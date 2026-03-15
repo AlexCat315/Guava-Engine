@@ -1,4 +1,8 @@
 const std = @import("std");
+const base_pass_mod = @import("base_pass.zig");
+const depth_prepass_mod = @import("depth_prepass.zig");
+const id_pass_mod = @import("id_pass.zig");
+const outline_pass_mod = @import("outline_pass.zig");
 const platform_mod = @import("../core/platform.zig");
 const window_mod = @import("../platform/window.zig");
 const graph_mod = @import("render_graph.zig");
@@ -32,7 +36,12 @@ pub const Renderer = struct {
     platform: platform_mod.Platform,
     rhi: rhi_mod.RhiDevice,
     graph: graph_mod.RenderGraph,
-    mesh_pass: mesh_pass_mod.MeshPass,
+    scene_cache: mesh_pass_mod.MeshSceneCache,
+    id_pass: id_pass_mod.IdPass,
+    depth_prepass: depth_prepass_mod.DepthPrepass,
+    base_pass: base_pass_mod.BasePass,
+    outline_pass: outline_pass_mod.OutlinePass,
+    selected_entity: ?scene_mod.EntityId = null,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -55,17 +64,37 @@ pub const Renderer = struct {
                 },
             ),
             .graph = try graph_mod.RenderGraph.initDefault3D(allocator),
-            .mesh_pass = undefined,
+            .scene_cache = undefined,
+            .id_pass = undefined,
+            .depth_prepass = undefined,
+            .base_pass = undefined,
+            .outline_pass = undefined,
         };
         errdefer renderer.graph.deinit();
         errdefer renderer.rhi.deinit();
 
-        renderer.mesh_pass = try mesh_pass_mod.MeshPass.init(allocator, &renderer.rhi);
+        renderer.scene_cache = try mesh_pass_mod.MeshSceneCache.init(allocator, &renderer.rhi);
+        errdefer renderer.scene_cache.deinit(&renderer.rhi);
+
+        renderer.id_pass = try id_pass_mod.IdPass.init(&renderer.rhi);
+        errdefer renderer.id_pass.deinit(&renderer.rhi);
+
+        renderer.depth_prepass = try depth_prepass_mod.DepthPrepass.init(&renderer.rhi);
+        errdefer renderer.depth_prepass.deinit(&renderer.rhi);
+
+        renderer.base_pass = try base_pass_mod.BasePass.init(&renderer.rhi);
+        errdefer renderer.base_pass.deinit(&renderer.rhi);
+
+        renderer.outline_pass = try outline_pass_mod.OutlinePass.init(&renderer.rhi);
         return renderer;
     }
 
     pub fn deinit(self: *Renderer) void {
-        self.mesh_pass.deinit(&self.rhi);
+        self.outline_pass.deinit(&self.rhi);
+        self.base_pass.deinit(&self.rhi);
+        self.depth_prepass.deinit(&self.rhi);
+        self.id_pass.deinit(&self.rhi);
+        self.scene_cache.deinit(&self.rhi);
         self.rhi.deinit();
         self.graph.deinit();
     }
@@ -104,7 +133,7 @@ pub const Renderer = struct {
             };
         }
 
-        if (!self.mesh_pass.isReady()) {
+        if (!self.depth_prepass.isReady() or !self.base_pass.isReady()) {
             try self.rhi.clearAndPresent(frame, clear);
             return .{
                 .backend = self.rhi.api,
@@ -114,9 +143,62 @@ pub const Renderer = struct {
             };
         }
 
-        const pass = try self.rhi.beginRenderPass(frame, clear);
-        const draw_stats = try self.mesh_pass.draw(&self.rhi, frame, pass, scene);
-        self.rhi.endRenderPass(pass);
+        var prepared_scene = try self.scene_cache.prepareScene(&self.rhi, frame, scene);
+        defer prepared_scene.deinit();
+
+        if (self.selected_entity == null) {
+            self.selected_entity = self.scene_cache.defaultSelectionEntity(scene);
+        }
+
+        try self.id_pass.ensureTarget(&self.rhi);
+
+        var draw_stats = mesh_pass_mod.DrawStats{};
+
+        if (self.id_pass.isReady()) {
+            const id_texture = self.id_pass.texture().?;
+            const id_render_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
+                .color = .{
+                    .target = .{ .texture = id_texture },
+                    .clear_color = .{ 0.0, 0.0, 0.0, 0.0 },
+                    .load_op = .clear,
+                    .store_op = .store,
+                },
+                .depth = if (self.rhi.depthTexture()) |depth_texture|
+                    .{
+                        .texture = depth_texture,
+                        .clear_depth = 1.0,
+                        .clear_stencil = 0,
+                        .load_op = .clear,
+                        .store_op = .dont_care,
+                        .stencil_load_op = .dont_care,
+                        .stencil_store_op = .dont_care,
+                    }
+                else
+                    null,
+            });
+            draw_stats.add(self.id_pass.draw(&self.rhi, frame, id_render_pass, &prepared_scene));
+            self.rhi.endRenderPass(id_render_pass);
+        }
+
+        const scene_pass = try self.rhi.beginRenderPass(frame, clear);
+        draw_stats.add(self.depth_prepass.draw(&self.rhi, frame, scene_pass, &prepared_scene));
+        draw_stats.add(self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene));
+        self.rhi.endRenderPass(scene_pass);
+
+        if (self.outline_pass.isReady() and self.id_pass.texture() != null and self.selected_entity != null) {
+            try self.outline_pass.syncTexture(&self.rhi, self.id_pass.texture().?);
+            const outline_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
+                .color = .{
+                    .target = .swapchain,
+                    .load_op = .load,
+                    .store_op = .store,
+                },
+                .depth = null,
+            });
+            draw_stats.add(self.outline_pass.draw(&self.rhi, frame, outline_pass, self.selected_entity));
+            self.rhi.endRenderPass(outline_pass);
+        }
+
         try self.rhi.submitFrame(frame);
 
         return .{

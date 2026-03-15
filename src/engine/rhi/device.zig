@@ -140,6 +140,44 @@ pub const RenderPass = struct {
     raw: *sdl.SDL_GPURenderPass,
 };
 
+pub const LoadOp = enum {
+    load,
+    clear,
+    dont_care,
+};
+
+pub const StoreOp = enum {
+    store,
+    dont_care,
+};
+
+pub const ColorTarget = union(enum) {
+    swapchain,
+    texture: *const Texture,
+};
+
+pub const ColorAttachmentDesc = struct {
+    target: ColorTarget = .swapchain,
+    clear_color: [4]f32 = .{ 0.07, 0.08, 0.12, 1.0 },
+    load_op: LoadOp = .clear,
+    store_op: StoreOp = .store,
+};
+
+pub const DepthAttachmentDesc = struct {
+    texture: *const Texture,
+    clear_depth: f32 = 1.0,
+    clear_stencil: u8 = 0,
+    load_op: LoadOp = .clear,
+    store_op: StoreOp = .dont_care,
+    stencil_load_op: LoadOp = .dont_care,
+    stencil_store_op: StoreOp = .dont_care,
+};
+
+pub const RenderPassDesc = struct {
+    color: ColorAttachmentDesc = .{},
+    depth: ?DepthAttachmentDesc = null,
+};
+
 const DriverSpec = struct {
     api: types.GraphicsAPI,
     driver_name: [:0]const u8,
@@ -200,6 +238,13 @@ pub const RhiDevice = struct {
         return self.runtime_info;
     }
 
+    pub fn depthTexture(self: *RhiDevice) ?*const Texture {
+        if (self.depth_texture) |*texture| {
+            return texture;
+        }
+        return null;
+    }
+
     pub fn beginFrame(self: *RhiDevice) Error!Frame {
         const command_buffer = sdl.SDL_AcquireGPUCommandBuffer(self.raw) orelse {
             std.log.err("SDL_AcquireGPUCommandBuffer failed: {s}", .{window_mod.lastError()});
@@ -248,31 +293,53 @@ pub const RhiDevice = struct {
     }
 
     pub fn beginRenderPass(self: *RhiDevice, frame: Frame, clear: types.ClearState) Error!RenderPass {
-        if (frame.swapchain_texture == null) {
-            return error.RenderPassBeginFailed;
-        }
+        return self.beginRenderPassWithDesc(frame, .{
+            .color = .{
+                .target = .swapchain,
+                .clear_color = clear.color,
+                .load_op = .clear,
+                .store_op = .store,
+            },
+            .depth = if (self.depthTexture()) |texture|
+                .{
+                    .texture = texture,
+                    .clear_depth = clear.depth,
+                    .clear_stencil = clear.stencil,
+                    .load_op = .clear,
+                    .store_op = .dont_care,
+                    .stencil_load_op = .dont_care,
+                    .stencil_store_op = .dont_care,
+                }
+            else
+                null,
+        });
+    }
 
+    pub fn beginRenderPassWithDesc(_: *RhiDevice, frame: Frame, desc: RenderPassDesc) Error!RenderPass {
         var color_target = std.mem.zeroes(sdl.SDL_GPUColorTargetInfo);
-        color_target.texture = frame.swapchain_texture.?;
-        color_target.clear_color = .{
-            .r = clear.color[0],
-            .g = clear.color[1],
-            .b = clear.color[2],
-            .a = clear.color[3],
+        color_target.texture = switch (desc.color.target) {
+            .swapchain => frame.swapchain_texture orelse return error.RenderPassBeginFailed,
+            .texture => |texture| texture.raw,
         };
-        color_target.load_op = sdl.SDL_GPU_LOADOP_CLEAR;
-        color_target.store_op = sdl.SDL_GPU_STOREOP_STORE;
+        color_target.clear_color = .{
+            .r = desc.color.clear_color[0],
+            .g = desc.color.clear_color[1],
+            .b = desc.color.clear_color[2],
+            .a = desc.color.clear_color[3],
+        };
+        color_target.load_op = loadOpToSdl(desc.color.load_op);
+        color_target.store_op = storeOpToSdl(desc.color.store_op);
 
         var depth_target = std.mem.zeroes(sdl.SDL_GPUDepthStencilTargetInfo);
         var depth_target_ptr: ?*const sdl.SDL_GPUDepthStencilTargetInfo = null;
-        if (self.depth_texture) |depth_texture| {
-            depth_target.texture = depth_texture.raw;
-            depth_target.clear_depth = clear.depth;
-            depth_target.clear_stencil = clear.stencil;
-            depth_target.load_op = sdl.SDL_GPU_LOADOP_CLEAR;
-            depth_target.store_op = sdl.SDL_GPU_STOREOP_DONT_CARE;
-            depth_target.stencil_load_op = sdl.SDL_GPU_LOADOP_DONT_CARE;
-            depth_target.stencil_store_op = sdl.SDL_GPU_STOREOP_DONT_CARE;
+        if (desc.depth) |depth_desc| {
+            depth_target.texture = depth_desc.texture.raw;
+            depth_target.clear_depth = depth_desc.clear_depth;
+            depth_target.clear_stencil = depth_desc.clear_stencil;
+            depth_target.load_op = loadOpToSdl(depth_desc.load_op);
+            depth_target.store_op = storeOpToSdl(depth_desc.store_op);
+            depth_target.stencil_load_op = loadOpToSdl(depth_desc.stencil_load_op);
+            depth_target.stencil_store_op = storeOpToSdl(depth_desc.stencil_store_op);
             depth_target_ptr = &depth_target;
         }
 
@@ -915,6 +982,21 @@ fn textureUsageToSdl(usage: u32) sdl.SDL_GPUTextureUsageFlags {
         result |= sdl.SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_SIMULTANEOUS_READ_WRITE;
     }
     return result;
+}
+
+fn loadOpToSdl(op: LoadOp) sdl.SDL_GPULoadOp {
+    return switch (op) {
+        .load => sdl.SDL_GPU_LOADOP_LOAD,
+        .clear => sdl.SDL_GPU_LOADOP_CLEAR,
+        .dont_care => sdl.SDL_GPU_LOADOP_DONT_CARE,
+    };
+}
+
+fn storeOpToSdl(op: StoreOp) sdl.SDL_GPUStoreOp {
+    return switch (op) {
+        .store => sdl.SDL_GPU_STOREOP_STORE,
+        .dont_care => sdl.SDL_GPU_STOREOP_DONT_CARE,
+    };
 }
 
 fn textureFormatToSdl(format: types.TextureFormat) sdl.SDL_GPUTextureFormat {

@@ -80,7 +80,7 @@ pub const World = struct {
         return null;
     }
 
-    pub fn findEntityByName(self: *World, name: []const u8) ?*Entity {
+    pub fn findEntityByName(self: *const World, name: []const u8) ?*const Entity {
         for (self.entities.items) |*entity| {
             if (std.mem.eql(u8, entity.name, name)) {
                 return entity;

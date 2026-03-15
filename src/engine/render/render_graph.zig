@@ -9,10 +9,12 @@ pub const QueueClass = enum {
 pub const PassKind = enum {
     shadow_map,
     depth_prepass,
-    opaque_geometry,
+    id_pass,
+    base_pass,
     lighting,
     transparent,
     post_process,
+    outline_pass,
     ui_overlay,
 };
 
@@ -45,10 +47,12 @@ pub const RenderGraph = struct {
         self.passes.clearRetainingCapacity();
         try self.addPass(.{ .name = "ShadowMap", .kind = .shadow_map });
         try self.addPass(.{ .name = "DepthPrepass", .kind = .depth_prepass });
-        try self.addPass(.{ .name = "OpaqueGeometry", .kind = .opaque_geometry });
+        try self.addPass(.{ .name = "IDPass", .kind = .id_pass });
+        try self.addPass(.{ .name = "BasePass", .kind = .base_pass });
         try self.addPass(.{ .name = "Lighting", .kind = .lighting });
         try self.addPass(.{ .name = "Transparent", .kind = .transparent });
         try self.addPass(.{ .name = "PostProcess", .kind = .post_process });
+        try self.addPass(.{ .name = "OutlinePass", .kind = .outline_pass });
         try self.addPass(.{ .name = "UIOverlay", .kind = .ui_overlay });
     }
 
