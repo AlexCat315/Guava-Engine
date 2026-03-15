@@ -34,7 +34,7 @@ pub const Application = struct {
     platform: platform_mod.Platform,
     window: window_mod.Window,
     renderer: renderer_mod.Renderer,
-    scene: scene_mod.Scene,
+    world: scene_mod.World,
     layers: layer_stack_mod.LayerStack,
     initialized: bool = false,
 
@@ -48,9 +48,9 @@ pub const Application = struct {
         });
         errdefer window.deinit();
 
-        var scene = scene_mod.Scene.init(allocator);
-        errdefer scene.deinit();
-        try scene.bootstrap3D();
+        var world = scene_mod.World.init(allocator);
+        errdefer world.deinit();
+        try world.bootstrap3D();
 
         const renderer = try renderer_mod.Renderer.init(allocator, platform, &window, .{
             .requested_backends = config.preferred_backends,
@@ -65,7 +65,7 @@ pub const Application = struct {
             .platform = platform,
             .window = window,
             .renderer = renderer,
-            .scene = scene,
+            .world = world,
             .layers = layer_stack_mod.LayerStack.init(allocator),
         };
     }
@@ -75,7 +75,7 @@ pub const Application = struct {
             self.detachLayers();
         }
         self.layers.deinit();
-        self.scene.deinit();
+        self.world.deinit();
         self.renderer.deinit();
         self.window.deinit();
     }
@@ -118,11 +118,11 @@ pub const Application = struct {
                 try layer.update(&layer_context);
             }
 
-            last_frame = try self.renderer.drawFrame(&self.scene);
+            last_frame = try self.renderer.drawFrame(&self.world);
             self.window.delay(self.config.frame_delay_ms);
         }
 
-        const summary = self.scene.summary();
+        const summary = self.world.summary();
         return .{
             .frames = frames_rendered,
             .backend = self.renderer.backendApi(),
@@ -166,7 +166,8 @@ pub const Application = struct {
 
     fn makeLayerContext(self: *Application, frame_index: usize, delta_seconds: f32) layer_mod.LayerContext {
         return .{
-            .scene = &self.scene,
+            .world = &self.world,
+            .scene = &self.world,
             .renderer = &self.renderer,
             .frame_index = frame_index,
             .delta_seconds = delta_seconds,

@@ -1,6 +1,6 @@
 const std = @import("std");
 const handles = @import("handles.zig");
-const material_mod = @import("material_resource.zig");
+const image_decoder = @import("image_decoder.zig");
 const mesh_mod = @import("mesh_resource.zig");
 const components = @import("../scene/components.zig");
 const math = @import("../math/mat4.zig");
@@ -17,6 +17,8 @@ const GltfDocument = struct {
     buffers: ?[]Buffer = null,
     bufferViews: ?[]BufferView = null,
     accessors: ?[]Accessor = null,
+    images: ?[]Image = null,
+    textures: ?[]Texture = null,
     materials: ?[]Material = null,
     meshes: ?[]Mesh = null,
     nodes: ?[]Node = null,
@@ -48,6 +50,19 @@ const Accessor = struct {
     count: usize,
     type: []const u8,
     normalized: bool = false,
+};
+
+const Image = struct {
+    uri: ?[]const u8 = null,
+    mimeType: ?[]const u8 = null,
+    bufferView: ?u32 = null,
+    name: ?[]const u8 = null,
+};
+
+const Texture = struct {
+    sampler: ?u32 = null,
+    source: ?u32 = null,
+    name: ?[]const u8 = null,
 };
 
 const TextureInfo = struct {
@@ -100,17 +115,23 @@ const AccessorView = struct {
     type: []const u8,
 };
 
-const MaterialResolution = struct {
-    handle: handles.MaterialHandle,
+const TextureResolution = struct {
+    handle: ?handles.TextureHandle = null,
     created: bool = false,
 };
 
+const MaterialResolution = struct {
+    handle: handles.MaterialHandle,
+    created: bool = false,
+    created_texture_count: usize = 0,
+};
+
 pub fn importStaticModel(
-    scene: anytype,
+    world: anytype,
     path: []const u8,
     root_transform: components.Transform,
 ) !ImportReport {
-    const allocator = scene.allocator;
+    const allocator = world.allocator;
     const source = try std.fs.cwd().readFileAlloc(allocator, path, 32 * 1024 * 1024);
     defer allocator.free(source);
 
@@ -125,6 +146,8 @@ pub fn importStaticModel(
     }
 
     const base_dir = std.fs.path.dirname(path) orelse ".";
+    const source_stem = std.fs.path.stem(path);
+
     const loaded_buffers = try loadBuffers(allocator, base_dir, document.buffers orelse &.{});
     defer freeLoadedBuffers(allocator, loaded_buffers);
 
@@ -133,7 +156,12 @@ pub fn importStaticModel(
     defer allocator.free(material_handles);
     @memset(material_handles, null);
 
-    const default_material = try scene.resources.ensureDefaultMaterial();
+    const document_textures = document.textures orelse &.{};
+    const texture_handles = try allocator.alloc(?handles.TextureHandle, document_textures.len);
+    defer allocator.free(texture_handles);
+    @memset(texture_handles, null);
+
+    const default_material = try world.resources.ensureDefaultMaterial();
 
     var report = ImportReport{};
     const scene_index = document.scene orelse 0;
@@ -145,15 +173,17 @@ pub fn importStaticModel(
     const root_nodes = document_scenes[scene_index].nodes orelse return error.MissingSceneNodes;
     for (root_nodes) |node_index| {
         try importNodeRecursive(
-            scene,
+            world,
             document,
             loaded_buffers,
             material_handles,
+            texture_handles,
             default_material,
             node_index,
             math.identity(),
             root_transform,
-            path,
+            base_dir,
+            source_stem,
             &report,
         );
     }
@@ -162,15 +192,17 @@ pub fn importStaticModel(
 }
 
 fn importNodeRecursive(
-    scene: anytype,
+    world: anytype,
     document: GltfDocument,
     loaded_buffers: []const []u8,
     material_handles: []?handles.MaterialHandle,
+    texture_handles: []?handles.TextureHandle,
     default_material: handles.MaterialHandle,
     node_index: u32,
     parent_matrix: math.Mat4,
     root_transform: components.Transform,
-    source_path: []const u8,
+    base_dir: []const u8,
+    source_stem: []const u8,
     report: *ImportReport,
 ) !void {
     const document_nodes = document.nodes orelse return error.MissingNodes;
@@ -183,16 +215,18 @@ fn importNodeRecursive(
 
     if (node.mesh) |mesh_index| {
         try importNodeMesh(
-            scene,
+            world,
             document,
             loaded_buffers,
             material_handles,
+            texture_handles,
             default_material,
             mesh_index,
             node,
             node_world,
             root_transform,
-            source_path,
+            base_dir,
+            source_stem,
             report,
         );
     }
@@ -200,15 +234,17 @@ fn importNodeRecursive(
     if (node.children) |children| {
         for (children) |child_index| {
             try importNodeRecursive(
-                scene,
+                world,
                 document,
                 loaded_buffers,
                 material_handles,
+                texture_handles,
                 default_material,
                 child_index,
                 node_world,
                 root_transform,
-                source_path,
+                base_dir,
+                source_stem,
                 report,
             );
         }
@@ -216,16 +252,18 @@ fn importNodeRecursive(
 }
 
 fn importNodeMesh(
-    scene: anytype,
+    world: anytype,
     document: GltfDocument,
     loaded_buffers: []const []u8,
     material_handles: []?handles.MaterialHandle,
+    texture_handles: []?handles.TextureHandle,
     default_material: handles.MaterialHandle,
     mesh_index: u32,
     node: Node,
     node_world: math.Mat4,
     root_transform: components.Transform,
-    source_path: []const u8,
+    base_dir: []const u8,
+    source_stem: []const u8,
     report: *ImportReport,
 ) !void {
     const document_meshes = document.meshes orelse return error.MissingMeshes;
@@ -234,7 +272,6 @@ fn importNodeMesh(
     }
 
     const mesh = document_meshes[mesh_index];
-    const source_stem = std.fs.path.stem(source_path);
 
     for (mesh.primitives, 0..) |primitive, primitive_index| {
         const mode = primitive.mode orelse 4;
@@ -242,28 +279,36 @@ fn importNodeMesh(
             return error.UnsupportedPrimitiveMode;
         }
 
-        const mesh_handle = try createMeshForPrimitive(scene, document, loaded_buffers, primitive, node_world, mesh.name, primitive_index);
-        const material = try resolveMaterialHandle(
-            scene,
+        const mesh_handle = try createMeshForPrimitive(
+            world,
             document,
+            loaded_buffers,
+            primitive,
+            node_world,
+            mesh.name,
+            primitive_index,
+        );
+        const material = try resolveMaterialHandle(
+            world,
+            document,
+            loaded_buffers,
             material_handles,
+            texture_handles,
             default_material,
             primitive.material,
+            base_dir,
             source_stem,
         );
-        if (material.created) {
-            report.material_count += 1;
-        }
 
         const entity_name = try entityNameForPrimitive(
-            scene.allocator,
+            world.allocator,
             source_stem,
             node.name orelse mesh.name orelse "Node",
             primitive_index,
         );
-        defer scene.allocator.free(entity_name);
+        defer world.allocator.free(entity_name);
 
-        _ = try scene.createEntity(.{
+        _ = try world.createEntity(.{
             .name = entity_name,
             .mesh = .{
                 .handle = mesh_handle,
@@ -277,11 +322,13 @@ fn importNodeMesh(
 
         report.entity_count += 1;
         report.mesh_count += 1;
+        report.material_count += @intFromBool(material.created);
+        report.texture_count += material.created_texture_count;
     }
 }
 
 fn createMeshForPrimitive(
-    scene: anytype,
+    world: anytype,
     document: GltfDocument,
     loaded_buffers: []const []u8,
     primitive: Primitive,
@@ -291,52 +338,83 @@ fn createMeshForPrimitive(
 ) !handles.MeshHandle {
     const position_accessor_index = attributeIndex(primitive.attributes, "POSITION") orelse return error.MissingPositions;
     const position_view = try accessorView(document, loaded_buffers, position_accessor_index);
-    if (!std.mem.eql(u8, position_view.type, "VEC3") or position_view.component_type != 5126) {
-        return error.UnsupportedPositionFormat;
-    }
+    try requireAccessorFormat(position_view, "VEC3", 5126, error.UnsupportedPositionFormat);
 
-    const color_accessor_index = attributeIndex(primitive.attributes, "COLOR_0");
-    const uv_accessor_index = attributeIndex(primitive.attributes, "TEXCOORD_0");
+    const normal_view = if (attributeIndex(primitive.attributes, "NORMAL")) |index| blk: {
+        const view = try accessorView(document, loaded_buffers, index);
+        try requireAccessorFormat(view, "VEC3", 5126, error.UnsupportedNormalFormat);
+        break :blk view;
+    } else null;
 
-    const vertices = try scene.allocator.alloc(mesh_mod.Vertex, position_view.count);
-    defer scene.allocator.free(vertices);
+    const tangent_view = if (attributeIndex(primitive.attributes, "TANGENT")) |index| blk: {
+        const view = try accessorView(document, loaded_buffers, index);
+        try requireAccessorFormat(view, "VEC4", 5126, error.UnsupportedTangentFormat);
+        break :blk view;
+    } else null;
 
-    const color_view = if (color_accessor_index) |index| try accessorView(document, loaded_buffers, index) else null;
-    const uv_view = if (uv_accessor_index) |index| try accessorView(document, loaded_buffers, index) else null;
+    const color_view = if (attributeIndex(primitive.attributes, "COLOR_0")) |index|
+        try accessorView(document, loaded_buffers, index)
+    else
+        null;
+    const uv_view = if (attributeIndex(primitive.attributes, "TEXCOORD_0")) |index|
+        try accessorView(document, loaded_buffers, index)
+    else
+        null;
+
+    try requireMatchingCount(normal_view, position_view.count);
+    try requireMatchingCount(tangent_view, position_view.count);
+    try requireMatchingCount(color_view, position_view.count);
+    try requireMatchingCount(uv_view, position_view.count);
+
+    const vertices = try world.allocator.alloc(mesh_mod.Vertex, position_view.count);
+    defer world.allocator.free(vertices);
 
     for (vertices, 0..) |*vertex, index| {
         const position = try readVec3(position_view, index);
         vertex.position = transformPoint(node_world, position);
+
+        vertex.normal = if (normal_view) |view|
+            normalize3(transformDirection(node_world, try readVec3(view, index)))
+        else
+            .{ 0.0, 1.0, 0.0 };
+
+        vertex.tangent = if (tangent_view) |view|
+            transformTangent(node_world, try readVec4(view, index))
+        else
+            defaultTangent(vertex.normal);
+
         vertex.color = if (color_view) |view| try readColor(view, index) else .{ 1.0, 1.0, 1.0, 1.0 };
         vertex.uv = if (uv_view) |view| try readVec2(view, index) else .{ 0.0, 0.0 };
     }
 
     const indices = if (primitive.indices) |accessor_index|
-        try readIndices(scene.allocator, try accessorView(document, loaded_buffers, accessor_index))
+        try readIndices(world.allocator, try accessorView(document, loaded_buffers, accessor_index))
     else
-        try sequentialIndices(scene.allocator, vertices.len);
-    defer scene.allocator.free(indices);
+        try sequentialIndices(world.allocator, vertices.len);
+    defer world.allocator.free(indices);
 
-    const name = try std.fmt.allocPrint(scene.allocator, "{s}_mesh_{d}", .{
+    const generated_name = try std.fmt.allocPrint(world.allocator, "{s}_mesh_{d}", .{
         mesh_name orelse "Mesh",
         primitive_index,
     });
-    defer scene.allocator.free(name);
+    defer world.allocator.free(generated_name);
 
-    const mesh_handle = try scene.resources.createMesh(.{
-        .name = name,
+    return world.resources.createMesh(.{
+        .name = generated_name,
         .vertices = vertices,
         .indices = indices,
     });
-    return mesh_handle;
 }
 
 fn resolveMaterialHandle(
-    scene: anytype,
+    world: anytype,
     document: GltfDocument,
+    loaded_buffers: []const []u8,
     material_handles: []?handles.MaterialHandle,
+    texture_handles: []?handles.TextureHandle,
     default_material: handles.MaterialHandle,
     material_index: ?u32,
+    base_dir: []const u8,
     source_stem: []const u8,
 ) !MaterialResolution {
     const index = material_index orelse return .{ .handle = default_material };
@@ -351,20 +429,96 @@ fn resolveMaterialHandle(
 
     const material = document_materials[index];
     const pbr = material.pbrMetallicRoughness;
-    const name = try std.fmt.allocPrint(scene.allocator, "{s}_{s}_{d}", .{
+    const base_color_factor = if (pbr) |value|
+        value.baseColorFactor orelse .{ 1.0, 1.0, 1.0, 1.0 }
+    else
+        .{ 1.0, 1.0, 1.0, 1.0 };
+
+    const base_color_texture = if (pbr) |value|
+        try resolveTextureHandle(
+            world,
+            document,
+            loaded_buffers,
+            texture_handles,
+            if (value.baseColorTexture) |info| info.index else null,
+            base_dir,
+            source_stem,
+        )
+    else
+        TextureResolution{};
+
+    const generated_name = try std.fmt.allocPrint(world.allocator, "{s}_material_{d}", .{
         source_stem,
-        "material",
         index,
     });
-    defer scene.allocator.free(name);
+    defer world.allocator.free(generated_name);
 
-    const handle = try scene.resources.createMaterial(.{
-        .name = material.name orelse name,
+    const handle = try world.resources.createMaterial(.{
+        .name = material.name orelse generated_name,
         .shading = .pbr_metallic_roughness,
-        .base_color_factor = if (pbr) |value| value.baseColorFactor orelse .{ 1.0, 1.0, 1.0, 1.0 } else .{ 1.0, 1.0, 1.0, 1.0 },
-        .base_color_texture = null,
+        .base_color_factor = base_color_factor,
+        .base_color_texture = base_color_texture.handle,
     });
     material_handles[index] = handle;
+
+    return .{
+        .handle = handle,
+        .created = true,
+        .created_texture_count = @intFromBool(base_color_texture.created),
+    };
+}
+
+fn resolveTextureHandle(
+    world: anytype,
+    document: GltfDocument,
+    loaded_buffers: []const []u8,
+    texture_handles: []?handles.TextureHandle,
+    texture_index: ?u32,
+    base_dir: []const u8,
+    source_stem: []const u8,
+) !TextureResolution {
+    const index = texture_index orelse return .{};
+    const document_textures = document.textures orelse return .{};
+    const document_images = document.images orelse return .{};
+    if (index >= document_textures.len) {
+        return error.TextureIndexOutOfBounds;
+    }
+
+    if (texture_handles[index]) |handle| {
+        return .{
+            .handle = handle,
+        };
+    }
+
+    const texture = document_textures[index];
+    const image_index = texture.source orelse return error.TextureSourceMissing;
+    if (image_index >= document_images.len) {
+        return error.ImageIndexOutOfBounds;
+    }
+
+    const image = document_images[image_index];
+    const encoded = try loadImageBytes(world.allocator, base_dir, image, document, loaded_buffers);
+    defer world.allocator.free(encoded);
+
+    var decoded = try image_decoder.decodeRgba8(world.allocator, encoded);
+    defer decoded.deinit();
+    swizzleRgbaToBgra(decoded.pixels);
+
+    const generated_name = try std.fmt.allocPrint(world.allocator, "{s}_texture_{d}", .{
+        source_stem,
+        index,
+    });
+    defer world.allocator.free(generated_name);
+
+    const handle = try world.resources.createTexture(.{
+        .name = texture.name orelse image.name orelse generated_name,
+        .width = decoded.width,
+        .height = decoded.height,
+        .format = .bgra8_unorm,
+        .pixels = decoded.pixels,
+    });
+    texture_handles[index] = handle;
+
     return .{
         .handle = handle,
         .created = true,
@@ -403,7 +557,7 @@ fn loadBuffers(
     while (index < buffers.len) : (index += 1) {
         const buffer = buffers[index];
         const uri = buffer.uri orelse return error.UnsupportedGlbBuffer;
-        loaded[index] = try loadBufferUri(allocator, base_dir, uri);
+        loaded[index] = try loadBinaryUri(allocator, base_dir, uri);
     }
 
     return loaded;
@@ -416,7 +570,28 @@ fn freeLoadedBuffers(allocator: std.mem.Allocator, buffers: [][]u8) void {
     allocator.free(buffers);
 }
 
-fn loadBufferUri(allocator: std.mem.Allocator, base_dir: []const u8, uri: []const u8) ![]u8 {
+fn loadImageBytes(
+    allocator: std.mem.Allocator,
+    base_dir: []const u8,
+    image: Image,
+    document: GltfDocument,
+    loaded_buffers: []const []u8,
+) ![]u8 {
+    if (image.uri) |uri| {
+        return loadBinaryUri(allocator, base_dir, uri);
+    }
+    if (image.bufferView) |buffer_view_index| {
+        const bytes = try bufferViewBytes(document, loaded_buffers, buffer_view_index);
+        return allocator.dupe(u8, bytes);
+    }
+    return error.UnsupportedImageSource;
+}
+
+fn loadBinaryUri(
+    allocator: std.mem.Allocator,
+    base_dir: []const u8,
+    uri: []const u8,
+) ![]u8 {
     if (std.mem.startsWith(u8, uri, "data:")) {
         const comma_index = std.mem.indexOfScalar(u8, uri, ',') orelse return error.InvalidDataUri;
         const header = uri[0..comma_index];
@@ -434,6 +609,31 @@ fn loadBufferUri(allocator: std.mem.Allocator, base_dir: []const u8, uri: []cons
     const resolved_path = try std.fs.path.join(allocator, &.{ base_dir, uri });
     defer allocator.free(resolved_path);
     return std.fs.cwd().readFileAlloc(allocator, resolved_path, 128 * 1024 * 1024);
+}
+
+fn bufferViewBytes(
+    document: GltfDocument,
+    loaded_buffers: []const []u8,
+    buffer_view_index: u32,
+) ![]const u8 {
+    const buffer_views = document.bufferViews orelse return error.MissingBufferViews;
+    if (buffer_view_index >= buffer_views.len) {
+        return error.BufferViewIndexOutOfBounds;
+    }
+
+    const buffer_view = buffer_views[buffer_view_index];
+    if (buffer_view.buffer >= loaded_buffers.len) {
+        return error.BufferIndexOutOfBounds;
+    }
+
+    const buffer = loaded_buffers[buffer_view.buffer];
+    const start = buffer_view.byteOffset orelse 0;
+    const end = start + buffer_view.byteLength;
+    if (end > buffer.len) {
+        return error.BufferSliceOutOfBounds;
+    }
+
+    return buffer[start..end];
 }
 
 fn accessorView(document: GltfDocument, loaded_buffers: []const []u8, accessor_index: u32) !AccessorView {
@@ -492,6 +692,20 @@ fn attributeIndex(attributes: std.json.Value, name: []const u8) ?u32 {
     };
 }
 
+fn requireAccessorFormat(view: AccessorView, expected_type: []const u8, expected_component: u32, err: anyerror) !void {
+    if (!std.mem.eql(u8, view.type, expected_type) or view.component_type != expected_component) {
+        return err;
+    }
+}
+
+fn requireMatchingCount(view: ?AccessorView, expected: usize) !void {
+    if (view) |value| {
+        if (value.count != expected) {
+            return error.AttributeCountMismatch;
+        }
+    }
+}
+
 fn readVec2(view: AccessorView, index: usize) ![2]f32 {
     if (!std.mem.eql(u8, view.type, "VEC2")) {
         return error.InvalidAccessorType;
@@ -515,6 +729,19 @@ fn readVec3(view: AccessorView, index: usize) ![3]f32 {
     };
 }
 
+fn readVec4(view: AccessorView, index: usize) ![4]f32 {
+    if (!std.mem.eql(u8, view.type, "VEC4")) {
+        return error.InvalidAccessorType;
+    }
+
+    return .{
+        try componentAsF32(view, index, 0),
+        try componentAsF32(view, index, 1),
+        try componentAsF32(view, index, 2),
+        try componentAsF32(view, index, 3),
+    };
+}
+
 fn readColor(view: AccessorView, index: usize) ![4]f32 {
     if (std.mem.eql(u8, view.type, "VEC3")) {
         return .{
@@ -525,12 +752,7 @@ fn readColor(view: AccessorView, index: usize) ![4]f32 {
         };
     }
     if (std.mem.eql(u8, view.type, "VEC4")) {
-        return .{
-            try componentAsF32(view, index, 0),
-            try componentAsF32(view, index, 1),
-            try componentAsF32(view, index, 2),
-            try componentAsF32(view, index, 3),
-        };
+        return try readVec4(view, index);
     }
     return error.InvalidAccessorType;
 }
@@ -663,4 +885,46 @@ fn transformPoint(matrix_value: math.Mat4, point: [3]f32) [3]f32 {
         matrix_value[1] * point[0] + matrix_value[5] * point[1] + matrix_value[9] * point[2] + matrix_value[13],
         matrix_value[2] * point[0] + matrix_value[6] * point[1] + matrix_value[10] * point[2] + matrix_value[14],
     };
+}
+
+fn transformDirection(matrix_value: math.Mat4, direction: [3]f32) [3]f32 {
+    return .{
+        matrix_value[0] * direction[0] + matrix_value[4] * direction[1] + matrix_value[8] * direction[2],
+        matrix_value[1] * direction[0] + matrix_value[5] * direction[1] + matrix_value[9] * direction[2],
+        matrix_value[2] * direction[0] + matrix_value[6] * direction[1] + matrix_value[10] * direction[2],
+    };
+}
+
+fn transformTangent(matrix_value: math.Mat4, tangent: [4]f32) [4]f32 {
+    const xyz = normalize3(transformDirection(matrix_value, .{ tangent[0], tangent[1], tangent[2] }));
+    return .{ xyz[0], xyz[1], xyz[2], tangent[3] };
+}
+
+fn normalize3(value: [3]f32) [3]f32 {
+    const length = std.math.sqrt(value[0] * value[0] + value[1] * value[1] + value[2] * value[2]);
+    if (length <= std.math.floatEps(f32)) {
+        return .{ 0.0, 1.0, 0.0 };
+    }
+    const inverse = 1.0 / length;
+    return .{
+        value[0] * inverse,
+        value[1] * inverse,
+        value[2] * inverse,
+    };
+}
+
+fn defaultTangent(normal: [3]f32) [4]f32 {
+    if (@abs(normal[1]) > 0.8) {
+        return .{ 1.0, 0.0, 0.0, 1.0 };
+    }
+    return .{ 0.0, 1.0, 0.0, 1.0 };
+}
+
+fn swizzleRgbaToBgra(bytes: []u8) void {
+    var index: usize = 0;
+    while (index + 3 < bytes.len) : (index += 4) {
+        const r = bytes[index];
+        bytes[index] = bytes[index + 2];
+        bytes[index + 2] = r;
+    }
 }

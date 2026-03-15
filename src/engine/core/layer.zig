@@ -3,6 +3,7 @@ const renderer_mod = @import("../render/renderer.zig");
 const rhi_mod = @import("../rhi/device.zig");
 
 pub const LayerContext = struct {
+    world: *scene_mod.World,
     scene: *scene_mod.Scene,
     renderer: *renderer_mod.Renderer,
     frame_index: usize,
