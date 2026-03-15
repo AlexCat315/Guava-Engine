@@ -17,12 +17,15 @@ pub const EventKind = enum {
     pixel_size_changed,
     metal_view_resized,
     exposed,
+    mouse_primary_down,
 };
 
 pub const Event = struct {
     kind: EventKind,
     width: u32 = 0,
     height: u32 = 0,
+    x: f32 = 0.0,
+    y: f32 = 0.0,
 };
 
 pub const Window = struct {
@@ -141,6 +144,15 @@ pub const Window = struct {
                         .width = self.drawable_width,
                         .height = self.drawable_height,
                     };
+                },
+                sdl.SDL_EVENT_MOUSE_BUTTON_DOWN => {
+                    if (raw_event.button.button == sdl.SDL_BUTTON_LEFT and raw_event.button.down) {
+                        return .{
+                            .kind = .mouse_primary_down,
+                            .x = raw_event.button.x,
+                            .y = raw_event.button.y,
+                        };
+                    }
                 },
                 else => {},
             }

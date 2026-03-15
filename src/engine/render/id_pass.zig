@@ -20,6 +20,21 @@ pub fn encodeEntityIdColor(entity_id: scene_mod.EntityId) [4]f32 {
     };
 }
 
+pub fn decodeEntityIdBgra(pixel: [4]u8) ?scene_mod.EntityId {
+    const encoded_id = @as(u32, pixel[2]) |
+        (@as(u32, pixel[1]) << 8) |
+        (@as(u32, pixel[0]) << 16);
+    if (encoded_id == 0) {
+        return null;
+    }
+    return encoded_id;
+}
+
+test "decodeEntityIdBgra decodes selection readback bytes" {
+    try std.testing.expectEqual(@as(?scene_mod.EntityId, 0x123456), decodeEntityIdBgra(.{ 0x12, 0x34, 0x56, 0xFF }));
+    try std.testing.expectEqual(@as(?scene_mod.EntityId, null), decodeEntityIdBgra(.{ 0x00, 0x00, 0x00, 0x00 }));
+}
+
 pub const IdPass = struct {
     id_texture: ?rhi_mod.Texture = null,
     pipeline: ?rhi_mod.GraphicsPipeline = null,

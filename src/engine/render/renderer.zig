@@ -31,6 +31,11 @@ pub const FrameReport = struct {
     triangles_drawn: usize = 0,
 };
 
+const SelectionReadbackRequest = struct {
+    pixel_x: u32,
+    pixel_y: u32,
+};
+
 pub const Renderer = struct {
     allocator: std.mem.Allocator,
     platform: platform_mod.Platform,
@@ -42,6 +47,8 @@ pub const Renderer = struct {
     base_pass: base_pass_mod.BasePass,
     outline_pass: outline_pass_mod.OutlinePass,
     selected_entity: ?scene_mod.EntityId = null,
+    selection_seeded: bool = false,
+    pending_selection_readback: ?SelectionReadbackRequest = null,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -115,6 +122,18 @@ pub const Renderer = struct {
         try self.rhi.resize(width, height);
     }
 
+    pub fn requestSelectionReadback(self: *Renderer, pixel_x: u32, pixel_y: u32) void {
+        self.pending_selection_readback = .{
+            .pixel_x = pixel_x,
+            .pixel_y = pixel_y,
+        };
+        self.selection_seeded = true;
+    }
+
+    pub fn selectedEntity(self: *const Renderer) ?scene_mod.EntityId {
+        return self.selected_entity;
+    }
+
     pub fn passCount(self: *const Renderer) usize {
         return self.graph.passes.items.len;
     }
@@ -146,8 +165,9 @@ pub const Renderer = struct {
         var prepared_scene = try self.scene_cache.prepareScene(&self.rhi, frame, scene);
         defer prepared_scene.deinit();
 
-        if (self.selected_entity == null) {
+        if (!self.selection_seeded) {
             self.selected_entity = self.scene_cache.defaultSelectionEntity(scene);
+            self.selection_seeded = true;
         }
 
         try self.id_pass.ensureTarget(&self.rhi);
@@ -200,6 +220,7 @@ pub const Renderer = struct {
         }
 
         try self.rhi.submitFrame(frame);
+        try self.resolveSelectionReadback();
 
         return .{
             .backend = self.rhi.api,
@@ -236,5 +257,24 @@ pub const Renderer = struct {
             },
             .depth = 1.0,
         };
+    }
+
+    fn resolveSelectionReadback(self: *Renderer) !void {
+        const request = self.pending_selection_readback orelse return;
+        defer self.pending_selection_readback = null;
+
+        const id_texture = self.id_pass.texture() orelse {
+            self.selected_entity = null;
+            return;
+        };
+        if (id_texture.desc.width == 0 or id_texture.desc.height == 0) {
+            self.selected_entity = null;
+            return;
+        }
+
+        const pixel_x = @min(request.pixel_x, id_texture.desc.width - 1);
+        const pixel_y = @min(request.pixel_y, id_texture.desc.height - 1);
+        const pixel = try self.rhi.readTexturePixel(id_texture, pixel_x, pixel_y);
+        self.selected_entity = id_pass_mod.decodeEntityIdBgra(pixel);
     }
 };

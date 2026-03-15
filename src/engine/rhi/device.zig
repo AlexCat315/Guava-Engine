@@ -817,6 +817,63 @@ pub const RhiDevice = struct {
         _ = sdl.SDL_WaitForGPUIdle(self.raw);
     }
 
+    pub fn readTexturePixel(self: *RhiDevice, texture: *const Texture, x: u32, y: u32) Error![4]u8 {
+        var transfer_buffer = try self.createTransferBuffer(.{
+            .size = 4,
+            .upload = false,
+        });
+        defer self.releaseTransferBuffer(&transfer_buffer);
+
+        const command_buffer = sdl.SDL_AcquireGPUCommandBuffer(self.raw) orelse {
+            std.log.err("SDL_AcquireGPUCommandBuffer failed: {s}", .{window_mod.lastError()});
+            return error.CommandBufferAcquireFailed;
+        };
+        errdefer _ = sdl.SDL_CancelGPUCommandBuffer(command_buffer);
+
+        const copy_pass = sdl.SDL_BeginGPUCopyPass(command_buffer) orelse {
+            std.log.err("SDL_BeginGPUCopyPass failed: {s}", .{window_mod.lastError()});
+            return error.CopyPassBeginFailed;
+        };
+
+        var source = sdl.SDL_GPUTextureRegion{
+            .texture = texture.raw,
+            .mip_level = 0,
+            .layer = 0,
+            .x = x,
+            .y = y,
+            .z = 0,
+            .w = 1,
+            .h = 1,
+            .d = 1,
+        };
+        var destination = sdl.SDL_GPUTextureTransferInfo{
+            .transfer_buffer = transfer_buffer.raw,
+            .offset = 0,
+            .pixels_per_row = 1,
+            .rows_per_layer = 1,
+        };
+        sdl.SDL_DownloadFromGPUTexture(copy_pass, &source, &destination);
+        sdl.SDL_EndGPUCopyPass(copy_pass);
+
+        if (!sdl.SDL_SubmitGPUCommandBuffer(command_buffer)) {
+            std.log.err("SDL_SubmitGPUCommandBuffer failed: {s}", .{window_mod.lastError()});
+            return error.CommandBufferSubmitFailed;
+        }
+
+        _ = sdl.SDL_WaitForGPUIdle(self.raw);
+
+        const mapped = sdl.SDL_MapGPUTransferBuffer(self.raw, transfer_buffer.raw, false) orelse {
+            std.log.err("SDL_MapGPUTransferBuffer failed: {s}", .{window_mod.lastError()});
+            return error.TransferBufferMapFailed;
+        };
+        defer sdl.SDL_UnmapGPUTransferBuffer(self.raw, transfer_buffer.raw);
+
+        const bytes: [*]u8 = @ptrCast(mapped);
+        var pixel: [4]u8 = undefined;
+        @memcpy(pixel[0..], bytes[0..4]);
+        return pixel;
+    }
+
     fn releaseDepthTexture(self: *RhiDevice) void {
         if (self.depth_texture) |depth_texture| {
             var copy = depth_texture;
