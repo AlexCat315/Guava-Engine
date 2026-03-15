@@ -1,4 +1,6 @@
 const std = @import("std");
+const assets = @import("../assets/library.zig");
+const gltf_import = @import("../assets/gltf_import.zig");
 const components = @import("components.zig");
 
 pub const EntityId = u64;
@@ -32,11 +34,15 @@ pub const Summary = struct {
 
 pub const Scene = struct {
     allocator: std.mem.Allocator,
+    resources: assets.ResourceLibrary,
     entities: std.ArrayList(Entity) = .empty,
     next_id: EntityId = 1,
 
     pub fn init(allocator: std.mem.Allocator) Scene {
-        return .{ .allocator = allocator };
+        return .{
+            .allocator = allocator,
+            .resources = assets.ResourceLibrary.init(allocator),
+        };
     }
 
     pub fn deinit(self: *Scene) void {
@@ -44,6 +50,7 @@ pub const Scene = struct {
             self.allocator.free(entity.name);
         }
         self.entities.deinit(self.allocator);
+        self.resources.deinit();
     }
 
     pub fn createEntity(self: *Scene, desc: EntityDesc) !EntityId {
@@ -106,6 +113,10 @@ pub const Scene = struct {
     }
 
     pub fn bootstrap3D(self: *Scene) !void {
+        const default_material = try self.resources.ensureDefaultMaterial();
+        const plane_mesh = try self.resources.ensurePrimitiveMesh(.plane);
+        const cube_mesh = try self.resources.ensurePrimitiveMesh(.cube);
+
         _ = try self.createEntity(.{
             .name = "MainCamera",
             .camera = .{ .is_primary = true },
@@ -127,8 +138,13 @@ pub const Scene = struct {
 
         _ = try self.createEntity(.{
             .name = "Ground",
-            .mesh = .{ .primitive = .plane },
-            .material = .{},
+            .mesh = .{
+                .handle = plane_mesh,
+                .primitive = .plane,
+            },
+            .material = .{
+                .handle = default_material,
+            },
             .transform = .{
                 .scale = .{ 10.0, 1.0, 10.0 },
             },
@@ -136,12 +152,25 @@ pub const Scene = struct {
 
         _ = try self.createEntity(.{
             .name = "Hero",
-            .mesh = .{ .primitive = .cube },
-            .material = .{},
+            .mesh = .{
+                .handle = cube_mesh,
+                .primitive = .cube,
+            },
+            .material = .{
+                .handle = default_material,
+            },
             .transform = .{
                 .translation = .{ 0.0, 1.0, 0.0 },
             },
         });
+    }
+
+    pub fn importGltfStaticModel(
+        self: *Scene,
+        path: []const u8,
+        root_transform: components.Transform,
+    ) !gltf_import.ImportReport {
+        return gltf_import.importStaticModel(self, path, root_transform);
     }
 };
 
@@ -157,4 +186,22 @@ test "bootstrap creates a minimal 3D scene" {
     try std.testing.expectEqual(@as(usize, 2), result.mesh_count);
     try std.testing.expectEqual(@as(usize, 1), result.light_count);
     try std.testing.expect(scene.findEntityByName("Hero") != null);
+}
+
+test "glTF static import creates scene entities and resources" {
+    var scene = Scene.init(std.testing.allocator);
+    defer scene.deinit();
+
+    const report = try scene.importGltfStaticModel(
+        "assets/models/guava_pyramid/guava_pyramid.gltf",
+        .{
+            .translation = .{ -2.0, 0.0, 0.0 },
+        },
+    );
+
+    try std.testing.expectEqual(@as(usize, 1), report.entity_count);
+    try std.testing.expectEqual(@as(usize, 1), report.mesh_count);
+    try std.testing.expectEqual(@as(usize, 1), report.material_count);
+    try std.testing.expectEqual(@as(usize, 0), report.texture_count);
+    try std.testing.expect(scene.findEntityByName("guava_pyramid_GuavaPyramid_0") != null);
 }

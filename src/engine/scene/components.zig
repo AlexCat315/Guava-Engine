@@ -1,3 +1,5 @@
+const handles = @import("../assets/handles.zig");
+
 pub const Vec2 = [2]f32;
 pub const Vec3 = [3]f32;
 
@@ -33,8 +35,8 @@ pub const Primitive = enum {
 };
 
 pub const Mesh = struct {
-    asset_id: ?u64 = null,
-    primitive: Primitive = .cube,
+    handle: ?handles.MeshHandle = null,
+    primitive: Primitive = .custom,
 };
 
 pub const ShadingModel = enum {
@@ -44,8 +46,9 @@ pub const ShadingModel = enum {
 };
 
 pub const Material = struct {
-    asset_id: ?u64 = null,
+    handle: ?handles.MaterialHandle = null,
     shading: ShadingModel = .pbr_metallic_roughness,
+    base_color_factor: [4]f32 = .{ 1.0, 1.0, 1.0, 1.0 },
 };
 
 pub const LightKind = enum {

@@ -2,7 +2,7 @@ const std = @import("std");
 const platform_mod = @import("../core/platform.zig");
 const window_mod = @import("../platform/window.zig");
 const graph_mod = @import("render_graph.zig");
-const primitive_stage_mod = @import("primitive_stage.zig");
+const mesh_pass_mod = @import("mesh_pass.zig");
 const rhi_mod = @import("../rhi/device.zig");
 const rhi_types = @import("../rhi/types.zig");
 const scene_mod = @import("../scene/scene.zig");
@@ -32,7 +32,7 @@ pub const Renderer = struct {
     platform: platform_mod.Platform,
     rhi: rhi_mod.RhiDevice,
     graph: graph_mod.RenderGraph,
-    primitive_stage: primitive_stage_mod.PrimitiveStage,
+    mesh_pass: mesh_pass_mod.MeshPass,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -55,17 +55,17 @@ pub const Renderer = struct {
                 },
             ),
             .graph = try graph_mod.RenderGraph.initDefault3D(allocator),
-            .primitive_stage = undefined,
+            .mesh_pass = undefined,
         };
         errdefer renderer.graph.deinit();
         errdefer renderer.rhi.deinit();
 
-        renderer.primitive_stage = try primitive_stage_mod.PrimitiveStage.init(allocator, &renderer.rhi);
+        renderer.mesh_pass = try mesh_pass_mod.MeshPass.init(allocator, &renderer.rhi);
         return renderer;
     }
 
     pub fn deinit(self: *Renderer) void {
-        self.primitive_stage.deinit(&self.rhi);
+        self.mesh_pass.deinit(&self.rhi);
         self.rhi.deinit();
         self.graph.deinit();
     }
@@ -104,7 +104,7 @@ pub const Renderer = struct {
             };
         }
 
-        if (!self.primitive_stage.isReady()) {
+        if (!self.mesh_pass.isReady()) {
             try self.rhi.clearAndPresent(frame, clear);
             return .{
                 .backend = self.rhi.api,
@@ -115,7 +115,7 @@ pub const Renderer = struct {
         }
 
         const pass = try self.rhi.beginRenderPass(frame, clear);
-        const draw_stats = try self.primitive_stage.draw(&self.rhi, frame, pass, scene);
+        const draw_stats = try self.mesh_pass.draw(&self.rhi, frame, pass, scene);
         self.rhi.endRenderPass(pass);
         try self.rhi.submitFrame(frame);
 
