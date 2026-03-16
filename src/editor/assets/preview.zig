@@ -93,6 +93,15 @@ pub fn ensurePreviewTextureForAssetPath(state: *EditorState, layer_context: *eng
     }
 
     const allocator = state.allocator orelse layer_context.world.allocator;
+    if (std.mem.endsWith(u8, path, ".svg")) {
+        var rasterized = try engine.assets.rasterizeSvgBgra8(allocator, path, .{
+            .tint = .{ 220, 224, 231, 255 },
+        });
+        defer rasterized.deinit();
+        try ensurePreviewTextureForResource(state, layer_context, path, rasterized.width, rasterized.height, rasterized.pixels);
+        return;
+    }
+
     const encoded = try std.fs.cwd().readFileAlloc(allocator, path, 128 * 1024 * 1024);
     defer allocator.free(encoded);
 

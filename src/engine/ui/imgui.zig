@@ -125,6 +125,24 @@ pub fn buttonEx(label: []const u8, width: f32, height: f32) bool {
     return c.guava_imgui_button_ex(label.ptr, label.len, width, height);
 }
 
+pub fn imageButton(id: []const u8, texture: *const rhi_mod.Texture, width: f32, height: f32, bg_tint: [4]f32, icon_tint: [4]f32) bool {
+    return c.guava_imgui_image_button(
+        id.ptr,
+        id.len,
+        @ptrCast(texture.raw),
+        width,
+        height,
+        bg_tint[0],
+        bg_tint[1],
+        bg_tint[2],
+        bg_tint[3],
+        icon_tint[0],
+        icon_tint[1],
+        icon_tint[2],
+        icon_tint[3],
+    );
+}
+
 pub fn invisibleButton(id: []const u8, width: f32, height: f32) bool {
     return c.guava_imgui_invisible_button(id.ptr, id.len, width, height);
 }
@@ -209,8 +227,17 @@ pub fn popId() void {
     c.guava_imgui_pop_id();
 }
 
-pub fn treeNodeEntity(id: u64, label: []const u8, selected: bool, leaf: bool, default_open: bool) bool {
-    return c.guava_imgui_tree_node_entity(id, label.ptr, label.len, selected, leaf, default_open);
+pub fn treeNodeEntity(id: u64, label: []const u8, icon_texture: ?*const rhi_mod.Texture, icon_size: f32, selected: bool, leaf: bool, default_open: bool) bool {
+    return c.guava_imgui_tree_node_entity(
+        id,
+        label.ptr,
+        label.len,
+        if (icon_texture) |value| @ptrCast(value.raw) else null,
+        icon_size,
+        selected,
+        leaf,
+        default_open,
+    );
 }
 
 pub fn treePop() void {

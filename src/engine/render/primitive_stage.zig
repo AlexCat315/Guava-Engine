@@ -198,6 +198,9 @@ pub const PrimitiveStage = struct {
         device.bindIndexBuffer(pass, &self.cube_index_buffer.?, .u16, 0);
 
         for (scene.entities.items) |entity| {
+            if (!entity.visible) {
+                continue;
+            }
             const mesh = entity.mesh orelse continue;
             if (mesh.primitive != .cube) {
                 continue;

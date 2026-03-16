@@ -66,6 +66,7 @@ const EntityRecord = struct {
     mesh: ?MeshComponentRecord = null,
     material: ?MaterialComponentRecord = null,
     light: ?components.Light = null,
+    visible: bool = true,
     editor_only: bool = false,
 };
 
@@ -118,6 +119,7 @@ const LegacyEntityRecord = struct {
     mesh: ?LegacyMeshComponentRecord = null,
     material: ?LegacyMaterialComponentRecord = null,
     light: ?components.Light = null,
+    visible: bool = true,
     editor_only: bool = false,
 };
 
@@ -282,6 +284,7 @@ fn buildSceneFile(allocator: std.mem.Allocator, world: *const world_mod.World) !
             .mesh = mesh_component,
             .material = material_component,
             .light = entity.light,
+            .visible = entity.visible,
             .editor_only = entity.editor_only,
         });
     }
@@ -405,6 +408,7 @@ fn deserializeWorldV3FromSlice(allocator: std.mem.Allocator, world: *world_mod.W
             else
                 null,
             .light = entity.light,
+            .visible = entity.visible,
             .editor_only = entity.editor_only,
         });
     }
@@ -502,6 +506,7 @@ fn deserializeLegacyWorldFromSlice(allocator: std.mem.Allocator, world: *world_m
             else
                 null,
             .light = entity.light,
+            .visible = entity.visible,
             .editor_only = entity.editor_only,
         });
     }

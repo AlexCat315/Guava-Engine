@@ -1,5 +1,6 @@
 #include "imgui_bridge.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <initializer_list>
 #include <string>
@@ -560,6 +561,36 @@ extern "C" bool guava_imgui_button_ex(const char* label, size_t label_len, float
     return ImGui::Button(owned_label.c_str(), ImVec2(width, height));
 }
 
+extern "C" bool guava_imgui_image_button(
+    const char* id,
+    size_t id_len,
+    SDL_GPUTexture* texture,
+    float width,
+    float height,
+    float bg_r,
+    float bg_g,
+    float bg_b,
+    float bg_a,
+    float tint_r,
+    float tint_g,
+    float tint_b,
+    float tint_a
+) {
+    if (!g_imgui_initialized || texture == nullptr) {
+        return false;
+    }
+    const std::string owned_id = make_string(id, id_len);
+    return ImGui::ImageButton(
+        owned_id.c_str(),
+        reinterpret_cast<ImTextureID>(texture),
+        ImVec2(width, height),
+        ImVec2(0.0f, 0.0f),
+        ImVec2(1.0f, 1.0f),
+        ImVec4(bg_r, bg_g, bg_b, bg_a),
+        ImVec4(tint_r, tint_g, tint_b, tint_a)
+    );
+}
+
 extern "C" bool guava_imgui_invisible_button(const char* id, size_t id_len, float width, float height) {
     if (!g_imgui_initialized) {
         return false;
@@ -770,7 +801,7 @@ extern "C" void guava_imgui_pop_id(void) {
     ImGui::PopID();
 }
 
-extern "C" bool guava_imgui_tree_node_entity(uint64_t id, const char* label, size_t label_len, bool selected, bool leaf, bool default_open) {
+extern "C" bool guava_imgui_tree_node_entity(uint64_t id, const char* label, size_t label_len, SDL_GPUTexture* icon_texture, float icon_size, bool selected, bool leaf, bool default_open) {
     if (!g_imgui_initialized) {
         return false;
     }
@@ -799,9 +830,23 @@ extern "C" bool guava_imgui_tree_node_entity(uint64_t id, const char* label, siz
     }
 
     const std::string owned_label = make_string(label, label_len);
-    const bool is_open = ImGui::TreeNodeEx(reinterpret_cast<void*>(static_cast<uintptr_t>(id)), flags, "%s", owned_label.c_str());
+    const bool is_open = ImGui::TreeNodeEx(reinterpret_cast<void*>(static_cast<uintptr_t>(id)), flags, "%s", "");
+    const ImRect rect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
+    const float label_x = rect.Min.x + ImGui::GetTreeNodeToLabelSpacing();
+    float text_x = label_x;
+    if (icon_texture != nullptr && icon_size > 0.0f) {
+        const float draw_size = (std::min)(icon_size, rect.GetHeight() - 4.0f);
+        const ImVec2 icon_min(label_x, rect.Min.y + (rect.GetHeight() - draw_size) * 0.5f);
+        const ImVec2 icon_max(icon_min.x + draw_size, icon_min.y + draw_size);
+        ImGui::GetWindowDrawList()->AddImage(reinterpret_cast<ImTextureID>(icon_texture), icon_min, icon_max);
+        text_x += draw_size + 6.0f;
+    }
+    ImGui::GetWindowDrawList()->AddText(
+        ImVec2(text_x, rect.Min.y + style.FramePadding.y),
+        ImGui::GetColorU32(ImGuiCol_Text),
+        owned_label.c_str()
+    );
     if (selected) {
-        const ImRect rect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
         ImGui::GetWindowDrawList()->AddRect(
             rect.Min,
             rect.Max,

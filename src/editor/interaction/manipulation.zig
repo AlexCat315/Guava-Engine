@@ -138,6 +138,9 @@ pub fn beginManipulation(
     if (state.editor_camera != null and selected == state.editor_camera.?) {
         return;
     }
+    if (utils.isEntitySelectionLocked(state, selected)) {
+        return;
+    }
 
     state.manipulation_mode = mode;
     state.manipulation_axis = .free;

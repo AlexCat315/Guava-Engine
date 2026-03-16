@@ -61,6 +61,9 @@ pub fn renderScenePpmAlloc(
     @memset(depth, std.math.inf(f32));
 
     for (scene.entities.items) |entity| {
+        if (!entity.visible) {
+            continue;
+        }
         const mesh_component = entity.mesh orelse continue;
         const mesh_handle = mesh_component.handle orelse continue;
         const mesh = scene.resources.mesh(mesh_handle) orelse continue;
@@ -146,7 +149,7 @@ fn projectVertex(
 }
 
 fn rasterizeTriangle(
-    color: [] [3]u8,
+    color: [][3]u8,
     depth: []f32,
     width: usize,
     height: usize,
@@ -292,6 +295,9 @@ fn chooseCamera(scene: *const scene_mod.Scene) CameraState {
 
 fn chooseMainLight(scene: *const scene_mod.Scene) LightState {
     for (scene.entities.items) |entity| {
+        if (!entity.visible) {
+            continue;
+        }
         const light = entity.light orelse continue;
         if (light.kind != .directional) {
             continue;
@@ -313,6 +319,9 @@ fn chooseMainLight(scene: *const scene_mod.Scene) LightState {
 
 fn choosePointLight(scene: *const scene_mod.Scene) PointLightState {
     for (scene.entities.items) |entity| {
+        if (!entity.visible) {
+            continue;
+        }
         const light = entity.light orelse continue;
         if (light.kind != .point) {
             continue;

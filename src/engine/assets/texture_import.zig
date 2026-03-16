@@ -1,6 +1,7 @@
 const std = @import("std");
 const image_decoder = @import("image_decoder.zig");
 const registry_mod = @import("registry.zig");
+const svg_decoder = @import("svg_decoder.zig");
 const rhi_types = @import("../rhi/types.zig");
 const library_mod = @import("library.zig");
 
@@ -114,12 +115,28 @@ pub fn loadTextureAsset(
 }
 
 fn cookTextureRecord(allocator: std.mem.Allocator, record: *const registry_mod.AssetRecord, cooked_path: []const u8) !void {
-    const encoded = try std.fs.cwd().readFileAlloc(allocator, record.source_path, 128 * 1024 * 1024);
-    defer allocator.free(encoded);
+    var width: u32 = 0;
+    var height: u32 = 0;
+    var pixels_hex: []u8 = undefined;
+    defer allocator.free(pixels_hex);
 
-    var decoded = try image_decoder.decodeRgba8(allocator, encoded);
-    defer decoded.deinit();
-    swizzleRgbaToBgra(decoded.pixels);
+    if (std.mem.endsWith(u8, record.source_path, ".svg")) {
+        var rasterized = try svg_decoder.rasterizeBgra8(allocator, record.source_path, .{});
+        defer rasterized.deinit();
+        width = rasterized.width;
+        height = rasterized.height;
+        pixels_hex = try encodeHexAlloc(allocator, rasterized.pixels);
+    } else {
+        const encoded = try std.fs.cwd().readFileAlloc(allocator, record.source_path, 128 * 1024 * 1024);
+        defer allocator.free(encoded);
+
+        var decoded = try image_decoder.decodeRgba8(allocator, encoded);
+        defer decoded.deinit();
+        swizzleRgbaToBgra(decoded.pixels);
+        width = decoded.width;
+        height = decoded.height;
+        pixels_hex = try encodeHexAlloc(allocator, decoded.pixels);
+    }
 
     const cooked = CookedTexture{
         .asset_id = record.id,
@@ -127,11 +144,10 @@ fn cookTextureRecord(allocator: std.mem.Allocator, record: *const registry_mod.A
         .source_hash = record.source_hash,
         .import_settings_hash = record.import_settings_hash,
         .import_version = record.resolvedImportVersion(),
-        .width = decoded.width,
-        .height = decoded.height,
-        .pixels_hex = try encodeHexAlloc(allocator, decoded.pixels),
+        .width = width,
+        .height = height,
+        .pixels_hex = pixels_hex,
     };
-    defer allocator.free(cooked.pixels_hex);
 
     const output = try stringifyAlloc(allocator, cooked);
     defer allocator.free(output);

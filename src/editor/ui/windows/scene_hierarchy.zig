@@ -4,6 +4,7 @@ const EditorState = @import("../../core/state.zig").EditorState;
 const state_mod = @import("../../core/state.zig");
 const utils = @import("../../common/utils.zig");
 const history = @import("../../actions/history.zig");
+const ui_icons = @import("../icons.zig");
 
 pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     var title_buffer: [80]u8 = undefined;
@@ -29,6 +30,14 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
     }
     engine.ui.ImGui.separator();
 
+    if (!engine.ui.ImGui.beginTable("scene_tree_table", 3)) {
+        return;
+    }
+    defer engine.ui.ImGui.endTable();
+    engine.ui.ImGui.tableSetupColumn(state.text(.name), true, 1.0);
+    engine.ui.ImGui.tableSetupColumn("##scene_visible", false, 32.0);
+    engine.ui.ImGui.tableSetupColumn("##scene_locked", false, 32.0);
+
     for (layer_context.world.entities.items) |entity| {
         if (entity.editor_only or entity.parent != null) {
             continue;
@@ -41,18 +50,27 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
 }
 
 pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerContext, entity_id: engine.scene.EntityId) !void {
-    const entity = layer_context.world.getEntityConst(entity_id) orelse return;
+    const entity = layer_context.world.getEntity(entity_id) orelse return;
     if (entity.editor_only) {
         return;
     }
 
     const is_selected = utils.isEntitySelected(state, layer_context, entity_id);
+    const is_locked = utils.isEntitySelectionLocked(state, entity_id);
     const leaf = !utils.hasVisibleChildren(state, layer_context.world, entity_id);
-    var label_buffer: [320]u8 = undefined;
-    const label = try std.fmt.bufPrint(&label_buffer, "{s} {s}", .{ entityTypeBadge(entity), entity.name });
-    const is_open = engine.ui.ImGui.treeNodeEntity(entity_id, label, is_selected, leaf, false);
+    const icon_texture = try ui_icons.ensureTintedIconTexture(
+        state,
+        layer_context,
+        ui_icons.entityIconPath(entity),
+        14.0,
+        if (entity.visible) .{ 188, 203, 228, 255 } else .{ 108, 116, 128, 255 },
+    );
 
-    if (engine.ui.ImGui.isItemClicked()) {
+    engine.ui.ImGui.tableNextRow();
+    engine.ui.ImGui.tableNextColumn();
+    const is_open = engine.ui.ImGui.treeNodeEntity(entity_id, entity.name, icon_texture, 14.0, is_selected, leaf, false);
+
+    if (engine.ui.ImGui.isItemClicked() and !is_locked) {
         if (layer_context.input.modifiers.shift or layer_context.input.modifiers.ctrl or layer_context.input.modifiers.super) {
             try layer_context.renderer.toggleSelection(entity_id);
         } else {
@@ -61,10 +79,47 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
         utils.syncInspectorNameBuffer(state, layer_context);
     }
 
-    _ = engine.ui.ImGui.dragDropSourceU64(state_mod.entity_drag_payload, entity_id, entity.name);
-    var dropped_child: u64 = 0;
-    if (engine.ui.ImGui.acceptDragDropPayloadU64(state_mod.entity_drag_payload, &dropped_child)) {
-        try reparentEntity(state, layer_context, dropped_child, entity_id);
+    if (!is_locked) {
+        _ = engine.ui.ImGui.dragDropSourceU64(state_mod.entity_drag_payload, entity_id, entity.name);
+        var dropped_child: u64 = 0;
+        if (engine.ui.ImGui.acceptDragDropPayloadU64(state_mod.entity_drag_payload, &dropped_child)) {
+            try reparentEntity(state, layer_context, dropped_child, entity_id);
+        }
+    }
+
+    engine.ui.ImGui.tableNextColumn();
+    var visibility_button_id_buffer: [48]u8 = undefined;
+    const visibility_button_id = try std.fmt.bufPrint(&visibility_button_id_buffer, "{d}_visibility", .{entity_id});
+    if (try ui_icons.drawIconButton(
+        state,
+        layer_context,
+        visibility_button_id,
+        if (entity.visible) ui_icons.paths.hierarchy.eye else ui_icons.paths.hierarchy.eye_off,
+        18.0,
+        if (entity.visible) .{ 208, 240, 224, 255 } else .{ 164, 171, 183, 255 },
+        if (entity.visible) ui_icons.palettes.status_on else ui_icons.palettes.status_off,
+    )) {
+        entity.visible = !entity.visible;
+        try history.captureSnapshot(state, layer_context);
+    }
+
+    engine.ui.ImGui.tableNextColumn();
+    var lock_button_id_buffer: [40]u8 = undefined;
+    const lock_button_id = try std.fmt.bufPrint(&lock_button_id_buffer, "{d}_lock", .{entity_id});
+    if (try ui_icons.drawIconButton(
+        state,
+        layer_context,
+        lock_button_id,
+        if (is_locked) ui_icons.paths.hierarchy.lock else ui_icons.paths.hierarchy.unlock,
+        18.0,
+        if (is_locked) .{ 255, 220, 144, 255 } else .{ 169, 176, 189, 255 },
+        if (is_locked) ui_icons.palettes.toolbar_active else ui_icons.palettes.status_off,
+    )) {
+        const locked_now = try utils.toggleEntitySelectionLocked(state, entity_id);
+        if (locked_now and is_selected) {
+            try utils.pruneLockedSelection(state, layer_context);
+            utils.syncInspectorNameBuffer(state, layer_context);
+        }
     }
 
     if (!leaf and is_open) {
@@ -79,19 +134,6 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
         }
         engine.ui.ImGui.treePop();
     }
-}
-
-fn entityTypeBadge(entity: *const engine.scene.Entity) []const u8 {
-    if (entity.camera != null) {
-        return "[CAM]";
-    }
-    if (entity.light != null) {
-        return "[LGT]";
-    }
-    if (entity.mesh != null) {
-        return "[GEO]";
-    }
-    return "[OBJ]";
 }
 
 pub fn parentSelection(state: *EditorState, layer_context: *engine.core.LayerContext) !void {

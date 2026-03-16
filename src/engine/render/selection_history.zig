@@ -87,6 +87,10 @@ pub const SelectionHistory = struct {
         };
     }
 
+    pub fn replaceSelection(self: *SelectionHistory, ids: []const scene_mod.EntityId) !bool {
+        return self.commitSelection(ids);
+    }
+
     fn toggleSelection(self: *SelectionHistory, entity: ?scene_mod.EntityId) !bool {
         const selected = entity orelse return false;
         const current = self.currentSelection();

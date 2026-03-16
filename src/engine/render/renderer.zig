@@ -281,6 +281,11 @@ pub const Renderer = struct {
         self.selection_seeded = true;
     }
 
+    pub fn replaceSelectionMany(self: *Renderer, entities: []const scene_mod.EntityId) !void {
+        _ = try self.selection_history.replaceSelection(entities);
+        self.selection_seeded = true;
+    }
+
     pub fn toggleSelection(self: *Renderer, entity: ?scene_mod.EntityId) !void {
         _ = try self.selection_history.applyPick(entity, .toggle);
         self.selection_seeded = true;

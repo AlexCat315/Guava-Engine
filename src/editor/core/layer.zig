@@ -4,6 +4,7 @@ const utils = @import("../common/utils.zig");
 const camera = @import("../interaction/camera.zig");
 const manipulation = @import("../interaction/manipulation.zig");
 const viewport = @import("../ui/viewport.zig");
+const icon_cache = @import("../ui/icon_cache.zig");
 const content_browser = @import("../assets/browser.zig");
 const asset_preview = @import("../assets/preview.zig");
 const history = @import("../actions/history.zig");
@@ -27,6 +28,7 @@ pub const EditorLayer = struct {
         const self: *EditorLayer = @ptrCast(@alignCast(context));
         self.state.allocator = layer_context.world.allocator;
         self.state.preview_device = layer_context.rhi();
+        self.state.icon_device = layer_context.rhi();
         self.state.asset_registry = engine.assets.AssetRegistry.init(layer_context.world.allocator);
         try engine.ui.ImGui.init(layer_context.window, layer_context.rhi());
         self.state.dock_layout_initialized = false;
@@ -40,8 +42,14 @@ pub const EditorLayer = struct {
 
     fn onDetach(context: *anyopaque) void {
         const self: *EditorLayer = @ptrCast(@alignCast(context));
+        icon_cache.clearIconCache(&self.state);
         asset_preview.clearPreviewTexture(&self.state);
         self.state.preview_device = null;
+        self.state.icon_device = null;
+        if (self.state.allocator) |allocator| {
+            self.state.selection_locked_entities.deinit(allocator);
+            self.state.selection_locked_entities = .empty;
+        }
         content_browser.clearAssetBrowser(&self.state);
         if (self.state.asset_registry) |*registry| {
             registry.deinit();
@@ -54,6 +62,8 @@ pub const EditorLayer = struct {
     fn onUpdate(context: *anyopaque, layer_context: *engine.core.LayerContext) !void {
         const self: *EditorLayer = @ptrCast(@alignCast(context));
         try history.pruneMissingSelection(&self.state, layer_context);
+        utils.pruneSelectionLockEntities(&self.state, layer_context.world);
+        try utils.pruneLockedSelection(&self.state, layer_context);
         utils.syncInspectorNameBuffer(&self.state, layer_context);
         engine.ui.ImGui.beginDockspace();
         if (!self.state.dock_layout_initialized) {

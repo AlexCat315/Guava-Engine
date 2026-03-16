@@ -58,6 +58,21 @@ void guava_imgui_end_menu(void);
 bool guava_imgui_menu_item(const char* label, size_t label_len, const char* shortcut, size_t shortcut_len, bool selected, bool enabled);
 bool guava_imgui_button(const char* label, size_t label_len);
 bool guava_imgui_button_ex(const char* label, size_t label_len, float width, float height);
+bool guava_imgui_image_button(
+    const char* id,
+    size_t id_len,
+    SDL_GPUTexture* texture,
+    float width,
+    float height,
+    float bg_r,
+    float bg_g,
+    float bg_b,
+    float bg_a,
+    float tint_r,
+    float tint_g,
+    float tint_b,
+    float tint_a
+);
 bool guava_imgui_invisible_button(const char* id, size_t id_len, float width, float height);
 bool guava_imgui_window_control_button(uint32_t kind, bool toggled);
 void guava_imgui_dummy(float width, float height);
@@ -79,7 +94,7 @@ void guava_imgui_text(const char* text, size_t text_len);
 void guava_imgui_label_text(const char* label, size_t label_len, const char* text, size_t text_len);
 void guava_imgui_push_id_u64(uint64_t value);
 void guava_imgui_pop_id(void);
-bool guava_imgui_tree_node_entity(uint64_t id, const char* label, size_t label_len, bool selected, bool leaf, bool default_open);
+bool guava_imgui_tree_node_entity(uint64_t id, const char* label, size_t label_len, SDL_GPUTexture* icon_texture, float icon_size, bool selected, bool leaf, bool default_open);
 void guava_imgui_tree_pop(void);
 bool guava_imgui_is_item_clicked(void);
 bool guava_imgui_is_item_active(void);

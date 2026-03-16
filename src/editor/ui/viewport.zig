@@ -11,15 +11,24 @@ const content_browser = @import("../assets/browser.zig");
 const asset_preview = @import("../assets/preview.zig");
 const menu_bar = @import("menu_bar.zig");
 const settings = @import("windows/settings.zig");
+const ui_icons = @import("icons.zig");
 
-fn drawToolbarButton(label: []const u8, width: f32, active: bool) bool {
-    if (active) {
-        engine.ui.ImGui.pushStyleColor(.button, .{ 0.26, 0.40, 0.66, 1.0 });
-        engine.ui.ImGui.pushStyleColor(.button_hovered, .{ 0.32, 0.48, 0.78, 1.0 });
-        engine.ui.ImGui.pushStyleColor(.button_active, .{ 0.21, 0.33, 0.56, 1.0 });
-        defer engine.ui.ImGui.popStyleColor(3);
-    }
-    return engine.ui.ImGui.buttonEx(label, width, 0.0);
+fn drawToolbarIconButton(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    id: []const u8,
+    path: []const u8,
+    active: bool,
+) !bool {
+    return ui_icons.drawIconButton(
+        state,
+        layer_context,
+        id,
+        path,
+        38.0,
+        .{ 235, 239, 245, 255 },
+        if (active) ui_icons.palettes.toolbar_active else ui_icons.palettes.toolbar_idle,
+    );
 }
 
 fn drawPlaybackButton(label: []const u8, width: f32, palette: [3][4]f32) bool {
@@ -36,30 +45,24 @@ pub fn drawGlobalToolbarWindow(state: *EditorState, layer_context: *engine.core.
     _ = engine.ui.ImGui.beginWindowFlags(title, engine.ui.ImGui.WindowFlags.no_title_bar | engine.ui.ImGui.WindowFlags.no_collapse | engine.ui.ImGui.WindowFlags.no_scrollbar);
     defer engine.ui.ImGui.endWindow();
 
-    if (drawToolbarButton(state.text(.select), 96.0, state.manipulation_mode == .none)) {
+    if (try drawToolbarIconButton(state, layer_context, "toolbar_select", ui_icons.paths.toolbar.select, state.manipulation_mode == .none)) {
         manipulation.endManipulation(state);
     }
-    var move_label_buffer: [32]u8 = undefined;
-    const move_label = try std.fmt.bufPrint(&move_label_buffer, "W {s}", .{state.text(.move)});
     engine.ui.ImGui.sameLine();
-    if (drawToolbarButton(move_label, 108.0, state.manipulation_mode == .translate)) {
+    if (try drawToolbarIconButton(state, layer_context, "toolbar_move", ui_icons.paths.toolbar.move, state.manipulation_mode == .translate)) {
         try manipulation.beginManipulation(state, layer_context, .translate);
     }
-    var rotate_label_buffer: [32]u8 = undefined;
-    const rotate_label = try std.fmt.bufPrint(&rotate_label_buffer, "E {s}", .{state.text(.rotate)});
     engine.ui.ImGui.sameLine();
-    if (drawToolbarButton(rotate_label, 116.0, state.manipulation_mode == .rotate)) {
+    if (try drawToolbarIconButton(state, layer_context, "toolbar_rotate", ui_icons.paths.toolbar.rotate, state.manipulation_mode == .rotate)) {
         try manipulation.beginManipulation(state, layer_context, .rotate);
     }
-    var scale_label_buffer: [32]u8 = undefined;
-    const scale_label = try std.fmt.bufPrint(&scale_label_buffer, "R {s}", .{state.text(.scale)});
     engine.ui.ImGui.sameLine();
-    if (drawToolbarButton(scale_label, 108.0, state.manipulation_mode == .scale)) {
+    if (try drawToolbarIconButton(state, layer_context, "toolbar_scale", ui_icons.paths.toolbar.scale, state.manipulation_mode == .scale)) {
         try manipulation.beginManipulation(state, layer_context, .scale);
     }
 
     const center_group_width: f32 = 398.0;
-    const right_group_width: f32 = 392.0;
+    const right_group_width: f32 = 316.0;
     const center_leading_gap = @max((engine.ui.ImGui.contentRegionAvail()[0] - center_group_width - right_group_width) * 0.5, 16.0);
     engine.ui.ImGui.sameLine();
     engine.ui.ImGui.dummy(center_leading_gap, 1.0);
@@ -116,11 +119,19 @@ pub fn drawGlobalToolbarWindow(state: *EditorState, layer_context: *engine.core.
     engine.ui.ImGui.dummy(right_gap, 1.0);
     engine.ui.ImGui.sameLine();
 
-    if (engine.ui.ImGui.buttonEx(state.text(.render_settings), 132.0, 0.0)) {
+    if (try ui_icons.drawIconButton(
+        state,
+        layer_context,
+        "toolbar_settings",
+        ui_icons.paths.toolbar.settings,
+        38.0,
+        .{ 235, 239, 245, 255 },
+        if (state.settings_open) ui_icons.palettes.toolbar_active else ui_icons.palettes.toolbar_idle,
+    )) {
         state.settings_open = !state.settings_open;
     }
     engine.ui.ImGui.sameLine();
-    engine.ui.ImGui.setNextItemWidth(164.0);
+    engine.ui.ImGui.setNextItemWidth(176.0);
     _ = engine.ui.ImGui.inputText(state.text(.scene_filter), state.scene_filter_buffer[0..]);
     engine.ui.ImGui.sameLine();
     if (engine.ui.ImGui.buttonEx(

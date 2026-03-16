@@ -17,6 +17,7 @@ pub const Entity = struct {
     mesh: ?components.Mesh = null,
     material: ?components.Material = null,
     light: ?components.Light = null,
+    visible: bool = true,
     editor_only: bool = false,
 };
 
@@ -28,6 +29,7 @@ pub const EntityDesc = struct {
     mesh: ?components.Mesh = null,
     material: ?components.Material = null,
     light: ?components.Light = null,
+    visible: bool = true,
     editor_only: bool = false,
 };
 
@@ -93,6 +95,7 @@ pub const World = struct {
             .mesh = desc.mesh,
             .material = desc.material,
             .light = desc.light,
+            .visible = desc.visible,
             .editor_only = desc.editor_only,
         });
 
@@ -548,6 +551,7 @@ pub const World = struct {
             .mesh = source.mesh,
             .material = source.material,
             .light = source.light,
+            .visible = source.visible,
             .editor_only = source.editor_only,
         });
 

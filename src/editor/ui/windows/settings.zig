@@ -2,6 +2,11 @@ const std = @import("std");
 const engine = @import("guava");
 const EditorState = @import("../../core/state.zig").EditorState;
 const i18n = @import("../../i18n/mod.zig");
+const icon_cache = @import("../icon_cache.zig");
+const ui_icons = @import("../icons.zig");
+
+const debug_icon_path = ui_icons.paths.hierarchy.mesh;
+const debug_icon_tint = [4]u8{ 196, 224, 255, 255 };
 
 pub fn drawSettingsWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     var title_buffer: [80]u8 = undefined;
@@ -24,6 +29,11 @@ pub fn drawSettingsWindow(state: *EditorState, layer_context: *engine.core.Layer
         engine.ui.ImGui.resetDefaultLayout();
         state.dock_layout_initialized = true;
     }
+
+    const debug_icon = try icon_cache.ensureIconTexture(state, layer_context, debug_icon_path, 28, 28, debug_icon_tint);
+    engine.ui.ImGui.text("SVG icon preview");
+    engine.ui.ImGui.sameLine();
+    engine.ui.ImGui.image(debug_icon, 28.0, 28.0);
 
     const viewport_size = layer_context.renderer.sceneViewportSize();
     var viewport_buffer: [64]u8 = undefined;

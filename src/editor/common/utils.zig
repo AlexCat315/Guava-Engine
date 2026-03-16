@@ -13,7 +13,7 @@ pub fn assetKindForPath(path: []const u8) ?AssetKind {
     if (std.mem.endsWith(u8, path, ".gltf")) {
         return .model;
     }
-    if (std.mem.endsWith(u8, path, ".png") or std.mem.endsWith(u8, path, ".jpg") or std.mem.endsWith(u8, path, ".jpeg")) {
+    if (std.mem.endsWith(u8, path, ".png") or std.mem.endsWith(u8, path, ".jpg") or std.mem.endsWith(u8, path, ".jpeg") or std.mem.endsWith(u8, path, ".svg")) {
         return .texture;
     }
     if (std.mem.endsWith(u8, path, ".glsl") or std.mem.endsWith(u8, path, ".spv") or std.mem.endsWith(u8, path, ".json")) {
@@ -184,4 +184,79 @@ pub fn syncInspectorNameBuffer(state: *EditorState, layer_context: *engine.core.
         }
     }
     state.inspector_name_entity = selected;
+}
+
+pub fn isEntitySelectionLocked(state: *const EditorState, entity_id: engine.scene.EntityId) bool {
+    for (state.selection_locked_entities.items) |locked_entity_id| {
+        if (locked_entity_id == entity_id) {
+            return true;
+        }
+    }
+    return false;
+}
+
+pub fn setEntitySelectionLocked(state: *EditorState, entity_id: engine.scene.EntityId, locked: bool) !bool {
+    const allocator = state.allocator orelse return false;
+    for (state.selection_locked_entities.items, 0..) |locked_entity_id, index| {
+        if (locked_entity_id != entity_id) {
+            continue;
+        }
+        if (!locked) {
+            _ = state.selection_locked_entities.orderedRemove(index);
+            return true;
+        }
+        return false;
+    }
+    if (!locked) {
+        return false;
+    }
+    try state.selection_locked_entities.append(allocator, entity_id);
+    return true;
+}
+
+pub fn toggleEntitySelectionLocked(state: *EditorState, entity_id: engine.scene.EntityId) !bool {
+    const was_locked = isEntitySelectionLocked(state, entity_id);
+    _ = try setEntitySelectionLocked(state, entity_id, !was_locked);
+    return !was_locked;
+}
+
+pub fn pruneSelectionLockEntities(state: *EditorState, world: *const engine.scene.World) void {
+    var index: usize = 0;
+    while (index < state.selection_locked_entities.items.len) {
+        if (world.hasEntity(state.selection_locked_entities.items[index])) {
+            index += 1;
+            continue;
+        }
+        _ = state.selection_locked_entities.orderedRemove(index);
+    }
+}
+
+pub fn pruneLockedSelection(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const current_selection = layer_context.renderer.selectedEntities();
+    if (current_selection.len == 0) {
+        return;
+    }
+
+    const allocator = state.allocator orelse return;
+    var unlocked = std.ArrayList(engine.scene.EntityId).empty;
+    defer unlocked.deinit(allocator);
+
+    for (current_selection) |entity_id| {
+        if (!isEntitySelectionLocked(state, entity_id)) {
+            try unlocked.append(allocator, entity_id);
+        }
+    }
+
+    if (unlocked.items.len == current_selection.len) {
+        return;
+    }
+
+    try layer_context.renderer.replaceSelectionMany(unlocked.items);
+    if (state.manipulation_entity) |entity_id| {
+        if (isEntitySelectionLocked(state, entity_id)) {
+            state.manipulation_mode = .none;
+            state.manipulation_axis = .free;
+            state.manipulation_entity = null;
+        }
+    }
 }

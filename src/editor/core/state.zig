@@ -19,6 +19,15 @@ pub const AssetEntry = struct {
     kind: AssetKind,
 };
 
+pub const IconTextureEntry = struct {
+    path: []u8,
+    width: u32,
+    height: u32,
+    tint: [4]u8,
+    has_tint: bool,
+    texture: engine.rhi.Texture,
+};
+
 pub const ManipulationMode = enum {
     none,
     translate,
@@ -81,9 +90,12 @@ pub const EditorState = struct {
     top_bar_drag_active: bool = false,
     top_bar_drag_offset: [2]f32 = .{ 0.0, 0.0 },
     preview_device: ?*engine.rhi.Device = null,
+    icon_device: ?*engine.rhi.Device = null,
     preview_texture: ?engine.rhi.Texture = null,
     preview_texture_key: ?[]u8 = null,
     preview_texture_size: [2]u32 = .{ 0, 0 },
+    icon_textures: std.ArrayList(IconTextureEntry) = .empty,
+    selection_locked_entities: std.ArrayList(engine.scene.EntityId) = .empty,
 
     pub fn text(self: *const EditorState, id: i18n.MessageId) []const u8 {
         return i18n.text(self.language, id);
