@@ -61,4 +61,5 @@ pub const Light = struct {
     kind: LightKind = .directional,
     color: Vec3 = .{ 1.0, 1.0, 1.0 },
     intensity: f32 = 1.0,
+    range: f32 = 10.0,
 };

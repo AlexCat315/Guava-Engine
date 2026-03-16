@@ -1,6 +1,7 @@
 const std = @import("std");
 const layer_mod = @import("layer.zig");
 const layer_stack_mod = @import("layer_stack.zig");
+const input_mod = @import("input.zig");
 const platform_mod = @import("platform.zig");
 const renderer_mod = @import("../render/renderer.zig");
 const render_types = @import("../render/types.zig");
@@ -36,6 +37,7 @@ pub const Application = struct {
     renderer: renderer_mod.Renderer,
     world: scene_mod.World,
     layers: layer_stack_mod.LayerStack,
+    input: input_mod.InputState = .{},
     initialized: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, config: ApplicationConfig) !Application {
@@ -67,6 +69,7 @@ pub const Application = struct {
             .renderer = renderer,
             .world = world,
             .layers = layer_stack_mod.LayerStack.init(allocator),
+            .input = .{},
         };
     }
 
@@ -109,7 +112,8 @@ pub const Application = struct {
             .runtime = self.renderer.runtimeInfo(),
         };
 
-        while (frames_rendered < frame_count and !self.window.should_close) : (frames_rendered += 1) {
+        while ((frame_count == 0 or frames_rendered < frame_count) and !self.window.should_close) : (frames_rendered += 1) {
+            self.input.beginFrame();
             try self.pumpEvents();
 
             const delta_seconds = @as(f32, @floatFromInt(self.config.frame_delay_ms)) / 1000.0;
@@ -160,13 +164,47 @@ pub const Application = struct {
                 .quit_requested, .close_requested => {
                     self.window.should_close = true;
                 },
-                .mouse_primary_down => {
-                    if (drawablePickPosition(&self.window, event.x, event.y)) |position| {
-                        try self.renderer.requestSelectionReadback(
-                            position.x,
-                            position.y,
-                            if (event.extend_selection) .toggle else .replace,
-                        );
+                .mouse_button_down => {
+                    self.input.setModifiers(event.modifiers);
+                    self.input.updateMousePosition(event.x, event.y);
+                    if (event.button) |button| {
+                        self.input.setMouseButton(button, true);
+                        if (button == .left and !event.modifiers.alt) {
+                            if (drawablePickPosition(&self.window, event.x, event.y)) |position| {
+                                try self.renderer.requestSelectionReadback(
+                                    position.x,
+                                    position.y,
+                                    if (event.modifiers.shift or event.modifiers.ctrl or event.modifiers.super) .toggle else .replace,
+                                );
+                            }
+                        }
+                    }
+                },
+                .mouse_button_up => {
+                    self.input.setModifiers(event.modifiers);
+                    self.input.updateMousePosition(event.x, event.y);
+                    if (event.button) |button| {
+                        self.input.setMouseButton(button, false);
+                    }
+                },
+                .mouse_moved => {
+                    self.input.setModifiers(event.modifiers);
+                    self.input.addMouseDelta(event.x, event.y, event.delta_x, event.delta_y);
+                },
+                .mouse_wheel => {
+                    self.input.setModifiers(event.modifiers);
+                    self.input.addMouseWheel(event.delta_x, event.delta_y);
+                },
+                .key_down => {
+                    self.input.setModifiers(event.modifiers);
+                    if (event.key) |key| {
+                        self.input.setKey(key, true);
+                    }
+                },
+                .key_up => {
+                    self.input.setModifiers(event.modifiers);
+                    if (event.key) |key| {
+                        self.input.setKey(key, false);
                     }
                 },
             }
@@ -178,6 +216,8 @@ pub const Application = struct {
             .world = &self.world,
             .scene = &self.world,
             .renderer = &self.renderer,
+            .input = &self.input,
+            .window = &self.window,
             .frame_index = frame_index,
             .delta_seconds = delta_seconds,
         };

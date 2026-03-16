@@ -1,4 +1,5 @@
 const std = @import("std");
+const input_mod = @import("../core/input.zig");
 const sdl = @import("sdl.zig").c;
 
 pub const WindowConfig = struct {
@@ -17,7 +18,12 @@ pub const EventKind = enum {
     pixel_size_changed,
     metal_view_resized,
     exposed,
-    mouse_primary_down,
+    mouse_button_down,
+    mouse_button_up,
+    mouse_moved,
+    mouse_wheel,
+    key_down,
+    key_up,
 };
 
 pub const Event = struct {
@@ -26,7 +32,12 @@ pub const Event = struct {
     height: u32 = 0,
     x: f32 = 0.0,
     y: f32 = 0.0,
-    extend_selection: bool = false,
+    delta_x: f32 = 0.0,
+    delta_y: f32 = 0.0,
+    button: ?input_mod.MouseButton = null,
+    key: ?input_mod.Key = null,
+    repeat: bool = false,
+    modifiers: input_mod.Modifiers = .{},
 };
 
 pub const Window = struct {
@@ -147,16 +158,62 @@ pub const Window = struct {
                     };
                 },
                 sdl.SDL_EVENT_MOUSE_BUTTON_DOWN => {
-                    if (raw_event.button.button == sdl.SDL_BUTTON_LEFT and raw_event.button.down) {
-                        const mods = sdl.SDL_GetModState();
-                        const extend_selection = (mods & (sdl.SDL_KMOD_SHIFT | sdl.SDL_KMOD_CTRL | sdl.SDL_KMOD_GUI)) != 0;
+                    if (raw_event.button.down) {
+                        const button = mouseButtonFromSdl(raw_event.button.button) orelse continue;
                         return .{
-                            .kind = .mouse_primary_down,
+                            .kind = .mouse_button_down,
                             .x = raw_event.button.x,
                             .y = raw_event.button.y,
-                            .extend_selection = extend_selection,
+                            .button = button,
+                            .modifiers = currentModifiers(),
                         };
                     }
+                },
+                sdl.SDL_EVENT_MOUSE_BUTTON_UP => {
+                    if (!raw_event.button.down) {
+                        const button = mouseButtonFromSdl(raw_event.button.button) orelse continue;
+                        return .{
+                            .kind = .mouse_button_up,
+                            .x = raw_event.button.x,
+                            .y = raw_event.button.y,
+                            .button = button,
+                            .modifiers = currentModifiers(),
+                        };
+                    }
+                },
+                sdl.SDL_EVENT_MOUSE_MOTION => {
+                    return .{
+                        .kind = .mouse_moved,
+                        .x = raw_event.motion.x,
+                        .y = raw_event.motion.y,
+                        .delta_x = raw_event.motion.xrel,
+                        .delta_y = raw_event.motion.yrel,
+                        .modifiers = currentModifiers(),
+                    };
+                },
+                sdl.SDL_EVENT_MOUSE_WHEEL => {
+                    return .{
+                        .kind = .mouse_wheel,
+                        .delta_x = raw_event.wheel.x,
+                        .delta_y = raw_event.wheel.y,
+                        .modifiers = currentModifiers(),
+                    };
+                },
+                sdl.SDL_EVENT_KEY_DOWN => {
+                    return .{
+                        .kind = .key_down,
+                        .key = keyFromScancode(raw_event.key.scancode),
+                        .repeat = raw_event.key.repeat,
+                        .modifiers = currentModifiers(),
+                    };
+                },
+                sdl.SDL_EVENT_KEY_UP => {
+                    return .{
+                        .kind = .key_up,
+                        .key = keyFromScancode(raw_event.key.scancode),
+                        .repeat = false,
+                        .modifiers = currentModifiers(),
+                    };
                 },
                 else => {},
             }
@@ -168,8 +225,58 @@ pub const Window = struct {
     pub fn delay(_: *Window, milliseconds: u32) void {
         sdl.SDL_Delay(milliseconds);
     }
+
+    pub fn setTitle(self: *Window, allocator: std.mem.Allocator, title: []const u8) !void {
+        const title_z = try allocator.dupeZ(u8, title);
+        defer allocator.free(title_z);
+        _ = sdl.SDL_SetWindowTitle(self.handle, title_z.ptr);
+    }
 };
 
 pub fn lastError() []const u8 {
     return std.mem.sliceTo(sdl.SDL_GetError(), 0);
+}
+
+fn currentModifiers() input_mod.Modifiers {
+    const mods = sdl.SDL_GetModState();
+    return .{
+        .shift = (mods & sdl.SDL_KMOD_SHIFT) != 0,
+        .ctrl = (mods & sdl.SDL_KMOD_CTRL) != 0,
+        .alt = (mods & sdl.SDL_KMOD_ALT) != 0,
+        .super = (mods & sdl.SDL_KMOD_GUI) != 0,
+    };
+}
+
+fn mouseButtonFromSdl(button: u8) ?input_mod.MouseButton {
+    return switch (button) {
+        sdl.SDL_BUTTON_LEFT => .left,
+        sdl.SDL_BUTTON_RIGHT => .right,
+        sdl.SDL_BUTTON_MIDDLE => .middle,
+        else => null,
+    };
+}
+
+fn keyFromScancode(scancode: c_uint) ?input_mod.Key {
+    return switch (scancode) {
+        sdl.SDL_SCANCODE_W => .w,
+        sdl.SDL_SCANCODE_A => .a,
+        sdl.SDL_SCANCODE_S => .s,
+        sdl.SDL_SCANCODE_D => .d,
+        sdl.SDL_SCANCODE_Q => .q,
+        sdl.SDL_SCANCODE_E => .e,
+        sdl.SDL_SCANCODE_F => .f,
+        sdl.SDL_SCANCODE_TAB => .tab,
+        sdl.SDL_SCANCODE_DELETE => .delete,
+        sdl.SDL_SCANCODE_BACKSPACE => .backspace,
+        sdl.SDL_SCANCODE_1 => .one,
+        sdl.SDL_SCANCODE_2 => .two,
+        sdl.SDL_SCANCODE_3 => .three,
+        sdl.SDL_SCANCODE_L => .l,
+        sdl.SDL_SCANCODE_LSHIFT, sdl.SDL_SCANCODE_RSHIFT => .shift,
+        sdl.SDL_SCANCODE_LCTRL, sdl.SDL_SCANCODE_RCTRL => .ctrl,
+        sdl.SDL_SCANCODE_LALT, sdl.SDL_SCANCODE_RALT => .alt,
+        sdl.SDL_SCANCODE_SPACE => .space,
+        sdl.SDL_SCANCODE_ESCAPE => .escape,
+        else => null,
+    };
 }

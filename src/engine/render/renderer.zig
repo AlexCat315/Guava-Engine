@@ -175,6 +175,16 @@ pub const Renderer = struct {
         return self.selection_history.currentSelection();
     }
 
+    pub fn replaceSelection(self: *Renderer, entity: ?scene_mod.EntityId) !void {
+        _ = try self.selection_history.applyPick(entity, .replace);
+        self.selection_seeded = true;
+    }
+
+    pub fn toggleSelection(self: *Renderer, entity: ?scene_mod.EntityId) !void {
+        _ = try self.selection_history.applyPick(entity, .toggle);
+        self.selection_seeded = true;
+    }
+
     pub fn passCount(self: *const Renderer) usize {
         return self.graph.passes.items.len;
     }
@@ -340,13 +350,14 @@ pub const Renderer = struct {
         }
 
         const copy_pass = try self.rhi.beginCopyPass(frame);
-        defer self.rhi.endCopyPass(copy_pass);
 
         for (readbacks) |*readback| {
             const pixel_x = @min(readback.request.pixel_x, id_texture.desc.width - 1);
             const pixel_y = @min(readback.request.pixel_y, id_texture.desc.height - 1);
             self.rhi.downloadTexturePixel(copy_pass, id_texture, &readback.transfer_buffer, pixel_x, pixel_y);
         }
+
+        self.rhi.endCopyPass(copy_pass);
 
         var fence = try self.rhi.submitFrameAndAcquireFence(frame);
         errdefer self.rhi.releaseFence(&fence);

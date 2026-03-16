@@ -11,6 +11,7 @@ pub const ResourceLibrary = struct {
     materials: std.ArrayList(material_mod.MaterialResource) = .empty,
     textures: std.ArrayList(texture_mod.TextureResource) = .empty,
     cube_mesh: ?handles.MeshHandle = null,
+    sphere_mesh: ?handles.MeshHandle = null,
     plane_mesh: ?handles.MeshHandle = null,
     default_material: ?handles.MaterialHandle = null,
     white_texture: ?handles.TextureHandle = null,
@@ -86,6 +87,11 @@ pub const ResourceLibrary = struct {
                 });
                 break :blk self.cube_mesh.?;
             },
+            .sphere => blk: {
+                if (self.sphere_mesh) |handle| break :blk handle;
+                self.sphere_mesh = try self.createUvSphereMesh();
+                break :blk self.sphere_mesh.?;
+            },
             .plane => blk: {
                 if (self.plane_mesh) |handle| break :blk handle;
                 self.plane_mesh = try self.createMesh(.{
@@ -128,6 +134,80 @@ pub const ResourceLibrary = struct {
             .base_color_texture = try self.ensureWhiteTexture(),
         });
         return self.default_material.?;
+    }
+
+    fn createUvSphereMesh(self: *ResourceLibrary) !handles.MeshHandle {
+        const latitude_segments: usize = 16;
+        const longitude_segments: usize = 24;
+        const vertex_count = (latitude_segments + 1) * (longitude_segments + 1);
+
+        var vertices = try self.allocator.alloc(mesh_mod.Vertex, vertex_count);
+        defer self.allocator.free(vertices);
+
+        var indices = std.ArrayList(u32).empty;
+        defer indices.deinit(self.allocator);
+
+        var vertex_index: usize = 0;
+        var lat: usize = 0;
+        while (lat <= latitude_segments) : (lat += 1) {
+            const v = @as(f32, @floatFromInt(lat)) / @as(f32, @floatFromInt(latitude_segments));
+            const theta = v * std.math.pi;
+            const sin_theta = std.math.sin(theta);
+            const cos_theta = std.math.cos(theta);
+
+            var lon: usize = 0;
+            while (lon <= longitude_segments) : (lon += 1) {
+                const u = @as(f32, @floatFromInt(lon)) / @as(f32, @floatFromInt(longitude_segments));
+                const phi = u * std.math.tau;
+                const sin_phi = std.math.sin(phi);
+                const cos_phi = std.math.cos(phi);
+
+                const normal = [3]f32{
+                    sin_theta * cos_phi,
+                    cos_theta,
+                    sin_theta * sin_phi,
+                };
+                vertices[vertex_index] = makeVertex(
+                    .{
+                        normal[0] * 0.5,
+                        normal[1] * 0.5,
+                        normal[2] * 0.5,
+                    },
+                    .{
+                        0.55 + normal[0] * 0.2,
+                        0.7 + normal[1] * 0.15,
+                        0.9 + normal[2] * 0.1,
+                        1.0,
+                    },
+                    .{ u, 1.0 - v },
+                    normal,
+                    .{ -sin_phi, 0.0, cos_phi, 1.0 },
+                );
+                vertex_index += 1;
+            }
+        }
+
+        lat = 0;
+        while (lat < latitude_segments) : (lat += 1) {
+            var lon: usize = 0;
+            while (lon < longitude_segments) : (lon += 1) {
+                const row_start = lat * (longitude_segments + 1);
+                const next_row_start = (lat + 1) * (longitude_segments + 1);
+
+                const a: u32 = @intCast(row_start + lon);
+                const b: u32 = @intCast(next_row_start + lon);
+                const c: u32 = @intCast(next_row_start + lon + 1);
+                const d: u32 = @intCast(row_start + lon + 1);
+
+                try indices.appendSlice(self.allocator, &.{ a, b, c, a, c, d });
+            }
+        }
+
+        return self.createMesh(.{
+            .name = "BuiltinSphere",
+            .vertices = vertices,
+            .indices = indices.items,
+        });
     }
 };
 

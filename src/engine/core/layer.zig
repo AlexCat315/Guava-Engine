@@ -1,11 +1,15 @@
 const scene_mod = @import("../scene/scene.zig");
 const renderer_mod = @import("../render/renderer.zig");
 const rhi_mod = @import("../rhi/device.zig");
+const input_mod = @import("input.zig");
+const window_mod = @import("../platform/window.zig");
 
 pub const LayerContext = struct {
     world: *scene_mod.World,
     scene: *scene_mod.Scene,
     renderer: *renderer_mod.Renderer,
+    input: *input_mod.InputState,
+    window: *window_mod.Window,
     frame_index: usize,
     delta_seconds: f32,
 

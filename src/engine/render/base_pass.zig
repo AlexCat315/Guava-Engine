@@ -48,6 +48,12 @@ pub const BasePass = struct {
             };
             var fragment_uniforms = mesh_pass_mod.BasePassUniforms{
                 .base_color_factor = item.base_color_factor,
+                .camera_world_position = prepared_scene.camera_world_position,
+                .light_direction = prepared_scene.light_direction,
+                .light_color_intensity = prepared_scene.light_color_intensity,
+                .point_light_position_radius = prepared_scene.point_light_position_radius,
+                .point_light_color_intensity = prepared_scene.point_light_color_intensity,
+                .ambient_color = prepared_scene.ambient_color,
             };
 
             device.bindVertexBuffer(pass, 0, &item.vertex_buffer, 0);
@@ -87,11 +93,17 @@ pub const BasePass = struct {
             .{
                 .location = 1,
                 .buffer_slot = 0,
+                .format = .float3,
+                .offset = @offsetOf(mesh_resource.Vertex, "normal"),
+            },
+            .{
+                .location = 2,
+                .buffer_slot = 0,
                 .format = .float4,
                 .offset = @offsetOf(mesh_resource.Vertex, "color"),
             },
             .{
-                .location = 2,
+                .location = 3,
                 .buffer_slot = 0,
                 .format = .float2,
                 .offset = @offsetOf(mesh_resource.Vertex, "uv"),

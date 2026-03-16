@@ -26,6 +26,12 @@ pub const VertexUniforms = extern struct {
 
 pub const BasePassUniforms = extern struct {
     base_color_factor: [4]f32,
+    camera_world_position: [4]f32,
+    light_direction: [4]f32,
+    light_color_intensity: [4]f32,
+    point_light_position_radius: [4]f32,
+    point_light_color_intensity: [4]f32,
+    ambient_color: [4]f32,
 };
 
 pub const DrawItem = struct {
@@ -41,6 +47,12 @@ pub const DrawItem = struct {
 pub const PreparedScene = struct {
     allocator: std.mem.Allocator,
     view_projection: [16]f32,
+    camera_world_position: [4]f32,
+    light_direction: [4]f32,
+    light_color_intensity: [4]f32,
+    point_light_position_radius: [4]f32,
+    point_light_color_intensity: [4]f32,
+    ambient_color: [4]f32,
     items: []DrawItem,
 
     pub fn deinit(self: *PreparedScene) void {
@@ -52,6 +64,19 @@ pub const PreparedScene = struct {
 const CameraState = struct {
     transform: components.Transform,
     camera: components.Camera,
+};
+
+const LightState = struct {
+    direction: [3]f32,
+    color: [3]f32,
+    intensity: f32,
+};
+
+const PointLightState = struct {
+    position: [3]f32,
+    color: [3]f32,
+    intensity: f32,
+    range: f32,
 };
 
 const CachedMesh = struct {
@@ -142,6 +167,8 @@ pub const MeshSceneCache = struct {
             math.projectionForCamera(camera_state.camera, aspect_ratio),
             math.viewMatrix(camera_state.transform),
         );
+        const main_light = chooseMainLight(scene);
+        const point_light = choosePointLight(scene);
 
         var items = std.ArrayList(DrawItem).empty;
         defer items.deinit(self.allocator);
@@ -171,6 +198,37 @@ pub const MeshSceneCache = struct {
         return .{
             .allocator = self.allocator,
             .view_projection = view_projection,
+            .camera_world_position = .{
+                camera_state.transform.translation[0],
+                camera_state.transform.translation[1],
+                camera_state.transform.translation[2],
+                1.0,
+            },
+            .light_direction = .{
+                main_light.direction[0],
+                main_light.direction[1],
+                main_light.direction[2],
+                0.0,
+            },
+            .light_color_intensity = .{
+                main_light.color[0],
+                main_light.color[1],
+                main_light.color[2],
+                main_light.intensity,
+            },
+            .point_light_position_radius = .{
+                point_light.position[0],
+                point_light.position[1],
+                point_light.position[2],
+                point_light.range,
+            },
+            .point_light_color_intensity = .{
+                point_light.color[0],
+                point_light.color[1],
+                point_light.color[2],
+                point_light.intensity,
+            },
+            .ambient_color = .{ 0.14, 0.15, 0.18, 1.0 },
             .items = try items.toOwnedSlice(self.allocator),
         };
     }
@@ -375,5 +433,72 @@ fn chooseCamera(scene: *const scene_mod.Scene) CameraState {
             .translation = .{ 0.0, 1.5, 5.0 },
         },
         .camera = .{ .is_primary = true },
+    };
+}
+
+fn chooseMainLight(scene: *const scene_mod.Scene) LightState {
+    for (scene.entities.items) |entity| {
+        const light = entity.light orelse continue;
+        if (light.kind != .directional) {
+            continue;
+        }
+
+        return .{
+            .direction = forwardFromEuler(entity.transform.rotation_euler),
+            .color = light.color,
+            .intensity = light.intensity,
+        };
+    }
+
+    return .{
+        .direction = normalizeVec3(.{ 0.3, -0.9, -0.2 }),
+        .color = .{ 1.0, 0.98, 0.92 },
+        .intensity = 1.6,
+    };
+}
+
+fn choosePointLight(scene: *const scene_mod.Scene) PointLightState {
+    for (scene.entities.items) |entity| {
+        const light = entity.light orelse continue;
+        if (light.kind != .point) {
+            continue;
+        }
+
+        return .{
+            .position = entity.transform.translation,
+            .color = light.color,
+            .intensity = light.intensity,
+            .range = light.range,
+        };
+    }
+
+    return .{
+        .position = .{ 0.0, 0.0, 0.0 },
+        .color = .{ 1.0, 0.95, 0.9 },
+        .intensity = 0.0,
+        .range = 1.0,
+    };
+}
+
+fn forwardFromEuler(rotation_euler: components.Vec3) [3]f32 {
+    const pitch = rotation_euler[0];
+    const yaw = rotation_euler[1];
+    const cos_pitch = std.math.cos(pitch);
+    return normalizeVec3(.{
+        -std.math.sin(yaw) * cos_pitch,
+        std.math.sin(pitch),
+        -std.math.cos(yaw) * cos_pitch,
+    });
+}
+
+fn normalizeVec3(vector: [3]f32) [3]f32 {
+    const length = std.math.sqrt(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]);
+    if (length <= 0.0001) {
+        return .{ 0.0, 0.0, -1.0 };
+    }
+    return .{
+        vector[0] / length,
+        vector[1] / length,
+        vector[2] / length,
     };
 }
