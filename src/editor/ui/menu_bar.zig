@@ -2,7 +2,10 @@ const std = @import("std");
 const engine = @import("guava");
 const EditorState = @import("../core/state.zig").EditorState;
 const history = @import("../actions/history.zig");
+const camera = @import("../interaction/camera.zig");
+const content_browser = @import("../assets/browser.zig");
 const scene_hierarchy = @import("windows/scene_hierarchy.zig");
+const i18n = @import("../i18n/mod.zig");
 
 pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     if (!engine.ui.ImGui.beginMainMenuBar()) {
@@ -26,25 +29,14 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
         }
     }
 
-    if (engine.ui.ImGui.beginMenu(state.text(.create))) {
+    if (engine.ui.ImGui.beginMenu(state.text(.assets_menu))) {
         defer engine.ui.ImGui.endMenu();
-        if (engine.ui.ImGui.menuItem(state.text(.empty), null, false, true)) {
-            try history.spawnEmptyEntity(state, layer_context);
+        const can_instantiate = content_browser.selectedAssetCanLoadScene(state) or content_browser.selectedAssetCanImportModel(state);
+        if (engine.ui.ImGui.menuItem(state.text(.instantiate_slash_load), null, false, can_instantiate)) {
+            try content_browser.instantiateSelectedAsset(state, layer_context);
         }
-        if (engine.ui.ImGui.menuItem(state.text(.camera), null, false, true)) {
-            try history.spawnCameraEntity(state, layer_context);
-        }
-        if (engine.ui.ImGui.menuItem(state.text(.cube), "1", false, true)) {
-            try history.spawnPrimitive(state, layer_context, .cube);
-        }
-        if (engine.ui.ImGui.menuItem(state.text(.sphere), "2", false, true)) {
-            try history.spawnPrimitive(state, layer_context, .sphere);
-        }
-        if (engine.ui.ImGui.menuItem(state.text(.plane), "3", false, true)) {
-            try history.spawnPrimitive(state, layer_context, .plane);
-        }
-        if (engine.ui.ImGui.menuItem(state.text(.point_light), "L", false, true)) {
-            try history.spawnPointLight(state, layer_context);
+        if (engine.ui.ImGui.menuItem(state.text(.refresh), null, false, true)) {
+            try content_browser.refreshAssetBrowser(state);
         }
     }
 
@@ -65,16 +57,38 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
         }
     }
 
+    if (engine.ui.ImGui.beginMenu(state.text(.rendering))) {
+        defer engine.ui.ImGui.endMenu();
+        if (engine.ui.ImGui.menuItem(state.text(.editor_camera_mode), null, state.editor_camera_active, true) and !state.editor_camera_active) {
+            camera.toggleCameraMode(state, layer_context);
+        }
+        if (engine.ui.ImGui.menuItem(state.text(.scene_camera_mode), null, !state.editor_camera_active, true) and state.editor_camera_active) {
+            camera.toggleCameraMode(state, layer_context);
+        }
+        if (engine.ui.ImGui.menuItem(state.text(.focus), "F", false, layer_context.renderer.selectedEntity() != null)) {
+            camera.focusSelection(state, layer_context);
+        }
+    }
+
     if (engine.ui.ImGui.beginMenu(state.text(.window))) {
         defer engine.ui.ImGui.endMenu();
+        if (engine.ui.ImGui.menuItem(state.text(.settings), null, state.settings_open, true)) {
+            state.settings_open = !state.settings_open;
+        }
         if (engine.ui.ImGui.menuItem(state.text(.reset_dock_layout), null, false, true)) {
             engine.ui.ImGui.resetDefaultLayout();
             state.dock_layout_initialized = true;
         }
     }
 
-    if (engine.ui.ImGui.button(state.text(.settings))) {
-        state.settings_open = !state.settings_open;
+    if (engine.ui.ImGui.beginMenu(state.text(.help))) {
+        defer engine.ui.ImGui.endMenu();
+        for (i18n.available_languages) |language| {
+            const locale_info = i18n.locale(language);
+            if (engine.ui.ImGui.menuItem(locale_info.native_name, null, state.language == language, true)) {
+                state.language = language;
+            }
+        }
     }
 
     const trailing_button_reserve: f32 = if (native_titlebar_controls)

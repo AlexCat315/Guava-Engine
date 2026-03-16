@@ -30,6 +30,13 @@ enum {
     GUAVA_IMGUI_WINDOW_CONTROL_CLOSE = 2,
 };
 
+enum {
+    GUAVA_IMGUI_STYLE_COLOR_TEXT = 0,
+    GUAVA_IMGUI_STYLE_COLOR_BUTTON = 1,
+    GUAVA_IMGUI_STYLE_COLOR_BUTTON_HOVERED = 2,
+    GUAVA_IMGUI_STYLE_COLOR_BUTTON_ACTIVE = 3,
+};
+
 bool guava_imgui_init(SDL_Window* window, SDL_GPUDevice* device, SDL_GPUTextureFormat color_target_format);
 void guava_imgui_shutdown(void);
 void guava_imgui_process_event(const SDL_Event* event);
@@ -50,11 +57,24 @@ bool guava_imgui_begin_menu(const char* label, size_t label_len);
 void guava_imgui_end_menu(void);
 bool guava_imgui_menu_item(const char* label, size_t label_len, const char* shortcut, size_t shortcut_len, bool selected, bool enabled);
 bool guava_imgui_button(const char* label, size_t label_len);
+bool guava_imgui_button_ex(const char* label, size_t label_len, float width, float height);
 bool guava_imgui_invisible_button(const char* id, size_t id_len, float width, float height);
 bool guava_imgui_window_control_button(uint32_t kind, bool toggled);
 void guava_imgui_dummy(float width, float height);
 void guava_imgui_same_line(void);
 void guava_imgui_separator(void);
+void guava_imgui_set_next_item_width(float width);
+void guava_imgui_push_style_color(uint32_t slot, float r, float g, float b, float a);
+void guava_imgui_pop_style_color(int32_t count);
+bool guava_imgui_begin_child(const char* id, size_t id_len, float width, float height, bool border);
+void guava_imgui_end_child(void);
+bool guava_imgui_begin_table(const char* id, size_t id_len, int32_t columns);
+void guava_imgui_end_table(void);
+void guava_imgui_table_setup_column(const char* label, size_t label_len, bool stretch, float init_width_or_weight);
+void guava_imgui_table_headers_row(void);
+void guava_imgui_table_next_row(void);
+void guava_imgui_table_next_column(void);
+bool guava_imgui_selectable(const char* label, size_t label_len, bool selected, bool span_all_columns, float width, float height);
 void guava_imgui_text(const char* text, size_t text_len);
 void guava_imgui_label_text(const char* label, size_t label_len, const char* text, size_t text_len);
 void guava_imgui_push_id_u64(uint64_t value);

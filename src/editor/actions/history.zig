@@ -25,6 +25,11 @@ pub fn captureSnapshot(state: *EditorState, layer_context: *engine.core.LayerCon
     while (state.snapshot_history.items.len > state.snapshot_cursor + 1) {
         const removed = state.snapshot_history.pop().?;
         allocator.free(removed);
+        if (state.saved_snapshot_cursor) |saved_snapshot_cursor| {
+            if (saved_snapshot_cursor >= state.snapshot_history.items.len) {
+                state.saved_snapshot_cursor = null;
+            }
+        }
     }
 
     try state.snapshot_history.append(allocator, snapshot);
@@ -33,6 +38,9 @@ pub fn captureSnapshot(state: *EditorState, layer_context: *engine.core.LayerCon
     while (state.snapshot_history.items.len > state.max_snapshots) {
         const removed = state.snapshot_history.orderedRemove(0);
         allocator.free(removed);
+        if (state.saved_snapshot_cursor) |saved_snapshot_cursor| {
+            state.saved_snapshot_cursor = if (saved_snapshot_cursor == 0) null else saved_snapshot_cursor - 1;
+        }
         if (state.snapshot_cursor > 0) {
             state.snapshot_cursor -= 1;
         }
@@ -42,6 +50,7 @@ pub fn captureSnapshot(state: *EditorState, layer_context: *engine.core.LayerCon
 pub fn resetSnapshotHistory(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     clearSnapshotHistory(state);
     try captureSnapshot(state, layer_context);
+    state.saved_snapshot_cursor = if (state.snapshot_history.items.len > 0) state.snapshot_cursor else null;
 }
 
 pub fn clearSnapshotHistory(state: *EditorState) void {
@@ -52,6 +61,7 @@ pub fn clearSnapshotHistory(state: *EditorState) void {
     state.snapshot_history.deinit(allocator);
     state.snapshot_history = .empty;
     state.snapshot_cursor = 0;
+    state.saved_snapshot_cursor = null;
 }
 
 pub fn undo(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -187,6 +197,7 @@ pub fn saveScenePath(state: *EditorState, layer_context: *engine.core.LayerConte
         std.log.err("failed to save scene to {s}: {}", .{ path, err });
         return;
     };
+    state.saved_snapshot_cursor = if (state.snapshot_history.items.len > 0) state.snapshot_cursor else null;
     content_browser.refreshAssetBrowser(state) catch |err| {
         std.log.warn("failed to refresh asset browser after save: {}", .{err});
     };
@@ -232,4 +243,12 @@ pub fn importModelPath(state: *EditorState, layer_context: *engine.core.LayerCon
 pub fn refreshWindowTitle(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     _ = state;
     _ = layer_context;
+}
+
+pub fn hasUnsavedChanges(state: *const EditorState) bool {
+    if (state.snapshot_history.items.len == 0) {
+        return false;
+    }
+    const saved_snapshot_cursor = state.saved_snapshot_cursor orelse return true;
+    return saved_snapshot_cursor != state.snapshot_cursor;
 }

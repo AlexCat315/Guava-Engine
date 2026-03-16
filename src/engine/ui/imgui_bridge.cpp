@@ -34,6 +34,21 @@ ImGuiWindowFlags to_imgui_window_flags(uint32_t flags) {
     return result;
 }
 
+ImGuiCol to_imgui_style_color(uint32_t slot) {
+    switch (slot) {
+        case GUAVA_IMGUI_STYLE_COLOR_TEXT:
+            return ImGuiCol_Text;
+        case GUAVA_IMGUI_STYLE_COLOR_BUTTON:
+            return ImGuiCol_Button;
+        case GUAVA_IMGUI_STYLE_COLOR_BUTTON_HOVERED:
+            return ImGuiCol_ButtonHovered;
+        case GUAVA_IMGUI_STYLE_COLOR_BUTTON_ACTIVE:
+            return ImGuiCol_ButtonActive;
+        default:
+            return ImGuiCol_Text;
+    }
+}
+
 std::string first_existing_path(std::initializer_list<const char*> candidates) {
     for (const char* candidate : candidates) {
         if (candidate == nullptr || candidate[0] == '\0') {
@@ -91,6 +106,115 @@ std::string find_cjk_font_path() {
         "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
     });
 #endif
+}
+
+ImVec4 make_color(int r, int g, int b, int a = 255) {
+    constexpr float inv_255 = 1.0f / 255.0f;
+    return ImVec4(
+        static_cast<float>(r) * inv_255,
+        static_cast<float>(g) * inv_255,
+        static_cast<float>(b) * inv_255,
+        static_cast<float>(a) * inv_255
+    );
+}
+
+void apply_guava_editor_style(float content_scale) {
+    ImGuiStyle& style = ImGui::GetStyle();
+    style = ImGuiStyle();
+
+    style.WindowPadding = ImVec2(12.0f, 10.0f);
+    style.FramePadding = ImVec2(10.0f, 6.0f);
+    style.CellPadding = ImVec2(8.0f, 7.0f);
+    style.ItemSpacing = ImVec2(8.0f, 7.0f);
+    style.ItemInnerSpacing = ImVec2(6.0f, 4.0f);
+    style.TouchExtraPadding = ImVec2(0.0f, 0.0f);
+    style.IndentSpacing = 20.0f;
+    style.ScrollbarSize = 14.0f;
+    style.GrabMinSize = 10.0f;
+
+    style.WindowBorderSize = 0.0f;
+    style.ChildBorderSize = 0.0f;
+    style.PopupBorderSize = 1.0f;
+    style.FrameBorderSize = 0.0f;
+    style.TabBorderSize = 0.0f;
+
+    style.WindowRounding = 7.0f;
+    style.ChildRounding = 6.0f;
+    style.FrameRounding = 5.0f;
+    style.PopupRounding = 6.0f;
+    style.ScrollbarRounding = 8.0f;
+    style.GrabRounding = 4.0f;
+    style.TabRounding = 4.0f;
+
+    style.WindowTitleAlign = ImVec2(0.02f, 0.5f);
+    style.WindowMenuButtonPosition = ImGuiDir_None;
+    style.ColorButtonPosition = ImGuiDir_Right;
+    style.ButtonTextAlign = ImVec2(0.5f, 0.5f);
+    style.SelectableTextAlign = ImVec2(0.0f, 0.5f);
+    style.WindowMinSize = ImVec2(220.0f, 120.0f);
+
+    ImVec4* colors = style.Colors;
+    colors[ImGuiCol_Text] = make_color(220, 224, 231);
+    colors[ImGuiCol_TextDisabled] = make_color(144, 153, 165);
+    colors[ImGuiCol_WindowBg] = make_color(28, 30, 34);
+    colors[ImGuiCol_ChildBg] = make_color(34, 37, 42);
+    colors[ImGuiCol_PopupBg] = make_color(33, 35, 40, 250);
+    colors[ImGuiCol_Border] = make_color(63, 70, 80, 110);
+    colors[ImGuiCol_BorderShadow] = make_color(0, 0, 0, 0);
+
+    colors[ImGuiCol_FrameBg] = make_color(52, 56, 63);
+    colors[ImGuiCol_FrameBgHovered] = make_color(67, 74, 84);
+    colors[ImGuiCol_FrameBgActive] = make_color(80, 89, 101);
+    colors[ImGuiCol_TitleBg] = make_color(24, 26, 31);
+    colors[ImGuiCol_TitleBgActive] = make_color(34, 37, 42);
+    colors[ImGuiCol_TitleBgCollapsed] = make_color(24, 26, 31, 210);
+    colors[ImGuiCol_MenuBarBg] = make_color(31, 34, 39);
+    colors[ImGuiCol_ScrollbarBg] = make_color(23, 24, 27);
+    colors[ImGuiCol_ScrollbarGrab] = make_color(77, 83, 93);
+    colors[ImGuiCol_ScrollbarGrabHovered] = make_color(95, 103, 115);
+    colors[ImGuiCol_ScrollbarGrabActive] = make_color(111, 121, 135);
+    colors[ImGuiCol_CheckMark] = make_color(110, 167, 255);
+    colors[ImGuiCol_SliderGrab] = make_color(108, 161, 246);
+    colors[ImGuiCol_SliderGrabActive] = make_color(128, 184, 255);
+
+    colors[ImGuiCol_Button] = make_color(58, 62, 70);
+    colors[ImGuiCol_ButtonHovered] = make_color(74, 81, 91);
+    colors[ImGuiCol_ButtonActive] = make_color(87, 96, 109);
+    colors[ImGuiCol_Header] = make_color(58, 64, 72);
+    colors[ImGuiCol_HeaderHovered] = make_color(75, 83, 95);
+    colors[ImGuiCol_HeaderActive] = make_color(90, 99, 112);
+    colors[ImGuiCol_Separator] = make_color(54, 60, 69, 170);
+    colors[ImGuiCol_SeparatorHovered] = make_color(93, 140, 217, 210);
+    colors[ImGuiCol_SeparatorActive] = make_color(109, 161, 246, 255);
+    colors[ImGuiCol_ResizeGrip] = make_color(91, 101, 116, 70);
+    colors[ImGuiCol_ResizeGripHovered] = make_color(109, 161, 246, 130);
+    colors[ImGuiCol_ResizeGripActive] = make_color(128, 184, 255, 170);
+    colors[ImGuiCol_Tab] = make_color(40, 43, 48);
+    colors[ImGuiCol_TabHovered] = make_color(74, 81, 91);
+    colors[ImGuiCol_TabActive] = make_color(60, 67, 76);
+    colors[ImGuiCol_TabUnfocused] = make_color(34, 37, 42);
+    colors[ImGuiCol_TabUnfocusedActive] = make_color(48, 52, 58);
+    colors[ImGuiCol_DockingPreview] = make_color(110, 167, 255, 138);
+    colors[ImGuiCol_DockingEmptyBg] = make_color(22, 24, 28);
+    colors[ImGuiCol_PlotLines] = make_color(132, 142, 156);
+    colors[ImGuiCol_PlotLinesHovered] = make_color(173, 197, 255);
+    colors[ImGuiCol_PlotHistogram] = make_color(110, 167, 255);
+    colors[ImGuiCol_PlotHistogramHovered] = make_color(132, 184, 255);
+    colors[ImGuiCol_TableHeaderBg] = make_color(43, 47, 54);
+    colors[ImGuiCol_TableBorderStrong] = make_color(64, 69, 78);
+    colors[ImGuiCol_TableBorderLight] = make_color(47, 51, 58);
+    colors[ImGuiCol_TableRowBg] = make_color(0, 0, 0, 0);
+    colors[ImGuiCol_TableRowBgAlt] = make_color(255, 255, 255, 9);
+    colors[ImGuiCol_TextSelectedBg] = make_color(94, 146, 227, 95);
+    colors[ImGuiCol_DragDropTarget] = make_color(250, 199, 88);
+    colors[ImGuiCol_NavCursor] = make_color(110, 167, 255);
+    colors[ImGuiCol_NavWindowingHighlight] = make_color(255, 255, 255, 70);
+    colors[ImGuiCol_NavWindowingDimBg] = make_color(0, 0, 0, 90);
+    colors[ImGuiCol_ModalWindowDimBg] = make_color(0, 0, 0, 110);
+
+    const float scale = content_scale > 0.0f ? content_scale : 1.0f;
+    style.ScaleAllSizes(scale);
+    style.FontScaleDpi = 1.0f;
 }
 
 void configure_fonts(float content_scale) {
@@ -222,10 +346,7 @@ extern "C" bool guava_imgui_init(SDL_Window* window, SDL_GPUDevice* device, SDL_
     const float main_scale = reported_scale > 0.0f ? reported_scale : 1.0f;
     configure_fonts(main_scale);
 
-    ImGui::StyleColorsDark();
-    ImGuiStyle& style = ImGui::GetStyle();
-    style.ScaleAllSizes(main_scale);
-    style.FontScaleDpi = 1.0f;
+    apply_guava_editor_style(main_scale);
 
     if (!ImGui_ImplSDL3_InitForSDLGPU(window)) {
         ImGui::DestroyContext();
@@ -302,19 +423,20 @@ extern "C" void guava_imgui_reset_default_layout(void) {
     ImGui::DockBuilderSetNodeSize(g_dockspace_id, viewport->Size);
 
     ImGuiID dock_main = g_dockspace_id;
-    ImGuiID dock_left = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Left, 0.22f, nullptr, &dock_main);
-    ImGuiID dock_right = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Right, 0.28f, nullptr, &dock_main);
-    ImGuiID dock_bottom = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Down, 0.28f, nullptr, &dock_main);
-    ImGuiID dock_top = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Up, 0.08f, nullptr, &dock_main);
-    ImGuiID dock_right_bottom = ImGui::DockBuilderSplitNode(dock_right, ImGuiDir_Down, 0.42f, nullptr, &dock_right);
+    ImGuiID dock_status = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Down, 0.035f, nullptr, &dock_main);
+    ImGuiID dock_bottom = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Down, 0.22f, nullptr, &dock_main);
+    ImGuiID dock_left = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Left, 0.18f, nullptr, &dock_main);
+    ImGuiID dock_right = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Right, 0.24f, nullptr, &dock_main);
+    ImGuiID dock_top = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Up, 0.06f, nullptr, &dock_main);
+    ImGuiID dock_right_bottom = ImGui::DockBuilderSplitNode(dock_right, ImGuiDir_Down, 0.28f, nullptr, &dock_right);
 
-    ImGui::DockBuilderDockWindow("Viewport Toolbar###viewport_toolbar_panel", dock_top);
+    ImGui::DockBuilderDockWindow("Global Toolbar###global_toolbar_panel", dock_top);
     ImGui::DockBuilderDockWindow("Viewport###viewport_panel", dock_main);
     ImGui::DockBuilderDockWindow("Scene###scene_panel", dock_left);
     ImGui::DockBuilderDockWindow("Details###details_panel", dock_right);
-    ImGui::DockBuilderDockWindow("Asset Preview###asset_preview_panel", dock_right_bottom);
     ImGui::DockBuilderDockWindow("Stats###stats_panel", dock_right_bottom);
     ImGui::DockBuilderDockWindow("Content Browser###content_browser_panel", dock_bottom);
+    ImGui::DockBuilderDockWindow("Status Bar###status_bar_panel", dock_status);
 
     ImGui::DockBuilderFinish(g_dockspace_id);
 }
@@ -430,6 +552,14 @@ extern "C" bool guava_imgui_button(const char* label, size_t label_len) {
     return ImGui::Button(owned_label.c_str());
 }
 
+extern "C" bool guava_imgui_button_ex(const char* label, size_t label_len, float width, float height) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+    const std::string owned_label = make_string(label, label_len);
+    return ImGui::Button(owned_label.c_str(), ImVec2(width, height));
+}
+
 extern "C" bool guava_imgui_invisible_button(const char* id, size_t id_len, float width, float height) {
     if (!g_imgui_initialized) {
         return false;
@@ -513,6 +643,103 @@ extern "C" void guava_imgui_separator(void) {
     ImGui::Separator();
 }
 
+extern "C" void guava_imgui_set_next_item_width(float width) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::SetNextItemWidth(width);
+}
+
+extern "C" void guava_imgui_push_style_color(uint32_t slot, float r, float g, float b, float a) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::PushStyleColor(to_imgui_style_color(slot), ImVec4(r, g, b, a));
+}
+
+extern "C" void guava_imgui_pop_style_color(int32_t count) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::PopStyleColor(count);
+}
+
+extern "C" bool guava_imgui_begin_child(const char* id, size_t id_len, float width, float height, bool border) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+    const std::string owned_id = make_string(id, id_len);
+    return ImGui::BeginChild(owned_id.c_str(), ImVec2(width, height), border);
+}
+
+extern "C" void guava_imgui_end_child(void) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::EndChild();
+}
+
+extern "C" bool guava_imgui_begin_table(const char* id, size_t id_len, int32_t columns) {
+    if (!g_imgui_initialized || columns <= 0) {
+        return false;
+    }
+    const std::string owned_id = make_string(id, id_len);
+    constexpr ImGuiTableFlags flags =
+        ImGuiTableFlags_RowBg |
+        ImGuiTableFlags_SizingStretchProp |
+        ImGuiTableFlags_Resizable;
+    return ImGui::BeginTable(owned_id.c_str(), columns, flags);
+}
+
+extern "C" void guava_imgui_end_table(void) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::EndTable();
+}
+
+extern "C" void guava_imgui_table_setup_column(const char* label, size_t label_len, bool stretch, float init_width_or_weight) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    const std::string owned_label = make_string(label, label_len);
+    const ImGuiTableColumnFlags flags = stretch ? ImGuiTableColumnFlags_WidthStretch : ImGuiTableColumnFlags_WidthFixed;
+    ImGui::TableSetupColumn(owned_label.c_str(), flags, init_width_or_weight);
+}
+
+extern "C" void guava_imgui_table_headers_row(void) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::TableHeadersRow();
+}
+
+extern "C" void guava_imgui_table_next_row(void) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::TableNextRow();
+}
+
+extern "C" void guava_imgui_table_next_column(void) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::TableNextColumn();
+}
+
+extern "C" bool guava_imgui_selectable(const char* label, size_t label_len, bool selected, bool span_all_columns, float width, float height) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+    const std::string owned_label = make_string(label, label_len);
+    ImGuiSelectableFlags flags = ImGuiSelectableFlags_None;
+    if (span_all_columns) {
+        flags |= ImGuiSelectableFlags_SpanAllColumns;
+    }
+    return ImGui::Selectable(owned_label.c_str(), selected, flags, ImVec2(width, height));
+}
+
 extern "C" void guava_imgui_text(const char* text, size_t text_len) {
     if (!g_imgui_initialized) {
         return;
@@ -548,7 +775,19 @@ extern "C" bool guava_imgui_tree_node_entity(uint64_t id, const char* label, siz
         return false;
     }
 
-    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
+    const ImVec2 cursor = ImGui::GetCursorScreenPos();
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float row_height = ImGui::GetFrameHeight();
+    const float row_pitch = row_height + style.ItemSpacing.y;
+    const float window_top = ImGui::GetWindowPos().y + style.WindowPadding.y;
+    const int row_index = static_cast<int>((cursor.y - window_top) / (row_pitch > 0.0f ? row_pitch : 1.0f));
+    const ImVec2 row_min(ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMin().x, cursor.y);
+    const ImVec2 row_max(ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x, cursor.y + row_height);
+    if ((row_index & 1) != 0) {
+        ImGui::GetWindowDrawList()->AddRectFilled(row_min, row_max, IM_COL32(255, 255, 255, 8), 4.0f);
+    }
+
+    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | ImGuiTreeNodeFlags_SpanFullWidth | ImGuiTreeNodeFlags_FramePadding;
     if (selected) {
         flags |= ImGuiTreeNodeFlags_Selected;
     }
@@ -560,7 +799,19 @@ extern "C" bool guava_imgui_tree_node_entity(uint64_t id, const char* label, siz
     }
 
     const std::string owned_label = make_string(label, label_len);
-    return ImGui::TreeNodeEx(reinterpret_cast<void*>(static_cast<uintptr_t>(id)), flags, "%s", owned_label.c_str());
+    const bool is_open = ImGui::TreeNodeEx(reinterpret_cast<void*>(static_cast<uintptr_t>(id)), flags, "%s", owned_label.c_str());
+    if (selected) {
+        const ImRect rect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
+        ImGui::GetWindowDrawList()->AddRect(
+            rect.Min,
+            rect.Max,
+            IM_COL32(114, 170, 255, 96),
+            4.0f,
+            0,
+            1.2f
+        );
+    }
+    return is_open;
 }
 
 extern "C" void guava_imgui_tree_pop(void) {

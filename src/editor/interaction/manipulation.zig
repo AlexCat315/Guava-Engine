@@ -26,6 +26,12 @@ pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.L
     }
 
     if (state.manipulation_mode != .none) {
+        if (input.wasKeyPressed(.q)) {
+            endManipulation(state);
+            syncGizmoState(state, layer_context);
+            try history.refreshWindowTitle(state, layer_context);
+            return;
+        }
         if (input.wasKeyPressed(.x)) {
             state.manipulation_axis = .x;
         }
@@ -45,7 +51,13 @@ pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.L
         if (input.wasKeyPressed(.g)) {
             try beginManipulation(state, layer_context, .translate);
         }
+        if (input.wasKeyPressed(.w)) {
+            try beginManipulation(state, layer_context, .translate);
+        }
         if (input.wasKeyPressed(.r)) {
+            try beginManipulation(state, layer_context, .scale);
+        }
+        if (input.wasKeyPressed(.e)) {
             try beginManipulation(state, layer_context, .rotate);
         }
         if (input.wasKeyPressed(.s) and !input.isMouseDown(.right)) {
@@ -86,8 +98,19 @@ pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.L
     if (input.wasKeyPressed(.g)) {
         try beginManipulation(state, layer_context, .translate);
     }
-    if (input.wasKeyPressed(.r)) {
+    if (input.wasKeyPressed(.q)) {
+        endManipulation(state);
+        syncGizmoState(state, layer_context);
+        try history.refreshWindowTitle(state, layer_context);
+    }
+    if (input.wasKeyPressed(.w)) {
+        try beginManipulation(state, layer_context, .translate);
+    }
+    if (input.wasKeyPressed(.e)) {
         try beginManipulation(state, layer_context, .rotate);
+    }
+    if (input.wasKeyPressed(.r)) {
+        try beginManipulation(state, layer_context, .scale);
     }
     if (input.wasKeyPressed(.s) and !input.modifiers.ctrl and !input.isMouseDown(.right)) {
         try beginManipulation(state, layer_context, .scale);

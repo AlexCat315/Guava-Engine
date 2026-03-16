@@ -4,6 +4,7 @@ const EditorState = @import("../core/state.zig").EditorState;
 const state_mod = @import("../core/state.zig");
 const utils = @import("../common/utils.zig");
 const history = @import("../actions/history.zig");
+const asset_preview = @import("preview.zig");
 
 const AssetKind = state_mod.AssetKind;
 const AssetEntry = state_mod.AssetEntry;
@@ -14,35 +15,23 @@ pub fn drawContentBrowser(state: *EditorState, layer_context: *engine.core.Layer
     _ = engine.ui.ImGui.beginWindow(title);
     defer engine.ui.ImGui.endWindow();
 
-    if (engine.ui.ImGui.button(state.text(.refresh))) {
+    if (engine.ui.ImGui.buttonEx(state.text(.refresh), 104.0, 0.0)) {
         try refreshAssetBrowser(state);
     }
     engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.button(state.text(.quick_save))) {
+    if (engine.ui.ImGui.buttonEx(state.text(.quick_save), 116.0, 0.0)) {
         history.saveScene(state, layer_context);
     }
 
-    if (selectedAsset(state)) |entry| {
-        engine.ui.ImGui.labelText(state.text(.selected), entry.name);
-        engine.ui.ImGui.labelText(state.text(.type), utils.assetKindLabel(state, entry.kind));
-        engine.ui.ImGui.labelText(state.text(.path), entry.path);
-
-        if (selectedAssetCanLoadScene(state) and engine.ui.ImGui.button(state.text(.save_over_selected_scene))) {
-            history.saveScenePath(state, layer_context, entry.path);
-        }
-        if (selectedAssetCanLoadScene(state) and engine.ui.ImGui.button(state.text(.load_selected_scene))) {
-            try history.loadScenePath(state, layer_context, entry.path);
-            return;
-        }
-        if (selectedAssetCanImportModel(state) and engine.ui.ImGui.button(state.text(.instantiate_selected_model))) {
-            try history.importModelPath(state, layer_context, entry.path);
-        }
-    } else {
-        engine.ui.ImGui.text(state.text(.no_asset_selected));
-    }
-
-    engine.ui.ImGui.separator();
+    engine.ui.ImGui.setNextItemWidth(-1.0);
     _ = engine.ui.ImGui.inputText(state.text(.asset_filter), state.asset_filter_buffer[0..]);
+
+    {
+        _ = engine.ui.ImGui.beginChild("content_browser_preview", 0.0, 192.0, true);
+        defer engine.ui.ImGui.endChild();
+        try drawSelectedAssetPreview(state, layer_context);
+    }
+    engine.ui.ImGui.separator();
     try drawAssetGroup(state, state.text(.scenes), .scene);
     try drawAssetGroup(state, state.text(.models), .model);
     try drawAssetGroup(state, state.text(.textures), .texture);
@@ -53,6 +42,29 @@ pub fn drawAssetGroup(state: *EditorState, title: []const u8, kind: AssetKind) !
     if (!engine.ui.ImGui.collapsingHeader(title, kind == .scene or kind == .model)) {
         return;
     }
+
+    var has_entries = false;
+    for (state.asset_entries.items) |entry| {
+        if (entry.kind == kind and utils.assetMatchesFilter(state, entry)) {
+            has_entries = true;
+            break;
+        }
+    }
+    if (!has_entries) {
+        engine.ui.ImGui.text(state.text(.none));
+        return;
+    }
+
+    var table_id_buffer: [64]u8 = undefined;
+    const table_id = try std.fmt.bufPrint(&table_id_buffer, "asset_group_{d}", .{@intFromEnum(kind)});
+    if (!engine.ui.ImGui.beginTable(table_id, 2)) {
+        return;
+    }
+    defer engine.ui.ImGui.endTable();
+
+    engine.ui.ImGui.tableSetupColumn(state.text(.name), false, 220.0);
+    engine.ui.ImGui.tableSetupColumn(state.text(.path), true, 1.0);
+    engine.ui.ImGui.tableHeadersRow();
 
     for (state.asset_entries.items, 0..) |entry, index| {
         if (entry.kind != kind) {
@@ -65,15 +77,59 @@ pub fn drawAssetGroup(state: *EditorState, title: []const u8, kind: AssetKind) !
         var label_buffer: [320]u8 = undefined;
         const label = try std.fmt.bufPrint(
             &label_buffer,
-            "{s}{s}",
-            .{ if (state.selected_asset_index == index) "> " else "", entry.name },
+            "{s}##asset_{d}",
+            .{ entry.name, index },
         );
-        if (engine.ui.ImGui.button(label)) {
+        engine.ui.ImGui.tableNextRow();
+        engine.ui.ImGui.tableNextColumn();
+        if (engine.ui.ImGui.selectable(label, state.selected_asset_index == index, true, 0.0, 28.0)) {
             state.selected_asset_index = index;
         }
-        engine.ui.ImGui.sameLine();
+        engine.ui.ImGui.tableNextColumn();
         engine.ui.ImGui.text(entry.path);
     }
+}
+
+fn drawSelectedAssetPreview(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    if (selectedAsset(state)) |entry| {
+        engine.ui.ImGui.labelText(state.text(.selected), entry.name);
+        engine.ui.ImGui.labelText(state.text(.type), utils.assetKindLabel(state, entry.kind));
+        engine.ui.ImGui.labelText(state.text(.path), entry.path);
+
+        switch (entry.kind) {
+            .texture => {
+                {
+                    _ = engine.ui.ImGui.beginChild("content_browser_thumbnail", 0.0, 96.0, true);
+                    defer engine.ui.ImGui.endChild();
+                    try asset_preview.ensurePreviewTextureForAssetPath(state, layer_context, entry.path);
+                    asset_preview.drawCurrentPreviewImage(state);
+                }
+                engine.ui.ImGui.text(state.text(.use_this_texture_from_details_gt_material));
+            },
+            .scene => {
+                if (engine.ui.ImGui.buttonEx(state.text(.load_selected_scene), engine.ui.ImGui.contentRegionAvail()[0], 0.0)) {
+                    try history.loadScenePath(state, layer_context, entry.path);
+                    return;
+                }
+                if (engine.ui.ImGui.buttonEx(state.text(.save_over_selected_scene), engine.ui.ImGui.contentRegionAvail()[0], 0.0)) {
+                    history.saveScenePath(state, layer_context, entry.path);
+                }
+                engine.ui.ImGui.text(state.text(.scenes_can_be_loaded_directly_or_overwritten_from_the_current_world));
+            },
+            .model => {
+                if (engine.ui.ImGui.buttonEx(state.text(.instantiate_selected_model), engine.ui.ImGui.contentRegionAvail()[0], 0.0)) {
+                    try history.importModelPath(state, layer_context, entry.path);
+                }
+                engine.ui.ImGui.text(state.text(.models_are_imported_as_grouped_instances_with_a_movable_root_entity));
+            },
+            .shader => {
+                engine.ui.ImGui.text(state.text(.shader_source_preview_is_currently_metadata_only));
+            },
+        }
+        return;
+    }
+
+    engine.ui.ImGui.text(state.text(.no_asset_selected));
 }
 
 pub fn selectedAssetCanUseAsTexture(state: *EditorState) bool {

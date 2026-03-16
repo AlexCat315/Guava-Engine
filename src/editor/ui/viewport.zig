@@ -12,71 +12,129 @@ const asset_preview = @import("../assets/preview.zig");
 const menu_bar = @import("menu_bar.zig");
 const settings = @import("windows/settings.zig");
 
-pub fn drawViewportToolbar(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+fn drawToolbarButton(label: []const u8, width: f32, active: bool) bool {
+    if (active) {
+        engine.ui.ImGui.pushStyleColor(.button, .{ 0.26, 0.40, 0.66, 1.0 });
+        engine.ui.ImGui.pushStyleColor(.button_hovered, .{ 0.32, 0.48, 0.78, 1.0 });
+        engine.ui.ImGui.pushStyleColor(.button_active, .{ 0.21, 0.33, 0.56, 1.0 });
+        defer engine.ui.ImGui.popStyleColor(3);
+    }
+    return engine.ui.ImGui.buttonEx(label, width, 0.0);
+}
+
+fn drawPlaybackButton(label: []const u8, width: f32, palette: [3][4]f32) bool {
+    engine.ui.ImGui.pushStyleColor(.button, palette[0]);
+    engine.ui.ImGui.pushStyleColor(.button_hovered, palette[1]);
+    engine.ui.ImGui.pushStyleColor(.button_active, palette[2]);
+    defer engine.ui.ImGui.popStyleColor(3);
+    return engine.ui.ImGui.buttonEx(label, width, 0.0);
+}
+
+pub fn drawGlobalToolbarWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     var title_buffer: [96]u8 = undefined;
-    const title = try state.windowLabel(&title_buffer, .viewport_toolbar, "viewport_toolbar_panel");
+    const title = try state.windowLabel(&title_buffer, .global_toolbar, "global_toolbar_panel");
     _ = engine.ui.ImGui.beginWindowFlags(title, engine.ui.ImGui.WindowFlags.no_title_bar | engine.ui.ImGui.WindowFlags.no_collapse | engine.ui.ImGui.WindowFlags.no_scrollbar);
     defer engine.ui.ImGui.endWindow();
 
-    engine.ui.ImGui.labelText(state.text(.camera), if (state.editor_camera_active) state.text(.editor_camera_mode) else state.text(.scene_camera_mode));
-    var mode_buffer: [32]u8 = undefined;
-    const mode_text = try std.fmt.bufPrint(&mode_buffer, "{s}", .{
-        switch (state.manipulation_mode) {
-            .none => state.text(.idle),
-            .translate => state.text(.move),
-            .rotate => state.text(.rotate),
-            .scale => state.text(.scale),
-        },
-    });
-    engine.ui.ImGui.labelText(state.text(.mode), mode_text);
-
-    if (engine.ui.ImGui.button(state.text(.toggle_camera))) {
-        camera.toggleCameraMode(state, layer_context);
+    if (drawToolbarButton(state.text(.select), 96.0, state.manipulation_mode == .none)) {
+        manipulation.endManipulation(state);
     }
+    var move_label_buffer: [32]u8 = undefined;
+    const move_label = try std.fmt.bufPrint(&move_label_buffer, "W {s}", .{state.text(.move)});
     engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.button(state.text(.focus))) {
-        camera.focusSelection(state, layer_context);
-    }
-    engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.button(state.text(.move))) {
+    if (drawToolbarButton(move_label, 108.0, state.manipulation_mode == .translate)) {
         try manipulation.beginManipulation(state, layer_context, .translate);
     }
+    var rotate_label_buffer: [32]u8 = undefined;
+    const rotate_label = try std.fmt.bufPrint(&rotate_label_buffer, "E {s}", .{state.text(.rotate)});
     engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.button(state.text(.rotate))) {
+    if (drawToolbarButton(rotate_label, 116.0, state.manipulation_mode == .rotate)) {
         try manipulation.beginManipulation(state, layer_context, .rotate);
     }
+    var scale_label_buffer: [32]u8 = undefined;
+    const scale_label = try std.fmt.bufPrint(&scale_label_buffer, "R {s}", .{state.text(.scale)});
     engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.button(state.text(.scale))) {
+    if (drawToolbarButton(scale_label, 108.0, state.manipulation_mode == .scale)) {
         try manipulation.beginManipulation(state, layer_context, .scale);
     }
 
-    if (engine.ui.ImGui.button(state.text(.empty))) {
-        try history.spawnEmptyEntity(state, layer_context);
+    const center_group_width: f32 = 398.0;
+    const right_group_width: f32 = 392.0;
+    const center_leading_gap = @max((engine.ui.ImGui.contentRegionAvail()[0] - center_group_width - right_group_width) * 0.5, 16.0);
+    engine.ui.ImGui.sameLine();
+    engine.ui.ImGui.dummy(center_leading_gap, 1.0);
+    engine.ui.ImGui.sameLine();
+
+    const playing_palette = if (state.playback_state == .playing)
+        [3][4]f32{
+            .{ 0.20, 0.59, 0.31, 1.0 },
+            .{ 0.24, 0.68, 0.36, 1.0 },
+            .{ 0.17, 0.50, 0.26, 1.0 },
+        }
+    else
+        [3][4]f32{
+            .{ 0.16, 0.42, 0.23, 1.0 },
+            .{ 0.19, 0.49, 0.27, 1.0 },
+            .{ 0.13, 0.34, 0.18, 1.0 },
+        };
+    var run_label_buffer: [32]u8 = undefined;
+    const run_label = try std.fmt.bufPrint(&run_label_buffer, "▶ {s}", .{state.text(.run)});
+    if (drawPlaybackButton(run_label, 124.0, playing_palette)) {
+        state.playback_state = .playing;
     }
     engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.button(state.text(.camera))) {
-        try history.spawnCameraEntity(state, layer_context);
+    const paused_palette = if (state.playback_state == .paused)
+        [3][4]f32{
+            .{ 0.69, 0.42, 0.17, 1.0 },
+            .{ 0.79, 0.49, 0.21, 1.0 },
+            .{ 0.56, 0.33, 0.13, 1.0 },
+        }
+    else
+        [3][4]f32{
+            .{ 0.48, 0.31, 0.14, 1.0 },
+            .{ 0.57, 0.37, 0.17, 1.0 },
+            .{ 0.39, 0.24, 0.10, 1.0 },
+        };
+    var pause_label_buffer: [32]u8 = undefined;
+    const pause_label = try std.fmt.bufPrint(&pause_label_buffer, "⏸ {s}", .{state.text(.pause)});
+    if (drawPlaybackButton(pause_label, 124.0, paused_palette)) {
+        state.playback_state = .paused;
     }
     engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.button(state.text(.cube))) {
-        try history.spawnPrimitive(state, layer_context, .cube);
-    }
-    engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.button(state.text(.sphere))) {
-        try history.spawnPrimitive(state, layer_context, .sphere);
-    }
-    engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.button(state.text(.light))) {
-        try history.spawnPointLight(state, layer_context);
+    var step_label_buffer: [32]u8 = undefined;
+    const step_label = try std.fmt.bufPrint(&step_label_buffer, "⏭ {s}", .{state.text(.step)});
+    if (drawPlaybackButton(step_label, 124.0, .{
+        .{ 0.29, 0.32, 0.37, 1.0 },
+        .{ 0.34, 0.38, 0.44, 1.0 },
+        .{ 0.23, 0.26, 0.30, 1.0 },
+    })) {
+        state.playback_state = .paused;
     }
 
-    if (content_browser.selectedAsset(state)) |entry| {
-        engine.ui.ImGui.labelText(state.text(.asset), entry.name);
-        if ((entry.kind == .model or entry.kind == .scene) and engine.ui.ImGui.button(state.text(.instantiate_slash_load))) {
-            try content_browser.instantiateSelectedAsset(state, layer_context);
-        }
-    } else {
-        engine.ui.ImGui.text(state.text(.select_a_model_or_scene_in_content_browser_to_instantiate_slash_load_it));
+    const right_gap = @max(engine.ui.ImGui.contentRegionAvail()[0] - right_group_width, 16.0);
+    engine.ui.ImGui.sameLine();
+    engine.ui.ImGui.dummy(right_gap, 1.0);
+    engine.ui.ImGui.sameLine();
+
+    if (engine.ui.ImGui.buttonEx(state.text(.render_settings), 132.0, 0.0)) {
+        state.settings_open = !state.settings_open;
+    }
+    engine.ui.ImGui.sameLine();
+    engine.ui.ImGui.setNextItemWidth(164.0);
+    _ = engine.ui.ImGui.inputText(state.text(.scene_filter), state.scene_filter_buffer[0..]);
+    engine.ui.ImGui.sameLine();
+    if (engine.ui.ImGui.buttonEx(
+        switch (state.transform_space) {
+            .local => state.text(.local_space),
+            .world => state.text(.world_space),
+        },
+        88.0,
+        0.0,
+    )) {
+        state.transform_space = switch (state.transform_space) {
+            .local => .world,
+            .world => .local,
+        };
     }
 }
 
@@ -162,6 +220,52 @@ pub fn drawStatsWindow(state: *EditorState, layer_context: *engine.core.LayerCon
     engine.ui.ImGui.labelText(state.text(.cameras), cameras_text);
 }
 
+pub fn drawStatusBarWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    var title_buffer: [96]u8 = undefined;
+    const title = try state.windowLabel(&title_buffer, .status_bar, "status_bar_panel");
+    _ = engine.ui.ImGui.beginWindowFlags(
+        title,
+        engine.ui.ImGui.WindowFlags.no_title_bar | engine.ui.ImGui.WindowFlags.no_collapse | engine.ui.ImGui.WindowFlags.no_scrollbar,
+    );
+    defer engine.ui.ImGui.endWindow();
+
+    const fps = if (layer_context.delta_seconds > 0.0001) 1.0 / layer_context.delta_seconds else 0.0;
+    const selection_count = layer_context.renderer.selectedEntities().len;
+    const save_status = if (history.hasUnsavedChanges(state)) state.text(.unsaved) else state.text(.saved);
+    const mode_text = switch (state.manipulation_mode) {
+        .none => state.text(.select),
+        .translate => state.text(.move),
+        .rotate => state.text(.rotate),
+        .scale => state.text(.scale),
+    };
+    const camera_text = if (state.editor_camera_active) state.text(.editor_camera_mode) else state.text(.scene_camera_mode);
+    const space_text = switch (state.transform_space) {
+        .local => state.text(.local_space),
+        .world => state.text(.world_space),
+    };
+
+    var status_buffer: [352]u8 = undefined;
+    const status_text = try std.fmt.bufPrint(
+        &status_buffer,
+        "{s}: {d}    {s}: {d:.1}    {s}: {s}    {s}: {s}    {s}: {s}    {s}: {s}",
+        .{
+            state.text(.selection_count),
+            selection_count,
+            state.text(.fps),
+            fps,
+            state.text(.save_status),
+            save_status,
+            state.text(.camera),
+            camera_text,
+            state.text(.mode),
+            mode_text,
+            state.text(.coordinate_space),
+            space_text,
+        },
+    );
+    engine.ui.ImGui.text(status_text);
+}
+
 pub fn handleViewportSelection(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const input = layer_context.input;
     if (!state.viewport_has_image or !state.viewport_hovered or !input.wasMousePressed(.left) or input.modifiers.alt) {
@@ -204,9 +308,10 @@ pub fn handleViewportSelection(state: *EditorState, layer_context: *engine.core.
 
 pub fn drawEditorUi(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     try menu_bar.drawMenuBar(state, layer_context);
-    try drawViewportToolbar(state, layer_context);
+    try drawGlobalToolbarWindow(state, layer_context);
     try drawViewportWindow(state, layer_context);
     try drawStatsWindow(state, layer_context);
+    try drawStatusBarWindow(state, layer_context);
     try scene_hierarchy.drawSceneWindow(state, layer_context);
     try inspector.drawInspectorWindow(state, layer_context);
     try content_browser.drawContentBrowser(state, layer_context);

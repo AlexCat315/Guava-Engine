@@ -25,6 +25,17 @@ pub const ManipulationMode = enum {
     scale,
 };
 
+pub const PlaybackState = enum {
+    stopped,
+    playing,
+    paused,
+};
+
+pub const TransformSpace = enum {
+    local,
+    world,
+};
+
 pub const AxisConstraint = engine.math.axis.Axis3;
 
 pub const EditorState = struct {
@@ -47,9 +58,12 @@ pub const EditorState = struct {
     manipulation_axis: AxisConstraint = .free,
     manipulation_entity: ?engine.scene.EntityId = null,
     manipulation_origin: engine.scene.Transform = .{},
+    playback_state: PlaybackState = .stopped,
+    transform_space: TransformSpace = .local,
     snapshot_history: std.ArrayList([]u8) = .empty,
     snapshot_cursor: usize = 0,
     max_snapshots: usize = 64,
+    saved_snapshot_cursor: ?usize = null,
     asset_entries: std.ArrayList(AssetEntry) = .empty,
     selected_asset_index: ?usize = null,
     scene_filter_buffer: [128]u8 = [_]u8{0} ** 128,

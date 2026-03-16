@@ -11,8 +11,16 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
     _ = engine.ui.ImGui.beginWindow(title);
     defer engine.ui.ImGui.endWindow();
 
+    var selection_count_buffer: [32]u8 = undefined;
+    const selection_count_text = try std.fmt.bufPrint(&selection_count_buffer, "{d}", .{layer_context.renderer.selectedEntities().len});
+    engine.ui.ImGui.labelText(state.text(.selection_count), selection_count_text);
+
+    const controls_width = engine.ui.ImGui.contentRegionAvail()[0];
+    const root_button_width = 112.0;
+    engine.ui.ImGui.setNextItemWidth(@max(controls_width - root_button_width - 8.0, 96.0));
     _ = engine.ui.ImGui.inputText(state.text(.scene_filter), state.scene_filter_buffer[0..]);
-    if (engine.ui.ImGui.button(state.text(.scene_root)) and layer_context.renderer.selectedEntities().len > 0) {
+    engine.ui.ImGui.sameLine();
+    if (engine.ui.ImGui.buttonEx(state.text(.scene_root), root_button_width, 0.0) and layer_context.renderer.selectedEntities().len > 0) {
         try unparentSelection(state, layer_context);
     }
     var dropped_root: u64 = 0;
@@ -40,7 +48,9 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
 
     const is_selected = utils.isEntitySelected(state, layer_context, entity_id);
     const leaf = !utils.hasVisibleChildren(state, layer_context.world, entity_id);
-    const is_open = engine.ui.ImGui.treeNodeEntity(entity_id, entity.name, is_selected, leaf, false);
+    var label_buffer: [320]u8 = undefined;
+    const label = try std.fmt.bufPrint(&label_buffer, "{s} {s}", .{ entityTypeBadge(entity), entity.name });
+    const is_open = engine.ui.ImGui.treeNodeEntity(entity_id, label, is_selected, leaf, false);
 
     if (engine.ui.ImGui.isItemClicked()) {
         if (layer_context.input.modifiers.shift or layer_context.input.modifiers.ctrl or layer_context.input.modifiers.super) {
@@ -69,6 +79,19 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
         }
         engine.ui.ImGui.treePop();
     }
+}
+
+fn entityTypeBadge(entity: *const engine.scene.Entity) []const u8 {
+    if (entity.camera != null) {
+        return "[CAM]";
+    }
+    if (entity.light != null) {
+        return "[LGT]";
+    }
+    if (entity.mesh != null) {
+        return "[GEO]";
+    }
+    return "[OBJ]";
 }
 
 pub fn parentSelection(state: *EditorState, layer_context: *engine.core.LayerContext) !void {

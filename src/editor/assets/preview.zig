@@ -1,9 +1,11 @@
 const std = @import("std");
 const engine = @import("guava");
 const EditorState = @import("../core/state.zig").EditorState;
+const state_mod = @import("../core/state.zig");
 const utils = @import("../common/utils.zig");
 const history = @import("../actions/history.zig");
-const content_browser = @import("browser.zig");
+
+const AssetEntry = state_mod.AssetEntry;
 
 pub fn drawAssetPreviewWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     var title_buffer: [96]u8 = undefined;
@@ -11,7 +13,7 @@ pub fn drawAssetPreviewWindow(state: *EditorState, layer_context: *engine.core.L
     _ = engine.ui.ImGui.beginWindow(title);
     defer engine.ui.ImGui.endWindow();
 
-    if (content_browser.selectedAsset(state)) |entry| {
+    if (selectedAsset(state)) |entry| {
         engine.ui.ImGui.labelText(state.text(.name), entry.name);
         engine.ui.ImGui.labelText(state.text(.type), utils.assetKindLabel(state, entry.kind));
         engine.ui.ImGui.labelText(state.text(.path), entry.path);
@@ -72,6 +74,15 @@ pub fn drawAssetPreviewWindow(state: *EditorState, layer_context: *engine.core.L
     }
 
     engine.ui.ImGui.text(state.text(.select_a_texture_asset_or_an_entity_with_a_textured_material_to_preview_it));
+}
+
+fn selectedAsset(state: *EditorState) ?*const AssetEntry {
+    const index = state.selected_asset_index orelse return null;
+    if (index >= state.asset_entries.items.len) {
+        state.selected_asset_index = null;
+        return null;
+    }
+    return &state.asset_entries.items[index];
 }
 
 pub fn ensurePreviewTextureForAssetPath(state: *EditorState, layer_context: *engine.core.LayerContext, path: []const u8) !void {

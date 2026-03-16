@@ -17,6 +17,13 @@ pub const WindowControlButton = enum(c_uint) {
     close = c.GUAVA_IMGUI_WINDOW_CONTROL_CLOSE,
 };
 
+pub const StyleColor = enum(c_uint) {
+    text = c.GUAVA_IMGUI_STYLE_COLOR_TEXT,
+    button = c.GUAVA_IMGUI_STYLE_COLOR_BUTTON,
+    button_hovered = c.GUAVA_IMGUI_STYLE_COLOR_BUTTON_HOVERED,
+    button_active = c.GUAVA_IMGUI_STYLE_COLOR_BUTTON_ACTIVE,
+};
+
 pub const WindowFlags = struct {
     pub const none: u32 = c.GUAVA_IMGUI_WINDOW_NONE;
     pub const no_title_bar: u32 = c.GUAVA_IMGUI_WINDOW_NO_TITLE_BAR;
@@ -114,6 +121,10 @@ pub fn button(label: []const u8) bool {
     return c.guava_imgui_button(label.ptr, label.len);
 }
 
+pub fn buttonEx(label: []const u8, width: f32, height: f32) bool {
+    return c.guava_imgui_button_ex(label.ptr, label.len, width, height);
+}
+
 pub fn invisibleButton(id: []const u8, width: f32, height: f32) bool {
     return c.guava_imgui_invisible_button(id.ptr, id.len, width, height);
 }
@@ -132,6 +143,54 @@ pub fn sameLine() void {
 
 pub fn separator() void {
     c.guava_imgui_separator();
+}
+
+pub fn setNextItemWidth(width: f32) void {
+    c.guava_imgui_set_next_item_width(width);
+}
+
+pub fn pushStyleColor(slot: StyleColor, color: [4]f32) void {
+    c.guava_imgui_push_style_color(@intFromEnum(slot), color[0], color[1], color[2], color[3]);
+}
+
+pub fn popStyleColor(count: i32) void {
+    c.guava_imgui_pop_style_color(count);
+}
+
+pub fn beginChild(id: []const u8, width: f32, height: f32, border: bool) bool {
+    return c.guava_imgui_begin_child(id.ptr, id.len, width, height, border);
+}
+
+pub fn endChild() void {
+    c.guava_imgui_end_child();
+}
+
+pub fn beginTable(id: []const u8, columns: i32) bool {
+    return c.guava_imgui_begin_table(id.ptr, id.len, columns);
+}
+
+pub fn endTable() void {
+    c.guava_imgui_end_table();
+}
+
+pub fn tableSetupColumn(label: []const u8, stretch: bool, init_width_or_weight: f32) void {
+    c.guava_imgui_table_setup_column(label.ptr, label.len, stretch, init_width_or_weight);
+}
+
+pub fn tableHeadersRow() void {
+    c.guava_imgui_table_headers_row();
+}
+
+pub fn tableNextRow() void {
+    c.guava_imgui_table_next_row();
+}
+
+pub fn tableNextColumn() void {
+    c.guava_imgui_table_next_column();
+}
+
+pub fn selectable(label: []const u8, selected: bool, span_all_columns: bool, width: f32, height: f32) bool {
+    return c.guava_imgui_selectable(label.ptr, label.len, selected, span_all_columns, width, height);
 }
 
 pub fn text(value: []const u8) void {
