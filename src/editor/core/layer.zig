@@ -27,6 +27,7 @@ pub const EditorLayer = struct {
         const self: *EditorLayer = @ptrCast(@alignCast(context));
         self.state.allocator = layer_context.world.allocator;
         self.state.preview_device = layer_context.rhi();
+        self.state.asset_registry = engine.assets.AssetRegistry.init(layer_context.world.allocator);
         try engine.ui.ImGui.init(layer_context.window, layer_context.rhi());
         self.state.dock_layout_initialized = false;
         self.state.scene_camera = layer_context.world.primaryCameraEntity();
@@ -34,7 +35,7 @@ pub const EditorLayer = struct {
         manipulation.syncGizmoState(&self.state, layer_context);
         utils.syncInspectorNameBuffer(&self.state, layer_context);
         try history.resetSnapshotHistory(&self.state, layer_context);
-        try content_browser.refreshAssetBrowser(&self.state);
+        try content_browser.refreshAssetBrowser(&self.state, layer_context);
     }
 
     fn onDetach(context: *anyopaque) void {
@@ -42,6 +43,10 @@ pub const EditorLayer = struct {
         asset_preview.clearPreviewTexture(&self.state);
         self.state.preview_device = null;
         content_browser.clearAssetBrowser(&self.state);
+        if (self.state.asset_registry) |*registry| {
+            registry.deinit();
+            self.state.asset_registry = null;
+        }
         history.clearSnapshotHistory(&self.state);
         engine.ui.ImGui.shutdown();
     }

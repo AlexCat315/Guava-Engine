@@ -198,7 +198,7 @@ pub fn saveScenePath(state: *EditorState, layer_context: *engine.core.LayerConte
         return;
     };
     state.saved_snapshot_cursor = if (state.snapshot_history.items.len > 0) state.snapshot_cursor else null;
-    content_browser.refreshAssetBrowser(state) catch |err| {
+    content_browser.refreshAssetBrowser(state, layer_context) catch |err| {
         std.log.warn("failed to refresh asset browser after save: {}", .{err});
     };
 }
@@ -230,7 +230,18 @@ pub fn loadScenePath(state: *EditorState, layer_context: *engine.core.LayerConte
 }
 
 pub fn importModelPath(state: *EditorState, layer_context: *engine.core.LayerContext, path: []const u8) !void {
-    const report = try layer_context.world.importGltfStaticModelInstance(path, spawnTransform(state, layer_context));
+    const report = if (state.asset_registry) |*registry|
+        if (registry.recordByPath(path)) |record|
+            try engine.assets.importGltfStaticModelAssetInstance(
+                layer_context.world,
+                registry,
+                record.id,
+                spawnTransform(state, layer_context),
+            )
+        else
+            try layer_context.world.importGltfStaticModelInstance(path, spawnTransform(state, layer_context))
+    else
+        try layer_context.world.importGltfStaticModelInstance(path, spawnTransform(state, layer_context));
     if (report.root_entity) |root_entity| {
         try layer_context.renderer.replaceSelection(root_entity);
         utils.syncInspectorNameBuffer(state, layer_context);

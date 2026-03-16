@@ -13,6 +13,7 @@ pub const AssetKind = enum {
 };
 
 pub const AssetEntry = struct {
+    id: []u8,
     path: []u8,
     name: []u8,
     kind: AssetKind,
@@ -64,6 +65,7 @@ pub const EditorState = struct {
     snapshot_cursor: usize = 0,
     max_snapshots: usize = 64,
     saved_snapshot_cursor: ?usize = null,
+    asset_registry: ?engine.assets.AssetRegistry = null,
     asset_entries: std.ArrayList(AssetEntry) = .empty,
     selected_asset_index: ?usize = null,
     scene_filter_buffer: [128]u8 = [_]u8{0} ** 128,

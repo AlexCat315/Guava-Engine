@@ -2,6 +2,7 @@ const std = @import("std");
 const handles = @import("handles.zig");
 const material_mod = @import("material_resource.zig");
 const mesh_mod = @import("mesh_resource.zig");
+const registry_mod = @import("registry.zig");
 const texture_mod = @import("texture_resource.zig");
 const components = @import("../scene/components.zig");
 
@@ -10,6 +11,13 @@ pub const ResourceLibrary = struct {
     meshes: std.ArrayList(mesh_mod.MeshResource) = .empty,
     materials: std.ArrayList(material_mod.MaterialResource) = .empty,
     textures: std.ArrayList(texture_mod.TextureResource) = .empty,
+    asset_registry: registry_mod.AssetRegistry,
+    mesh_records: std.AutoHashMap(handles.MeshHandle, usize),
+    material_records: std.AutoHashMap(handles.MaterialHandle, usize),
+    texture_records: std.AutoHashMap(handles.TextureHandle, usize),
+    mesh_handles_by_asset_id: std.StringHashMap(handles.MeshHandle),
+    material_handles_by_asset_id: std.StringHashMap(handles.MaterialHandle),
+    texture_handles_by_asset_id: std.StringHashMap(handles.TextureHandle),
     cube_mesh: ?handles.MeshHandle = null,
     sphere_mesh: ?handles.MeshHandle = null,
     plane_mesh: ?handles.MeshHandle = null,
@@ -17,10 +25,30 @@ pub const ResourceLibrary = struct {
     white_texture: ?handles.TextureHandle = null,
 
     pub fn init(allocator: std.mem.Allocator) ResourceLibrary {
-        return .{ .allocator = allocator };
+        return .{
+            .allocator = allocator,
+            .asset_registry = registry_mod.AssetRegistry.init(allocator),
+            .mesh_records = std.AutoHashMap(handles.MeshHandle, usize).init(allocator),
+            .material_records = std.AutoHashMap(handles.MaterialHandle, usize).init(allocator),
+            .texture_records = std.AutoHashMap(handles.TextureHandle, usize).init(allocator),
+            .mesh_handles_by_asset_id = std.StringHashMap(handles.MeshHandle).init(allocator),
+            .material_handles_by_asset_id = std.StringHashMap(handles.MaterialHandle).init(allocator),
+            .texture_handles_by_asset_id = std.StringHashMap(handles.TextureHandle).init(allocator),
+        };
     }
 
     pub fn deinit(self: *ResourceLibrary) void {
+        freeHandleKeys(self.allocator, handles.TextureHandle, &self.texture_handles_by_asset_id);
+        self.texture_handles_by_asset_id.deinit();
+        freeHandleKeys(self.allocator, handles.MaterialHandle, &self.material_handles_by_asset_id);
+        self.material_handles_by_asset_id.deinit();
+        freeHandleKeys(self.allocator, handles.MeshHandle, &self.mesh_handles_by_asset_id);
+        self.mesh_handles_by_asset_id.deinit();
+        self.texture_records.deinit();
+        self.material_records.deinit();
+        self.mesh_records.deinit();
+        self.asset_registry.deinit();
+
         for (self.meshes.items) |*mesh_resource| {
             mesh_resource.deinit(self.allocator);
         }
@@ -76,6 +104,64 @@ pub const ResourceLibrary = struct {
         return &self.textures.items[handles.indexOf(handle)];
     }
 
+    pub fn assetRecordById(self: *const ResourceLibrary, asset_id: []const u8) ?*const registry_mod.AssetRecord {
+        return self.asset_registry.recordById(asset_id);
+    }
+
+    pub fn meshAssetId(self: *const ResourceLibrary, handle: handles.MeshHandle) ?[]const u8 {
+        const record_index = self.mesh_records.get(handle) orelse return null;
+        return self.asset_registry.records.items[record_index].id;
+    }
+
+    pub fn materialAssetId(self: *const ResourceLibrary, handle: handles.MaterialHandle) ?[]const u8 {
+        const record_index = self.material_records.get(handle) orelse return null;
+        return self.asset_registry.records.items[record_index].id;
+    }
+
+    pub fn textureAssetId(self: *const ResourceLibrary, handle: handles.TextureHandle) ?[]const u8 {
+        const record_index = self.texture_records.get(handle) orelse return null;
+        return self.asset_registry.records.items[record_index].id;
+    }
+
+    pub fn meshHandleByAssetId(self: *const ResourceLibrary, asset_id: []const u8) ?handles.MeshHandle {
+        return self.mesh_handles_by_asset_id.get(asset_id);
+    }
+
+    pub fn materialHandleByAssetId(self: *const ResourceLibrary, asset_id: []const u8) ?handles.MaterialHandle {
+        return self.material_handles_by_asset_id.get(asset_id);
+    }
+
+    pub fn textureHandleByAssetId(self: *const ResourceLibrary, asset_id: []const u8) ?handles.TextureHandle {
+        return self.texture_handles_by_asset_id.get(asset_id);
+    }
+
+    pub fn bindMeshAssetRecord(self: *ResourceLibrary, handle: handles.MeshHandle, record: registry_mod.AssetRecord) ![]const u8 {
+        const previous_id = if (self.meshAssetId(handle)) |value| try self.allocator.dupe(u8, value) else null;
+        defer if (previous_id) |value| self.allocator.free(value);
+        const resolved = try self.asset_registry.upsertOwned(record);
+        try self.mesh_records.put(handle, indexForRecord(self, resolved.id).?);
+        try bindHandleByAssetId(self.allocator, handles.MeshHandle, &self.mesh_handles_by_asset_id, handle, resolved.id, previous_id);
+        return resolved.id;
+    }
+
+    pub fn bindMaterialAssetRecord(self: *ResourceLibrary, handle: handles.MaterialHandle, record: registry_mod.AssetRecord) ![]const u8 {
+        const previous_id = if (self.materialAssetId(handle)) |value| try self.allocator.dupe(u8, value) else null;
+        defer if (previous_id) |value| self.allocator.free(value);
+        const resolved = try self.asset_registry.upsertOwned(record);
+        try self.material_records.put(handle, indexForRecord(self, resolved.id).?);
+        try bindHandleByAssetId(self.allocator, handles.MaterialHandle, &self.material_handles_by_asset_id, handle, resolved.id, previous_id);
+        return resolved.id;
+    }
+
+    pub fn bindTextureAssetRecord(self: *ResourceLibrary, handle: handles.TextureHandle, record: registry_mod.AssetRecord) ![]const u8 {
+        const previous_id = if (self.textureAssetId(handle)) |value| try self.allocator.dupe(u8, value) else null;
+        defer if (previous_id) |value| self.allocator.free(value);
+        const resolved = try self.asset_registry.upsertOwned(record);
+        try self.texture_records.put(handle, indexForRecord(self, resolved.id).?);
+        try bindHandleByAssetId(self.allocator, handles.TextureHandle, &self.texture_handles_by_asset_id, handle, resolved.id, previous_id);
+        return resolved.id;
+    }
+
     pub fn ensurePrimitiveMesh(self: *ResourceLibrary, primitive: components.Primitive) !handles.MeshHandle {
         return switch (primitive) {
             .cube => blk: {
@@ -85,11 +171,23 @@ pub const ResourceLibrary = struct {
                     .vertices = cube_vertices[0..],
                     .indices = cube_indices[0..],
                 });
+                _ = try self.bindMeshAssetRecord(self.cube_mesh.?, try builtinRecord(
+                    self,
+                    .mesh,
+                    "builtin://mesh/cube",
+                    "BuiltinCube",
+                ));
                 break :blk self.cube_mesh.?;
             },
             .sphere => blk: {
                 if (self.sphere_mesh) |handle| break :blk handle;
                 self.sphere_mesh = try self.createUvSphereMesh();
+                _ = try self.bindMeshAssetRecord(self.sphere_mesh.?, try builtinRecord(
+                    self,
+                    .mesh,
+                    "builtin://mesh/sphere",
+                    "BuiltinSphere",
+                ));
                 break :blk self.sphere_mesh.?;
             },
             .plane => blk: {
@@ -99,6 +197,12 @@ pub const ResourceLibrary = struct {
                     .vertices = plane_vertices[0..],
                     .indices = plane_indices[0..],
                 });
+                _ = try self.bindMeshAssetRecord(self.plane_mesh.?, try builtinRecord(
+                    self,
+                    .mesh,
+                    "builtin://mesh/plane",
+                    "BuiltinPlane",
+                ));
                 break :blk self.plane_mesh.?;
             },
             else => error.UnsupportedPrimitive,
@@ -120,6 +224,12 @@ pub const ResourceLibrary = struct {
             .height = 1,
             .pixels = pixels[0..],
         });
+        _ = try self.bindTextureAssetRecord(self.white_texture.?, try builtinRecord(
+            self,
+            .texture,
+            "builtin://texture/white",
+            "White1x1",
+        ));
         return self.white_texture.?;
     }
 
@@ -133,6 +243,12 @@ pub const ResourceLibrary = struct {
             .base_color_factor = .{ 1.0, 1.0, 1.0, 1.0 },
             .base_color_texture = try self.ensureWhiteTexture(),
         });
+        _ = try self.bindMaterialAssetRecord(self.default_material.?, try builtinRecord(
+            self,
+            .material,
+            "builtin://material/default",
+            "DefaultMaterial",
+        ));
         return self.default_material.?;
     }
 
@@ -210,6 +326,99 @@ pub const ResourceLibrary = struct {
         });
     }
 };
+
+fn builtinRecord(
+    library: *ResourceLibrary,
+    asset_type: registry_mod.AssetType,
+    source_path: []const u8,
+    display_name: []const u8,
+) !registry_mod.AssetRecord {
+    const asset_id = try registry_mod.makeDerivedAssetIdAlloc(library.allocator, "guava.builtin.v1", &.{ source_path });
+    errdefer library.allocator.free(asset_id);
+
+    const source_hash = try registry_mod.hashStringAlloc(library.allocator, source_path);
+    errdefer library.allocator.free(source_hash);
+
+    const import_settings_hash = try registry_mod.defaultImportSettingsHashAlloc(library.allocator, asset_type);
+    errdefer library.allocator.free(import_settings_hash);
+
+    return .{
+        .id = asset_id,
+        .type = asset_type,
+        .source_path = try library.allocator.dupe(u8, source_path),
+        .source_hash = source_hash,
+        .import_settings_hash = import_settings_hash,
+        .import_version = asset_type.importVersion(),
+        .dependency_ids = try library.allocator.alloc([]u8, 0),
+        .outputs = try library.allocator.alloc(registry_mod.AssetOutput, 0),
+        .metadata = .{
+            .display_name = try library.allocator.dupe(u8, display_name),
+            .importer = try library.allocator.dupe(u8, asset_type.importerName()),
+            .source_extension = try library.allocator.dupe(u8, std.fs.path.extension(source_path)),
+        },
+    };
+}
+
+fn indexForRecord(library: *const ResourceLibrary, asset_id: []const u8) ?usize {
+    for (library.asset_registry.records.items, 0..) |record, index| {
+        if (std.mem.eql(u8, record.id, asset_id)) {
+            return index;
+        }
+    }
+    return null;
+}
+
+fn bindHandleByAssetId(
+    allocator: std.mem.Allocator,
+    comptime Handle: type,
+    map: *std.StringHashMap(Handle),
+    handle: Handle,
+    asset_id: []const u8,
+    previous_id: ?[]const u8,
+) !void {
+    if (previous_id) |old_id| {
+        if (!std.mem.eql(u8, old_id, asset_id)) {
+            if (map.fetchRemove(old_id)) |removed| {
+                allocator.free(removed.key);
+            }
+        }
+    }
+
+    const owned_id = try allocator.dupe(u8, asset_id);
+    errdefer allocator.free(owned_id);
+    if (try map.fetchPut(owned_id, handle)) |replaced| {
+        allocator.free(replaced.key);
+    }
+}
+
+fn freeHandleKeys(
+    allocator: std.mem.Allocator,
+    comptime Handle: type,
+    map: *const std.StringHashMap(Handle),
+) void {
+    var iterator = map.keyIterator();
+    while (iterator.next()) |key| {
+        allocator.free(key.*);
+    }
+}
+
+test "resource library resolves handles by stable asset id" {
+    var library = ResourceLibrary.init(std.testing.allocator);
+    defer library.deinit();
+
+    const mesh_handle = try library.createMesh(.{
+        .name = "TestMesh",
+        .vertices = cube_vertices[0..],
+        .indices = cube_indices[0..],
+    });
+    const asset_id = try library.bindMeshAssetRecord(
+        mesh_handle,
+        try builtinRecord(&library, .mesh, "builtin://mesh/test", "TestMesh"),
+    );
+
+    try std.testing.expectEqual(mesh_handle, library.meshHandleByAssetId(asset_id).?);
+    try std.testing.expectEqualStrings(asset_id, library.meshAssetId(mesh_handle).?);
+}
 
 const cube_vertices = [_]mesh_mod.Vertex{
     makeVertex(.{ -0.5, -0.5, 0.5 }, .{ 1.0, 0.5, 0.4, 1.0 }, .{ 0.0, 1.0 }, .{ 0.0, 0.0, 1.0 }, .{ 1.0, 0.0, 0.0, 1.0 }),

@@ -36,7 +36,7 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
             try content_browser.instantiateSelectedAsset(state, layer_context);
         }
         if (engine.ui.ImGui.menuItem(state.text(.refresh), null, false, true)) {
-            try content_browser.refreshAssetBrowser(state);
+            try content_browser.refreshAssetBrowser(state, layer_context);
         }
     }
 

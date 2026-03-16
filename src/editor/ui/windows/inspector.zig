@@ -744,7 +744,7 @@ pub fn assignSelectedTextureToMaterial(
         return;
     }
 
-    const texture_handle = try importTextureAsset(state, layer_context, entry.path);
+    const texture_handle = try importTextureAsset(state, layer_context, entry.id, entry.path);
     if (try ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
         material_resource.base_color_texture = texture_handle;
         if (entity.material) |*material_component| {
@@ -753,7 +753,23 @@ pub fn assignSelectedTextureToMaterial(
     }
 }
 
-pub fn importTextureAsset(state: *EditorState, layer_context: *engine.core.LayerContext, path: []const u8) !engine.assets.TextureHandle {
+pub fn importTextureAsset(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    asset_id: []const u8,
+    path: []const u8,
+) !engine.assets.TextureHandle {
+    if (state.asset_registry) |*registry| {
+        if (registry.recordById(asset_id) != null) {
+            return engine.assets.loadTextureAsset(
+                state.allocator orelse layer_context.world.allocator,
+                layer_context.world.assets(),
+                registry,
+                asset_id,
+            );
+        }
+    }
+
     for (layer_context.world.assets().textures.items, 0..) |texture, index| {
         if (std.mem.eql(u8, texture.name, path)) {
             return @enumFromInt(index + 1);

@@ -113,6 +113,7 @@ pub const Application = struct {
         var last_frame = renderer_mod.FrameReport{
             .backend = self.renderer.backendApi(),
             .passes_executed = self.renderer.passCount(),
+            .graph_resources = self.renderer.graph.resourceCount(),
             .scene = .{},
             .runtime = self.renderer.runtimeInfo(),
         };

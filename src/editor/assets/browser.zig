@@ -16,7 +16,7 @@ pub fn drawContentBrowser(state: *EditorState, layer_context: *engine.core.Layer
     defer engine.ui.ImGui.endWindow();
 
     if (engine.ui.ImGui.buttonEx(state.text(.refresh), 104.0, 0.0)) {
-        try refreshAssetBrowser(state);
+        try refreshAssetBrowser(state, layer_context);
     }
     engine.ui.ImGui.sameLine();
     if (engine.ui.ImGui.buttonEx(state.text(.quick_save), 116.0, 0.0)) {
@@ -137,32 +137,33 @@ pub fn selectedAssetCanUseAsTexture(state: *EditorState) bool {
     return entry.kind == .texture;
 }
 
-pub fn refreshAssetBrowser(state: *EditorState) !void {
+pub fn refreshAssetBrowser(state: *EditorState, _: *engine.core.LayerContext) !void {
     const allocator = state.allocator orelse return;
     clearAssetBrowser(state);
 
-    var assets_dir = std.fs.cwd().openDir("assets", .{ .iterate = true }) catch |err| {
-        std.log.warn("failed to open assets directory: {}", .{err});
+    const registry = if (state.asset_registry) |*value|
+        value
+    else
         return;
+
+    try registry.refreshProject("assets");
+    registry.writeSnapshotToPath("assets/derived/asset_registry.json") catch |err| {
+        std.log.warn("failed to write asset registry snapshot: {}", .{err});
     };
-    defer assets_dir.close();
 
-    var walker = try assets_dir.walk(allocator);
-    defer walker.deinit();
-
-    while (try walker.next()) |entry| {
-        if (entry.kind != .file) {
-            continue;
-        }
-        const kind = utils.assetKindForPath(entry.path) orelse continue;
-        const relative_path = try std.fs.path.join(allocator, &.{ "assets", entry.path });
-        errdefer allocator.free(relative_path);
-        const name = try allocator.dupe(u8, std.fs.path.basename(entry.path));
-        errdefer allocator.free(name);
+    for (registry.records.items) |record| {
+        const kind = switch (record.type) {
+            .scene => AssetKind.scene,
+            .model => AssetKind.model,
+            .texture => AssetKind.texture,
+            .shader => AssetKind.shader,
+            else => continue,
+        };
 
         try state.asset_entries.append(allocator, .{
-            .path = relative_path,
-            .name = name,
+            .id = try allocator.dupe(u8, record.id),
+            .path = try allocator.dupe(u8, record.source_path),
+            .name = try allocator.dupe(u8, record.metadata.display_name),
             .kind = kind,
         });
     }
@@ -178,6 +179,7 @@ pub fn refreshAssetBrowser(state: *EditorState) !void {
 pub fn clearAssetBrowser(state: *EditorState) void {
     const allocator = state.allocator orelse return;
     for (state.asset_entries.items) |entry| {
+        allocator.free(entry.id);
         allocator.free(entry.path);
         allocator.free(entry.name);
     }
