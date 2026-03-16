@@ -296,6 +296,17 @@ pub const World = struct {
         });
     }
 
+    pub fn createCameraEntity(self: *World, transform: components.Transform) !EntityId {
+        const entity_name = try self.nextAvailableName("Camera");
+        defer self.allocator.free(entity_name);
+
+        return self.createEntity(.{
+            .name = entity_name,
+            .transform = transform,
+            .camera = .{},
+        });
+    }
+
     pub fn createLightEntity(
         self: *World,
         kind: components.LightKind,

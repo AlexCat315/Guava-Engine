@@ -338,6 +338,15 @@ pub const EditorLayer = struct {
         try self.captureSnapshot(layer_context);
     }
 
+    fn spawnCameraEntity(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
+        const entity_id = try layer_context.world.createCameraEntity(self.activeCameraTransform(layer_context));
+        try layer_context.renderer.replaceSelection(entity_id);
+        self.scene_camera = entity_id;
+        self.syncInspectorNameBuffer(layer_context);
+        self.focusSelection(layer_context);
+        try self.captureSnapshot(layer_context);
+    }
+
     fn spawnPrimitive(self: *EditorLayer, layer_context: *engine.core.LayerContext, primitive: engine.scene.Primitive) !void {
         const spawn_transform = self.spawnTransform(layer_context);
         const entity_id = try layer_context.world.createPrimitiveEntity(primitive, spawn_transform);
@@ -796,6 +805,9 @@ pub const EditorLayer = struct {
             if (engine.ui.ImGui.menuItem("Empty", null, false, true)) {
                 try self.spawnEmptyEntity(layer_context);
             }
+            if (engine.ui.ImGui.menuItem("Camera", null, false, true)) {
+                try self.spawnCameraEntity(layer_context);
+            }
             if (engine.ui.ImGui.menuItem("Cube", "1", false, true)) {
                 try self.spawnPrimitive(layer_context, .cube);
             }
@@ -1008,12 +1020,82 @@ pub const EditorLayer = struct {
         );
         engine.ui.ImGui.labelText("World Scale", world_scale);
 
-        if (entity.camera != null and engine.ui.ImGui.collapsingHeader("Camera", true)) {
-            if (entity.camera.?.is_primary) {
-                engine.ui.ImGui.text("Primary scene camera");
-            } else if (engine.ui.ImGui.button("Make Primary Camera")) {
-                _ = layer_context.world.setPrimaryCamera(selected);
-                try self.captureSnapshot(layer_context);
+        if (entity.camera) |*camera| {
+            if (engine.ui.ImGui.collapsingHeader("Camera", true)) {
+                if (camera.is_primary) {
+                    engine.ui.ImGui.text("Primary scene camera");
+                } else if (engine.ui.ImGui.button("Make Primary Camera")) {
+                    _ = layer_context.world.setPrimaryCamera(selected);
+                    try self.captureSnapshot(layer_context);
+                }
+
+                if (engine.ui.ImGui.button("Use Perspective")) {
+                    camera.projection = .{ .perspective = .{} };
+                    try self.captureSnapshot(layer_context);
+                }
+                engine.ui.ImGui.sameLine();
+                if (engine.ui.ImGui.button("Use Orthographic")) {
+                    camera.projection = .{ .orthographic = .{} };
+                    try self.captureSnapshot(layer_context);
+                }
+
+                switch (camera.projection) {
+                    .perspective => |projection| {
+                        var edited = projection;
+                        var fov_degrees = radiansToDegrees(edited.fov_y_radians);
+                        if (engine.ui.ImGui.dragFloat("FOV Y", &fov_degrees, 0.25, 10.0, 170.0)) {
+                            edited.fov_y_radians = degreesToRadians(fov_degrees);
+                            camera.projection = .{ .perspective = edited };
+                            if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
+                                try self.captureSnapshot(layer_context);
+                            }
+                        }
+
+                        if (engine.ui.ImGui.dragFloat("Near Clip", &edited.near_clip, 0.01, 0.001, 100.0)) {
+                            edited.near_clip = std.math.clamp(edited.near_clip, 0.001, 100.0);
+                            edited.far_clip = @max(edited.far_clip, edited.near_clip + 0.01);
+                            camera.projection = .{ .perspective = edited };
+                            if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
+                                try self.captureSnapshot(layer_context);
+                            }
+                        }
+
+                        if (engine.ui.ImGui.dragFloat("Far Clip", &edited.far_clip, 1.0, 0.1, 5000.0)) {
+                            edited.near_clip = @min(edited.near_clip, edited.far_clip - 0.01);
+                            edited.far_clip = std.math.clamp(edited.far_clip, edited.near_clip + 0.01, 5000.0);
+                            camera.projection = .{ .perspective = edited };
+                            if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
+                                try self.captureSnapshot(layer_context);
+                            }
+                        }
+                    },
+                    .orthographic => |projection| {
+                        var edited = projection;
+                        if (engine.ui.ImGui.dragFloat("Size", &edited.size, 0.1, 0.01, 500.0)) {
+                            edited.size = std.math.clamp(edited.size, 0.01, 500.0);
+                            camera.projection = .{ .orthographic = edited };
+                            if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
+                                try self.captureSnapshot(layer_context);
+                            }
+                        }
+
+                        if (engine.ui.ImGui.dragFloat("Near Clip", &edited.near_clip, 0.05, -1000.0, 1000.0)) {
+                            edited.near_clip = std.math.clamp(edited.near_clip, -1000.0, edited.far_clip - 0.01);
+                            camera.projection = .{ .orthographic = edited };
+                            if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
+                                try self.captureSnapshot(layer_context);
+                            }
+                        }
+
+                        if (engine.ui.ImGui.dragFloat("Far Clip", &edited.far_clip, 0.05, -1000.0, 1000.0)) {
+                            edited.far_clip = std.math.clamp(edited.far_clip, edited.near_clip + 0.01, 1000.0);
+                            camera.projection = .{ .orthographic = edited };
+                            if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
+                                try self.captureSnapshot(layer_context);
+                            }
+                        }
+                    },
+                }
             }
         }
 
@@ -1134,6 +1216,14 @@ fn clampDistance(distance: f32) f32 {
 
 fn clampScale(scale: f32) f32 {
     return std.math.clamp(scale, 0.05, 100.0);
+}
+
+fn degreesToRadians(degrees: f32) f32 {
+    return degrees * std.math.pi / 180.0;
+}
+
+fn radiansToDegrees(radians: f32) f32 {
+    return radians * 180.0 / std.math.pi;
 }
 
 fn axisVector(axis: AxisConstraint) [3]f32 {
