@@ -549,6 +549,33 @@ extern "C" void guava_imgui_end_menu(void) {
     ImGui::EndMenu();
 }
 
+extern "C" bool guava_imgui_begin_popup_context_item(const char* id, size_t id_len) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+    const std::string owned_id = id != nullptr ? make_string(id, id_len) : std::string{};
+    return ImGui::BeginPopupContextItem(owned_id.empty() ? nullptr : owned_id.c_str());
+}
+
+extern "C" bool guava_imgui_begin_popup_context_window(const char* id, size_t id_len, bool open_over_items) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+    const std::string owned_id = id != nullptr ? make_string(id, id_len) : std::string{};
+    ImGuiPopupFlags flags = ImGuiPopupFlags_MouseButtonRight;
+    if (!open_over_items) {
+        flags |= ImGuiPopupFlags_NoOpenOverItems;
+    }
+    return ImGui::BeginPopupContextWindow(owned_id.empty() ? nullptr : owned_id.c_str(), flags);
+}
+
+extern "C" void guava_imgui_end_popup(void) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::EndPopup();
+}
+
 extern "C" bool guava_imgui_menu_item(const char* label, size_t label_len, const char* shortcut, size_t shortcut_len, bool selected, bool enabled) {
     if (!g_imgui_initialized) {
         return false;

@@ -112,31 +112,66 @@ pub fn pruneMissingSelection(state: *EditorState, layer_context: *engine.core.La
 }
 
 pub fn deleteSelection(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
-    const selected = layer_context.renderer.selectedEntity() orelse return;
-    if (state.editor_camera != null and selected == state.editor_camera.?) {
+    try deleteEntities(state, layer_context, layer_context.renderer.selectedEntities());
+}
+
+pub fn deleteEntities(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity_ids: []const engine.scene.EntityId,
+) !void {
+    const allocator = state.allocator orelse return;
+    var roots = std.ArrayList(engine.scene.EntityId).empty;
+    defer roots.deinit(allocator);
+    try collectSelectionRoots(allocator, layer_context.world, entity_ids, state.editor_camera, &roots);
+    if (roots.items.len == 0) {
         return;
     }
+
     manipulation.endManipulation(state);
-    if (layer_context.world.destroyEntity(selected)) {
+    var changed = false;
+    for (roots.items) |entity_id| {
+        changed = layer_context.world.destroyEntity(entity_id) or changed;
+    }
+    if (changed) {
         try layer_context.renderer.replaceSelection(null);
         try captureSnapshot(state, layer_context);
     }
 }
 
 pub fn duplicateSelection(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
-    const selected = layer_context.renderer.selectedEntity() orelse return;
-    if (state.editor_camera != null and selected == state.editor_camera.?) {
+    try duplicateEntities(state, layer_context, layer_context.renderer.selectedEntities());
+}
+
+pub fn duplicateEntities(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity_ids: []const engine.scene.EntityId,
+) !void {
+    const allocator = state.allocator orelse return;
+    var roots = std.ArrayList(engine.scene.EntityId).empty;
+    defer roots.deinit(allocator);
+    try collectSelectionRoots(allocator, layer_context.world, entity_ids, state.editor_camera, &roots);
+    if (roots.items.len == 0) {
         return;
     }
 
-    const duplicate_id = try layer_context.world.duplicateEntity(selected);
-    if (layer_context.world.worldTransform(duplicate_id)) |duplicate_transform| {
-        var moved = duplicate_transform;
-        moved.translation[0] += 0.65;
-        moved.translation[1] += 0.15;
-        _ = layer_context.world.setEntityWorldTransform(duplicate_id, moved);
+    var duplicates = std.ArrayList(engine.scene.EntityId).empty;
+    defer duplicates.deinit(allocator);
+
+    for (roots.items, 0..) |entity_id, index| {
+        const duplicate_id = try layer_context.world.duplicateEntity(entity_id);
+        if (layer_context.world.worldTransform(duplicate_id)) |duplicate_transform| {
+            var moved = duplicate_transform;
+            const stack_offset = @as(f32, @floatFromInt(index)) * 0.2;
+            moved.translation[0] += 0.65 + stack_offset;
+            moved.translation[1] += 0.15;
+            _ = layer_context.world.setEntityWorldTransform(duplicate_id, moved);
+        }
+        try duplicates.append(allocator, duplicate_id);
     }
-    try layer_context.renderer.replaceSelection(duplicate_id);
+
+    try layer_context.renderer.replaceSelectionMany(duplicates.items);
     utils.syncInspectorNameBuffer(state, layer_context);
     camera.focusSelection(state, layer_context);
     try captureSnapshot(state, layer_context);
@@ -262,4 +297,39 @@ pub fn hasUnsavedChanges(state: *const EditorState) bool {
     }
     const saved_snapshot_cursor = state.saved_snapshot_cursor orelse return true;
     return saved_snapshot_cursor != state.snapshot_cursor;
+}
+
+fn collectSelectionRoots(
+    allocator: std.mem.Allocator,
+    world: *const engine.scene.World,
+    entity_ids: []const engine.scene.EntityId,
+    editor_camera: ?engine.scene.EntityId,
+    out_roots: *std.ArrayList(engine.scene.EntityId),
+) !void {
+    for (entity_ids) |entity_id| {
+        if (editor_camera != null and entity_id == editor_camera.?) {
+            continue;
+        }
+        if (!world.hasEntity(entity_id) or selectionContainsAncestor(world, entity_ids, entity_id)) {
+            continue;
+        }
+        try out_roots.append(allocator, entity_id);
+    }
+}
+
+fn selectionContainsAncestor(
+    world: *const engine.scene.World,
+    entity_ids: []const engine.scene.EntityId,
+    entity_id: engine.scene.EntityId,
+) bool {
+    var current = world.parentEntity(entity_id);
+    while (current) |current_id| {
+        for (entity_ids) |candidate| {
+            if (candidate == current_id) {
+                return true;
+            }
+        }
+        current = world.parentEntity(current_id);
+    }
+    return false;
 }

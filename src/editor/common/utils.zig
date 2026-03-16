@@ -375,3 +375,78 @@ pub fn pruneLockedSelection(state: *EditorState, layer_context: *engine.core.Lay
         }
     }
 }
+
+pub fn isEntityFrozen(state: *const EditorState, entity_id: engine.scene.EntityId) bool {
+    for (state.frozen_entities.items) |frozen_entity_id| {
+        if (frozen_entity_id == entity_id) {
+            return true;
+        }
+    }
+    return false;
+}
+
+pub fn setEntityFrozen(state: *EditorState, entity_id: engine.scene.EntityId, frozen: bool) !bool {
+    const allocator = state.allocator orelse return false;
+    for (state.frozen_entities.items, 0..) |frozen_entity_id, index| {
+        if (frozen_entity_id != entity_id) {
+            continue;
+        }
+        if (!frozen) {
+            _ = state.frozen_entities.orderedRemove(index);
+            return true;
+        }
+        return false;
+    }
+    if (!frozen) {
+        return false;
+    }
+    try state.frozen_entities.append(allocator, entity_id);
+    return true;
+}
+
+pub fn toggleEntityFrozen(state: *EditorState, entity_id: engine.scene.EntityId) !bool {
+    const was_frozen = isEntityFrozen(state, entity_id);
+    _ = try setEntityFrozen(state, entity_id, !was_frozen);
+    return !was_frozen;
+}
+
+pub fn pruneFrozenEntities(state: *EditorState, world: *const engine.scene.World) void {
+    var index: usize = 0;
+    while (index < state.frozen_entities.items.len) {
+        if (world.hasEntity(state.frozen_entities.items[index])) {
+            index += 1;
+            continue;
+        }
+        _ = state.frozen_entities.orderedRemove(index);
+    }
+}
+
+pub fn pruneFrozenSelection(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const current_selection = layer_context.renderer.selectedEntities();
+    if (current_selection.len == 0) {
+        return;
+    }
+
+    const allocator = state.allocator orelse return;
+    var unfrozen = std.ArrayList(engine.scene.EntityId).empty;
+    defer unfrozen.deinit(allocator);
+
+    for (current_selection) |entity_id| {
+        if (!isEntityFrozen(state, entity_id)) {
+            try unfrozen.append(allocator, entity_id);
+        }
+    }
+
+    if (unfrozen.items.len == current_selection.len) {
+        return;
+    }
+
+    try layer_context.renderer.replaceSelectionMany(unfrozen.items);
+    if (state.manipulation_entity) |entity_id| {
+        if (isEntityFrozen(state, entity_id)) {
+            state.manipulation_mode = .none;
+            state.manipulation_axis = .free;
+            state.manipulation_entity = null;
+        }
+    }
+}

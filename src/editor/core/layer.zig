@@ -47,6 +47,8 @@ pub const EditorLayer = struct {
         self.state.preview_device = null;
         self.state.icon_device = null;
         if (self.state.allocator) |allocator| {
+            self.state.frozen_entities.deinit(allocator);
+            self.state.frozen_entities = .empty;
             self.state.selection_locked_entities.deinit(allocator);
             self.state.selection_locked_entities = .empty;
         }
@@ -62,7 +64,9 @@ pub const EditorLayer = struct {
     fn onUpdate(context: *anyopaque, layer_context: *engine.core.LayerContext) !void {
         const self: *EditorLayer = @ptrCast(@alignCast(context));
         try history.pruneMissingSelection(&self.state, layer_context);
+        utils.pruneFrozenEntities(&self.state, layer_context.world);
         utils.pruneSelectionLockEntities(&self.state, layer_context.world);
+        try utils.pruneFrozenSelection(&self.state, layer_context);
         try utils.pruneLockedSelection(&self.state, layer_context);
         utils.syncInspectorNameBuffer(&self.state, layer_context);
         engine.ui.ImGui.beginDockspace();

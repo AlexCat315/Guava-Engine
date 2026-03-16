@@ -127,6 +127,25 @@ pub fn endMenu() void {
     c.guava_imgui_end_menu();
 }
 
+pub fn beginPopupContextItem(id: ?[]const u8) bool {
+    return c.guava_imgui_begin_popup_context_item(
+        if (id) |value| value.ptr else null,
+        if (id) |value| value.len else 0,
+    );
+}
+
+pub fn beginPopupContextWindow(id: ?[]const u8, open_over_items: bool) bool {
+    return c.guava_imgui_begin_popup_context_window(
+        if (id) |value| value.ptr else null,
+        if (id) |value| value.len else 0,
+        open_over_items,
+    );
+}
+
+pub fn endPopup() void {
+    c.guava_imgui_end_popup();
+}
+
 pub fn menuItem(label: []const u8, shortcut: ?[]const u8, selected: bool, enabled: bool) bool {
     const shortcut_ptr = if (shortcut) |value| value.ptr else null;
     const shortcut_len = if (shortcut) |value| value.len else 0;

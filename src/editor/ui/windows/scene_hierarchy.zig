@@ -32,7 +32,10 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
     if (engine.ui.ImGui.buttonEx(state.text(.rename), rename_button_width, 0.0)) {
         if (layer_context.renderer.selectedEntities().len == 1) {
             const selected = layer_context.renderer.selectedEntity() orelse unreachable;
-            if (!utils.isEntitySelectionLocked(state, selected) and utils.shouldShowEntityInSceneTree(state, layer_context.world, selected)) {
+            if (!utils.isEntitySelectionLocked(state, selected) and
+                !utils.isEntityFrozen(state, selected) and
+                utils.shouldShowEntityInSceneTree(state, layer_context.world, selected))
+            {
                 beginHierarchyRename(state, layer_context.world, selected);
             }
         }
@@ -45,12 +48,12 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
     engine.ui.ImGui.separator();
     engine.ui.ImGui.dummy(0.0, 4.0);
 
-    if (!engine.ui.ImGui.beginTable("scene_tree_table", 3)) {
+    if (!engine.ui.ImGui.beginTable("scene_tree_table", 4)) {
         return;
     }
-    defer engine.ui.ImGui.endTable();
     engine.ui.ImGui.tableSetupColumn(state.text(.name), true, 1.0);
     engine.ui.ImGui.tableSetupColumn("##scene_visible", false, 32.0);
+    engine.ui.ImGui.tableSetupColumn("##scene_frozen", false, 28.0);
     engine.ui.ImGui.tableSetupColumn("##scene_locked", false, 32.0);
 
     for (layer_context.world.entities.items) |entity| {
@@ -60,17 +63,26 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
         if (!utils.shouldShowEntityInSceneTree(state, layer_context.world, entity.id)) {
             continue;
         }
-        try drawHierarchyNode(state, layer_context, entity.id);
+        drawHierarchyNode(state, layer_context, entity.id) catch |err| switch (err) {
+            error.HierarchyMutated => return,
+            else => return err,
+        };
+    }
+    engine.ui.ImGui.endTable();
+
+    if (try drawSceneWindowContextMenu(state, layer_context)) {
+        return;
     }
 }
 
-pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerContext, entity_id: engine.scene.EntityId) !void {
+pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerContext, entity_id: engine.scene.EntityId) anyerror!void {
     const entity = layer_context.world.getEntity(entity_id) orelse return;
     if (entity.editor_only) {
         return;
     }
 
     const is_selected = utils.isEntitySelected(state, layer_context, entity_id);
+    const is_frozen = utils.isEntityFrozen(state, entity_id);
     const is_locked = utils.isEntitySelectionLocked(state, entity_id);
     const filter_active = utils.zeroTerminatedSlice(state.scene_filter_buffer[0..]).len != 0 or
         utils.zeroTerminatedSlice(state.hierarchy_filter_buffer[0..]).len != 0 or
@@ -84,7 +96,12 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
         layer_context,
         ui_icons.entityIconPath(entity),
         14.0,
-        if (entity.visible) .{ 188, 203, 228, 255 } else .{ 108, 116, 128, 255 },
+        if (is_frozen)
+            .{ 122, 132, 145, 255 }
+        else if (entity.visible)
+            .{ 188, 203, 228, 255 }
+        else
+            .{ 108, 116, 128, 255 },
     );
 
     engine.ui.ImGui.tableNextRow();
@@ -105,7 +122,7 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
         state.hierarchy_rename_focus_pending = false;
     }
 
-    if (tree_result.clicked and !is_locked) {
+    if (tree_result.clicked and !is_locked and !is_frozen) {
         if (state.hierarchy_rename_entity != null and state.hierarchy_rename_entity.? != entity_id) {
             cancelHierarchyRename(state);
         }
@@ -117,11 +134,25 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
         utils.syncInspectorNameBuffer(state, layer_context);
     }
 
-    if (!is_locked and !rename_active) {
+    if (!is_locked and !is_frozen and !rename_active) {
         _ = engine.ui.ImGui.dragDropSourceU64(state_mod.entity_drag_payload, entity_id, entity.name);
         var dropped_child: u64 = 0;
         if (engine.ui.ImGui.acceptDragDropPayloadU64(state_mod.entity_drag_payload, &dropped_child)) {
             try reparentEntity(state, layer_context, dropped_child, entity_id);
+            return error.HierarchyMutated;
+        }
+    }
+
+    var popup_id_buffer: [48]u8 = undefined;
+    const popup_id = try std.fmt.bufPrint(&popup_id_buffer, "{d}_context", .{entity_id});
+    if (engine.ui.ImGui.beginPopupContextItem(popup_id)) {
+        defer engine.ui.ImGui.endPopup();
+        if (!is_selected and !is_frozen) {
+            try layer_context.renderer.replaceSelection(entity_id);
+            utils.syncInspectorNameBuffer(state, layer_context);
+        }
+        if (try drawHierarchyNodeContextMenu(state, layer_context, entity_id, is_selected)) {
+            return error.HierarchyMutated;
         }
     }
 
@@ -142,6 +173,13 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
     }
 
     engine.ui.ImGui.tableNextColumn();
+    var freeze_button_id_buffer: [40]u8 = undefined;
+    const freeze_button_id = try std.fmt.bufPrint(&freeze_button_id_buffer, "{d}_freeze", .{entity_id});
+    if (try drawFreezeToggleButton(freeze_button_id, is_frozen)) {
+        try setFrozenForEntities(state, layer_context, &.{entity_id}, !is_frozen);
+    }
+
+    engine.ui.ImGui.tableNextColumn();
     var lock_button_id_buffer: [40]u8 = undefined;
     const lock_button_id = try std.fmt.bufPrint(&lock_button_id_buffer, "{d}_lock", .{entity_id});
     if (try ui_icons.drawIconButton(
@@ -153,11 +191,7 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
         if (is_locked) .{ 170, 203, 188, 255 } else .{ 148, 154, 166, 255 },
         if (is_locked) ui_icons.palettes.status_on else ui_icons.palettes.status_off,
     )) {
-        const locked_now = try utils.toggleEntitySelectionLocked(state, entity_id);
-        if (locked_now and is_selected) {
-            try utils.pruneLockedSelection(state, layer_context);
-            utils.syncInspectorNameBuffer(state, layer_context);
-        }
+        try setLockedForEntities(state, layer_context, &.{entity_id}, !is_locked);
     }
 
     if (rename_active and tree_result.rename_finished) {
@@ -175,7 +209,10 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
             if (!utils.shouldShowEntityInSceneTree(state, layer_context.world, child.id)) {
                 continue;
             }
-            try drawHierarchyNode(state, layer_context, child.id);
+            drawHierarchyNode(state, layer_context, child.id) catch |err| switch (err) {
+                error.HierarchyMutated => return error.HierarchyMutated,
+                else => return err,
+            };
         }
         engine.ui.ImGui.treePop();
     }
@@ -210,21 +247,7 @@ pub fn parentSelection(state: *EditorState, layer_context: *engine.core.LayerCon
 
 pub fn unparentSelection(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const selection = layer_context.renderer.selectedEntities();
-    if (selection.len == 0) {
-        return;
-    }
-
-    var changed = false;
-    for (selection) |entity_id| {
-        if (state.editor_camera != null and entity_id == state.editor_camera.?) {
-            continue;
-        }
-        changed = (try layer_context.world.setParent(entity_id, null)) or changed;
-    }
-
-    if (changed) {
-        try history.captureSnapshot(state, layer_context);
-    }
+    try unparentEntities(state, layer_context, selection);
 }
 
 pub fn reparentEntity(
@@ -234,6 +257,11 @@ pub fn reparentEntity(
     parent_id: ?engine.scene.EntityId,
 ) !void {
     if (state.editor_camera != null and child_id == state.editor_camera.?) {
+        return;
+    }
+    if (utils.isEntityFrozen(state, child_id) or
+        (parent_id != null and utils.isEntityFrozen(state, parent_id.?)))
+    {
         return;
     }
 
@@ -270,6 +298,7 @@ fn syncHierarchyRenameState(state: *EditorState, layer_context: *engine.core.Lay
     if (layer_context.renderer.selectedEntities().len != 1 or
         layer_context.renderer.selectedEntity() != rename_entity or
         !layer_context.world.hasEntity(rename_entity) or
+        utils.isEntityFrozen(state, rename_entity) or
         utils.isEntitySelectionLocked(state, rename_entity) or
         !utils.shouldShowEntityInSceneTree(state, layer_context.world, rename_entity))
     {
@@ -291,4 +320,186 @@ fn commitHierarchyRename(
         try history.captureSnapshot(state, layer_context);
         try history.refreshWindowTitle(state, layer_context);
     }
+}
+
+fn drawSceneWindowContextMenu(state: *EditorState, layer_context: *engine.core.LayerContext) !bool {
+    if (!engine.ui.ImGui.beginPopupContextWindow("scene_tree_window_context", false)) {
+        return false;
+    }
+    defer engine.ui.ImGui.endPopup();
+
+    if (engine.ui.ImGui.beginMenu(state.text(.create))) {
+        defer engine.ui.ImGui.endMenu();
+        if (engine.ui.ImGui.menuItem(state.text(.empty), null, false, true)) {
+            try history.spawnEmptyEntity(state, layer_context);
+            return true;
+        }
+        if (engine.ui.ImGui.menuItem(state.text(.camera), null, false, true)) {
+            try history.spawnCameraEntity(state, layer_context);
+            return true;
+        }
+        if (engine.ui.ImGui.menuItem(state.text(.cube), null, false, true)) {
+            try history.spawnPrimitive(state, layer_context, .cube);
+            return true;
+        }
+        if (engine.ui.ImGui.menuItem(state.text(.sphere), null, false, true)) {
+            try history.spawnPrimitive(state, layer_context, .sphere);
+            return true;
+        }
+        if (engine.ui.ImGui.menuItem(state.text(.plane), null, false, true)) {
+            try history.spawnPrimitive(state, layer_context, .plane);
+            return true;
+        }
+        if (engine.ui.ImGui.menuItem(state.text(.point_light), null, false, true)) {
+            try history.spawnPointLight(state, layer_context);
+            return true;
+        }
+    }
+    return false;
+}
+
+fn drawHierarchyNodeContextMenu(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity_id: engine.scene.EntityId,
+    is_selected: bool,
+) !bool {
+    const single_target = [_]engine.scene.EntityId{entity_id};
+    const targets = if (is_selected and layer_context.renderer.selectedEntities().len > 1)
+        layer_context.renderer.selectedEntities()
+    else
+        single_target[0..];
+    const can_rename = targets.len == 1 and !utils.isEntityFrozen(state, entity_id) and !utils.isEntitySelectionLocked(state, entity_id);
+    const all_frozen = allEntitiesFrozen(state, targets);
+    const all_locked = allEntitiesLocked(state, targets);
+    const has_parent = anyEntityHasParent(layer_context.world, targets);
+
+    if (engine.ui.ImGui.menuItem(state.text(.rename), null, false, can_rename)) {
+        beginHierarchyRename(state, layer_context.world, entity_id);
+        return false;
+    }
+    if (engine.ui.ImGui.menuItem(state.text(.duplicate), null, false, true)) {
+        try history.duplicateEntities(state, layer_context, targets);
+        return true;
+    } else if (engine.ui.ImGui.menuItem(state.text(.delete), null, false, true)) {
+        try history.deleteEntities(state, layer_context, targets);
+        return true;
+    }
+    engine.ui.ImGui.separator();
+    if (engine.ui.ImGui.menuItem(state.text(if (all_frozen) .unfreeze else .freeze), null, false, true)) {
+        try setFrozenForEntities(state, layer_context, targets, !all_frozen);
+        return false;
+    }
+    if (engine.ui.ImGui.menuItem(state.text(if (all_locked) .unlock else .lock), null, false, true)) {
+        try setLockedForEntities(state, layer_context, targets, !all_locked);
+        return false;
+    }
+    if (engine.ui.ImGui.menuItem(state.text(.unparent), null, false, has_parent)) {
+        try unparentEntities(state, layer_context, targets);
+        return true;
+    }
+    return false;
+}
+
+fn unparentEntities(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity_ids: []const engine.scene.EntityId,
+) !void {
+    if (entity_ids.len == 0) {
+        return;
+    }
+
+    var changed = false;
+    for (entity_ids) |entity_id| {
+        if (state.editor_camera != null and entity_id == state.editor_camera.?) {
+            continue;
+        }
+        changed = (try layer_context.world.setParent(entity_id, null)) or changed;
+    }
+
+    if (changed) {
+        try history.captureSnapshot(state, layer_context);
+    }
+}
+
+fn setFrozenForEntities(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity_ids: []const engine.scene.EntityId,
+    frozen: bool,
+) !void {
+    var changed = false;
+    for (entity_ids) |entity_id| {
+        changed = (try utils.setEntityFrozen(state, entity_id, frozen)) or changed;
+    }
+    if (!changed) {
+        return;
+    }
+    if (frozen) {
+        try utils.pruneFrozenSelection(state, layer_context);
+        utils.syncInspectorNameBuffer(state, layer_context);
+    }
+}
+
+fn setLockedForEntities(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity_ids: []const engine.scene.EntityId,
+    locked: bool,
+) !void {
+    var changed = false;
+    for (entity_ids) |entity_id| {
+        changed = (try utils.setEntitySelectionLocked(state, entity_id, locked)) or changed;
+    }
+    if (!changed) {
+        return;
+    }
+    if (locked) {
+        try utils.pruneLockedSelection(state, layer_context);
+        utils.syncInspectorNameBuffer(state, layer_context);
+    }
+}
+
+fn allEntitiesFrozen(state: *const EditorState, entity_ids: []const engine.scene.EntityId) bool {
+    for (entity_ids) |entity_id| {
+        if (!utils.isEntityFrozen(state, entity_id)) {
+            return false;
+        }
+    }
+    return entity_ids.len > 0;
+}
+
+fn allEntitiesLocked(state: *const EditorState, entity_ids: []const engine.scene.EntityId) bool {
+    for (entity_ids) |entity_id| {
+        if (!utils.isEntitySelectionLocked(state, entity_id)) {
+            return false;
+        }
+    }
+    return entity_ids.len > 0;
+}
+
+fn anyEntityHasParent(world: *const engine.scene.World, entity_ids: []const engine.scene.EntityId) bool {
+    for (entity_ids) |entity_id| {
+        if (world.parentEntity(entity_id) != null) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn drawFreezeToggleButton(id: []const u8, active: bool) !bool {
+    engine.ui.ImGui.pushStyleColor(.text, if (active) .{ 0.74, 0.92, 0.98, 1.0 } else .{ 0.55, 0.58, 0.62, 1.0 });
+    engine.ui.ImGui.pushStyleColor(.button, if (active) .{ 0.19, 0.29, 0.34, 0.82 } else .{ 0.16, 0.17, 0.19, 0.54 });
+    engine.ui.ImGui.pushStyleColor(.button_hovered, if (active) .{ 0.24, 0.36, 0.42, 0.92 } else .{ 0.21, 0.23, 0.27, 0.74 });
+    engine.ui.ImGui.pushStyleColor(.button_active, if (active) .{ 0.18, 0.26, 0.31, 0.96 } else .{ 0.18, 0.20, 0.24, 0.86 });
+    engine.ui.ImGui.pushStyleVarVec2(.frame_padding, .{ 2.0, 2.0 });
+    engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, 6.0);
+    defer {
+        engine.ui.ImGui.popStyleVar(2);
+        engine.ui.ImGui.popStyleColor(4);
+    }
+    var label_buffer: [64]u8 = undefined;
+    const label = try std.fmt.bufPrint(&label_buffer, "F##{s}", .{id});
+    return engine.ui.ImGui.buttonEx(label, 22.0, 22.0);
 }

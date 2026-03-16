@@ -86,6 +86,11 @@ pub const EditorState = struct {
     manipulation_axis: AxisConstraint = .free,
     manipulation_entity: ?engine.scene.EntityId = null,
     manipulation_origin: engine.scene.Transform = .{},
+    transform_component_clipboard: ?engine.scene.Transform = null,
+    mesh_component_clipboard: ?engine.scene.Mesh = null,
+    material_component_clipboard: ?engine.scene.Material = null,
+    camera_component_clipboard: ?engine.scene.Camera = null,
+    light_component_clipboard: ?engine.scene.Light = null,
     playback_state: PlaybackState = .stopped,
     transform_space: TransformSpace = .local,
     snapshot_history: std.ArrayList([]u8) = .empty,
@@ -134,6 +139,7 @@ pub const EditorState = struct {
     preview_texture_key: ?[]u8 = null,
     preview_texture_size: [2]u32 = .{ 0, 0 },
     icon_textures: std.ArrayList(IconTextureEntry) = .empty,
+    frozen_entities: std.ArrayList(engine.scene.EntityId) = .empty,
     selection_locked_entities: std.ArrayList(engine.scene.EntityId) = .empty,
 
     pub fn text(self: *const EditorState, id: i18n.MessageId) []const u8 {

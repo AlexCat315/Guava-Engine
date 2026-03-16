@@ -13,6 +13,13 @@ const EditRowResult = struct {
     committed: bool = false,
 };
 
+const ActionRowResult = enum {
+    none,
+    first,
+    second,
+    third,
+};
+
 const TransformResetTarget = enum {
     translation,
     rotation,
@@ -107,6 +114,10 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
             .world => state.text(.world_space),
         });
         engine.ui.ImGui.dummy(0.0, 4.0);
+        if (try drawTransformComponentToolbar(state, layer_context, selected, entity, world_transform)) {
+            return;
+        }
+        engine.ui.ImGui.dummy(0.0, 6.0);
         try drawTransformResetButtons(state, layer_context, selected, entity, world_transform);
         engine.ui.ImGui.dummy(0.0, 6.0);
 
@@ -174,66 +185,17 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
 
     if (engine.ui.ImGui.collapsingHeader(state.text(.components), true)) {
         engine.ui.ImGui.dummy(0.0, 4.0);
-        var has_missing_component = false;
-        if (entity.mesh == null) {
-            has_missing_component = true;
-            if (engine.ui.ImGui.beginMenu(state.text(.mesh))) {
-                defer engine.ui.ImGui.endMenu();
-                if (engine.ui.ImGui.menuItem(state.text(.add_cube_mesh), null, false, true)) {
-                    try setPrimitiveMeshComponent(state, layer_context, entity, .cube);
-                }
-                if (engine.ui.ImGui.menuItem(state.text(.add_sphere_mesh), null, false, true)) {
-                    try setPrimitiveMeshComponent(state, layer_context, entity, .sphere);
-                }
-                if (engine.ui.ImGui.menuItem(state.text(.add_plane_mesh), null, false, true)) {
-                    try setPrimitiveMeshComponent(state, layer_context, entity, .plane);
-                }
-            }
-        } else {
-            if (engine.ui.ImGui.beginMenu(state.text(.mesh))) {
-                defer engine.ui.ImGui.endMenu();
-                if (engine.ui.ImGui.menuItem(state.text(.set_cube_mesh), null, false, true)) {
-                    try setPrimitiveMeshComponent(state, layer_context, entity, .cube);
-                }
-                if (engine.ui.ImGui.menuItem(state.text(.set_sphere_mesh), null, false, true)) {
-                    try setPrimitiveMeshComponent(state, layer_context, entity, .sphere);
-                }
-                if (engine.ui.ImGui.menuItem(state.text(.set_plane_mesh), null, false, true)) {
-                    try setPrimitiveMeshComponent(state, layer_context, entity, .plane);
-                }
-            }
-        }
-
-        if (entity.camera == null) {
-            has_missing_component = true;
-            if (engine.ui.ImGui.buttonEx(state.text(.add_camera_component), engine.ui.ImGui.contentRegionAvail()[0], 0.0)) {
-                try addCameraComponent(state, layer_context, selected, entity);
-            }
-        }
-
-        if (entity.light == null) {
-            has_missing_component = true;
-            if (engine.ui.ImGui.beginMenu(state.text(.light))) {
-                defer engine.ui.ImGui.endMenu();
-                if (engine.ui.ImGui.menuItem(state.text(.add_directional_light), null, false, true)) {
-                    try setLightComponent(state, layer_context, entity, .directional);
-                }
-                if (engine.ui.ImGui.menuItem(state.text(.add_point_light), null, false, true)) {
-                    try setLightComponent(state, layer_context, entity, .point);
-                }
-                if (engine.ui.ImGui.menuItem(state.text(.add_spot_light), null, false, true)) {
-                    try setLightComponent(state, layer_context, entity, .spot);
-                }
-            }
-        }
-
-        if (!has_missing_component) {
-            engine.ui.ImGui.text(state.text(.none));
+        if (try drawAddComponentControls(state, layer_context, selected, entity)) {
+            return;
         }
     }
 
     if (entity.mesh) |mesh_component| {
         if (engine.ui.ImGui.collapsingHeader(state.text(.mesh), true)) {
+            if (try drawMeshComponentToolbar(state, layer_context, entity, mesh_component)) {
+                return;
+            }
+            engine.ui.ImGui.dummy(0.0, 4.0);
             engine.ui.ImGui.labelText(state.text(.primitive), utils.primitiveLabel(state, mesh_component.primitive));
             if (mesh_component.handle) |mesh_handle| {
                 if (layer_context.world.assets().mesh(mesh_handle)) |mesh_resource| {
@@ -254,16 +216,15 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
             } else {
                 engine.ui.ImGui.text(state.text(.mesh_component_has_no_bound_resource));
             }
-
-            if (engine.ui.ImGui.buttonEx(state.text(.remove_mesh_component), engine.ui.ImGui.contentRegionAvail()[0], 0.0)) {
-                try clearMeshComponent(state, layer_context, entity);
-                return;
-            }
         }
     }
 
     if (entity.material) |*material_component| {
         if (engine.ui.ImGui.collapsingHeader(state.text(.material), true)) {
+            if (try drawMaterialComponentToolbar(state, layer_context, entity, material_component.*)) {
+                return;
+            }
+            engine.ui.ImGui.dummy(0.0, 4.0);
             var effective_shading = material_component.shading;
             var effective_color = material_component.base_color_factor;
             var material_usage_count: usize = 0;
@@ -373,6 +334,10 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
 
     if (entity.camera) |*camera_component| {
         if (engine.ui.ImGui.collapsingHeader(state.text(.camera), true)) {
+            if (try drawCameraComponentToolbar(state, layer_context, selected, entity, camera_component.*)) {
+                return;
+            }
+            engine.ui.ImGui.dummy(0.0, 4.0);
             if (camera_component.is_primary) {
                 engine.ui.ImGui.text(state.text(.primary_scene_camera));
             } else if (engine.ui.ImGui.buttonEx(state.text(.make_primary_camera), engine.ui.ImGui.contentRegionAvail()[0], 0.0)) {
@@ -446,16 +411,15 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                     }
                 },
             }
-
-            if (engine.ui.ImGui.buttonEx(state.text(.remove_camera_component), engine.ui.ImGui.contentRegionAvail()[0], 0.0)) {
-                try removeCameraComponent(state, layer_context, selected, entity);
-                return;
-            }
         }
     }
 
     if (entity.light) |*light| {
         if (engine.ui.ImGui.collapsingHeader(state.text(.light), true)) {
+            if (try drawLightComponentToolbar(state, layer_context, entity, light.*)) {
+                return;
+            }
+            engine.ui.ImGui.dummy(0.0, 4.0);
             engine.ui.ImGui.labelText(state.text(.type), switch (light.kind) {
                 .directional => state.text(.directional),
                 .point => state.text(.point),
@@ -503,11 +467,6 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                     }
                 }
             }
-
-            if (engine.ui.ImGui.buttonEx(state.text(.remove_light_component), engine.ui.ImGui.contentRegionAvail()[0], 0.0)) {
-                try removeLightComponent(state, layer_context, entity);
-                return;
-            }
         }
     }
 
@@ -540,6 +499,204 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
             try manipulation.beginManipulation(state, layer_context, .scale);
         }
     }
+}
+
+fn drawTransformComponentToolbar(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    selected: engine.scene.EntityId,
+    entity: *engine.scene.Entity,
+    world_transform: engine.scene.Transform,
+) !bool {
+    switch (drawActionRow3(state.text(.copy), state.text(.paste), state.text(.reset_all))) {
+        .first => state.transform_component_clipboard = entity.transform,
+        .second => {
+            if (state.transform_component_clipboard) |clipboard| {
+                if (!transformsEqual(entity.transform, clipboard)) {
+                    entity.transform = clipboard;
+                    try history.captureSnapshot(state, layer_context);
+                    return true;
+                }
+            }
+        },
+        .third => {
+            try resetTransformTarget(state, layer_context, selected, entity, world_transform, .all);
+            return true;
+        },
+        .none => {},
+    }
+    return false;
+}
+
+fn drawAddComponentControls(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    selected: engine.scene.EntityId,
+    entity: *engine.scene.Entity,
+) !bool {
+    const has_missing_component = entity.mesh == null or entity.material == null or entity.camera == null or entity.light == null;
+    if (!has_missing_component) {
+        engine.ui.ImGui.text(state.text(.none));
+        return false;
+    }
+
+    if (!engine.ui.ImGui.beginMenu(state.text(.add_component))) {
+        return false;
+    }
+    defer engine.ui.ImGui.endMenu();
+
+    if (entity.mesh == null) {
+        if (engine.ui.ImGui.beginMenu(state.text(.mesh))) {
+            defer engine.ui.ImGui.endMenu();
+            if (engine.ui.ImGui.menuItem(state.text(.add_cube_mesh), null, false, true)) {
+                try setPrimitiveMeshComponent(state, layer_context, entity, .cube);
+                return true;
+            }
+            if (engine.ui.ImGui.menuItem(state.text(.add_sphere_mesh), null, false, true)) {
+                try setPrimitiveMeshComponent(state, layer_context, entity, .sphere);
+                return true;
+            }
+            if (engine.ui.ImGui.menuItem(state.text(.add_plane_mesh), null, false, true)) {
+                try setPrimitiveMeshComponent(state, layer_context, entity, .plane);
+                return true;
+            }
+        }
+    }
+
+    if (entity.material == null and engine.ui.ImGui.menuItem(state.text(.add_material_component), null, false, true)) {
+        try addMaterialComponent(state, layer_context, entity);
+        return true;
+    }
+
+    if (entity.camera == null and engine.ui.ImGui.menuItem(state.text(.add_camera_component), null, false, true)) {
+        try addCameraComponent(state, layer_context, selected, entity);
+        return true;
+    }
+
+    if (entity.light == null and engine.ui.ImGui.beginMenu(state.text(.light))) {
+        defer engine.ui.ImGui.endMenu();
+        if (engine.ui.ImGui.menuItem(state.text(.add_directional_light), null, false, true)) {
+            try setLightComponent(state, layer_context, entity, .directional);
+            return true;
+        }
+        if (engine.ui.ImGui.menuItem(state.text(.add_point_light), null, false, true)) {
+            try setLightComponent(state, layer_context, entity, .point);
+            return true;
+        }
+        if (engine.ui.ImGui.menuItem(state.text(.add_spot_light), null, false, true)) {
+            try setLightComponent(state, layer_context, entity, .spot);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+fn drawMeshComponentToolbar(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity: *engine.scene.Entity,
+    mesh_component: engine.scene.Mesh,
+) !bool {
+    switch (drawActionRow3(state.text(.copy), state.text(.paste), state.text(.remove_mesh_component))) {
+        .first => state.mesh_component_clipboard = mesh_component,
+        .second => {
+            if (state.mesh_component_clipboard) |clipboard| {
+                entity.mesh = clipboard;
+                if (entity.material == null) {
+                    const material_handle = try layer_context.world.assets().ensureDefaultMaterial();
+                    entity.material = .{ .handle = material_handle };
+                }
+                try history.captureSnapshot(state, layer_context);
+                return true;
+            }
+        },
+        .third => {
+            try clearMeshComponent(state, layer_context, entity);
+            return true;
+        },
+        .none => {},
+    }
+    return false;
+}
+
+fn drawMaterialComponentToolbar(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity: *engine.scene.Entity,
+    material_component: engine.scene.Material,
+) !bool {
+    switch (drawActionRow3(state.text(.copy), state.text(.paste), state.text(.remove_material_component))) {
+        .first => state.material_component_clipboard = material_component,
+        .second => {
+            if (state.material_component_clipboard) |clipboard| {
+                entity.material = clipboard;
+                try history.captureSnapshot(state, layer_context);
+                return true;
+            }
+        },
+        .third => {
+            try removeMaterialComponent(state, layer_context, entity);
+            return true;
+        },
+        .none => {},
+    }
+    return false;
+}
+
+fn drawCameraComponentToolbar(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    selected: engine.scene.EntityId,
+    entity: *engine.scene.Entity,
+    camera_component: engine.scene.Camera,
+) !bool {
+    switch (drawActionRow3(state.text(.copy), state.text(.paste), state.text(.remove_camera_component))) {
+        .first => state.camera_component_clipboard = camera_component,
+        .second => {
+            if (state.camera_component_clipboard) |clipboard| {
+                var pasted = clipboard;
+                pasted.is_primary = false;
+                entity.camera = pasted;
+                if (layer_context.world.primaryCameraEntity() == null) {
+                    _ = layer_context.world.setPrimaryCamera(selected);
+                }
+                state.scene_camera = layer_context.world.primaryCameraEntity();
+                try history.captureSnapshot(state, layer_context);
+                return true;
+            }
+        },
+        .third => {
+            try removeCameraComponent(state, layer_context, selected, entity);
+            return true;
+        },
+        .none => {},
+    }
+    return false;
+}
+
+fn drawLightComponentToolbar(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity: *engine.scene.Entity,
+    light_component: engine.scene.Light,
+) !bool {
+    switch (drawActionRow3(state.text(.copy), state.text(.paste), state.text(.remove_light_component))) {
+        .first => state.light_component_clipboard = light_component,
+        .second => {
+            if (state.light_component_clipboard) |clipboard| {
+                entity.light = clipboard;
+                try history.captureSnapshot(state, layer_context);
+                return true;
+            }
+        },
+        .third => {
+            try removeLightComponent(state, layer_context, entity);
+            return true;
+        },
+        .none => {},
+    }
+    return false;
 }
 
 fn drawTransformResetButtons(
@@ -638,6 +795,31 @@ fn drawLabeledFloat3Control(
 fn buttonRowWidth() f32 {
     const spacing = 8.0;
     return @max((engine.ui.ImGui.contentRegionAvail()[0] - spacing * 2.0) / 3.0, 72.0);
+}
+
+fn actionRowWidth(button_count: usize) f32 {
+    if (button_count == 0) {
+        return 0.0;
+    }
+    const spacing = 8.0;
+    const total_spacing = spacing * @as(f32, @floatFromInt(button_count - 1));
+    return @max((engine.ui.ImGui.contentRegionAvail()[0] - total_spacing) / @as(f32, @floatFromInt(button_count)), 72.0);
+}
+
+fn drawActionRow3(first: []const u8, second: []const u8, third: []const u8) ActionRowResult {
+    const width = actionRowWidth(3);
+    if (engine.ui.ImGui.buttonEx(first, width, 0.0)) {
+        return .first;
+    }
+    engine.ui.ImGui.sameLine();
+    if (engine.ui.ImGui.buttonEx(second, width, 0.0)) {
+        return .second;
+    }
+    engine.ui.ImGui.sameLine();
+    if (engine.ui.ImGui.buttonEx(third, width, 0.0)) {
+        return .third;
+    }
+    return .none;
 }
 
 fn drawTransformTableRow(
@@ -744,6 +926,33 @@ pub fn clearMeshComponent(
         return;
     }
     entity.mesh = null;
+    entity.material = null;
+    try history.captureSnapshot(state, layer_context);
+}
+
+pub fn addMaterialComponent(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity: *engine.scene.Entity,
+) !void {
+    if (entity.material != null) {
+        return;
+    }
+    const material_handle = try layer_context.world.assets().ensureDefaultMaterial();
+    entity.material = .{
+        .handle = material_handle,
+    };
+    try history.captureSnapshot(state, layer_context);
+}
+
+pub fn removeMaterialComponent(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity: *engine.scene.Entity,
+) !void {
+    if (entity.material == null) {
+        return;
+    }
     entity.material = null;
     try history.captureSnapshot(state, layer_context);
 }
