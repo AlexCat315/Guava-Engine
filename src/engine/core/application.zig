@@ -5,6 +5,7 @@ const input_mod = @import("input.zig");
 const platform_mod = @import("platform.zig");
 const renderer_mod = @import("../render/renderer.zig");
 const render_types = @import("../render/types.zig");
+const imgui_mod = @import("../ui/imgui.zig");
 const window_mod = @import("../platform/window.zig");
 const scene_mod = @import("../scene/scene.zig");
 
@@ -115,6 +116,7 @@ pub const Application = struct {
         while ((frame_count == 0 or frames_rendered < frame_count) and !self.window.should_close) : (frames_rendered += 1) {
             self.input.beginFrame();
             try self.pumpEvents();
+            imgui_mod.newFrame();
 
             const delta_seconds = @as(f32, @floatFromInt(self.config.frame_delay_ms)) / 1000.0;
             var layer_context = self.makeLayerContext(frames_rendered, delta_seconds);
@@ -157,6 +159,7 @@ pub const Application = struct {
 
     fn pumpEvents(self: *Application) !void {
         while (try self.window.pollEvent()) |event| {
+            imgui_mod.processEvent(&event.raw);
             switch (event.kind) {
                 .resized, .pixel_size_changed, .metal_view_resized, .exposed => {
                     try self.renderer.handleResize(event.width, event.height);
@@ -169,7 +172,7 @@ pub const Application = struct {
                     self.input.updateMousePosition(event.x, event.y);
                     if (event.button) |button| {
                         self.input.setMouseButton(button, true);
-                        if (button == .left and !event.modifiers.alt) {
+                        if (button == .left and !event.modifiers.alt and !imgui_mod.wantsCaptureMouse()) {
                             if (drawablePickPosition(&self.window, event.x, event.y)) |position| {
                                 try self.renderer.requestSelectionReadback(
                                     position.x,

@@ -6,7 +6,7 @@ const components = @import("components.zig");
 const world_mod = @import("world.zig");
 
 const SceneFile = struct {
-    version: u32 = 1,
+    version: u32 = 2,
     meshes: []MeshRecord,
     textures: []TextureRecord,
     materials: []MaterialRecord,
@@ -48,6 +48,7 @@ const MaterialComponentRecord = struct {
 
 const EntityRecord = struct {
     name: []const u8,
+    parent: ?u32 = null,
     transform: components.Transform = .{},
     camera: ?components.Camera = null,
     mesh: ?MeshComponentRecord = null,
@@ -83,7 +84,7 @@ pub fn deserializeWorldFromSlice(allocator: std.mem.Allocator, world: *world_mod
     defer parsed.deinit();
 
     const scene = parsed.value;
-    if (scene.version != 1) {
+    if (scene.version != 1 and scene.version != 2) {
         return error.UnsupportedSceneVersion;
     }
 
@@ -135,8 +136,11 @@ pub fn deserializeWorldFromSlice(allocator: std.mem.Allocator, world: *world_mod
         applyBuiltinMeshHandle(&world.resources, mesh.name, handle);
     }
 
-    for (scene.entities) |entity| {
-        _ = try world.createEntity(.{
+    const entity_ids = try allocator.alloc(world_mod.EntityId, scene.entities.len);
+    defer allocator.free(entity_ids);
+
+    for (scene.entities, 0..) |entity, index| {
+        entity_ids[index] = try world.createEntity(.{
             .name = entity.name,
             .transform = entity.transform,
             .camera = entity.camera,
@@ -158,6 +162,15 @@ pub fn deserializeWorldFromSlice(allocator: std.mem.Allocator, world: *world_mod
             .light = entity.light,
             .editor_only = entity.editor_only,
         });
+    }
+
+    for (scene.entities, 0..) |entity, index| {
+        if (entity.parent) |parent_index| {
+            if (parent_index >= entity_ids.len) {
+                return error.ParentIndexOutOfBounds;
+            }
+            _ = try world.setParentLocal(entity_ids[index], entity_ids[parent_index]);
+        }
     }
 }
 
@@ -204,6 +217,17 @@ fn buildSceneFile(allocator: std.mem.Allocator, world: *const world_mod.World) !
     defer texture_indices.deinit();
     var material_indices = std.AutoHashMap(assets_handles.MaterialHandle, u32).init(allocator);
     defer material_indices.deinit();
+    var entity_indices = std.AutoHashMap(world_mod.EntityId, u32).init(allocator);
+    defer entity_indices.deinit();
+
+    var exported_entity_index: u32 = 0;
+    for (world.entities.items) |entity| {
+        if (entity.editor_only) {
+            continue;
+        }
+        try entity_indices.put(entity.id, exported_entity_index);
+        exported_entity_index += 1;
+    }
 
     for (world.entities.items) |entity| {
         if (entity.editor_only) {
@@ -253,6 +277,7 @@ fn buildSceneFile(allocator: std.mem.Allocator, world: *const world_mod.World) !
 
         try entity_records.append(allocator, .{
             .name = entity.name,
+            .parent = if (entity.parent) |parent_id| entity_indices.get(parent_id) else null,
             .transform = entity.transform,
             .camera = entity.camera,
             .mesh = mesh_component,
@@ -435,4 +460,34 @@ test "scene serialization round-trips meshes, lights, and textures" {
     const material = loaded.resources.material(imported.material.?.handle.?).?;
     try std.testing.expectEqual(@as(usize, 7), mesh.vertices.len);
     try std.testing.expect(material.base_color_texture != null);
+}
+
+test "scene serialization round-trips parent relationships" {
+    var world = world_mod.World.init(std.testing.allocator);
+    defer world.deinit();
+
+    const root = try world.createEntity(.{
+        .name = "Parent",
+    });
+    const child = try world.createEntity(.{
+        .name = "Child",
+        .parent = root,
+        .transform = .{
+            .translation = .{ 0.0, 2.0, 0.0 },
+        },
+    });
+
+    const encoded = try serializeWorldAlloc(std.testing.allocator, &world);
+    defer std.testing.allocator.free(encoded);
+
+    var loaded = world_mod.World.init(std.testing.allocator);
+    defer loaded.deinit();
+    try deserializeWorldFromSlice(std.testing.allocator, &loaded, encoded);
+
+    const loaded_child = loaded.findEntityByName("Child").?;
+    const loaded_root = loaded.findEntityByName("Parent").?;
+    try std.testing.expectEqual(loaded_root.id, loaded_child.parent.?);
+    const world_transform = loaded.worldTransform(loaded_child.id).?;
+    try std.testing.expectApproxEqAbs(@as(f32, 2.0), world_transform.translation[1], 0.0001);
+    _ = child;
 }

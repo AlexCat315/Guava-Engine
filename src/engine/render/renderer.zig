@@ -6,6 +6,7 @@ const gizmo_pass_mod = @import("gizmo_pass.zig");
 const outline_pass_mod = @import("outline_pass.zig");
 const platform_mod = @import("../core/platform.zig");
 const selection_history_mod = @import("selection_history.zig");
+const imgui_mod = @import("../ui/imgui.zig");
 const window_mod = @import("../platform/window.zig");
 const graph_mod = @import("render_graph.zig");
 const mesh_pass_mod = @import("mesh_pass.zig");
@@ -303,7 +304,7 @@ pub const Renderer = struct {
 
         if (self.gizmo_pass.isReady()) {
             if (self.selection_history.primarySelection()) |selected_entity_id| {
-                if (scene.getEntityConst(selected_entity_id)) |selected_entity| {
+                if (scene.worldTransform(selected_entity_id)) |selected_transform| {
                     const gizmo_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
                         .color = .{
                             .target = .swapchain,
@@ -317,13 +318,25 @@ pub const Renderer = struct {
                         frame,
                         gizmo_pass,
                         &prepared_scene,
-                        selected_entity,
+                        selected_transform,
                         self.editor_gizmo_state,
                     ));
                     self.rhi.endRenderPass(gizmo_pass);
                 }
             }
         }
+
+        imgui_mod.prepare(frame.command_buffer);
+        const ui_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
+            .color = .{
+                .target = .swapchain,
+                .load_op = .load,
+                .store_op = .store,
+            },
+            .depth = null,
+        });
+        imgui_mod.render(frame.command_buffer, ui_pass.raw);
+        self.rhi.endRenderPass(ui_pass);
 
         if (self.pending_selection_readbacks.items.len > 0) {
             if (self.id_pass.texture()) |id_texture| {

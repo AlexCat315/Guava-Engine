@@ -28,6 +28,7 @@ pub const EventKind = enum {
 
 pub const Event = struct {
     kind: EventKind,
+    raw: sdl.SDL_Event = undefined,
     width: u32 = 0,
     height: u32 = 0,
     x: f32 = 0.0,
@@ -119,16 +120,17 @@ pub const Window = struct {
             switch (raw_event.type) {
                 sdl.SDL_EVENT_QUIT => {
                     self.should_close = true;
-                    return .{ .kind = .quit_requested };
+                    return .{ .kind = .quit_requested, .raw = raw_event };
                 },
                 sdl.SDL_EVENT_WINDOW_CLOSE_REQUESTED => {
                     self.should_close = true;
-                    return .{ .kind = .close_requested };
+                    return .{ .kind = .close_requested, .raw = raw_event };
                 },
                 sdl.SDL_EVENT_WINDOW_RESIZED => {
                     try self.refreshSizes();
                     return .{
                         .kind = .resized,
+                        .raw = raw_event,
                         .width = self.drawable_width,
                         .height = self.drawable_height,
                     };
@@ -137,6 +139,7 @@ pub const Window = struct {
                     try self.refreshSizes();
                     return .{
                         .kind = .pixel_size_changed,
+                        .raw = raw_event,
                         .width = self.drawable_width,
                         .height = self.drawable_height,
                     };
@@ -145,6 +148,7 @@ pub const Window = struct {
                     try self.refreshSizes();
                     return .{
                         .kind = .metal_view_resized,
+                        .raw = raw_event,
                         .width = self.drawable_width,
                         .height = self.drawable_height,
                     };
@@ -153,6 +157,7 @@ pub const Window = struct {
                     try self.refreshSizes();
                     return .{
                         .kind = .exposed,
+                        .raw = raw_event,
                         .width = self.drawable_width,
                         .height = self.drawable_height,
                     };
@@ -162,6 +167,7 @@ pub const Window = struct {
                         const button = mouseButtonFromSdl(raw_event.button.button) orelse continue;
                         return .{
                             .kind = .mouse_button_down,
+                            .raw = raw_event,
                             .x = raw_event.button.x,
                             .y = raw_event.button.y,
                             .button = button,
@@ -174,6 +180,7 @@ pub const Window = struct {
                         const button = mouseButtonFromSdl(raw_event.button.button) orelse continue;
                         return .{
                             .kind = .mouse_button_up,
+                            .raw = raw_event,
                             .x = raw_event.button.x,
                             .y = raw_event.button.y,
                             .button = button,
@@ -184,6 +191,7 @@ pub const Window = struct {
                 sdl.SDL_EVENT_MOUSE_MOTION => {
                     return .{
                         .kind = .mouse_moved,
+                        .raw = raw_event,
                         .x = raw_event.motion.x,
                         .y = raw_event.motion.y,
                         .delta_x = raw_event.motion.xrel,
@@ -194,6 +202,7 @@ pub const Window = struct {
                 sdl.SDL_EVENT_MOUSE_WHEEL => {
                     return .{
                         .kind = .mouse_wheel,
+                        .raw = raw_event,
                         .delta_x = raw_event.wheel.x,
                         .delta_y = raw_event.wheel.y,
                         .modifiers = currentModifiers(),
@@ -202,6 +211,7 @@ pub const Window = struct {
                 sdl.SDL_EVENT_KEY_DOWN => {
                     return .{
                         .kind = .key_down,
+                        .raw = raw_event,
                         .key = keyFromScancode(raw_event.key.scancode),
                         .repeat = raw_event.key.repeat,
                         .modifiers = currentModifiers(),
@@ -210,6 +220,7 @@ pub const Window = struct {
                 sdl.SDL_EVENT_KEY_UP => {
                     return .{
                         .kind = .key_up,
+                        .raw = raw_event,
                         .key = keyFromScancode(raw_event.key.scancode),
                         .repeat = false,
                         .modifiers = currentModifiers(),
@@ -275,6 +286,7 @@ fn keyFromScancode(scancode: c_uint) ?input_mod.Key {
         sdl.SDL_SCANCODE_3 => .three,
         sdl.SDL_SCANCODE_L => .l,
         sdl.SDL_SCANCODE_O => .o,
+        sdl.SDL_SCANCODE_P => .p,
         sdl.SDL_SCANCODE_X => .x,
         sdl.SDL_SCANCODE_Y => .y,
         sdl.SDL_SCANCODE_Z => .z,

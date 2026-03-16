@@ -21,6 +21,8 @@ pub const EditorLayer = struct {
     allocator: ?std.mem.Allocator = null,
     editor_camera: ?engine.scene.EntityId = null,
     scene_camera: ?engine.scene.EntityId = null,
+    inspector_name_entity: ?engine.scene.EntityId = null,
+    inspector_name_buffer: [256]u8 = [_]u8{0} ** 256,
     editor_camera_active: bool = true,
     focus_pivot: [3]f32 = .{ 0.0, 1.0, 0.0 },
     yaw: f32 = 0.0,
@@ -55,9 +57,11 @@ pub const EditorLayer = struct {
     fn onAttach(context: *anyopaque, layer_context: *engine.core.LayerContext) !void {
         const self: *EditorLayer = @ptrCast(@alignCast(context));
         self.allocator = layer_context.world.allocator;
+        try engine.ui.ImGui.init(layer_context.window, layer_context.rhi());
         self.scene_camera = layer_context.world.primaryCameraEntity();
         try self.createEditorCamera(layer_context);
         self.syncGizmoState(layer_context);
+        self.syncInspectorNameBuffer(layer_context);
         try self.resetSnapshotHistory(layer_context);
         try self.refreshWindowTitle(layer_context);
     }
@@ -65,11 +69,15 @@ pub const EditorLayer = struct {
     fn onDetach(context: *anyopaque) void {
         const self: *EditorLayer = @ptrCast(@alignCast(context));
         self.clearSnapshotHistory();
+        engine.ui.ImGui.shutdown();
     }
 
     fn onUpdate(context: *anyopaque, layer_context: *engine.core.LayerContext) !void {
         const self: *EditorLayer = @ptrCast(@alignCast(context));
         try self.pruneMissingSelection(layer_context);
+        self.syncInspectorNameBuffer(layer_context);
+        engine.ui.ImGui.beginDockspace();
+        try self.drawEditorUi(layer_context);
         try self.handleEditingShortcuts(layer_context);
         self.applyManipulation(layer_context);
         self.handleCameraControls(layer_context);
@@ -91,6 +99,10 @@ pub const EditorLayer = struct {
 
     fn handleEditingShortcuts(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
         const input = layer_context.input;
+
+        if (engine.ui.ImGui.wantsCaptureKeyboard()) {
+            return;
+        }
 
         if (input.modifiers.ctrl and input.wasKeyPressed(.z)) {
             try self.undo(layer_context);
@@ -152,6 +164,13 @@ pub const EditorLayer = struct {
         if (input.modifiers.ctrl and input.wasKeyPressed(.d)) {
             try self.duplicateSelection(layer_context);
         }
+        if (input.wasKeyPressed(.p)) {
+            if (input.modifiers.shift) {
+                try self.unparentSelection(layer_context);
+            } else {
+                try self.parentSelection(layer_context);
+            }
+        }
         if (input.wasKeyPressed(.g)) {
             try self.beginManipulation(layer_context, .translate);
         }
@@ -176,7 +195,7 @@ pub const EditorLayer = struct {
     }
 
     fn handleCameraControls(self: *EditorLayer, layer_context: *engine.core.LayerContext) void {
-        if (!self.editor_camera_active or self.manipulation_mode != .none) {
+        if (!self.editor_camera_active or self.manipulation_mode != .none or engine.ui.ImGui.wantsCaptureMouse() or engine.ui.ImGui.wantsCaptureKeyboard()) {
             return;
         }
 
@@ -267,9 +286,9 @@ pub const EditorLayer = struct {
         const selected = layer_context.renderer.selectedEntity() orelse return;
         const camera_id = self.editor_camera orelse return;
         const camera = layer_context.world.getEntity(camera_id) orelse return;
-        const entity = layer_context.world.getEntity(selected) orelse return;
+        const entity_transform = layer_context.world.worldTransform(selected) orelse return;
 
-        self.focus_pivot = entity.transform.translation;
+        self.focus_pivot = entity_transform.translation;
         if (!self.editor_camera_active) {
             return;
         }
@@ -298,11 +317,14 @@ pub const EditorLayer = struct {
         }
 
         const duplicate_id = try layer_context.world.duplicateEntity(selected);
-        if (layer_context.world.getEntity(duplicate_id)) |duplicate| {
-            duplicate.transform.translation[0] += 0.65;
-            duplicate.transform.translation[1] += 0.15;
+        if (layer_context.world.worldTransform(duplicate_id)) |duplicate_transform| {
+            var moved = duplicate_transform;
+            moved.translation[0] += 0.65;
+            moved.translation[1] += 0.15;
+            _ = layer_context.world.setEntityWorldTransform(duplicate_id, moved);
         }
         try layer_context.renderer.replaceSelection(duplicate_id);
+        self.syncInspectorNameBuffer(layer_context);
         self.focusSelection(layer_context);
         try self.captureSnapshot(layer_context);
     }
@@ -337,8 +359,8 @@ pub const EditorLayer = struct {
     fn activeCameraTransform(self: *const EditorLayer, layer_context: *engine.core.LayerContext) engine.scene.Transform {
         const active_camera_id = if (self.editor_camera_active) self.editor_camera else layer_context.world.primaryCameraEntity();
         if (active_camera_id) |camera_id| {
-            if (layer_context.world.getEntity(camera_id)) |camera| {
-                return camera.transform;
+            if (layer_context.world.worldTransform(camera_id)) |camera_transform| {
+                return camera_transform;
             }
         }
         return .{
@@ -371,7 +393,7 @@ pub const EditorLayer = struct {
 
         const title = try std.fmt.allocPrint(
             layer_context.world.allocator,
-            "Guava Editor [{s}] Sel:{s} Mode:{s}/{s} | RMB fly | Alt+LMB orbit | MMB pan | Wheel dolly | G/R/S edit | X/Y/Z axis | Space apply | Esc cancel | Ctrl+S save | Ctrl+O load | 1 cube 2 sphere 3 plane | L light | F focus | Ctrl+D duplicate | Del delete | Tab camera",
+            "Guava Editor [{s}] Sel:{s} Mode:{s}/{s} | RMB fly | Alt+LMB orbit | MMB pan | Wheel dolly | G/R/S edit | X/Y/Z axis | Space apply | Esc cancel | P parent | Shift+P unparent | Ctrl+S save | Ctrl+O load | 1 cube 2 sphere 3 plane | L light | F focus | Ctrl+D duplicate | Del delete | Tab camera",
             .{ camera_mode, selected_name, manipulation_mode, manipulation_axis },
         );
         defer layer_context.world.allocator.free(title);
@@ -425,6 +447,7 @@ pub const EditorLayer = struct {
             }
         }
         try layer_context.renderer.replaceSelection(null);
+        self.syncInspectorNameBuffer(layer_context);
         try self.resetSnapshotHistory(layer_context);
         try self.refreshWindowTitle(layer_context);
     }
@@ -508,6 +531,7 @@ pub const EditorLayer = struct {
             }
         }
         try layer_context.renderer.replaceSelection(null);
+        self.syncInspectorNameBuffer(layer_context);
         try self.refreshWindowTitle(layer_context);
     }
 
@@ -520,12 +544,11 @@ pub const EditorLayer = struct {
         if (self.editor_camera != null and selected == self.editor_camera.?) {
             return;
         }
-        const entity = layer_context.world.getEntity(selected) orelse return;
 
         self.manipulation_mode = mode;
         self.manipulation_axis = .free;
         self.manipulation_entity = selected;
-        self.manipulation_origin = entity.transform;
+        self.manipulation_origin = layer_context.world.worldTransform(selected) orelse return;
         self.syncGizmoState(layer_context);
         try self.refreshWindowTitle(layer_context);
     }
@@ -541,16 +564,14 @@ pub const EditorLayer = struct {
             self.endManipulation();
             return;
         };
-        if (layer_context.world.getEntity(entity_id)) |entity| {
-            entity.transform = self.manipulation_origin;
-        }
+        _ = layer_context.world.setEntityWorldTransform(entity_id, self.manipulation_origin);
         self.endManipulation();
         self.syncGizmoState(layer_context);
     }
 
     fn applyManipulation(self: *EditorLayer, layer_context: *engine.core.LayerContext) void {
         const entity_id = self.manipulation_entity orelse return;
-        const entity = layer_context.world.getEntity(entity_id) orelse {
+        var entity_transform = layer_context.world.worldTransform(entity_id) orelse {
             self.endManipulation();
             return;
         };
@@ -561,23 +582,25 @@ pub const EditorLayer = struct {
 
         switch (self.manipulation_mode) {
             .none => {},
-            .translate => self.applyTranslate(layer_context, entity),
-            .rotate => self.applyRotate(input, entity),
-            .scale => self.applyScale(input, entity),
+            .translate => self.applyTranslate(layer_context, &entity_transform),
+            .rotate => self.applyRotate(input, &entity_transform),
+            .scale => self.applyScale(input, &entity_transform),
         }
+
+        _ = layer_context.world.setEntityWorldTransform(entity_id, entity_transform);
     }
 
     fn applyTranslate(
         self: *const EditorLayer,
         layer_context: *engine.core.LayerContext,
-        entity: *engine.scene.Entity,
+        entity_transform: *engine.scene.Transform,
     ) void {
         const input = layer_context.input;
         const camera_transform = self.activeCameraTransform(layer_context);
         const right = rightFromYaw(camera_transform.rotation_euler[1]);
         const forward = forwardFromAngles(camera_transform.rotation_euler[1], camera_transform.rotation_euler[0]);
         const up = normalizeVec3(cross(right, forward));
-        const distance = @max(lengthVec3(subVec3(camera_transform.translation, entity.transform.translation)), 1.0);
+        const distance = @max(lengthVec3(subVec3(camera_transform.translation, entity_transform.translation)), 1.0);
         const move_scale = distance * 0.0025;
 
         switch (self.manipulation_axis) {
@@ -586,43 +609,396 @@ pub const EditorLayer = struct {
                     scaleVec3(right, input.mouse_delta[0] * move_scale),
                     scaleVec3(up, -input.mouse_delta[1] * move_scale),
                 );
-                entity.transform.translation = addVec3(entity.transform.translation, delta);
+                entity_transform.translation = addVec3(entity_transform.translation, delta);
             },
             .x, .y, .z => {
                 const axis = axisVector(self.manipulation_axis);
                 const scalar = (input.mouse_delta[0] - input.mouse_delta[1]) * move_scale;
-                entity.transform.translation = addVec3(entity.transform.translation, scaleVec3(axis, scalar));
+                entity_transform.translation = addVec3(entity_transform.translation, scaleVec3(axis, scalar));
             },
         }
     }
 
-    fn applyRotate(self: *const EditorLayer, input: *const engine.core.InputState, entity: *engine.scene.Entity) void {
+    fn applyRotate(self: *const EditorLayer, input: *const engine.core.InputState, entity_transform: *engine.scene.Transform) void {
         const scalar = (input.mouse_delta[0] - input.mouse_delta[1]) * 0.01;
         switch (self.manipulation_axis) {
             .free => {
-                entity.transform.rotation_euler[1] -= input.mouse_delta[0] * 0.01;
-                entity.transform.rotation_euler[0] -= input.mouse_delta[1] * 0.01;
+                entity_transform.rotation_euler[1] -= input.mouse_delta[0] * 0.01;
+                entity_transform.rotation_euler[0] -= input.mouse_delta[1] * 0.01;
             },
-            .x => entity.transform.rotation_euler[0] += scalar,
-            .y => entity.transform.rotation_euler[1] += scalar,
-            .z => entity.transform.rotation_euler[2] += scalar,
+            .x => entity_transform.rotation_euler[0] += scalar,
+            .y => entity_transform.rotation_euler[1] += scalar,
+            .z => entity_transform.rotation_euler[2] += scalar,
         }
     }
 
-    fn applyScale(self: *const EditorLayer, input: *const engine.core.InputState, entity: *engine.scene.Entity) void {
+    fn applyScale(self: *const EditorLayer, input: *const engine.core.InputState, entity_transform: *engine.scene.Transform) void {
         const scalar = 1.0 + (input.mouse_delta[0] - input.mouse_delta[1]) * 0.01;
         switch (self.manipulation_axis) {
             .free => {
-                entity.transform.scale = .{
-                    clampScale(entity.transform.scale[0] * scalar),
-                    clampScale(entity.transform.scale[1] * scalar),
-                    clampScale(entity.transform.scale[2] * scalar),
+                entity_transform.scale = .{
+                    clampScale(entity_transform.scale[0] * scalar),
+                    clampScale(entity_transform.scale[1] * scalar),
+                    clampScale(entity_transform.scale[2] * scalar),
                 };
             },
-            .x => entity.transform.scale[0] = clampScale(entity.transform.scale[0] * scalar),
-            .y => entity.transform.scale[1] = clampScale(entity.transform.scale[1] * scalar),
-            .z => entity.transform.scale[2] = clampScale(entity.transform.scale[2] * scalar),
+            .x => entity_transform.scale[0] = clampScale(entity_transform.scale[0] * scalar),
+            .y => entity_transform.scale[1] = clampScale(entity_transform.scale[1] * scalar),
+            .z => entity_transform.scale[2] = clampScale(entity_transform.scale[2] * scalar),
         }
+    }
+
+    fn parentSelection(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
+        const selection = layer_context.renderer.selectedEntities();
+        if (selection.len < 2) {
+            return;
+        }
+
+        const parent_id = layer_context.renderer.selectedEntity() orelse return;
+        if (self.editor_camera != null and parent_id == self.editor_camera.?) {
+            return;
+        }
+
+        var changed = false;
+        for (selection) |entity_id| {
+            if (entity_id == parent_id) {
+                continue;
+            }
+            if (self.editor_camera != null and entity_id == self.editor_camera.?) {
+                continue;
+            }
+            changed = (try layer_context.world.setParent(entity_id, parent_id)) or changed;
+        }
+
+        if (changed) {
+            try self.captureSnapshot(layer_context);
+        }
+    }
+
+    fn unparentSelection(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
+        const selection = layer_context.renderer.selectedEntities();
+        if (selection.len == 0) {
+            return;
+        }
+
+        var changed = false;
+        for (selection) |entity_id| {
+            if (self.editor_camera != null and entity_id == self.editor_camera.?) {
+                continue;
+            }
+            changed = (try layer_context.world.setParent(entity_id, null)) or changed;
+        }
+
+        if (changed) {
+            try self.captureSnapshot(layer_context);
+        }
+    }
+
+    fn drawEditorUi(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
+        try self.drawMenuBar(layer_context);
+        try self.drawStatsWindow(layer_context);
+        try self.drawSceneWindow(layer_context);
+        try self.drawInspectorWindow(layer_context);
+    }
+
+    fn drawStatsWindow(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
+        _ = self;
+        _ = engine.ui.ImGui.beginWindow("Stats");
+        defer engine.ui.ImGui.endWindow();
+
+        const runtime = layer_context.renderer.runtimeInfo();
+        const summary = layer_context.world.summary();
+        const fps = if (layer_context.delta_seconds > 0.0001) 1.0 / layer_context.delta_seconds else 0.0;
+
+        var fps_buffer: [64]u8 = undefined;
+        const fps_text = try std.fmt.bufPrint(&fps_buffer, "{d:.1}", .{fps});
+        engine.ui.ImGui.labelText("FPS", fps_text);
+        engine.ui.ImGui.labelText("Backend", engine.render.graphicsApiName(layer_context.renderer.backendApi()));
+        engine.ui.ImGui.labelText("Device", runtime.deviceName());
+
+        var draw_size_buffer: [64]u8 = undefined;
+        const draw_size_text = try std.fmt.bufPrint(
+            &draw_size_buffer,
+            "{d} x {d}",
+            .{ runtime.drawable_width, runtime.drawable_height },
+        );
+        engine.ui.ImGui.labelText("Drawable", draw_size_text);
+
+        var entities_buffer: [32]u8 = undefined;
+        const entities_text = try std.fmt.bufPrint(&entities_buffer, "{d}", .{summary.entity_count});
+        engine.ui.ImGui.labelText("Entities", entities_text);
+
+        var meshes_buffer: [32]u8 = undefined;
+        const meshes_text = try std.fmt.bufPrint(&meshes_buffer, "{d}", .{summary.mesh_count});
+        engine.ui.ImGui.labelText("Meshes", meshes_text);
+
+        var lights_buffer: [32]u8 = undefined;
+        const lights_text = try std.fmt.bufPrint(&lights_buffer, "{d}", .{summary.light_count});
+        engine.ui.ImGui.labelText("Lights", lights_text);
+
+        var cameras_buffer: [32]u8 = undefined;
+        const cameras_text = try std.fmt.bufPrint(&cameras_buffer, "{d}", .{summary.camera_count});
+        engine.ui.ImGui.labelText("Cameras", cameras_text);
+    }
+
+    fn drawMenuBar(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
+        if (!engine.ui.ImGui.beginMainMenuBar()) {
+            return;
+        }
+        defer engine.ui.ImGui.endMainMenuBar();
+
+        if (engine.ui.ImGui.beginMenu("File")) {
+            defer engine.ui.ImGui.endMenu();
+            if (engine.ui.ImGui.menuItem("Save Scene", "Ctrl+S", false, true)) {
+                self.saveScene(layer_context);
+            }
+            if (engine.ui.ImGui.menuItem("Load Scene", "Ctrl+O", false, true)) {
+                try self.loadScene(layer_context);
+            }
+        }
+
+        if (engine.ui.ImGui.beginMenu("Create")) {
+            defer engine.ui.ImGui.endMenu();
+            if (engine.ui.ImGui.menuItem("Cube", "1", false, true)) {
+                try self.spawnPrimitive(layer_context, .cube);
+            }
+            if (engine.ui.ImGui.menuItem("Sphere", "2", false, true)) {
+                try self.spawnPrimitive(layer_context, .sphere);
+            }
+            if (engine.ui.ImGui.menuItem("Plane", "3", false, true)) {
+                try self.spawnPrimitive(layer_context, .plane);
+            }
+            if (engine.ui.ImGui.menuItem("Point Light", "L", false, true)) {
+                try self.spawnPointLight(layer_context);
+            }
+        }
+
+        if (engine.ui.ImGui.beginMenu("Edit")) {
+            defer engine.ui.ImGui.endMenu();
+            const has_selection = layer_context.renderer.selectedEntity() != null;
+            if (engine.ui.ImGui.menuItem("Duplicate", "Ctrl+D", false, has_selection)) {
+                try self.duplicateSelection(layer_context);
+            }
+            if (engine.ui.ImGui.menuItem("Delete", "Del", false, has_selection)) {
+                try self.deleteSelection(layer_context);
+            }
+            if (engine.ui.ImGui.menuItem("Parent To Active", "P", false, layer_context.renderer.selectedEntities().len > 1)) {
+                try self.parentSelection(layer_context);
+            }
+            if (engine.ui.ImGui.menuItem("Unparent", "Shift+P", false, has_selection)) {
+                try self.unparentSelection(layer_context);
+            }
+        }
+    }
+
+    fn drawSceneWindow(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
+        _ = engine.ui.ImGui.beginWindow("Scene");
+        defer engine.ui.ImGui.endWindow();
+
+        for (layer_context.world.entities.items) |entity| {
+            if (entity.editor_only or entity.parent != null) {
+                continue;
+            }
+            try self.drawHierarchyNode(layer_context, entity.id);
+        }
+    }
+
+    fn drawHierarchyNode(self: *EditorLayer, layer_context: *engine.core.LayerContext, entity_id: engine.scene.EntityId) !void {
+        const entity = layer_context.world.getEntityConst(entity_id) orelse return;
+        if (entity.editor_only) {
+            return;
+        }
+
+        const is_selected = layer_context.renderer.selectedEntity() == entity_id;
+        const leaf = !self.hasVisibleChildren(layer_context.world, entity_id);
+        const is_open = engine.ui.ImGui.treeNodeEntity(entity_id, entity.name, is_selected, leaf, false);
+
+        if (engine.ui.ImGui.isItemClicked()) {
+            if (layer_context.input.modifiers.shift or layer_context.input.modifiers.ctrl or layer_context.input.modifiers.super) {
+                try layer_context.renderer.toggleSelection(entity_id);
+            } else {
+                try layer_context.renderer.replaceSelection(entity_id);
+            }
+            self.syncInspectorNameBuffer(layer_context);
+        }
+
+        if (!leaf and is_open) {
+            for (layer_context.world.entities.items) |child| {
+                if (child.editor_only or child.parent != entity_id) {
+                    continue;
+                }
+                try self.drawHierarchyNode(layer_context, child.id);
+            }
+            engine.ui.ImGui.treePop();
+        }
+    }
+
+    fn drawInspectorWindow(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
+        _ = engine.ui.ImGui.beginWindow("Inspector");
+        defer engine.ui.ImGui.endWindow();
+
+        const selected = layer_context.renderer.selectedEntity() orelse {
+            engine.ui.ImGui.text("No entity selected.");
+            return;
+        };
+
+        const entity = layer_context.world.getEntity(selected) orelse {
+            engine.ui.ImGui.text("Selection is stale.");
+            return;
+        };
+        const world_transform = layer_context.world.worldTransform(selected) orelse entity.transform;
+
+        if (engine.ui.ImGui.button("Focus")) {
+            self.focusSelection(layer_context);
+        }
+        engine.ui.ImGui.sameLine();
+        if (engine.ui.ImGui.button("Duplicate")) {
+            try self.duplicateSelection(layer_context);
+            return;
+        }
+        engine.ui.ImGui.sameLine();
+        if (engine.ui.ImGui.button("Delete")) {
+            try self.deleteSelection(layer_context);
+            return;
+        }
+        engine.ui.ImGui.sameLine();
+        if (engine.ui.ImGui.button("Move")) {
+            try self.beginManipulation(layer_context, .translate);
+        }
+        engine.ui.ImGui.sameLine();
+        if (engine.ui.ImGui.button("Rotate")) {
+            try self.beginManipulation(layer_context, .rotate);
+        }
+        engine.ui.ImGui.sameLine();
+        if (engine.ui.ImGui.button("Scale")) {
+            try self.beginManipulation(layer_context, .scale);
+        }
+
+        if (engine.ui.ImGui.inputText("Name", self.inspector_name_buffer[0..])) {
+            if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
+                const next_name = zeroTerminatedSlice(self.inspector_name_buffer[0..]);
+                if (next_name.len > 0) {
+                    if (try layer_context.world.renameEntity(selected, next_name)) {
+                        self.syncInspectorNameBuffer(layer_context);
+                        try self.captureSnapshot(layer_context);
+                        try self.refreshWindowTitle(layer_context);
+                    }
+                }
+            }
+        }
+
+        if (entity.parent) |parent_id| {
+            if (layer_context.world.getEntityConst(parent_id)) |parent| {
+                engine.ui.ImGui.labelText("Parent", parent.name);
+            }
+            if (engine.ui.ImGui.button("Unparent Selected")) {
+                try self.unparentSelection(layer_context);
+                return;
+            }
+        } else {
+            engine.ui.ImGui.labelText("Parent", "Root");
+        }
+
+        var local_translation = entity.transform.translation;
+        if (engine.ui.ImGui.dragFloat3("Local Translation", &local_translation, 0.05, -500.0, 500.0)) {
+            entity.transform.translation = local_translation;
+            if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
+                try self.captureSnapshot(layer_context);
+            }
+        }
+
+        var local_rotation = entity.transform.rotation_euler;
+        if (engine.ui.ImGui.dragFloat3("Local Rotation", &local_rotation, 0.01, -std.math.tau, std.math.tau)) {
+            entity.transform.rotation_euler = local_rotation;
+            if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
+                try self.captureSnapshot(layer_context);
+            }
+        }
+
+        var local_scale = entity.transform.scale;
+        if (engine.ui.ImGui.dragFloat3("Local Scale", &local_scale, 0.01, 0.05, 100.0)) {
+            entity.transform.scale = .{
+                clampScale(local_scale[0]),
+                clampScale(local_scale[1]),
+                clampScale(local_scale[2]),
+            };
+            if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
+                try self.captureSnapshot(layer_context);
+            }
+        }
+
+        var world_translation_buffer: [96]u8 = undefined;
+        const world_translation = try std.fmt.bufPrint(
+            &world_translation_buffer,
+            "{d:.2}, {d:.2}, {d:.2}",
+            .{ world_transform.translation[0], world_transform.translation[1], world_transform.translation[2] },
+        );
+        engine.ui.ImGui.labelText("World Translation", world_translation);
+
+        if (entity.camera != null and engine.ui.ImGui.collapsingHeader("Camera", true)) {
+            if (entity.camera.?.is_primary) {
+                engine.ui.ImGui.text("Primary scene camera");
+            } else if (engine.ui.ImGui.button("Make Primary Camera")) {
+                _ = layer_context.world.setPrimaryCamera(selected);
+                try self.captureSnapshot(layer_context);
+            }
+        }
+
+        if (entity.light) |*light| {
+            if (engine.ui.ImGui.collapsingHeader("Light", true)) {
+                var light_color = light.color;
+                if (engine.ui.ImGui.dragFloat3("Color", &light_color, 0.01, 0.0, 10.0)) {
+                    light.color = light_color;
+                    if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
+                        try self.captureSnapshot(layer_context);
+                    }
+                }
+
+                var intensity = light.intensity;
+                if (engine.ui.ImGui.dragFloat("Intensity", &intensity, 0.1, 0.0, 100.0)) {
+                    light.intensity = intensity;
+                    if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
+                        try self.captureSnapshot(layer_context);
+                    }
+                }
+
+                if (light.kind != .directional) {
+                    var range = light.range;
+                    if (engine.ui.ImGui.dragFloat("Range", &range, 0.1, 0.1, 100.0)) {
+                        light.range = range;
+                        if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
+                            try self.captureSnapshot(layer_context);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn hasVisibleChildren(self: *const EditorLayer, world: *const engine.scene.World, entity_id: engine.scene.EntityId) bool {
+        _ = self;
+        for (world.entities.items) |entity| {
+            if (!entity.editor_only and entity.parent == entity_id) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn syncInspectorNameBuffer(self: *EditorLayer, layer_context: *engine.core.LayerContext) void {
+        const selected = layer_context.renderer.selectedEntity();
+        if (selected == self.inspector_name_entity) {
+            return;
+        }
+
+        @memset(self.inspector_name_buffer[0..], 0);
+        if (selected) |selected_id| {
+            if (layer_context.world.getEntityConst(selected_id)) |entity| {
+                const copy_len = @min(entity.name.len, self.inspector_name_buffer.len - 1);
+                @memcpy(self.inspector_name_buffer[0..copy_len], entity.name[0..copy_len]);
+            }
+        }
+        self.inspector_name_entity = selected;
     }
 
     fn syncGizmoState(self: *const EditorLayer, layer_context: *engine.core.LayerContext) void {
@@ -642,6 +1018,11 @@ pub const EditorLayer = struct {
         });
     }
 };
+
+fn zeroTerminatedSlice(buffer: []const u8) []const u8 {
+    const end = std.mem.indexOfScalar(u8, buffer, 0) orelse buffer.len;
+    return buffer[0..end];
+}
 
 fn forwardFromAngles(yaw: f32, pitch: f32) [3]f32 {
     const cos_pitch = std.math.cos(pitch);

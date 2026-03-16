@@ -4,7 +4,6 @@ const components = @import("../scene/components.zig");
 const mesh_pass_mod = @import("mesh_pass.zig");
 const rhi_mod = @import("../rhi/device.zig");
 const rhi_types = @import("../rhi/types.zig");
-const scene_mod = @import("../scene/scene.zig");
 const shader_support = @import("shader_support.zig");
 
 pub const EditorGizmoMode = enum {
@@ -164,7 +163,7 @@ pub const GizmoPass = struct {
         frame: rhi_mod.Frame,
         pass: rhi_mod.RenderPass,
         prepared_scene: *const mesh_pass_mod.PreparedScene,
-        selected_entity: *const scene_mod.Entity,
+        selected_transform: components.Transform,
         state: EditorGizmoState,
     ) mesh_pass_mod.DrawStats {
         var stats = mesh_pass_mod.DrawStats{};
@@ -172,9 +171,9 @@ pub const GizmoPass = struct {
             return stats;
         }
 
-        const gizmo_scale = scaleForSelection(prepared_scene.camera_world_position, selected_entity.transform.translation);
-        const base_translation = selected_entity.transform.translation;
-        const base_rotation = selected_entity.transform.rotation_euler;
+        const gizmo_scale = scaleForSelection(prepared_scene.camera_world_position, selected_transform.translation);
+        const base_translation = selected_transform.translation;
+        const base_rotation = selected_transform.rotation_euler;
 
         device.bindGraphicsPipeline(pass, &self.pipeline.?);
 

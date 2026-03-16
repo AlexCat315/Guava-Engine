@@ -180,6 +180,7 @@ pub const MeshSceneCache = struct {
             if (mesh.primitive_type != .triangle_list) {
                 continue;
             }
+            const world_transform = scene.worldTransform(entity.id) orelse entity.transform;
 
             const gpu_mesh = try self.ensureMesh(device, mesh_handle, mesh);
             const material_state = try self.resolveMaterial(device, scene, entity.material);
@@ -191,7 +192,7 @@ pub const MeshSceneCache = struct {
                 .index_count = gpu_mesh.index_count,
                 .bind_group = material_state.bind_group,
                 .base_color_factor = material_state.base_color_factor,
-                .model = math.transformMatrix(entity.transform),
+                .model = math.transformMatrix(world_transform),
             });
         }
 
@@ -415,8 +416,9 @@ fn chooseCamera(scene: *const scene_mod.Scene) CameraState {
 
     for (scene.entities.items) |entity| {
         const camera = entity.camera orelse continue;
+        const world_transform = scene.worldTransform(entity.id) orelse entity.transform;
         const candidate: CameraState = .{
-            .transform = entity.transform,
+            .transform = world_transform,
             .camera = camera,
         };
 
@@ -442,9 +444,10 @@ fn chooseMainLight(scene: *const scene_mod.Scene) LightState {
         if (light.kind != .directional) {
             continue;
         }
+        const world_transform = scene.worldTransform(entity.id) orelse entity.transform;
 
         return .{
-            .direction = forwardFromEuler(entity.transform.rotation_euler),
+            .direction = forwardFromEuler(world_transform.rotation_euler),
             .color = light.color,
             .intensity = light.intensity,
         };
@@ -463,9 +466,10 @@ fn choosePointLight(scene: *const scene_mod.Scene) PointLightState {
         if (light.kind != .point) {
             continue;
         }
+        const world_transform = scene.worldTransform(entity.id) orelse entity.transform;
 
         return .{
-            .position = entity.transform.translation,
+            .position = world_transform.translation,
             .color = light.color,
             .intensity = light.intensity,
             .range = light.range,

@@ -1,0 +1,334 @@
+#include "imgui_bridge.h"
+
+#include <string>
+
+#include "imgui.h"
+#include "backends/imgui_impl_sdl3.h"
+#include "backends/imgui_impl_sdlgpu3.h"
+
+namespace {
+
+std::string make_string(const char* text, size_t text_len) {
+    return std::string(text, text_len);
+}
+
+bool g_imgui_initialized = false;
+ImDrawData* g_draw_data = nullptr;
+std::string g_ini_path;
+
+} // namespace
+
+extern "C" bool guava_imgui_init(SDL_Window* window, SDL_GPUDevice* device, SDL_GPUTextureFormat color_target_format) {
+    if (g_imgui_initialized) {
+        return true;
+    }
+
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    io.ConfigDpiScaleFonts = true;
+
+    if (char* pref_path = SDL_GetPrefPath("Guava", "Editor")) {
+        g_ini_path = std::string(pref_path) + "imgui.ini";
+        io.IniFilename = g_ini_path.c_str();
+        SDL_free(pref_path);
+    } else {
+        g_ini_path.clear();
+        io.IniFilename = nullptr;
+    }
+
+    ImGui::StyleColorsDark();
+
+    const float main_scale = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.ScaleAllSizes(main_scale);
+    style.FontScaleDpi = main_scale;
+
+    if (!ImGui_ImplSDL3_InitForSDLGPU(window)) {
+        ImGui::DestroyContext();
+        return false;
+    }
+
+    ImGui_ImplSDLGPU3_InitInfo init_info = {};
+    init_info.Device = device;
+    init_info.ColorTargetFormat = color_target_format;
+    init_info.MSAASamples = SDL_GPU_SAMPLECOUNT_1;
+    init_info.SwapchainComposition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
+    init_info.PresentMode = SDL_GPU_PRESENTMODE_VSYNC;
+
+    if (!ImGui_ImplSDLGPU3_Init(&init_info)) {
+        ImGui_ImplSDL3_Shutdown();
+        ImGui::DestroyContext();
+        return false;
+    }
+
+    g_imgui_initialized = true;
+    return true;
+}
+
+extern "C" void guava_imgui_shutdown(void) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+
+    ImGui_ImplSDLGPU3_Shutdown();
+    ImGui_ImplSDL3_Shutdown();
+    ImGui::DestroyContext();
+    g_draw_data = nullptr;
+    g_ini_path.clear();
+    g_imgui_initialized = false;
+}
+
+extern "C" void guava_imgui_process_event(const SDL_Event* event) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui_ImplSDL3_ProcessEvent(event);
+}
+
+extern "C" void guava_imgui_new_frame(void) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui_ImplSDLGPU3_NewFrame();
+    ImGui_ImplSDL3_NewFrame();
+    ImGui::NewFrame();
+}
+
+extern "C" void guava_imgui_begin_dockspace(void) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
+}
+
+extern "C" void guava_imgui_prepare(SDL_GPUCommandBuffer* command_buffer) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+
+    g_draw_data = nullptr;
+    ImGui::Render();
+    g_draw_data = ImGui::GetDrawData();
+    if (g_draw_data == nullptr || g_draw_data->DisplaySize.x <= 0.0f || g_draw_data->DisplaySize.y <= 0.0f) {
+        return;
+    }
+
+    ImGui_ImplSDLGPU3_PrepareDrawData(g_draw_data, command_buffer);
+}
+
+extern "C" void guava_imgui_render(SDL_GPUCommandBuffer* command_buffer, SDL_GPURenderPass* render_pass) {
+    if (!g_imgui_initialized || g_draw_data == nullptr || g_draw_data->DisplaySize.x <= 0.0f || g_draw_data->DisplaySize.y <= 0.0f) {
+        return;
+    }
+
+    ImGui_ImplSDLGPU3_RenderDrawData(g_draw_data, command_buffer, render_pass);
+}
+
+extern "C" bool guava_imgui_want_capture_mouse(void) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+    return ImGui::GetIO().WantCaptureMouse;
+}
+
+extern "C" bool guava_imgui_want_capture_keyboard(void) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+    return ImGui::GetIO().WantCaptureKeyboard;
+}
+
+extern "C" bool guava_imgui_begin_window(const char* name, size_t name_len) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+    const std::string window_name = make_string(name, name_len);
+    return ImGui::Begin(window_name.c_str());
+}
+
+extern "C" void guava_imgui_end_window(void) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::End();
+}
+
+extern "C" bool guava_imgui_begin_main_menu_bar(void) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+    return ImGui::BeginMainMenuBar();
+}
+
+extern "C" void guava_imgui_end_main_menu_bar(void) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::EndMainMenuBar();
+}
+
+extern "C" bool guava_imgui_begin_menu(const char* label, size_t label_len) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+    const std::string owned_label = make_string(label, label_len);
+    return ImGui::BeginMenu(owned_label.c_str());
+}
+
+extern "C" void guava_imgui_end_menu(void) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::EndMenu();
+}
+
+extern "C" bool guava_imgui_menu_item(const char* label, size_t label_len, const char* shortcut, size_t shortcut_len, bool selected, bool enabled) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+    const std::string owned_label = make_string(label, label_len);
+    const std::string owned_shortcut = shortcut != nullptr ? make_string(shortcut, shortcut_len) : std::string();
+    return ImGui::MenuItem(
+        owned_label.c_str(),
+        shortcut != nullptr ? owned_shortcut.c_str() : nullptr,
+        selected,
+        enabled
+    );
+}
+
+extern "C" bool guava_imgui_button(const char* label, size_t label_len) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+    const std::string owned_label = make_string(label, label_len);
+    return ImGui::Button(owned_label.c_str());
+}
+
+extern "C" void guava_imgui_same_line(void) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::SameLine();
+}
+
+extern "C" void guava_imgui_separator(void) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::Separator();
+}
+
+extern "C" void guava_imgui_text(const char* text, size_t text_len) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::TextUnformatted(text, text + text_len);
+}
+
+extern "C" void guava_imgui_label_text(const char* label, size_t label_len, const char* text, size_t text_len) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    const std::string owned_label = make_string(label, label_len);
+    const std::string owned_text = make_string(text, text_len);
+    ImGui::LabelText(owned_label.c_str(), "%s", owned_text.c_str());
+}
+
+extern "C" void guava_imgui_push_id_u64(uint64_t value) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::PushID(reinterpret_cast<void*>(static_cast<uintptr_t>(value)));
+}
+
+extern "C" void guava_imgui_pop_id(void) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::PopID();
+}
+
+extern "C" bool guava_imgui_tree_node_entity(uint64_t id, const char* label, size_t label_len, bool selected, bool leaf, bool default_open) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+
+    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
+    if (selected) {
+        flags |= ImGuiTreeNodeFlags_Selected;
+    }
+    if (leaf) {
+        flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+    }
+    if (default_open) {
+        flags |= ImGuiTreeNodeFlags_DefaultOpen;
+    }
+
+    const std::string owned_label = make_string(label, label_len);
+    return ImGui::TreeNodeEx(reinterpret_cast<void*>(static_cast<uintptr_t>(id)), flags, "%s", owned_label.c_str());
+}
+
+extern "C" void guava_imgui_tree_pop(void) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::TreePop();
+}
+
+extern "C" bool guava_imgui_is_item_clicked(void) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+    return ImGui::IsItemClicked();
+}
+
+extern "C" bool guava_imgui_is_item_deactivated_after_edit(void) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+    return ImGui::IsItemDeactivatedAfterEdit();
+}
+
+extern "C" bool guava_imgui_input_text(const char* label, size_t label_len, char* buffer, size_t buffer_size) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+    const std::string owned_label = make_string(label, label_len);
+    return ImGui::InputText(owned_label.c_str(), buffer, buffer_size);
+}
+
+extern "C" bool guava_imgui_drag_float(const char* label, size_t label_len, float* value, float speed, float min_value, float max_value) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+    const std::string owned_label = make_string(label, label_len);
+    return ImGui::DragFloat(owned_label.c_str(), value, speed, min_value, max_value);
+}
+
+extern "C" bool guava_imgui_drag_float3(const char* label, size_t label_len, float value[3], float speed, float min_value, float max_value) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+    const std::string owned_label = make_string(label, label_len);
+    return ImGui::DragFloat3(owned_label.c_str(), value, speed, min_value, max_value);
+}
+
+extern "C" bool guava_imgui_checkbox(const char* label, size_t label_len, bool* value) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+    const std::string owned_label = make_string(label, label_len);
+    return ImGui::Checkbox(owned_label.c_str(), value);
+}
+
+extern "C" bool guava_imgui_collapsing_header(const char* label, size_t label_len, bool default_open) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+    ImGuiTreeNodeFlags flags = default_open ? ImGuiTreeNodeFlags_DefaultOpen : ImGuiTreeNodeFlags_None;
+    const std::string owned_label = make_string(label, label_len);
+    return ImGui::CollapsingHeader(owned_label.c_str(), flags);
+}
