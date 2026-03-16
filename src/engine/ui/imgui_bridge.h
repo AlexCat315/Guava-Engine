@@ -16,6 +16,7 @@ void guava_imgui_shutdown(void);
 void guava_imgui_process_event(const SDL_Event* event);
 void guava_imgui_new_frame(void);
 void guava_imgui_begin_dockspace(void);
+void guava_imgui_reset_default_layout(void);
 void guava_imgui_prepare(SDL_GPUCommandBuffer* command_buffer);
 void guava_imgui_render(SDL_GPUCommandBuffer* command_buffer, SDL_GPURenderPass* render_pass);
 bool guava_imgui_want_capture_mouse(void);
@@ -38,6 +39,7 @@ void guava_imgui_pop_id(void);
 bool guava_imgui_tree_node_entity(uint64_t id, const char* label, size_t label_len, bool selected, bool leaf, bool default_open);
 void guava_imgui_tree_pop(void);
 bool guava_imgui_is_item_clicked(void);
+bool guava_imgui_is_item_hovered(void);
 bool guava_imgui_is_item_deactivated_after_edit(void);
 bool guava_imgui_input_text(const char* label, size_t label_len, char* buffer, size_t buffer_size);
 bool guava_imgui_drag_float(const char* label, size_t label_len, float* value, float speed, float min_value, float max_value);
@@ -46,6 +48,11 @@ bool guava_imgui_checkbox(const char* label, size_t label_len, bool* value);
 bool guava_imgui_collapsing_header(const char* label, size_t label_len, bool default_open);
 bool guava_imgui_drag_drop_source_u64(const char* payload_type, size_t payload_type_len, uint64_t value, const char* preview_text, size_t preview_text_len);
 bool guava_imgui_accept_drag_drop_payload_u64(const char* payload_type, size_t payload_type_len, uint64_t* out_value);
+bool guava_imgui_is_window_hovered(void);
+bool guava_imgui_is_window_focused(void);
+void guava_imgui_get_content_region_avail(float out_value[2]);
+void guava_imgui_get_cursor_screen_pos(float out_value[2]);
+void guava_imgui_image(SDL_GPUTexture* texture, float width, float height);
 
 #ifdef __cplusplus
 }

@@ -31,6 +31,11 @@ const AxisConstraint = enum {
     z,
 };
 
+const Language = enum {
+    english,
+    chinese,
+};
+
 pub const EditorLayer = struct {
     allocator: ?std.mem.Allocator = null,
     editor_camera: ?engine.scene.EntityId = null,
@@ -59,6 +64,17 @@ pub const EditorLayer = struct {
     selected_asset_index: ?usize = null,
     scene_filter_buffer: [128]u8 = [_]u8{0} ** 128,
     asset_filter_buffer: [128]u8 = [_]u8{0} ** 128,
+    language: Language = .chinese,
+    dock_layout_initialized: bool = false,
+    viewport_hovered: bool = false,
+    viewport_focused: bool = false,
+    viewport_has_image: bool = false,
+    viewport_origin: [2]f32 = .{ 0.0, 0.0 },
+    viewport_extent: [2]f32 = .{ 0.0, 0.0 },
+    preview_device: ?*engine.rhi.Device = null,
+    preview_texture: ?engine.rhi.Texture = null,
+    preview_texture_key: ?[]u8 = null,
+    preview_texture_size: [2]u32 = .{ 0, 0 },
 
     pub fn asLayer(self: *EditorLayer) engine.core.Layer {
         return .{
@@ -75,7 +91,9 @@ pub const EditorLayer = struct {
     fn onAttach(context: *anyopaque, layer_context: *engine.core.LayerContext) !void {
         const self: *EditorLayer = @ptrCast(@alignCast(context));
         self.allocator = layer_context.world.allocator;
+        self.preview_device = layer_context.rhi();
         try engine.ui.ImGui.init(layer_context.window, layer_context.rhi());
+        self.dock_layout_initialized = false;
         self.scene_camera = layer_context.world.primaryCameraEntity();
         try self.createEditorCamera(layer_context);
         self.syncGizmoState(layer_context);
@@ -87,6 +105,8 @@ pub const EditorLayer = struct {
 
     fn onDetach(context: *anyopaque) void {
         const self: *EditorLayer = @ptrCast(@alignCast(context));
+        self.clearPreviewTexture();
+        self.preview_device = null;
         self.clearAssetBrowser();
         self.clearSnapshotHistory();
         engine.ui.ImGui.shutdown();
@@ -97,7 +117,12 @@ pub const EditorLayer = struct {
         try self.pruneMissingSelection(layer_context);
         self.syncInspectorNameBuffer(layer_context);
         engine.ui.ImGui.beginDockspace();
+        if (!self.dock_layout_initialized) {
+            engine.ui.ImGui.resetDefaultLayout();
+            self.dock_layout_initialized = true;
+        }
         try self.drawEditorUi(layer_context);
+        try self.handleViewportSelection(layer_context);
         try self.handleEditingShortcuts(layer_context);
         self.applyManipulation(layer_context);
         self.handleCameraControls(layer_context);
@@ -215,13 +240,20 @@ pub const EditorLayer = struct {
     }
 
     fn handleCameraControls(self: *EditorLayer, layer_context: *engine.core.LayerContext) void {
-        if (!self.editor_camera_active or self.manipulation_mode != .none or engine.ui.ImGui.wantsCaptureMouse() or engine.ui.ImGui.wantsCaptureKeyboard()) {
+        const input = layer_context.input;
+        const viewport_interaction = self.viewport_hovered or input.isMouseDown(.right) or input.isMouseDown(.middle) or (input.modifiers.alt and input.isMouseDown(.left));
+        if (!self.editor_camera_active or self.manipulation_mode != .none or !viewport_interaction) {
+            return;
+        }
+        if (engine.ui.ImGui.wantsCaptureMouse() and !self.viewport_hovered and !input.isMouseDown(.right) and !input.isMouseDown(.middle)) {
+            return;
+        }
+        if (engine.ui.ImGui.wantsCaptureKeyboard() and !self.viewport_focused and !input.isMouseDown(.right)) {
             return;
         }
 
         const camera_id = self.editor_camera orelse return;
         const camera = layer_context.world.getEntity(camera_id) orelse return;
-        const input = layer_context.input;
 
         if (input.modifiers.alt and input.isMouseDown(.left)) {
             self.yaw -= input.mouse_delta[0] * self.orbit_sensitivity;
@@ -961,83 +993,119 @@ pub const EditorLayer = struct {
     fn drawEditorUi(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
         try self.drawMenuBar(layer_context);
         try self.drawViewportToolbar(layer_context);
+        try self.drawViewportWindow(layer_context);
         try self.drawStatsWindow(layer_context);
         try self.drawSceneWindow(layer_context);
         try self.drawInspectorWindow(layer_context);
         try self.drawContentBrowser(layer_context);
+        try self.drawAssetPreviewWindow(layer_context);
+        try self.drawSettingsWindow(layer_context);
     }
 
     fn drawViewportToolbar(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
-        _ = engine.ui.ImGui.beginWindow("Viewport Toolbar 视口工具条");
+        var title_buffer: [96]u8 = undefined;
+        const title = try self.windowLabel(&title_buffer, "Viewport Toolbar", "视口工具条", "viewport_toolbar_panel");
+        _ = engine.ui.ImGui.beginWindow(title);
         defer engine.ui.ImGui.endWindow();
 
-        engine.ui.ImGui.labelText("Camera 相机", if (self.editor_camera_active) "Editor" else "Scene");
+        engine.ui.ImGui.labelText(self.tr("Camera", "相机"), self.tr(if (self.editor_camera_active) "Editor" else "Scene", if (self.editor_camera_active) "编辑器" else "场景"));
         var mode_buffer: [32]u8 = undefined;
         const mode_text = try std.fmt.bufPrint(&mode_buffer, "{s}", .{
             switch (self.manipulation_mode) {
-                .none => "Idle",
-                .translate => "Move",
-                .rotate => "Rotate",
-                .scale => "Scale",
+                .none => self.tr("Idle", "空闲"),
+                .translate => self.tr("Move", "移动"),
+                .rotate => self.tr("Rotate", "旋转"),
+                .scale => self.tr("Scale", "缩放"),
             },
         });
-        engine.ui.ImGui.labelText("Mode 模式", mode_text);
+        engine.ui.ImGui.labelText(self.tr("Mode", "模式"), mode_text);
 
-        if (engine.ui.ImGui.button("Toggle Camera")) {
+        if (engine.ui.ImGui.button(self.tr("Toggle Camera", "切换相机"))) {
             self.toggleCameraMode(layer_context);
         }
         engine.ui.ImGui.sameLine();
-        if (engine.ui.ImGui.button("Focus")) {
+        if (engine.ui.ImGui.button(self.tr("Focus", "聚焦"))) {
             self.focusSelection(layer_context);
         }
         engine.ui.ImGui.sameLine();
-        if (engine.ui.ImGui.button("Move")) {
+        if (engine.ui.ImGui.button(self.tr("Move", "移动"))) {
             try self.beginManipulation(layer_context, .translate);
         }
         engine.ui.ImGui.sameLine();
-        if (engine.ui.ImGui.button("Rotate")) {
+        if (engine.ui.ImGui.button(self.tr("Rotate", "旋转"))) {
             try self.beginManipulation(layer_context, .rotate);
         }
         engine.ui.ImGui.sameLine();
-        if (engine.ui.ImGui.button("Scale")) {
+        if (engine.ui.ImGui.button(self.tr("Scale", "缩放"))) {
             try self.beginManipulation(layer_context, .scale);
         }
 
-        if (engine.ui.ImGui.button("Empty")) {
+        if (engine.ui.ImGui.button(self.tr("Empty", "空物体"))) {
             try self.spawnEmptyEntity(layer_context);
         }
         engine.ui.ImGui.sameLine();
-        if (engine.ui.ImGui.button("Camera")) {
+        if (engine.ui.ImGui.button(self.tr("Camera", "相机"))) {
             try self.spawnCameraEntity(layer_context);
         }
         engine.ui.ImGui.sameLine();
-        if (engine.ui.ImGui.button("Cube")) {
+        if (engine.ui.ImGui.button(self.tr("Cube", "立方体"))) {
             try self.spawnPrimitive(layer_context, .cube);
         }
         engine.ui.ImGui.sameLine();
-        if (engine.ui.ImGui.button("Sphere")) {
+        if (engine.ui.ImGui.button(self.tr("Sphere", "球体"))) {
             try self.spawnPrimitive(layer_context, .sphere);
         }
         engine.ui.ImGui.sameLine();
-        if (engine.ui.ImGui.button("Light")) {
+        if (engine.ui.ImGui.button(self.tr("Light", "灯光"))) {
             try self.spawnPointLight(layer_context);
         }
 
         if (self.selectedAsset()) |entry| {
-            engine.ui.ImGui.labelText("Asset 资源", entry.name);
-            if ((entry.kind == .model or entry.kind == .scene) and engine.ui.ImGui.button("Instantiate / Load")) {
+            engine.ui.ImGui.labelText(self.tr("Asset", "资源"), entry.name);
+            if ((entry.kind == .model or entry.kind == .scene) and engine.ui.ImGui.button(self.tr("Instantiate / Load", "实例化 / 加载"))) {
                 try self.instantiateSelectedAsset(layer_context);
             }
         } else {
-            engine.ui.ImGui.text("Select a model or scene in Content Browser to instantiate/load it.");
+            engine.ui.ImGui.text(self.tr("Select a model or scene in Content Browser to instantiate/load it.", "在资源浏览器里选择模型或场景后可直接实例化或加载。"));
         }
+    }
 
-        engine.ui.ImGui.text("The realtime viewport is still rendered in the central dockspace background.");
+    fn drawViewportWindow(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
+        var title_buffer: [80]u8 = undefined;
+        const title = try self.windowLabel(&title_buffer, "Viewport", "视口", "viewport_panel");
+        _ = engine.ui.ImGui.beginWindow(title);
+        defer engine.ui.ImGui.endWindow();
+
+        const content_size = engine.ui.ImGui.contentRegionAvail();
+        self.viewport_origin = engine.ui.ImGui.cursorScreenPos();
+        self.viewport_extent = .{
+            @max(content_size[0], 0.0),
+            @max(content_size[1], 0.0),
+        };
+        self.viewport_hovered = false;
+        self.viewport_focused = engine.ui.ImGui.isWindowFocused();
+        self.viewport_has_image = false;
+
+        const drawable_size = viewportDrawableSize(layer_context.window, self.viewport_extent);
+        try layer_context.renderer.setSceneViewportSize(drawable_size[0], drawable_size[1]);
+
+        if (layer_context.renderer.sceneViewportTexture()) |texture| {
+            const image_size = .{
+                @max(self.viewport_extent[0], 8.0),
+                @max(self.viewport_extent[1], 8.0),
+            };
+            engine.ui.ImGui.image(texture, image_size[0], image_size[1]);
+            self.viewport_hovered = engine.ui.ImGui.isItemHovered();
+            self.viewport_has_image = true;
+        } else {
+            engine.ui.ImGui.text(self.tr("Viewport target is not ready yet.", "视口渲染目标尚未准备完成。"));
+        }
     }
 
     fn drawStatsWindow(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
-        _ = self;
-        _ = engine.ui.ImGui.beginWindow("Stats 状态");
+        var title_buffer: [80]u8 = undefined;
+        const title = try self.windowLabel(&title_buffer, "Stats", "状态", "stats_panel");
+        _ = engine.ui.ImGui.beginWindow(title);
         defer engine.ui.ImGui.endWindow();
 
         const runtime = layer_context.renderer.runtimeInfo();
@@ -1047,8 +1115,8 @@ pub const EditorLayer = struct {
         var fps_buffer: [64]u8 = undefined;
         const fps_text = try std.fmt.bufPrint(&fps_buffer, "{d:.1}", .{fps});
         engine.ui.ImGui.labelText("FPS", fps_text);
-        engine.ui.ImGui.labelText("Backend", engine.render.graphicsApiName(layer_context.renderer.backendApi()));
-        engine.ui.ImGui.labelText("Device", runtime.deviceName());
+        engine.ui.ImGui.labelText(self.tr("Backend", "后端"), engine.render.graphicsApiName(layer_context.renderer.backendApi()));
+        engine.ui.ImGui.labelText(self.tr("Device", "设备"), runtime.deviceName());
 
         var draw_size_buffer: [64]u8 = undefined;
         const draw_size_text = try std.fmt.bufPrint(
@@ -1056,23 +1124,32 @@ pub const EditorLayer = struct {
             "{d} x {d}",
             .{ runtime.drawable_width, runtime.drawable_height },
         );
-        engine.ui.ImGui.labelText("Drawable", draw_size_text);
+        engine.ui.ImGui.labelText(self.tr("Drawable", "绘制尺寸"), draw_size_text);
+
+        const viewport_size = layer_context.renderer.sceneViewportSize();
+        var viewport_size_buffer: [64]u8 = undefined;
+        const viewport_size_text = try std.fmt.bufPrint(
+            &viewport_size_buffer,
+            "{d} x {d}",
+            .{ viewport_size[0], viewport_size[1] },
+        );
+        engine.ui.ImGui.labelText(self.tr("Viewport", "视口"), viewport_size_text);
 
         var entities_buffer: [32]u8 = undefined;
         const entities_text = try std.fmt.bufPrint(&entities_buffer, "{d}", .{summary.entity_count});
-        engine.ui.ImGui.labelText("Entities", entities_text);
+        engine.ui.ImGui.labelText(self.tr("Entities", "对象"), entities_text);
 
         var meshes_buffer: [32]u8 = undefined;
         const meshes_text = try std.fmt.bufPrint(&meshes_buffer, "{d}", .{summary.mesh_count});
-        engine.ui.ImGui.labelText("Meshes", meshes_text);
+        engine.ui.ImGui.labelText(self.tr("Meshes", "网格"), meshes_text);
 
         var lights_buffer: [32]u8 = undefined;
         const lights_text = try std.fmt.bufPrint(&lights_buffer, "{d}", .{summary.light_count});
-        engine.ui.ImGui.labelText("Lights", lights_text);
+        engine.ui.ImGui.labelText(self.tr("Lights", "灯光"), lights_text);
 
         var cameras_buffer: [32]u8 = undefined;
         const cameras_text = try std.fmt.bufPrint(&cameras_buffer, "{d}", .{summary.camera_count});
-        engine.ui.ImGui.labelText("Cameras", cameras_text);
+        engine.ui.ImGui.labelText(self.tr("Cameras", "相机"), cameras_text);
     }
 
     fn drawMenuBar(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
@@ -1081,62 +1158,72 @@ pub const EditorLayer = struct {
         }
         defer engine.ui.ImGui.endMainMenuBar();
 
-        if (engine.ui.ImGui.beginMenu("File")) {
+        if (engine.ui.ImGui.beginMenu(self.tr("File", "文件"))) {
             defer engine.ui.ImGui.endMenu();
-            if (engine.ui.ImGui.menuItem("Save Scene", "Ctrl+S", false, true)) {
+            if (engine.ui.ImGui.menuItem(self.tr("Save Scene", "保存场景"), "Ctrl+S", false, true)) {
                 self.saveScene(layer_context);
             }
-            if (engine.ui.ImGui.menuItem("Load Scene", "Ctrl+O", false, true)) {
+            if (engine.ui.ImGui.menuItem(self.tr("Load Scene", "加载场景"), "Ctrl+O", false, true)) {
                 try self.loadScene(layer_context);
             }
         }
 
-        if (engine.ui.ImGui.beginMenu("Create")) {
+        if (engine.ui.ImGui.beginMenu(self.tr("Create", "创建"))) {
             defer engine.ui.ImGui.endMenu();
-            if (engine.ui.ImGui.menuItem("Empty", null, false, true)) {
+            if (engine.ui.ImGui.menuItem(self.tr("Empty", "空物体"), null, false, true)) {
                 try self.spawnEmptyEntity(layer_context);
             }
-            if (engine.ui.ImGui.menuItem("Camera", null, false, true)) {
+            if (engine.ui.ImGui.menuItem(self.tr("Camera", "相机"), null, false, true)) {
                 try self.spawnCameraEntity(layer_context);
             }
-            if (engine.ui.ImGui.menuItem("Cube", "1", false, true)) {
+            if (engine.ui.ImGui.menuItem(self.tr("Cube", "立方体"), "1", false, true)) {
                 try self.spawnPrimitive(layer_context, .cube);
             }
-            if (engine.ui.ImGui.menuItem("Sphere", "2", false, true)) {
+            if (engine.ui.ImGui.menuItem(self.tr("Sphere", "球体"), "2", false, true)) {
                 try self.spawnPrimitive(layer_context, .sphere);
             }
-            if (engine.ui.ImGui.menuItem("Plane", "3", false, true)) {
+            if (engine.ui.ImGui.menuItem(self.tr("Plane", "平面"), "3", false, true)) {
                 try self.spawnPrimitive(layer_context, .plane);
             }
-            if (engine.ui.ImGui.menuItem("Point Light", "L", false, true)) {
+            if (engine.ui.ImGui.menuItem(self.tr("Point Light", "点光源"), "L", false, true)) {
                 try self.spawnPointLight(layer_context);
             }
         }
 
-        if (engine.ui.ImGui.beginMenu("Edit")) {
+        if (engine.ui.ImGui.beginMenu(self.tr("Edit", "编辑"))) {
             defer engine.ui.ImGui.endMenu();
             const has_selection = layer_context.renderer.selectedEntity() != null;
-            if (engine.ui.ImGui.menuItem("Duplicate", "Ctrl+D", false, has_selection)) {
+            if (engine.ui.ImGui.menuItem(self.tr("Duplicate", "复制"), "Ctrl+D", false, has_selection)) {
                 try self.duplicateSelection(layer_context);
             }
-            if (engine.ui.ImGui.menuItem("Delete", "Del", false, has_selection)) {
+            if (engine.ui.ImGui.menuItem(self.tr("Delete", "删除"), "Del", false, has_selection)) {
                 try self.deleteSelection(layer_context);
             }
-            if (engine.ui.ImGui.menuItem("Parent To Active", "P", false, layer_context.renderer.selectedEntities().len > 1)) {
+            if (engine.ui.ImGui.menuItem(self.tr("Parent To Active", "设为活动对象子级"), "P", false, layer_context.renderer.selectedEntities().len > 1)) {
                 try self.parentSelection(layer_context);
             }
-            if (engine.ui.ImGui.menuItem("Unparent", "Shift+P", false, has_selection)) {
+            if (engine.ui.ImGui.menuItem(self.tr("Unparent", "取消父级"), "Shift+P", false, has_selection)) {
                 try self.unparentSelection(layer_context);
+            }
+        }
+
+        if (engine.ui.ImGui.beginMenu(self.tr("Window", "窗口"))) {
+            defer engine.ui.ImGui.endMenu();
+            if (engine.ui.ImGui.menuItem(self.tr("Reset Dock Layout", "重置停靠布局"), null, false, true)) {
+                engine.ui.ImGui.resetDefaultLayout();
+                self.dock_layout_initialized = true;
             }
         }
     }
 
     fn drawSceneWindow(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
-        _ = engine.ui.ImGui.beginWindow("Scene 场景");
+        var title_buffer: [80]u8 = undefined;
+        const title = try self.windowLabel(&title_buffer, "Scene", "场景", "scene_panel");
+        _ = engine.ui.ImGui.beginWindow(title);
         defer engine.ui.ImGui.endWindow();
 
-        _ = engine.ui.ImGui.inputText("Scene Filter 过滤", self.scene_filter_buffer[0..]);
-        if (engine.ui.ImGui.button("Scene Root 根节点") and layer_context.renderer.selectedEntities().len > 0) {
+        _ = engine.ui.ImGui.inputText(self.tr("Scene Filter", "场景过滤"), self.scene_filter_buffer[0..]);
+        if (engine.ui.ImGui.button(self.tr("Scene Root", "场景根节点")) and layer_context.renderer.selectedEntities().len > 0) {
             try self.unparentSelection(layer_context);
         }
         var dropped_root: u64 = 0;
@@ -1196,90 +1283,92 @@ pub const EditorLayer = struct {
     }
 
     fn drawInspectorWindow(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
-        _ = engine.ui.ImGui.beginWindow("Details 细节");
+        var title_buffer: [80]u8 = undefined;
+        const title = try self.windowLabel(&title_buffer, "Details", "细节", "details_panel");
+        _ = engine.ui.ImGui.beginWindow(title);
         defer engine.ui.ImGui.endWindow();
 
         const selected = layer_context.renderer.selectedEntity() orelse {
-            engine.ui.ImGui.text("No entity selected. 未选择对象。");
+            engine.ui.ImGui.text(self.tr("No entity selected.", "未选择对象。"));
             return;
         };
         const selection_count = layer_context.renderer.selectedEntities().len;
 
         const entity = layer_context.world.getEntity(selected) orelse {
-            engine.ui.ImGui.text("Selection is stale. 选择已失效。");
+            engine.ui.ImGui.text(self.tr("Selection is stale.", "选择已失效。"));
             return;
         };
         const world_transform = layer_context.world.worldTransform(selected) orelse entity.transform;
 
         var selection_count_buffer: [32]u8 = undefined;
         const selection_count_text = try std.fmt.bufPrint(&selection_count_buffer, "{d}", .{selection_count});
-        engine.ui.ImGui.labelText("Selection Count 选择数量", selection_count_text);
+        engine.ui.ImGui.labelText(self.tr("Selection Count", "选择数量"), selection_count_text);
 
-        if (engine.ui.ImGui.collapsingHeader("Identity 标识", true)) {
+        if (engine.ui.ImGui.collapsingHeader(self.tr("Identity", "标识"), true)) {
             var entity_id_buffer: [32]u8 = undefined;
             const entity_id_text = try std.fmt.bufPrint(&entity_id_buffer, "{d}", .{selected});
-            engine.ui.ImGui.labelText("Entity ID", entity_id_text);
+            engine.ui.ImGui.labelText(self.tr("Entity ID", "对象 ID"), entity_id_text);
 
             var editor_only = entity.editor_only;
-            if (engine.ui.ImGui.checkbox("Editor Only 仅编辑器", &editor_only)) {
+            if (engine.ui.ImGui.checkbox(self.tr("Editor Only", "仅编辑器"), &editor_only)) {
                 entity.editor_only = editor_only;
                 try self.captureSnapshot(layer_context);
             }
         }
 
-        if (engine.ui.ImGui.collapsingHeader("Components 组件", true)) {
+        if (engine.ui.ImGui.collapsingHeader(self.tr("Components", "组件"), true)) {
             if (entity.mesh == null) {
-                if (engine.ui.ImGui.button("Add Cube Mesh")) {
+                if (engine.ui.ImGui.button(self.tr("Add Cube Mesh", "添加立方体网格"))) {
                     try self.setPrimitiveMeshComponent(layer_context, entity, .cube);
                 }
                 engine.ui.ImGui.sameLine();
-                if (engine.ui.ImGui.button("Add Sphere Mesh")) {
+                if (engine.ui.ImGui.button(self.tr("Add Sphere Mesh", "添加球体网格"))) {
                     try self.setPrimitiveMeshComponent(layer_context, entity, .sphere);
                 }
                 engine.ui.ImGui.sameLine();
-                if (engine.ui.ImGui.button("Add Plane Mesh")) {
+                if (engine.ui.ImGui.button(self.tr("Add Plane Mesh", "添加平面网格"))) {
                     try self.setPrimitiveMeshComponent(layer_context, entity, .plane);
                 }
             } else {
-                if (engine.ui.ImGui.button("Set Cube Mesh")) {
+                if (engine.ui.ImGui.button(self.tr("Set Cube Mesh", "设为立方体网格"))) {
                     try self.setPrimitiveMeshComponent(layer_context, entity, .cube);
                 }
                 engine.ui.ImGui.sameLine();
-                if (engine.ui.ImGui.button("Set Sphere Mesh")) {
+                if (engine.ui.ImGui.button(self.tr("Set Sphere Mesh", "设为球体网格"))) {
                     try self.setPrimitiveMeshComponent(layer_context, entity, .sphere);
                 }
                 engine.ui.ImGui.sameLine();
-                if (engine.ui.ImGui.button("Set Plane Mesh")) {
+                if (engine.ui.ImGui.button(self.tr("Set Plane Mesh", "设为平面网格"))) {
                     try self.setPrimitiveMeshComponent(layer_context, entity, .plane);
                 }
-                if (engine.ui.ImGui.button("Remove Mesh Component")) {
+                if (engine.ui.ImGui.button(self.tr("Remove Mesh Component", "移除网格组件"))) {
                     try self.clearMeshComponent(layer_context, entity);
                     return;
                 }
             }
 
             if (entity.camera == null) {
-                if (engine.ui.ImGui.button("Add Camera Component")) {
+                if (engine.ui.ImGui.button(self.tr("Add Camera Component", "添加相机组件"))) {
                     try self.addCameraComponent(layer_context, selected, entity);
                 }
-            } else if (engine.ui.ImGui.button("Remove Camera Component")) {
+            } else if (engine.ui.ImGui.button(self.tr("Remove Camera Component", "移除相机组件"))) {
                 try self.removeCameraComponent(layer_context, selected, entity);
                 return;
             }
 
             if (entity.light == null) {
-                if (engine.ui.ImGui.button("Add Directional Light")) {
+                if (engine.ui.ImGui.button(self.tr("Add Directional Light", "添加平行光"))) {
                     try self.setLightComponent(layer_context, entity, .directional);
                 }
                 engine.ui.ImGui.sameLine();
-                if (engine.ui.ImGui.button("Add Point Light")) {
+                if (engine.ui.ImGui.button(self.tr("Add Point Light", "添加点光"))) {
                     try self.setLightComponent(layer_context, entity, .point);
                 }
                 engine.ui.ImGui.sameLine();
-                if (engine.ui.ImGui.button("Add Spot Light")) {
+                if (engine.ui.ImGui.button(self.tr("Add Spot Light", "添加聚光"))) {
                     try self.setLightComponent(layer_context, entity, .spot);
                 }
-            } else if (engine.ui.ImGui.button("Remove Light Component")) {
+            } else if (engine.ui.ImGui.button(self.tr("Remove Light Component", "移除灯光组件"))) {
                 try self.removeLightComponent(layer_context, entity);
                 return;
             }
@@ -1288,49 +1377,86 @@ pub const EditorLayer = struct {
         }
 
         if (entity.mesh) |mesh_component| {
-            if (engine.ui.ImGui.collapsingHeader("Mesh 网格", true)) {
-                engine.ui.ImGui.labelText("Primitive", primitiveLabel(mesh_component.primitive));
+            if (engine.ui.ImGui.collapsingHeader(self.tr("Mesh", "网格"), true)) {
+                engine.ui.ImGui.labelText(self.tr("Primitive", "图元"), self.primitiveLabel(mesh_component.primitive));
                 if (mesh_component.handle) |mesh_handle| {
                     if (layer_context.world.assets().mesh(mesh_handle)) |mesh_resource| {
-                        engine.ui.ImGui.labelText("Resource 资源", mesh_resource.name);
+                        engine.ui.ImGui.labelText(self.tr("Resource", "资源"), mesh_resource.name);
 
                         var vertices_buffer: [32]u8 = undefined;
                         const vertices_text = try std.fmt.bufPrint(&vertices_buffer, "{d}", .{mesh_resource.vertices.len});
-                        engine.ui.ImGui.labelText("Vertices 顶点", vertices_text);
+                        engine.ui.ImGui.labelText(self.tr("Vertices", "顶点"), vertices_text);
 
                         var indices_buffer: [32]u8 = undefined;
                         const indices_text = try std.fmt.bufPrint(&indices_buffer, "{d}", .{mesh_resource.indices.len});
-                        engine.ui.ImGui.labelText("Indices 索引", indices_text);
+                        engine.ui.ImGui.labelText(self.tr("Indices", "索引"), indices_text);
 
                         var triangles_buffer: [32]u8 = undefined;
                         const triangles_text = try std.fmt.bufPrint(&triangles_buffer, "{d}", .{mesh_resource.indices.len / 3});
-                        engine.ui.ImGui.labelText("Triangles 三角形", triangles_text);
+                        engine.ui.ImGui.labelText(self.tr("Triangles", "三角形"), triangles_text);
                     }
                 } else {
-                    engine.ui.ImGui.text("Mesh component has no bound resource.");
+                    engine.ui.ImGui.text(self.tr("Mesh component has no bound resource.", "网格组件还没有绑定资源。"));
                 }
             }
         }
 
         if (entity.material) |*material_component| {
-            if (engine.ui.ImGui.collapsingHeader("Material 材质", true)) {
+            if (engine.ui.ImGui.collapsingHeader(self.tr("Material", "材质"), true)) {
                 var effective_shading = material_component.shading;
                 var effective_color = material_component.base_color_factor;
+                var material_usage_count: usize = 0;
+                var material_texture_handle: ?engine.assets.TextureHandle = null;
                 if (material_component.handle) |material_handle| {
+                    material_usage_count = self.materialUsageCount(layer_context.world, material_handle);
                     if (layer_context.world.assets().material(material_handle)) |material_resource| {
                         effective_shading = material_resource.shading;
                         effective_color = material_resource.base_color_factor;
-                        engine.ui.ImGui.labelText("Resource 资源", material_resource.name);
-                        if (material_resource.base_color_texture) |texture_handle| {
+                        material_texture_handle = material_resource.base_color_texture;
+                        engine.ui.ImGui.labelText(self.tr("Resource", "资源"), material_resource.name);
+                        if (material_usage_count > 1) {
+                            var shared_buffer: [32]u8 = undefined;
+                            const shared_text = try std.fmt.bufPrint(&shared_buffer, "{d}", .{material_usage_count});
+                            engine.ui.ImGui.labelText(self.tr("Shared By", "共享数量"), shared_text);
+                        } else {
+                            engine.ui.ImGui.labelText(self.tr("Scope", "范围"), self.tr("Instance", "实例"));
+                        }
+                        if (material_texture_handle) |texture_handle| {
                             if (layer_context.world.assets().texture(texture_handle)) |texture_resource| {
-                                engine.ui.ImGui.labelText("Texture 贴图", texture_resource.name);
+                                engine.ui.ImGui.labelText(self.tr("Texture", "贴图"), texture_resource.name);
                             }
                         } else {
-                            engine.ui.ImGui.labelText("Texture 贴图", "None");
+                            engine.ui.ImGui.labelText(self.tr("Texture", "贴图"), self.tr("None", "无"));
                         }
                     }
                 } else {
-                    engine.ui.ImGui.labelText("Resource 资源", "Embedded");
+                    engine.ui.ImGui.labelText(self.tr("Resource", "资源"), self.tr("Embedded", "嵌入"));
+                }
+
+                if (material_component.handle == null or material_usage_count > 1) {
+                    if (engine.ui.ImGui.button(self.tr("Make Material Instance", "创建材质实例"))) {
+                        _ = try self.ensureEditableMaterialResource(layer_context, entity);
+                        try self.captureSnapshot(layer_context);
+                    }
+                    if (material_component.handle != null and material_usage_count > 1) {
+                        engine.ui.ImGui.sameLine();
+                        engine.ui.ImGui.text(self.tr("Editing now will affect all users until instanced.", "当前资源仍在共享，不实例化就会影响所有引用。"));
+                    }
+                }
+
+                if (self.selectedAssetCanUseAsTexture() and engine.ui.ImGui.button(self.tr("Assign Selected Texture", "指定所选贴图"))) {
+                    try self.assignSelectedTextureToMaterial(layer_context, entity);
+                    try self.captureSnapshot(layer_context);
+                }
+                if (material_texture_handle != null) {
+                    engine.ui.ImGui.sameLine();
+                    if (engine.ui.ImGui.button(self.tr("Clear Texture", "清除贴图"))) {
+                        if (try self.ensureEditableMaterialResource(layer_context, entity)) |material_resource| {
+                            material_resource.base_color_texture = null;
+                            material_component.handle = self.materialHandleForEntity(entity);
+                            try self.captureSnapshot(layer_context);
+                        }
+                    }
                 }
 
                 if (engine.ui.ImGui.button("Unlit")) {
@@ -1346,26 +1472,24 @@ pub const EditorLayer = struct {
                 }
 
                 if (effective_shading != material_component.shading) {
-                    material_component.shading = effective_shading;
-                    if (material_component.handle) |material_handle| {
-                        if (layer_context.world.assets().material(material_handle)) |material_resource| {
-                            @constCast(material_resource).shading = effective_shading;
-                        }
+                    if (try self.ensureEditableMaterialResource(layer_context, entity)) |material_resource| {
+                        material_resource.shading = effective_shading;
+                        material_component.shading = effective_shading;
+                        material_component.handle = self.materialHandleForEntity(entity);
                     }
                     try self.captureSnapshot(layer_context);
                 }
-                engine.ui.ImGui.labelText("Shading 着色", shadingLabel(effective_shading));
+                engine.ui.ImGui.labelText(self.tr("Shading", "着色"), self.shadingLabel(effective_shading));
 
                 var base_color_rgb: [3]f32 = .{ effective_color[0], effective_color[1], effective_color[2] };
-                if (engine.ui.ImGui.dragFloat3("Base Color 基色", &base_color_rgb, 0.01, 0.0, 1.0)) {
+                if (engine.ui.ImGui.dragFloat3(self.tr("Base Color", "基础颜色"), &base_color_rgb, 0.01, 0.0, 1.0)) {
                     effective_color[0] = std.math.clamp(base_color_rgb[0], 0.0, 1.0);
                     effective_color[1] = std.math.clamp(base_color_rgb[1], 0.0, 1.0);
                     effective_color[2] = std.math.clamp(base_color_rgb[2], 0.0, 1.0);
                     material_component.base_color_factor = effective_color;
-                    if (material_component.handle) |material_handle| {
-                        if (layer_context.world.assets().material(material_handle)) |material_resource| {
-                            @constCast(material_resource).base_color_factor = effective_color;
-                        }
+                    if (try self.ensureEditableMaterialResource(layer_context, entity)) |material_resource| {
+                        material_resource.base_color_factor = effective_color;
+                        material_component.handle = self.materialHandleForEntity(entity);
                     }
                     if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
                         try self.captureSnapshot(layer_context);
@@ -1373,13 +1497,12 @@ pub const EditorLayer = struct {
                 }
 
                 var alpha = effective_color[3];
-                if (engine.ui.ImGui.dragFloat("Opacity 不透明度", &alpha, 0.01, 0.0, 1.0)) {
+                if (engine.ui.ImGui.dragFloat(self.tr("Opacity", "不透明度"), &alpha, 0.01, 0.0, 1.0)) {
                     effective_color[3] = std.math.clamp(alpha, 0.0, 1.0);
                     material_component.base_color_factor = effective_color;
-                    if (material_component.handle) |material_handle| {
-                        if (layer_context.world.assets().material(material_handle)) |material_resource| {
-                            @constCast(material_resource).base_color_factor = effective_color;
-                        }
+                    if (try self.ensureEditableMaterialResource(layer_context, entity)) |material_resource| {
+                        material_resource.base_color_factor = effective_color;
+                        material_component.handle = self.materialHandleForEntity(entity);
                     }
                     if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
                         try self.captureSnapshot(layer_context);
@@ -1388,33 +1511,33 @@ pub const EditorLayer = struct {
             }
         }
 
-        if (engine.ui.ImGui.button("Focus")) {
+        if (engine.ui.ImGui.button(self.tr("Focus", "聚焦"))) {
             self.focusSelection(layer_context);
         }
         engine.ui.ImGui.sameLine();
-        if (engine.ui.ImGui.button("Duplicate")) {
+        if (engine.ui.ImGui.button(self.tr("Duplicate", "复制"))) {
             try self.duplicateSelection(layer_context);
             return;
         }
         engine.ui.ImGui.sameLine();
-        if (engine.ui.ImGui.button("Delete")) {
+        if (engine.ui.ImGui.button(self.tr("Delete", "删除"))) {
             try self.deleteSelection(layer_context);
             return;
         }
         engine.ui.ImGui.sameLine();
-        if (engine.ui.ImGui.button("Move")) {
+        if (engine.ui.ImGui.button(self.tr("Move", "移动"))) {
             try self.beginManipulation(layer_context, .translate);
         }
         engine.ui.ImGui.sameLine();
-        if (engine.ui.ImGui.button("Rotate")) {
+        if (engine.ui.ImGui.button(self.tr("Rotate", "旋转"))) {
             try self.beginManipulation(layer_context, .rotate);
         }
         engine.ui.ImGui.sameLine();
-        if (engine.ui.ImGui.button("Scale")) {
+        if (engine.ui.ImGui.button(self.tr("Scale", "缩放"))) {
             try self.beginManipulation(layer_context, .scale);
         }
 
-        if (engine.ui.ImGui.inputText("Name", self.inspector_name_buffer[0..])) {
+        if (engine.ui.ImGui.inputText(self.tr("Name", "名称"), self.inspector_name_buffer[0..])) {
             if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
                 const next_name = zeroTerminatedSlice(self.inspector_name_buffer[0..]);
                 if (next_name.len > 0) {
@@ -1429,18 +1552,18 @@ pub const EditorLayer = struct {
 
         if (entity.parent) |parent_id| {
             if (layer_context.world.getEntityConst(parent_id)) |parent| {
-                engine.ui.ImGui.labelText("Parent", parent.name);
+                engine.ui.ImGui.labelText(self.tr("Parent", "父级"), parent.name);
             }
-            if (engine.ui.ImGui.button("Unparent Selected")) {
+            if (engine.ui.ImGui.button(self.tr("Unparent Selected", "取消父级"))) {
                 try self.unparentSelection(layer_context);
                 return;
             }
         } else {
-            engine.ui.ImGui.labelText("Parent", "Root");
+            engine.ui.ImGui.labelText(self.tr("Parent", "父级"), self.tr("Root", "根节点"));
         }
 
         var local_translation = entity.transform.translation;
-        if (engine.ui.ImGui.dragFloat3("Local Translation", &local_translation, 0.05, -500.0, 500.0)) {
+        if (engine.ui.ImGui.dragFloat3(self.tr("Local Translation", "局部位移"), &local_translation, 0.05, -500.0, 500.0)) {
             entity.transform.translation = local_translation;
             if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
                 try self.captureSnapshot(layer_context);
@@ -1448,7 +1571,7 @@ pub const EditorLayer = struct {
         }
 
         var local_rotation = entity.transform.rotation_euler;
-        if (engine.ui.ImGui.dragFloat3("Local Rotation", &local_rotation, 0.01, -std.math.tau, std.math.tau)) {
+        if (engine.ui.ImGui.dragFloat3(self.tr("Local Rotation", "局部旋转"), &local_rotation, 0.01, -std.math.tau, std.math.tau)) {
             entity.transform.rotation_euler = local_rotation;
             if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
                 try self.captureSnapshot(layer_context);
@@ -1456,7 +1579,7 @@ pub const EditorLayer = struct {
         }
 
         var local_scale = entity.transform.scale;
-        if (engine.ui.ImGui.dragFloat3("Local Scale", &local_scale, 0.01, 0.05, 100.0)) {
+        if (engine.ui.ImGui.dragFloat3(self.tr("Local Scale", "局部缩放"), &local_scale, 0.01, 0.05, 100.0)) {
             entity.transform.scale = .{
                 clampScale(local_scale[0]),
                 clampScale(local_scale[1]),
@@ -1473,7 +1596,7 @@ pub const EditorLayer = struct {
             "{d:.2}, {d:.2}, {d:.2}",
             .{ world_transform.translation[0], world_transform.translation[1], world_transform.translation[2] },
         );
-        engine.ui.ImGui.labelText("World Translation", world_translation);
+        engine.ui.ImGui.labelText(self.tr("World Translation", "世界位移"), world_translation);
 
         var world_rotation_buffer: [96]u8 = undefined;
         const world_rotation = try std.fmt.bufPrint(
@@ -1481,7 +1604,7 @@ pub const EditorLayer = struct {
             "{d:.2}, {d:.2}, {d:.2}",
             .{ world_transform.rotation_euler[0], world_transform.rotation_euler[1], world_transform.rotation_euler[2] },
         );
-        engine.ui.ImGui.labelText("World Rotation", world_rotation);
+        engine.ui.ImGui.labelText(self.tr("World Rotation", "世界旋转"), world_rotation);
 
         var world_scale_buffer: [96]u8 = undefined;
         const world_scale = try std.fmt.bufPrint(
@@ -1489,23 +1612,23 @@ pub const EditorLayer = struct {
             "{d:.2}, {d:.2}, {d:.2}",
             .{ world_transform.scale[0], world_transform.scale[1], world_transform.scale[2] },
         );
-        engine.ui.ImGui.labelText("World Scale", world_scale);
+        engine.ui.ImGui.labelText(self.tr("World Scale", "世界缩放"), world_scale);
 
         if (entity.camera) |*camera| {
-            if (engine.ui.ImGui.collapsingHeader("Camera", true)) {
+            if (engine.ui.ImGui.collapsingHeader(self.tr("Camera", "相机"), true)) {
                 if (camera.is_primary) {
-                    engine.ui.ImGui.text("Primary scene camera");
-                } else if (engine.ui.ImGui.button("Make Primary Camera")) {
+                    engine.ui.ImGui.text(self.tr("Primary scene camera", "当前主场景相机"));
+                } else if (engine.ui.ImGui.button(self.tr("Make Primary Camera", "设为主相机"))) {
                     _ = layer_context.world.setPrimaryCamera(selected);
                     try self.captureSnapshot(layer_context);
                 }
 
-                if (engine.ui.ImGui.button("Use Perspective")) {
+                if (engine.ui.ImGui.button(self.tr("Use Perspective", "透视投影"))) {
                     camera.projection = .{ .perspective = .{} };
                     try self.captureSnapshot(layer_context);
                 }
                 engine.ui.ImGui.sameLine();
-                if (engine.ui.ImGui.button("Use Orthographic")) {
+                if (engine.ui.ImGui.button(self.tr("Use Orthographic", "正交投影"))) {
                     camera.projection = .{ .orthographic = .{} };
                     try self.captureSnapshot(layer_context);
                 }
@@ -1522,7 +1645,7 @@ pub const EditorLayer = struct {
                             }
                         }
 
-                        if (engine.ui.ImGui.dragFloat("Near Clip", &edited.near_clip, 0.01, 0.001, 100.0)) {
+                        if (engine.ui.ImGui.dragFloat(self.tr("Near Clip", "近裁剪面"), &edited.near_clip, 0.01, 0.001, 100.0)) {
                             edited.near_clip = std.math.clamp(edited.near_clip, 0.001, 100.0);
                             edited.far_clip = @max(edited.far_clip, edited.near_clip + 0.01);
                             camera.projection = .{ .perspective = edited };
@@ -1531,7 +1654,7 @@ pub const EditorLayer = struct {
                             }
                         }
 
-                        if (engine.ui.ImGui.dragFloat("Far Clip", &edited.far_clip, 1.0, 0.1, 5000.0)) {
+                        if (engine.ui.ImGui.dragFloat(self.tr("Far Clip", "远裁剪面"), &edited.far_clip, 1.0, 0.1, 5000.0)) {
                             edited.near_clip = @min(edited.near_clip, edited.far_clip - 0.01);
                             edited.far_clip = std.math.clamp(edited.far_clip, edited.near_clip + 0.01, 5000.0);
                             camera.projection = .{ .perspective = edited };
@@ -1542,7 +1665,7 @@ pub const EditorLayer = struct {
                     },
                     .orthographic => |projection| {
                         var edited = projection;
-                        if (engine.ui.ImGui.dragFloat("Size", &edited.size, 0.1, 0.01, 500.0)) {
+                        if (engine.ui.ImGui.dragFloat(self.tr("Size", "尺寸"), &edited.size, 0.1, 0.01, 500.0)) {
                             edited.size = std.math.clamp(edited.size, 0.01, 500.0);
                             camera.projection = .{ .orthographic = edited };
                             if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
@@ -1550,7 +1673,7 @@ pub const EditorLayer = struct {
                             }
                         }
 
-                        if (engine.ui.ImGui.dragFloat("Near Clip", &edited.near_clip, 0.05, -1000.0, 1000.0)) {
+                        if (engine.ui.ImGui.dragFloat(self.tr("Near Clip", "近裁剪面"), &edited.near_clip, 0.05, -1000.0, 1000.0)) {
                             edited.near_clip = std.math.clamp(edited.near_clip, -1000.0, edited.far_clip - 0.01);
                             camera.projection = .{ .orthographic = edited };
                             if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
@@ -1558,7 +1681,7 @@ pub const EditorLayer = struct {
                             }
                         }
 
-                        if (engine.ui.ImGui.dragFloat("Far Clip", &edited.far_clip, 0.05, -1000.0, 1000.0)) {
+                        if (engine.ui.ImGui.dragFloat(self.tr("Far Clip", "远裁剪面"), &edited.far_clip, 0.05, -1000.0, 1000.0)) {
                             edited.far_clip = std.math.clamp(edited.far_clip, edited.near_clip + 0.01, 1000.0);
                             camera.projection = .{ .orthographic = edited };
                             if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
@@ -1571,24 +1694,24 @@ pub const EditorLayer = struct {
         }
 
         if (entity.light) |*light| {
-            if (engine.ui.ImGui.collapsingHeader("Light", true)) {
-                if (engine.ui.ImGui.button("Directional")) {
+            if (engine.ui.ImGui.collapsingHeader(self.tr("Light", "灯光"), true)) {
+                if (engine.ui.ImGui.button(self.tr("Directional", "平行光"))) {
                     light.kind = .directional;
                     try self.captureSnapshot(layer_context);
                 }
                 engine.ui.ImGui.sameLine();
-                if (engine.ui.ImGui.button("Point")) {
+                if (engine.ui.ImGui.button(self.tr("Point", "点光"))) {
                     light.kind = .point;
                     try self.captureSnapshot(layer_context);
                 }
                 engine.ui.ImGui.sameLine();
-                if (engine.ui.ImGui.button("Spot")) {
+                if (engine.ui.ImGui.button(self.tr("Spot", "聚光"))) {
                     light.kind = .spot;
                     try self.captureSnapshot(layer_context);
                 }
 
                 var light_color = light.color;
-                if (engine.ui.ImGui.dragFloat3("Color", &light_color, 0.01, 0.0, 10.0)) {
+                if (engine.ui.ImGui.dragFloat3(self.tr("Color", "颜色"), &light_color, 0.01, 0.0, 10.0)) {
                     light.color = light_color;
                     if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
                         try self.captureSnapshot(layer_context);
@@ -1596,7 +1719,7 @@ pub const EditorLayer = struct {
                 }
 
                 var intensity = light.intensity;
-                if (engine.ui.ImGui.dragFloat("Intensity", &intensity, 0.1, 0.0, 100.0)) {
+                if (engine.ui.ImGui.dragFloat(self.tr("Intensity", "强度"), &intensity, 0.1, 0.0, 100.0)) {
                     light.intensity = intensity;
                     if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
                         try self.captureSnapshot(layer_context);
@@ -1605,7 +1728,7 @@ pub const EditorLayer = struct {
 
                 if (light.kind != .directional) {
                     var range = light.range;
-                    if (engine.ui.ImGui.dragFloat("Range", &range, 0.1, 0.1, 100.0)) {
+                    if (engine.ui.ImGui.dragFloat(self.tr("Range", "范围"), &range, 0.1, 0.1, 100.0)) {
                         light.range = range;
                         if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
                             try self.captureSnapshot(layer_context);
@@ -1617,42 +1740,44 @@ pub const EditorLayer = struct {
     }
 
     fn drawContentBrowser(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
-        _ = engine.ui.ImGui.beginWindow("Content Browser 资源浏览");
+        var title_buffer: [96]u8 = undefined;
+        const title = try self.windowLabel(&title_buffer, "Content Browser", "资源浏览", "content_browser_panel");
+        _ = engine.ui.ImGui.beginWindow(title);
         defer engine.ui.ImGui.endWindow();
 
-        if (engine.ui.ImGui.button("Refresh 刷新")) {
+        if (engine.ui.ImGui.button(self.tr("Refresh", "刷新"))) {
             try self.refreshAssetBrowser();
         }
         engine.ui.ImGui.sameLine();
-        if (engine.ui.ImGui.button("Quick Save 快速保存")) {
+        if (engine.ui.ImGui.button(self.tr("Quick Save", "快速保存"))) {
             self.saveScene(layer_context);
         }
 
         if (self.selectedAsset()) |entry| {
-            engine.ui.ImGui.labelText("Selected 已选", entry.name);
-            engine.ui.ImGui.labelText("Type 类型", assetKindLabel(entry.kind));
-            engine.ui.ImGui.labelText("Path 路径", entry.path);
+            engine.ui.ImGui.labelText(self.tr("Selected", "已选"), entry.name);
+            engine.ui.ImGui.labelText(self.tr("Type", "类型"), self.assetKindLabel(entry.kind));
+            engine.ui.ImGui.labelText(self.tr("Path", "路径"), entry.path);
 
-            if (self.selectedAssetCanLoadScene() and engine.ui.ImGui.button("Save Over Selected Scene 覆盖保存")) {
+            if (self.selectedAssetCanLoadScene() and engine.ui.ImGui.button(self.tr("Save Over Selected Scene", "覆盖保存到所选场景"))) {
                 self.saveScenePath(layer_context, entry.path);
             }
-            if (self.selectedAssetCanLoadScene() and engine.ui.ImGui.button("Load Selected Scene 加载场景")) {
+            if (self.selectedAssetCanLoadScene() and engine.ui.ImGui.button(self.tr("Load Selected Scene", "加载所选场景"))) {
                 try self.loadScenePath(layer_context, entry.path);
                 return;
             }
-            if (self.selectedAssetCanImportModel() and engine.ui.ImGui.button("Instantiate Selected Model 实例化模型")) {
+            if (self.selectedAssetCanImportModel() and engine.ui.ImGui.button(self.tr("Instantiate Selected Model", "实例化所选模型"))) {
                 try self.importModelPath(layer_context, entry.path);
             }
         } else {
-            engine.ui.ImGui.text("No asset selected. 未选择资源。");
+            engine.ui.ImGui.text(self.tr("No asset selected.", "未选择资源。"));
         }
 
         engine.ui.ImGui.separator();
-        _ = engine.ui.ImGui.inputText("Asset Filter 过滤", self.asset_filter_buffer[0..]);
-        try self.drawAssetGroup("Scenes 场景", .scene);
-        try self.drawAssetGroup("Models 模型", .model);
-        try self.drawAssetGroup("Textures 贴图", .texture);
-        try self.drawAssetGroup("Shaders 着色器", .shader);
+        _ = engine.ui.ImGui.inputText(self.tr("Asset Filter", "资源过滤"), self.asset_filter_buffer[0..]);
+        try self.drawAssetGroup(self.tr("Scenes", "场景"), .scene);
+        try self.drawAssetGroup(self.tr("Models", "模型"), .model);
+        try self.drawAssetGroup(self.tr("Textures", "贴图"), .texture);
+        try self.drawAssetGroup(self.tr("Shaders", "着色器"), .shader);
     }
 
     fn drawAssetGroup(self: *EditorLayer, title: []const u8, kind: AssetKind) !void {
@@ -1680,6 +1805,375 @@ pub const EditorLayer = struct {
             engine.ui.ImGui.sameLine();
             engine.ui.ImGui.text(entry.path);
         }
+    }
+
+    fn drawAssetPreviewWindow(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
+        var title_buffer: [96]u8 = undefined;
+        const title = try self.windowLabel(&title_buffer, "Asset Preview", "资产预览", "asset_preview_panel");
+        _ = engine.ui.ImGui.beginWindow(title);
+        defer engine.ui.ImGui.endWindow();
+
+        if (self.selectedAsset()) |entry| {
+            engine.ui.ImGui.labelText(self.tr("Name", "名称"), entry.name);
+            engine.ui.ImGui.labelText(self.tr("Type", "类型"), self.assetKindLabel(entry.kind));
+            engine.ui.ImGui.labelText(self.tr("Path", "路径"), entry.path);
+
+            switch (entry.kind) {
+                .texture => {
+                    try self.ensurePreviewTextureForAssetPath(layer_context, entry.path);
+                    self.drawCurrentPreviewImage();
+                    engine.ui.ImGui.text(self.tr("Use this texture from Details > Material.", "可在 细节 > 材质 中把这张贴图指定给当前对象。"));
+                },
+                .model => {
+                    engine.ui.ImGui.text(self.tr("Models are imported as grouped instances with a movable root entity.", "模型会作为成组实例导入，并自动生成可整体移动的根节点。"));
+                    if (engine.ui.ImGui.button(self.tr("Instantiate Model", "实例化模型"))) {
+                        try self.importModelPath(layer_context, entry.path);
+                    }
+                },
+                .scene => {
+                    engine.ui.ImGui.text(self.tr("Scenes can be loaded directly or overwritten from the current world.", "场景资源可以直接加载，也可以用当前世界覆盖保存。"));
+                    if (engine.ui.ImGui.button(self.tr("Load Scene", "加载场景"))) {
+                        try self.loadScenePath(layer_context, entry.path);
+                    }
+                    engine.ui.ImGui.sameLine();
+                    if (engine.ui.ImGui.button(self.tr("Save Over", "覆盖保存"))) {
+                        self.saveScenePath(layer_context, entry.path);
+                    }
+                },
+                .shader => {
+                    engine.ui.ImGui.text(self.tr("Shader source preview is currently metadata-only.", "当前着色器预览仅提供元数据展示。"));
+                },
+            }
+            return;
+        }
+
+        if (layer_context.renderer.selectedEntity()) |selected| {
+            if (layer_context.world.getEntityConst(selected)) |entity| {
+                if (entity.material) |material_component| {
+                    if (material_component.handle) |material_handle| {
+                        if (layer_context.world.assets().material(material_handle)) |material_resource| {
+                            if (material_resource.base_color_texture) |texture_handle| {
+                                if (layer_context.world.assets().texture(texture_handle)) |texture_resource| {
+                                    try self.ensurePreviewTextureForResource(
+                                        layer_context,
+                                        texture_resource.name,
+                                        texture_resource.width,
+                                        texture_resource.height,
+                                        texture_resource.pixels,
+                                    );
+                                    engine.ui.ImGui.labelText(self.tr("Previewing", "预览中"), texture_resource.name);
+                                    self.drawCurrentPreviewImage();
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        engine.ui.ImGui.text(self.tr("Select a texture asset or an entity with a textured material to preview it.", "选择贴图资源，或选择一个带贴图材质的对象来预览。"));
+    }
+
+    fn drawSettingsWindow(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
+        var title_buffer: [80]u8 = undefined;
+        const title = try self.windowLabel(&title_buffer, "Settings", "设置", "settings_panel");
+        _ = engine.ui.ImGui.beginWindow(title);
+        defer engine.ui.ImGui.endWindow();
+
+        engine.ui.ImGui.labelText(self.tr("Language", "语言"), self.tr(
+            if (self.language == .english) "English" else "Chinese",
+            if (self.language == .english) "英文" else "中文",
+        ));
+        if (engine.ui.ImGui.button("English")) {
+            self.language = .english;
+        }
+        engine.ui.ImGui.sameLine();
+        if (engine.ui.ImGui.button("中文")) {
+            self.language = .chinese;
+        }
+
+        if (engine.ui.ImGui.button(self.tr("Reset Dock Layout", "重置停靠布局"))) {
+            engine.ui.ImGui.resetDefaultLayout();
+            self.dock_layout_initialized = true;
+        }
+
+        const viewport_size = layer_context.renderer.sceneViewportSize();
+        var viewport_buffer: [64]u8 = undefined;
+        const viewport_text = try std.fmt.bufPrint(&viewport_buffer, "{d} x {d}", .{ viewport_size[0], viewport_size[1] });
+        engine.ui.ImGui.labelText(self.tr("Viewport Size", "视口尺寸"), viewport_text);
+        engine.ui.ImGui.text(self.tr("The dock layout uses stable panel ids now, so language switching no longer breaks docking.", "停靠布局现在使用稳定的面板 ID，切换语言也不会打乱停靠位置。"));
+    }
+
+    fn handleViewportSelection(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
+        const input = layer_context.input;
+        if (!self.viewport_has_image or !self.viewport_hovered or !input.wasMousePressed(.left) or input.modifiers.alt) {
+            return;
+        }
+        if (self.viewport_extent[0] <= 1.0 or self.viewport_extent[1] <= 1.0) {
+            return;
+        }
+
+        const local_x = input.mouse_position[0] - self.viewport_origin[0];
+        const local_y = input.mouse_position[1] - self.viewport_origin[1];
+        if (local_x < 0.0 or local_y < 0.0 or local_x > self.viewport_extent[0] or local_y > self.viewport_extent[1]) {
+            return;
+        }
+
+        const viewport_size = layer_context.renderer.sceneViewportSize();
+        if (viewport_size[0] == 0 or viewport_size[1] == 0) {
+            return;
+        }
+
+        const normalized_x = std.math.clamp(local_x / self.viewport_extent[0], 0.0, 1.0);
+        const normalized_y = std.math.clamp(local_y / self.viewport_extent[1], 0.0, 1.0);
+        const pixel_x = @as(u32, @intFromFloat(std.math.clamp(
+            normalized_x * @as(f32, @floatFromInt(viewport_size[0])),
+            0.0,
+            @as(f32, @floatFromInt(viewport_size[0] - 1)),
+        )));
+        const pixel_y = @as(u32, @intFromFloat(std.math.clamp(
+            normalized_y * @as(f32, @floatFromInt(viewport_size[1])),
+            0.0,
+            @as(f32, @floatFromInt(viewport_size[1] - 1)),
+        )));
+
+        try layer_context.renderer.requestSelectionReadback(
+            pixel_x,
+            pixel_y,
+            if (input.modifiers.shift or input.modifiers.ctrl or input.modifiers.super) .toggle else .replace,
+        );
+    }
+
+    fn ensurePreviewTextureForAssetPath(self: *EditorLayer, layer_context: *engine.core.LayerContext, path: []const u8) !void {
+        if (self.preview_texture_key) |existing_key| {
+            if (self.preview_texture != null and std.mem.eql(u8, existing_key, path)) {
+                return;
+            }
+        }
+
+        const allocator = self.allocator orelse layer_context.world.allocator;
+        const encoded = try std.fs.cwd().readFileAlloc(allocator, path, 128 * 1024 * 1024);
+        defer allocator.free(encoded);
+
+        var decoded = try engine.assets.decodeImageRgba8(allocator, encoded);
+        defer decoded.deinit();
+        swizzleRgbaToBgra(decoded.pixels);
+
+        try self.ensurePreviewTextureForResource(layer_context, path, decoded.width, decoded.height, decoded.pixels);
+    }
+
+    fn ensurePreviewTextureForResource(
+        self: *EditorLayer,
+        layer_context: *engine.core.LayerContext,
+        cache_key: []const u8,
+        width: u32,
+        height: u32,
+        pixels: []const u8,
+    ) !void {
+        if (self.preview_texture_key) |existing_key| {
+            if (self.preview_texture != null and self.preview_texture_size[0] == width and self.preview_texture_size[1] == height and std.mem.eql(u8, existing_key, cache_key)) {
+                return;
+            }
+        }
+
+        self.clearPreviewTexture();
+
+        var texture = try layer_context.rhi().createTexture(.{
+            .width = width,
+            .height = height,
+            .format = .bgra8_unorm,
+            .usage = engine.rhi.TextureUsage.sampler,
+        });
+        errdefer layer_context.rhi().releaseTexture(&texture);
+
+        try layer_context.rhi().uploadTextureData(&texture, pixels, width, height);
+
+        const allocator = self.allocator orelse layer_context.world.allocator;
+        self.preview_texture = texture;
+        self.preview_texture_key = try allocator.dupe(u8, cache_key);
+        self.preview_texture_size = .{ width, height };
+        self.preview_device = layer_context.rhi();
+    }
+
+    fn drawCurrentPreviewImage(self: *EditorLayer) void {
+        const texture = if (self.preview_texture) |*value| value else return;
+        const available = engine.ui.ImGui.contentRegionAvail();
+        if (available[0] <= 1.0 or available[1] <= 1.0 or self.preview_texture_size[0] == 0 or self.preview_texture_size[1] == 0) {
+            return;
+        }
+
+        const width_f = @as(f32, @floatFromInt(self.preview_texture_size[0]));
+        const height_f = @as(f32, @floatFromInt(self.preview_texture_size[1]));
+        const scale = @min(available[0] / width_f, available[1] / height_f);
+        const display_width = @max(width_f * scale, 1.0);
+        const display_height = @max(height_f * scale, 1.0);
+        engine.ui.ImGui.image(texture, display_width, display_height);
+    }
+
+    fn clearPreviewTexture(self: *EditorLayer) void {
+        if (self.preview_texture) |*texture| {
+            if (self.preview_device) |device| {
+                device.releaseTexture(texture);
+            }
+            self.preview_texture = null;
+        }
+        if (self.preview_texture_key) |key| {
+            if (self.allocator) |allocator| {
+                allocator.free(key);
+            }
+            self.preview_texture_key = null;
+        }
+        self.preview_texture_size = .{ 0, 0 };
+    }
+
+    fn selectedAssetCanUseAsTexture(self: *EditorLayer) bool {
+        const entry = self.selectedAsset() orelse return false;
+        return entry.kind == .texture;
+    }
+
+    fn assignSelectedTextureToMaterial(
+        self: *EditorLayer,
+        layer_context: *engine.core.LayerContext,
+        entity: *engine.scene.Entity,
+    ) !void {
+        const entry = self.selectedAsset() orelse return;
+        if (entry.kind != .texture) {
+            return;
+        }
+
+        const texture_handle = try self.importTextureAsset(layer_context, entry.path);
+        if (try self.ensureEditableMaterialResource(layer_context, entity)) |material_resource| {
+            material_resource.base_color_texture = texture_handle;
+            if (entity.material) |*material_component| {
+                material_component.handle = self.materialHandleForEntity(entity);
+            }
+        }
+    }
+
+    fn importTextureAsset(self: *EditorLayer, layer_context: *engine.core.LayerContext, path: []const u8) !engine.assets.TextureHandle {
+        for (layer_context.world.assets().textures.items, 0..) |texture, index| {
+            if (std.mem.eql(u8, texture.name, path)) {
+                return @enumFromInt(index + 1);
+            }
+        }
+
+        const allocator = self.allocator orelse layer_context.world.allocator;
+        const encoded = try std.fs.cwd().readFileAlloc(allocator, path, 128 * 1024 * 1024);
+        defer allocator.free(encoded);
+
+        var decoded = try engine.assets.decodeImageRgba8(allocator, encoded);
+        defer decoded.deinit();
+        swizzleRgbaToBgra(decoded.pixels);
+
+        return layer_context.world.assets().createTexture(.{
+            .name = path,
+            .width = decoded.width,
+            .height = decoded.height,
+            .pixels = decoded.pixels,
+        });
+    }
+
+    fn ensureEditableMaterialResource(
+        self: *EditorLayer,
+        layer_context: *engine.core.LayerContext,
+        entity: *engine.scene.Entity,
+    ) !?*engine.assets.MaterialResource {
+        const allocator = self.allocator orelse layer_context.world.allocator;
+        const material_component = if (entity.material) |*value| value else return null;
+
+        if (material_component.handle) |material_handle| {
+            if (self.materialUsageCount(layer_context.world, material_handle) <= 1) {
+                const material_resource = layer_context.world.assets().material(material_handle) orelse return null;
+                return @constCast(material_resource);
+            }
+
+            const source = layer_context.world.assets().material(material_handle) orelse return null;
+            const instance_name = try std.fmt.allocPrint(allocator, "{s} Material", .{entity.name});
+            defer allocator.free(instance_name);
+
+            const new_handle = try layer_context.world.assets().createMaterial(.{
+                .name = instance_name,
+                .shading = source.shading,
+                .base_color_factor = source.base_color_factor,
+                .base_color_texture = source.base_color_texture,
+            });
+            material_component.handle = new_handle;
+            material_component.shading = source.shading;
+            material_component.base_color_factor = source.base_color_factor;
+            return @constCast(layer_context.world.assets().material(new_handle).?);
+        }
+
+        const instance_name = try std.fmt.allocPrint(allocator, "{s} Material", .{entity.name});
+        defer allocator.free(instance_name);
+
+        const new_handle = try layer_context.world.assets().createMaterial(.{
+            .name = instance_name,
+            .shading = material_component.shading,
+            .base_color_factor = material_component.base_color_factor,
+        });
+        material_component.handle = new_handle;
+        return @constCast(layer_context.world.assets().material(new_handle).?);
+    }
+
+    fn materialHandleForEntity(self: *const EditorLayer, entity: *const engine.scene.Entity) ?engine.assets.MaterialHandle {
+        _ = self;
+        if (entity.material) |material_component| {
+            return material_component.handle;
+        }
+        return null;
+    }
+
+    fn materialUsageCount(self: *const EditorLayer, world: *const engine.scene.World, handle: engine.assets.MaterialHandle) usize {
+        _ = self;
+        var count: usize = 0;
+        for (world.entities.items) |entity| {
+            if (entity.material) |material| {
+                if (material.handle) |candidate| {
+                    if (candidate == handle) {
+                        count += 1;
+                    }
+                }
+            }
+        }
+        return count;
+    }
+
+    fn tr(self: *const EditorLayer, english: []const u8, chinese: []const u8) []const u8 {
+        return switch (self.language) {
+            .english => english,
+            .chinese => chinese,
+        };
+    }
+
+    fn windowLabel(self: *const EditorLayer, buffer: []u8, english: []const u8, chinese: []const u8, stable_id: []const u8) ![]const u8 {
+        return std.fmt.bufPrint(buffer, "{s}###{s}", .{ self.tr(english, chinese), stable_id });
+    }
+
+    fn assetKindLabel(self: *const EditorLayer, kind: AssetKind) []const u8 {
+        return switch (kind) {
+            .scene => self.tr("Scene", "场景"),
+            .model => self.tr("Model", "模型"),
+            .texture => self.tr("Texture", "贴图"),
+            .shader => self.tr("Shader", "着色器"),
+        };
+    }
+
+    fn primitiveLabel(self: *const EditorLayer, primitive: engine.scene.Primitive) []const u8 {
+        return switch (primitive) {
+            .cube => self.tr("Cube", "立方体"),
+            .sphere => self.tr("Sphere", "球体"),
+            .plane => self.tr("Plane", "平面"),
+            .custom => self.tr("Custom", "自定义"),
+        };
+    }
+
+    fn shadingLabel(self: *const EditorLayer, shading: engine.scene.ShadingModel) []const u8 {
+        return switch (shading) {
+            .unlit => self.tr("Unlit", "无光照"),
+            .lambert => self.tr("Lambert", "兰伯特"),
+            .pbr_metallic_roughness => "PBR",
+        };
     }
 
     fn hasVisibleChildren(self: *const EditorLayer, world: *const engine.scene.World, entity_id: engine.scene.EntityId) bool {
@@ -1846,6 +2340,28 @@ fn containsAsciiInsensitive(haystack: []const u8, needle: []const u8) bool {
 fn zeroTerminatedSlice(buffer: []const u8) []const u8 {
     const end = std.mem.indexOfScalar(u8, buffer, 0) orelse buffer.len;
     return buffer[0..end];
+}
+
+fn viewportDrawableSize(window: *const engine.platform.Window, logical_extent: [2]f32) [2]u32 {
+    if (logical_extent[0] < 1.0 or logical_extent[1] < 1.0 or window.logical_width == 0 or window.logical_height == 0 or window.drawable_width == 0 or window.drawable_height == 0) {
+        return .{ 0, 0 };
+    }
+
+    const scale_x = @as(f32, @floatFromInt(window.drawable_width)) / @as(f32, @floatFromInt(window.logical_width));
+    const scale_y = @as(f32, @floatFromInt(window.drawable_height)) / @as(f32, @floatFromInt(window.logical_height));
+    return .{
+        @max(@as(u32, @intFromFloat(@max(logical_extent[0] * scale_x, 0.0))), 1),
+        @max(@as(u32, @intFromFloat(@max(logical_extent[1] * scale_y, 0.0))), 1),
+    };
+}
+
+fn swizzleRgbaToBgra(bytes: []u8) void {
+    var index: usize = 0;
+    while (index + 3 < bytes.len) : (index += 4) {
+        const r = bytes[index];
+        bytes[index] = bytes[index + 2];
+        bytes[index + 2] = r;
+    }
 }
 
 fn forwardFromAngles(yaw: f32, pitch: f32) [3]f32 {

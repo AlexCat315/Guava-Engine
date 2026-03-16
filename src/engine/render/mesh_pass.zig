@@ -155,14 +155,15 @@ pub const MeshSceneCache = struct {
     pub fn prepareScene(
         self: *MeshSceneCache,
         device: *rhi_mod.RhiDevice,
-        frame: rhi_mod.Frame,
         scene: *const scene_mod.Scene,
+        render_width: u32,
+        render_height: u32,
     ) !PreparedScene {
         const camera_state = chooseCamera(scene);
-        const aspect_ratio = if (frame.height == 0)
+        const aspect_ratio = if (render_height == 0)
             1.0
         else
-            @as(f32, @floatFromInt(frame.width)) / @as(f32, @floatFromInt(frame.height));
+            @as(f32, @floatFromInt(render_width)) / @as(f32, @floatFromInt(render_height));
         const view_projection = math.mul(
             math.projectionForCamera(camera_state.camera, aspect_ratio),
             math.viewMatrix(camera_state.transform),

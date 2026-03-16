@@ -37,6 +37,10 @@ pub fn beginDockspace() void {
     c.guava_imgui_begin_dockspace();
 }
 
+pub fn resetDefaultLayout() void {
+    c.guava_imgui_reset_default_layout();
+}
+
 pub fn render(command_buffer: *sdl.SDL_GPUCommandBuffer, render_pass: *sdl.SDL_GPURenderPass) void {
     c.guava_imgui_render(@ptrCast(command_buffer), @ptrCast(render_pass));
 }
@@ -123,6 +127,10 @@ pub fn isItemClicked() bool {
     return c.guava_imgui_is_item_clicked();
 }
 
+pub fn isItemHovered() bool {
+    return c.guava_imgui_is_item_hovered();
+}
+
 pub fn isItemDeactivatedAfterEdit() bool {
     return c.guava_imgui_is_item_deactivated_after_edit();
 }
@@ -153,6 +161,30 @@ pub fn dragDropSourceU64(payload_type: []const u8, value: u64, preview_text: []c
 
 pub fn acceptDragDropPayloadU64(payload_type: []const u8, out_value: *u64) bool {
     return c.guava_imgui_accept_drag_drop_payload_u64(payload_type.ptr, payload_type.len, out_value);
+}
+
+pub fn isWindowHovered() bool {
+    return c.guava_imgui_is_window_hovered();
+}
+
+pub fn isWindowFocused() bool {
+    return c.guava_imgui_is_window_focused();
+}
+
+pub fn contentRegionAvail() [2]f32 {
+    var value = [2]f32{ 0.0, 0.0 };
+    c.guava_imgui_get_content_region_avail(@ptrCast(&value[0]));
+    return value;
+}
+
+pub fn cursorScreenPos() [2]f32 {
+    var value = [2]f32{ 0.0, 0.0 };
+    c.guava_imgui_get_cursor_screen_pos(@ptrCast(&value[0]));
+    return value;
+}
+
+pub fn image(texture: *const rhi_mod.Texture, width: f32, height: f32) void {
+    c.guava_imgui_image(@ptrCast(texture.raw), width, height);
 }
 
 fn textureFormatToSdl(format: rhi_types.TextureFormat) c.SDL_GPUTextureFormat {

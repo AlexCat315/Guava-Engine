@@ -43,7 +43,8 @@ pub const IdPass = struct {
     pub fn init(device: *rhi_mod.RhiDevice) !IdPass {
         var pass = IdPass{};
         try pass.createResources(device);
-        try pass.ensureTarget(device);
+        const runtime = device.runtimeInfo();
+        try pass.ensureTargetSize(device, runtime.drawable_width, runtime.drawable_height);
         return pass;
     }
 
@@ -73,7 +74,11 @@ pub const IdPass = struct {
 
     pub fn ensureTarget(self: *IdPass, device: *rhi_mod.RhiDevice) !void {
         const runtime = device.runtimeInfo();
-        if (runtime.drawable_width == 0 or runtime.drawable_height == 0) {
+        try self.ensureTargetSize(device, runtime.drawable_width, runtime.drawable_height);
+    }
+
+    pub fn ensureTargetSize(self: *IdPass, device: *rhi_mod.RhiDevice, width: u32, height: u32) !void {
+        if (width == 0 or height == 0) {
             if (self.id_texture) |*id_texture| {
                 device.releaseTexture(id_texture);
             }
@@ -82,7 +87,7 @@ pub const IdPass = struct {
         }
 
         if (self.id_texture) |existing_texture| {
-            if (existing_texture.desc.width == runtime.drawable_width and existing_texture.desc.height == runtime.drawable_height) {
+            if (existing_texture.desc.width == width and existing_texture.desc.height == height) {
                 return;
             }
 
@@ -92,8 +97,8 @@ pub const IdPass = struct {
         }
 
         self.id_texture = try device.createTexture(.{
-            .width = runtime.drawable_width,
-            .height = runtime.drawable_height,
+            .width = width,
+            .height = height,
             .format = .bgra8_unorm,
             .usage = rhi_types.TextureUsage.color_target | rhi_types.TextureUsage.sampler,
         });

@@ -62,6 +62,79 @@ const InFlightSelectionBatch = struct {
     }
 };
 
+const SceneViewportState = struct {
+    width: u32 = 0,
+    height: u32 = 0,
+    color_texture: ?rhi_mod.Texture = null,
+    depth_texture: ?rhi_mod.Texture = null,
+
+    fn deinit(self: *SceneViewportState, device: *rhi_mod.RhiDevice) void {
+        if (self.color_texture) |*texture| {
+            device.releaseTexture(texture);
+        }
+        if (self.depth_texture) |*texture| {
+            device.releaseTexture(texture);
+        }
+        self.* = .{};
+    }
+
+    fn ensure(self: *SceneViewportState, device: *rhi_mod.RhiDevice, width: u32, height: u32) !void {
+        if (width == 0 or height == 0) {
+            self.deinit(device);
+            return;
+        }
+
+        if (self.color_texture) |color_texture| {
+            if (self.depth_texture != null and color_texture.desc.width == width and color_texture.desc.height == height) {
+                self.width = width;
+                self.height = height;
+                return;
+            }
+        }
+
+        self.deinit(device);
+
+        self.color_texture = try device.createTexture(.{
+            .width = width,
+            .height = height,
+            .format = .bgra8_unorm,
+            .usage = rhi_types.TextureUsage.color_target | rhi_types.TextureUsage.sampler,
+        });
+        errdefer if (self.color_texture) |*texture| {
+            device.releaseTexture(texture);
+            self.color_texture = null;
+        };
+
+        self.depth_texture = try device.createTexture(.{
+            .width = width,
+            .height = height,
+            .format = .d32_float,
+            .usage = rhi_types.TextureUsage.depth_stencil_target,
+        });
+
+        self.width = width;
+        self.height = height;
+    }
+
+    fn active(self: *const SceneViewportState) bool {
+        return self.width > 0 and self.height > 0 and self.color_texture != null and self.depth_texture != null;
+    }
+
+    fn color(self: *SceneViewportState) ?*const rhi_mod.Texture {
+        if (self.color_texture) |*texture| {
+            return texture;
+        }
+        return null;
+    }
+
+    fn depth(self: *SceneViewportState) ?*const rhi_mod.Texture {
+        if (self.depth_texture) |*texture| {
+            return texture;
+        }
+        return null;
+    }
+};
+
 pub const Renderer = struct {
     allocator: std.mem.Allocator,
     platform: platform_mod.Platform,
@@ -78,6 +151,7 @@ pub const Renderer = struct {
     editor_gizmo_state: EditorGizmoState = .{},
     pending_selection_readbacks: std.ArrayList(SelectionReadbackRequest) = .empty,
     in_flight_selection_batches: std.ArrayList(InFlightSelectionBatch) = .empty,
+    scene_viewport: SceneViewportState = .{},
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -137,6 +211,7 @@ pub const Renderer = struct {
         self.releaseInFlightSelectionBatches();
         self.pending_selection_readbacks.deinit(self.allocator);
         self.selection_history.deinit();
+        self.scene_viewport.deinit(&self.rhi);
         self.gizmo_pass.deinit(&self.rhi);
         self.outline_pass.deinit(&self.rhi);
         self.base_pass.deinit(&self.rhi);
@@ -211,6 +286,21 @@ pub const Renderer = struct {
         self.editor_gizmo_state = state;
     }
 
+    pub fn setSceneViewportSize(self: *Renderer, width: u32, height: u32) !void {
+        try self.scene_viewport.ensure(&self.rhi, width, height);
+    }
+
+    pub fn sceneViewportTexture(self: *Renderer) ?*const rhi_mod.Texture {
+        if (self.scene_viewport.color_texture) |*texture| {
+            return texture;
+        }
+        return null;
+    }
+
+    pub fn sceneViewportSize(self: *const Renderer) [2]u32 {
+        return .{ self.scene_viewport.width, self.scene_viewport.height };
+    }
+
     pub fn passCount(self: *const Renderer) usize {
         return self.graph.passes.items.len;
     }
@@ -241,7 +331,11 @@ pub const Renderer = struct {
             };
         }
 
-        var prepared_scene = try self.scene_cache.prepareScene(&self.rhi, frame, scene);
+        const viewport_active = self.scene_viewport.active();
+        const render_width = if (viewport_active) self.scene_viewport.width else frame.width;
+        const render_height = if (viewport_active) self.scene_viewport.height else frame.height;
+
+        var prepared_scene = try self.scene_cache.prepareScene(&self.rhi, scene, render_width, render_height);
         defer prepared_scene.deinit();
 
         if (!self.selection_seeded) {
@@ -252,7 +346,27 @@ pub const Renderer = struct {
             self.selection_seeded = true;
         }
 
-        try self.id_pass.ensureTarget(&self.rhi);
+        try self.id_pass.ensureTargetSize(&self.rhi, render_width, render_height);
+
+        const scene_color_target: rhi_mod.ColorTarget = if (viewport_active)
+            .{ .texture = self.scene_viewport.color().? }
+        else
+            .swapchain;
+        const scene_depth_target: ?rhi_mod.DepthAttachmentDesc = blk: {
+            const depth_texture = if (viewport_active)
+                self.scene_viewport.depth().?
+            else
+                self.rhi.depthTexture() orelse break :blk null;
+            break :blk .{
+                .texture = depth_texture,
+                .clear_depth = 1.0,
+                .clear_stencil = 0,
+                .load_op = .clear,
+                .store_op = .dont_care,
+                .stencil_load_op = .dont_care,
+                .stencil_store_op = .dont_care,
+            };
+        };
 
         var draw_stats = mesh_pass_mod.DrawStats{};
 
@@ -265,24 +379,21 @@ pub const Renderer = struct {
                     .load_op = .clear,
                     .store_op = .store,
                 },
-                .depth = if (self.rhi.depthTexture()) |depth_texture|
-                    .{
-                        .texture = depth_texture,
-                        .clear_depth = 1.0,
-                        .clear_stencil = 0,
-                        .load_op = .clear,
-                        .store_op = .dont_care,
-                        .stencil_load_op = .dont_care,
-                        .stencil_store_op = .dont_care,
-                    }
-                else
-                    null,
+                .depth = scene_depth_target,
             });
             draw_stats.add(self.id_pass.draw(&self.rhi, frame, id_render_pass, &prepared_scene));
             self.rhi.endRenderPass(id_render_pass);
         }
 
-        const scene_pass = try self.rhi.beginRenderPass(frame, clear);
+        const scene_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
+            .color = .{
+                .target = scene_color_target,
+                .clear_color = clear.color,
+                .load_op = .clear,
+                .store_op = .store,
+            },
+            .depth = scene_depth_target,
+        });
         draw_stats.add(self.depth_prepass.draw(&self.rhi, frame, scene_pass, &prepared_scene));
         draw_stats.add(self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene));
         self.rhi.endRenderPass(scene_pass);
@@ -292,7 +403,7 @@ pub const Renderer = struct {
             try self.outline_pass.syncTexture(&self.rhi, self.id_pass.texture().?);
             const outline_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
                 .color = .{
-                    .target = .swapchain,
+                    .target = scene_color_target,
                     .load_op = .load,
                     .store_op = .store,
                 },
@@ -307,7 +418,7 @@ pub const Renderer = struct {
                 if (scene.worldTransform(selected_entity_id)) |selected_transform| {
                     const gizmo_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
                         .color = .{
-                            .target = .swapchain,
+                            .target = scene_color_target,
                             .load_op = .load,
                             .store_op = .store,
                         },
@@ -330,7 +441,8 @@ pub const Renderer = struct {
         const ui_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
             .color = .{
                 .target = .swapchain,
-                .load_op = .load,
+                .clear_color = clear.color,
+                .load_op = if (viewport_active) .clear else .load,
                 .store_op = .store,
             },
             .depth = null,

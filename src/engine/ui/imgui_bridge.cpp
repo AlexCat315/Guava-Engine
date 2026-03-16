@@ -5,6 +5,7 @@
 #include <string>
 
 #include "imgui.h"
+#include "imgui_internal.h"
 #include "backends/imgui_impl_sdl3.h"
 #include "backends/imgui_impl_sdlgpu3.h"
 
@@ -17,6 +18,7 @@ std::string make_string(const char* text, size_t text_len) {
 bool g_imgui_initialized = false;
 ImDrawData* g_draw_data = nullptr;
 std::string g_ini_path;
+ImGuiID g_dockspace_id = 0;
 
 std::string first_existing_path(std::initializer_list<const char*> candidates) {
     for (const char* candidate : candidates) {
@@ -203,7 +205,43 @@ extern "C" void guava_imgui_begin_dockspace(void) {
     if (!g_imgui_initialized) {
         return;
     }
-    ImGui::DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
+    g_dockspace_id = ImGui::GetID("GuavaEditorDockspace");
+    ImGui::DockSpaceOverViewport(g_dockspace_id, nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
+}
+
+extern "C" void guava_imgui_reset_default_layout(void) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+
+    ImGuiViewport* viewport = ImGui::GetMainViewport();
+    if (viewport == nullptr) {
+        return;
+    }
+
+    g_dockspace_id = ImGui::GetID("GuavaEditorDockspace");
+    ImGui::DockBuilderRemoveNode(g_dockspace_id);
+    ImGui::DockBuilderAddNode(g_dockspace_id, ImGuiDockNodeFlags_DockSpace | ImGuiDockNodeFlags_PassthruCentralNode);
+    ImGui::DockBuilderSetNodeSize(g_dockspace_id, viewport->Size);
+
+    ImGuiID dock_main = g_dockspace_id;
+    ImGuiID dock_left = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Left, 0.22f, nullptr, &dock_main);
+    ImGuiID dock_right = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Right, 0.28f, nullptr, &dock_main);
+    ImGuiID dock_bottom = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Down, 0.28f, nullptr, &dock_main);
+    ImGuiID dock_top = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Up, 0.08f, nullptr, &dock_main);
+    ImGuiID dock_left_bottom = ImGui::DockBuilderSplitNode(dock_left, ImGuiDir_Down, 0.34f, nullptr, &dock_left);
+    ImGuiID dock_right_bottom = ImGui::DockBuilderSplitNode(dock_right, ImGuiDir_Down, 0.42f, nullptr, &dock_right);
+
+    ImGui::DockBuilderDockWindow("Viewport Toolbar###viewport_toolbar_panel", dock_top);
+    ImGui::DockBuilderDockWindow("Viewport###viewport_panel", dock_main);
+    ImGui::DockBuilderDockWindow("Scene###scene_panel", dock_left);
+    ImGui::DockBuilderDockWindow("Settings###settings_panel", dock_left_bottom);
+    ImGui::DockBuilderDockWindow("Details###details_panel", dock_right);
+    ImGui::DockBuilderDockWindow("Asset Preview###asset_preview_panel", dock_right_bottom);
+    ImGui::DockBuilderDockWindow("Stats###stats_panel", dock_right_bottom);
+    ImGui::DockBuilderDockWindow("Content Browser###content_browser_panel", dock_bottom);
+
+    ImGui::DockBuilderFinish(g_dockspace_id);
 }
 
 extern "C" void guava_imgui_prepare(SDL_GPUCommandBuffer* command_buffer) {
@@ -387,6 +425,13 @@ extern "C" bool guava_imgui_is_item_clicked(void) {
     return ImGui::IsItemClicked();
 }
 
+extern "C" bool guava_imgui_is_item_hovered(void) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+    return ImGui::IsItemHovered();
+}
+
 extern "C" bool guava_imgui_is_item_deactivated_after_edit(void) {
     if (!g_imgui_initialized) {
         return false;
@@ -471,4 +516,43 @@ extern "C" bool guava_imgui_accept_drag_drop_payload_u64(const char* payload_typ
 
     ImGui::EndDragDropTarget();
     return accepted;
+}
+
+extern "C" bool guava_imgui_is_window_hovered(void) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+    return ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+}
+
+extern "C" bool guava_imgui_is_window_focused(void) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+    return ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+}
+
+extern "C" void guava_imgui_get_content_region_avail(float out_value[2]) {
+    if (!g_imgui_initialized || out_value == nullptr) {
+        return;
+    }
+    const ImVec2 value = ImGui::GetContentRegionAvail();
+    out_value[0] = value.x;
+    out_value[1] = value.y;
+}
+
+extern "C" void guava_imgui_get_cursor_screen_pos(float out_value[2]) {
+    if (!g_imgui_initialized || out_value == nullptr) {
+        return;
+    }
+    const ImVec2 value = ImGui::GetCursorScreenPos();
+    out_value[0] = value.x;
+    out_value[1] = value.y;
+}
+
+extern "C" void guava_imgui_image(SDL_GPUTexture* texture, float width, float height) {
+    if (!g_imgui_initialized || texture == nullptr) {
+        return;
+    }
+    ImGui::Image((ImTextureID)(intptr_t)texture, ImVec2(width, height));
 }
