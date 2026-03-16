@@ -10,6 +10,7 @@ pub const ImportReport = struct {
     mesh_count: usize = 0,
     material_count: usize = 0,
     texture_count: usize = 0,
+    root_entity: ?u64 = null,
 };
 
 const GltfDocument = struct {
@@ -131,6 +132,24 @@ pub fn importStaticModel(
     path: []const u8,
     root_transform: components.Transform,
 ) !ImportReport {
+    return importStaticModelInternal(world, path, root_transform, null, false);
+}
+
+pub fn importStaticModelInstance(
+    world: anytype,
+    path: []const u8,
+    root_transform: components.Transform,
+) !ImportReport {
+    return importStaticModelInternal(world, path, root_transform, null, true);
+}
+
+fn importStaticModelInternal(
+    world: anytype,
+    path: []const u8,
+    root_transform: components.Transform,
+    forced_parent: ?u64,
+    create_root_instance: bool,
+) !ImportReport {
     const allocator = world.allocator;
     const source = try std.fs.cwd().readFileAlloc(allocator, path, 32 * 1024 * 1024);
     defer allocator.free(source);
@@ -164,6 +183,10 @@ pub fn importStaticModel(
     const default_material = try world.resources.ensureDefaultMaterial();
 
     var report = ImportReport{};
+    const import_parent = if (create_root_instance)
+        try createImportRoot(world, path, root_transform, &report)
+    else
+        forced_parent;
     const scene_index = document.scene orelse 0;
     const document_scenes = document.scenes orelse return error.MissingScenes;
     if (scene_index >= document_scenes.len) {
@@ -182,6 +205,7 @@ pub fn importStaticModel(
             node_index,
             math.identity(),
             root_transform,
+            import_parent,
             base_dir,
             source_stem,
             &report,
@@ -201,6 +225,7 @@ fn importNodeRecursive(
     node_index: u32,
     parent_matrix: math.Mat4,
     root_transform: components.Transform,
+    import_parent: ?u64,
     base_dir: []const u8,
     source_stem: []const u8,
     report: *ImportReport,
@@ -225,6 +250,7 @@ fn importNodeRecursive(
             node,
             node_world,
             root_transform,
+            import_parent,
             base_dir,
             source_stem,
             report,
@@ -243,6 +269,7 @@ fn importNodeRecursive(
                 child_index,
                 node_world,
                 root_transform,
+                import_parent,
                 base_dir,
                 source_stem,
                 report,
@@ -262,6 +289,7 @@ fn importNodeMesh(
     node: Node,
     node_world: math.Mat4,
     root_transform: components.Transform,
+    import_parent: ?u64,
     base_dir: []const u8,
     source_stem: []const u8,
     report: *ImportReport,
@@ -310,6 +338,7 @@ fn importNodeMesh(
 
         _ = try world.createEntity(.{
             .name = entity_name,
+            .parent = import_parent,
             .mesh = .{
                 .handle = mesh_handle,
                 .primitive = .custom,
@@ -317,7 +346,7 @@ fn importNodeMesh(
             .material = .{
                 .handle = material.handle,
             },
-            .transform = root_transform,
+            .transform = if (import_parent != null) .{} else root_transform,
         });
 
         report.entity_count += 1;
@@ -325,6 +354,25 @@ fn importNodeMesh(
         report.material_count += @intFromBool(material.created);
         report.texture_count += material.created_texture_count;
     }
+}
+
+fn createImportRoot(
+    world: anytype,
+    path: []const u8,
+    root_transform: components.Transform,
+    report: *ImportReport,
+) !u64 {
+    const source_stem = std.fs.path.stem(path);
+    const root_name = try std.fmt.allocPrint(world.allocator, "{s} Instance", .{source_stem});
+    defer world.allocator.free(root_name);
+
+    const root_id = try world.createEntity(.{
+        .name = root_name,
+        .transform = root_transform,
+    });
+    report.root_entity = root_id;
+    report.entity_count += 1;
+    return root_id;
 }
 
 fn createMeshForPrimitive(

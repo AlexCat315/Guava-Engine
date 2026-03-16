@@ -1,5 +1,7 @@
 #include "imgui_bridge.h"
 
+#include <filesystem>
+#include <initializer_list>
 #include <string>
 
 #include "imgui.h"
@@ -16,6 +18,105 @@ bool g_imgui_initialized = false;
 ImDrawData* g_draw_data = nullptr;
 std::string g_ini_path;
 
+std::string first_existing_path(std::initializer_list<const char*> candidates) {
+    for (const char* candidate : candidates) {
+        if (candidate == nullptr || candidate[0] == '\0') {
+            continue;
+        }
+        std::error_code ec;
+        if (std::filesystem::exists(candidate, ec)) {
+            return std::string(candidate);
+        }
+    }
+    return {};
+}
+
+std::string find_ui_font_path() {
+#if defined(__APPLE__)
+    return first_existing_path({
+        "/System/Library/Fonts/SFNS.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+    });
+#elif defined(_WIN32)
+    return first_existing_path({
+        "C:/Windows/Fonts/segoeui.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+    });
+#else
+    return first_existing_path({
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf",
+    });
+#endif
+}
+
+std::string find_cjk_font_path() {
+#if defined(__APPLE__)
+    return first_existing_path({
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/System/Library/Fonts/STHeiti Light.ttc",
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "/Library/Fonts/Arial Unicode.ttf",
+    });
+#elif defined(_WIN32)
+    return first_existing_path({
+        "C:/Windows/Fonts/msyh.ttc",
+        "C:/Windows/Fonts/msyh.ttf",
+        "C:/Windows/Fonts/simhei.ttf",
+        "C:/Windows/Fonts/simsun.ttc",
+    });
+#else
+    return first_existing_path({
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    });
+#endif
+}
+
+void configure_fonts(float content_scale) {
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigDpiScaleFonts = false;
+    io.Fonts->Clear();
+    io.Fonts->Flags |= ImFontAtlasFlags_NoPowerOfTwoHeight;
+
+    const float scale = content_scale > 0.0f ? content_scale : 1.0f;
+    const float font_size = 16.0f * scale;
+
+    ImFontConfig base_cfg = {};
+    base_cfg.OversampleH = 2;
+    base_cfg.OversampleV = 1;
+    base_cfg.RasterizerMultiply = 1.1f;
+    base_cfg.FontNo = 0;
+
+    const std::string ui_font_path = find_ui_font_path();
+    const std::string cjk_font_path = find_cjk_font_path();
+
+    ImFont* primary_font = nullptr;
+    if (!ui_font_path.empty()) {
+        primary_font = io.Fonts->AddFontFromFileTTF(ui_font_path.c_str(), font_size, &base_cfg, io.Fonts->GetGlyphRangesDefault());
+    }
+    if (primary_font == nullptr && !cjk_font_path.empty()) {
+        primary_font = io.Fonts->AddFontFromFileTTF(cjk_font_path.c_str(), font_size, &base_cfg, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+    }
+    if (primary_font == nullptr) {
+        primary_font = io.Fonts->AddFontDefault();
+    }
+
+    if (!cjk_font_path.empty()) {
+        ImFontConfig merge_cfg = base_cfg;
+        merge_cfg.MergeMode = true;
+        merge_cfg.FontNo = 0;
+        merge_cfg.GlyphMinAdvanceX = font_size * 0.5f;
+        io.Fonts->AddFontFromFileTTF(cjk_font_path.c_str(), font_size, &merge_cfg, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+    }
+
+    io.FontDefault = primary_font;
+}
+
 } // namespace
 
 extern "C" bool guava_imgui_init(SDL_Window* window, SDL_GPUDevice* device, SDL_GPUTextureFormat color_target_format) {
@@ -28,7 +129,6 @@ extern "C" bool guava_imgui_init(SDL_Window* window, SDL_GPUDevice* device, SDL_
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-    io.ConfigDpiScaleFonts = true;
 
     if (char* pref_path = SDL_GetPrefPath("Guava", "Editor")) {
         g_ini_path = std::string(pref_path) + "imgui.ini";
@@ -39,12 +139,14 @@ extern "C" bool guava_imgui_init(SDL_Window* window, SDL_GPUDevice* device, SDL_
         io.IniFilename = nullptr;
     }
 
-    ImGui::StyleColorsDark();
+    const float reported_scale = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
+    const float main_scale = reported_scale > 0.0f ? reported_scale : 1.0f;
+    configure_fonts(main_scale);
 
-    const float main_scale = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
+    ImGui::StyleColorsDark();
     ImGuiStyle& style = ImGui::GetStyle();
     style.ScaleAllSizes(main_scale);
-    style.FontScaleDpi = main_scale;
+    style.FontScaleDpi = 1.0f;
 
     if (!ImGui_ImplSDL3_InitForSDLGPU(window)) {
         ImGui::DestroyContext();

@@ -452,6 +452,14 @@ pub const World = struct {
         return gltf_import.importStaticModel(self, path, root_transform);
     }
 
+    pub fn importGltfStaticModelInstance(
+        self: *World,
+        path: []const u8,
+        root_transform: components.Transform,
+    ) !gltf_import.ImportReport {
+        return gltf_import.importStaticModelInstance(self, path, root_transform);
+    }
+
     pub fn assets(self: *World) *assets_lib.ResourceLibrary {
         return &self.resources;
     }
@@ -703,6 +711,29 @@ test "glTF static import creates world entities, textures, normals, tangents, an
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), mesh.vertices[0].normal[1], 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), mesh.vertices[0].tangent[0], 0.0001);
     try std.testing.expect(material.base_color_texture != null);
+}
+
+test "glTF instance import creates a movable root entity" {
+    var world = World.init(std.testing.allocator);
+    defer world.deinit();
+
+    const report = try world.importGltfStaticModelInstance(
+        "assets/models/guava_showcase/guava_showcase.gltf",
+        .{
+            .translation = .{ 3.0, 2.0, 1.0 },
+        },
+    );
+
+    try std.testing.expect(report.root_entity != null);
+    const root = world.getEntityConst(report.root_entity.?).?;
+    try std.testing.expectEqualStrings("guava_showcase Instance", root.name);
+    try std.testing.expectApproxEqAbs(@as(f32, 3.0), root.transform.translation[0], 0.0001);
+
+    const imported = world.findEntityByName("guava_showcase_GuavaShowcase_0").?;
+    try std.testing.expectEqual(report.root_entity.?, imported.parent.?);
+    const imported_world = world.worldTransform(imported.id).?;
+    try std.testing.expectApproxEqAbs(@as(f32, 3.0), imported_world.translation[0], 0.0001);
+    try std.testing.expectEqual(@as(usize, 3), report.entity_count);
 }
 
 test "world supports editor duplicate and destroy operations" {
