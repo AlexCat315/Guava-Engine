@@ -22,26 +22,25 @@ pub fn drawAssetPreviewWindow(state: *EditorState, layer_context: *engine.core.L
             .texture => {
                 try ensurePreviewTextureForAssetPath(state, layer_context, entry.path);
                 drawCurrentPreviewImage(state);
-                engine.ui.ImGui.text(state.text(.use_this_texture_from_details_gt_material));
+                engine.ui.ImGui.textWrapped(state.text(.use_this_texture_from_details_gt_material));
             },
             .model => {
-                engine.ui.ImGui.text(state.text(.models_are_imported_as_grouped_instances_with_a_movable_root_entity));
-                if (engine.ui.ImGui.button(state.text(.instantiate_model))) {
+                engine.ui.ImGui.textWrapped(state.text(.models_are_imported_as_grouped_instances_with_a_movable_root_entity));
+                if (engine.ui.ImGui.buttonEx(state.text(.instantiate_model), engine.ui.ImGui.contentRegionAvail()[0], 0.0)) {
                     try history.importModelPath(state, layer_context, entry.path);
                 }
             },
             .scene => {
-                engine.ui.ImGui.text(state.text(.scenes_can_be_loaded_directly_or_overwritten_from_the_current_world));
-                if (engine.ui.ImGui.button(state.text(.load_scene))) {
+                engine.ui.ImGui.textWrapped(state.text(.scenes_can_be_loaded_directly_or_overwritten_from_the_current_world));
+                if (engine.ui.ImGui.buttonEx(state.text(.load_scene), engine.ui.ImGui.contentRegionAvail()[0], 0.0)) {
                     try history.loadScenePath(state, layer_context, entry.path);
                 }
-                engine.ui.ImGui.sameLine();
-                if (engine.ui.ImGui.button(state.text(.save_over))) {
+                if (engine.ui.ImGui.buttonEx(state.text(.save_over), engine.ui.ImGui.contentRegionAvail()[0], 0.0)) {
                     history.saveScenePath(state, layer_context, entry.path);
                 }
             },
             .shader => {
-                engine.ui.ImGui.text(state.text(.shader_source_preview_is_currently_metadata_only));
+                engine.ui.ImGui.textWrapped(state.text(.shader_source_preview_is_currently_metadata_only));
             },
         }
         return;
@@ -73,7 +72,7 @@ pub fn drawAssetPreviewWindow(state: *EditorState, layer_context: *engine.core.L
         }
     }
 
-    engine.ui.ImGui.text(state.text(.select_a_texture_asset_or_an_entity_with_a_textured_material_to_preview_it));
+    engine.ui.ImGui.textWrapped(state.text(.select_a_texture_asset_or_an_entity_with_a_textured_material_to_preview_it));
 }
 
 fn selectedAsset(state: *EditorState) ?*const AssetEntry {

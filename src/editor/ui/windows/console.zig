@@ -73,18 +73,35 @@ pub fn snapshot(buffer: []Entry) usize {
 }
 
 pub fn drawConsolePanel(state: *EditorState) !void {
-    if (engine.ui.ImGui.buttonEx(state.text(.clear), 82.0, 0.0)) {
+    const width = engine.ui.ImGui.contentRegionAvail()[0];
+    const clear_width = if (width >= 520.0) 82.0 else width;
+    if (engine.ui.ImGui.buttonEx(state.text(.clear), clear_width, 0.0)) {
         clear();
     }
-    engine.ui.ImGui.sameLine();
+    if (width >= 520.0) {
+        engine.ui.ImGui.sameLine();
+    }
+
+    const toggle_columns: usize = if (width >= 520.0)
+        5
+    else if (width >= 320.0)
+        2
+    else
+        1;
+    var toggle_index: usize = 0;
+    beginResponsiveToggle(toggle_index, toggle_columns);
     _ = engine.ui.ImGui.checkbox(state.text(.errors), &state.console_show_errors);
-    engine.ui.ImGui.sameLine();
+    toggle_index += 1;
+    beginResponsiveToggle(toggle_index, toggle_columns);
     _ = engine.ui.ImGui.checkbox(state.text(.warnings), &state.console_show_warnings);
-    engine.ui.ImGui.sameLine();
+    toggle_index += 1;
+    beginResponsiveToggle(toggle_index, toggle_columns);
     _ = engine.ui.ImGui.checkbox(state.text(.info), &state.console_show_info);
-    engine.ui.ImGui.sameLine();
+    toggle_index += 1;
+    beginResponsiveToggle(toggle_index, toggle_columns);
     _ = engine.ui.ImGui.checkbox(state.text(.debug), &state.console_show_debug);
-    engine.ui.ImGui.sameLine();
+    toggle_index += 1;
+    beginResponsiveToggle(toggle_index, toggle_columns);
     _ = engine.ui.ImGui.checkbox(state.text(.auto_scroll), &state.console_auto_scroll);
     engine.ui.ImGui.separator();
 
@@ -107,11 +124,22 @@ pub fn drawConsolePanel(state: *EditorState) !void {
             "[{s}] {s}: {s}",
             .{ levelLabel(entry.level), entry.scopeText(), entry.messageText() },
         );
-        engine.ui.ImGui.text(line);
+        engine.ui.ImGui.textWrapped(line);
     }
 
     if (state.console_auto_scroll) {
         engine.ui.ImGui.setScrollHereY(1.0);
+    }
+}
+
+fn beginResponsiveToggle(index: usize, columns: usize) void {
+    if (index == 0 or columns == 0) {
+        return;
+    }
+    if (index % columns == 0) {
+        engine.ui.ImGui.dummy(0.0, 4.0);
+    } else {
+        engine.ui.ImGui.sameLine();
     }
 }
 

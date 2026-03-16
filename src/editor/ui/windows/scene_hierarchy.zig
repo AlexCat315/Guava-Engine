@@ -20,23 +20,39 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
 
     engine.ui.ImGui.dummy(0.0, 4.0);
     const controls_width = engine.ui.ImGui.contentRegionAvail()[0];
-    const root_button_width = 112.0;
-    const rename_button_width = 88.0;
-    engine.ui.ImGui.setNextItemWidth(@max(controls_width - root_button_width - rename_button_width - 16.0, 96.0));
-    _ = engine.ui.ImGui.inputText("##scene_filter", state.scene_filter_buffer[0..]);
-    engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.buttonEx(state.text(.scene_root), root_button_width, 0.0) and layer_context.renderer.selectedEntities().len > 0) {
-        try unparentSelection(state, layer_context);
-    }
-    engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.buttonEx(state.text(.rename), rename_button_width, 0.0)) {
-        if (layer_context.renderer.selectedEntities().len == 1) {
-            const selected = layer_context.renderer.selectedEntity() orelse unreachable;
-            if (!utils.isEntitySelectionLocked(state, selected) and
-                !utils.isEntityFrozen(state, selected) and
-                utils.shouldShowEntityInSceneTree(state, layer_context.world, selected))
-            {
-                beginHierarchyRename(state, layer_context.world, selected);
+    if (controls_width >= 360.0) {
+        const root_button_width = std.math.clamp(controls_width * 0.22, 96.0, 124.0);
+        const rename_button_width = std.math.clamp(controls_width * 0.18, 84.0, 104.0);
+        engine.ui.ImGui.setNextItemWidth(@max(controls_width - root_button_width - rename_button_width - 16.0, 96.0));
+        _ = engine.ui.ImGui.inputText("##scene_filter", state.scene_filter_buffer[0..]);
+        engine.ui.ImGui.sameLine();
+        if (engine.ui.ImGui.buttonEx(state.text(.scene_root), root_button_width, 0.0) and layer_context.renderer.selectedEntities().len > 0) {
+            try unparentSelection(state, layer_context);
+        }
+        engine.ui.ImGui.sameLine();
+        if (engine.ui.ImGui.buttonEx(state.text(.rename), rename_button_width, 0.0)) {
+            try beginSelectedHierarchyRename(state, layer_context);
+        }
+    } else {
+        engine.ui.ImGui.setNextItemWidth(-1.0);
+        _ = engine.ui.ImGui.inputText("##scene_filter", state.scene_filter_buffer[0..]);
+        engine.ui.ImGui.dummy(0.0, 6.0);
+        if (controls_width >= 184.0) {
+            const half_width = @max((controls_width - 8.0) * 0.5, 88.0);
+            if (engine.ui.ImGui.buttonEx(state.text(.scene_root), half_width, 0.0) and layer_context.renderer.selectedEntities().len > 0) {
+                try unparentSelection(state, layer_context);
+            }
+            engine.ui.ImGui.sameLine();
+            if (engine.ui.ImGui.buttonEx(state.text(.rename), half_width, 0.0)) {
+                try beginSelectedHierarchyRename(state, layer_context);
+            }
+        } else {
+            if (engine.ui.ImGui.buttonEx(state.text(.scene_root), controls_width, 0.0) and layer_context.renderer.selectedEntities().len > 0) {
+                try unparentSelection(state, layer_context);
+            }
+            engine.ui.ImGui.dummy(0.0, 6.0);
+            if (engine.ui.ImGui.buttonEx(state.text(.rename), controls_width, 0.0)) {
+                try beginSelectedHierarchyRename(state, layer_context);
             }
         }
     }
@@ -52,9 +68,9 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
         return;
     }
     engine.ui.ImGui.tableSetupColumn(state.text(.name), true, 1.0);
-    engine.ui.ImGui.tableSetupColumn("##scene_visible", false, 32.0);
-    engine.ui.ImGui.tableSetupColumn("##scene_frozen", false, 28.0);
-    engine.ui.ImGui.tableSetupColumn("##scene_locked", false, 32.0);
+    engine.ui.ImGui.tableSetupColumn("##scene_visible", false, 24.0);
+    engine.ui.ImGui.tableSetupColumn("##scene_frozen", false, 22.0);
+    engine.ui.ImGui.tableSetupColumn("##scene_locked", false, 24.0);
 
     for (layer_context.world.entities.items) |entity| {
         if (entity.editor_only or entity.parent != null) {
@@ -287,6 +303,19 @@ fn beginHierarchyRename(state: *EditorState, world: *const engine.scene.World, e
     state.hierarchy_rename_focus_pending = true;
 }
 
+fn beginSelectedHierarchyRename(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    if (layer_context.renderer.selectedEntities().len != 1) {
+        return;
+    }
+    const selected = layer_context.renderer.selectedEntity() orelse return;
+    if (!utils.isEntitySelectionLocked(state, selected) and
+        !utils.isEntityFrozen(state, selected) and
+        utils.shouldShowEntityInSceneTree(state, layer_context.world, selected))
+    {
+        beginHierarchyRename(state, layer_context.world, selected);
+    }
+}
+
 fn cancelHierarchyRename(state: *EditorState) void {
     state.hierarchy_rename_entity = null;
     state.hierarchy_rename_focus_pending = false;
@@ -501,5 +530,5 @@ fn drawFreezeToggleButton(id: []const u8, active: bool) !bool {
     }
     var label_buffer: [64]u8 = undefined;
     const label = try std.fmt.bufPrint(&label_buffer, "F##{s}", .{id});
-    return engine.ui.ImGui.buttonEx(label, 22.0, 22.0);
+    return engine.ui.ImGui.buttonEx(label, 18.0, 18.0);
 }

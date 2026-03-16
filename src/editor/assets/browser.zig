@@ -28,23 +28,33 @@ pub fn drawContentBrowser(state: *EditorState, layer_context: *engine.core.Layer
 }
 
 fn drawBottomTabs(state: *EditorState) !void {
-    if (drawTabButton(state, .project, state.text(.project))) {
+    const available_width = engine.ui.ImGui.contentRegionAvail()[0];
+    const stacked = available_width < 184.0;
+    const tab_width = if (stacked)
+        available_width
+    else
+        std.math.clamp((available_width - 8.0) * 0.5, 84.0, 148.0);
+    if (drawTabButton(state, .project, state.text(.project), tab_width)) {
         state.bottom_panel_tab = .project;
     }
-    engine.ui.ImGui.sameLine();
-    if (drawTabButton(state, .console, state.text(.console))) {
+    if (!stacked) {
+        engine.ui.ImGui.sameLine();
+    } else {
+        engine.ui.ImGui.dummy(0.0, 6.0);
+    }
+    if (drawTabButton(state, .console, state.text(.console), tab_width)) {
         state.bottom_panel_tab = .console;
     }
 }
 
-fn drawTabButton(state: *EditorState, tab: BottomPanelTab, label: []const u8) bool {
+fn drawTabButton(state: *EditorState, tab: BottomPanelTab, label: []const u8, width: f32) bool {
     const active = state.bottom_panel_tab == tab;
     const palette = if (active) ui_icons.palettes.toolbar_active else ui_icons.palettes.toolbar_idle;
     engine.ui.ImGui.pushStyleColor(.button, palette.button);
     engine.ui.ImGui.pushStyleColor(.button_hovered, palette.hovered);
     engine.ui.ImGui.pushStyleColor(.button_active, palette.active);
     defer engine.ui.ImGui.popStyleColor(3);
-    return engine.ui.ImGui.buttonEx(label, 104.0, 0.0);
+    return engine.ui.ImGui.buttonEx(label, width, 0.0);
 }
 
 fn drawThumbnailPresetButton(state: *EditorState, label: []const u8, size: f32) void {
@@ -66,53 +76,17 @@ fn drawThumbnailPresetButton(state: *EditorState, label: []const u8, size: f32) 
 
 fn drawProjectPanel(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     ensureSelectedAssetDirectory(state);
-
-    if (engine.ui.ImGui.beginTable("project_toolbar", 4)) {
-        defer engine.ui.ImGui.endTable();
-        engine.ui.ImGui.tableSetupColumn("##project_refresh", false, 108.0);
-        engine.ui.ImGui.tableSetupColumn("##project_save", false, 122.0);
-        engine.ui.ImGui.tableSetupColumn("##project_sizes", false, 122.0);
-        engine.ui.ImGui.tableSetupColumn("##project_thumb_drag", true, 1.0);
-
-        engine.ui.ImGui.tableNextRow();
-
-        engine.ui.ImGui.tableNextColumn();
-        if (engine.ui.ImGui.buttonEx(state.text(.refresh), 104.0, 30.0)) {
-            try refreshAssetBrowser(state, layer_context);
-        }
-
-        engine.ui.ImGui.tableNextColumn();
-        if (engine.ui.ImGui.buttonEx(state.text(.quick_save), 116.0, 30.0)) {
-            history.saveScene(state, layer_context);
-        }
-
-        engine.ui.ImGui.tableNextColumn();
-        drawThumbnailPresetButton(state, "S", 84.0);
-        engine.ui.ImGui.sameLine();
-        drawThumbnailPresetButton(state, "M", 104.0);
-        engine.ui.ImGui.sameLine();
-        drawThumbnailPresetButton(state, "L", 132.0);
-
-        engine.ui.ImGui.tableNextColumn();
-        engine.ui.ImGui.alignTextToFramePadding();
-        engine.ui.ImGui.text(state.text(.thumbnails));
-        engine.ui.ImGui.sameLine();
-        var thumbnail_size = state.asset_thumbnail_size;
-        engine.ui.ImGui.setNextItemWidth(116.0);
-        if (engine.ui.ImGui.dragFloat("##asset_thumbnail_size", &thumbnail_size, 1.0, 72.0, 160.0)) {
-            state.asset_thumbnail_size = std.math.clamp(thumbnail_size, 72.0, 160.0);
-        }
-    }
+    try drawProjectToolbar(state, layer_context);
 
     engine.ui.ImGui.setNextItemWidth(-1.0);
-    _ = engine.ui.ImGui.inputText(state.text(.asset_filter), state.asset_filter_buffer[0..]);
+    _ = engine.ui.ImGui.inputText("##asset_filter", state.asset_filter_buffer[0..]);
     engine.ui.ImGui.separator();
 
     if (!engine.ui.ImGui.beginTable("project_browser_layout", 2)) {
         return;
     }
     defer engine.ui.ImGui.endTable();
-    engine.ui.ImGui.tableSetupColumn(state.text(.folders), false, 224.0);
+    engine.ui.ImGui.tableSetupColumn(state.text(.folders), false, std.math.clamp(engine.ui.ImGui.contentRegionAvail()[0] * 0.24, 132.0, 220.0));
     engine.ui.ImGui.tableSetupColumn(state.text(.project), true, 1.0);
 
     engine.ui.ImGui.tableNextRow();
@@ -190,7 +164,7 @@ fn drawAssetCard(
 ) !void {
     var child_id_buffer: [64]u8 = undefined;
     const child_id = try std.fmt.bufPrint(&child_id_buffer, "asset_card_{d}", .{index});
-    const child_height = tile_size + 46.0;
+    const child_height = tile_size + 62.0;
     _ = engine.ui.ImGui.beginChild(child_id, tile_size + 10.0, child_height, true);
     defer engine.ui.ImGui.endChild();
 
@@ -221,11 +195,12 @@ fn drawAssetCard(
 
     const label_y = icon_size + 18.0;
     engine.ui.ImGui.setCursorPos(.{ 8.0, label_y });
-    engine.ui.ImGui.text(entry.name);
+    engine.ui.ImGui.textWrapped(entry.name);
 }
 
 fn drawSelectedAssetPreview(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
-    _ = engine.ui.ImGui.beginChild("project_asset_preview", 0.0, 188.0, true);
+    const preview_height = std.math.clamp(engine.ui.ImGui.contentRegionAvail()[1] * 0.32, 152.0, 220.0);
+    _ = engine.ui.ImGui.beginChild("project_asset_preview", 0.0, preview_height, true);
     defer engine.ui.ImGui.endChild();
 
     if (selectedAsset(state)) |entry| {
@@ -241,7 +216,7 @@ fn drawSelectedAssetPreview(state: *EditorState, layer_context: *engine.core.Lay
                     try asset_preview.ensurePreviewTextureForAssetPath(state, layer_context, entry.path);
                     asset_preview.drawCurrentPreviewImage(state);
                 }
-                engine.ui.ImGui.text(state.text(.use_this_texture_from_details_gt_material));
+                engine.ui.ImGui.textWrapped(state.text(.use_this_texture_from_details_gt_material));
             },
             .scene => {
                 if (engine.ui.ImGui.buttonEx(state.text(.load_selected_scene), engine.ui.ImGui.contentRegionAvail()[0], 0.0)) {
@@ -251,22 +226,72 @@ fn drawSelectedAssetPreview(state: *EditorState, layer_context: *engine.core.Lay
                 if (engine.ui.ImGui.buttonEx(state.text(.save_over_selected_scene), engine.ui.ImGui.contentRegionAvail()[0], 0.0)) {
                     history.saveScenePath(state, layer_context, entry.path);
                 }
-                engine.ui.ImGui.text(state.text(.scenes_can_be_loaded_directly_or_overwritten_from_the_current_world));
+                engine.ui.ImGui.textWrapped(state.text(.scenes_can_be_loaded_directly_or_overwritten_from_the_current_world));
             },
             .model => {
                 if (engine.ui.ImGui.buttonEx(state.text(.instantiate_selected_model), engine.ui.ImGui.contentRegionAvail()[0], 0.0)) {
                     try history.importModelPath(state, layer_context, entry.path);
                 }
-                engine.ui.ImGui.text(state.text(.models_are_imported_as_grouped_instances_with_a_movable_root_entity));
+                engine.ui.ImGui.textWrapped(state.text(.models_are_imported_as_grouped_instances_with_a_movable_root_entity));
             },
             .shader => {
-                engine.ui.ImGui.text(state.text(.shader_source_preview_is_currently_metadata_only));
+                engine.ui.ImGui.textWrapped(state.text(.shader_source_preview_is_currently_metadata_only));
             },
         }
         return;
     }
 
-    engine.ui.ImGui.text(state.text(.no_asset_selected));
+    engine.ui.ImGui.textWrapped(state.text(.no_asset_selected));
+}
+
+fn drawProjectToolbar(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const width = engine.ui.ImGui.contentRegionAvail()[0];
+    const stacked_primary = width < 232.0;
+    const primary_button_width = if (stacked_primary)
+        width
+    else if (width >= 680.0)
+        116.0
+    else
+        @max((width - 8.0) * 0.5, 100.0);
+
+    if (engine.ui.ImGui.buttonEx(state.text(.refresh), primary_button_width, 30.0)) {
+        try refreshAssetBrowser(state, layer_context);
+    }
+    if (!stacked_primary) {
+        engine.ui.ImGui.sameLine();
+    } else {
+        engine.ui.ImGui.dummy(0.0, 6.0);
+    }
+    if (engine.ui.ImGui.buttonEx(state.text(.quick_save), primary_button_width, 30.0)) {
+        history.saveScene(state, layer_context);
+    }
+
+    engine.ui.ImGui.dummy(0.0, 8.0);
+    drawThumbnailPresetButton(state, "S", 84.0);
+    engine.ui.ImGui.sameLine();
+    drawThumbnailPresetButton(state, "M", 104.0);
+    engine.ui.ImGui.sameLine();
+    drawThumbnailPresetButton(state, "L", 132.0);
+
+    if (width >= 620.0) {
+        engine.ui.ImGui.sameLine();
+    } else {
+        engine.ui.ImGui.dummy(0.0, 6.0);
+    }
+
+    const compact_thumbnails = width < 320.0;
+    engine.ui.ImGui.alignTextToFramePadding();
+    engine.ui.ImGui.text(state.text(.thumbnails));
+    if (!compact_thumbnails) {
+        engine.ui.ImGui.sameLine();
+    } else {
+        engine.ui.ImGui.dummy(0.0, 6.0);
+    }
+    var thumbnail_size = state.asset_thumbnail_size;
+    engine.ui.ImGui.setNextItemWidth(if (compact_thumbnails) width else std.math.clamp(width * 0.22, 108.0, 180.0));
+    if (engine.ui.ImGui.dragFloat("##asset_thumbnail_size", &thumbnail_size, 1.0, 72.0, 160.0)) {
+        state.asset_thumbnail_size = std.math.clamp(thumbnail_size, 72.0, 160.0);
+    }
 }
 
 fn assetIconPath(kind: AssetKind) []const u8 {

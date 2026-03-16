@@ -10,40 +10,33 @@ pub fn drawRenderSettingsWindow(state: *EditorState, layer_context: *engine.core
     defer engine.ui.ImGui.endWindow();
 
     engine.ui.ImGui.text(state.text(.camera));
-    if (engine.ui.ImGui.buttonEx(state.text(.editor_camera_mode), 140.0, 0.0) and !state.editor_camera_active) {
-        camera.toggleCameraMode(state, layer_context);
-    }
-    engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.buttonEx(state.text(.scene_camera_mode), 140.0, 0.0) and state.editor_camera_active) {
-        camera.toggleCameraMode(state, layer_context);
+    switch (drawButtonRow2(state.text(.editor_camera_mode), state.text(.scene_camera_mode), 112.0)) {
+        .first => if (!state.editor_camera_active) {
+            camera.toggleCameraMode(state, layer_context);
+        },
+        .second => if (state.editor_camera_active) {
+            camera.toggleCameraMode(state, layer_context);
+        },
+        .third => {},
+        .none => {},
     }
 
     engine.ui.ImGui.separator();
     engine.ui.ImGui.text(state.text(.perspective_view));
-    if (engine.ui.ImGui.buttonEx(state.text(.perspective_view), 140.0, 0.0)) {
-        camera.setViewPreset(state, layer_context, .perspective);
-    }
-    engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.buttonEx(state.text(.top_view), 120.0, 0.0)) {
-        camera.setViewPreset(state, layer_context, .top);
-    }
-    engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.buttonEx(state.text(.side_view), 120.0, 0.0)) {
-        camera.setViewPreset(state, layer_context, .side);
+    switch (drawButtonRow3(state.text(.perspective_view), state.text(.top_view), state.text(.side_view), 92.0)) {
+        .first => camera.setViewPreset(state, layer_context, .perspective),
+        .second => camera.setViewPreset(state, layer_context, .top),
+        .third => camera.setViewPreset(state, layer_context, .side),
+        .none => {},
     }
 
     engine.ui.ImGui.separator();
     engine.ui.ImGui.text(state.text(.render_mode));
-    if (engine.ui.ImGui.buttonEx(state.text(.textured), 140.0, 0.0)) {
-        state.viewport_render_mode = .textured;
-    }
-    engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.buttonEx(state.text(.wireframe), 140.0, 0.0)) {
-        state.viewport_render_mode = .wireframe;
-    }
-    engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.buttonEx(state.text(.unlit), 120.0, 0.0)) {
-        state.viewport_render_mode = .unlit;
+    switch (drawButtonRow3(state.text(.textured), state.text(.wireframe), state.text(.unlit), 92.0)) {
+        .first => state.viewport_render_mode = .textured,
+        .second => state.viewport_render_mode = .wireframe,
+        .third => state.viewport_render_mode = .unlit,
+        .none => {},
     }
 
     engine.ui.ImGui.separator();
@@ -53,12 +46,11 @@ pub fn drawRenderSettingsWindow(state: *EditorState, layer_context: *engine.core
 
     engine.ui.ImGui.separator();
     engine.ui.ImGui.text(state.text(.coordinate_space));
-    if (engine.ui.ImGui.buttonEx(state.text(.local_space), 140.0, 0.0)) {
-        state.transform_space = .local;
-    }
-    engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.buttonEx(state.text(.world_space), 140.0, 0.0)) {
-        state.transform_space = .world;
+    switch (drawButtonRow2(state.text(.local_space), state.text(.world_space), 112.0)) {
+        .first => state.transform_space = .local,
+        .second => state.transform_space = .world,
+        .third => {},
+        .none => {},
     }
 
     engine.ui.ImGui.separator();
@@ -66,4 +58,73 @@ pub fn drawRenderSettingsWindow(state: *EditorState, layer_context: *engine.core
     var viewport_buffer: [64]u8 = undefined;
     const viewport_text = try std.fmt.bufPrint(&viewport_buffer, "{d} x {d}", .{ viewport_size[0], viewport_size[1] });
     engine.ui.ImGui.labelText(state.text(.viewport_size), viewport_text);
+}
+
+const ButtonRowResult = enum {
+    none,
+    first,
+    second,
+    third,
+};
+
+fn drawButtonRow2(first: []const u8, second: []const u8, min_button_width: f32) ButtonRowResult {
+    const columns = responsiveButtonColumns(2, min_button_width);
+    const width = responsiveButtonWidth(columns);
+    if (engine.ui.ImGui.buttonEx(first, width, 0.0)) {
+        return .first;
+    }
+    drawResponsiveRowAdvance(1, columns);
+    if (engine.ui.ImGui.buttonEx(second, width, 0.0)) {
+        return .second;
+    }
+    return .none;
+}
+
+fn drawButtonRow3(first: []const u8, second: []const u8, third: []const u8, min_button_width: f32) ButtonRowResult {
+    const columns = responsiveButtonColumns(3, min_button_width);
+    const width = responsiveButtonWidth(columns);
+    if (engine.ui.ImGui.buttonEx(first, width, 0.0)) {
+        return .first;
+    }
+    drawResponsiveRowAdvance(1, columns);
+    if (engine.ui.ImGui.buttonEx(second, width, 0.0)) {
+        return .second;
+    }
+    drawResponsiveRowAdvance(2, columns);
+    if (engine.ui.ImGui.buttonEx(third, width, 0.0)) {
+        return .third;
+    }
+    return .none;
+}
+
+fn responsiveButtonColumns(button_count: usize, min_button_width: f32) usize {
+    var columns = button_count;
+    while (columns > 1) : (columns -= 1) {
+        const required_width =
+            min_button_width * @as(f32, @floatFromInt(columns)) +
+            8.0 * @as(f32, @floatFromInt(columns - 1));
+        if (engine.ui.ImGui.contentRegionAvail()[0] >= required_width) {
+            return columns;
+        }
+    }
+    return 1;
+}
+
+fn responsiveButtonWidth(columns: usize) f32 {
+    const total_spacing = 8.0 * @as(f32, @floatFromInt(columns -| 1));
+    return @max(
+        (engine.ui.ImGui.contentRegionAvail()[0] - total_spacing) / @as(f32, @floatFromInt(columns)),
+        1.0,
+    );
+}
+
+fn drawResponsiveRowAdvance(index: usize, columns: usize) void {
+    if (columns == 0 or index == 0) {
+        return;
+    }
+    if (index % columns == 0) {
+        engine.ui.ImGui.dummy(0.0, 6.0);
+    } else {
+        engine.ui.ImGui.sameLine();
+    }
 }

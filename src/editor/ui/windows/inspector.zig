@@ -471,30 +471,32 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
     }
 
     if (engine.ui.ImGui.collapsingHeader(state.text(.actions), true)) {
-        const action_button_width = buttonRowWidth();
+        const action_columns = responsiveButtonColumns(3, 80.0);
+        const action_button_width = responsiveButtonWidth(action_columns);
 
         if (engine.ui.ImGui.buttonEx(state.text(.focus), action_button_width, 0.0)) {
             camera.focusSelection(state, layer_context);
         }
-        engine.ui.ImGui.sameLine();
+        drawResponsiveButtonAdvance(1, action_columns);
         if (engine.ui.ImGui.buttonEx(state.text(.duplicate), action_button_width, 0.0)) {
             try history.duplicateSelection(state, layer_context);
             return;
         }
-        engine.ui.ImGui.sameLine();
+        drawResponsiveButtonAdvance(2, action_columns);
         if (engine.ui.ImGui.buttonEx(state.text(.delete), action_button_width, 0.0)) {
             try history.deleteSelection(state, layer_context);
             return;
         }
 
+        engine.ui.ImGui.dummy(0.0, 6.0);
         if (engine.ui.ImGui.buttonEx(state.text(.move), action_button_width, 0.0)) {
             try manipulation.beginManipulation(state, layer_context, .translate);
         }
-        engine.ui.ImGui.sameLine();
+        drawResponsiveButtonAdvance(1, action_columns);
         if (engine.ui.ImGui.buttonEx(state.text(.rotate), action_button_width, 0.0)) {
             try manipulation.beginManipulation(state, layer_context, .rotate);
         }
-        engine.ui.ImGui.sameLine();
+        drawResponsiveButtonAdvance(2, action_columns);
         if (engine.ui.ImGui.buttonEx(state.text(.scale), action_button_width, 0.0)) {
             try manipulation.beginManipulation(state, layer_context, .scale);
         }
@@ -508,7 +510,7 @@ fn drawTransformComponentToolbar(
     entity: *engine.scene.Entity,
     world_transform: engine.scene.Transform,
 ) !bool {
-    switch (drawActionRow3(state.text(.copy), state.text(.paste), state.text(.reset_all))) {
+    switch (drawActionRow3(state.text(.copy), state.text(.paste), state.text(.reset_all), 96.0)) {
         .first => state.transform_component_clipboard = entity.transform,
         .second => {
             if (state.transform_component_clipboard) |clipboard| {
@@ -598,7 +600,7 @@ fn drawMeshComponentToolbar(
     entity: *engine.scene.Entity,
     mesh_component: engine.scene.Mesh,
 ) !bool {
-    switch (drawActionRow3(state.text(.copy), state.text(.paste), state.text(.remove_mesh_component))) {
+    switch (drawActionRow3(state.text(.copy), state.text(.paste), state.text(.remove_mesh_component), 112.0)) {
         .first => state.mesh_component_clipboard = mesh_component,
         .second => {
             if (state.mesh_component_clipboard) |clipboard| {
@@ -626,7 +628,7 @@ fn drawMaterialComponentToolbar(
     entity: *engine.scene.Entity,
     material_component: engine.scene.Material,
 ) !bool {
-    switch (drawActionRow3(state.text(.copy), state.text(.paste), state.text(.remove_material_component))) {
+    switch (drawActionRow3(state.text(.copy), state.text(.paste), state.text(.remove_material_component), 112.0)) {
         .first => state.material_component_clipboard = material_component,
         .second => {
             if (state.material_component_clipboard) |clipboard| {
@@ -651,7 +653,7 @@ fn drawCameraComponentToolbar(
     entity: *engine.scene.Entity,
     camera_component: engine.scene.Camera,
 ) !bool {
-    switch (drawActionRow3(state.text(.copy), state.text(.paste), state.text(.remove_camera_component))) {
+    switch (drawActionRow3(state.text(.copy), state.text(.paste), state.text(.remove_camera_component), 112.0)) {
         .first => state.camera_component_clipboard = camera_component,
         .second => {
             if (state.camera_component_clipboard) |clipboard| {
@@ -681,7 +683,7 @@ fn drawLightComponentToolbar(
     entity: *engine.scene.Entity,
     light_component: engine.scene.Light,
 ) !bool {
-    switch (drawActionRow3(state.text(.copy), state.text(.paste), state.text(.remove_light_component))) {
+    switch (drawActionRow3(state.text(.copy), state.text(.paste), state.text(.remove_light_component), 112.0)) {
         .first => state.light_component_clipboard = light_component,
         .second => {
             if (state.light_component_clipboard) |clipboard| {
@@ -706,21 +708,21 @@ fn drawTransformResetButtons(
     entity: *engine.scene.Entity,
     world_transform: engine.scene.Transform,
 ) !void {
-    const spacing = 8.0;
-    const button_width = @max((engine.ui.ImGui.contentRegionAvail()[0] - spacing * 3.0) * 0.25, 72.0);
+    const columns = responsiveButtonColumns(4, 88.0);
+    const button_width = responsiveButtonWidth(columns);
 
     if (engine.ui.ImGui.buttonEx(state.text(.reset_position), button_width, 0.0)) {
         try resetTransformTarget(state, layer_context, selected, entity, world_transform, .translation);
     }
-    engine.ui.ImGui.sameLine();
+    drawResponsiveButtonAdvance(1, columns);
     if (engine.ui.ImGui.buttonEx(state.text(.reset_rotation), button_width, 0.0)) {
         try resetTransformTarget(state, layer_context, selected, entity, world_transform, .rotation);
     }
-    engine.ui.ImGui.sameLine();
+    drawResponsiveButtonAdvance(2, columns);
     if (engine.ui.ImGui.buttonEx(state.text(.reset_scale), button_width, 0.0)) {
         try resetTransformTarget(state, layer_context, selected, entity, world_transform, .scale);
     }
-    engine.ui.ImGui.sameLine();
+    drawResponsiveButtonAdvance(3, columns);
     if (engine.ui.ImGui.buttonEx(state.text(.reset_all), button_width, 0.0)) {
         try resetTransformTarget(state, layer_context, selected, entity, world_transform, .all);
     }
@@ -792,34 +794,53 @@ fn drawLabeledFloat3Control(
     return engine.ui.ImGui.dragFloat3(widget_id, value, speed, min_value, max_value);
 }
 
-fn buttonRowWidth() f32 {
-    const spacing = 8.0;
-    return @max((engine.ui.ImGui.contentRegionAvail()[0] - spacing * 2.0) / 3.0, 72.0);
-}
-
-fn actionRowWidth(button_count: usize) f32 {
-    if (button_count == 0) {
-        return 0.0;
-    }
-    const spacing = 8.0;
-    const total_spacing = spacing * @as(f32, @floatFromInt(button_count - 1));
-    return @max((engine.ui.ImGui.contentRegionAvail()[0] - total_spacing) / @as(f32, @floatFromInt(button_count)), 72.0);
-}
-
-fn drawActionRow3(first: []const u8, second: []const u8, third: []const u8) ActionRowResult {
-    const width = actionRowWidth(3);
+fn drawActionRow3(first: []const u8, second: []const u8, third: []const u8, min_button_width: f32) ActionRowResult {
+    const columns = responsiveButtonColumns(3, min_button_width);
+    const width = responsiveButtonWidth(columns);
     if (engine.ui.ImGui.buttonEx(first, width, 0.0)) {
         return .first;
     }
-    engine.ui.ImGui.sameLine();
+    drawResponsiveButtonAdvance(1, columns);
     if (engine.ui.ImGui.buttonEx(second, width, 0.0)) {
         return .second;
     }
-    engine.ui.ImGui.sameLine();
+    drawResponsiveButtonAdvance(2, columns);
     if (engine.ui.ImGui.buttonEx(third, width, 0.0)) {
         return .third;
     }
     return .none;
+}
+
+fn responsiveButtonColumns(button_count: usize, min_button_width: f32) usize {
+    var columns = button_count;
+    while (columns > 1) : (columns -= 1) {
+        const required_width =
+            min_button_width * @as(f32, @floatFromInt(columns)) +
+            8.0 * @as(f32, @floatFromInt(columns - 1));
+        if (engine.ui.ImGui.contentRegionAvail()[0] >= required_width) {
+            return columns;
+        }
+    }
+    return 1;
+}
+
+fn responsiveButtonWidth(columns: usize) f32 {
+    const total_spacing = 8.0 * @as(f32, @floatFromInt(columns -| 1));
+    return @max(
+        (engine.ui.ImGui.contentRegionAvail()[0] - total_spacing) / @as(f32, @floatFromInt(columns)),
+        1.0,
+    );
+}
+
+fn drawResponsiveButtonAdvance(index: usize, columns: usize) void {
+    if (columns == 0 or index == 0) {
+        return;
+    }
+    if (index % columns == 0) {
+        engine.ui.ImGui.dummy(0.0, 6.0);
+    } else {
+        engine.ui.ImGui.sameLine();
+    }
 }
 
 fn drawTransformTableRow(
