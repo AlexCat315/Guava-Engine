@@ -21,6 +21,10 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
 
     if (engine.ui.ImGui.beginMenu(state.text(.file))) {
         defer engine.ui.ImGui.endMenu();
+        if (engine.ui.ImGui.menuItem(state.text(.new_scene), "Ctrl+N", false, true)) {
+            try history.newScene(state, layer_context);
+        }
+        engine.ui.ImGui.separator();
         if (engine.ui.ImGui.menuItem(state.text(.save_scene), "Ctrl+S", false, true)) {
             history.saveScene(state, layer_context);
         }
@@ -42,6 +46,13 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
 
     if (engine.ui.ImGui.beginMenu(state.text(.edit))) {
         defer engine.ui.ImGui.endMenu();
+        if (engine.ui.ImGui.menuItem(state.text(.undo), "Ctrl+Z", false, true)) {
+            try history.undo(state, layer_context);
+        }
+        if (engine.ui.ImGui.menuItem(state.text(.redo), "Ctrl+Y", false, true)) {
+            try history.redo(state, layer_context);
+        }
+        engine.ui.ImGui.separator();
         const has_selection = layer_context.renderer.selectedEntity() != null;
         if (engine.ui.ImGui.menuItem(state.text(.duplicate), "Ctrl+D", false, has_selection)) {
             try history.duplicateSelection(state, layer_context);
@@ -67,6 +78,16 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
         }
         if (engine.ui.ImGui.menuItem(state.text(.focus), "F", false, layer_context.renderer.selectedEntity() != null)) {
             camera.focusSelection(state, layer_context);
+        }
+        engine.ui.ImGui.separator();
+        if (engine.ui.ImGui.menuItem(state.text(.translation_snap), "Ctrl+Shift+T", false, true)) {
+            state.translation_snap_enabled = !state.translation_snap_enabled;
+        }
+        if (engine.ui.ImGui.menuItem(state.text(.rotation_snap), "Ctrl+Shift+R", false, true)) {
+            state.rotation_snap_enabled = !state.rotation_snap_enabled;
+        }
+        if (engine.ui.ImGui.menuItem(state.text(.scale_snap), "Ctrl+Shift+S", false, true)) {
+            state.scale_snap_enabled = !state.scale_snap_enabled;
         }
     }
 

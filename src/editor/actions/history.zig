@@ -285,6 +285,24 @@ pub fn loadScene(state: *EditorState, layer_context: *engine.core.LayerContext) 
     try loadScenePath(state, layer_context, autosave_path);
 }
 
+pub fn newScene(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    manipulation.endManipulation(state);
+    layer_context.world.clear();
+    try layer_context.renderer.resetSceneState();
+    state.scene_camera = null;
+    state.editor_camera = null;
+    try camera.createEditorCamera(state, layer_context);
+    if (!state.editor_camera_active) {
+        if (state.scene_camera) |scene_camera_id| {
+            _ = layer_context.world.setPrimaryCamera(scene_camera_id);
+        }
+    }
+    try layer_context.renderer.replaceSelection(null);
+    utils.syncInspectorNameBuffer(state, layer_context);
+    try resetSnapshotHistory(state, layer_context);
+    try refreshWindowTitle(state, layer_context);
+}
+
 pub fn loadScenePath(state: *EditorState, layer_context: *engine.core.LayerContext, path: []const u8) !void {
     manipulation.endManipulation(state);
     engine.scene.loadWorldFromPath(layer_context.world.allocator, layer_context.world, path) catch |err| {
