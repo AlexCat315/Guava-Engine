@@ -35,7 +35,6 @@ pub const EditorLayer = struct {
         utils.syncInspectorNameBuffer(&self.state, layer_context);
         try history.resetSnapshotHistory(&self.state, layer_context);
         try content_browser.refreshAssetBrowser(&self.state);
-        try history.refreshWindowTitle(&self.state, layer_context);
     }
 
     fn onDetach(context: *anyopaque) void {
@@ -62,9 +61,5 @@ pub const EditorLayer = struct {
         manipulation.applyManipulation(&self.state, layer_context);
         camera.handleCameraControls(&self.state, layer_context);
         manipulation.syncGizmoState(&self.state, layer_context);
-
-        if (layer_context.frame_index % self.state.title_frame_interval == 0) {
-            try history.refreshWindowTitle(&self.state, layer_context);
-        }
     }
 };

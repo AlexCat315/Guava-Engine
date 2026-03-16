@@ -3,7 +3,6 @@ const engine = @import("guava");
 const vec3 = engine.math.vec3;
 const EditorState = @import("../core/state.zig").EditorState;
 const state_mod = @import("../core/state.zig");
-const i18n = @import("../i18n/mod.zig");
 const utils = @import("../common/utils.zig");
 const camera = @import("../interaction/camera.zig");
 const manipulation = @import("../interaction/manipulation.zig");
@@ -231,30 +230,6 @@ pub fn importModelPath(state: *EditorState, layer_context: *engine.core.LayerCon
 }
 
 pub fn refreshWindowTitle(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
-    const selected_name = if (layer_context.renderer.selectedEntity()) |selected| blk: {
-        if (layer_context.world.getEntity(selected)) |entity| break :blk entity.name;
-        break :blk state.text(.none);
-    } else state.text(.none);
-    const camera_mode = if (state.editor_camera_active) state.text(.editor_camera_mode) else state.text(.scene_camera_mode);
-    const manipulation_mode = switch (state.manipulation_mode) {
-        .none => state.text(.idle),
-        .translate => state.text(.move),
-        .rotate => state.text(.rotate),
-        .scale => state.text(.scale),
-    };
-    const manipulation_axis = switch (state.manipulation_axis) {
-        .free => state.text(.free_axis),
-        .x => "X",
-        .y => "Y",
-        .z => "Z",
-    };
-
-    const title = try i18n.allocPrintMessage(
-        .window_title_format,
-        layer_context.world.allocator,
-        state.language,
-        .{ camera_mode, selected_name, manipulation_mode, manipulation_axis },
-    );
-    defer layer_context.world.allocator.free(title);
-    try layer_context.window.setTitle(layer_context.world.allocator, title);
+    _ = state;
+    _ = layer_context;
 }

@@ -11,6 +11,12 @@ pub const Error = error{
     ImGuiInitFailed,
 };
 
+pub const WindowControlButton = enum(c_uint) {
+    minimize = c.GUAVA_IMGUI_WINDOW_CONTROL_MINIMIZE,
+    maximize = c.GUAVA_IMGUI_WINDOW_CONTROL_MAXIMIZE,
+    close = c.GUAVA_IMGUI_WINDOW_CONTROL_CLOSE,
+};
+
 pub const WindowFlags = struct {
     pub const none: u32 = c.GUAVA_IMGUI_WINDOW_NONE;
     pub const no_title_bar: u32 = c.GUAVA_IMGUI_WINDOW_NO_TITLE_BAR;
@@ -108,6 +114,18 @@ pub fn button(label: []const u8) bool {
     return c.guava_imgui_button(label.ptr, label.len);
 }
 
+pub fn invisibleButton(id: []const u8, width: f32, height: f32) bool {
+    return c.guava_imgui_invisible_button(id.ptr, id.len, width, height);
+}
+
+pub fn windowControlButton(kind: WindowControlButton, toggled: bool) bool {
+    return c.guava_imgui_window_control_button(@intFromEnum(kind), toggled);
+}
+
+pub fn dummy(width: f32, height: f32) void {
+    c.guava_imgui_dummy(width, height);
+}
+
 pub fn sameLine() void {
     c.guava_imgui_same_line();
 }
@@ -142,6 +160,10 @@ pub fn treePop() void {
 
 pub fn isItemClicked() bool {
     return c.guava_imgui_is_item_clicked();
+}
+
+pub fn isItemActive() bool {
+    return c.guava_imgui_is_item_active();
 }
 
 pub fn isItemHovered() bool {

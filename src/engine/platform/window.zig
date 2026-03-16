@@ -1,12 +1,27 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const input_mod = @import("../core/input.zig");
 const sdl = @import("sdl.zig").c;
+
+extern fn guava_window_apply_macos_native_titlebar_style(window: *sdl.SDL_Window) bool;
+extern fn guava_window_macos_titlebar_leading_inset(window: *sdl.SDL_Window) f32;
+extern fn guava_window_apply_windows_native_titlebar_style(window: *sdl.SDL_Window) bool;
+extern fn guava_window_windows_titlebar_trailing_inset(window: *sdl.SDL_Window) f32;
+
+pub const Rect = struct {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+};
 
 pub const WindowConfig = struct {
     title: []const u8 = "Guava Engine",
     width: u32 = 1280,
     height: u32 = 720,
     resizable: bool = true,
+    borderless: bool = false,
+    native_titlebar_controls: bool = false,
     high_pixel_density: bool = true,
     hidden: bool = false,
 };
@@ -47,6 +62,9 @@ pub const Window = struct {
     logical_height: u32 = 0,
     drawable_width: u32 = 0,
     drawable_height: u32 = 0,
+    native_titlebar_controls: bool = false,
+    native_titlebar_leading_inset: f32 = 0.0,
+    native_titlebar_trailing_inset: f32 = 0.0,
     should_close: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, config: WindowConfig) !Window {
@@ -59,9 +77,17 @@ pub const Window = struct {
         const title_z = try allocator.dupeZ(u8, config.title);
         defer allocator.free(title_z);
 
+        const use_native_titlebar_controls = config.native_titlebar_controls and switch (builtin.os.tag) {
+            .macos, .windows => true,
+            else => false,
+        };
+
         var flags: sdl.SDL_WindowFlags = 0;
         if (config.resizable) {
             flags |= sdl.SDL_WINDOW_RESIZABLE;
+        }
+        if (config.borderless and !use_native_titlebar_controls) {
+            flags |= sdl.SDL_WINDOW_BORDERLESS;
         }
         if (config.high_pixel_density) {
             flags |= sdl.SDL_WINDOW_HIGH_PIXEL_DENSITY;
@@ -80,10 +106,29 @@ pub const Window = struct {
             std.log.err("SDL_CreateWindow failed: {s}", .{lastError()});
             return error.SdlWindowCreateFailed;
         }
+        errdefer sdl.SDL_DestroyWindow(handle.?);
 
         var window = Window{
             .handle = handle.?,
+            .native_titlebar_controls = use_native_titlebar_controls,
         };
+        if (use_native_titlebar_controls) {
+            switch (builtin.os.tag) {
+                .macos => {
+                    if (!guava_window_apply_macos_native_titlebar_style(window.handle)) {
+                        return error.SdlWindowOperationFailed;
+                    }
+                },
+                .windows => {
+                    if (!guava_window_apply_windows_native_titlebar_style(window.handle)) {
+                        return error.SdlWindowOperationFailed;
+                    }
+                },
+                else => unreachable,
+            }
+            window.refreshNativeTitlebarInsets();
+        }
+        try window.positionInUsableBounds(config.width, config.height);
         try window.refreshSizes();
         return window;
     }
@@ -112,6 +157,7 @@ pub const Window = struct {
         self.logical_height = @intCast(@max(logical_h, 0));
         self.drawable_width = @intCast(@max(drawable_w, 0));
         self.drawable_height = @intCast(@max(drawable_h, 0));
+        self.refreshNativeTitlebarInsets();
     }
 
     pub fn pollEvent(self: *Window) !?Event {
@@ -242,7 +288,138 @@ pub const Window = struct {
         defer allocator.free(title_z);
         _ = sdl.SDL_SetWindowTitle(self.handle, title_z.ptr);
     }
+
+    pub fn position(self: *const Window) ![2]i32 {
+        var x: c_int = 0;
+        var y: c_int = 0;
+        if (!sdl.SDL_GetWindowPosition(self.handle, &x, &y)) {
+            std.log.err("SDL_GetWindowPosition failed: {s}", .{lastError()});
+            return error.SdlQueryFailed;
+        }
+        return .{ @intCast(x), @intCast(y) };
+    }
+
+    pub fn setPosition(self: *Window, x: i32, y: i32) !void {
+        if (!sdl.SDL_SetWindowPosition(self.handle, x, y)) {
+            std.log.err("SDL_SetWindowPosition failed: {s}", .{lastError()});
+            return error.SdlWindowOperationFailed;
+        }
+    }
+
+    pub fn globalMousePosition(_: *const Window) [2]f32 {
+        var x: f32 = 0.0;
+        var y: f32 = 0.0;
+        _ = sdl.SDL_GetGlobalMouseState(&x, &y);
+        return .{ x, y };
+    }
+
+    pub fn minimize(self: *Window) !void {
+        if (!sdl.SDL_MinimizeWindow(self.handle)) {
+            std.log.err("SDL_MinimizeWindow failed: {s}", .{lastError()});
+            return error.SdlWindowOperationFailed;
+        }
+    }
+
+    pub fn maximize(self: *Window) !void {
+        if (!sdl.SDL_MaximizeWindow(self.handle)) {
+            std.log.err("SDL_MaximizeWindow failed: {s}", .{lastError()});
+            return error.SdlWindowOperationFailed;
+        }
+    }
+
+    pub fn restore(self: *Window) !void {
+        if (!sdl.SDL_RestoreWindow(self.handle)) {
+            std.log.err("SDL_RestoreWindow failed: {s}", .{lastError()});
+            return error.SdlWindowOperationFailed;
+        }
+    }
+
+    pub fn sync(self: *Window) !void {
+        if (!sdl.SDL_SyncWindow(self.handle)) {
+            std.log.err("SDL_SyncWindow failed: {s}", .{lastError()});
+            return error.SdlWindowOperationFailed;
+        }
+    }
+
+    pub fn isMaximized(self: *const Window) bool {
+        return (sdl.SDL_GetWindowFlags(self.handle) & sdl.SDL_WINDOW_MAXIMIZED) != 0;
+    }
+
+    pub fn usableBounds(_: *const Window) !Rect {
+        return primaryDisplayUsableBounds();
+    }
+
+    pub fn hasNativeTitlebarControls(self: *const Window) bool {
+        return self.native_titlebar_controls;
+    }
+
+    pub fn titlebarLeadingInset(self: *const Window) f32 {
+        return self.native_titlebar_leading_inset;
+    }
+
+    pub fn titlebarTrailingInset(self: *const Window) f32 {
+        return self.native_titlebar_trailing_inset;
+    }
+
+    pub fn requestClose(self: *Window) void {
+        self.should_close = true;
+    }
+
+    fn positionInUsableBounds(self: *Window, width: u32, height: u32) !void {
+        const usable_bounds = primaryDisplayUsableBounds() catch return;
+
+        const window_width: i32 = @intCast(width);
+        const window_height: i32 = @intCast(height);
+        const usable_width = @max(usable_bounds.w, window_width);
+        const usable_height = @max(usable_bounds.h, window_height);
+        const target_x = usable_bounds.x + @divTrunc(usable_width - window_width, 2);
+        const target_y = usable_bounds.y + @divTrunc(usable_height - window_height, 2);
+        try self.setPosition(target_x, target_y);
+    }
+
+    fn refreshNativeTitlebarInsets(self: *Window) void {
+        if (!self.native_titlebar_controls) {
+            self.native_titlebar_leading_inset = 0.0;
+            self.native_titlebar_trailing_inset = 0.0;
+            return;
+        }
+
+        switch (builtin.os.tag) {
+            .macos => {
+                self.native_titlebar_leading_inset = guava_window_macos_titlebar_leading_inset(self.handle);
+                self.native_titlebar_trailing_inset = 0.0;
+            },
+            .windows => {
+                self.native_titlebar_leading_inset = 0.0;
+                self.native_titlebar_trailing_inset = guava_window_windows_titlebar_trailing_inset(self.handle);
+            },
+            else => {
+                self.native_titlebar_leading_inset = 0.0;
+                self.native_titlebar_trailing_inset = 0.0;
+            },
+        }
+    }
 };
+
+fn primaryDisplayUsableBounds() !Rect {
+    const display = sdl.SDL_GetPrimaryDisplay();
+    if (display == 0) {
+        return error.SdlQueryFailed;
+    }
+
+    var usable_bounds: sdl.SDL_Rect = undefined;
+    if (!sdl.SDL_GetDisplayUsableBounds(display, &usable_bounds)) {
+        std.log.warn("SDL_GetDisplayUsableBounds failed: {s}", .{lastError()});
+        return error.SdlQueryFailed;
+    }
+
+    return .{
+        .x = usable_bounds.x,
+        .y = usable_bounds.y,
+        .w = usable_bounds.w,
+        .h = usable_bounds.h,
+    };
+}
 
 pub fn lastError() []const u8 {
     return std.mem.sliceTo(sdl.SDL_GetError(), 0);

@@ -1,3 +1,4 @@
+const std = @import("std");
 const engine = @import("guava");
 const EditorState = @import("../core/state.zig").EditorState;
 const history = @import("../actions/history.zig");
@@ -8,6 +9,12 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
         return;
     }
     defer engine.ui.ImGui.endMainMenuBar();
+
+    const native_titlebar_controls = layer_context.window.hasNativeTitlebarControls();
+    if (native_titlebar_controls and layer_context.window.titlebarLeadingInset() > 0.0) {
+        engine.ui.ImGui.dummy(layer_context.window.titlebarLeadingInset(), 1.0);
+        engine.ui.ImGui.sameLine();
+    }
 
     if (engine.ui.ImGui.beginMenu(state.text(.file))) {
         defer engine.ui.ImGui.endMenu();
@@ -69,4 +76,104 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
     if (engine.ui.ImGui.button(state.text(.settings))) {
         state.settings_open = !state.settings_open;
     }
+
+    const trailing_button_reserve: f32 = if (native_titlebar_controls)
+        layer_context.window.titlebarTrailingInset()
+    else
+        114.0;
+    const available = engine.ui.ImGui.contentRegionAvail();
+    const drag_width = @max(available[0] - trailing_button_reserve, 48.0);
+
+    engine.ui.ImGui.sameLine();
+    _ = engine.ui.ImGui.invisibleButton("top_bar_drag_region", drag_width, 22.0);
+    if (engine.ui.ImGui.isItemActive() and layer_context.input.wasMousePressed(.left)) {
+        try beginTopBarDrag(state, layer_context);
+    }
+
+    if (state.top_bar_drag_active) {
+        if (layer_context.input.isMouseDown(.left)) {
+            const mouse = layer_context.window.globalMousePosition();
+            try layer_context.window.setPosition(
+                @as(i32, @intFromFloat(mouse[0] - state.top_bar_drag_offset[0])),
+                @as(i32, @intFromFloat(mouse[1] - state.top_bar_drag_offset[1])),
+            );
+        } else {
+            state.top_bar_drag_active = false;
+        }
+    }
+
+    if (!native_titlebar_controls) {
+        engine.ui.ImGui.sameLine();
+        if (engine.ui.ImGui.windowControlButton(.minimize, false)) {
+            state.top_bar_drag_active = false;
+            try layer_context.window.minimize();
+        }
+
+        engine.ui.ImGui.sameLine();
+        if (engine.ui.ImGui.windowControlButton(.maximize, layer_context.window.isMaximized())) {
+            state.top_bar_drag_active = false;
+            if (layer_context.window.isMaximized()) {
+                try layer_context.window.restore();
+            } else {
+                try layer_context.window.maximize();
+            }
+        }
+
+        engine.ui.ImGui.sameLine();
+        if (engine.ui.ImGui.windowControlButton(.close, false)) {
+            state.top_bar_drag_active = false;
+            layer_context.window.requestClose();
+        }
+    }
+}
+
+fn beginTopBarDrag(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const mouse = layer_context.window.globalMousePosition();
+
+    if (layer_context.window.isMaximized()) {
+        const usable = try layer_context.window.usableBounds();
+        const width_before_restore = @max(layer_context.window.logical_width, 1);
+        const click_ratio_x = std.math.clamp(
+            layer_context.input.mouse_position[0] / @as(f32, @floatFromInt(width_before_restore)),
+            0.1,
+            0.9,
+        );
+        const click_offset_y = std.math.clamp(layer_context.input.mouse_position[1], 8.0, 28.0);
+
+        try layer_context.window.restore();
+        try layer_context.window.sync();
+        try layer_context.window.refreshSizes();
+
+        const restored_width: i32 = @intCast(@max(layer_context.window.logical_width, 1));
+        const restored_height: i32 = @intCast(@max(layer_context.window.logical_height, 1));
+        const min_x = usable.x;
+        const max_x = usable.x + usable.w - restored_width;
+        const min_y = usable.y;
+        const max_y = usable.y + usable.h - restored_height;
+        const target_x = std.math.clamp(
+            @as(i32, @intFromFloat(mouse[0] - @as(f32, @floatFromInt(restored_width)) * click_ratio_x)),
+            min_x,
+            @max(min_x, max_x),
+        );
+        const target_y = std.math.clamp(
+            @as(i32, @intFromFloat(mouse[1] - click_offset_y)),
+            min_y,
+            @max(min_y, max_y),
+        );
+        try layer_context.window.setPosition(target_x, target_y);
+
+        state.top_bar_drag_active = true;
+        state.top_bar_drag_offset = .{
+            mouse[0] - @as(f32, @floatFromInt(target_x)),
+            mouse[1] - @as(f32, @floatFromInt(target_y)),
+        };
+        return;
+    }
+
+    const window_pos = try layer_context.window.position();
+    state.top_bar_drag_active = true;
+    state.top_bar_drag_offset = .{
+        mouse[0] - @as(f32, @floatFromInt(window_pos[0])),
+        mouse[1] - @as(f32, @floatFromInt(window_pos[1])),
+    };
 }

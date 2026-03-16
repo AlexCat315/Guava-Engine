@@ -24,6 +24,12 @@ enum {
     GUAVA_IMGUI_WINDOW_NO_DECORATION = 1 << 8,
 };
 
+enum {
+    GUAVA_IMGUI_WINDOW_CONTROL_MINIMIZE = 0,
+    GUAVA_IMGUI_WINDOW_CONTROL_MAXIMIZE = 1,
+    GUAVA_IMGUI_WINDOW_CONTROL_CLOSE = 2,
+};
+
 bool guava_imgui_init(SDL_Window* window, SDL_GPUDevice* device, SDL_GPUTextureFormat color_target_format);
 void guava_imgui_shutdown(void);
 void guava_imgui_process_event(const SDL_Event* event);
@@ -44,6 +50,9 @@ bool guava_imgui_begin_menu(const char* label, size_t label_len);
 void guava_imgui_end_menu(void);
 bool guava_imgui_menu_item(const char* label, size_t label_len, const char* shortcut, size_t shortcut_len, bool selected, bool enabled);
 bool guava_imgui_button(const char* label, size_t label_len);
+bool guava_imgui_invisible_button(const char* id, size_t id_len, float width, float height);
+bool guava_imgui_window_control_button(uint32_t kind, bool toggled);
+void guava_imgui_dummy(float width, float height);
 void guava_imgui_same_line(void);
 void guava_imgui_separator(void);
 void guava_imgui_text(const char* text, size_t text_len);
@@ -53,6 +62,7 @@ void guava_imgui_pop_id(void);
 bool guava_imgui_tree_node_entity(uint64_t id, const char* label, size_t label_len, bool selected, bool leaf, bool default_open);
 void guava_imgui_tree_pop(void);
 bool guava_imgui_is_item_clicked(void);
+bool guava_imgui_is_item_active(void);
 bool guava_imgui_is_item_hovered(void);
 bool guava_imgui_is_item_deactivated_after_edit(void);
 bool guava_imgui_input_text(const char* label, size_t label_len, char* buffer, size_t buffer_size);

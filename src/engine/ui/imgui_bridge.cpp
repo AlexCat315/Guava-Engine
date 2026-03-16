@@ -133,6 +133,69 @@ void configure_fonts(float content_scale) {
     io.FontDefault = primary_font;
 }
 
+void draw_window_control_icon(ImDrawList* draw_list, ImRect rect, uint32_t kind, bool toggled, ImU32 color) {
+    const ImVec2 center = rect.GetCenter();
+    const float half_w = rect.GetWidth() * 0.18f;
+    const float half_h = rect.GetHeight() * 0.18f;
+    const float thickness = 1.5f;
+
+    switch (kind) {
+        case GUAVA_IMGUI_WINDOW_CONTROL_MINIMIZE:
+            draw_list->AddLine(
+                ImVec2(center.x - half_w, center.y + half_h * 0.45f),
+                ImVec2(center.x + half_w, center.y + half_h * 0.45f),
+                color,
+                thickness
+            );
+            break;
+        case GUAVA_IMGUI_WINDOW_CONTROL_MAXIMIZE:
+            if (toggled) {
+                draw_list->AddRect(
+                    ImVec2(center.x - half_w * 0.55f, center.y - half_h * 1.25f),
+                    ImVec2(center.x + half_w * 1.05f, center.y + half_h * 0.35f),
+                    color,
+                    1.5f,
+                    0,
+                    thickness
+                );
+                draw_list->AddRect(
+                    ImVec2(center.x - half_w * 1.05f, center.y - half_h * 0.35f),
+                    ImVec2(center.x + half_w * 0.55f, center.y + half_h * 1.25f),
+                    color,
+                    1.5f,
+                    0,
+                    thickness
+                );
+            } else {
+                draw_list->AddRect(
+                    ImVec2(center.x - half_w, center.y - half_h),
+                    ImVec2(center.x + half_w, center.y + half_h),
+                    color,
+                    1.5f,
+                    0,
+                    thickness
+                );
+            }
+            break;
+        case GUAVA_IMGUI_WINDOW_CONTROL_CLOSE:
+            draw_list->AddLine(
+                ImVec2(center.x - half_w, center.y - half_h),
+                ImVec2(center.x + half_w, center.y + half_h),
+                color,
+                thickness
+            );
+            draw_list->AddLine(
+                ImVec2(center.x - half_w, center.y + half_h),
+                ImVec2(center.x + half_w, center.y - half_h),
+                color,
+                thickness
+            );
+            break;
+        default:
+            break;
+    }
+}
+
 } // namespace
 
 extern "C" bool guava_imgui_init(SDL_Window* window, SDL_GPUDevice* device, SDL_GPUTextureFormat color_target_format) {
@@ -367,6 +430,75 @@ extern "C" bool guava_imgui_button(const char* label, size_t label_len) {
     return ImGui::Button(owned_label.c_str());
 }
 
+extern "C" bool guava_imgui_invisible_button(const char* id, size_t id_len, float width, float height) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+    const std::string owned_id = make_string(id, id_len);
+    return ImGui::InvisibleButton(owned_id.c_str(), ImVec2(width, height));
+}
+
+extern "C" bool guava_imgui_window_control_button(uint32_t kind, bool toggled) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+
+    const float height = ImGui::GetFrameHeight();
+    const ImVec2 size(height * 1.42f, height * 0.9f);
+    const float rounding = 6.0f;
+    ImGui::PushID(static_cast<int>(kind));
+    const bool clicked = ImGui::InvisibleButton("##window_control", size);
+
+    const bool hovered = ImGui::IsItemHovered();
+    const bool active = ImGui::IsItemActive();
+    const ImRect rect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+
+    ImU32 bg_color = IM_COL32(0, 0, 0, 0);
+    ImU32 border_color = IM_COL32(136, 150, 172, 42);
+    if (kind == GUAVA_IMGUI_WINDOW_CONTROL_CLOSE) {
+        if (active) {
+            bg_color = IM_COL32(172, 44, 49, 255);
+            border_color = IM_COL32(217, 111, 116, 110);
+        } else if (hovered) {
+            bg_color = IM_COL32(208, 64, 72, 245);
+            border_color = IM_COL32(242, 149, 152, 120);
+        }
+    } else {
+        if (active) {
+            bg_color = IM_COL32(82, 92, 112, 176);
+            border_color = IM_COL32(168, 180, 198, 92);
+        } else if (hovered) {
+            bg_color = IM_COL32(60, 71, 88, 132);
+            border_color = IM_COL32(160, 174, 194, 88);
+        } else {
+            bg_color = IM_COL32(255, 255, 255, 8);
+        }
+    }
+
+    if ((bg_color & IM_COL32_A_MASK) != 0) {
+        draw_list->AddRectFilled(rect.Min, rect.Max, bg_color, rounding);
+    }
+    if ((border_color & IM_COL32_A_MASK) != 0) {
+        draw_list->AddRect(rect.Min, rect.Max, border_color, rounding);
+    }
+
+    const ImU32 icon_color = hovered || active
+        ? IM_COL32(245, 247, 250, 255)
+        : IM_COL32(176, 188, 207, 212);
+    draw_window_control_icon(draw_list, rect, kind, toggled, icon_color);
+
+    ImGui::PopID();
+    return clicked;
+}
+
+extern "C" void guava_imgui_dummy(float width, float height) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::Dummy(ImVec2(width, height));
+}
+
 extern "C" void guava_imgui_same_line(void) {
     if (!g_imgui_initialized) {
         return;
@@ -443,6 +575,13 @@ extern "C" bool guava_imgui_is_item_clicked(void) {
         return false;
     }
     return ImGui::IsItemClicked();
+}
+
+extern "C" bool guava_imgui_is_item_active(void) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+    return ImGui::IsItemActive();
 }
 
 extern "C" bool guava_imgui_is_item_hovered(void) {

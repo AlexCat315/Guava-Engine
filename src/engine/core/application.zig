@@ -13,6 +13,8 @@ pub const ApplicationConfig = struct {
     name: []const u8 = "Guava Engine",
     window_width: u32 = 1280,
     window_height: u32 = 720,
+    window_borderless: bool = false,
+    window_native_titlebar_controls: bool = false,
     frame_delay_ms: u32 = 16,
     preferred_backends: []const render_types.GraphicsAPI = &.{ .vulkan, .dx12, .metal },
     backend_selection_policy: render_types.BackendSelectionPolicy = .explicit_order,
@@ -48,6 +50,8 @@ pub const Application = struct {
             .title = config.name,
             .width = config.window_width,
             .height = config.window_height,
+            .borderless = config.window_borderless,
+            .native_titlebar_controls = config.window_native_titlebar_controls,
         });
         errdefer window.deinit();
 
