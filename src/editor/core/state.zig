@@ -35,15 +35,30 @@ pub const ManipulationMode = enum {
     scale,
 };
 
-pub const PlaybackState = enum {
-    stopped,
-    playing,
-    paused,
-};
+pub const PlaybackState = engine.core.PlaybackState;
 
 pub const TransformSpace = enum {
     local,
     world,
+};
+
+pub const HierarchyCategory = enum {
+    all,
+    cameras,
+    lights,
+    geometry,
+    objects,
+};
+
+pub const BottomPanelTab = enum {
+    project,
+    console,
+};
+
+pub const ViewportRenderMode = enum {
+    textured,
+    wireframe,
+    unlit,
 };
 
 pub const AxisConstraint = engine.math.axis.Axis3;
@@ -76,12 +91,28 @@ pub const EditorState = struct {
     saved_snapshot_cursor: ?usize = null,
     asset_registry: ?engine.assets.AssetRegistry = null,
     asset_entries: std.ArrayList(AssetEntry) = .empty,
+    asset_directories: std.ArrayList([]u8) = .empty,
     selected_asset_index: ?usize = null,
     scene_filter_buffer: [128]u8 = [_]u8{0} ** 128,
+    hierarchy_filter_buffer: [128]u8 = [_]u8{0} ** 128,
+    hierarchy_category: HierarchyCategory = .all,
     asset_filter_buffer: [128]u8 = [_]u8{0} ** 128,
+    asset_directory_buffer: [256]u8 = [_]u8{0} ** 256,
+    asset_thumbnail_size: f32 = 104.0,
+    bottom_panel_tab: BottomPanelTab = .project,
+    console_show_errors: bool = true,
+    console_show_warnings: bool = true,
+    console_show_info: bool = true,
+    console_show_debug: bool = true,
+    console_auto_scroll: bool = true,
     language: i18n.Language = .zh_cn,
     dock_layout_initialized: bool = false,
     settings_open: bool = false,
+    render_settings_open: bool = false,
+    viewport_render_mode: ViewportRenderMode = .textured,
+    viewport_show_grid: bool = true,
+    viewport_show_bones: bool = false,
+    viewport_show_collision: bool = false,
     viewport_hovered: bool = false,
     viewport_focused: bool = false,
     viewport_has_image: bool = false,

@@ -167,6 +167,14 @@ pub fn setNextItemWidth(width: f32) void {
     c.guava_imgui_set_next_item_width(width);
 }
 
+pub fn setNextWindowPos(position: [2]f32) void {
+    c.guava_imgui_set_next_window_pos(position[0], position[1]);
+}
+
+pub fn setNextWindowSize(size: [2]f32) void {
+    c.guava_imgui_set_next_window_size(size[0], size[1]);
+}
+
 pub fn pushStyleColor(slot: StyleColor, color: [4]f32) void {
     c.guava_imgui_push_style_color(@intFromEnum(slot), color[0], color[1], color[2], color[3]);
 }
@@ -306,6 +314,24 @@ pub fn cursorScreenPos() [2]f32 {
     var value = [2]f32{ 0.0, 0.0 };
     c.guava_imgui_get_cursor_screen_pos(@ptrCast(&value[0]));
     return value;
+}
+
+pub fn setCursorPos(position: [2]f32) void {
+    c.guava_imgui_set_cursor_pos(position[0], position[1]);
+}
+
+pub fn windowSize() [2]f32 {
+    var value = [2]f32{ 0.0, 0.0 };
+    c.guava_imgui_get_window_size(@ptrCast(&value[0]));
+    return value;
+}
+
+pub fn time() f32 {
+    return c.guava_imgui_get_time();
+}
+
+pub fn setScrollHereY(center_y_ratio: f32) void {
+    c.guava_imgui_set_scroll_here_y(center_y_ratio);
 }
 
 pub fn image(texture: *const rhi_mod.Texture, width: f32, height: f32) void {

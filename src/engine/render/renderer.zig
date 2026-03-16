@@ -12,14 +12,17 @@ const graph_mod = @import("render_graph.zig");
 const mesh_pass_mod = @import("mesh_pass.zig");
 const rhi_mod = @import("../rhi/device.zig");
 const rhi_types = @import("../rhi/types.zig");
+const components = @import("../scene/components.zig");
 const scene_mod = @import("../scene/scene.zig");
 const types = @import("types.zig");
+const vec3 = @import("../math/vec3.zig");
 
 pub const GraphicsAPI = rhi_types.GraphicsAPI;
 pub const RuntimeInfo = rhi_types.RuntimeInfo;
 pub const SelectionHistory = selection_history_mod.SelectionHistory;
 pub const SelectionUpdateMode = selection_history_mod.SelectionUpdateMode;
 pub const EditorGizmoState = gizmo_pass_mod.EditorGizmoState;
+pub const EditorViewportState = types.EditorViewportState;
 
 pub const RendererConfig = struct {
     requested_backends: []const rhi_types.GraphicsAPI = &.{},
@@ -150,6 +153,7 @@ pub const Renderer = struct {
     selection_history: SelectionHistory,
     selection_seeded: bool = false,
     editor_gizmo_state: EditorGizmoState = .{},
+    editor_viewport_state: EditorViewportState = .{},
     pending_selection_readbacks: std.ArrayList(SelectionReadbackRequest) = .empty,
     in_flight_selection_batches: std.ArrayList(InFlightSelectionBatch) = .empty,
     scene_viewport: SceneViewportState = .{},
@@ -295,6 +299,10 @@ pub const Renderer = struct {
         self.editor_gizmo_state = state;
     }
 
+    pub fn setEditorViewportState(self: *Renderer, state: EditorViewportState) void {
+        self.editor_viewport_state = state;
+    }
+
     pub fn setSceneViewportSize(self: *Renderer, width: u32, height: u32) !void {
         try self.scene_viewport.ensure(&self.rhi, width, height);
     }
@@ -418,7 +426,7 @@ pub const Renderer = struct {
             draw_stats.add(depth_stats);
 
             const base_start = std.time.nanoTimestamp();
-            const base_stats = self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene);
+            const base_stats = self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene, self.editor_viewport_state);
             self.graph.recordPassStat(pass_stats, .base_pass, durationNs(base_start, std.time.nanoTimestamp()), base_stats.draw_calls, base_stats.triangles_drawn);
             draw_stats.add(base_stats);
             self.rhi.endRenderPass(scene_pass);
@@ -441,18 +449,19 @@ pub const Renderer = struct {
                 self.rhi.endRenderPass(outline_pass);
             }
 
-            if (self.gizmo_pass.isReady()) {
+            if (self.gizmoPassRequired(scene)) {
+                const gizmo_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
+                    .color = .{
+                        .target = scene_color_target,
+                        .load_op = .load,
+                        .store_op = .store,
+                    },
+                    .depth = null,
+                });
+                const gizmo_start = std.time.nanoTimestamp();
+                var gizmo_overlay_stats = mesh_pass_mod.DrawStats{};
                 if (self.selection_history.primarySelection()) |selected_entity_id| {
                     if (scene.worldTransform(selected_entity_id)) |selected_transform| {
-                        const gizmo_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
-                            .color = .{
-                                .target = scene_color_target,
-                                .load_op = .load,
-                                .store_op = .store,
-                            },
-                            .depth = null,
-                        });
-                        const gizmo_start = std.time.nanoTimestamp();
                         const gizmo_stats = self.gizmo_pass.draw(
                             &self.rhi,
                             frame,
@@ -461,11 +470,16 @@ pub const Renderer = struct {
                             selected_transform,
                             self.editor_gizmo_state,
                         );
-                        self.graph.recordPassStat(pass_stats, .gizmo_overlay, durationNs(gizmo_start, std.time.nanoTimestamp()), gizmo_stats.draw_calls, gizmo_stats.triangles_drawn);
+                        gizmo_overlay_stats.add(gizmo_stats);
                         draw_stats.add(gizmo_stats);
-                        self.rhi.endRenderPass(gizmo_pass);
                     }
                 }
+
+                const debug_stats = try self.drawViewportDebugOverlays(frame, gizmo_pass, scene, &prepared_scene);
+                gizmo_overlay_stats.add(debug_stats);
+                draw_stats.add(debug_stats);
+                self.graph.recordPassStat(pass_stats, .gizmo_overlay, durationNs(gizmo_start, std.time.nanoTimestamp()), gizmo_overlay_stats.draw_calls, gizmo_overlay_stats.triangles_drawn);
+                self.rhi.endRenderPass(gizmo_pass);
             }
 
             imgui_mod.prepare(frame.command_buffer);
@@ -548,6 +562,199 @@ pub const Renderer = struct {
 
     fn durationNs(start: i128, end: i128) u64 {
         return if (end > start) @intCast(end - start) else 0;
+    }
+
+    fn gizmoPassRequired(self: *const Renderer, _: *const scene_mod.Scene) bool {
+        if (!self.gizmo_pass.isReady()) {
+            return false;
+        }
+        return self.selection_history.primarySelection() != null or
+            self.editor_viewport_state.show_grid or
+            self.editor_viewport_state.show_bones or
+            self.editor_viewport_state.show_collision;
+    }
+
+    fn drawViewportDebugOverlays(
+        self: *Renderer,
+        frame: rhi_mod.Frame,
+        pass: rhi_mod.RenderPass,
+        scene: *const scene_mod.Scene,
+        prepared_scene: *const mesh_pass_mod.PreparedScene,
+    ) !mesh_pass_mod.DrawStats {
+        var stats = mesh_pass_mod.DrawStats{};
+
+        if (self.editor_viewport_state.show_grid) {
+            var grid_lines = std.ArrayList(gizmo_pass_mod.WorldLineVertex).empty;
+            defer grid_lines.deinit(self.allocator);
+            try appendGridLines(self.allocator, &grid_lines);
+            const grid_stats = try self.gizmo_pass.drawWorldLines(
+                &self.rhi,
+                frame,
+                pass,
+                prepared_scene.view_projection,
+                grid_lines.items,
+                .{ 0.22, 0.25, 0.30, 1.0 },
+            );
+            stats.add(grid_stats);
+        }
+
+        if (self.editor_viewport_state.show_bones) {
+            var bone_lines = std.ArrayList(gizmo_pass_mod.WorldLineVertex).empty;
+            defer bone_lines.deinit(self.allocator);
+            try appendBoneLines(self.allocator, scene, &bone_lines);
+            const bone_stats = try self.gizmo_pass.drawWorldLines(
+                &self.rhi,
+                frame,
+                pass,
+                prepared_scene.view_projection,
+                bone_lines.items,
+                .{ 0.95, 0.58, 0.24, 1.0 },
+            );
+            stats.add(bone_stats);
+        }
+
+        if (self.editor_viewport_state.show_collision) {
+            var collision_lines = std.ArrayList(gizmo_pass_mod.WorldLineVertex).empty;
+            defer collision_lines.deinit(self.allocator);
+            try appendCollisionLines(self.allocator, scene, &collision_lines);
+            const collision_stats = try self.gizmo_pass.drawWorldLines(
+                &self.rhi,
+                frame,
+                pass,
+                prepared_scene.view_projection,
+                collision_lines.items,
+                .{ 0.30, 0.92, 0.52, 1.0 },
+            );
+            stats.add(collision_stats);
+        }
+
+        return stats;
+    }
+
+    fn appendGridLines(
+        allocator: std.mem.Allocator,
+        lines: *std.ArrayList(gizmo_pass_mod.WorldLineVertex),
+    ) !void {
+        const half_extent: i32 = 16;
+        var index: i32 = -half_extent;
+        while (index <= half_extent) : (index += 1) {
+            const offset = @as(f32, @floatFromInt(index));
+            try appendLine(allocator, lines, .{ offset, 0.0, -@as(f32, @floatFromInt(half_extent)) }, .{ offset, 0.0, @as(f32, @floatFromInt(half_extent)) });
+            try appendLine(allocator, lines, .{ -@as(f32, @floatFromInt(half_extent)), 0.0, offset }, .{ @as(f32, @floatFromInt(half_extent)), 0.0, offset });
+        }
+    }
+
+    fn appendBoneLines(
+        allocator: std.mem.Allocator,
+        scene: *const scene_mod.Scene,
+        lines: *std.ArrayList(gizmo_pass_mod.WorldLineVertex),
+    ) !void {
+        for (scene.entities.items) |entity| {
+            const parent_id = entity.parent orelse continue;
+            const parent_transform = scene.worldTransform(parent_id) orelse continue;
+            const child_transform = scene.worldTransform(entity.id) orelse entity.transform;
+            try appendLine(allocator, lines, parent_transform.translation, child_transform.translation);
+        }
+    }
+
+    fn appendCollisionLines(
+        allocator: std.mem.Allocator,
+        scene: *const scene_mod.Scene,
+        lines: *std.ArrayList(gizmo_pass_mod.WorldLineVertex),
+    ) !void {
+        for (scene.entities.items) |entity| {
+            const mesh_component = entity.mesh orelse continue;
+            const mesh_handle = mesh_component.handle orelse continue;
+            const mesh = scene.resources.mesh(mesh_handle) orelse continue;
+            if (mesh.vertices.len == 0) {
+                continue;
+            }
+            const world_transform = scene.worldTransform(entity.id) orelse entity.transform;
+
+            var local_min = mesh.vertices[0].position;
+            var local_max = mesh.vertices[0].position;
+            for (mesh.vertices[1..]) |vertex| {
+                local_min[0] = @min(local_min[0], vertex.position[0]);
+                local_min[1] = @min(local_min[1], vertex.position[1]);
+                local_min[2] = @min(local_min[2], vertex.position[2]);
+                local_max[0] = @max(local_max[0], vertex.position[0]);
+                local_max[1] = @max(local_max[1], vertex.position[1]);
+                local_max[2] = @max(local_max[2], vertex.position[2]);
+            }
+
+            const corners = [_][3]f32{
+                transformPoint(world_transform, .{ local_min[0], local_min[1], local_min[2] }),
+                transformPoint(world_transform, .{ local_max[0], local_min[1], local_min[2] }),
+                transformPoint(world_transform, .{ local_max[0], local_max[1], local_min[2] }),
+                transformPoint(world_transform, .{ local_min[0], local_max[1], local_min[2] }),
+                transformPoint(world_transform, .{ local_min[0], local_min[1], local_max[2] }),
+                transformPoint(world_transform, .{ local_max[0], local_min[1], local_max[2] }),
+                transformPoint(world_transform, .{ local_max[0], local_max[1], local_max[2] }),
+                transformPoint(world_transform, .{ local_min[0], local_max[1], local_max[2] }),
+            };
+            try appendBoxEdges(allocator, lines, corners);
+        }
+    }
+
+    fn appendBoxEdges(allocator: std.mem.Allocator, lines: *std.ArrayList(gizmo_pass_mod.WorldLineVertex), corners: [8][3]f32) !void {
+        try appendLine(allocator, lines, corners[0], corners[1]);
+        try appendLine(allocator, lines, corners[1], corners[2]);
+        try appendLine(allocator, lines, corners[2], corners[3]);
+        try appendLine(allocator, lines, corners[3], corners[0]);
+        try appendLine(allocator, lines, corners[4], corners[5]);
+        try appendLine(allocator, lines, corners[5], corners[6]);
+        try appendLine(allocator, lines, corners[6], corners[7]);
+        try appendLine(allocator, lines, corners[7], corners[4]);
+        try appendLine(allocator, lines, corners[0], corners[4]);
+        try appendLine(allocator, lines, corners[1], corners[5]);
+        try appendLine(allocator, lines, corners[2], corners[6]);
+        try appendLine(allocator, lines, corners[3], corners[7]);
+    }
+
+    fn appendLine(allocator: std.mem.Allocator, lines: *std.ArrayList(gizmo_pass_mod.WorldLineVertex), a: [3]f32, b: [3]f32) !void {
+        try lines.append(allocator, .{ .position = a });
+        try lines.append(allocator, .{ .position = b });
+    }
+
+    fn transformPoint(transform: components.Transform, point: [3]f32) [3]f32 {
+        return vec3.add(
+            transform.translation,
+            rotateVec3Euler(transform.rotation_euler, vec3.mul(transform.scale, point)),
+        );
+    }
+
+    fn rotateVec3Euler(rotation: [3]f32, vector: [3]f32) [3]f32 {
+        return rotateZ(rotation[2], rotateY(rotation[1], rotateX(rotation[0], vector)));
+    }
+
+    fn rotateX(radians: f32, vector: [3]f32) [3]f32 {
+        const c = std.math.cos(radians);
+        const s = std.math.sin(radians);
+        return .{
+            vector[0],
+            vector[1] * c - vector[2] * s,
+            vector[1] * s + vector[2] * c,
+        };
+    }
+
+    fn rotateY(radians: f32, vector: [3]f32) [3]f32 {
+        const c = std.math.cos(radians);
+        const s = std.math.sin(radians);
+        return .{
+            vector[0] * c + vector[2] * s,
+            vector[1],
+            -vector[0] * s + vector[2] * c,
+        };
+    }
+
+    fn rotateZ(radians: f32, vector: [3]f32) [3]f32 {
+        const c = std.math.cos(radians);
+        const s = std.math.sin(radians);
+        return .{
+            vector[0] * c - vector[1] * s,
+            vector[0] * s + vector[1] * c,
+            vector[2],
+        };
     }
 
     fn enqueueSelectionReadbacks(self: *Renderer, frame: rhi_mod.Frame, id_texture: *const rhi_mod.Texture) !void {

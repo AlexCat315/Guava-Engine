@@ -5,6 +5,7 @@ const state_mod = @import("../core/state.zig");
 
 const AssetKind = state_mod.AssetKind;
 const AssetEntry = state_mod.AssetEntry;
+const HierarchyCategory = state_mod.HierarchyCategory;
 
 pub fn assetKindForPath(path: []const u8) ?AssetKind {
     if (std.mem.endsWith(u8, path, ".guava_scene")) {
@@ -81,7 +82,7 @@ pub fn swizzleRgbaToBgra(bytes: []u8) void {
 }
 
 pub fn clampPitch(pitch: f32) f32 {
-    return std.math.clamp(pitch, -1.45, 1.45);
+    return std.math.clamp(pitch, -1.55, 1.55);
 }
 
 pub fn clampDistance(distance: f32) f32 {
@@ -137,11 +138,16 @@ pub fn hasVisibleChildren(_: *const EditorState, world: *const engine.scene.Worl
 }
 
 pub fn shouldShowEntityInSceneTree(state: *const EditorState, world: *const engine.scene.World, entity_id: engine.scene.EntityId) bool {
-    const filter = zeroTerminatedSlice(state.scene_filter_buffer[0..]);
-    if (filter.len == 0) {
-        return true;
+    const scene_filter = zeroTerminatedSlice(state.scene_filter_buffer[0..]);
+    if (scene_filter.len != 0 and !entityMatchesFilterRecursive(state, world, entity_id, scene_filter)) {
+        return false;
     }
-    return entityMatchesFilterRecursive(state, world, entity_id, filter);
+
+    const hierarchy_filter = zeroTerminatedSlice(state.hierarchy_filter_buffer[0..]);
+    if (hierarchy_filter.len != 0 or state.hierarchy_category != .all) {
+        return entityMatchesHierarchyFilterRecursive(state, world, entity_id, hierarchy_filter);
+    }
+    return true;
 }
 
 pub fn entityMatchesFilterRecursive(
@@ -160,6 +166,41 @@ pub fn entityMatchesFilterRecursive(
         }
     }
     return false;
+}
+
+pub fn entityMatchesHierarchyFilterRecursive(
+    state: *const EditorState,
+    world: *const engine.scene.World,
+    entity_id: engine.scene.EntityId,
+    hierarchy_filter: []const u8,
+) bool {
+    const entity = world.getEntityConst(entity_id) orelse return false;
+    if (entityMatchesHierarchyFilter(state, entity, hierarchy_filter)) {
+        return true;
+    }
+    for (world.entities.items) |child| {
+        if (!child.editor_only and child.parent == entity_id and entityMatchesHierarchyFilterRecursive(state, world, child.id, hierarchy_filter)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+pub fn entityMatchesHierarchyFilter(state: *const EditorState, entity: *const engine.scene.Entity, hierarchy_filter: []const u8) bool {
+    if (hierarchy_filter.len != 0 and !containsAsciiInsensitive(entity.name, hierarchy_filter)) {
+        return false;
+    }
+    return entityMatchesHierarchyCategory(state.hierarchy_category, entity);
+}
+
+pub fn entityMatchesHierarchyCategory(category: HierarchyCategory, entity: *const engine.scene.Entity) bool {
+    return switch (category) {
+        .all => true,
+        .cameras => entity.camera != null,
+        .lights => entity.light != null,
+        .geometry => entity.mesh != null,
+        .objects => entity.camera == null and entity.light == null and entity.mesh == null,
+    };
 }
 
 pub fn assetMatchesFilter(state: *const EditorState, entry: AssetEntry) bool {
@@ -184,6 +225,63 @@ pub fn syncInspectorNameBuffer(state: *EditorState, layer_context: *engine.core.
         }
     }
     state.inspector_name_entity = selected;
+}
+
+pub fn entityPath(buffer: []u8, world: *const engine.scene.World, entity_id: engine.scene.EntityId) ![]const u8 {
+    var segments = std.BoundedArray([]const u8, 64){};
+    var current: ?engine.scene.EntityId = entity_id;
+    while (current) |current_id| {
+        const entity = world.getEntityConst(current_id) orelse break;
+        try segments.append(entity.name);
+        current = entity.parent;
+    }
+
+    var stream = std.io.fixedBufferStream(buffer);
+    const writer = stream.writer();
+    if (segments.len == 0) {
+        try writer.writeAll("/");
+        return stream.getWritten();
+    }
+
+    var index = segments.len;
+    while (index > 0) {
+        index -= 1;
+        try writer.writeAll("/");
+        try writer.writeAll(segments.get(index));
+    }
+    return stream.getWritten();
+}
+
+pub fn estimatedWorldMemoryBytes(world: *const engine.scene.World) usize {
+    const MeshResourceType = std.meta.Child(@TypeOf(world.resources.meshes.items));
+    const MaterialResourceType = std.meta.Child(@TypeOf(world.resources.materials.items));
+    const TextureResourceType = std.meta.Child(@TypeOf(world.resources.textures.items));
+    var total: usize = 0;
+    total += world.entities.items.len * @sizeOf(engine.scene.Entity);
+    for (world.entities.items) |entity| {
+        total += entity.name.len;
+    }
+
+    total += world.resources.meshes.items.len * @sizeOf(MeshResourceType);
+    for (world.resources.meshes.items) |mesh| {
+        total += mesh.name.len;
+        if (mesh.vertices.len > 0) {
+            total += mesh.vertices.len * @sizeOf(@TypeOf(mesh.vertices[0]));
+        }
+        total += mesh.indices.len * @sizeOf(u32);
+    }
+
+    total += world.resources.materials.items.len * @sizeOf(MaterialResourceType);
+    for (world.resources.materials.items) |material| {
+        total += material.name.len;
+    }
+
+    total += world.resources.textures.items.len * @sizeOf(TextureResourceType);
+    for (world.resources.textures.items) |texture| {
+        total += texture.name.len;
+        total += texture.pixels.len;
+    }
+    return total;
 }
 
 pub fn isEntitySelectionLocked(state: *const EditorState, entity_id: engine.scene.EntityId) bool {

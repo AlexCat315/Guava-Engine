@@ -1,7 +1,14 @@
+const std = @import("std");
 const engine = @import("guava");
 const vec3 = engine.math.vec3;
 const EditorState = @import("../core/state.zig").EditorState;
 const utils = @import("../common/utils.zig");
+
+pub const ViewPreset = enum {
+    perspective,
+    top,
+    side,
+};
 
 pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.LayerContext) void {
     const input = layer_context.input;
@@ -129,6 +136,18 @@ pub fn createEditorCamera(state: *EditorState, layer_context: *engine.core.Layer
     }
 }
 
+pub fn setViewPreset(state: *EditorState, layer_context: *engine.core.LayerContext, preset: ViewPreset) void {
+    switch (preset) {
+        .perspective => applyEditorViewDirection(state, layer_context, vec3.normalize(.{ -0.45, -0.32, -0.84 }), false),
+        .top => applyEditorViewDirection(state, layer_context, .{ 0.0, -1.0, 0.0 }, true),
+        .side => applyEditorViewDirection(state, layer_context, .{ -1.0, 0.0, 0.0 }, true),
+    }
+}
+
+pub fn lookAlongWorldAxis(state: *EditorState, layer_context: *engine.core.LayerContext, axis: [3]f32) void {
+    applyEditorViewDirection(state, layer_context, vec3.normalize(axis), true);
+}
+
 pub fn editorCameraTransform(state: *const EditorState) engine.scene.Transform {
     return .{
         .translation = vec3.sub(state.focus_pivot, vec3.scale(vec3.forwardFromAngles(state.yaw, state.pitch), state.orbit_distance)),
@@ -150,4 +169,28 @@ pub fn activeCameraTransform(state: *const EditorState, layer_context: *engine.c
 
 pub fn moveSpeed(state: *const EditorState, delta_seconds: f32) f32 {
     return state.move_speed * @max(delta_seconds, 0.001);
+}
+
+fn applyEditorViewDirection(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    forward: [3]f32,
+    orthographic: bool,
+) void {
+    const camera_id = state.editor_camera orelse return;
+    const camera_entity = layer_context.world.getEntity(camera_id) orelse return;
+
+    state.pitch = utils.clampPitch(std.math.asin(std.math.clamp(forward[1], -1.0, 1.0)));
+    state.yaw = std.math.atan2(-forward[0], -forward[2]);
+    camera_entity.transform = editorCameraTransform(state);
+    if (camera_entity.camera) |camera_component| {
+        var next_camera = camera_component;
+        next_camera.projection = if (orthographic)
+            .{ .orthographic = .{ .size = @max(state.orbit_distance * 1.1, 2.0), .near_clip = -1000.0, .far_clip = 1000.0 } }
+        else
+            .{ .perspective = .{} };
+        camera_entity.camera = next_camera;
+    }
+    _ = layer_context.world.setPrimaryCamera(camera_id);
+    state.editor_camera_active = true;
 }

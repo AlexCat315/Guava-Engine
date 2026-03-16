@@ -1,3 +1,4 @@
+const std = @import("std");
 const engine = @import("guava");
 const vec3 = engine.math.vec3;
 const EditorState = @import("../core/state.zig").EditorState;
@@ -8,6 +9,7 @@ const history = @import("../actions/history.zig");
 const scene_hierarchy = @import("../ui/windows/scene_hierarchy.zig");
 
 const ManipulationMode = state_mod.ManipulationMode;
+const TransformSpace = state_mod.TransformSpace;
 
 pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const input = layer_context.input;
@@ -27,9 +29,7 @@ pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.L
 
     if (state.manipulation_mode != .none) {
         if (input.wasKeyPressed(.q)) {
-            endManipulation(state);
-            syncGizmoState(state, layer_context);
-            try history.refreshWindowTitle(state, layer_context);
+            try selectTool(state, layer_context);
             return;
         }
         if (input.wasKeyPressed(.x)) {
@@ -99,9 +99,7 @@ pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.L
         try beginManipulation(state, layer_context, .translate);
     }
     if (input.wasKeyPressed(.q)) {
-        endManipulation(state);
-        syncGizmoState(state, layer_context);
-        try history.refreshWindowTitle(state, layer_context);
+        try selectTool(state, layer_context);
     }
     if (input.wasKeyPressed(.w)) {
         try beginManipulation(state, layer_context, .translate);
@@ -146,6 +144,12 @@ pub fn beginManipulation(
     state.manipulation_axis = .free;
     state.manipulation_entity = selected;
     state.manipulation_origin = layer_context.world.worldTransform(selected) orelse return;
+    syncGizmoState(state, layer_context);
+    try history.refreshWindowTitle(state, layer_context);
+}
+
+pub fn selectTool(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    endManipulation(state);
     syncGizmoState(state, layer_context);
     try history.refreshWindowTitle(state, layer_context);
 }
@@ -209,7 +213,7 @@ pub fn applyTranslate(
             entity_transform.translation = vec3.add(entity_transform.translation, delta);
         },
         .x, .y, .z => {
-            const axis = engine.math.axis.vector(state.manipulation_axis);
+            const axis = manipulationAxisVector(state.transform_space, state.manipulation_axis, entity_transform.rotation_euler);
             const scalar = (input.mouse_delta[0] - input.mouse_delta[1]) * move_scale;
             entity_transform.translation = vec3.add(entity_transform.translation, vec3.scale(axis, scalar));
         },
@@ -254,5 +258,58 @@ pub fn syncGizmoState(state: *const EditorState, layer_context: *engine.core.Lay
             .scale => .scale,
         },
         .axis = state.manipulation_axis,
+        .space = switch (state.transform_space) {
+            .local => .local,
+            .world => .world,
+        },
     });
+}
+
+fn manipulationAxisVector(space: TransformSpace, axis: state_mod.AxisConstraint, rotation_euler: [3]f32) [3]f32 {
+    const base_axis = engine.math.axis.vector(axis);
+    return switch (space) {
+        .world => base_axis,
+        .local => rotateVec3Euler(rotation_euler, base_axis),
+    };
+}
+
+fn rotateVec3Euler(rotation: [3]f32, vector: [3]f32) [3]f32 {
+    return rotateZ(rotation[2], rotateY(rotation[1], rotateX(rotation[0], vector)));
+}
+
+fn rotateX(radians: f32, vector: [3]f32) [3]f32 {
+    const c = std.math.cos(radians);
+    const s = std.math.sin(radians);
+    return .{
+        vector[0],
+        vector[1] * c - vector[2] * s,
+        vector[1] * s + vector[2] * c,
+    };
+}
+
+fn rotateY(radians: f32, vector: [3]f32) [3]f32 {
+    const c = std.math.cos(radians);
+    const s = std.math.sin(radians);
+    return .{
+        vector[0] * c + vector[2] * s,
+        vector[1],
+        -vector[0] * s + vector[2] * c,
+    };
+}
+
+fn rotateZ(radians: f32, vector: [3]f32) [3]f32 {
+    const c = std.math.cos(radians);
+    const s = std.math.sin(radians);
+    return .{
+        vector[0] * c - vector[1] * s,
+        vector[0] * s + vector[1] * c,
+        vector[2],
+    };
+}
+
+test "manipulationAxisVector rotates constrained local axes" {
+    const axis = manipulationAxisVector(.local, .x, .{ 0.0, std.math.pi * 0.5, 0.0 });
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), axis[0], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), axis[1], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, -1.0), axis[2], 0.0001);
 }

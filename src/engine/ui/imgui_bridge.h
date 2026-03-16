@@ -79,6 +79,8 @@ void guava_imgui_dummy(float width, float height);
 void guava_imgui_same_line(void);
 void guava_imgui_separator(void);
 void guava_imgui_set_next_item_width(float width);
+void guava_imgui_set_next_window_pos(float x, float y);
+void guava_imgui_set_next_window_size(float width, float height);
 void guava_imgui_push_style_color(uint32_t slot, float r, float g, float b, float a);
 void guava_imgui_pop_style_color(int32_t count);
 bool guava_imgui_begin_child(const char* id, size_t id_len, float width, float height, bool border);
@@ -111,6 +113,10 @@ bool guava_imgui_is_window_hovered(void);
 bool guava_imgui_is_window_focused(void);
 void guava_imgui_get_content_region_avail(float out_value[2]);
 void guava_imgui_get_cursor_screen_pos(float out_value[2]);
+void guava_imgui_set_cursor_pos(float x, float y);
+void guava_imgui_get_window_size(float out_value[2]);
+float guava_imgui_get_time(void);
+void guava_imgui_set_scroll_here_y(float center_y_ratio);
 void guava_imgui_image(SDL_GPUTexture* texture, float width, float height);
 
 #ifdef __cplusplus

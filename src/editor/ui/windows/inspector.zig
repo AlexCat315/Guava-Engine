@@ -79,53 +79,62 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
             .world => state.text(.world_space),
         });
 
-        var editable_translation = if (state.transform_space == .world) world_transform.translation else entity.transform.translation;
-        const translation_result = try drawTransformRow("P", "translation", &editable_translation, 0.05, -500.0, 500.0);
-        if (translation_result.changed) {
-            if (state.transform_space == .world) {
-                var updated = world_transform;
-                updated.translation = editable_translation;
-                _ = layer_context.world.setEntityWorldTransform(selected, updated);
-            } else {
-                entity.transform.translation = editable_translation;
-            }
-            if (translation_result.committed) {
-                try history.captureSnapshot(state, layer_context);
-            }
-        }
+        if (engine.ui.ImGui.beginTable("transform_grid", 4)) {
+            defer engine.ui.ImGui.endTable();
+            engine.ui.ImGui.tableSetupColumn("##transform_label", false, 72.0);
+            engine.ui.ImGui.tableSetupColumn("X", false, 1.0);
+            engine.ui.ImGui.tableSetupColumn("Y", false, 1.0);
+            engine.ui.ImGui.tableSetupColumn("Z", false, 1.0);
+            engine.ui.ImGui.tableHeadersRow();
 
-        var editable_rotation = if (state.transform_space == .world) world_transform.rotation_euler else entity.transform.rotation_euler;
-        const rotation_result = try drawTransformRow("R", "rotation", &editable_rotation, 0.01, -std.math.tau, std.math.tau);
-        if (rotation_result.changed) {
-            if (state.transform_space == .world) {
-                var updated = world_transform;
-                updated.rotation_euler = editable_rotation;
-                _ = layer_context.world.setEntityWorldTransform(selected, updated);
-            } else {
-                entity.transform.rotation_euler = editable_rotation;
+            var editable_translation = if (state.transform_space == .world) world_transform.translation else entity.transform.translation;
+            const translation_result = try drawTransformTableRow("Pos", "translation", &editable_translation, 0.05, -500.0, 500.0);
+            if (translation_result.changed) {
+                if (state.transform_space == .world) {
+                    var updated = world_transform;
+                    updated.translation = editable_translation;
+                    _ = layer_context.world.setEntityWorldTransform(selected, updated);
+                } else {
+                    entity.transform.translation = editable_translation;
+                }
+                if (translation_result.committed) {
+                    try history.captureSnapshot(state, layer_context);
+                }
             }
-            if (rotation_result.committed) {
-                try history.captureSnapshot(state, layer_context);
-            }
-        }
 
-        var editable_scale = if (state.transform_space == .world) world_transform.scale else entity.transform.scale;
-        const scale_result = try drawTransformRow("S", "scale", &editable_scale, 0.01, 0.05, 100.0);
-        if (scale_result.changed) {
-            editable_scale = .{
-                utils.clampScale(editable_scale[0]),
-                utils.clampScale(editable_scale[1]),
-                utils.clampScale(editable_scale[2]),
-            };
-            if (state.transform_space == .world) {
-                var updated = world_transform;
-                updated.scale = editable_scale;
-                _ = layer_context.world.setEntityWorldTransform(selected, updated);
-            } else {
-                entity.transform.scale = editable_scale;
+            var editable_rotation = if (state.transform_space == .world) world_transform.rotation_euler else entity.transform.rotation_euler;
+            const rotation_result = try drawTransformTableRow("Rot", "rotation", &editable_rotation, 0.01, -std.math.tau, std.math.tau);
+            if (rotation_result.changed) {
+                if (state.transform_space == .world) {
+                    var updated = world_transform;
+                    updated.rotation_euler = editable_rotation;
+                    _ = layer_context.world.setEntityWorldTransform(selected, updated);
+                } else {
+                    entity.transform.rotation_euler = editable_rotation;
+                }
+                if (rotation_result.committed) {
+                    try history.captureSnapshot(state, layer_context);
+                }
             }
-            if (scale_result.committed) {
-                try history.captureSnapshot(state, layer_context);
+
+            var editable_scale = if (state.transform_space == .world) world_transform.scale else entity.transform.scale;
+            const scale_result = try drawTransformTableRow("Scl", "scale", &editable_scale, 0.01, 0.05, 100.0);
+            if (scale_result.changed) {
+                editable_scale = .{
+                    utils.clampScale(editable_scale[0]),
+                    utils.clampScale(editable_scale[1]),
+                    utils.clampScale(editable_scale[2]),
+                };
+                if (state.transform_space == .world) {
+                    var updated = world_transform;
+                    updated.scale = editable_scale;
+                    _ = layer_context.world.setEntityWorldTransform(selected, updated);
+                } else {
+                    entity.transform.scale = editable_scale;
+                }
+                if (scale_result.committed) {
+                    try history.captureSnapshot(state, layer_context);
+                }
             }
         }
     }
@@ -508,7 +517,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
     }
 }
 
-fn drawTransformRow(
+fn drawTransformTableRow(
     row_label: []const u8,
     id_prefix: []const u8,
     values: *[3]f32,
@@ -518,47 +527,32 @@ fn drawTransformRow(
 ) !EditRowResult {
     var result = EditRowResult{};
 
-    engine.ui.ImGui.pushStyleColor(.text, .{ 0.86, 0.88, 0.92, 1.0 });
+    engine.ui.ImGui.tableNextRow();
+    engine.ui.ImGui.tableNextColumn();
     engine.ui.ImGui.text(row_label);
-    engine.ui.ImGui.popStyleColor(1);
 
-    engine.ui.ImGui.sameLine();
-    engine.ui.ImGui.pushStyleColor(.text, .{ 0.86, 0.32, 0.32, 1.0 });
-    engine.ui.ImGui.text("X");
-    engine.ui.ImGui.popStyleColor(1);
-    engine.ui.ImGui.sameLine();
-
+    engine.ui.ImGui.tableNextColumn();
     var x_label_buffer: [32]u8 = undefined;
     const x_label = try std.fmt.bufPrint(&x_label_buffer, "##{s}_x", .{id_prefix});
-    engine.ui.ImGui.setNextItemWidth(72.0);
+    engine.ui.ImGui.setNextItemWidth(-1.0);
     if (engine.ui.ImGui.dragFloat(x_label, &values[0], speed, min_value, max_value)) {
         result.changed = true;
     }
     result.committed = result.committed or engine.ui.ImGui.isItemDeactivatedAfterEdit();
 
-    engine.ui.ImGui.sameLine();
-    engine.ui.ImGui.pushStyleColor(.text, .{ 0.40, 0.78, 0.42, 1.0 });
-    engine.ui.ImGui.text("Y");
-    engine.ui.ImGui.popStyleColor(1);
-    engine.ui.ImGui.sameLine();
-
+    engine.ui.ImGui.tableNextColumn();
     var y_label_buffer: [32]u8 = undefined;
     const y_label = try std.fmt.bufPrint(&y_label_buffer, "##{s}_y", .{id_prefix});
-    engine.ui.ImGui.setNextItemWidth(72.0);
+    engine.ui.ImGui.setNextItemWidth(-1.0);
     if (engine.ui.ImGui.dragFloat(y_label, &values[1], speed, min_value, max_value)) {
         result.changed = true;
     }
     result.committed = result.committed or engine.ui.ImGui.isItemDeactivatedAfterEdit();
 
-    engine.ui.ImGui.sameLine();
-    engine.ui.ImGui.pushStyleColor(.text, .{ 0.34, 0.52, 0.88, 1.0 });
-    engine.ui.ImGui.text("Z");
-    engine.ui.ImGui.popStyleColor(1);
-    engine.ui.ImGui.sameLine();
-
+    engine.ui.ImGui.tableNextColumn();
     var z_label_buffer: [32]u8 = undefined;
     const z_label = try std.fmt.bufPrint(&z_label_buffer, "##{s}_z", .{id_prefix});
-    engine.ui.ImGui.setNextItemWidth(72.0);
+    engine.ui.ImGui.setNextItemWidth(-1.0);
     if (engine.ui.ImGui.dragFloat(z_label, &values[2], speed, min_value, max_value)) {
         result.changed = true;
     }

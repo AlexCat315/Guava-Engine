@@ -424,11 +424,10 @@ extern "C" void guava_imgui_reset_default_layout(void) {
     ImGui::DockBuilderSetNodeSize(g_dockspace_id, viewport->Size);
 
     ImGuiID dock_main = g_dockspace_id;
-    ImGuiID dock_status = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Down, 0.035f, nullptr, &dock_main);
     ImGuiID dock_bottom = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Down, 0.22f, nullptr, &dock_main);
-    ImGuiID dock_left = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Left, 0.18f, nullptr, &dock_main);
-    ImGuiID dock_right = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Right, 0.24f, nullptr, &dock_main);
-    ImGuiID dock_top = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Up, 0.06f, nullptr, &dock_main);
+    ImGuiID dock_left = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Left, 0.15f, nullptr, &dock_main);
+    ImGuiID dock_right = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Right, 0.26f, nullptr, &dock_main);
+    ImGuiID dock_top = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Up, 0.055f, nullptr, &dock_main);
     ImGuiID dock_right_bottom = ImGui::DockBuilderSplitNode(dock_right, ImGuiDir_Down, 0.28f, nullptr, &dock_right);
 
     ImGui::DockBuilderDockWindow("Global Toolbar###global_toolbar_panel", dock_top);
@@ -437,7 +436,6 @@ extern "C" void guava_imgui_reset_default_layout(void) {
     ImGui::DockBuilderDockWindow("Details###details_panel", dock_right);
     ImGui::DockBuilderDockWindow("Stats###stats_panel", dock_right_bottom);
     ImGui::DockBuilderDockWindow("Content Browser###content_browser_panel", dock_bottom);
-    ImGui::DockBuilderDockWindow("Status Bar###status_bar_panel", dock_status);
 
     ImGui::DockBuilderFinish(g_dockspace_id);
 }
@@ -681,6 +679,20 @@ extern "C" void guava_imgui_set_next_item_width(float width) {
     ImGui::SetNextItemWidth(width);
 }
 
+extern "C" void guava_imgui_set_next_window_pos(float x, float y) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::SetNextWindowPos(ImVec2(x, y));
+}
+
+extern "C" void guava_imgui_set_next_window_size(float width, float height) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::SetNextWindowSize(ImVec2(width, height));
+}
+
 extern "C" void guava_imgui_push_style_color(uint32_t slot, float r, float g, float b, float a) {
     if (!g_imgui_initialized) {
         return;
@@ -847,13 +859,23 @@ extern "C" bool guava_imgui_tree_node_entity(uint64_t id, const char* label, siz
         owned_label.c_str()
     );
     if (selected) {
+        const float pulse = 0.5f + 0.5f * std::sin(ImGui::GetTime() * 3.8f);
+        const int glow_alpha = 68 + static_cast<int>(pulse * 72.0f);
         ImGui::GetWindowDrawList()->AddRect(
             rect.Min,
             rect.Max,
-            IM_COL32(114, 170, 255, 96),
+            IM_COL32(114, 170, 255, glow_alpha),
             4.0f,
             0,
-            1.2f
+            1.6f
+        );
+        ImGui::GetWindowDrawList()->AddRect(
+            ImVec2(rect.Min.x - 1.0f, rect.Min.y - 1.0f),
+            ImVec2(rect.Max.x + 1.0f, rect.Max.y + 1.0f),
+            IM_COL32(88, 144, 255, glow_alpha / 2),
+            5.0f,
+            0,
+            2.2f
         );
     }
     return is_open;
@@ -1003,6 +1025,38 @@ extern "C" void guava_imgui_get_cursor_screen_pos(float out_value[2]) {
     const ImVec2 value = ImGui::GetCursorScreenPos();
     out_value[0] = value.x;
     out_value[1] = value.y;
+}
+
+extern "C" void guava_imgui_set_cursor_pos(float x, float y) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::SetCursorPos(ImVec2(x, y));
+}
+
+extern "C" void guava_imgui_get_window_size(float out_value[2]) {
+    if (!g_imgui_initialized) {
+        out_value[0] = 0.0f;
+        out_value[1] = 0.0f;
+        return;
+    }
+    const ImVec2 value = ImGui::GetWindowSize();
+    out_value[0] = value.x;
+    out_value[1] = value.y;
+}
+
+extern "C" float guava_imgui_get_time(void) {
+    if (!g_imgui_initialized) {
+        return 0.0f;
+    }
+    return static_cast<float>(ImGui::GetTime());
+}
+
+extern "C" void guava_imgui_set_scroll_here_y(float center_y_ratio) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::SetScrollHereY(center_y_ratio);
 }
 
 extern "C" void guava_imgui_image(SDL_GPUTexture* texture, float width, float height) {

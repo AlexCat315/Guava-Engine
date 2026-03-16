@@ -3,6 +3,19 @@ pub const BackendSelectionPolicy = @import("../rhi/types.zig").BackendSelectionP
 pub const RuntimeInfo = @import("../rhi/types.zig").RuntimeInfo;
 pub const graphicsApiName = @import("../rhi/types.zig").graphicsApiName;
 
+pub const EditorViewportRenderMode = enum {
+    textured,
+    wireframe,
+    unlit,
+};
+
+pub const EditorViewportState = struct {
+    render_mode: EditorViewportRenderMode = .textured,
+    show_grid: bool = true,
+    show_bones: bool = false,
+    show_collision: bool = false,
+};
+
 pub const SceneSnapshot = struct {
     entity_count: usize = 0,
     camera_count: usize = 0,

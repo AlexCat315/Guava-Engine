@@ -16,14 +16,22 @@ pub const EditorGizmoMode = enum {
 
 pub const EditorGizmoAxis = axis_mod.Axis3;
 
+pub const EditorGizmoSpace = enum {
+    local,
+    world,
+};
+
 pub const EditorGizmoState = struct {
     mode: EditorGizmoMode = .idle,
     axis: EditorGizmoAxis = .free,
+    space: EditorGizmoSpace = .local,
 };
 
-const GizmoVertex = extern struct {
+pub const WorldLineVertex = extern struct {
     position: [3]f32,
 };
+
+const GizmoVertex = WorldLineVertex;
 
 const VertexUniforms = extern struct {
     view_projection: [16]f32,
@@ -169,7 +177,7 @@ pub const GizmoPass = struct {
 
         const gizmo_scale = scaleForSelection(prepared_scene.camera_world_position, selected_transform.translation);
         const base_translation = selected_transform.translation;
-        const base_rotation = selected_transform.rotation_euler;
+        const base_rotation = rotationForSpace(selected_transform, state.space);
 
         device.bindGraphicsPipeline(pass, &self.pipeline.?);
 
@@ -192,6 +200,32 @@ pub const GizmoPass = struct {
             },
         }
 
+        return stats;
+    }
+
+    pub fn drawWorldLines(
+        self: *GizmoPass,
+        device: *rhi_mod.RhiDevice,
+        frame: rhi_mod.Frame,
+        pass: rhi_mod.RenderPass,
+        view_projection: [16]f32,
+        vertices: []const WorldLineVertex,
+        color: [4]f32,
+    ) !mesh_pass_mod.DrawStats {
+        var stats = mesh_pass_mod.DrawStats{};
+        if (!self.isReady() or vertices.len == 0) {
+            return stats;
+        }
+
+        const buffer = try createVertexBuffer(device, vertices);
+        defer {
+            var owned = buffer;
+            device.releaseBuffer(&owned);
+        }
+
+        const model = math.identity();
+        device.bindGraphicsPipeline(pass, &self.pipeline.?);
+        self.drawShape(device, frame, pass, buffer, 0, vertices.len, view_projection, model, color, &stats);
         return stats;
     }
 
@@ -444,6 +478,13 @@ fn scaleForSelection(camera_world_position: [4]f32, target_position: [3]f32) f32
     return std.math.clamp(distance * 0.18, 0.7, 3.4);
 }
 
+fn rotationForSpace(selected_transform: components.Transform, space: EditorGizmoSpace) [3]f32 {
+    return switch (space) {
+        .local => selected_transform.rotation_euler,
+        .world => .{ 0.0, 0.0, 0.0 },
+    };
+}
+
 fn axisColor(axis: EditorGizmoAxis, constrained_axis: EditorGizmoAxis, mode: EditorGizmoMode) [4]f32 {
     var color: [4]f32 = switch (axis) {
         .free => .{ 1.0, 0.86, 0.32, 1.0 },
@@ -490,4 +531,12 @@ test "axisColor dims unconstrained axes when locked" {
     try std.testing.expect(locked[1] < 0.4);
     const highlighted = axisColor(.x, .x, .translate);
     try std.testing.expect(highlighted[0] >= 0.99);
+}
+
+test "rotationForSpace resets world gizmo orientation" {
+    const selected = components.Transform{
+        .rotation_euler = .{ 0.25, 0.5, 0.75 },
+    };
+    try std.testing.expectEqualSlices(f32, &selected.rotation_euler, &rotationForSpace(selected, .local));
+    try std.testing.expectEqualSlices(f32, &.{ 0.0, 0.0, 0.0 }, &rotationForSpace(selected, .world));
 }

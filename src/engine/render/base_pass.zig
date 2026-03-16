@@ -3,9 +3,11 @@ const mesh_resource = @import("../assets/mesh_resource.zig");
 const mesh_pass_mod = @import("mesh_pass.zig");
 const rhi_mod = @import("../rhi/device.zig");
 const shader_support = @import("shader_support.zig");
+const render_types = @import("types.zig");
 
 pub const BasePass = struct {
-    pipeline: ?rhi_mod.GraphicsPipeline = null,
+    fill_pipeline: ?rhi_mod.GraphicsPipeline = null,
+    wireframe_pipeline: ?rhi_mod.GraphicsPipeline = null,
     stages: ?shader_support.ProgramStages = null,
 
     pub fn init(device: *rhi_mod.RhiDevice) !BasePass {
@@ -15,7 +17,10 @@ pub const BasePass = struct {
     }
 
     pub fn deinit(self: *BasePass, device: *rhi_mod.RhiDevice) void {
-        if (self.pipeline) |*pipeline| {
+        if (self.wireframe_pipeline) |*pipeline| {
+            device.releaseGraphicsPipeline(pipeline);
+        }
+        if (self.fill_pipeline) |*pipeline| {
             device.releaseGraphicsPipeline(pipeline);
         }
         if (self.stages) |*stages| {
@@ -25,7 +30,7 @@ pub const BasePass = struct {
     }
 
     pub fn isReady(self: *const BasePass) bool {
-        return self.pipeline != null;
+        return self.fill_pipeline != null and self.wireframe_pipeline != null;
     }
 
     pub fn draw(
@@ -34,13 +39,18 @@ pub const BasePass = struct {
         frame: rhi_mod.Frame,
         pass: rhi_mod.RenderPass,
         prepared_scene: *const mesh_pass_mod.PreparedScene,
+        viewport_state: render_types.EditorViewportState,
     ) mesh_pass_mod.DrawStats {
         var stats = mesh_pass_mod.DrawStats{};
         if (!self.isReady()) {
             return stats;
         }
 
-        device.bindGraphicsPipeline(pass, &self.pipeline.?);
+        const pipeline = switch (viewport_state.render_mode) {
+            .wireframe => &self.wireframe_pipeline.?,
+            .textured, .unlit => &self.fill_pipeline.?,
+        };
+        device.bindGraphicsPipeline(pass, pipeline);
         for (prepared_scene.items) |item| {
             var vertex_uniforms = mesh_pass_mod.VertexUniforms{
                 .view_projection = prepared_scene.view_projection,
@@ -55,6 +65,11 @@ pub const BasePass = struct {
                 .point_light_color_intensity = prepared_scene.point_light_color_intensity,
                 .ambient_color = prepared_scene.ambient_color,
             };
+            if (viewport_state.render_mode == .unlit) {
+                fragment_uniforms.light_color_intensity = .{ 0.0, 0.0, 0.0, 0.0 };
+                fragment_uniforms.point_light_color_intensity = .{ 0.0, 0.0, 0.0, 0.0 };
+                fragment_uniforms.ambient_color = .{ 1.0, 1.0, 1.0, 1.0 };
+            }
 
             device.bindVertexBuffer(pass, 0, &item.vertex_buffer, 0);
             device.bindIndexBuffer(pass, &item.index_buffer, .u32, 0);
@@ -110,7 +125,7 @@ pub const BasePass = struct {
             },
         };
 
-        self.pipeline = try device.createGraphicsPipeline(.{
+        self.fill_pipeline = try device.createGraphicsPipeline(.{
             .vertex_shader = &self.stages.?.vertex,
             .fragment_shader = &self.stages.?.fragment,
             .vertex_buffer_layouts = vertex_layouts[0..],
@@ -120,6 +135,25 @@ pub const BasePass = struct {
             .primitive_type = .triangle_list,
             .fill_mode = .fill,
             .cull_mode = .back,
+            .front_face = .counter_clockwise,
+            .depth_compare = .less_or_equal,
+            .depth_test = true,
+            .depth_write = false,
+        });
+        errdefer if (self.fill_pipeline) |*pipeline| {
+            device.releaseGraphicsPipeline(pipeline);
+        };
+
+        self.wireframe_pipeline = try device.createGraphicsPipeline(.{
+            .vertex_shader = &self.stages.?.vertex,
+            .fragment_shader = &self.stages.?.fragment,
+            .vertex_buffer_layouts = vertex_layouts[0..],
+            .vertex_attributes = vertex_attributes[0..],
+            .color_format = device.runtimeInfo().swapchain_format,
+            .depth_format = .d32_float,
+            .primitive_type = .triangle_list,
+            .fill_mode = .line,
+            .cull_mode = .none,
             .front_face = .counter_clockwise,
             .depth_compare = .less_or_equal,
             .depth_test = true,

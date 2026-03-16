@@ -41,6 +41,7 @@ pub const Application = struct {
     world: scene_mod.World,
     layers: layer_stack_mod.LayerStack,
     input: input_mod.InputState = .{},
+    playback_controller: layer_mod.PlaybackController = .{},
     initialized: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, config: ApplicationConfig) !Application {
@@ -125,8 +126,15 @@ pub const Application = struct {
 
             const delta_seconds = @as(f32, @floatFromInt(self.config.frame_delay_ms)) / 1000.0;
             var layer_context = self.makeLayerContext(frames_rendered, delta_seconds);
-            for (self.layers.layers.items) |layer| {
+            const should_advance_simulation = self.playback_controller.shouldAdvance();
+            for (self.layers.layers.items, 0..) |layer, index| {
+                if (index < self.layers.overlay_start and !should_advance_simulation) {
+                    continue;
+                }
                 try layer.update(&layer_context);
+            }
+            if (should_advance_simulation) {
+                self.playback_controller.consumeAdvance();
             }
 
             last_frame = try self.renderer.drawFrame(&self.world);
@@ -226,6 +234,7 @@ pub const Application = struct {
             .renderer = &self.renderer,
             .input = &self.input,
             .window = &self.window,
+            .playback_controller = &self.playback_controller,
             .frame_index = frame_index,
             .delta_seconds = delta_seconds,
         };
