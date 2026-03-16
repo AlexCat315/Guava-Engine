@@ -8,6 +8,7 @@ const camera = @import("../interaction/camera.zig");
 const manipulation = @import("../interaction/manipulation.zig");
 const scene_hierarchy = @import("windows/scene_hierarchy.zig");
 const inspector = @import("windows/inspector.zig");
+const place_actors = @import("windows/place_actors.zig");
 const content_browser = @import("../assets/browser.zig");
 const menu_bar = @import("menu_bar.zig");
 const render_settings = @import("windows/render_settings.zig");
@@ -495,6 +496,7 @@ pub fn drawEditorUi(state: *EditorState, layer_context: *engine.core.LayerContex
     try drawViewportWindow(state, layer_context);
     try drawStatusBarWindow(state, layer_context);
     try scene_hierarchy.drawSceneWindow(state, layer_context);
+    try place_actors.drawPlaceActorsWindow(state, layer_context);
     try inspector.drawInspectorWindow(state, layer_context);
     try content_browser.drawContentBrowser(state, layer_context);
     if (state.render_settings_open) {
@@ -680,7 +682,7 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
         state.viewport_origin[1] + viewportOverlayTopInset(),
     };
     engine.ui.ImGui.setNextWindowPos(overlay_pos);
-    engine.ui.ImGui.setNextWindowBgAlpha(0.72);
+    engine.ui.ImGui.setNextWindowBgAlpha(0.6);
     _ = engine.ui.ImGui.beginWindowFlags(
         "##viewport_overlay_controls",
         engine.ui.ImGui.WindowFlags.no_title_bar |
@@ -688,6 +690,7 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
             engine.ui.ImGui.WindowFlags.no_move |
             engine.ui.ImGui.WindowFlags.no_saved_settings |
             engine.ui.ImGui.WindowFlags.no_docking |
+            engine.ui.ImGui.WindowFlags.no_background |
             engine.ui.ImGui.WindowFlags.always_auto_resize,
     );
     defer engine.ui.ImGui.endWindow();
@@ -745,7 +748,7 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
         state.viewport_origin[0] + @max((state.viewport_extent[0] - window_width) * 0.5, 18.0),
         state.viewport_origin[1] + 10.0,
     });
-    engine.ui.ImGui.setNextWindowBgAlpha(0.66);
+    engine.ui.ImGui.setNextWindowBgAlpha(0.6);
     _ = engine.ui.ImGui.beginWindowFlags(
         "##viewport_playback_overlay",
         engine.ui.ImGui.WindowFlags.no_title_bar |
@@ -753,6 +756,7 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
             engine.ui.ImGui.WindowFlags.no_move |
             engine.ui.ImGui.WindowFlags.no_saved_settings |
             engine.ui.ImGui.WindowFlags.no_docking |
+            engine.ui.ImGui.WindowFlags.no_background |
             engine.ui.ImGui.WindowFlags.always_auto_resize,
     );
     defer engine.ui.ImGui.endWindow();

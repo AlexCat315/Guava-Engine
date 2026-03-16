@@ -32,6 +32,8 @@ pub const MessageId = enum {
     help,
     plane,
     point_light,
+    spot_light,
+    directional_light,
     edit,
     rename,
     freeze,

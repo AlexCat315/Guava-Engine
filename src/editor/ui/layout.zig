@@ -56,3 +56,27 @@ pub fn drawResponsivePropertyLabel(label: []const u8, min_control_width: f32) bo
     engine.ui.ImGui.sameLineEx(label_width, default_item_spacing);
     return true;
 }
+
+pub fn beginInspectorPropertyTable(id: []const u8, label_width_ratio: f32) bool {
+    const available_width = engine.ui.ImGui.contentRegionAvail()[0];
+    const label_width = available_width * label_width_ratio;
+    _ = label_width;
+    return engine.ui.ImGui.beginTable(id, 2, .{}, available_width, 0.0);
+}
+
+pub fn endInspectorPropertyTable() void {
+    engine.ui.ImGui.endTable();
+}
+
+pub fn drawInspectorPropertyRow(label: []const u8, label_color: ?[4]f32) void {
+    engine.ui.ImGui.tableNextRow();
+    engine.ui.ImGui.tableNextColumn();
+    if (label_color) |color| {
+        engine.ui.ImGui.pushStyleColor(.text, color);
+        defer engine.ui.ImGui.popStyleColor(1);
+    }
+    engine.ui.ImGui.alignTextToFramePadding();
+    engine.ui.ImGui.text(label);
+    engine.ui.ImGui.tableNextColumn();
+    engine.ui.ImGui.setNextItemWidth(-1.0);
+}
