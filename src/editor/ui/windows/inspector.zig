@@ -45,12 +45,22 @@ const axis_z_style = AxisStyle{
     .text = .{ 0.12, 0.12, 0.13, 1.0 },
 };
 
+const inspector_section_padding = 10.0;
+
 fn inspectorFilter(state: *const EditorState) []const u8 {
     return utils.zeroTerminatedSlice(state.inspector_filter_buffer[0..]);
 }
 
 fn inspectorSectionMatches(filter: []const u8, label: []const u8) bool {
     return filter.len == 0 or utils.containsAsciiInsensitive(label, filter);
+}
+
+fn beginInspectorSectionBody() void {
+    engine.ui.ImGui.indent(inspector_section_padding);
+}
+
+fn endInspectorSectionBody() void {
+    engine.ui.ImGui.unindent(inspector_section_padding);
 }
 
 pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -79,6 +89,8 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
     const filter = inspectorFilter(state);
 
     if (inspectorSectionMatches(filter, state.text(.identity)) and engine.ui.ImGui.collapsingHeader(state.text(.identity), filter.len != 0)) {
+        beginInspectorSectionBody();
+        defer endInspectorSectionBody();
         engine.ui.ImGui.dummy(0.0, 4.0);
         var entity_id_buffer: [32]u8 = undefined;
         const entity_id_text = try std.fmt.bufPrint(&entity_id_buffer, "{d}", .{selected});
@@ -124,6 +136,8 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
             return;
         }
         if (transform_open) {
+            beginInspectorSectionBody();
+            defer endInspectorSectionBody();
             engine.ui.ImGui.dummy(0.0, 4.0);
             engine.ui.ImGui.labelText(state.text(.coordinate_space), switch (state.transform_space) {
                 .local => state.text(.local_space),
@@ -195,6 +209,8 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
     }
 
     if (inspectorSectionMatches(filter, state.text(.components)) and engine.ui.ImGui.collapsingHeader(state.text(.components), filter.len != 0)) {
+        beginInspectorSectionBody();
+        defer endInspectorSectionBody();
         engine.ui.ImGui.dummy(0.0, 4.0);
         if (try drawAddComponentControls(state, layer_context, selected, entity)) {
             return;
@@ -208,6 +224,8 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                 return;
             }
             if (mesh_open) {
+                beginInspectorSectionBody();
+                defer endInspectorSectionBody();
                 engine.ui.ImGui.dummy(0.0, 4.0);
                 engine.ui.ImGui.labelText(state.text(.primitive), utils.primitiveLabel(state, mesh_component.primitive));
                 if (mesh_component.handle) |mesh_handle| {
@@ -240,6 +258,8 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                 return;
             }
             if (material_open) {
+                beginInspectorSectionBody();
+                defer endInspectorSectionBody();
                 engine.ui.ImGui.dummy(0.0, 4.0);
                 var effective_shading = material_component.shading;
                 var effective_color = material_component.base_color_factor;
@@ -356,6 +376,8 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                 return;
             }
             if (camera_open) {
+                beginInspectorSectionBody();
+                defer endInspectorSectionBody();
                 engine.ui.ImGui.dummy(0.0, 4.0);
                 if (camera_component.is_primary) {
                     engine.ui.ImGui.text(state.text(.primary_scene_camera));
@@ -364,13 +386,17 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                     try history.captureSnapshot(state, layer_context);
                 }
 
-                if (engine.ui.ImGui.buttonEx(state.text(.use_perspective), engine.ui.ImGui.contentRegionAvail()[0], 0.0)) {
-                    camera_component.projection = .{ .perspective = .{} };
-                    try history.captureSnapshot(state, layer_context);
-                }
-                if (engine.ui.ImGui.buttonEx(state.text(.use_orthographic), engine.ui.ImGui.contentRegionAvail()[0], 0.0)) {
-                    camera_component.projection = .{ .orthographic = .{} };
-                    try history.captureSnapshot(state, layer_context);
+                switch (drawActionRow2(state.text(.use_perspective), state.text(.use_orthographic), 116.0)) {
+                    .first => {
+                        camera_component.projection = .{ .perspective = .{} };
+                        try history.captureSnapshot(state, layer_context);
+                    },
+                    .second => {
+                        camera_component.projection = .{ .orthographic = .{} };
+                        try history.captureSnapshot(state, layer_context);
+                    },
+                    .third => {},
+                    .none => {},
                 }
 
                 switch (camera_component.projection) {
@@ -441,6 +467,8 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                 return;
             }
             if (light_open) {
+                beginInspectorSectionBody();
+                defer endInspectorSectionBody();
                 engine.ui.ImGui.dummy(0.0, 4.0);
                 engine.ui.ImGui.labelText(state.text(.type), switch (light.kind) {
                     .directional => state.text(.directional),
@@ -494,6 +522,8 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
     }
 
     if (inspectorSectionMatches(filter, state.text(.actions)) and engine.ui.ImGui.collapsingHeader(state.text(.actions), filter.len != 0)) {
+        beginInspectorSectionBody();
+        defer endInspectorSectionBody();
         const action_columns = responsiveButtonColumns(3, 80.0);
         const action_button_width = responsiveButtonWidth(action_columns);
 
@@ -953,7 +983,7 @@ fn drawLabeledFloatControl(
     min_value: f32,
     max_value: f32,
 ) bool {
-    engine.ui.ImGui.text(label);
+    _ = drawResponsivePropertyLabel(label, 104.0);
     engine.ui.ImGui.setNextItemWidth(-1.0);
     return engine.ui.ImGui.dragFloat(widget_id, value, speed, min_value, max_value);
 }
@@ -966,9 +996,34 @@ fn drawLabeledFloat3Control(
     min_value: f32,
     max_value: f32,
 ) bool {
-    engine.ui.ImGui.text(label);
+    _ = drawResponsivePropertyLabel(label, 178.0);
     engine.ui.ImGui.setNextItemWidth(-1.0);
     return engine.ui.ImGui.dragFloat3(widget_id, value, speed, min_value, max_value);
+}
+
+fn drawResponsivePropertyLabel(label: []const u8, min_control_width: f32) bool {
+    const total_width = engine.ui.ImGui.contentRegionAvail()[0];
+    const label_width = std.math.clamp(total_width * 0.34, 86.0, 142.0);
+    engine.ui.ImGui.alignTextToFramePadding();
+    engine.ui.ImGui.text(label);
+    if (total_width < label_width + min_control_width) {
+        return false;
+    }
+    engine.ui.ImGui.sameLineEx(label_width, 8.0);
+    return true;
+}
+
+fn drawActionRow2(first: []const u8, second: []const u8, min_button_width: f32) ActionRowResult {
+    const columns = responsiveButtonColumns(2, min_button_width);
+    const width = responsiveButtonWidth(columns);
+    if (engine.ui.ImGui.buttonEx(first, width, 0.0)) {
+        return .first;
+    }
+    drawResponsiveButtonAdvance(1, columns);
+    if (engine.ui.ImGui.buttonEx(second, width, 0.0)) {
+        return .second;
+    }
+    return .none;
 }
 
 fn drawActionRow3(first: []const u8, second: []const u8, third: []const u8, min_button_width: f32) ActionRowResult {

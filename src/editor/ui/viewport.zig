@@ -297,9 +297,10 @@ pub fn drawStatsWindow(state: *EditorState, layer_context: *engine.core.LayerCon
 }
 
 pub fn drawStatusBarWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
-    const height = 46.0;
+    const window_width = @as(f32, @floatFromInt(layer_context.window.logical_width));
+    const height = 38.0;
     engine.ui.ImGui.setNextWindowPos(.{ 0.0, @as(f32, @floatFromInt(layer_context.window.logical_height)) - height });
-    engine.ui.ImGui.setNextWindowSize(.{ @as(f32, @floatFromInt(layer_context.window.logical_width)), height });
+    engine.ui.ImGui.setNextWindowSize(.{ window_width, height });
     var title_buffer: [96]u8 = undefined;
     const title = try state.windowLabel(&title_buffer, .status_bar, "status_bar_panel");
     _ = engine.ui.ImGui.beginWindowFlags(
@@ -341,40 +342,132 @@ pub fn drawStatusBarWindow(state: *EditorState, layer_context: *engine.core.Laye
     else
         "/";
 
-    var primary_buffer: [384]u8 = undefined;
-    const primary_text = try std.fmt.bufPrint(
-        &primary_buffer,
-        "{s}: {d}    {s}: {d:.1}    {s}: {s}    {s}: {s}    {s}: {s}",
-        .{
-            state.text(.selection_count),
-            selection_count,
-            state.text(.fps),
-            fps,
-            state.text(.backend),
-            backend_text,
-            state.text(.memory),
-            memory_text,
-            state.text(.save_status),
-            save_status,
-        },
+    var compact_path_buffer: [160]u8 = undefined;
+    const compact_path = compactStatusPath(
+        &compact_path_buffer,
+        selected_path,
+        statusPathCharacterBudget(window_width),
     );
-    var secondary_buffer: [512]u8 = undefined;
-    const secondary_text = try std.fmt.bufPrint(
-        &secondary_buffer,
-        "{s}: {s}    {s}: {s}    {s}: {s}    {s}: {s}",
-        .{
-            state.text(.selected_path),
-            selected_path,
-            state.text(.camera),
-            camera_text,
-            state.text(.mode),
-            mode_text,
-            state.text(.coordinate_space),
-            space_text,
-        },
+
+    var metrics_buffer: [320]u8 = undefined;
+    var metrics_stream = std.io.fixedBufferStream(&metrics_buffer);
+    try buildStatusMetricsText(
+        metrics_stream.writer(),
+        state,
+        selection_count,
+        fps,
+        save_status,
+        backend_text,
+        memory_text,
+        window_width,
     );
-    engine.ui.ImGui.textWrapped(primary_text);
-    engine.ui.ImGui.textWrapped(secondary_text);
+    const metrics_text = metrics_stream.getWritten();
+
+    var context_buffer: [384]u8 = undefined;
+    var context_stream = std.io.fixedBufferStream(&context_buffer);
+    try buildStatusContextText(
+        context_stream.writer(),
+        state,
+        compact_path,
+        camera_text,
+        mode_text,
+        space_text,
+        window_width,
+    );
+    const context_text = context_stream.getWritten();
+
+    engine.ui.ImGui.pushStyleVarVec2(.item_spacing, .{ 8.0, 0.0 });
+    defer engine.ui.ImGui.popStyleVar(1);
+    engine.ui.ImGui.setCursorPos(.{ 0.0, 3.0 });
+    if (engine.ui.ImGui.beginTable("status_bar_layout", 2)) {
+        defer engine.ui.ImGui.endTable();
+        engine.ui.ImGui.tableSetupColumn("##status_context", true, if (window_width >= 1280.0) 0.62 else 0.56);
+        engine.ui.ImGui.tableSetupColumn("##status_metrics", true, if (window_width >= 1280.0) 0.38 else 0.44);
+        engine.ui.ImGui.tableNextRow();
+        engine.ui.ImGui.tableNextColumn();
+        engine.ui.ImGui.alignTextToFramePadding();
+        engine.ui.ImGui.text(context_text);
+        engine.ui.ImGui.tableNextColumn();
+        engine.ui.ImGui.alignTextToFramePadding();
+        engine.ui.ImGui.text(metrics_text);
+    }
+}
+
+fn buildStatusMetricsText(
+    writer: anytype,
+    state: *const EditorState,
+    selection_count: usize,
+    fps: f32,
+    save_status: []const u8,
+    backend_text: []const u8,
+    memory_text: []const u8,
+    window_width: f32,
+) !void {
+    var first = true;
+
+    var selection_buffer: [24]u8 = undefined;
+    const selection_text = try std.fmt.bufPrint(&selection_buffer, "{d}", .{selection_count});
+    try appendStatusSegment(writer, &first, state.text(.selection_count), selection_text);
+
+    var fps_buffer: [32]u8 = undefined;
+    const fps_text = try std.fmt.bufPrint(&fps_buffer, "{d:.1}", .{fps});
+    try appendStatusSegment(writer, &first, state.text(.fps), fps_text);
+
+    try appendStatusSegment(writer, &first, state.text(.save_status), save_status);
+    if (window_width >= 980.0) {
+        try appendStatusSegment(writer, &first, state.text(.backend), backend_text);
+    }
+    if (window_width >= 1180.0) {
+        try appendStatusSegment(writer, &first, state.text(.memory), memory_text);
+    }
+}
+
+fn buildStatusContextText(
+    writer: anytype,
+    state: *const EditorState,
+    selected_path: []const u8,
+    camera_text: []const u8,
+    mode_text: []const u8,
+    space_text: []const u8,
+    window_width: f32,
+) !void {
+    var first = true;
+    try appendStatusSegment(writer, &first, state.text(.selected_path), selected_path);
+    if (window_width >= 820.0) {
+        try appendStatusSegment(writer, &first, state.text(.camera), camera_text);
+    }
+    if (window_width >= 980.0) {
+        try appendStatusSegment(writer, &first, state.text(.mode), mode_text);
+    }
+    if (window_width >= 1120.0) {
+        try appendStatusSegment(writer, &first, state.text(.coordinate_space), space_text);
+    }
+}
+
+fn appendStatusSegment(writer: anytype, first: *bool, label: []const u8, value: []const u8) !void {
+    if (!first.*) {
+        try writer.writeAll("  |  ");
+    }
+    first.* = false;
+    try writer.print("{s}: {s}", .{ label, value });
+}
+
+fn statusPathCharacterBudget(window_width: f32) usize {
+    if (window_width < 720.0) return 18;
+    if (window_width < 960.0) return 28;
+    if (window_width < 1280.0) return 42;
+    return 60;
+}
+
+fn compactStatusPath(buffer: []u8, path: []const u8, max_chars: usize) []const u8 {
+    if (path.len <= max_chars or buffer.len == 0) {
+        return path;
+    }
+
+    const clamped_chars = @max(max_chars, 4);
+    const tail_len = @min(path.len, clamped_chars - 3);
+    const written = std.fmt.bufPrint(buffer, "...{s}", .{path[path.len - tail_len ..]}) catch return path;
+    return written;
 }
 
 pub fn handleViewportSelection(state: *EditorState, layer_context: *engine.core.LayerContext) !void {

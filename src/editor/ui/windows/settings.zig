@@ -11,7 +11,9 @@ const debug_icon_tint = [4]u8{ 196, 224, 255, 255 };
 pub fn drawSettingsWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     var title_buffer: [80]u8 = undefined;
     const title = try state.windowLabel(&title_buffer, .settings, "settings_popup");
-    _ = engine.ui.ImGui.beginWindowFlags(title, engine.ui.ImGui.WindowFlags.no_docking);
+    var open = state.settings_open;
+    _ = engine.ui.ImGui.beginWindowFlagsOpen(title, &open, engine.ui.ImGui.WindowFlags.no_docking);
+    state.settings_open = open;
     defer engine.ui.ImGui.endWindow();
 
     engine.ui.ImGui.labelText(state.text(.language), state.languageInfo().native_name);

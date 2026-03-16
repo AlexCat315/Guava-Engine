@@ -133,6 +133,14 @@ pub fn beginWindowFlags(name: []const u8, flags: u32) bool {
     return c.guava_imgui_begin_window_flags(name.ptr, name.len, flags);
 }
 
+pub fn beginWindowOpen(name: []const u8, open: *bool) bool {
+    return c.guava_imgui_begin_window_open(name.ptr, name.len, open);
+}
+
+pub fn beginWindowFlagsOpen(name: []const u8, open: *bool, flags: u32) bool {
+    return c.guava_imgui_begin_window_flags_open(name.ptr, name.len, open, flags);
+}
+
 pub fn endWindow() void {
     c.guava_imgui_end_window();
 }
@@ -218,6 +226,10 @@ pub fn dummy(width: f32, height: f32) void {
 
 pub fn sameLine() void {
     c.guava_imgui_same_line();
+}
+
+pub fn sameLineEx(offset_from_start_x: f32, spacing: f32) void {
+    c.guava_imgui_same_line_ex(offset_from_start_x, spacing);
 }
 
 pub fn separator() void {
@@ -426,6 +438,14 @@ pub fn setCursorPosY(y: f32) void {
 
 pub fn alignTextToFramePadding() void {
     c.guava_imgui_align_text_to_frame_padding();
+}
+
+pub fn indent(width: f32) void {
+    c.guava_imgui_indent(width);
+}
+
+pub fn unindent(width: f32) void {
+    c.guava_imgui_unindent(width);
 }
 
 pub fn windowSize() [2]f32 {

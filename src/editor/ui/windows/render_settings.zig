@@ -6,7 +6,9 @@ const camera = @import("../../interaction/camera.zig");
 pub fn drawRenderSettingsWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     var title_buffer: [80]u8 = undefined;
     const title = try state.windowLabel(&title_buffer, .render_settings, "render_settings_popup");
-    _ = engine.ui.ImGui.beginWindowFlags(title, engine.ui.ImGui.WindowFlags.no_docking);
+    var open = state.render_settings_open;
+    _ = engine.ui.ImGui.beginWindowFlagsOpen(title, &open, engine.ui.ImGui.WindowFlags.no_docking);
+    state.render_settings_open = open;
     defer engine.ui.ImGui.endWindow();
 
     engine.ui.ImGui.text(state.text(.camera));

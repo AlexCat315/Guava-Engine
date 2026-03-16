@@ -656,6 +656,22 @@ extern "C" bool guava_imgui_begin_window_flags(const char* name, size_t name_len
     return ImGui::Begin(window_name.c_str(), nullptr, to_imgui_window_flags(flags));
 }
 
+extern "C" bool guava_imgui_begin_window_open(const char* name, size_t name_len, bool* open) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+    const std::string window_name = make_string(name, name_len);
+    return ImGui::Begin(window_name.c_str(), open);
+}
+
+extern "C" bool guava_imgui_begin_window_flags_open(const char* name, size_t name_len, bool* open, uint32_t flags) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+    const std::string window_name = make_string(name, name_len);
+    return ImGui::Begin(window_name.c_str(), open, to_imgui_window_flags(flags));
+}
+
 extern "C" void guava_imgui_end_window(void) {
     if (!g_imgui_initialized) {
         return;
@@ -855,6 +871,13 @@ extern "C" void guava_imgui_same_line(void) {
     ImGui::SameLine();
 }
 
+extern "C" void guava_imgui_same_line_ex(float offset_from_start_x, float spacing) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::SameLine(offset_from_start_x, spacing);
+}
+
 extern "C" void guava_imgui_separator(void) {
     if (!g_imgui_initialized) {
         return;
@@ -1023,9 +1046,26 @@ extern "C" void guava_imgui_label_text(const char* label, size_t label_len, cons
     }
     const std::string owned_label = make_string(label, label_len);
     const std::string owned_text = make_string(text, text_len);
+    constexpr float min_inline_value_width = 88.0f;
+    constexpr float min_label_width = 84.0f;
+    constexpr float max_label_width = 152.0f;
+    const float available_width = ImGui::GetContentRegionAvail().x;
+    const float spacing = ImGui::GetStyle().ItemInnerSpacing.x;
+    const ImVec2 label_size = ImGui::CalcTextSize(owned_label.c_str());
+    float label_width = std::clamp(available_width * 0.34f, min_label_width, max_label_width);
+    label_width = (std::max)(label_width, label_size.x + spacing + 4.0f);
+
+    ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(owned_label.c_str());
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
-    ImGui::TextWrapped("%s", owned_text.c_str());
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.72f, 0.74f, 0.79f, 1.0f));
+    if (available_width >= label_width + min_inline_value_width) {
+        ImGui::SameLine(label_width, spacing);
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextWrapped("%s", owned_text.c_str());
+        ImGui::PopTextWrapPos();
+    } else {
+        ImGui::TextWrapped("%s", owned_text.c_str());
+    }
     ImGui::PopStyleColor();
 }
 
@@ -1322,6 +1362,20 @@ extern "C" void guava_imgui_align_text_to_frame_padding(void) {
         return;
     }
     ImGui::AlignTextToFramePadding();
+}
+
+extern "C" void guava_imgui_indent(float width) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::Indent(width);
+}
+
+extern "C" void guava_imgui_unindent(float width) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::Unindent(width);
 }
 
 extern "C" void guava_imgui_get_window_size(float out_value[2]) {

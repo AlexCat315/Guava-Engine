@@ -81,6 +81,8 @@ bool guava_imgui_want_capture_keyboard(void);
 
 bool guava_imgui_begin_window(const char* name, size_t name_len);
 bool guava_imgui_begin_window_flags(const char* name, size_t name_len, uint32_t flags);
+bool guava_imgui_begin_window_open(const char* name, size_t name_len, bool* open);
+bool guava_imgui_begin_window_flags_open(const char* name, size_t name_len, bool* open, uint32_t flags);
 void guava_imgui_end_window(void);
 bool guava_imgui_begin_main_menu_bar(void);
 void guava_imgui_end_main_menu_bar(void);
@@ -111,6 +113,7 @@ bool guava_imgui_invisible_button(const char* id, size_t id_len, float width, fl
 bool guava_imgui_window_control_button(uint32_t kind, bool toggled);
 void guava_imgui_dummy(float width, float height);
 void guava_imgui_same_line(void);
+void guava_imgui_same_line_ex(float offset_from_start_x, float spacing);
 void guava_imgui_separator(void);
 void guava_imgui_set_next_item_width(float width);
 void guava_imgui_set_next_window_pos(float x, float y);
@@ -167,6 +170,8 @@ void guava_imgui_get_cursor_screen_pos(float out_value[2]);
 void guava_imgui_set_cursor_pos(float x, float y);
 void guava_imgui_set_cursor_pos_y(float y);
 void guava_imgui_align_text_to_frame_padding(void);
+void guava_imgui_indent(float width);
+void guava_imgui_unindent(float width);
 void guava_imgui_get_window_size(float out_value[2]);
 float guava_imgui_get_frame_height(void);
 float guava_imgui_get_time(void);
