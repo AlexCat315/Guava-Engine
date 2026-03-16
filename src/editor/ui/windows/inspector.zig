@@ -13,9 +13,23 @@ const EditRowResult = struct {
     committed: bool = false,
 };
 
-const axis_x_color = [4]f32{ 0.88, 0.43, 0.43, 1.0 };
-const axis_y_color = [4]f32{ 0.48, 0.81, 0.56, 1.0 };
-const axis_z_color = [4]f32{ 0.42, 0.63, 0.94, 1.0 };
+const AxisStyle = struct {
+    background: [4]f32,
+    text: [4]f32,
+};
+
+const axis_x_style = AxisStyle{
+    .background = .{ 0.54, 0.40, 0.38, 1.0 },
+    .text = .{ 0.12, 0.12, 0.13, 1.0 },
+};
+const axis_y_style = AxisStyle{
+    .background = .{ 0.42, 0.49, 0.43, 1.0 },
+    .text = .{ 0.12, 0.12, 0.13, 1.0 },
+};
+const axis_z_style = AxisStyle{
+    .background = .{ 0.40, 0.49, 0.53, 1.0 },
+    .text = .{ 0.12, 0.12, 0.13, 1.0 },
+};
 
 pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     var title_buffer: [80]u8 = undefined;
@@ -87,15 +101,15 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
         });
         engine.ui.ImGui.dummy(0.0, 4.0);
 
-        if (engine.ui.ImGui.beginTable("transform_grid", 7)) {
+        if (engine.ui.ImGui.beginTable("transform_grid", 4)) {
             defer engine.ui.ImGui.endTable();
-            engine.ui.ImGui.tableSetupColumn("##transform_label", false, 44.0);
-            engine.ui.ImGui.tableSetupColumn("##transform_x_axis", false, 18.0);
-            engine.ui.ImGui.tableSetupColumn("##transform_x_value", true, 1.0);
-            engine.ui.ImGui.tableSetupColumn("##transform_y_axis", false, 18.0);
-            engine.ui.ImGui.tableSetupColumn("##transform_y_value", true, 1.0);
-            engine.ui.ImGui.tableSetupColumn("##transform_z_axis", false, 18.0);
-            engine.ui.ImGui.tableSetupColumn("##transform_z_value", true, 1.0);
+            engine.ui.ImGui.tableSetupColumn("##transform_label", false, 42.0);
+            engine.ui.ImGui.tableSetupColumn("##transform_x", true, 1.0);
+            engine.ui.ImGui.tableSetupColumn("##transform_y", true, 1.0);
+            engine.ui.ImGui.tableSetupColumn("##transform_z", true, 1.0);
+
+            engine.ui.ImGui.pushStyleVarVec2(.item_spacing, .{ 6.0, 4.0 });
+            defer engine.ui.ImGui.popStyleVar(1);
 
             var editable_translation = if (state.transform_space == .world) world_transform.translation else entity.transform.translation;
             const translation_result = try drawTransformTableRow("Pos", "translation", &editable_translation, 0.05, -500.0, 500.0);
@@ -544,49 +558,59 @@ fn drawTransformTableRow(
     engine.ui.ImGui.text(row_label);
 
     engine.ui.ImGui.tableNextColumn();
-    drawAxisPrefixCell("X", axis_x_color);
+    const x_result = try drawAxisDragField(id_prefix, "x", "X", &values[0], axis_x_style, speed, min_value, max_value);
+    result.changed = result.changed or x_result.changed;
+    result.committed = result.committed or x_result.committed;
 
     engine.ui.ImGui.tableNextColumn();
-    var x_label_buffer: [32]u8 = undefined;
-    const x_label = try std.fmt.bufPrint(&x_label_buffer, "##{s}_x", .{id_prefix});
-    engine.ui.ImGui.setNextItemWidth(-1.0);
-    if (engine.ui.ImGui.dragFloat(x_label, &values[0], speed, min_value, max_value)) {
-        result.changed = true;
-    }
-    result.committed = result.committed or engine.ui.ImGui.isItemDeactivatedAfterEdit();
+    const y_result = try drawAxisDragField(id_prefix, "y", "Y", &values[1], axis_y_style, speed, min_value, max_value);
+    result.changed = result.changed or y_result.changed;
+    result.committed = result.committed or y_result.committed;
 
     engine.ui.ImGui.tableNextColumn();
-    drawAxisPrefixCell("Y", axis_y_color);
-
-    engine.ui.ImGui.tableNextColumn();
-    var y_label_buffer: [32]u8 = undefined;
-    const y_label = try std.fmt.bufPrint(&y_label_buffer, "##{s}_y", .{id_prefix});
-    engine.ui.ImGui.setNextItemWidth(-1.0);
-    if (engine.ui.ImGui.dragFloat(y_label, &values[1], speed, min_value, max_value)) {
-        result.changed = true;
-    }
-    result.committed = result.committed or engine.ui.ImGui.isItemDeactivatedAfterEdit();
-
-    engine.ui.ImGui.tableNextColumn();
-    drawAxisPrefixCell("Z", axis_z_color);
-
-    engine.ui.ImGui.tableNextColumn();
-    var z_label_buffer: [32]u8 = undefined;
-    const z_label = try std.fmt.bufPrint(&z_label_buffer, "##{s}_z", .{id_prefix});
-    engine.ui.ImGui.setNextItemWidth(-1.0);
-    if (engine.ui.ImGui.dragFloat(z_label, &values[2], speed, min_value, max_value)) {
-        result.changed = true;
-    }
-    result.committed = result.committed or engine.ui.ImGui.isItemDeactivatedAfterEdit();
+    const z_result = try drawAxisDragField(id_prefix, "z", "Z", &values[2], axis_z_style, speed, min_value, max_value);
+    result.changed = result.changed or z_result.changed;
+    result.committed = result.committed or z_result.committed;
 
     return result;
 }
 
-fn drawAxisPrefixCell(label: []const u8, color: [4]f32) void {
-    engine.ui.ImGui.alignTextToFramePadding();
-    engine.ui.ImGui.pushStyleColor(.text, color);
-    defer engine.ui.ImGui.popStyleColor(1);
-    engine.ui.ImGui.text(label);
+fn drawAxisDragField(
+    id_prefix: []const u8,
+    axis_suffix: []const u8,
+    axis_label: []const u8,
+    value: *f32,
+    style: AxisStyle,
+    speed: f32,
+    min_value: f32,
+    max_value: f32,
+) !EditRowResult {
+    var result = EditRowResult{};
+    const axis_width = @max(engine.ui.ImGui.frameHeight() - 4.0, 22.0);
+
+    engine.ui.ImGui.pushStyleVarVec2(.item_spacing, .{ 0.0, 0.0 });
+    engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, 0.0);
+    defer engine.ui.ImGui.popStyleVar(2);
+
+    var axis_id_buffer: [48]u8 = undefined;
+    const axis_id = try std.fmt.bufPrint(&axis_id_buffer, "{s}##{s}_{s}_axis", .{ axis_label, id_prefix, axis_suffix });
+    engine.ui.ImGui.pushStyleColor(.text, style.text);
+    engine.ui.ImGui.pushStyleColor(.button, style.background);
+    engine.ui.ImGui.pushStyleColor(.button_hovered, style.background);
+    engine.ui.ImGui.pushStyleColor(.button_active, style.background);
+    _ = engine.ui.ImGui.buttonEx(axis_id, axis_width, engine.ui.ImGui.frameHeight());
+    engine.ui.ImGui.popStyleColor(4);
+
+    engine.ui.ImGui.sameLine();
+
+    var drag_id_buffer: [40]u8 = undefined;
+    const drag_id = try std.fmt.bufPrint(&drag_id_buffer, "##{s}_{s}", .{ id_prefix, axis_suffix });
+    engine.ui.ImGui.setNextItemWidth(-1.0);
+    if (engine.ui.ImGui.dragFloat(drag_id, value, speed, min_value, max_value)) {
+        result.changed = true;
+    }
+    result.committed = engine.ui.ImGui.isItemDeactivatedAfterEdit();
+    return result;
 }
 
 pub fn setPrimitiveMeshComponent(
