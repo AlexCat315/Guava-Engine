@@ -6,6 +6,7 @@ const utils = @import("../../common/utils.zig");
 const history = @import("../../actions/history.zig");
 const inspector = @import("inspector.zig");
 const ui_icons = @import("../icons.zig");
+const layout = @import("../layout.zig");
 
 pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     var title_buffer: [80]u8 = undefined;
@@ -15,6 +16,7 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
 
     syncHierarchyRenameState(state, layer_context);
 
+    layout.beginSectionBody();
     var selection_count_buffer: [32]u8 = undefined;
     const selection_count_text = try std.fmt.bufPrint(&selection_count_buffer, "{d}", .{layer_context.renderer.selectedEntities().len});
     engine.ui.ImGui.labelText(state.text(.selection_count), selection_count_text);
@@ -57,6 +59,7 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
             }
         }
     }
+    layout.endSectionBody();
     var dropped_root: u64 = 0;
     if (engine.ui.ImGui.acceptDragDropPayloadU64(state_mod.entity_drag_payload, &dropped_root)) {
         try reparentEntity(state, layer_context, dropped_root, null);

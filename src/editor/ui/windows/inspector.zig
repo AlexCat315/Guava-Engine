@@ -7,6 +7,7 @@ const manipulation = @import("../../interaction/manipulation.zig");
 const camera = @import("../../interaction/camera.zig");
 const content_browser = @import("../../assets/browser.zig");
 const scene_hierarchy = @import("scene_hierarchy.zig");
+const layout = @import("../layout.zig");
 
 const EditRowResult = struct {
     changed: bool = false,
@@ -45,8 +46,6 @@ const axis_z_style = AxisStyle{
     .text = .{ 0.12, 0.12, 0.13, 1.0 },
 };
 
-const inspector_section_padding = 10.0;
-
 fn inspectorFilter(state: *const EditorState) []const u8 {
     return utils.zeroTerminatedSlice(state.inspector_filter_buffer[0..]);
 }
@@ -56,11 +55,11 @@ fn inspectorSectionMatches(filter: []const u8, label: []const u8) bool {
 }
 
 fn beginInspectorSectionBody() void {
-    engine.ui.ImGui.indent(inspector_section_padding);
+    layout.beginSectionBody();
 }
 
 fn endInspectorSectionBody() void {
-    engine.ui.ImGui.unindent(inspector_section_padding);
+    layout.endSectionBody();
 }
 
 pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -523,18 +522,18 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
     if (inspectorSectionMatches(filter, state.text(.actions)) and engine.ui.ImGui.collapsingHeader(state.text(.actions), filter.len != 0)) {
         beginInspectorSectionBody();
         defer endInspectorSectionBody();
-        const action_columns = responsiveButtonColumns(3, 80.0);
-        const action_button_width = responsiveButtonWidth(action_columns);
+        const action_columns = layout.responsiveButtonColumns(3, 80.0);
+        const action_button_width = layout.responsiveButtonWidth(action_columns);
 
         if (engine.ui.ImGui.buttonEx(state.text(.focus), action_button_width, 0.0)) {
             camera.focusSelection(state, layer_context);
         }
-        drawResponsiveButtonAdvance(1, action_columns);
+        layout.advanceResponsiveRow(1, action_columns);
         if (engine.ui.ImGui.buttonEx(state.text(.duplicate), action_button_width, 0.0)) {
             try history.duplicateSelection(state, layer_context);
             return;
         }
-        drawResponsiveButtonAdvance(2, action_columns);
+        layout.advanceResponsiveRow(2, action_columns);
         if (engine.ui.ImGui.buttonEx(state.text(.delete), action_button_width, 0.0)) {
             try history.deleteSelection(state, layer_context);
             return;
@@ -544,11 +543,11 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
         if (engine.ui.ImGui.buttonEx(state.text(.move), action_button_width, 0.0)) {
             try manipulation.beginManipulation(state, layer_context, .translate);
         }
-        drawResponsiveButtonAdvance(1, action_columns);
+        layout.advanceResponsiveRow(1, action_columns);
         if (engine.ui.ImGui.buttonEx(state.text(.rotate), action_button_width, 0.0)) {
             try manipulation.beginManipulation(state, layer_context, .rotate);
         }
-        drawResponsiveButtonAdvance(2, action_columns);
+        layout.advanceResponsiveRow(2, action_columns);
         if (engine.ui.ImGui.buttonEx(state.text(.scale), action_button_width, 0.0)) {
             try manipulation.beginManipulation(state, layer_context, .scale);
         }
@@ -914,21 +913,21 @@ fn drawTransformResetButtons(
     entity: *engine.scene.Entity,
     world_transform: engine.scene.Transform,
 ) !void {
-    const columns = responsiveButtonColumns(4, 88.0);
-    const button_width = responsiveButtonWidth(columns);
+    const columns = layout.responsiveButtonColumns(4, 88.0);
+    const button_width = layout.responsiveButtonWidth(columns);
 
     if (engine.ui.ImGui.buttonEx(state.text(.reset_position), button_width, 0.0)) {
         try resetTransformTarget(state, layer_context, selected, entity, world_transform, .translation);
     }
-    drawResponsiveButtonAdvance(1, columns);
+    layout.advanceResponsiveRow(1, columns);
     if (engine.ui.ImGui.buttonEx(state.text(.reset_rotation), button_width, 0.0)) {
         try resetTransformTarget(state, layer_context, selected, entity, world_transform, .rotation);
     }
-    drawResponsiveButtonAdvance(2, columns);
+    layout.advanceResponsiveRow(2, columns);
     if (engine.ui.ImGui.buttonEx(state.text(.reset_scale), button_width, 0.0)) {
         try resetTransformTarget(state, layer_context, selected, entity, world_transform, .scale);
     }
-    drawResponsiveButtonAdvance(3, columns);
+    layout.advanceResponsiveRow(3, columns);
     if (engine.ui.ImGui.buttonEx(state.text(.reset_all), button_width, 0.0)) {
         try resetTransformTarget(state, layer_context, selected, entity, world_transform, .all);
     }
@@ -982,7 +981,7 @@ fn drawLabeledFloatControl(
     min_value: f32,
     max_value: f32,
 ) bool {
-    _ = drawResponsivePropertyLabel(label, 104.0);
+    _ = layout.drawResponsivePropertyLabel(label, 104.0);
     engine.ui.ImGui.setNextItemWidth(-1.0);
     return engine.ui.ImGui.dragFloat(widget_id, value, speed, min_value, max_value);
 }
@@ -993,7 +992,7 @@ fn drawLabeledInputText(
     buffer: []u8,
     min_control_width: f32,
 ) bool {
-    _ = drawResponsivePropertyLabel(label, min_control_width);
+    _ = layout.drawResponsivePropertyLabel(label, min_control_width);
     engine.ui.ImGui.setNextItemWidth(-1.0);
     return engine.ui.ImGui.inputText(widget_id, buffer);
 }
@@ -1006,30 +1005,18 @@ fn drawLabeledFloat3Control(
     min_value: f32,
     max_value: f32,
 ) bool {
-    _ = drawResponsivePropertyLabel(label, 178.0);
+    _ = layout.drawResponsivePropertyLabel(label, 178.0);
     engine.ui.ImGui.setNextItemWidth(-1.0);
     return engine.ui.ImGui.dragFloat3(widget_id, value, speed, min_value, max_value);
 }
 
-fn drawResponsivePropertyLabel(label: []const u8, min_control_width: f32) bool {
-    const total_width = engine.ui.ImGui.contentRegionAvail()[0];
-    const label_width = std.math.clamp(total_width * 0.34, 86.0, 142.0);
-    engine.ui.ImGui.alignTextToFramePadding();
-    engine.ui.ImGui.text(label);
-    if (total_width < label_width + min_control_width) {
-        return false;
-    }
-    engine.ui.ImGui.sameLineEx(label_width, 8.0);
-    return true;
-}
-
 fn drawActionRow2(first: []const u8, second: []const u8, min_button_width: f32) ActionRowResult {
-    const columns = responsiveButtonColumns(2, min_button_width);
-    const width = responsiveButtonWidth(columns);
+    const columns = layout.responsiveButtonColumns(2, min_button_width);
+    const width = layout.responsiveButtonWidth(columns);
     if (engine.ui.ImGui.buttonEx(first, width, 0.0)) {
         return .first;
     }
-    drawResponsiveButtonAdvance(1, columns);
+    layout.advanceResponsiveRow(1, columns);
     if (engine.ui.ImGui.buttonEx(second, width, 0.0)) {
         return .second;
     }
@@ -1037,52 +1024,20 @@ fn drawActionRow2(first: []const u8, second: []const u8, min_button_width: f32) 
 }
 
 fn drawActionRow3(first: []const u8, second: []const u8, third: []const u8, min_button_width: f32) ActionRowResult {
-    const columns = responsiveButtonColumns(3, min_button_width);
-    const width = responsiveButtonWidth(columns);
+    const columns = layout.responsiveButtonColumns(3, min_button_width);
+    const width = layout.responsiveButtonWidth(columns);
     if (engine.ui.ImGui.buttonEx(first, width, 0.0)) {
         return .first;
     }
-    drawResponsiveButtonAdvance(1, columns);
+    layout.advanceResponsiveRow(1, columns);
     if (engine.ui.ImGui.buttonEx(second, width, 0.0)) {
         return .second;
     }
-    drawResponsiveButtonAdvance(2, columns);
+    layout.advanceResponsiveRow(2, columns);
     if (engine.ui.ImGui.buttonEx(third, width, 0.0)) {
         return .third;
     }
     return .none;
-}
-
-fn responsiveButtonColumns(button_count: usize, min_button_width: f32) usize {
-    var columns = button_count;
-    while (columns > 1) : (columns -= 1) {
-        const required_width =
-            min_button_width * @as(f32, @floatFromInt(columns)) +
-            8.0 * @as(f32, @floatFromInt(columns - 1));
-        if (engine.ui.ImGui.contentRegionAvail()[0] >= required_width) {
-            return columns;
-        }
-    }
-    return 1;
-}
-
-fn responsiveButtonWidth(columns: usize) f32 {
-    const total_spacing = 8.0 * @as(f32, @floatFromInt(columns -| 1));
-    return @max(
-        (engine.ui.ImGui.contentRegionAvail()[0] - total_spacing) / @as(f32, @floatFromInt(columns)),
-        1.0,
-    );
-}
-
-fn drawResponsiveButtonAdvance(index: usize, columns: usize) void {
-    if (columns == 0 or index == 0) {
-        return;
-    }
-    if (index % columns == 0) {
-        engine.ui.ImGui.dummy(0.0, 6.0);
-    } else {
-        engine.ui.ImGui.sameLine();
-    }
 }
 
 fn drawTransformTableRow(

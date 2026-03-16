@@ -4,6 +4,7 @@ const EditorState = @import("../../core/state.zig").EditorState;
 const i18n = @import("../../i18n/mod.zig");
 const icon_cache = @import("../icon_cache.zig");
 const ui_icons = @import("../icons.zig");
+const layout = @import("../layout.zig");
 
 const debug_icon_path = ui_icons.paths.hierarchy.mesh;
 const debug_icon_tint = [4]u8{ 196, 224, 255, 255 };
@@ -15,6 +16,8 @@ pub fn drawSettingsWindow(state: *EditorState, layer_context: *engine.core.Layer
     _ = engine.ui.ImGui.beginWindowFlagsOpen(title, &open, engine.ui.ImGui.WindowFlags.no_docking);
     state.settings_open = open;
     defer engine.ui.ImGui.endWindow();
+    layout.beginSectionBody();
+    defer layout.endSectionBody();
 
     engine.ui.ImGui.labelText(state.text(.language), state.languageInfo().native_name);
     const content_width = engine.ui.ImGui.contentRegionAvail()[0];
@@ -32,11 +35,7 @@ pub fn drawSettingsWindow(state: *EditorState, layer_context: *engine.core.Layer
     for (i18n.available_languages, 0..) |language, index| {
         const locale_info = i18n.locale(language);
         if (index > 0) {
-            if (index % language_columns == 0) {
-                engine.ui.ImGui.dummy(0.0, 6.0);
-            } else {
-                engine.ui.ImGui.sameLine();
-            }
+            layout.advanceResponsiveRow(index, language_columns);
         }
         if (engine.ui.ImGui.buttonEx(locale_info.native_name, language_button_width, 0.0)) {
             state.language = language;

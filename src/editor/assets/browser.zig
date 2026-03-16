@@ -7,6 +7,7 @@ const history = @import("../actions/history.zig");
 const asset_preview = @import("preview.zig");
 const console = @import("../ui/windows/console.zig");
 const ui_icons = @import("../ui/icons.zig");
+const layout = @import("../ui/layout.zig");
 
 const AssetKind = state_mod.AssetKind;
 const AssetEntry = state_mod.AssetEntry;
@@ -209,6 +210,8 @@ fn drawSelectedAssetPreview(state: *EditorState, layer_context: *engine.core.Lay
     const preview_height = std.math.clamp(engine.ui.ImGui.contentRegionAvail()[1] * 0.32, 152.0, 220.0);
     _ = engine.ui.ImGui.beginChild("project_asset_preview", 0.0, preview_height, true);
     defer engine.ui.ImGui.endChild();
+    layout.beginSectionBody();
+    defer layout.endSectionBody();
 
     if (selectedAsset(state)) |entry| {
         engine.ui.ImGui.labelText(state.text(.selected), entry.name);
@@ -274,28 +277,18 @@ fn drawProjectToolbar(state: *EditorState, layer_context: *engine.core.LayerCont
     }
 
     engine.ui.ImGui.dummy(0.0, 8.0);
+    const thumb_columns = layout.responsiveButtonColumns(3, 32.0);
     drawThumbnailPresetButton(state, "S", 84.0);
-    engine.ui.ImGui.sameLine();
+    layout.advanceResponsiveRow(1, thumb_columns);
     drawThumbnailPresetButton(state, "M", 104.0);
-    engine.ui.ImGui.sameLine();
+    layout.advanceResponsiveRow(2, thumb_columns);
     drawThumbnailPresetButton(state, "L", 132.0);
 
-    if (width >= 620.0) {
-        engine.ui.ImGui.sameLine();
-    } else {
-        engine.ui.ImGui.dummy(0.0, 6.0);
-    }
-
+    engine.ui.ImGui.dummy(0.0, 6.0);
     const compact_thumbnails = width < 320.0;
-    engine.ui.ImGui.alignTextToFramePadding();
-    engine.ui.ImGui.text(state.text(.thumbnails));
-    if (!compact_thumbnails) {
-        engine.ui.ImGui.sameLine();
-    } else {
-        engine.ui.ImGui.dummy(0.0, 6.0);
-    }
+    _ = layout.drawResponsivePropertyLabel(state.text(.thumbnails), if (compact_thumbnails) width else 108.0);
     var thumbnail_size = state.asset_thumbnail_size;
-    engine.ui.ImGui.setNextItemWidth(if (compact_thumbnails) width else std.math.clamp(width * 0.22, 108.0, 180.0));
+    engine.ui.ImGui.setNextItemWidth(-1.0);
     if (engine.ui.ImGui.dragFloat("##asset_thumbnail_size", &thumbnail_size, 1.0, 72.0, 160.0)) {
         state.asset_thumbnail_size = std.math.clamp(thumbnail_size, 72.0, 160.0);
     }
@@ -303,6 +296,7 @@ fn drawProjectToolbar(state: *EditorState, layer_context: *engine.core.LayerCont
 
 fn drawBreadcrumbs(state: *EditorState) !void {
     const current = selectedDirectory(state);
+    const stacked = engine.ui.ImGui.contentRegionAvail()[0] < 360.0;
     var start: usize = 0;
     var crumb_index: usize = 0;
 
@@ -310,16 +304,25 @@ fn drawBreadcrumbs(state: *EditorState) !void {
         const next_slash = std.mem.indexOfScalarPos(u8, current, start, '/') orelse current.len;
         const crumb_path = current[0..next_slash];
         const crumb_label = if (crumb_index == 0) state.text(.assets_menu) else directoryName(crumb_path);
-        if (engine.ui.ImGui.buttonEx(crumb_label, 0.0, 0.0)) {
+        var stacked_label_buffer: [160]u8 = undefined;
+        const button_label = if (stacked and crumb_index > 0)
+            try std.fmt.bufPrint(&stacked_label_buffer, "> {s}", .{crumb_label})
+        else
+            crumb_label;
+        if (engine.ui.ImGui.buttonEx(button_label, if (stacked) engine.ui.ImGui.contentRegionAvail()[0] else 0.0, 0.0)) {
             setSelectedAssetDirectory(state, crumb_path);
         }
 
         if (next_slash == current.len) {
             break;
         }
-        engine.ui.ImGui.sameLine();
-        engine.ui.ImGui.text(">");
-        engine.ui.ImGui.sameLine();
+        if (!stacked) {
+            engine.ui.ImGui.sameLine();
+            engine.ui.ImGui.text(">");
+            engine.ui.ImGui.sameLine();
+        } else {
+            engine.ui.ImGui.dummy(0.0, 4.0);
+        }
 
         start = next_slash + 1;
         crumb_index += 1;

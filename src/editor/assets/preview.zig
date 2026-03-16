@@ -4,6 +4,7 @@ const EditorState = @import("../core/state.zig").EditorState;
 const state_mod = @import("../core/state.zig");
 const utils = @import("../common/utils.zig");
 const history = @import("../actions/history.zig");
+const layout = @import("../ui/layout.zig");
 
 const AssetEntry = state_mod.AssetEntry;
 
@@ -12,6 +13,8 @@ pub fn drawAssetPreviewWindow(state: *EditorState, layer_context: *engine.core.L
     const title = try state.windowLabel(&title_buffer, .asset_preview, "asset_preview_panel");
     _ = engine.ui.ImGui.beginWindow(title);
     defer engine.ui.ImGui.endWindow();
+    layout.beginSectionBody();
+    defer layout.endSectionBody();
 
     if (selectedAsset(state)) |entry| {
         engine.ui.ImGui.labelText(state.text(.name), entry.name);

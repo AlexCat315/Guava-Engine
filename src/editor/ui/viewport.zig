@@ -13,6 +13,7 @@ const menu_bar = @import("menu_bar.zig");
 const render_settings = @import("windows/render_settings.zig");
 const settings = @import("windows/settings.zig");
 const ui_icons = @import("icons.zig");
+const layout = @import("layout.zig");
 const PlaybackState = @import("../core/state.zig").PlaybackState;
 const HierarchyCategory = @import("../core/state.zig").HierarchyCategory;
 
@@ -251,6 +252,8 @@ pub fn drawStatsWindow(state: *EditorState, layer_context: *engine.core.LayerCon
     const title = try state.windowLabel(&title_buffer, .stats, "stats_panel");
     _ = engine.ui.ImGui.beginWindow(title);
     defer engine.ui.ImGui.endWindow();
+    layout.beginSectionBody();
+    defer layout.endSectionBody();
 
     const runtime = layer_context.renderer.runtimeInfo();
     const summary = layer_context.world.summary();

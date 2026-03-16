@@ -2,6 +2,7 @@ const std = @import("std");
 const engine = @import("guava");
 const EditorState = @import("../../core/state.zig").EditorState;
 const camera = @import("../../interaction/camera.zig");
+const layout = @import("../layout.zig");
 
 pub fn drawRenderSettingsWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     var title_buffer: [80]u8 = undefined;
@@ -10,6 +11,8 @@ pub fn drawRenderSettingsWindow(state: *EditorState, layer_context: *engine.core
     _ = engine.ui.ImGui.beginWindowFlagsOpen(title, &open, engine.ui.ImGui.WindowFlags.no_docking);
     state.render_settings_open = open;
     defer engine.ui.ImGui.endWindow();
+    layout.beginSectionBody();
+    defer layout.endSectionBody();
 
     engine.ui.ImGui.text(state.text(.camera));
     switch (drawButtonRow2(state.text(.editor_camera_mode), state.text(.scene_camera_mode), 112.0)) {
@@ -70,12 +73,12 @@ const ButtonRowResult = enum {
 };
 
 fn drawButtonRow2(first: []const u8, second: []const u8, min_button_width: f32) ButtonRowResult {
-    const columns = responsiveButtonColumns(2, min_button_width);
-    const width = responsiveButtonWidth(columns);
+    const columns = layout.responsiveButtonColumns(2, min_button_width);
+    const width = layout.responsiveButtonWidth(columns);
     if (engine.ui.ImGui.buttonEx(first, width, 0.0)) {
         return .first;
     }
-    drawResponsiveRowAdvance(1, columns);
+    layout.advanceResponsiveRow(1, columns);
     if (engine.ui.ImGui.buttonEx(second, width, 0.0)) {
         return .second;
     }
@@ -83,50 +86,18 @@ fn drawButtonRow2(first: []const u8, second: []const u8, min_button_width: f32) 
 }
 
 fn drawButtonRow3(first: []const u8, second: []const u8, third: []const u8, min_button_width: f32) ButtonRowResult {
-    const columns = responsiveButtonColumns(3, min_button_width);
-    const width = responsiveButtonWidth(columns);
+    const columns = layout.responsiveButtonColumns(3, min_button_width);
+    const width = layout.responsiveButtonWidth(columns);
     if (engine.ui.ImGui.buttonEx(first, width, 0.0)) {
         return .first;
     }
-    drawResponsiveRowAdvance(1, columns);
+    layout.advanceResponsiveRow(1, columns);
     if (engine.ui.ImGui.buttonEx(second, width, 0.0)) {
         return .second;
     }
-    drawResponsiveRowAdvance(2, columns);
+    layout.advanceResponsiveRow(2, columns);
     if (engine.ui.ImGui.buttonEx(third, width, 0.0)) {
         return .third;
     }
     return .none;
-}
-
-fn responsiveButtonColumns(button_count: usize, min_button_width: f32) usize {
-    var columns = button_count;
-    while (columns > 1) : (columns -= 1) {
-        const required_width =
-            min_button_width * @as(f32, @floatFromInt(columns)) +
-            8.0 * @as(f32, @floatFromInt(columns - 1));
-        if (engine.ui.ImGui.contentRegionAvail()[0] >= required_width) {
-            return columns;
-        }
-    }
-    return 1;
-}
-
-fn responsiveButtonWidth(columns: usize) f32 {
-    const total_spacing = 8.0 * @as(f32, @floatFromInt(columns -| 1));
-    return @max(
-        (engine.ui.ImGui.contentRegionAvail()[0] - total_spacing) / @as(f32, @floatFromInt(columns)),
-        1.0,
-    );
-}
-
-fn drawResponsiveRowAdvance(index: usize, columns: usize) void {
-    if (columns == 0 or index == 0) {
-        return;
-    }
-    if (index % columns == 0) {
-        engine.ui.ImGui.dummy(0.0, 6.0);
-    } else {
-        engine.ui.ImGui.sameLine();
-    }
 }
