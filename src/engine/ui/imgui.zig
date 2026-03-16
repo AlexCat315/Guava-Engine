@@ -24,6 +24,13 @@ pub const StyleColor = enum(c_uint) {
     button_active = c.GUAVA_IMGUI_STYLE_COLOR_BUTTON_ACTIVE,
 };
 
+pub const StyleVar = enum(c_uint) {
+    alpha = c.GUAVA_IMGUI_STYLE_VAR_ALPHA,
+    frame_padding = c.GUAVA_IMGUI_STYLE_VAR_FRAME_PADDING,
+    item_spacing = c.GUAVA_IMGUI_STYLE_VAR_ITEM_SPACING,
+    frame_rounding = c.GUAVA_IMGUI_STYLE_VAR_FRAME_ROUNDING,
+};
+
 pub const WindowFlags = struct {
     pub const none: u32 = c.GUAVA_IMGUI_WINDOW_NONE;
     pub const no_title_bar: u32 = c.GUAVA_IMGUI_WINDOW_NO_TITLE_BAR;
@@ -183,6 +190,18 @@ pub fn popStyleColor(count: i32) void {
     c.guava_imgui_pop_style_color(count);
 }
 
+pub fn pushStyleVarFloat(slot: StyleVar, value: f32) void {
+    c.guava_imgui_push_style_var_float(@intFromEnum(slot), value);
+}
+
+pub fn pushStyleVarVec2(slot: StyleVar, value: [2]f32) void {
+    c.guava_imgui_push_style_var_vec2(@intFromEnum(slot), value[0], value[1]);
+}
+
+pub fn popStyleVar(count: i32) void {
+    c.guava_imgui_pop_style_var(count);
+}
+
 pub fn beginChild(id: []const u8, width: f32, height: f32, border: bool) bool {
     return c.guava_imgui_begin_child(id.ptr, id.len, width, height, border);
 }
@@ -320,10 +339,22 @@ pub fn setCursorPos(position: [2]f32) void {
     c.guava_imgui_set_cursor_pos(position[0], position[1]);
 }
 
+pub fn setCursorPosY(y: f32) void {
+    c.guava_imgui_set_cursor_pos_y(y);
+}
+
+pub fn alignTextToFramePadding() void {
+    c.guava_imgui_align_text_to_frame_padding();
+}
+
 pub fn windowSize() [2]f32 {
     var value = [2]f32{ 0.0, 0.0 };
     c.guava_imgui_get_window_size(@ptrCast(&value[0]));
     return value;
+}
+
+pub fn frameHeight() f32 {
+    return c.guava_imgui_get_frame_height();
 }
 
 pub fn time() f32 {

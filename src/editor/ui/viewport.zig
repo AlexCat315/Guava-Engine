@@ -27,7 +27,7 @@ fn drawToolbarIconButton(
         layer_context,
         id,
         path,
-        38.0,
+        20.0,
         .{ 235, 239, 245, 255 },
         if (active) ui_icons.palettes.toolbar_active else ui_icons.palettes.toolbar_idle,
     );
@@ -37,8 +37,12 @@ fn drawPlaybackButton(label: []const u8, width: f32, palette: [3][4]f32) bool {
     engine.ui.ImGui.pushStyleColor(.button, palette[0]);
     engine.ui.ImGui.pushStyleColor(.button_hovered, palette[1]);
     engine.ui.ImGui.pushStyleColor(.button_active, palette[2]);
-    defer engine.ui.ImGui.popStyleColor(3);
-    return engine.ui.ImGui.buttonEx(label, width, 0.0);
+    engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, 10.0);
+    defer {
+        engine.ui.ImGui.popStyleVar(1);
+        engine.ui.ImGui.popStyleColor(3);
+    }
+    return engine.ui.ImGui.buttonEx(label, width, 30.0);
 }
 
 fn setPlaybackState(state: *EditorState, layer_context: *engine.core.LayerContext, playback_state: PlaybackState) void {
@@ -138,7 +142,7 @@ pub fn drawGlobalToolbarWindow(state: *EditorState, layer_context: *engine.core.
         layer_context,
         "toolbar_settings",
         ui_icons.paths.toolbar.settings,
-        38.0,
+        20.0,
         .{ 235, 239, 245, 255 },
         if (state.render_settings_open) ui_icons.palettes.toolbar_active else ui_icons.palettes.toolbar_idle,
     )) {
@@ -285,6 +289,7 @@ pub fn drawStatusBarWindow(state: *EditorState, layer_context: *engine.core.Laye
         .local => state.text(.local_space),
         .world => state.text(.world_space),
     };
+    const backend_text = engine.render.graphicsApiName(layer_context.renderer.backendApi());
     const memory_mb = @as(f32, @floatFromInt(utils.estimatedWorldMemoryBytes(layer_context.world))) / (1024.0 * 1024.0);
 
     var path_buffer: [320]u8 = undefined;
@@ -296,12 +301,14 @@ pub fn drawStatusBarWindow(state: *EditorState, layer_context: *engine.core.Laye
     var status_buffer: [768]u8 = undefined;
     const status_text = try std.fmt.bufPrint(
         &status_buffer,
-        "{s}: {d}    {s}: {d:.1}    {s}: {d:.1} MB    {s}: {s}    {s}: {s}    {s}: {s}    {s}: {s}    {s}: {s}",
+        "{s}: {d}    {s}: {d:.1}    {s}: {s}    {s}: {d:.1} MB    {s}: {s}    {s}: {s}    {s}: {s}    {s}: {s}    {s}: {s}",
         .{
             state.text(.selection_count),
             selection_count,
             state.text(.fps),
             fps,
+            state.text(.backend),
+            backend_text,
             state.text(.memory),
             memory_mb,
             state.text(.selected_path),
@@ -364,7 +371,6 @@ pub fn drawEditorUi(state: *EditorState, layer_context: *engine.core.LayerContex
     try menu_bar.drawMenuBar(state, layer_context);
     try drawGlobalToolbarWindow(state, layer_context);
     try drawViewportWindow(state, layer_context);
-    try drawStatsWindow(state, layer_context);
     try drawStatusBarWindow(state, layer_context);
     try scene_hierarchy.drawSceneWindow(state, layer_context);
     try inspector.drawInspectorWindow(state, layer_context);
@@ -394,41 +400,41 @@ fn drawViewportOverlayControls(state: *EditorState, layer_context: *engine.core.
     const window_size = engine.ui.ImGui.windowSize();
 
     engine.ui.ImGui.setCursorPos(.{ 18.0, 14.0 });
-    if (engine.ui.ImGui.buttonEx(state.text(.perspective_view), 92.0, 0.0)) {
+    if (drawOverlayActionButton(state.text(.perspective_view), 88.0)) {
         camera.setViewPreset(state, layer_context, .perspective);
     }
     engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.buttonEx(state.text(.top_view), 72.0, 0.0)) {
+    if (drawOverlayActionButton(state.text(.top_view), 58.0)) {
         camera.setViewPreset(state, layer_context, .top);
     }
     engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.buttonEx(state.text(.side_view), 72.0, 0.0)) {
+    if (drawOverlayActionButton(state.text(.side_view), 58.0)) {
         camera.setViewPreset(state, layer_context, .side);
     }
 
-    engine.ui.ImGui.setCursorPos(.{ 18.0, 50.0 });
-    if (drawOverlayToggleButton(state, state.text(.textured), state.viewport_render_mode == .textured, 94.0)) {
+    engine.ui.ImGui.setCursorPos(.{ 18.0, 48.0 });
+    if (drawOverlayToggleButton(state.text(.textured), state.viewport_render_mode == .textured, 82.0)) {
         state.viewport_render_mode = .textured;
     }
     engine.ui.ImGui.sameLine();
-    if (drawOverlayToggleButton(state, state.text(.wireframe), state.viewport_render_mode == .wireframe, 94.0)) {
+    if (drawOverlayToggleButton(state.text(.wireframe), state.viewport_render_mode == .wireframe, 82.0)) {
         state.viewport_render_mode = .wireframe;
     }
     engine.ui.ImGui.sameLine();
-    if (drawOverlayToggleButton(state, state.text(.unlit), state.viewport_render_mode == .unlit, 88.0)) {
+    if (drawOverlayToggleButton(state.text(.unlit), state.viewport_render_mode == .unlit, 74.0)) {
         state.viewport_render_mode = .unlit;
     }
 
-    engine.ui.ImGui.setCursorPos(.{ 18.0, 86.0 });
-    if (drawOverlayToggleButton(state, state.text(.show_grid), state.viewport_show_grid, 94.0)) {
+    engine.ui.ImGui.setCursorPos(.{ 18.0, 82.0 });
+    if (drawOverlayToggleButton(state.text(.show_grid), state.viewport_show_grid, 74.0)) {
         state.viewport_show_grid = !state.viewport_show_grid;
     }
     engine.ui.ImGui.sameLine();
-    if (drawOverlayToggleButton(state, state.text(.show_bones), state.viewport_show_bones, 104.0)) {
+    if (drawOverlayToggleButton(state.text(.show_bones), state.viewport_show_bones, 84.0)) {
         state.viewport_show_bones = !state.viewport_show_bones;
     }
     engine.ui.ImGui.sameLine();
-    if (drawOverlayToggleButton(state, state.text(.show_collision), state.viewport_show_collision, 118.0)) {
+    if (drawOverlayToggleButton(state.text(.show_collision), state.viewport_show_collision, 96.0)) {
         state.viewport_show_collision = !state.viewport_show_collision;
     }
 
@@ -436,47 +442,75 @@ fn drawViewportOverlayControls(state: *EditorState, layer_context: *engine.core.
 }
 
 fn drawNavigationGizmo(state: *EditorState, layer_context: *engine.core.LayerContext, window_width: f32) !void {
-    const right = @max(window_width - 126.0, 16.0);
+    const button = 24.0;
+    const gap = 4.0;
+    const right = @max(window_width - 108.0, 16.0);
     const top = 16.0;
-    const button = 28.0;
 
     engine.ui.ImGui.setCursorPos(.{ right + button, top });
-    if (engine.ui.ImGui.buttonEx("+Y", button, button)) {
+    if (drawOverlayNavButton("+Y", button)) {
         camera.lookAlongWorldAxis(state, layer_context, .{ 0.0, -1.0, 0.0 });
     }
 
-    engine.ui.ImGui.setCursorPos(.{ right, top + button + 6.0 });
-    if (engine.ui.ImGui.buttonEx("-X", button, button)) {
+    engine.ui.ImGui.setCursorPos(.{ right, top + button + gap });
+    if (drawOverlayNavButton("-X", button)) {
         camera.lookAlongWorldAxis(state, layer_context, .{ 1.0, 0.0, 0.0 });
     }
     engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.buttonEx("+Z", button, button)) {
+    if (drawOverlayNavButton("+Z", button)) {
         camera.lookAlongWorldAxis(state, layer_context, .{ 0.0, 0.0, -1.0 });
     }
     engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.buttonEx("+X", button, button)) {
+    if (drawOverlayNavButton("+X", button)) {
         camera.lookAlongWorldAxis(state, layer_context, .{ -1.0, 0.0, 0.0 });
     }
 
-    engine.ui.ImGui.setCursorPos(.{ right + button, top + (button + 6.0) * 2.0 });
-    if (engine.ui.ImGui.buttonEx("-Y", button, button)) {
+    engine.ui.ImGui.setCursorPos(.{ right + button, top + (button + gap) * 2.0 });
+    if (drawOverlayNavButton("-Y", button)) {
         camera.lookAlongWorldAxis(state, layer_context, .{ 0.0, 1.0, 0.0 });
     }
 
-    engine.ui.ImGui.setCursorPos(.{ right + button, top + (button + 6.0) * 3.0 });
-    if (engine.ui.ImGui.buttonEx("-Z", button, button)) {
+    engine.ui.ImGui.setCursorPos(.{ right + button, top + (button + gap) * 3.0 });
+    if (drawOverlayNavButton("-Z", button)) {
         camera.lookAlongWorldAxis(state, layer_context, .{ 0.0, 0.0, 1.0 });
     }
 }
 
-fn drawOverlayToggleButton(state: *EditorState, label: []const u8, active: bool, width: f32) bool {
-    const palette = if (active) ui_icons.palettes.toolbar_active else ui_icons.palettes.toolbar_idle;
-    engine.ui.ImGui.pushStyleColor(.button, palette.button);
-    engine.ui.ImGui.pushStyleColor(.button_hovered, palette.hovered);
-    engine.ui.ImGui.pushStyleColor(.button_active, palette.active);
-    defer engine.ui.ImGui.popStyleColor(3);
-    _ = state;
-    return engine.ui.ImGui.buttonEx(label, width, 0.0);
+fn drawOverlayActionButton(label: []const u8, width: f32) bool {
+    return drawOverlayButton(label, false, width, 26.0);
+}
+
+fn drawOverlayToggleButton(label: []const u8, active: bool, width: f32) bool {
+    return drawOverlayButton(label, active, width, 26.0);
+}
+
+fn drawOverlayNavButton(label: []const u8, size: f32) bool {
+    return drawOverlayButton(label, false, size, size);
+}
+
+fn drawOverlayButton(label: []const u8, active: bool, width: f32, height: f32) bool {
+    const palette = if (active)
+        [3][4]f32{
+            .{ 0.25, 0.43, 0.66, 0.86 },
+            .{ 0.30, 0.50, 0.74, 0.94 },
+            .{ 0.22, 0.37, 0.56, 0.98 },
+        }
+    else
+        [3][4]f32{
+            .{ 0.20, 0.20, 0.21, 0.40 },
+            .{ 0.24, 0.25, 0.27, 0.58 },
+            .{ 0.28, 0.29, 0.31, 0.70 },
+        };
+    engine.ui.ImGui.pushStyleColor(.button, palette[0]);
+    engine.ui.ImGui.pushStyleColor(.button_hovered, palette[1]);
+    engine.ui.ImGui.pushStyleColor(.button_active, palette[2]);
+    engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, 13.0);
+    engine.ui.ImGui.pushStyleVarVec2(.frame_padding, .{ 10.0, 5.0 });
+    defer {
+        engine.ui.ImGui.popStyleVar(2);
+        engine.ui.ImGui.popStyleColor(3);
+    }
+    return engine.ui.ImGui.buttonEx(label, width, height);
 }
 
 fn hierarchyCategoryLabel(state: *const EditorState) []const u8 {

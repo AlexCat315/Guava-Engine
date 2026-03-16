@@ -13,6 +13,10 @@ const EditRowResult = struct {
     committed: bool = false,
 };
 
+const axis_x_color = [4]f32{ 0.88, 0.43, 0.43, 1.0 };
+const axis_y_color = [4]f32{ 0.48, 0.81, 0.56, 1.0 };
+const axis_z_color = [4]f32{ 0.42, 0.63, 0.94, 1.0 };
+
 pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     var title_buffer: [80]u8 = undefined;
     const title = try state.windowLabel(&title_buffer, .details, "details_panel");
@@ -79,13 +83,15 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
             .world => state.text(.world_space),
         });
 
-        if (engine.ui.ImGui.beginTable("transform_grid", 4)) {
+        if (engine.ui.ImGui.beginTable("transform_grid", 7)) {
             defer engine.ui.ImGui.endTable();
-            engine.ui.ImGui.tableSetupColumn("##transform_label", false, 72.0);
-            engine.ui.ImGui.tableSetupColumn("X", false, 1.0);
-            engine.ui.ImGui.tableSetupColumn("Y", false, 1.0);
-            engine.ui.ImGui.tableSetupColumn("Z", false, 1.0);
-            engine.ui.ImGui.tableHeadersRow();
+            engine.ui.ImGui.tableSetupColumn("##transform_label", false, 44.0);
+            engine.ui.ImGui.tableSetupColumn("##transform_x_axis", false, 18.0);
+            engine.ui.ImGui.tableSetupColumn("##transform_x_value", true, 1.0);
+            engine.ui.ImGui.tableSetupColumn("##transform_y_axis", false, 18.0);
+            engine.ui.ImGui.tableSetupColumn("##transform_y_value", true, 1.0);
+            engine.ui.ImGui.tableSetupColumn("##transform_z_axis", false, 18.0);
+            engine.ui.ImGui.tableSetupColumn("##transform_z_value", true, 1.0);
 
             var editable_translation = if (state.transform_space == .world) world_transform.translation else entity.transform.translation;
             const translation_result = try drawTransformTableRow("Pos", "translation", &editable_translation, 0.05, -500.0, 500.0);
@@ -529,7 +535,11 @@ fn drawTransformTableRow(
 
     engine.ui.ImGui.tableNextRow();
     engine.ui.ImGui.tableNextColumn();
+    engine.ui.ImGui.alignTextToFramePadding();
     engine.ui.ImGui.text(row_label);
+
+    engine.ui.ImGui.tableNextColumn();
+    drawAxisPrefixCell("X", axis_x_color);
 
     engine.ui.ImGui.tableNextColumn();
     var x_label_buffer: [32]u8 = undefined;
@@ -541,6 +551,9 @@ fn drawTransformTableRow(
     result.committed = result.committed or engine.ui.ImGui.isItemDeactivatedAfterEdit();
 
     engine.ui.ImGui.tableNextColumn();
+    drawAxisPrefixCell("Y", axis_y_color);
+
+    engine.ui.ImGui.tableNextColumn();
     var y_label_buffer: [32]u8 = undefined;
     const y_label = try std.fmt.bufPrint(&y_label_buffer, "##{s}_y", .{id_prefix});
     engine.ui.ImGui.setNextItemWidth(-1.0);
@@ -548,6 +561,9 @@ fn drawTransformTableRow(
         result.changed = true;
     }
     result.committed = result.committed or engine.ui.ImGui.isItemDeactivatedAfterEdit();
+
+    engine.ui.ImGui.tableNextColumn();
+    drawAxisPrefixCell("Z", axis_z_color);
 
     engine.ui.ImGui.tableNextColumn();
     var z_label_buffer: [32]u8 = undefined;
@@ -559,6 +575,13 @@ fn drawTransformTableRow(
     result.committed = result.committed or engine.ui.ImGui.isItemDeactivatedAfterEdit();
 
     return result;
+}
+
+fn drawAxisPrefixCell(label: []const u8, color: [4]f32) void {
+    engine.ui.ImGui.alignTextToFramePadding();
+    engine.ui.ImGui.pushStyleColor(.text, color);
+    defer engine.ui.ImGui.popStyleColor(1);
+    engine.ui.ImGui.text(label);
 }
 
 pub fn setPrimitiveMeshComponent(

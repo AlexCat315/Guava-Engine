@@ -50,6 +50,21 @@ ImGuiCol to_imgui_style_color(uint32_t slot) {
     }
 }
 
+ImGuiStyleVar to_imgui_style_var(uint32_t slot) {
+    switch (slot) {
+        case GUAVA_IMGUI_STYLE_VAR_ALPHA:
+            return ImGuiStyleVar_Alpha;
+        case GUAVA_IMGUI_STYLE_VAR_FRAME_PADDING:
+            return ImGuiStyleVar_FramePadding;
+        case GUAVA_IMGUI_STYLE_VAR_ITEM_SPACING:
+            return ImGuiStyleVar_ItemSpacing;
+        case GUAVA_IMGUI_STYLE_VAR_FRAME_ROUNDING:
+            return ImGuiStyleVar_FrameRounding;
+        default:
+            return ImGuiStyleVar_Alpha;
+    }
+}
+
 std::string first_existing_path(std::initializer_list<const char*> candidates) {
     for (const char* candidate : candidates) {
         if (candidate == nullptr || candidate[0] == '\0') {
@@ -428,13 +443,14 @@ extern "C" void guava_imgui_reset_default_layout(void) {
     ImGuiID dock_left = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Left, 0.15f, nullptr, &dock_main);
     ImGuiID dock_right = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Right, 0.26f, nullptr, &dock_main);
     ImGuiID dock_top = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Up, 0.055f, nullptr, &dock_main);
-    ImGuiID dock_right_bottom = ImGui::DockBuilderSplitNode(dock_right, ImGuiDir_Down, 0.28f, nullptr, &dock_right);
+    if (ImGuiDockNode* top_node = ImGui::DockBuilderGetNode(dock_top)) {
+        top_node->LocalFlags |= ImGuiDockNodeFlags_NoTabBar | ImGuiDockNodeFlags_NoWindowMenuButton | ImGuiDockNodeFlags_NoCloseButton;
+    }
 
     ImGui::DockBuilderDockWindow("Global Toolbar###global_toolbar_panel", dock_top);
     ImGui::DockBuilderDockWindow("Viewport###viewport_panel", dock_main);
     ImGui::DockBuilderDockWindow("Scene###scene_panel", dock_left);
     ImGui::DockBuilderDockWindow("Details###details_panel", dock_right);
-    ImGui::DockBuilderDockWindow("Stats###stats_panel", dock_right_bottom);
     ImGui::DockBuilderDockWindow("Content Browser###content_browser_panel", dock_bottom);
 
     ImGui::DockBuilderFinish(g_dockspace_id);
@@ -707,6 +723,27 @@ extern "C" void guava_imgui_pop_style_color(int32_t count) {
     ImGui::PopStyleColor(count);
 }
 
+extern "C" void guava_imgui_push_style_var_float(uint32_t slot, float value) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::PushStyleVar(to_imgui_style_var(slot), value);
+}
+
+extern "C" void guava_imgui_push_style_var_vec2(uint32_t slot, float x, float y) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::PushStyleVar(to_imgui_style_var(slot), ImVec2(x, y));
+}
+
+extern "C" void guava_imgui_pop_style_var(int32_t count) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::PopStyleVar(count);
+}
+
 extern "C" bool guava_imgui_begin_child(const char* id, size_t id_len, float width, float height, bool border) {
     if (!g_imgui_initialized) {
         return false;
@@ -853,8 +890,9 @@ extern "C" bool guava_imgui_tree_node_entity(uint64_t id, const char* label, siz
         ImGui::GetWindowDrawList()->AddImage(reinterpret_cast<ImTextureID>(icon_texture), icon_min, icon_max);
         text_x += draw_size + 6.0f;
     }
+    const float text_y = rect.Min.y + (rect.GetHeight() - ImGui::GetFontSize()) * 0.5f;
     ImGui::GetWindowDrawList()->AddText(
-        ImVec2(text_x, rect.Min.y + style.FramePadding.y),
+        ImVec2(text_x, text_y),
         ImGui::GetColorU32(ImGuiCol_Text),
         owned_label.c_str()
     );
@@ -1034,6 +1072,20 @@ extern "C" void guava_imgui_set_cursor_pos(float x, float y) {
     ImGui::SetCursorPos(ImVec2(x, y));
 }
 
+extern "C" void guava_imgui_set_cursor_pos_y(float y) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::SetCursorPosY(y);
+}
+
+extern "C" void guava_imgui_align_text_to_frame_padding(void) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::AlignTextToFramePadding();
+}
+
 extern "C" void guava_imgui_get_window_size(float out_value[2]) {
     if (!g_imgui_initialized) {
         out_value[0] = 0.0f;
@@ -1043,6 +1095,13 @@ extern "C" void guava_imgui_get_window_size(float out_value[2]) {
     const ImVec2 value = ImGui::GetWindowSize();
     out_value[0] = value.x;
     out_value[1] = value.y;
+}
+
+extern "C" float guava_imgui_get_frame_height(void) {
+    if (!g_imgui_initialized) {
+        return 0.0f;
+    }
+    return ImGui::GetFrameHeight();
 }
 
 extern "C" float guava_imgui_get_time(void) {

@@ -36,24 +36,24 @@ pub const ButtonPalette = struct {
 
 pub const palettes = struct {
     pub const toolbar_idle = ButtonPalette{
-        .button = .{ 0.24, 0.26, 0.30, 1.0 },
-        .hovered = .{ 0.31, 0.34, 0.39, 1.0 },
-        .active = .{ 0.35, 0.39, 0.45, 1.0 },
+        .button = .{ 0.18, 0.20, 0.23, 0.66 },
+        .hovered = .{ 0.24, 0.27, 0.31, 0.82 },
+        .active = .{ 0.22, 0.25, 0.29, 0.92 },
     };
     pub const toolbar_active = ButtonPalette{
-        .button = .{ 0.21, 0.40, 0.67, 1.0 },
-        .hovered = .{ 0.26, 0.48, 0.78, 1.0 },
-        .active = .{ 0.18, 0.34, 0.58, 1.0 },
+        .button = .{ 0.24, 0.41, 0.60, 0.84 },
+        .hovered = .{ 0.28, 0.48, 0.69, 0.92 },
+        .active = .{ 0.21, 0.35, 0.52, 0.96 },
     };
     pub const status_on = ButtonPalette{
-        .button = .{ 0.16, 0.34, 0.24, 1.0 },
-        .hovered = .{ 0.20, 0.42, 0.29, 1.0 },
-        .active = .{ 0.14, 0.28, 0.20, 1.0 },
+        .button = .{ 0.20, 0.28, 0.31, 0.64 },
+        .hovered = .{ 0.24, 0.34, 0.39, 0.82 },
+        .active = .{ 0.18, 0.26, 0.30, 0.92 },
     };
     pub const status_off = ButtonPalette{
-        .button = .{ 0.23, 0.24, 0.27, 1.0 },
-        .hovered = .{ 0.29, 0.31, 0.35, 1.0 },
-        .active = .{ 0.19, 0.20, 0.23, 1.0 },
+        .button = .{ 0.17, 0.18, 0.20, 0.52 },
+        .hovered = .{ 0.22, 0.24, 0.28, 0.72 },
+        .active = .{ 0.18, 0.20, 0.23, 0.84 },
     };
 };
 
@@ -91,9 +91,15 @@ pub fn drawIconButton(
     palette: ButtonPalette,
 ) !bool {
     const texture = try ensureTintedIconTexture(state, layer_context, path, size, tint);
+    const padding = if (size >= 28.0) [2]f32{ 6.0, 6.0 } else [2]f32{ 3.0, 3.0 };
     engine.ui.ImGui.pushStyleColor(.button, palette.button);
     engine.ui.ImGui.pushStyleColor(.button_hovered, palette.hovered);
     engine.ui.ImGui.pushStyleColor(.button_active, palette.active);
-    defer engine.ui.ImGui.popStyleColor(3);
+    engine.ui.ImGui.pushStyleVarVec2(.frame_padding, padding);
+    engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, if (size >= 28.0) 10.0 else 7.0);
+    defer {
+        engine.ui.ImGui.popStyleVar(2);
+        engine.ui.ImGui.popStyleColor(3);
+    }
     return engine.ui.ImGui.imageButton(id, texture, size, size, .{ 0.0, 0.0, 0.0, 0.0 }, .{ 1.0, 1.0, 1.0, 1.0 });
 }

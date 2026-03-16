@@ -58,6 +58,7 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
     const is_selected = utils.isEntitySelected(state, layer_context, entity_id);
     const is_locked = utils.isEntitySelectionLocked(state, entity_id);
     const leaf = !utils.hasVisibleChildren(state, layer_context.world, entity_id);
+    const status_icon_size = 16.0;
     const icon_texture = try ui_icons.ensureTintedIconTexture(
         state,
         layer_context,
@@ -95,8 +96,8 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
         layer_context,
         visibility_button_id,
         if (entity.visible) ui_icons.paths.hierarchy.eye else ui_icons.paths.hierarchy.eye_off,
-        18.0,
-        if (entity.visible) .{ 208, 240, 224, 255 } else .{ 164, 171, 183, 255 },
+        status_icon_size,
+        if (entity.visible) .{ 176, 203, 224, 255 } else .{ 145, 151, 162, 255 },
         if (entity.visible) ui_icons.palettes.status_on else ui_icons.palettes.status_off,
     )) {
         entity.visible = !entity.visible;
@@ -111,9 +112,9 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
         layer_context,
         lock_button_id,
         if (is_locked) ui_icons.paths.hierarchy.lock else ui_icons.paths.hierarchy.unlock,
-        18.0,
-        if (is_locked) .{ 255, 220, 144, 255 } else .{ 169, 176, 189, 255 },
-        if (is_locked) ui_icons.palettes.toolbar_active else ui_icons.palettes.status_off,
+        status_icon_size,
+        if (is_locked) .{ 170, 203, 188, 255 } else .{ 148, 154, 166, 255 },
+        if (is_locked) ui_icons.palettes.status_on else ui_icons.palettes.status_off,
     )) {
         const locked_now = try utils.toggleEntitySelectionLocked(state, entity_id);
         if (locked_now and is_selected) {

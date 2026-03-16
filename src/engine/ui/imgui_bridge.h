@@ -37,6 +37,13 @@ enum {
     GUAVA_IMGUI_STYLE_COLOR_BUTTON_ACTIVE = 3,
 };
 
+enum {
+    GUAVA_IMGUI_STYLE_VAR_ALPHA = 0,
+    GUAVA_IMGUI_STYLE_VAR_FRAME_PADDING = 1,
+    GUAVA_IMGUI_STYLE_VAR_ITEM_SPACING = 2,
+    GUAVA_IMGUI_STYLE_VAR_FRAME_ROUNDING = 3,
+};
+
 bool guava_imgui_init(SDL_Window* window, SDL_GPUDevice* device, SDL_GPUTextureFormat color_target_format);
 void guava_imgui_shutdown(void);
 void guava_imgui_process_event(const SDL_Event* event);
@@ -83,6 +90,9 @@ void guava_imgui_set_next_window_pos(float x, float y);
 void guava_imgui_set_next_window_size(float width, float height);
 void guava_imgui_push_style_color(uint32_t slot, float r, float g, float b, float a);
 void guava_imgui_pop_style_color(int32_t count);
+void guava_imgui_push_style_var_float(uint32_t slot, float value);
+void guava_imgui_push_style_var_vec2(uint32_t slot, float x, float y);
+void guava_imgui_pop_style_var(int32_t count);
 bool guava_imgui_begin_child(const char* id, size_t id_len, float width, float height, bool border);
 void guava_imgui_end_child(void);
 bool guava_imgui_begin_table(const char* id, size_t id_len, int32_t columns);
@@ -114,7 +124,10 @@ bool guava_imgui_is_window_focused(void);
 void guava_imgui_get_content_region_avail(float out_value[2]);
 void guava_imgui_get_cursor_screen_pos(float out_value[2]);
 void guava_imgui_set_cursor_pos(float x, float y);
+void guava_imgui_set_cursor_pos_y(float y);
+void guava_imgui_align_text_to_frame_padding(void);
 void guava_imgui_get_window_size(float out_value[2]);
+float guava_imgui_get_frame_height(void);
 float guava_imgui_get_time(void);
 void guava_imgui_set_scroll_here_y(float center_y_ratio);
 void guava_imgui_image(SDL_GPUTexture* texture, float width, float height);
