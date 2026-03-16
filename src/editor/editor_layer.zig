@@ -57,6 +57,8 @@ pub const EditorLayer = struct {
     max_snapshots: usize = 64,
     asset_entries: std.ArrayList(AssetEntry) = .empty,
     selected_asset_index: ?usize = null,
+    scene_filter_buffer: [128]u8 = [_]u8{0} ** 128,
+    asset_filter_buffer: [128]u8 = [_]u8{0} ** 128,
 
     pub fn asLayer(self: *EditorLayer) engine.core.Layer {
         return .{
@@ -1051,6 +1053,7 @@ pub const EditorLayer = struct {
         _ = engine.ui.ImGui.beginWindow("Scene");
         defer engine.ui.ImGui.endWindow();
 
+        _ = engine.ui.ImGui.inputText("Scene Filter", self.scene_filter_buffer[0..]);
         if (engine.ui.ImGui.button("Scene Root") and layer_context.renderer.selectedEntities().len > 0) {
             try self.unparentSelection(layer_context);
         }
@@ -1062,6 +1065,9 @@ pub const EditorLayer = struct {
 
         for (layer_context.world.entities.items) |entity| {
             if (entity.editor_only or entity.parent != null) {
+                continue;
+            }
+            if (!self.shouldShowEntityInSceneTree(layer_context.world, entity.id)) {
                 continue;
             }
             try self.drawHierarchyNode(layer_context, entity.id);
@@ -1096,6 +1102,9 @@ pub const EditorLayer = struct {
         if (!leaf and is_open) {
             for (layer_context.world.entities.items) |child| {
                 if (child.editor_only or child.parent != entity_id) {
+                    continue;
+                }
+                if (!self.shouldShowEntityInSceneTree(layer_context.world, child.id)) {
                     continue;
                 }
                 try self.drawHierarchyNode(layer_context, child.id);
@@ -1429,6 +1438,9 @@ pub const EditorLayer = struct {
             engine.ui.ImGui.labelText("Type", assetKindLabel(entry.kind));
             engine.ui.ImGui.labelText("Path", entry.path);
 
+            if (self.selectedAssetCanLoadScene() and engine.ui.ImGui.button("Save Over Selected Scene")) {
+                self.saveScenePath(layer_context, entry.path);
+            }
             if (self.selectedAssetCanLoadScene() and engine.ui.ImGui.button("Load Selected Scene")) {
                 try self.loadScenePath(layer_context, entry.path);
                 return;
@@ -1441,6 +1453,7 @@ pub const EditorLayer = struct {
         }
 
         engine.ui.ImGui.separator();
+        _ = engine.ui.ImGui.inputText("Asset Filter", self.asset_filter_buffer[0..]);
         try self.drawAssetGroup("Scenes", .scene);
         try self.drawAssetGroup("Models", .model);
         try self.drawAssetGroup("Textures", .texture);
@@ -1454,6 +1467,9 @@ pub const EditorLayer = struct {
 
         for (self.asset_entries.items, 0..) |entry, index| {
             if (entry.kind != kind) {
+                continue;
+            }
+            if (!self.assetMatchesFilter(entry)) {
                 continue;
             }
 
@@ -1481,6 +1497,32 @@ pub const EditorLayer = struct {
         return false;
     }
 
+    fn shouldShowEntityInSceneTree(self: *const EditorLayer, world: *const engine.scene.World, entity_id: engine.scene.EntityId) bool {
+        const filter = zeroTerminatedSlice(self.scene_filter_buffer[0..]);
+        if (filter.len == 0) {
+            return true;
+        }
+        return self.entityMatchesFilterRecursive(world, entity_id, filter);
+    }
+
+    fn entityMatchesFilterRecursive(
+        self: *const EditorLayer,
+        world: *const engine.scene.World,
+        entity_id: engine.scene.EntityId,
+        filter: []const u8,
+    ) bool {
+        const entity = world.getEntityConst(entity_id) orelse return false;
+        if (containsAsciiInsensitive(entity.name, filter)) {
+            return true;
+        }
+        for (world.entities.items) |child| {
+            if (!child.editor_only and child.parent == entity_id and self.entityMatchesFilterRecursive(world, child.id, filter)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     fn isEntitySelected(self: *const EditorLayer, layer_context: *const engine.core.LayerContext, entity_id: engine.scene.EntityId) bool {
         _ = self;
         for (layer_context.renderer.selectedEntities()) |selected_id| {
@@ -1489,6 +1531,14 @@ pub const EditorLayer = struct {
             }
         }
         return false;
+    }
+
+    fn assetMatchesFilter(self: *const EditorLayer, entry: AssetEntry) bool {
+        const filter = zeroTerminatedSlice(self.asset_filter_buffer[0..]);
+        if (filter.len == 0) {
+            return true;
+        }
+        return containsAsciiInsensitive(entry.name, filter) or containsAsciiInsensitive(entry.path, filter);
     }
 
     fn syncInspectorNameBuffer(self: *EditorLayer, layer_context: *engine.core.LayerContext) void {
@@ -1555,6 +1605,30 @@ fn lessThanAssetEntry(_: void, lhs: AssetEntry, rhs: AssetEntry) bool {
         return @intFromEnum(lhs.kind) < @intFromEnum(rhs.kind);
     }
     return std.mem.lessThan(u8, lhs.path, rhs.path);
+}
+
+fn containsAsciiInsensitive(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) {
+        return true;
+    }
+    if (needle.len > haystack.len) {
+        return false;
+    }
+
+    var start: usize = 0;
+    while (start + needle.len <= haystack.len) : (start += 1) {
+        var matches = true;
+        for (needle, 0..) |needle_char, offset| {
+            if (std.ascii.toLower(haystack[start + offset]) != std.ascii.toLower(needle_char)) {
+                matches = false;
+                break;
+            }
+        }
+        if (matches) {
+            return true;
+        }
+    }
+    return false;
 }
 
 fn zeroTerminatedSlice(buffer: []const u8) []const u8 {
