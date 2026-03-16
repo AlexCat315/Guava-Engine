@@ -156,6 +156,7 @@ pub const EditorState = struct {
     hierarchy_filter_buffer: [128]u8 = [_]u8{0} ** 128,
     hierarchy_category: HierarchyCategory = .all,
     place_actor_category: PlaceActorCategory = .basics,
+    place_actor_filter_buffer: [128]u8 = [_]u8{0} ** 128,
     asset_filter_buffer: [128]u8 = [_]u8{0} ** 128,
     asset_directory_buffer: [256]u8 = [_]u8{0} ** 256,
     asset_thumbnail_size: f32 = 104.0,
