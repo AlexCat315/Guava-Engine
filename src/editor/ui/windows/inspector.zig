@@ -97,8 +97,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
         engine.ui.ImGui.labelText(state.text(.entity_id), entity_id_text);
 
         engine.ui.ImGui.dummy(0.0, 2.0);
-        engine.ui.ImGui.setNextItemWidth(-1.0);
-        if (engine.ui.ImGui.inputText(state.text(.name), state.inspector_name_buffer[0..])) {
+        if (drawLabeledInputText(state.text(.name), "##inspector_entity_name", state.inspector_name_buffer[0..], 140.0)) {
             if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
                 const next_name = utils.zeroTerminatedSlice(state.inspector_name_buffer[0..]);
                 if (next_name.len > 0) {
@@ -986,6 +985,17 @@ fn drawLabeledFloatControl(
     _ = drawResponsivePropertyLabel(label, 104.0);
     engine.ui.ImGui.setNextItemWidth(-1.0);
     return engine.ui.ImGui.dragFloat(widget_id, value, speed, min_value, max_value);
+}
+
+fn drawLabeledInputText(
+    label: []const u8,
+    widget_id: []const u8,
+    buffer: []u8,
+    min_control_width: f32,
+) bool {
+    _ = drawResponsivePropertyLabel(label, min_control_width);
+    engine.ui.ImGui.setNextItemWidth(-1.0);
+    return engine.ui.ImGui.inputText(widget_id, buffer);
 }
 
 fn drawLabeledFloat3Control(
