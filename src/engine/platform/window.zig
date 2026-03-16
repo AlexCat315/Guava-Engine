@@ -274,6 +274,7 @@ fn keyFromScancode(scancode: c_uint) ?input_mod.Key {
         sdl.SDL_SCANCODE_2 => .two,
         sdl.SDL_SCANCODE_3 => .three,
         sdl.SDL_SCANCODE_L => .l,
+        sdl.SDL_SCANCODE_O => .o,
         sdl.SDL_SCANCODE_X => .x,
         sdl.SDL_SCANCODE_Y => .y,
         sdl.SDL_SCANCODE_Z => .z,

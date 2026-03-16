@@ -175,6 +175,18 @@ pub const Renderer = struct {
         return self.selection_history.currentSelection();
     }
 
+    pub fn resetSceneState(self: *Renderer) !void {
+        self.releaseInFlightSelectionBatches();
+        self.in_flight_selection_batches = .empty;
+        self.pending_selection_readbacks.deinit(self.allocator);
+        self.pending_selection_readbacks = .empty;
+        self.selection_history.deinit();
+        self.selection_history = SelectionHistory.init(self.allocator, 64);
+        self.selection_seeded = false;
+        self.scene_cache.deinit(&self.rhi);
+        self.scene_cache = try mesh_pass_mod.MeshSceneCache.init(self.allocator, &self.rhi);
+    }
+
     pub fn replaceSelection(self: *Renderer, entity: ?scene_mod.EntityId) !void {
         _ = try self.selection_history.applyPick(entity, .replace);
         self.selection_seeded = true;

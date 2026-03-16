@@ -1,6 +1,8 @@
 const std = @import("std");
 const engine = @import("guava");
 
+const autosave_path = "assets/scenes/editor_autosave.guava_scene";
+
 const ManipulationMode = enum {
     none,
     translate,
@@ -16,6 +18,7 @@ const AxisConstraint = enum {
 };
 
 pub const EditorLayer = struct {
+    allocator: ?std.mem.Allocator = null,
     editor_camera: ?engine.scene.EntityId = null,
     scene_camera: ?engine.scene.EntityId = null,
     editor_camera_active: bool = true,
@@ -33,6 +36,9 @@ pub const EditorLayer = struct {
     manipulation_axis: AxisConstraint = .free,
     manipulation_entity: ?engine.scene.EntityId = null,
     manipulation_origin: engine.scene.Transform = .{},
+    snapshot_history: std.ArrayList([]u8) = .empty,
+    snapshot_cursor: usize = 0,
+    max_snapshots: usize = 64,
 
     pub fn asLayer(self: *EditorLayer) engine.core.Layer {
         return .{
@@ -40,6 +46,7 @@ pub const EditorLayer = struct {
             .context = self,
             .hooks = .{
                 .on_attach = onAttach,
+                .on_detach = onDetach,
                 .on_update = onUpdate,
             },
         };
@@ -47,19 +54,16 @@ pub const EditorLayer = struct {
 
     fn onAttach(context: *anyopaque, layer_context: *engine.core.LayerContext) !void {
         const self: *EditorLayer = @ptrCast(@alignCast(context));
+        self.allocator = layer_context.world.allocator;
         self.scene_camera = layer_context.world.primaryCameraEntity();
-        self.editor_camera = try layer_context.world.createEntity(.{
-            .name = "EditorCamera",
-            .camera = .{
-                .is_primary = true,
-            },
-            .transform = .{
-                .translation = .{ 0.0, 2.4, 8.0 },
-                .rotation_euler = .{ self.pitch, self.yaw, 0.0 },
-            },
-        });
-        _ = layer_context.world.setPrimaryCamera(self.editor_camera.?);
+        try self.createEditorCamera(layer_context);
+        try self.resetSnapshotHistory(layer_context);
         try self.refreshWindowTitle(layer_context);
+    }
+
+    fn onDetach(context: *anyopaque) void {
+        const self: *EditorLayer = @ptrCast(@alignCast(context));
+        self.clearSnapshotHistory();
     }
 
     fn onUpdate(context: *anyopaque, layer_context: *engine.core.LayerContext) !void {
@@ -86,6 +90,15 @@ pub const EditorLayer = struct {
     fn handleEditingShortcuts(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
         const input = layer_context.input;
 
+        if (input.modifiers.ctrl and input.wasKeyPressed(.z)) {
+            try self.undo(layer_context);
+            return;
+        }
+        if (input.modifiers.ctrl and input.wasKeyPressed(.y)) {
+            try self.redo(layer_context);
+            return;
+        }
+
         if (self.manipulation_mode != .none) {
             if (input.wasKeyPressed(.x)) {
                 self.manipulation_axis = .x;
@@ -98,6 +111,7 @@ pub const EditorLayer = struct {
             }
             if (input.wasKeyPressed(.space)) {
                 self.endManipulation();
+                try self.captureSnapshot(layer_context);
             }
             if (input.wasKeyPressed(.escape)) {
                 self.cancelManipulation(layer_context);
@@ -111,6 +125,15 @@ pub const EditorLayer = struct {
             if (input.wasKeyPressed(.s) and !input.isMouseDown(.right)) {
                 try self.beginManipulation(layer_context, .scale);
             }
+            return;
+        }
+
+        if (input.modifiers.ctrl and input.wasKeyPressed(.s)) {
+            self.saveScene(layer_context);
+            return;
+        }
+        if (input.modifiers.ctrl and input.wasKeyPressed(.o)) {
+            try self.loadScene(layer_context);
             return;
         }
 
@@ -133,7 +156,7 @@ pub const EditorLayer = struct {
         if (input.wasKeyPressed(.r)) {
             try self.beginManipulation(layer_context, .rotate);
         }
-        if (input.wasKeyPressed(.s) and !input.isMouseDown(.right)) {
+        if (input.wasKeyPressed(.s) and !input.modifiers.ctrl and !input.isMouseDown(.right)) {
             try self.beginManipulation(layer_context, .scale);
         }
         if (input.wasKeyPressed(.one)) {
@@ -262,6 +285,7 @@ pub const EditorLayer = struct {
         self.endManipulation();
         if (layer_context.world.destroyEntity(selected)) {
             try layer_context.renderer.replaceSelection(null);
+            try self.captureSnapshot(layer_context);
         }
     }
 
@@ -278,6 +302,7 @@ pub const EditorLayer = struct {
         }
         try layer_context.renderer.replaceSelection(duplicate_id);
         self.focusSelection(layer_context);
+        try self.captureSnapshot(layer_context);
     }
 
     fn spawnPrimitive(self: *EditorLayer, layer_context: *engine.core.LayerContext, primitive: engine.scene.Primitive) !void {
@@ -285,6 +310,7 @@ pub const EditorLayer = struct {
         const entity_id = try layer_context.world.createPrimitiveEntity(primitive, spawn_transform);
         try layer_context.renderer.replaceSelection(entity_id);
         self.focusSelection(layer_context);
+        try self.captureSnapshot(layer_context);
     }
 
     fn spawnPointLight(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
@@ -293,6 +319,7 @@ pub const EditorLayer = struct {
         const entity_id = try layer_context.world.createLightEntity(.point, transform, 24.0);
         try layer_context.renderer.replaceSelection(entity_id);
         self.focusSelection(layer_context);
+        try self.captureSnapshot(layer_context);
     }
 
     fn spawnTransform(self: *EditorLayer, layer_context: *engine.core.LayerContext) engine.scene.Transform {
@@ -342,11 +369,144 @@ pub const EditorLayer = struct {
 
         const title = try std.fmt.allocPrint(
             layer_context.world.allocator,
-            "Guava Editor [{s}] Sel:{s} Mode:{s}/{s} | RMB fly | Alt+LMB orbit | MMB pan | Wheel dolly | G/R/S edit | X/Y/Z axis | Space apply | Esc cancel | 1 cube 2 sphere 3 plane | L light | F focus | Ctrl+D duplicate | Del delete | Tab camera",
+            "Guava Editor [{s}] Sel:{s} Mode:{s}/{s} | RMB fly | Alt+LMB orbit | MMB pan | Wheel dolly | G/R/S edit | X/Y/Z axis | Space apply | Esc cancel | Ctrl+S save | Ctrl+O load | 1 cube 2 sphere 3 plane | L light | F focus | Ctrl+D duplicate | Del delete | Tab camera",
             .{ camera_mode, selected_name, manipulation_mode, manipulation_axis },
         );
         defer layer_context.world.allocator.free(title);
         try layer_context.window.setTitle(layer_context.world.allocator, title);
+    }
+
+    fn createEditorCamera(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
+        const transform = self.editorCameraTransform();
+        self.editor_camera = try layer_context.world.createEntity(.{
+            .name = "EditorCamera",
+            .camera = .{
+                .is_primary = true,
+            },
+            .transform = transform,
+            .editor_only = true,
+        });
+        if (self.editor_camera_active) {
+            _ = layer_context.world.setPrimaryCamera(self.editor_camera.?);
+        }
+    }
+
+    fn editorCameraTransform(self: *const EditorLayer) engine.scene.Transform {
+        return .{
+            .translation = subVec3(self.focus_pivot, scaleVec3(forwardFromAngles(self.yaw, self.pitch), self.orbit_distance)),
+            .rotation_euler = .{ self.pitch, self.yaw, 0.0 },
+        };
+    }
+
+    fn saveScene(self: *EditorLayer, layer_context: *engine.core.LayerContext) void {
+        _ = self;
+        engine.scene.saveWorldToPath(layer_context.world.allocator, layer_context.world, autosave_path) catch |err| {
+            std.log.err("failed to save scene to {s}: {}", .{ autosave_path, err });
+            return;
+        };
+    }
+
+    fn loadScene(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
+        self.endManipulation();
+        engine.scene.loadWorldFromPath(layer_context.world.allocator, layer_context.world, autosave_path) catch |err| {
+            std.log.err("failed to load scene from {s}: {}", .{ autosave_path, err });
+            return;
+        };
+
+        try layer_context.renderer.resetSceneState();
+        self.scene_camera = layer_context.world.primaryCameraEntity();
+        self.editor_camera = null;
+        try self.createEditorCamera(layer_context);
+        if (!self.editor_camera_active) {
+            if (self.scene_camera) |scene_camera_id| {
+                _ = layer_context.world.setPrimaryCamera(scene_camera_id);
+            }
+        }
+        try layer_context.renderer.replaceSelection(null);
+        try self.resetSnapshotHistory(layer_context);
+        try self.refreshWindowTitle(layer_context);
+    }
+
+    fn captureSnapshot(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
+        const allocator = self.allocator orelse return;
+        const snapshot = try engine.scene.serializeWorldAlloc(allocator, layer_context.world);
+        errdefer allocator.free(snapshot);
+
+        if (self.snapshot_history.items.len > 0) {
+            const current = self.snapshot_history.items[self.snapshot_cursor];
+            if (std.mem.eql(u8, current, snapshot)) {
+                allocator.free(snapshot);
+                return;
+            }
+        }
+
+        while (self.snapshot_history.items.len > self.snapshot_cursor + 1) {
+            const removed = self.snapshot_history.pop().?;
+            allocator.free(removed);
+        }
+
+        try self.snapshot_history.append(allocator, snapshot);
+        self.snapshot_cursor = self.snapshot_history.items.len - 1;
+
+        while (self.snapshot_history.items.len > self.max_snapshots) {
+            const removed = self.snapshot_history.orderedRemove(0);
+            allocator.free(removed);
+            if (self.snapshot_cursor > 0) {
+                self.snapshot_cursor -= 1;
+            }
+        }
+    }
+
+    fn resetSnapshotHistory(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
+        self.clearSnapshotHistory();
+        try self.captureSnapshot(layer_context);
+    }
+
+    fn clearSnapshotHistory(self: *EditorLayer) void {
+        const allocator = self.allocator orelse return;
+        for (self.snapshot_history.items) |snapshot| {
+            allocator.free(snapshot);
+        }
+        self.snapshot_history.deinit(allocator);
+        self.snapshot_history = .empty;
+        self.snapshot_cursor = 0;
+    }
+
+    fn undo(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
+        if (self.snapshot_history.items.len == 0 or self.snapshot_cursor == 0) {
+            return;
+        }
+        self.snapshot_cursor -= 1;
+        try self.restoreSnapshot(layer_context, self.snapshot_cursor);
+    }
+
+    fn redo(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
+        if (self.snapshot_history.items.len == 0 or self.snapshot_cursor + 1 >= self.snapshot_history.items.len) {
+            return;
+        }
+        self.snapshot_cursor += 1;
+        try self.restoreSnapshot(layer_context, self.snapshot_cursor);
+    }
+
+    fn restoreSnapshot(self: *EditorLayer, layer_context: *engine.core.LayerContext, index: usize) !void {
+        if (index >= self.snapshot_history.items.len) {
+            return;
+        }
+
+        self.endManipulation();
+        const snapshot = self.snapshot_history.items[index];
+        try engine.scene.deserializeWorldFromSlice(layer_context.world.allocator, layer_context.world, snapshot);
+        try layer_context.renderer.resetSceneState();
+        self.scene_camera = layer_context.world.primaryCameraEntity();
+        self.editor_camera = null;
+        try self.createEditorCamera(layer_context);
+        if (!self.editor_camera_active) {
+            if (self.scene_camera) |scene_camera_id| {
+                _ = layer_context.world.setPrimaryCamera(scene_camera_id);
+            }
+        }
+        try layer_context.renderer.replaceSelection(null);
+        try self.refreshWindowTitle(layer_context);
     }
 
     fn beginManipulation(

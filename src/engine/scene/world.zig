@@ -13,6 +13,7 @@ pub const Entity = struct {
     mesh: ?components.Mesh = null,
     material: ?components.Material = null,
     light: ?components.Light = null,
+    editor_only: bool = false,
 };
 
 pub const EntityDesc = struct {
@@ -22,6 +23,7 @@ pub const EntityDesc = struct {
     mesh: ?components.Mesh = null,
     material: ?components.Material = null,
     light: ?components.Light = null,
+    editor_only: bool = false,
 };
 
 pub const Summary = struct {
@@ -46,11 +48,24 @@ pub const World = struct {
     }
 
     pub fn deinit(self: *World) void {
+        self.clearStorage(false);
+    }
+
+    pub fn clear(self: *World) void {
+        self.clearStorage(true);
+    }
+
+    fn clearStorage(self: *World, reinitialize: bool) void {
         for (self.entities.items) |entity| {
             self.allocator.free(entity.name);
         }
         self.entities.deinit(self.allocator);
         self.resources.deinit();
+        if (reinitialize) {
+            self.entities = .empty;
+            self.resources = assets_lib.ResourceLibrary.init(self.allocator);
+            self.next_id = 1;
+        }
     }
 
     pub fn createEntity(self: *World, desc: EntityDesc) !EntityId {
@@ -66,6 +81,7 @@ pub const World = struct {
             .mesh = desc.mesh,
             .material = desc.material,
             .light = desc.light,
+            .editor_only = desc.editor_only,
         });
 
         return id;
