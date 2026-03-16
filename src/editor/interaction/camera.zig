@@ -1,0 +1,153 @@
+const engine = @import("guava");
+const vec3 = engine.math.vec3;
+const EditorState = @import("../core/state.zig").EditorState;
+const utils = @import("../common/utils.zig");
+
+pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+    const input = layer_context.input;
+    const viewport_interaction = state.viewport_hovered or input.isMouseDown(.right) or input.isMouseDown(.middle) or (input.modifiers.alt and input.isMouseDown(.left));
+    if (!state.editor_camera_active or state.manipulation_mode != .none or !viewport_interaction) {
+        return;
+    }
+    if (engine.ui.ImGui.wantsCaptureMouse() and !state.viewport_hovered and !input.isMouseDown(.right) and !input.isMouseDown(.middle)) {
+        return;
+    }
+    if (engine.ui.ImGui.wantsCaptureKeyboard() and !state.viewport_focused and !input.isMouseDown(.right)) {
+        return;
+    }
+
+    const camera_id = state.editor_camera orelse return;
+    const camera = layer_context.world.getEntity(camera_id) orelse return;
+
+    if (input.modifiers.alt and input.isMouseDown(.left)) {
+        state.yaw -= input.mouse_delta[0] * state.orbit_sensitivity;
+        state.pitch = utils.clampPitch(state.pitch - input.mouse_delta[1] * state.orbit_sensitivity);
+        const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
+        camera.transform.rotation_euler = .{ state.pitch, state.yaw, 0.0 };
+        camera.transform.translation = vec3.sub(state.focus_pivot, vec3.scale(forward, state.orbit_distance));
+    } else {
+        if (input.isMouseDown(.right)) {
+            state.yaw -= input.mouse_delta[0] * state.look_sensitivity;
+            state.pitch = utils.clampPitch(state.pitch - input.mouse_delta[1] * state.look_sensitivity);
+        }
+
+        camera.transform.rotation_euler = .{ state.pitch, state.yaw, 0.0 };
+
+        if (input.isMouseDown(.right)) {
+            const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
+            const right = vec3.rightFromYaw(state.yaw);
+            const move_up = [3]f32{ 0.0, 1.0, 0.0 };
+            const boost: f32 = if (input.modifiers.shift) 3.5 else 1.0;
+            const step = moveSpeed(state, layer_context.delta_seconds) * boost;
+            var movement = [3]f32{ 0.0, 0.0, 0.0 };
+
+            if (input.isKeyDown(.w)) movement = vec3.add(movement, vec3.scale(forward, step));
+            if (input.isKeyDown(.s)) movement = vec3.sub(movement, vec3.scale(forward, step));
+            if (input.isKeyDown(.d)) movement = vec3.add(movement, vec3.scale(right, step));
+            if (input.isKeyDown(.a)) movement = vec3.sub(movement, vec3.scale(right, step));
+            if (input.isKeyDown(.e)) movement = vec3.add(movement, vec3.scale(move_up, step));
+            if (input.isKeyDown(.q)) movement = vec3.sub(movement, vec3.scale(move_up, step));
+
+            camera.transform.translation = vec3.add(camera.transform.translation, movement);
+            state.focus_pivot = vec3.add(camera.transform.translation, vec3.scale(forward, state.orbit_distance));
+        }
+    }
+
+    if (input.isMouseDown(.middle)) {
+        const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
+        const right = vec3.rightFromYaw(state.yaw);
+        const up = vec3.normalize(vec3.cross(right, forward));
+        const pan_scale = @max(state.orbit_distance, 1.0) * state.pan_sensitivity * 0.05;
+        const pan = vec3.add(
+            vec3.scale(right, -input.mouse_delta[0] * pan_scale),
+            vec3.scale(up, input.mouse_delta[1] * pan_scale),
+        );
+        camera.transform.translation = vec3.add(camera.transform.translation, pan);
+        state.focus_pivot = vec3.add(state.focus_pivot, pan);
+    }
+
+    if (@abs(input.mouse_wheel[1]) > 0.001) {
+        const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
+        const zoom_step = input.mouse_wheel[1] * state.wheel_speed * @max(state.orbit_distance * 0.2, 0.8);
+        camera.transform.translation = vec3.add(camera.transform.translation, vec3.scale(forward, zoom_step));
+        state.orbit_distance = utils.clampDistance(vec3.length(vec3.sub(state.focus_pivot, camera.transform.translation)));
+    }
+
+    camera.transform.rotation_euler = .{ state.pitch, state.yaw, 0.0 };
+}
+
+pub fn toggleCameraMode(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+    if (state.manipulation_mode != .none) {
+        return;
+    }
+    if (state.editor_camera_active) {
+        if (state.scene_camera) |scene_camera_id| {
+            if (layer_context.world.hasEntity(scene_camera_id)) {
+                _ = layer_context.world.setPrimaryCamera(scene_camera_id);
+                state.editor_camera_active = false;
+            }
+        }
+        return;
+    }
+
+    if (state.editor_camera) |editor_camera_id| {
+        if (layer_context.world.hasEntity(editor_camera_id)) {
+            _ = layer_context.world.setPrimaryCamera(editor_camera_id);
+            state.editor_camera_active = true;
+        }
+    }
+}
+
+pub fn focusSelection(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+    const selected = layer_context.renderer.selectedEntity() orelse return;
+    const camera_id = state.editor_camera orelse return;
+    const camera = layer_context.world.getEntity(camera_id) orelse return;
+    const entity_transform = layer_context.world.worldTransform(selected) orelse return;
+
+    state.focus_pivot = entity_transform.translation;
+    if (!state.editor_camera_active) {
+        return;
+    }
+
+    const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
+    state.orbit_distance = utils.clampDistance(state.orbit_distance);
+    camera.transform.translation = vec3.sub(state.focus_pivot, vec3.scale(forward, state.orbit_distance));
+}
+
+pub fn createEditorCamera(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const transform = editorCameraTransform(state);
+    state.editor_camera = try layer_context.world.createEntity(.{
+        .name = "EditorCamera",
+        .camera = .{
+            .is_primary = true,
+        },
+        .transform = transform,
+        .editor_only = true,
+    });
+    if (state.editor_camera_active) {
+        _ = layer_context.world.setPrimaryCamera(state.editor_camera.?);
+    }
+}
+
+pub fn editorCameraTransform(state: *const EditorState) engine.scene.Transform {
+    return .{
+        .translation = vec3.sub(state.focus_pivot, vec3.scale(vec3.forwardFromAngles(state.yaw, state.pitch), state.orbit_distance)),
+        .rotation_euler = .{ state.pitch, state.yaw, 0.0 },
+    };
+}
+
+pub fn activeCameraTransform(state: *const EditorState, layer_context: *engine.core.LayerContext) engine.scene.Transform {
+    const active_camera_id = if (state.editor_camera_active) state.editor_camera else layer_context.world.primaryCameraEntity();
+    if (active_camera_id) |camera_id| {
+        if (layer_context.world.worldTransform(camera_id)) |camera_transform| {
+            return camera_transform;
+        }
+    }
+    return .{
+        .translation = .{ 0.0, 2.0, 6.0 },
+    };
+}
+
+pub fn moveSpeed(state: *const EditorState, delta_seconds: f32) f32 {
+    return state.move_speed * @max(delta_seconds, 0.001);
+}

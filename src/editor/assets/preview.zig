@@ -1,0 +1,157 @@
+const std = @import("std");
+const engine = @import("guava");
+const EditorState = @import("../core/state.zig").EditorState;
+const utils = @import("../common/utils.zig");
+const history = @import("../actions/history.zig");
+const content_browser = @import("browser.zig");
+
+pub fn drawAssetPreviewWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    var title_buffer: [96]u8 = undefined;
+    const title = try state.windowLabel(&title_buffer, .asset_preview, "asset_preview_panel");
+    _ = engine.ui.ImGui.beginWindow(title);
+    defer engine.ui.ImGui.endWindow();
+
+    if (content_browser.selectedAsset(state)) |entry| {
+        engine.ui.ImGui.labelText(state.text(.name), entry.name);
+        engine.ui.ImGui.labelText(state.text(.type), utils.assetKindLabel(state, entry.kind));
+        engine.ui.ImGui.labelText(state.text(.path), entry.path);
+
+        switch (entry.kind) {
+            .texture => {
+                try ensurePreviewTextureForAssetPath(state, layer_context, entry.path);
+                drawCurrentPreviewImage(state);
+                engine.ui.ImGui.text(state.text(.use_this_texture_from_details_gt_material));
+            },
+            .model => {
+                engine.ui.ImGui.text(state.text(.models_are_imported_as_grouped_instances_with_a_movable_root_entity));
+                if (engine.ui.ImGui.button(state.text(.instantiate_model))) {
+                    try history.importModelPath(state, layer_context, entry.path);
+                }
+            },
+            .scene => {
+                engine.ui.ImGui.text(state.text(.scenes_can_be_loaded_directly_or_overwritten_from_the_current_world));
+                if (engine.ui.ImGui.button(state.text(.load_scene))) {
+                    try history.loadScenePath(state, layer_context, entry.path);
+                }
+                engine.ui.ImGui.sameLine();
+                if (engine.ui.ImGui.button(state.text(.save_over))) {
+                    history.saveScenePath(state, layer_context, entry.path);
+                }
+            },
+            .shader => {
+                engine.ui.ImGui.text(state.text(.shader_source_preview_is_currently_metadata_only));
+            },
+        }
+        return;
+    }
+
+    if (layer_context.renderer.selectedEntity()) |selected| {
+        if (layer_context.world.getEntityConst(selected)) |entity| {
+            if (entity.material) |material_component| {
+                if (material_component.handle) |material_handle| {
+                    if (layer_context.world.assets().material(material_handle)) |material_resource| {
+                        if (material_resource.base_color_texture) |texture_handle| {
+                            if (layer_context.world.assets().texture(texture_handle)) |texture_resource| {
+                                try ensurePreviewTextureForResource(
+                                    state,
+                                    layer_context,
+                                    texture_resource.name,
+                                    texture_resource.width,
+                                    texture_resource.height,
+                                    texture_resource.pixels,
+                                );
+                                engine.ui.ImGui.labelText(state.text(.previewing), texture_resource.name);
+                                drawCurrentPreviewImage(state);
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    engine.ui.ImGui.text(state.text(.select_a_texture_asset_or_an_entity_with_a_textured_material_to_preview_it));
+}
+
+pub fn ensurePreviewTextureForAssetPath(state: *EditorState, layer_context: *engine.core.LayerContext, path: []const u8) !void {
+    if (state.preview_texture_key) |existing_key| {
+        if (state.preview_texture != null and std.mem.eql(u8, existing_key, path)) {
+            return;
+        }
+    }
+
+    const allocator = state.allocator orelse layer_context.world.allocator;
+    const encoded = try std.fs.cwd().readFileAlloc(allocator, path, 128 * 1024 * 1024);
+    defer allocator.free(encoded);
+
+    var decoded = try engine.assets.decodeImageRgba8(allocator, encoded);
+    defer decoded.deinit();
+    utils.swizzleRgbaToBgra(decoded.pixels);
+
+    try ensurePreviewTextureForResource(state, layer_context, path, decoded.width, decoded.height, decoded.pixels);
+}
+
+pub fn ensurePreviewTextureForResource(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    cache_key: []const u8,
+    width: u32,
+    height: u32,
+    pixels: []const u8,
+) !void {
+    if (state.preview_texture_key) |existing_key| {
+        if (state.preview_texture != null and state.preview_texture_size[0] == width and state.preview_texture_size[1] == height and std.mem.eql(u8, existing_key, cache_key)) {
+            return;
+        }
+    }
+
+    clearPreviewTexture(state);
+
+    var texture = try layer_context.rhi().createTexture(.{
+        .width = width,
+        .height = height,
+        .format = .bgra8_unorm,
+        .usage = engine.rhi.TextureUsage.sampler,
+    });
+    errdefer layer_context.rhi().releaseTexture(&texture);
+
+    try layer_context.rhi().uploadTextureData(&texture, pixels, width, height);
+
+    const allocator = state.allocator orelse layer_context.world.allocator;
+    state.preview_texture = texture;
+    state.preview_texture_key = try allocator.dupe(u8, cache_key);
+    state.preview_texture_size = .{ width, height };
+    state.preview_device = layer_context.rhi();
+}
+
+pub fn drawCurrentPreviewImage(state: *EditorState) void {
+    const texture = if (state.preview_texture) |*value| value else return;
+    const available = engine.ui.ImGui.contentRegionAvail();
+    if (available[0] <= 1.0 or available[1] <= 1.0 or state.preview_texture_size[0] == 0 or state.preview_texture_size[1] == 0) {
+        return;
+    }
+
+    const width_f = @as(f32, @floatFromInt(state.preview_texture_size[0]));
+    const height_f = @as(f32, @floatFromInt(state.preview_texture_size[1]));
+    const scale = @min(available[0] / width_f, available[1] / height_f);
+    const display_width = @max(width_f * scale, 1.0);
+    const display_height = @max(height_f * scale, 1.0);
+    engine.ui.ImGui.image(texture, display_width, display_height);
+}
+
+pub fn clearPreviewTexture(state: *EditorState) void {
+    if (state.preview_texture) |*texture| {
+        if (state.preview_device) |device| {
+            device.releaseTexture(texture);
+        }
+        state.preview_texture = null;
+    }
+    if (state.preview_texture_key) |key| {
+        if (state.allocator) |allocator| {
+            allocator.free(key);
+        }
+        state.preview_texture_key = null;
+    }
+    state.preview_texture_size = .{ 0, 0 };
+}

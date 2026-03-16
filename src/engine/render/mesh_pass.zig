@@ -4,6 +4,7 @@ const material_mod = @import("../assets/material_resource.zig");
 const mesh_mod = @import("../assets/mesh_resource.zig");
 const texture_mod = @import("../assets/texture_resource.zig");
 const math = @import("../math/mat4.zig");
+const vec3 = @import("../math/vec3.zig");
 const rhi_mod = @import("../rhi/device.zig");
 const rhi_types = @import("../rhi/types.zig");
 const components = @import("../scene/components.zig");
@@ -455,7 +456,7 @@ fn chooseMainLight(scene: *const scene_mod.Scene) LightState {
     }
 
     return .{
-        .direction = normalizeVec3(.{ 0.3, -0.9, -0.2 }),
+        .direction = vec3.normalize(.{ 0.3, -0.9, -0.2 }),
         .color = .{ 1.0, 0.98, 0.92 },
         .intensity = 1.6,
     };
@@ -486,24 +487,5 @@ fn choosePointLight(scene: *const scene_mod.Scene) PointLightState {
 }
 
 fn forwardFromEuler(rotation_euler: components.Vec3) [3]f32 {
-    const pitch = rotation_euler[0];
-    const yaw = rotation_euler[1];
-    const cos_pitch = std.math.cos(pitch);
-    return normalizeVec3(.{
-        -std.math.sin(yaw) * cos_pitch,
-        std.math.sin(pitch),
-        -std.math.cos(yaw) * cos_pitch,
-    });
-}
-
-fn normalizeVec3(vector: [3]f32) [3]f32 {
-    const length = std.math.sqrt(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]);
-    if (length <= 0.0001) {
-        return .{ 0.0, 0.0, -1.0 };
-    }
-    return .{
-        vector[0] / length,
-        vector[1] / length,
-        vector[2] / length,
-    };
+    return vec3.forwardFromAngles(rotation_euler[1], rotation_euler[0]);
 }

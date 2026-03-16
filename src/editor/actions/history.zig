@@ -1,0 +1,260 @@
+const std = @import("std");
+const engine = @import("guava");
+const vec3 = engine.math.vec3;
+const EditorState = @import("../core/state.zig").EditorState;
+const state_mod = @import("../core/state.zig");
+const i18n = @import("../i18n/mod.zig");
+const utils = @import("../common/utils.zig");
+const camera = @import("../interaction/camera.zig");
+const manipulation = @import("../interaction/manipulation.zig");
+const content_browser = @import("../assets/browser.zig");
+const autosave_path = state_mod.autosave_path;
+
+pub fn captureSnapshot(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const allocator = state.allocator orelse return;
+    const snapshot = try engine.scene.serializeWorldAlloc(allocator, layer_context.world);
+    errdefer allocator.free(snapshot);
+
+    if (state.snapshot_history.items.len > 0) {
+        const current = state.snapshot_history.items[state.snapshot_cursor];
+        if (std.mem.eql(u8, current, snapshot)) {
+            allocator.free(snapshot);
+            return;
+        }
+    }
+
+    while (state.snapshot_history.items.len > state.snapshot_cursor + 1) {
+        const removed = state.snapshot_history.pop().?;
+        allocator.free(removed);
+    }
+
+    try state.snapshot_history.append(allocator, snapshot);
+    state.snapshot_cursor = state.snapshot_history.items.len - 1;
+
+    while (state.snapshot_history.items.len > state.max_snapshots) {
+        const removed = state.snapshot_history.orderedRemove(0);
+        allocator.free(removed);
+        if (state.snapshot_cursor > 0) {
+            state.snapshot_cursor -= 1;
+        }
+    }
+}
+
+pub fn resetSnapshotHistory(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    clearSnapshotHistory(state);
+    try captureSnapshot(state, layer_context);
+}
+
+pub fn clearSnapshotHistory(state: *EditorState) void {
+    const allocator = state.allocator orelse return;
+    for (state.snapshot_history.items) |snapshot| {
+        allocator.free(snapshot);
+    }
+    state.snapshot_history.deinit(allocator);
+    state.snapshot_history = .empty;
+    state.snapshot_cursor = 0;
+}
+
+pub fn undo(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    if (state.snapshot_history.items.len == 0 or state.snapshot_cursor == 0) {
+        return;
+    }
+    state.snapshot_cursor -= 1;
+    try restoreSnapshot(state, layer_context, state.snapshot_cursor);
+}
+
+pub fn redo(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    if (state.snapshot_history.items.len == 0 or state.snapshot_cursor + 1 >= state.snapshot_history.items.len) {
+        return;
+    }
+    state.snapshot_cursor += 1;
+    try restoreSnapshot(state, layer_context, state.snapshot_cursor);
+}
+
+pub fn restoreSnapshot(state: *EditorState, layer_context: *engine.core.LayerContext, index: usize) !void {
+    if (index >= state.snapshot_history.items.len) {
+        return;
+    }
+
+    manipulation.endManipulation(state);
+    const snapshot = state.snapshot_history.items[index];
+    try engine.scene.deserializeWorldFromSlice(layer_context.world.allocator, layer_context.world, snapshot);
+    try layer_context.renderer.resetSceneState();
+    state.scene_camera = layer_context.world.primaryCameraEntity();
+    state.editor_camera = null;
+    try camera.createEditorCamera(state, layer_context);
+    if (!state.editor_camera_active) {
+        if (state.scene_camera) |scene_camera_id| {
+            _ = layer_context.world.setPrimaryCamera(scene_camera_id);
+        }
+    }
+    try layer_context.renderer.replaceSelection(null);
+    utils.syncInspectorNameBuffer(state, layer_context);
+    try refreshWindowTitle(state, layer_context);
+}
+
+pub fn pruneMissingSelection(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    _ = state;
+    if (layer_context.renderer.selectedEntity()) |selected| {
+        if (!layer_context.world.hasEntity(selected)) {
+            try layer_context.renderer.replaceSelection(null);
+        }
+    }
+}
+
+pub fn deleteSelection(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const selected = layer_context.renderer.selectedEntity() orelse return;
+    if (state.editor_camera != null and selected == state.editor_camera.?) {
+        return;
+    }
+    manipulation.endManipulation(state);
+    if (layer_context.world.destroyEntity(selected)) {
+        try layer_context.renderer.replaceSelection(null);
+        try captureSnapshot(state, layer_context);
+    }
+}
+
+pub fn duplicateSelection(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const selected = layer_context.renderer.selectedEntity() orelse return;
+    if (state.editor_camera != null and selected == state.editor_camera.?) {
+        return;
+    }
+
+    const duplicate_id = try layer_context.world.duplicateEntity(selected);
+    if (layer_context.world.worldTransform(duplicate_id)) |duplicate_transform| {
+        var moved = duplicate_transform;
+        moved.translation[0] += 0.65;
+        moved.translation[1] += 0.15;
+        _ = layer_context.world.setEntityWorldTransform(duplicate_id, moved);
+    }
+    try layer_context.renderer.replaceSelection(duplicate_id);
+    utils.syncInspectorNameBuffer(state, layer_context);
+    camera.focusSelection(state, layer_context);
+    try captureSnapshot(state, layer_context);
+}
+
+pub fn spawnEmptyEntity(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const entity_id = try layer_context.world.createEmptyEntity(spawnTransform(state, layer_context));
+    try layer_context.renderer.replaceSelection(entity_id);
+    utils.syncInspectorNameBuffer(state, layer_context);
+    camera.focusSelection(state, layer_context);
+    try captureSnapshot(state, layer_context);
+}
+
+pub fn spawnCameraEntity(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const entity_id = try layer_context.world.createCameraEntity(camera.activeCameraTransform(state, layer_context));
+    try layer_context.renderer.replaceSelection(entity_id);
+    state.scene_camera = entity_id;
+    utils.syncInspectorNameBuffer(state, layer_context);
+    camera.focusSelection(state, layer_context);
+    try captureSnapshot(state, layer_context);
+}
+
+pub fn spawnPrimitive(state: *EditorState, layer_context: *engine.core.LayerContext, primitive: engine.scene.Primitive) !void {
+    const spawn_transform = spawnTransform(state, layer_context);
+    const entity_id = try layer_context.world.createPrimitiveEntity(primitive, spawn_transform);
+    try layer_context.renderer.replaceSelection(entity_id);
+    utils.syncInspectorNameBuffer(state, layer_context);
+    camera.focusSelection(state, layer_context);
+    try captureSnapshot(state, layer_context);
+}
+
+pub fn spawnPointLight(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    var transform = spawnTransform(state, layer_context);
+    transform.translation[1] += 1.0;
+    const entity_id = try layer_context.world.createLightEntity(.point, transform, 24.0);
+    try layer_context.renderer.replaceSelection(entity_id);
+    utils.syncInspectorNameBuffer(state, layer_context);
+    camera.focusSelection(state, layer_context);
+    try captureSnapshot(state, layer_context);
+}
+
+pub fn spawnTransform(state: *EditorState, layer_context: *engine.core.LayerContext) engine.scene.Transform {
+    const camera_transform = camera.activeCameraTransform(state, layer_context);
+    const forward = vec3.forwardFromAngles(camera_transform.rotation_euler[1], camera_transform.rotation_euler[0]);
+    const spawn_position = vec3.add(camera_transform.translation, vec3.scale(forward, 3.0));
+
+    return .{
+        .translation = spawn_position,
+    };
+}
+
+pub fn saveScene(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+    saveScenePath(state, layer_context, autosave_path);
+}
+
+pub fn saveScenePath(state: *EditorState, layer_context: *engine.core.LayerContext, path: []const u8) void {
+    engine.scene.saveWorldToPath(layer_context.world.allocator, layer_context.world, path) catch |err| {
+        std.log.err("failed to save scene to {s}: {}", .{ path, err });
+        return;
+    };
+    content_browser.refreshAssetBrowser(state) catch |err| {
+        std.log.warn("failed to refresh asset browser after save: {}", .{err});
+    };
+}
+
+pub fn loadScene(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    try loadScenePath(state, layer_context, autosave_path);
+}
+
+pub fn loadScenePath(state: *EditorState, layer_context: *engine.core.LayerContext, path: []const u8) !void {
+    manipulation.endManipulation(state);
+    engine.scene.loadWorldFromPath(layer_context.world.allocator, layer_context.world, path) catch |err| {
+        std.log.err("failed to load scene from {s}: {}", .{ path, err });
+        return;
+    };
+
+    try layer_context.renderer.resetSceneState();
+    state.scene_camera = layer_context.world.primaryCameraEntity();
+    state.editor_camera = null;
+    try camera.createEditorCamera(state, layer_context);
+    if (!state.editor_camera_active) {
+        if (state.scene_camera) |scene_camera_id| {
+            _ = layer_context.world.setPrimaryCamera(scene_camera_id);
+        }
+    }
+    try layer_context.renderer.replaceSelection(null);
+    utils.syncInspectorNameBuffer(state, layer_context);
+    try resetSnapshotHistory(state, layer_context);
+    try refreshWindowTitle(state, layer_context);
+}
+
+pub fn importModelPath(state: *EditorState, layer_context: *engine.core.LayerContext, path: []const u8) !void {
+    const report = try layer_context.world.importGltfStaticModelInstance(path, spawnTransform(state, layer_context));
+    if (report.root_entity) |root_entity| {
+        try layer_context.renderer.replaceSelection(root_entity);
+        utils.syncInspectorNameBuffer(state, layer_context);
+        camera.focusSelection(state, layer_context);
+    }
+    try captureSnapshot(state, layer_context);
+    try refreshWindowTitle(state, layer_context);
+}
+
+pub fn refreshWindowTitle(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const selected_name = if (layer_context.renderer.selectedEntity()) |selected| blk: {
+        if (layer_context.world.getEntity(selected)) |entity| break :blk entity.name;
+        break :blk state.text(.none);
+    } else state.text(.none);
+    const camera_mode = if (state.editor_camera_active) state.text(.editor_camera_mode) else state.text(.scene_camera_mode);
+    const manipulation_mode = switch (state.manipulation_mode) {
+        .none => state.text(.idle),
+        .translate => state.text(.move),
+        .rotate => state.text(.rotate),
+        .scale => state.text(.scale),
+    };
+    const manipulation_axis = switch (state.manipulation_axis) {
+        .free => state.text(.free_axis),
+        .x => "X",
+        .y => "Y",
+        .z => "Z",
+    };
+
+    const title = try i18n.allocPrintMessage(
+        .window_title_format,
+        layer_context.world.allocator,
+        state.language,
+        .{ camera_mode, selected_name, manipulation_mode, manipulation_axis },
+    );
+    defer layer_context.world.allocator.free(title);
+    try layer_context.window.setTitle(layer_context.world.allocator, title);
+}

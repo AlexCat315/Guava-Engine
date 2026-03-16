@@ -1,5 +1,6 @@
 const std = @import("std");
 const math = @import("../math/mat4.zig");
+const axis_mod = @import("../math/axis.zig");
 const components = @import("../scene/components.zig");
 const mesh_pass_mod = @import("mesh_pass.zig");
 const rhi_mod = @import("../rhi/device.zig");
@@ -13,12 +14,7 @@ pub const EditorGizmoMode = enum {
     scale,
 };
 
-pub const EditorGizmoAxis = enum {
-    free,
-    x,
-    y,
-    z,
-};
+pub const EditorGizmoAxis = axis_mod.Axis3;
 
 pub const EditorGizmoState = struct {
     mode: EditorGizmoMode = .idle,

@@ -2,6 +2,7 @@ const std = @import("std");
 const assets_lib = @import("../assets/library.zig");
 const gltf_import = @import("../assets/gltf_import.zig");
 const components = @import("components.zig");
+const vec3 = @import("../math/vec3.zig");
 
 const compose_epsilon = 0.0001;
 
@@ -590,26 +591,27 @@ pub const World = struct {
 
 fn composeTransform(parent: components.Transform, local: components.Transform) components.Transform {
     return .{
-        .translation = addVec3(
+        .translation = vec3.add(
             parent.translation,
-            rotateVec3Euler(parent.rotation_euler, mulVec3(parent.scale, local.translation)),
+            rotateVec3Euler(parent.rotation_euler, vec3.mul(parent.scale, local.translation)),
         ),
-        .rotation_euler = addVec3(parent.rotation_euler, local.rotation_euler),
-        .scale = mulVec3(parent.scale, local.scale),
+        .rotation_euler = vec3.add(parent.rotation_euler, local.rotation_euler),
+        .scale = vec3.mul(parent.scale, local.scale),
     };
 }
 
 fn relativeTransform(parent: components.Transform, world: components.Transform) components.Transform {
-    const delta = subVec3(world.translation, parent.translation);
-    const local_translation = divVec3Safe(
+    const delta = vec3.sub(world.translation, parent.translation);
+    const local_translation = vec3.divSafe(
         inverseRotateVec3Euler(parent.rotation_euler, delta),
         parent.scale,
+        compose_epsilon,
     );
 
     return .{
         .translation = local_translation,
-        .rotation_euler = subVec3(world.rotation_euler, parent.rotation_euler),
-        .scale = divVec3Safe(world.scale, parent.scale),
+        .rotation_euler = vec3.sub(world.rotation_euler, parent.rotation_euler),
+        .scale = vec3.divSafe(world.scale, parent.scale, compose_epsilon),
     };
 }
 
@@ -648,26 +650,6 @@ fn rotateZ(radians: f32, vector: components.Vec3) components.Vec3 {
         vector[0] * c - vector[1] * s,
         vector[0] * s + vector[1] * c,
         vector[2],
-    };
-}
-
-fn addVec3(a: components.Vec3, b: components.Vec3) components.Vec3 {
-    return .{ a[0] + b[0], a[1] + b[1], a[2] + b[2] };
-}
-
-fn subVec3(a: components.Vec3, b: components.Vec3) components.Vec3 {
-    return .{ a[0] - b[0], a[1] - b[1], a[2] - b[2] };
-}
-
-fn mulVec3(a: components.Vec3, b: components.Vec3) components.Vec3 {
-    return .{ a[0] * b[0], a[1] * b[1], a[2] * b[2] };
-}
-
-fn divVec3Safe(a: components.Vec3, b: components.Vec3) components.Vec3 {
-    return .{
-        a[0] / if (@abs(b[0]) <= compose_epsilon) 1.0 else b[0],
-        a[1] / if (@abs(b[1]) <= compose_epsilon) 1.0 else b[1],
-        a[2] / if (@abs(b[2]) <= compose_epsilon) 1.0 else b[2],
     };
 }
 
