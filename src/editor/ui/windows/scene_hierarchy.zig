@@ -388,6 +388,10 @@ fn drawSceneWindowContextMenu(state: *EditorState, layer_context: *engine.core.L
 
     if (engine.ui.ImGui.beginMenu(state.text(.create))) {
         defer engine.ui.ImGui.endMenu();
+        if (engine.ui.ImGui.menuItem(state.text(.folder), null, false, true)) {
+            try createFolderEntity(state, layer_context);
+            return true;
+        }
         if (engine.ui.ImGui.menuItem(state.text(.empty), null, false, true)) {
             try history.spawnEmptyEntity(state, layer_context);
             return true;
@@ -560,4 +564,13 @@ fn drawFreezeToggleButton(id: []const u8, active: bool) !bool {
     var label_buffer: [64]u8 = undefined;
     const label = try std.fmt.bufPrint(&label_buffer, "F##{s}", .{id});
     return engine.ui.ImGui.buttonEx(label, 18.0, 18.0);
+}
+
+fn createFolderEntity(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const transform = history.spawnTransform(state, layer_context);
+    const entity_id = try layer_context.world.createEmptyEntity(transform);
+    _ = layer_context.world.renameEntity(entity_id, "Folder") catch {};
+    try layer_context.renderer.replaceSelection(entity_id);
+    utils.syncInspectorNameBuffer(state, layer_context);
+    try history.captureSnapshot(state, layer_context);
 }
