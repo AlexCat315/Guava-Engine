@@ -201,9 +201,45 @@ pub const World = struct {
         const entity_name = try self.nextAvailableName(base_name);
         defer self.allocator.free(entity_name);
 
+        var light_transform = transform;
+        var mesh: ?components.Mesh = null;
+        var material: ?components.Material = null;
+
+        if (kind != .directional) {
+            const proxy_mesh = try self.resources.ensurePrimitiveMesh(.sphere);
+            const material_name = try std.fmt.allocPrint(self.allocator, "{s}Material", .{entity_name});
+            defer self.allocator.free(material_name);
+            const tint: [4]f32 = switch (kind) {
+                .point => .{ 1.0, 0.86, 0.55, 1.0 },
+                .spot => .{ 0.65, 0.8, 1.0, 1.0 },
+                .directional => .{ 1.0, 1.0, 1.0, 1.0 },
+            };
+            const proxy_material = try self.resources.createMaterial(.{
+                .name = material_name,
+                .base_color_factor = tint,
+                .base_color_texture = try self.resources.ensureWhiteTexture(),
+            });
+
+            light_transform.scale = switch (kind) {
+                .point => .{ 0.18, 0.18, 0.18 },
+                .spot => .{ 0.24, 0.24, 0.24 },
+                .directional => light_transform.scale,
+            };
+            mesh = .{
+                .handle = proxy_mesh,
+                .primitive = .sphere,
+            };
+            material = .{
+                .handle = proxy_material,
+                .base_color_factor = tint,
+            };
+        }
+
         return self.createEntity(.{
             .name = entity_name,
-            .transform = transform,
+            .transform = light_transform,
+            .mesh = mesh,
+            .material = material,
             .light = .{
                 .kind = kind,
                 .intensity = intensity,

@@ -1,6 +1,20 @@
 const std = @import("std");
 const engine = @import("guava");
 
+const ManipulationMode = enum {
+    none,
+    translate,
+    rotate,
+    scale,
+};
+
+const AxisConstraint = enum {
+    free,
+    x,
+    y,
+    z,
+};
+
 pub const EditorLayer = struct {
     editor_camera: ?engine.scene.EntityId = null,
     scene_camera: ?engine.scene.EntityId = null,
@@ -15,6 +29,10 @@ pub const EditorLayer = struct {
     wheel_speed: f32 = 1.2,
     move_speed: f32 = 6.0,
     title_frame_interval: usize = 8,
+    manipulation_mode: ManipulationMode = .none,
+    manipulation_axis: AxisConstraint = .free,
+    manipulation_entity: ?engine.scene.EntityId = null,
+    manipulation_origin: engine.scene.Transform = .{},
 
     pub fn asLayer(self: *EditorLayer) engine.core.Layer {
         return .{
@@ -48,6 +66,7 @@ pub const EditorLayer = struct {
         const self: *EditorLayer = @ptrCast(@alignCast(context));
         try self.pruneMissingSelection(layer_context);
         try self.handleEditingShortcuts(layer_context);
+        self.applyManipulation(layer_context);
         self.handleCameraControls(layer_context);
 
         if (layer_context.frame_index % self.title_frame_interval == 0) {
@@ -67,6 +86,34 @@ pub const EditorLayer = struct {
     fn handleEditingShortcuts(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
         const input = layer_context.input;
 
+        if (self.manipulation_mode != .none) {
+            if (input.wasKeyPressed(.x)) {
+                self.manipulation_axis = .x;
+            }
+            if (input.wasKeyPressed(.y)) {
+                self.manipulation_axis = .y;
+            }
+            if (input.wasKeyPressed(.z)) {
+                self.manipulation_axis = .z;
+            }
+            if (input.wasKeyPressed(.space)) {
+                self.endManipulation();
+            }
+            if (input.wasKeyPressed(.escape)) {
+                self.cancelManipulation(layer_context);
+            }
+            if (input.wasKeyPressed(.g)) {
+                try self.beginManipulation(layer_context, .translate);
+            }
+            if (input.wasKeyPressed(.r)) {
+                try self.beginManipulation(layer_context, .rotate);
+            }
+            if (input.wasKeyPressed(.s) and !input.isMouseDown(.right)) {
+                try self.beginManipulation(layer_context, .scale);
+            }
+            return;
+        }
+
         if (input.wasKeyPressed(.tab)) {
             self.toggleCameraMode(layer_context);
         }
@@ -79,6 +126,15 @@ pub const EditorLayer = struct {
         }
         if (input.modifiers.ctrl and input.wasKeyPressed(.d)) {
             try self.duplicateSelection(layer_context);
+        }
+        if (input.wasKeyPressed(.g)) {
+            try self.beginManipulation(layer_context, .translate);
+        }
+        if (input.wasKeyPressed(.r)) {
+            try self.beginManipulation(layer_context, .rotate);
+        }
+        if (input.wasKeyPressed(.s) and !input.isMouseDown(.right)) {
+            try self.beginManipulation(layer_context, .scale);
         }
         if (input.wasKeyPressed(.one)) {
             try self.spawnPrimitive(layer_context, .cube);
@@ -95,7 +151,7 @@ pub const EditorLayer = struct {
     }
 
     fn handleCameraControls(self: *EditorLayer, layer_context: *engine.core.LayerContext) void {
-        if (!self.editor_camera_active) {
+        if (!self.editor_camera_active or self.manipulation_mode != .none) {
             return;
         }
 
@@ -161,6 +217,9 @@ pub const EditorLayer = struct {
     }
 
     fn toggleCameraMode(self: *EditorLayer, layer_context: *engine.core.LayerContext) void {
+        if (self.manipulation_mode != .none) {
+            return;
+        }
         if (self.editor_camera_active) {
             if (self.scene_camera) |scene_camera_id| {
                 if (layer_context.world.hasEntity(scene_camera_id)) {
@@ -200,6 +259,7 @@ pub const EditorLayer = struct {
         if (self.editor_camera != null and selected == self.editor_camera.?) {
             return;
         }
+        self.endManipulation();
         if (layer_context.world.destroyEntity(selected)) {
             try layer_context.renderer.replaceSelection(null);
         }
@@ -245,7 +305,7 @@ pub const EditorLayer = struct {
         };
     }
 
-    fn activeCameraTransform(self: *EditorLayer, layer_context: *engine.core.LayerContext) engine.scene.Transform {
+    fn activeCameraTransform(self: *const EditorLayer, layer_context: *engine.core.LayerContext) engine.scene.Transform {
         const active_camera_id = if (self.editor_camera_active) self.editor_camera else layer_context.world.primaryCameraEntity();
         if (active_camera_id) |camera_id| {
             if (layer_context.world.getEntity(camera_id)) |camera| {
@@ -267,14 +327,138 @@ pub const EditorLayer = struct {
             break :blk "None";
         } else "None";
         const camera_mode = if (self.editor_camera_active) "EditorCam" else "SceneCam";
+        const manipulation_mode = switch (self.manipulation_mode) {
+            .none => "Idle",
+            .translate => "Move",
+            .rotate => "Rotate",
+            .scale => "Scale",
+        };
+        const manipulation_axis = switch (self.manipulation_axis) {
+            .free => "Free",
+            .x => "X",
+            .y => "Y",
+            .z => "Z",
+        };
 
         const title = try std.fmt.allocPrint(
             layer_context.world.allocator,
-            "Guava Editor [{s}] Sel:{s} | RMB fly | Alt+LMB orbit | MMB pan | Wheel dolly | 1 cube 2 sphere 3 plane | L light | F focus | Ctrl+D duplicate | Del delete | Tab camera",
-            .{ camera_mode, selected_name },
+            "Guava Editor [{s}] Sel:{s} Mode:{s}/{s} | RMB fly | Alt+LMB orbit | MMB pan | Wheel dolly | G/R/S edit | X/Y/Z axis | Space apply | Esc cancel | 1 cube 2 sphere 3 plane | L light | F focus | Ctrl+D duplicate | Del delete | Tab camera",
+            .{ camera_mode, selected_name, manipulation_mode, manipulation_axis },
         );
         defer layer_context.world.allocator.free(title);
         try layer_context.window.setTitle(layer_context.world.allocator, title);
+    }
+
+    fn beginManipulation(
+        self: *EditorLayer,
+        layer_context: *engine.core.LayerContext,
+        mode: ManipulationMode,
+    ) !void {
+        const selected = layer_context.renderer.selectedEntity() orelse return;
+        if (self.editor_camera != null and selected == self.editor_camera.?) {
+            return;
+        }
+        const entity = layer_context.world.getEntity(selected) orelse return;
+
+        self.manipulation_mode = mode;
+        self.manipulation_axis = .free;
+        self.manipulation_entity = selected;
+        self.manipulation_origin = entity.transform;
+        try self.refreshWindowTitle(layer_context);
+    }
+
+    fn endManipulation(self: *EditorLayer) void {
+        self.manipulation_mode = .none;
+        self.manipulation_axis = .free;
+        self.manipulation_entity = null;
+    }
+
+    fn cancelManipulation(self: *EditorLayer, layer_context: *engine.core.LayerContext) void {
+        const entity_id = self.manipulation_entity orelse {
+            self.endManipulation();
+            return;
+        };
+        if (layer_context.world.getEntity(entity_id)) |entity| {
+            entity.transform = self.manipulation_origin;
+        }
+        self.endManipulation();
+    }
+
+    fn applyManipulation(self: *EditorLayer, layer_context: *engine.core.LayerContext) void {
+        const entity_id = self.manipulation_entity orelse return;
+        const entity = layer_context.world.getEntity(entity_id) orelse {
+            self.endManipulation();
+            return;
+        };
+        const input = layer_context.input;
+        if (@abs(input.mouse_delta[0]) < 0.0001 and @abs(input.mouse_delta[1]) < 0.0001) {
+            return;
+        }
+
+        switch (self.manipulation_mode) {
+            .none => {},
+            .translate => self.applyTranslate(layer_context, entity),
+            .rotate => self.applyRotate(input, entity),
+            .scale => self.applyScale(input, entity),
+        }
+    }
+
+    fn applyTranslate(
+        self: *const EditorLayer,
+        layer_context: *engine.core.LayerContext,
+        entity: *engine.scene.Entity,
+    ) void {
+        const input = layer_context.input;
+        const camera_transform = self.activeCameraTransform(layer_context);
+        const right = rightFromYaw(camera_transform.rotation_euler[1]);
+        const forward = forwardFromAngles(camera_transform.rotation_euler[1], camera_transform.rotation_euler[0]);
+        const up = normalizeVec3(cross(right, forward));
+        const distance = @max(lengthVec3(subVec3(camera_transform.translation, entity.transform.translation)), 1.0);
+        const move_scale = distance * 0.0025;
+
+        switch (self.manipulation_axis) {
+            .free => {
+                const delta = addVec3(
+                    scaleVec3(right, input.mouse_delta[0] * move_scale),
+                    scaleVec3(up, -input.mouse_delta[1] * move_scale),
+                );
+                entity.transform.translation = addVec3(entity.transform.translation, delta);
+            },
+            .x, .y, .z => {
+                const axis = axisVector(self.manipulation_axis);
+                const scalar = (input.mouse_delta[0] - input.mouse_delta[1]) * move_scale;
+                entity.transform.translation = addVec3(entity.transform.translation, scaleVec3(axis, scalar));
+            },
+        }
+    }
+
+    fn applyRotate(self: *const EditorLayer, input: *const engine.core.InputState, entity: *engine.scene.Entity) void {
+        const scalar = (input.mouse_delta[0] - input.mouse_delta[1]) * 0.01;
+        switch (self.manipulation_axis) {
+            .free => {
+                entity.transform.rotation_euler[1] -= input.mouse_delta[0] * 0.01;
+                entity.transform.rotation_euler[0] -= input.mouse_delta[1] * 0.01;
+            },
+            .x => entity.transform.rotation_euler[0] += scalar,
+            .y => entity.transform.rotation_euler[1] += scalar,
+            .z => entity.transform.rotation_euler[2] += scalar,
+        }
+    }
+
+    fn applyScale(self: *const EditorLayer, input: *const engine.core.InputState, entity: *engine.scene.Entity) void {
+        const scalar = 1.0 + (input.mouse_delta[0] - input.mouse_delta[1]) * 0.01;
+        switch (self.manipulation_axis) {
+            .free => {
+                entity.transform.scale = .{
+                    clampScale(entity.transform.scale[0] * scalar),
+                    clampScale(entity.transform.scale[1] * scalar),
+                    clampScale(entity.transform.scale[2] * scalar),
+                };
+            },
+            .x => entity.transform.scale[0] = clampScale(entity.transform.scale[0] * scalar),
+            .y => entity.transform.scale[1] = clampScale(entity.transform.scale[1] * scalar),
+            .z => entity.transform.scale[2] = clampScale(entity.transform.scale[2] * scalar),
+        }
     }
 };
 
@@ -301,6 +485,19 @@ fn clampPitch(pitch: f32) f32 {
 
 fn clampDistance(distance: f32) f32 {
     return std.math.clamp(distance, 1.5, 40.0);
+}
+
+fn clampScale(scale: f32) f32 {
+    return std.math.clamp(scale, 0.05, 100.0);
+}
+
+fn axisVector(axis: AxisConstraint) [3]f32 {
+    return switch (axis) {
+        .free => .{ 0.0, 0.0, 0.0 },
+        .x => .{ 1.0, 0.0, 0.0 },
+        .y => .{ 0.0, 1.0, 0.0 },
+        .z => .{ 0.0, 0.0, 1.0 },
+    };
 }
 
 fn addVec3(a: [3]f32, b: [3]f32) [3]f32 {
