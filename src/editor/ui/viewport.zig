@@ -14,6 +14,7 @@ const content_browser = @import("../assets/browser.zig");
 const menu_bar = @import("menu_bar.zig");
 const render_settings = @import("windows/render_settings.zig");
 const settings = @import("windows/settings.zig");
+const material_editor = @import("windows/material_editor.zig");
 const ui_icons = @import("icons.zig");
 const layout = @import("layout.zig");
 const PlaybackState = @import("../core/state.zig").PlaybackState;
@@ -505,6 +506,9 @@ pub fn drawEditorUi(state: *EditorState, layer_context: *engine.core.LayerContex
     }
     if (state.settings_open) {
         try settings.drawSettingsWindow(state, layer_context);
+    }
+    if (state.material_editor_open) {
+        try material_editor.drawMaterialEditorWindow(state, layer_context);
     }
 }
 

@@ -170,6 +170,7 @@ pub const EditorState = struct {
     dock_layout_initialized: bool = false,
     settings_open: bool = false,
     render_settings_open: bool = false,
+    material_editor_open: bool = false,
     viewport_render_mode: ViewportRenderMode = .textured,
     viewport_view_preset: ViewportViewPreset = .perspective,
     viewport_show_grid: bool = true,

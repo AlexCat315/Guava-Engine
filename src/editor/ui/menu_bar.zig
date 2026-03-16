@@ -93,6 +93,9 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
 
     if (engine.ui.ImGui.beginMenu(state.text(.window))) {
         defer engine.ui.ImGui.endMenu();
+        if (engine.ui.ImGui.menuItem(state.text(.material_editor), null, state.material_editor_open, true)) {
+            state.material_editor_open = !state.material_editor_open;
+        }
         if (engine.ui.ImGui.menuItem(state.text(.settings), null, state.settings_open, true)) {
             state.settings_open = !state.settings_open;
         }
