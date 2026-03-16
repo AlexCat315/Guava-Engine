@@ -792,6 +792,19 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
             state.viewport_show_collision = !state.viewport_show_collision;
         }
     }
+    engine.ui.ImGui.sameLine();
+    if (engine.ui.ImGui.beginMenu("Snap")) {
+        defer engine.ui.ImGui.endMenu();
+        if (engine.ui.ImGui.menuItem(state.text(.translation_snap), null, state.translation_snap_enabled, true)) {
+            state.translation_snap_enabled = !state.translation_snap_enabled;
+        }
+        if (engine.ui.ImGui.menuItem(state.text(.rotation_snap), null, state.rotation_snap_enabled, true)) {
+            state.rotation_snap_enabled = !state.rotation_snap_enabled;
+        }
+        if (engine.ui.ImGui.menuItem(state.text(.scale_snap), null, state.scale_snap_enabled, true)) {
+            state.scale_snap_enabled = !state.scale_snap_enabled;
+        }
+    }
 
     if (engine.ui.ImGui.isWindowHovered()) {
         state.viewport_overlay_hovered = true;

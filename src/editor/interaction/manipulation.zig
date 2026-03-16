@@ -218,6 +218,13 @@ pub fn applyTranslate(
             entity_transform.translation = vec3.add(entity_transform.translation, vec3.scale(axis, scalar));
         },
     }
+
+    if (state.translation_snap_enabled) {
+        const snap = state.translation_snap_step;
+        entity_transform.translation[0] = @round(entity_transform.translation[0] / snap) * snap;
+        entity_transform.translation[1] = @round(entity_transform.translation[1] / snap) * snap;
+        entity_transform.translation[2] = @round(entity_transform.translation[2] / snap) * snap;
+    }
 }
 
 pub fn applyRotate(state: *const EditorState, input: *const engine.core.InputState, entity_transform: *engine.scene.Transform) void {
@@ -230,6 +237,13 @@ pub fn applyRotate(state: *const EditorState, input: *const engine.core.InputSta
         .x => entity_transform.rotation_euler[0] += scalar,
         .y => entity_transform.rotation_euler[1] += scalar,
         .z => entity_transform.rotation_euler[2] += scalar,
+    }
+
+    if (state.rotation_snap_enabled) {
+        const snap_radians = state.rotation_snap_step_degrees * std.math.pi / 180.0;
+        entity_transform.rotation_euler[0] = @round(entity_transform.rotation_euler[0] / snap_radians) * snap_radians;
+        entity_transform.rotation_euler[1] = @round(entity_transform.rotation_euler[1] / snap_radians) * snap_radians;
+        entity_transform.rotation_euler[2] = @round(entity_transform.rotation_euler[2] / snap_radians) * snap_radians;
     }
 }
 
@@ -246,6 +260,13 @@ pub fn applyScale(state: *const EditorState, input: *const engine.core.InputStat
         .x => entity_transform.scale[0] = utils.clampScale(entity_transform.scale[0] * scalar),
         .y => entity_transform.scale[1] = utils.clampScale(entity_transform.scale[1] * scalar),
         .z => entity_transform.scale[2] = utils.clampScale(entity_transform.scale[2] * scalar),
+    }
+
+    if (state.scale_snap_enabled) {
+        const snap = state.scale_snap_step;
+        entity_transform.scale[0] = @round(entity_transform.scale[0] / snap) * snap;
+        entity_transform.scale[1] = @round(entity_transform.scale[1] / snap) * snap;
+        entity_transform.scale[2] = @round(entity_transform.scale[2] / snap) * snap;
     }
 }
 
