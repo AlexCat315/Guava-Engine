@@ -63,6 +63,7 @@ enum {
     GUAVA_IMGUI_VIEW_CUBE_BOTTOM = 6,
     GUAVA_IMGUI_VIEW_CUBE_HOVERED = 1 << 8,
     GUAVA_IMGUI_VIEW_CUBE_ACTIVE = 1 << 9,
+    GUAVA_IMGUI_VIEW_CUBE_DRAGGING = 1 << 10,
 };
 
 bool guava_imgui_init(SDL_Window* window, SDL_GPUDevice* device, SDL_GPUTextureFormat color_target_format);
@@ -175,7 +176,8 @@ uint32_t guava_imgui_draw_view_cube(
     const float view[16],
     float x,
     float y,
-    float size
+    float size,
+    float out_drag_delta[2]
 );
 
 #ifdef __cplusplus

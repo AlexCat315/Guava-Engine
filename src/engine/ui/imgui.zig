@@ -53,6 +53,8 @@ pub const ViewCubeResult = struct {
     face: ViewCubeFace = .none,
     hovered: bool = false,
     active: bool = false,
+    dragging: bool = false,
+    drag_delta: [2]f32 = .{ 0.0, 0.0 },
 };
 
 pub const WindowFlags = struct {
@@ -449,11 +451,14 @@ pub fn image(texture: *const rhi_mod.Texture, width: f32, height: f32) void {
 }
 
 pub fn drawViewCube(view: *const [16]f32, position: [2]f32, size: f32) ViewCubeResult {
-    const raw = c.guava_imgui_draw_view_cube(@ptrCast(view), position[0], position[1], size);
+    var drag_delta = [2]f32{ 0.0, 0.0 };
+    const raw = c.guava_imgui_draw_view_cube(@ptrCast(view), position[0], position[1], size, @ptrCast(&drag_delta[0]));
     return .{
         .face = @enumFromInt(raw & 0xff),
         .hovered = (raw & c.GUAVA_IMGUI_VIEW_CUBE_HOVERED) != 0,
         .active = (raw & c.GUAVA_IMGUI_VIEW_CUBE_ACTIVE) != 0,
+        .dragging = (raw & c.GUAVA_IMGUI_VIEW_CUBE_DRAGGING) != 0,
+        .drag_delta = drag_delta,
     };
 }
 

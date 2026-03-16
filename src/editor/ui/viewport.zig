@@ -699,6 +699,9 @@ fn drawViewportViewCube(state: *EditorState, layer_context: *engine.core.LayerCo
     if (result.hovered or result.active) {
         state.viewport_overlay_hovered = true;
     }
+    if (result.dragging) {
+        camera.orbitFromViewCubeDrag(state, layer_context, result.drag_delta);
+    }
     switch (result.face) {
         .front => camera.lookAlongWorldAxis(state, layer_context, .{ 0.0, 0.0, -1.0 }),
         .back => camera.lookAlongWorldAxis(state, layer_context, .{ 0.0, 0.0, 1.0 }),

@@ -157,6 +157,19 @@ pub fn lookAlongWorldAxis(state: *EditorState, layer_context: *engine.core.Layer
     requestViewOrientation(state, layer_context, vec3.normalize(axis), true);
 }
 
+pub fn orbitFromViewCubeDrag(state: *EditorState, layer_context: *engine.core.LayerContext, drag_delta: [2]f32) void {
+    const camera_id = state.editor_camera orelse return;
+    const camera_entity = layer_context.world.getEntity(camera_id) orelse return;
+
+    state.view_cube_transition_active = false;
+    state.yaw -= drag_delta[0] * state.orbit_sensitivity;
+    state.pitch = utils.clampPitch(state.pitch - drag_delta[1] * state.orbit_sensitivity);
+
+    camera_entity.transform = editorCameraTransform(state);
+    _ = layer_context.world.setPrimaryCamera(camera_id);
+    state.editor_camera_active = true;
+}
+
 pub fn editorCameraTransform(state: *const EditorState) engine.scene.Transform {
     return .{
         .translation = vec3.sub(state.focus_pivot, vec3.scale(vec3.forwardFromAngles(state.yaw, state.pitch), state.orbit_distance)),

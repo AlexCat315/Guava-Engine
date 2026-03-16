@@ -41,6 +41,24 @@ struct ViewCubeFaceInfo {
     ImU32 color;
 };
 
+struct ViewCubeAxisInfo {
+    uint32_t id;
+    const char* label;
+    ViewCubePoint3 direction;
+    ImU32 color;
+    bool positive;
+};
+
+struct ViewCubeAxisHandle {
+    uint32_t id;
+    const char* label;
+    ImU32 color;
+    bool positive;
+    ImVec2 center;
+    float radius;
+    float depth;
+};
+
 ImGuiWindowFlags to_imgui_window_flags(uint32_t flags) {
     ImGuiWindowFlags result = ImGuiWindowFlags_None;
     if ((flags & GUAVA_IMGUI_WINDOW_NO_TITLE_BAR) != 0) result |= ImGuiWindowFlags_NoTitleBar;
@@ -198,6 +216,24 @@ ImU32 scale_color(ImU32 color, float factor) {
     const int b = (std::min)(255, static_cast<int>(((color >> IM_COL32_B_SHIFT) & 0xff) * factor));
     const int a = static_cast<int>((color >> IM_COL32_A_SHIFT) & 0xff);
     return IM_COL32(r, g, b, a);
+}
+
+ViewCubePoint3 scale_point3(ViewCubePoint3 point, float factor) {
+    return {
+        point.x * factor,
+        point.y * factor,
+        point.z * factor,
+    };
+}
+
+ImVec2 to_imvec2(ViewCubePoint2 point) {
+    return ImVec2(point.x, point.y);
+}
+
+float distance_squared(ImVec2 a, ImVec2 b) {
+    const float dx = a.x - b.x;
+    const float dy = a.y - b.y;
+    return dx * dx + dy * dy;
 }
 
 void build_default_dock_layout() {
@@ -1327,7 +1363,11 @@ extern "C" void guava_imgui_image(SDL_GPUTexture* texture, float width, float he
     ImGui::Image((ImTextureID)(intptr_t)texture, ImVec2(width, height));
 }
 
-extern "C" uint32_t guava_imgui_draw_view_cube(const float view[16], float x, float y, float size) {
+extern "C" uint32_t guava_imgui_draw_view_cube(const float view[16], float x, float y, float size, float out_drag_delta[2]) {
+    if (out_drag_delta != nullptr) {
+        out_drag_delta[0] = 0.0f;
+        out_drag_delta[1] = 0.0f;
+    }
     if (!g_imgui_initialized || view == nullptr || size <= 0.0f) {
         return GUAVA_IMGUI_VIEW_CUBE_NONE;
     }
@@ -1335,7 +1375,10 @@ extern "C" uint32_t guava_imgui_draw_view_cube(const float view[16], float x, fl
     const ImVec2 cube_pos(x, y);
     const ImVec2 cube_size(size, size);
     const ImVec2 center(x + size * 0.5f, y + size * 0.5f);
-    const float radius = size * 1.58f;
+    const float radius = size * 1.38f;
+    const float plate_radius = size * 0.47f;
+    const float positive_axis_radius = size * 0.078f;
+    const float negative_axis_radius = size * 0.056f;
 
     static const ViewCubePoint3 cube_vertices[8] = {
         { -1.0f, -1.0f, -1.0f },
@@ -1348,12 +1391,20 @@ extern "C" uint32_t guava_imgui_draw_view_cube(const float view[16], float x, fl
         { -1.0f,  1.0f,  1.0f },
     };
     static const ViewCubeFaceInfo faces[6] = {
-        { GUAVA_IMGUI_VIEW_CUBE_FRONT, "+Z", { 0.0f, 0.0f, 1.0f },  { 4, 5, 6, 7 }, IM_COL32(80, 134, 214, 220) },
-        { GUAVA_IMGUI_VIEW_CUBE_BACK,  "-Z", { 0.0f, 0.0f, -1.0f }, { 1, 0, 3, 2 }, IM_COL32(52, 78, 128, 214) },
-        { GUAVA_IMGUI_VIEW_CUBE_LEFT,  "-X", { -1.0f, 0.0f, 0.0f }, { 0, 4, 7, 3 }, IM_COL32(110, 74, 74, 216) },
-        { GUAVA_IMGUI_VIEW_CUBE_RIGHT, "+X", { 1.0f, 0.0f, 0.0f },  { 5, 1, 2, 6 }, IM_COL32(182, 94, 84, 228) },
-        { GUAVA_IMGUI_VIEW_CUBE_TOP,   "+Y", { 0.0f, 1.0f, 0.0f },  { 7, 6, 2, 3 }, IM_COL32(92, 156, 86, 228) },
-        { GUAVA_IMGUI_VIEW_CUBE_BOTTOM,"-Y", { 0.0f, -1.0f, 0.0f }, { 0, 1, 5, 4 }, IM_COL32(76, 108, 70, 216) },
+        { GUAVA_IMGUI_VIEW_CUBE_FRONT, "Front",  { 0.0f, 0.0f, 1.0f },  { 4, 5, 6, 7 }, IM_COL32(128, 140, 158, 236) },
+        { GUAVA_IMGUI_VIEW_CUBE_BACK,  "Back",   { 0.0f, 0.0f, -1.0f }, { 1, 0, 3, 2 }, IM_COL32(92, 99, 112, 226) },
+        { GUAVA_IMGUI_VIEW_CUBE_LEFT,  "Left",   { -1.0f, 0.0f, 0.0f }, { 0, 4, 7, 3 }, IM_COL32(120, 112, 114, 232) },
+        { GUAVA_IMGUI_VIEW_CUBE_RIGHT, "Right",  { 1.0f, 0.0f, 0.0f },  { 5, 1, 2, 6 }, IM_COL32(140, 120, 114, 236) },
+        { GUAVA_IMGUI_VIEW_CUBE_TOP,   "Top",    { 0.0f, 1.0f, 0.0f },  { 7, 6, 2, 3 }, IM_COL32(120, 132, 120, 236) },
+        { GUAVA_IMGUI_VIEW_CUBE_BOTTOM,"Bottom", { 0.0f, -1.0f, 0.0f }, { 0, 1, 5, 4 }, IM_COL32(96, 102, 96, 226) },
+    };
+    static const ViewCubeAxisInfo axes[6] = {
+        { GUAVA_IMGUI_VIEW_CUBE_RIGHT,  "X",  { 1.0f, 0.0f, 0.0f },  IM_COL32(224, 94, 84, 255), true },
+        { GUAVA_IMGUI_VIEW_CUBE_LEFT,   "-X", { -1.0f, 0.0f, 0.0f }, IM_COL32(224, 94, 84, 255), false },
+        { GUAVA_IMGUI_VIEW_CUBE_TOP,    "Y",  { 0.0f, 1.0f, 0.0f },  IM_COL32(100, 192, 94, 255), true },
+        { GUAVA_IMGUI_VIEW_CUBE_BOTTOM, "-Y", { 0.0f, -1.0f, 0.0f }, IM_COL32(100, 192, 94, 255), false },
+        { GUAVA_IMGUI_VIEW_CUBE_FRONT,  "Z",  { 0.0f, 0.0f, 1.0f },  IM_COL32(86, 146, 228, 255), true },
+        { GUAVA_IMGUI_VIEW_CUBE_BACK,   "-Z", { 0.0f, 0.0f, -1.0f }, IM_COL32(86, 146, 228, 255), false },
     };
 
     ViewCubePoint3 rotated_vertices[8];
@@ -1363,28 +1414,57 @@ extern "C" uint32_t guava_imgui_draw_view_cube(const float view[16], float x, fl
         projected_vertices[index] = project_view_cube_point(rotated_vertices[index], center, radius);
     }
 
+    ViewCubeAxisHandle axis_handles[6];
+    for (int index = 0; index < 6; ++index) {
+        const ViewCubePoint3 rotated_axis = rotate_by_view(view, scale_point3(axes[index].direction, 1.58f));
+        const ViewCubePoint2 projected_axis = project_view_cube_point(rotated_axis, center, radius);
+        axis_handles[index] = {
+            axes[index].id,
+            axes[index].label,
+            axes[index].color,
+            axes[index].positive,
+            to_imvec2(projected_axis),
+            axes[index].positive ? positive_axis_radius : negative_axis_radius,
+            rotated_axis.z,
+        };
+    }
+
     ImGui::PushID("guava_editor_view_cube");
     ImGui::SetCursorScreenPos(cube_pos);
-    ImGui::InvisibleButton("##view_cube", cube_size);
+    ImGui::InvisibleButton("##view_cube", cube_size, ImGuiButtonFlags_MouseButtonLeft);
     const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
     const bool active = ImGui::IsItemActive();
+    const bool dragging = active && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 2.5f);
+    const ImGuiID item_id = ImGui::GetItemID();
+    const ImGuiID pressed_target_key = item_id ^ 0x51a13d7u;
+    const ImGuiID dragged_key = item_id ^ 0x2c8f48b1u;
+    ImGuiStorage* storage = ImGui::GetStateStorage();
     const ImVec2 mouse = ImGui::GetIO().MousePos;
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
 
-    draw_list->AddRectFilled(
-        cube_pos,
-        ImVec2(cube_pos.x + size, cube_pos.y + size),
-        IM_COL32(22, 25, 31, hovered ? 208 : 172),
-        13.0f
-    );
-    draw_list->AddRect(
-        cube_pos,
-        ImVec2(cube_pos.x + size, cube_pos.y + size),
-        IM_COL32(124, 138, 162, hovered ? 118 : 82),
-        13.0f,
-        0,
-        1.1f
-    );
+    int axis_hit_order[6] = { 0, 1, 2, 3, 4, 5 };
+    std::sort(axis_hit_order, axis_hit_order + 6, [&](int lhs, int rhs) {
+        const bool lhs_front = axis_handles[lhs].depth >= 0.0f;
+        const bool rhs_front = axis_handles[rhs].depth >= 0.0f;
+        if (lhs_front != rhs_front) {
+            return lhs_front > rhs_front;
+        }
+        if (axis_handles[lhs].depth != axis_handles[rhs].depth) {
+            return axis_handles[lhs].depth > axis_handles[rhs].depth;
+        }
+        return axis_handles[lhs].positive > axis_handles[rhs].positive;
+    });
+
+    uint32_t hovered_face = GUAVA_IMGUI_VIEW_CUBE_NONE;
+    if (hovered) {
+        for (int order_index = 0; order_index < 6; ++order_index) {
+            const ViewCubeAxisHandle& handle = axis_handles[axis_hit_order[order_index]];
+            if (distance_squared(handle.center, mouse) <= handle.radius * handle.radius) {
+                hovered_face = handle.id;
+                break;
+            }
+        }
+    }
 
     int draw_order[6] = { 0, 1, 2, 3, 4, 5 };
     std::sort(draw_order, draw_order + 6, [&](int lhs, int rhs) {
@@ -1397,8 +1477,56 @@ extern "C" uint32_t guava_imgui_draw_view_cube(const float view[16], float x, fl
         return lhs_depth < rhs_depth;
     });
 
-    uint32_t result = GUAVA_IMGUI_VIEW_CUBE_NONE;
-    uint32_t hovered_face = GUAVA_IMGUI_VIEW_CUBE_NONE;
+    if (hovered_face == GUAVA_IMGUI_VIEW_CUBE_NONE && hovered) {
+        for (int order_index = 5; order_index >= 0; --order_index) {
+            const ViewCubeFaceInfo& face = faces[draw_order[order_index]];
+            const ViewCubePoint3 rotated_normal = rotate_by_view(view, face.normal);
+            if (rotated_normal.z <= 0.0f) {
+                continue;
+            }
+            ViewCubePoint2 polygon[4];
+            for (int corner = 0; corner < 4; ++corner) {
+                polygon[corner] = projected_vertices[face.corners[corner]];
+            }
+            if (point_in_quad(polygon, mouse)) {
+                hovered_face = face.id;
+                break;
+            }
+        }
+    }
+
+    if (ImGui::IsItemActivated()) {
+        storage->SetInt(pressed_target_key, static_cast<int>(hovered_face));
+        storage->SetBool(dragged_key, false);
+    }
+    if (dragging) {
+        storage->SetBool(dragged_key, true);
+        if (out_drag_delta != nullptr) {
+            out_drag_delta[0] = ImGui::GetIO().MouseDelta.x;
+            out_drag_delta[1] = ImGui::GetIO().MouseDelta.y;
+        }
+    }
+
+    draw_list->AddCircleFilled(
+        ImVec2(center.x, center.y + size * 0.026f),
+        plate_radius,
+        IM_COL32(0, 0, 0, hovered ? 54 : 34),
+        48
+    );
+    draw_list->AddCircleFilled(center, plate_radius, IM_COL32(20, 24, 30, hovered ? 214 : 184), 48);
+    draw_list->AddCircle(center, plate_radius, IM_COL32(122, 134, 150, hovered ? 132 : 92), 48, 1.2f);
+    draw_list->AddCircle(center, plate_radius * 0.82f, IM_COL32(255, 255, 255, 18), 48, 1.0f);
+
+    for (int index = 0; index < 6; ++index) {
+        const ViewCubeAxisHandle& handle = axis_handles[index];
+        if (handle.depth >= 0.0f) {
+            continue;
+        }
+        const bool axis_hovered = hovered_face == handle.id;
+        draw_list->AddLine(center, handle.center, scale_color(handle.color, axis_hovered ? 0.72f : 0.54f), axis_hovered ? 1.9f : 1.4f);
+        draw_list->AddCircleFilled(handle.center, handle.radius, IM_COL32(204, 210, 220, axis_hovered ? 210 : 168), 20);
+        draw_list->AddCircle(handle.center, handle.radius, scale_color(handle.color, axis_hovered ? 1.12f : 0.84f), 20, axis_hovered ? 1.5f : 1.1f);
+    }
 
     for (int order_index = 0; order_index < 6; ++order_index) {
         const ViewCubeFaceInfo& face = faces[draw_order[order_index]];
@@ -1410,59 +1538,89 @@ extern "C" uint32_t guava_imgui_draw_view_cube(const float view[16], float x, fl
         ViewCubePoint2 polygon[4];
         ImVec2 polygon_imgui[4];
         ImVec2 label_center(0.0f, 0.0f);
+        float min_x = projected_vertices[face.corners[0]].x;
+        float max_x = min_x;
+        float min_y = projected_vertices[face.corners[0]].y;
+        float max_y = min_y;
         for (int corner = 0; corner < 4; ++corner) {
             polygon[corner] = projected_vertices[face.corners[corner]];
-            polygon_imgui[corner] = ImVec2(polygon[corner].x, polygon[corner].y);
+            polygon_imgui[corner] = to_imvec2(polygon[corner]);
             label_center.x += polygon_imgui[corner].x;
             label_center.y += polygon_imgui[corner].y;
+            min_x = (std::min)(min_x, polygon_imgui[corner].x);
+            max_x = (std::max)(max_x, polygon_imgui[corner].x);
+            min_y = (std::min)(min_y, polygon_imgui[corner].y);
+            max_y = (std::max)(max_y, polygon_imgui[corner].y);
         }
         label_center.x *= 0.25f;
         label_center.y *= 0.25f;
 
-        const bool face_hovered = hovered && point_in_quad(polygon, mouse);
-        if (face_hovered) {
-            hovered_face = face.id;
-        }
-
-        const float lighting = 0.82f + rotated_normal.z * 0.30f + (face_hovered ? 0.18f : 0.0f);
+        const bool face_hovered = hovered_face == face.id;
+        const float lighting = 0.76f + rotated_normal.z * 0.28f + (face_hovered ? 0.22f : 0.0f);
         const ImU32 fill = scale_color(face.color, lighting);
         draw_list->AddConvexPolyFilled(polygon_imgui, 4, fill);
-        draw_list->AddPolyline(polygon_imgui, 4, IM_COL32(238, 241, 247, face_hovered ? 210 : 120), ImDrawFlags_Closed, face_hovered ? 1.5f : 1.1f);
+        draw_list->AddPolyline(polygon_imgui, 4, IM_COL32(240, 243, 248, face_hovered ? 224 : 132), ImDrawFlags_Closed, face_hovered ? 1.7f : 1.1f);
 
+        const float font_size = (std::max)(10.0f, (std::min)(12.5f, size * 0.105f));
         const ImVec2 label_size = ImGui::CalcTextSize(face.label);
-        draw_list->AddText(
-            ImVec2(label_center.x - label_size.x * 0.5f, label_center.y - label_size.y * 0.5f),
-            IM_COL32(245, 247, 251, 248),
-            face.label
-        );
+        if ((max_x - min_x) >= label_size.x + 8.0f && (max_y - min_y) >= font_size + 6.0f) {
+            draw_list->AddText(
+                ImGui::GetFont(),
+                font_size,
+                ImVec2(label_center.x - label_size.x * 0.5f, label_center.y - font_size * 0.5f),
+                IM_COL32(246, 248, 252, face_hovered ? 252 : 228),
+                face.label
+            );
+        }
     }
 
-    const ViewCubePoint3 axis_points[3] = {
-        rotate_by_view(view, { 1.45f, 0.0f, 0.0f }),
-        rotate_by_view(view, { 0.0f, 1.45f, 0.0f }),
-        rotate_by_view(view, { 0.0f, 0.0f, 1.45f }),
-    };
-    const ImU32 axis_colors[3] = {
-        IM_COL32(224, 94, 84, 255),
-        IM_COL32(100, 192, 94, 255),
-        IM_COL32(86, 146, 228, 255),
-    };
-    const char* axis_labels[3] = { "X", "Y", "Z" };
-    for (int axis_index = 0; axis_index < 3; ++axis_index) {
-        const ViewCubePoint2 projected = project_view_cube_point(axis_points[axis_index], center, radius);
-        draw_list->AddLine(center, ImVec2(projected.x, projected.y), axis_colors[axis_index], 1.6f);
-        draw_list->AddCircleFilled(ImVec2(projected.x, projected.y), 5.2f, axis_colors[axis_index]);
-        draw_list->AddText(ImVec2(projected.x + 6.0f, projected.y - 7.0f), IM_COL32(244, 246, 249, 220), axis_labels[axis_index]);
+    for (int index = 0; index < 6; ++index) {
+        const ViewCubeAxisHandle& handle = axis_handles[index];
+        if (handle.depth < 0.0f) {
+            continue;
+        }
+        const bool axis_hovered = hovered_face == handle.id;
+        const float line_thickness = handle.positive ? (axis_hovered ? 2.4f : 1.9f) : (axis_hovered ? 1.9f : 1.4f);
+        draw_list->AddLine(center, handle.center, scale_color(handle.color, axis_hovered ? 1.08f : 0.82f), line_thickness);
+
+        if (handle.positive) {
+            draw_list->AddCircleFilled(handle.center, handle.radius, handle.color, 24);
+            draw_list->AddCircle(handle.center, handle.radius, IM_COL32(246, 248, 252, axis_hovered ? 244 : 182), 24, axis_hovered ? 1.8f : 1.2f);
+            const ImVec2 label_size = ImGui::CalcTextSize(handle.label);
+            draw_list->AddText(
+                ImGui::GetFont(),
+                (std::max)(10.0f, (std::min)(12.5f, size * 0.11f)),
+                ImVec2(handle.center.x - label_size.x * 0.5f, handle.center.y - ImGui::GetFontSize() * 0.52f),
+                IM_COL32(248, 250, 253, 248),
+                handle.label
+            );
+        } else {
+            draw_list->AddCircleFilled(handle.center, handle.radius, IM_COL32(208, 214, 224, axis_hovered ? 220 : 184), 20);
+            draw_list->AddCircle(handle.center, handle.radius, scale_color(handle.color, axis_hovered ? 1.08f : 0.82f), 20, axis_hovered ? 1.6f : 1.1f);
+        }
     }
 
+    draw_list->AddCircleFilled(center, size * 0.03f, IM_COL32(234, 238, 244, hovered ? 228 : 196), 18);
+
+    uint32_t result = GUAVA_IMGUI_VIEW_CUBE_NONE;
     if (hovered) {
         result |= GUAVA_IMGUI_VIEW_CUBE_HOVERED;
     }
     if (active) {
         result |= GUAVA_IMGUI_VIEW_CUBE_ACTIVE;
     }
-    if (hovered_face != GUAVA_IMGUI_VIEW_CUBE_NONE && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-        result = (result & ~0xffu) | hovered_face;
+    if (dragging) {
+        result |= GUAVA_IMGUI_VIEW_CUBE_DRAGGING;
+    }
+
+    if (ImGui::IsItemDeactivated()) {
+        const uint32_t pressed_target = static_cast<uint32_t>(storage->GetInt(pressed_target_key, 0));
+        const bool was_dragged = storage->GetBool(dragged_key, false);
+        if (!was_dragged && pressed_target != GUAVA_IMGUI_VIEW_CUBE_NONE && hovered_face == pressed_target) {
+            result = (result & ~0xffu) | pressed_target;
+        }
+        storage->SetInt(pressed_target_key, 0);
+        storage->SetBool(dragged_key, false);
     }
 
     ImGui::PopID();
