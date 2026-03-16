@@ -10,6 +10,8 @@ pub const Key = enum(u8) {
     f,
     g,
     r,
+    t,
+    n,
     tab,
     delete,
     backspace,

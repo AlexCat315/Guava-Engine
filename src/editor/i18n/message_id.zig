@@ -246,4 +246,6 @@ pub const MessageId = enum {
     render_mode,
     search_place_actors,
     window_title_format,
+    viewport_view_preset_tooltip,
+    viewport_render_mode_tooltip,
 };

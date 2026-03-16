@@ -253,5 +253,7 @@ pub const locale = types.LocaleInfo{
         .render_mode = "渲染模式",
         .search_place_actors = "搜索可放置对象",
         .window_title_format = "Guava 编辑器 [{s}] 选中:{s} 模式:{s}/{s} | 右键飞行 | Alt+左键环绕 | 中键平移 | 滚轮推拉 | G/R/S 编辑 | X/Y/Z 锁轴 | Space 应用 | Esc 取消 | P 设父级 | Shift+P 取消父级 | Ctrl+S 保存 | Ctrl+O 加载 | 1 立方体 2 球体 3 平面 | L 灯光 | F 聚焦 | Ctrl+D 复制 | Del 删除 | Tab 相机",
+        .viewport_view_preset_tooltip = "视图：透视/顶视/侧视",
+        .viewport_render_mode_tooltip = "渲染：纹理/线框/无光照",
     }),
 };

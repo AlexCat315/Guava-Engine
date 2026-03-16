@@ -326,18 +326,22 @@ pub fn loadScenePath(state: *EditorState, layer_context: *engine.core.LayerConte
 }
 
 pub fn importModelPath(state: *EditorState, layer_context: *engine.core.LayerContext, path: []const u8) !void {
+    try importModelPathAt(state, layer_context, path, spawnTransform(state, layer_context));
+}
+
+pub fn importModelPathAt(state: *EditorState, layer_context: *engine.core.LayerContext, path: []const u8, transform: engine.scene.Transform) !void {
     const report = if (state.asset_registry) |*registry|
         if (registry.recordByPath(path)) |record|
             try engine.assets.importGltfStaticModelAssetInstance(
                 layer_context.world,
                 registry,
                 record.id,
-                spawnTransform(state, layer_context),
+                transform,
             )
         else
-            try layer_context.world.importGltfStaticModelInstance(path, spawnTransform(state, layer_context))
+            try layer_context.world.importGltfStaticModelInstance(path, transform)
     else
-        try layer_context.world.importGltfStaticModelInstance(path, spawnTransform(state, layer_context));
+        try layer_context.world.importGltfStaticModelInstance(path, transform);
     if (report.root_entity) |root_entity| {
         try layer_context.renderer.replaceSelection(root_entity);
         utils.syncInspectorNameBuffer(state, layer_context);

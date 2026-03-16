@@ -633,7 +633,10 @@ fn applyPendingViewportAssetDrop(state: *EditorState, layer_context: *engine.cor
             const entry = state.asset_entries.items[asset_index];
 
             switch (entry.kind) {
-                .model => try history.importModelPath(state, layer_context, entry.path),
+                .model => {
+                    const spawn_transform = try calculateSpawnTransformFromPixel(state, layer_context, pending.pixel);
+                    try history.importModelPathAt(state, layer_context, entry.path, spawn_transform);
+                },
                 .texture => {
                     const target_entity = pending.target_entity orelse layer_context.renderer.selectedEntity() orelse return;
                     const entity = layer_context.world.getEntity(target_entity) orelse return;
@@ -755,59 +758,74 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
     );
     defer engine.ui.ImGui.endWindow();
 
-    engine.ui.ImGui.pushStyleVarVec2(.item_spacing, .{ 10.0, 4.0 });
+    engine.ui.ImGui.pushStyleVarVec2(.item_spacing, .{ 6.0, 4.0 });
     defer engine.ui.ImGui.popStyleVar(1);
 
-    if (engine.ui.ImGui.beginMenu("View")) {
-        defer engine.ui.ImGui.endMenu();
-        if (engine.ui.ImGui.menuItem(state.text(.perspective_view), null, state.viewport_view_preset == .perspective, true)) {
-            camera.setViewPreset(state, layer_context, .perspective);
-        }
-        if (engine.ui.ImGui.menuItem(state.text(.top_view), null, state.viewport_view_preset == .top, true)) {
-            camera.setViewPreset(state, layer_context, .top);
-        }
-        if (engine.ui.ImGui.menuItem(state.text(.side_view), null, state.viewport_view_preset == .side, true)) {
-            camera.setViewPreset(state, layer_context, .side);
-        }
+    // View preset buttons with icons
+    const view_icon = switch (state.viewport_view_preset) {
+        .perspective => ui_icons.paths.viewport.perspective,
+        .top => ui_icons.paths.viewport.top,
+        .side => ui_icons.paths.viewport.side,
+        .custom => ui_icons.paths.viewport.perspective,
+    };
+    const view_palette = if (true) ui_icons.palettes.toolbar_active else ui_icons.palettes.toolbar_idle;
+    if (try ui_icons.drawIconButton(state, layer_context, "##view_btn", view_icon, 16.0, .{ 245, 248, 252, 255 }, view_palette)) {
+        // Cycle through view presets: perspective -> top -> side -> perspective
+        const next_preset: camera.ViewPreset = switch (state.viewport_view_preset) {
+            .perspective => .top,
+            .top => .side,
+            .side => .perspective,
+            .custom => .perspective,
+        };
+        camera.setViewPreset(state, layer_context, next_preset);
     }
+
     engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.beginMenu(currentRenderModeLabel(state))) {
-        defer engine.ui.ImGui.endMenu();
-        if (engine.ui.ImGui.menuItem(state.text(.textured), null, state.viewport_render_mode == .textured, true)) {
-            state.viewport_render_mode = .textured;
-        }
-        if (engine.ui.ImGui.menuItem(state.text(.wireframe), null, state.viewport_render_mode == .wireframe, true)) {
-            state.viewport_render_mode = .wireframe;
-        }
-        if (engine.ui.ImGui.menuItem(state.text(.unlit), null, state.viewport_render_mode == .unlit, true)) {
-            state.viewport_render_mode = .unlit;
-        }
+
+    // Render mode button
+    const render_icon = switch (state.viewport_render_mode) {
+        .textured => ui_icons.paths.viewport.textured,
+        .wireframe => ui_icons.paths.viewport.wireframe,
+        .unlit => ui_icons.paths.viewport.unlit,
+    };
+    const render_palette = if (true) ui_icons.palettes.toolbar_active else ui_icons.palettes.toolbar_idle;
+    if (try ui_icons.drawIconButton(state, layer_context, "##render_btn", render_icon, 16.0, .{ 245, 248, 252, 255 }, render_palette)) {
+        // Cycle through render modes: textured -> wireframe -> unlit -> textured
+        state.viewport_render_mode = switch (state.viewport_render_mode) {
+            .textured => .wireframe,
+            .wireframe => .unlit,
+            .unlit => .textured,
+        };
     }
+
     engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.beginMenu("Overlay")) {
-        defer engine.ui.ImGui.endMenu();
-        if (engine.ui.ImGui.menuItem(state.text(.show_grid), null, state.viewport_show_grid, true)) {
-            state.viewport_show_grid = !state.viewport_show_grid;
-        }
-        if (engine.ui.ImGui.menuItem(state.text(.show_bones), null, state.viewport_show_bones, true)) {
-            state.viewport_show_bones = !state.viewport_show_bones;
-        }
-        if (engine.ui.ImGui.menuItem(state.text(.show_collision), null, state.viewport_show_collision, true)) {
-            state.viewport_show_collision = !state.viewport_show_collision;
-        }
+
+    // Grid toggle button
+    const grid_palette = if (state.viewport_show_grid) ui_icons.palettes.status_on else ui_icons.palettes.status_off;
+    if (try ui_icons.drawIconButton(state, layer_context, "##grid_btn", ui_icons.paths.viewport.grid, 16.0, .{ 245, 248, 252, 255 }, grid_palette)) {
+        state.viewport_show_grid = !state.viewport_show_grid;
     }
+
     engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.beginMenu("Snap")) {
-        defer engine.ui.ImGui.endMenu();
-        if (engine.ui.ImGui.menuItem(state.text(.translation_snap), null, state.translation_snap_enabled, true)) {
-            state.translation_snap_enabled = !state.translation_snap_enabled;
-        }
-        if (engine.ui.ImGui.menuItem(state.text(.rotation_snap), null, state.rotation_snap_enabled, true)) {
-            state.rotation_snap_enabled = !state.rotation_snap_enabled;
-        }
-        if (engine.ui.ImGui.menuItem(state.text(.scale_snap), null, state.scale_snap_enabled, true)) {
-            state.scale_snap_enabled = !state.scale_snap_enabled;
-        }
+
+    // Snap buttons
+    const snap_translate_palette = if (state.translation_snap_enabled) ui_icons.palettes.status_on else ui_icons.palettes.status_off;
+    if (try ui_icons.drawIconButton(state, layer_context, "##snap_t_btn", ui_icons.paths.toolbar.snap_translate, 16.0, .{ 245, 248, 252, 255 }, snap_translate_palette)) {
+        state.translation_snap_enabled = !state.translation_snap_enabled;
+    }
+
+    engine.ui.ImGui.sameLine();
+
+    const snap_rotate_palette = if (state.rotation_snap_enabled) ui_icons.palettes.status_on else ui_icons.palettes.status_off;
+    if (try ui_icons.drawIconButton(state, layer_context, "##snap_r_btn", ui_icons.paths.toolbar.snap_rotate, 16.0, .{ 245, 248, 252, 255 }, snap_rotate_palette)) {
+        state.rotation_snap_enabled = !state.rotation_snap_enabled;
+    }
+
+    engine.ui.ImGui.sameLine();
+
+    const snap_scale_palette = if (state.scale_snap_enabled) ui_icons.palettes.status_on else ui_icons.palettes.status_off;
+    if (try ui_icons.drawIconButton(state, layer_context, "##snap_s_btn", ui_icons.paths.toolbar.snap_scale, 16.0, .{ 245, 248, 252, 255 }, snap_scale_palette)) {
+        state.scale_snap_enabled = !state.scale_snap_enabled;
     }
 
     // Show camera speed indicator when shift is held

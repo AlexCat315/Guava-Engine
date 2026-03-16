@@ -254,12 +254,7 @@ void build_default_dock_layout() {
     ImGuiID dock_details = dock_right;
     ImGuiID dock_bottom = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Down, 0.22f, nullptr, &dock_main);
     ImGuiID dock_viewport = dock_main;
-    ImGuiID dock_top = ImGui::DockBuilderSplitNode(g_dockspace_id, ImGuiDir_Up, 0.055f, nullptr, &dock_main);
-    if (ImGuiDockNode* top_node = ImGui::DockBuilderGetNode(dock_top)) {
-        top_node->LocalFlags |= ImGuiDockNodeFlags_NoTabBar | ImGuiDockNodeFlags_NoWindowMenuButton | ImGuiDockNodeFlags_NoCloseButton;
-    }
 
-    ImGui::DockBuilderDockWindow("Global Toolbar###global_toolbar_panel", dock_top);
     ImGui::DockBuilderDockWindow("Viewport###viewport_panel", dock_viewport);
     ImGui::DockBuilderDockWindow("Place Actors###place_actors_panel", dock_left);
     ImGui::DockBuilderDockWindow("Scene###scene_panel", dock_scene);
@@ -286,12 +281,7 @@ void build_animation_dock_layout() {
     ImGuiID dock_details = dock_right;
     ImGuiID dock_bottom = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Down, 0.30f, nullptr, &dock_main);
     ImGuiID dock_viewport = dock_main;
-    ImGuiID dock_top = ImGui::DockBuilderSplitNode(g_dockspace_id, ImGuiDir_Up, 0.055f, nullptr, &dock_main);
-    if (ImGuiDockNode* top_node = ImGui::DockBuilderGetNode(dock_top)) {
-        top_node->LocalFlags |= ImGuiDockNodeFlags_NoTabBar | ImGuiDockNodeFlags_NoWindowMenuButton | ImGuiDockNodeFlags_NoCloseButton;
-    }
 
-    ImGui::DockBuilderDockWindow("Global Toolbar###global_toolbar_panel", dock_top);
     ImGui::DockBuilderDockWindow("Viewport###viewport_panel", dock_viewport);
     ImGui::DockBuilderDockWindow("Place Actors###place_actors_panel", dock_left);
     ImGui::DockBuilderDockWindow("Scene###scene_panel", dock_scene);

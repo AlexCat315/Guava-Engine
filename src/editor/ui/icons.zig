@@ -23,6 +23,17 @@ pub const paths = struct {
         pub const settings = "assets/ui/icons/heroicons/24/solid/cog-6-tooth.svg";
     };
 
+    pub const viewport = struct {
+        pub const perspective = "assets/ui/icons/heroicons/24/solid/cube.svg";
+        pub const top = "assets/ui/icons/heroicons/24/solid/chevron-up.svg";
+        pub const side = "assets/ui/icons/heroicons/24/solid/chevron-right.svg";
+        pub const textured = "assets/ui/icons/heroicons/24/solid/square-3d-3d.svg";
+        pub const wireframe = "assets/ui/icons/heroicons/24/solid/wireframe.svg";
+        pub const unlit = "assets/ui/icons/heroicons/24/solid/sun.svg";
+        pub const grid = "assets/ui/icons/heroicons/24/solid/table-cells.svg";
+        pub const collision = "assets/ui/icons/heroicons/24/solid/shield-check.svg";
+    };
+
     pub const place_actors = struct {
         pub const empty = "assets/ui/icons/heroicons/24/solid/squares-2x2.svg";
         pub const camera = "assets/ui/icons/heroicons/24/solid/camera.svg";
@@ -39,6 +50,7 @@ pub const paths = struct {
         pub const light = "assets/ui/icons/heroicons/24/solid/light-bulb.svg";
         pub const mesh = "assets/ui/icons/heroicons/24/solid/cube.svg";
         pub const object = "assets/ui/icons/heroicons/24/solid/squares-2x2.svg";
+        pub const folder = "assets/ui/icons/heroicons/24/solid/folder.svg";
         pub const eye = "assets/ui/icons/heroicons/24/solid/eye.svg";
         pub const eye_off = "assets/ui/icons/heroicons/24/solid/eye-slash.svg";
         pub const lock = "assets/ui/icons/heroicons/24/solid/lock-closed.svg";
@@ -76,6 +88,12 @@ pub const palettes = struct {
 };
 
 pub fn entityIconPath(entity: *const engine.scene.Entity) []const u8 {
+    // Check for folder - editor_only entity with no components and name starting with "Folder"
+    if (entity.editor_only and entity.camera == null and entity.mesh == null and entity.light == null) {
+        if (entity.name.len >= 6 and std.mem.eql(u8, entity.name[0..6], "Folder")) {
+            return paths.hierarchy.folder;
+        }
+    }
     if (entity.camera != null) {
         return paths.hierarchy.camera;
     }

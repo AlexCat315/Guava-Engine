@@ -74,6 +74,22 @@ pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.L
         try history.loadScene(state, layer_context);
         return;
     }
+    if (input.modifiers.ctrl and input.wasKeyPressed(.n)) {
+        try history.newScene(state, layer_context);
+        return;
+    }
+    if (input.modifiers.ctrl and input.modifiers.shift and input.wasKeyPressed(.t)) {
+        state.translation_snap_enabled = !state.translation_snap_enabled;
+        return;
+    }
+    if (input.modifiers.ctrl and input.modifiers.shift and input.wasKeyPressed(.r)) {
+        state.rotation_snap_enabled = !state.rotation_snap_enabled;
+        return;
+    }
+    if (input.modifiers.ctrl and input.modifiers.shift and input.wasKeyPressed(.s)) {
+        state.scale_snap_enabled = !state.scale_snap_enabled;
+        return;
+    }
 
     if (input.wasKeyPressed(.tab)) {
         camera.toggleCameraMode(state, layer_context);
@@ -220,10 +236,17 @@ pub fn applyTranslate(
     }
 
     if (state.translation_snap_enabled) {
+        // Snap relative to manipulation origin
+        const origin = state.manipulation_origin.translation;
         const snap = state.translation_snap_step;
-        entity_transform.translation[0] = @round(entity_transform.translation[0] / snap) * snap;
-        entity_transform.translation[1] = @round(entity_transform.translation[1] / snap) * snap;
-        entity_transform.translation[2] = @round(entity_transform.translation[2] / snap) * snap;
+        const delta_x = entity_transform.translation[0] - origin[0];
+        const delta_y = entity_transform.translation[1] - origin[1];
+        const delta_z = entity_transform.translation[2] - origin[2];
+        entity_transform.translation = .{
+            origin[0] + @round(delta_x / snap) * snap,
+            origin[1] + @round(delta_y / snap) * snap,
+            origin[2] + @round(delta_z / snap) * snap,
+        };
     }
 }
 
@@ -240,10 +263,17 @@ pub fn applyRotate(state: *const EditorState, input: *const engine.core.InputSta
     }
 
     if (state.rotation_snap_enabled) {
+        // Snap relative to manipulation origin
+        const origin = state.manipulation_origin.rotation_euler;
         const snap_radians = state.rotation_snap_step_degrees * std.math.pi / 180.0;
-        entity_transform.rotation_euler[0] = @round(entity_transform.rotation_euler[0] / snap_radians) * snap_radians;
-        entity_transform.rotation_euler[1] = @round(entity_transform.rotation_euler[1] / snap_radians) * snap_radians;
-        entity_transform.rotation_euler[2] = @round(entity_transform.rotation_euler[2] / snap_radians) * snap_radians;
+        const delta_x = entity_transform.rotation_euler[0] - origin[0];
+        const delta_y = entity_transform.rotation_euler[1] - origin[1];
+        const delta_z = entity_transform.rotation_euler[2] - origin[2];
+        entity_transform.rotation_euler = .{
+            origin[0] + @round(delta_x / snap_radians) * snap_radians,
+            origin[1] + @round(delta_y / snap_radians) * snap_radians,
+            origin[2] + @round(delta_z / snap_radians) * snap_radians,
+        };
     }
 }
 
@@ -263,10 +293,17 @@ pub fn applyScale(state: *const EditorState, input: *const engine.core.InputStat
     }
 
     if (state.scale_snap_enabled) {
+        // Snap relative to manipulation origin
+        const origin = state.manipulation_origin.scale;
         const snap = state.scale_snap_step;
-        entity_transform.scale[0] = @round(entity_transform.scale[0] / snap) * snap;
-        entity_transform.scale[1] = @round(entity_transform.scale[1] / snap) * snap;
-        entity_transform.scale[2] = @round(entity_transform.scale[2] / snap) * snap;
+        const delta_x = entity_transform.scale[0] - origin[0];
+        const delta_y = entity_transform.scale[1] - origin[1];
+        const delta_z = entity_transform.scale[2] - origin[2];
+        entity_transform.scale = .{
+            utils.clampScale(origin[0] + @round(delta_x / snap) * snap),
+            utils.clampScale(origin[1] + @round(delta_y / snap) * snap),
+            utils.clampScale(origin[2] + @round(delta_z / snap) * snap),
+        };
     }
 }
 

@@ -5,6 +5,9 @@ const state_mod = @import("../../core/state.zig");
 const MessageId = @import("../../i18n/message_id.zig").MessageId;
 const ui_icons = @import("../icons.zig");
 const layout = @import("../layout.zig");
+const history = @import("../../actions/history.zig");
+const camera = @import("../../interaction/camera.zig");
+const utils = @import("../../common/utils.zig");
 
 const PlaceActorEntry = struct {
     kind: state_mod.PlaceActorKind,
@@ -172,6 +175,39 @@ fn drawPlaceActorEntry(
 
     if (engine.ui.ImGui.selectable(label, false, false, available_width, entry_height)) {
         // Clicked - spawn at default location
+        switch (entry.kind) {
+            .empty => try history.spawnEmptyEntity(state, layer_context),
+            .camera => try history.spawnCameraEntity(state, layer_context),
+            .cube => try history.spawnPrimitive(state, layer_context, .cube),
+            .sphere => try history.spawnPrimitive(state, layer_context, .sphere),
+            .plane => try history.spawnPrimitive(state, layer_context, .plane),
+            .point_light => {
+                var transform = history.spawnTransform(state, layer_context);
+                transform.translation[1] += 1.0;
+                const entity_id = try layer_context.world.createLightEntity(.point, transform, 24.0);
+                try layer_context.renderer.replaceSelection(entity_id);
+                utils.syncInspectorNameBuffer(state, layer_context);
+                camera.focusSelection(state, layer_context);
+                try history.captureSnapshot(state, layer_context);
+            },
+            .spot_light => {
+                var transform = history.spawnTransform(state, layer_context);
+                transform.translation[1] += 1.0;
+                const entity_id = try layer_context.world.createLightEntity(.spot, transform, 24.0);
+                try layer_context.renderer.replaceSelection(entity_id);
+                utils.syncInspectorNameBuffer(state, layer_context);
+                camera.focusSelection(state, layer_context);
+                try history.captureSnapshot(state, layer_context);
+            },
+            .directional_light => {
+                const transform = history.spawnTransform(state, layer_context);
+                const entity_id = try layer_context.world.createLightEntity(.directional, transform, 3.0);
+                try layer_context.renderer.replaceSelection(entity_id);
+                utils.syncInspectorNameBuffer(state, layer_context);
+                camera.focusSelection(state, layer_context);
+                try history.captureSnapshot(state, layer_context);
+            },
+        }
     }
 
     // Draw description
