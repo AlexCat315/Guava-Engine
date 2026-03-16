@@ -4,6 +4,19 @@ const engine = @import("guava");
 const autosave_path = "assets/scenes/editor_autosave.guava_scene";
 const entity_drag_payload = "guava.scene.entity";
 
+const AssetKind = enum {
+    scene,
+    model,
+    texture,
+    shader,
+};
+
+const AssetEntry = struct {
+    path: []u8,
+    name: []u8,
+    kind: AssetKind,
+};
+
 const ManipulationMode = enum {
     none,
     translate,
@@ -42,6 +55,8 @@ pub const EditorLayer = struct {
     snapshot_history: std.ArrayList([]u8) = .empty,
     snapshot_cursor: usize = 0,
     max_snapshots: usize = 64,
+    asset_entries: std.ArrayList(AssetEntry) = .empty,
+    selected_asset_index: ?usize = null,
 
     pub fn asLayer(self: *EditorLayer) engine.core.Layer {
         return .{
@@ -64,11 +79,13 @@ pub const EditorLayer = struct {
         self.syncGizmoState(layer_context);
         self.syncInspectorNameBuffer(layer_context);
         try self.resetSnapshotHistory(layer_context);
+        try self.refreshAssetBrowser();
         try self.refreshWindowTitle(layer_context);
     }
 
     fn onDetach(context: *anyopaque) void {
         const self: *EditorLayer = @ptrCast(@alignCast(context));
+        self.clearAssetBrowser();
         self.clearSnapshotHistory();
         engine.ui.ImGui.shutdown();
     }
@@ -443,17 +460,27 @@ pub const EditorLayer = struct {
     }
 
     fn saveScene(self: *EditorLayer, layer_context: *engine.core.LayerContext) void {
-        _ = self;
-        engine.scene.saveWorldToPath(layer_context.world.allocator, layer_context.world, autosave_path) catch |err| {
-            std.log.err("failed to save scene to {s}: {}", .{ autosave_path, err });
+        self.saveScenePath(layer_context, autosave_path);
+    }
+
+    fn saveScenePath(self: *EditorLayer, layer_context: *engine.core.LayerContext, path: []const u8) void {
+        engine.scene.saveWorldToPath(layer_context.world.allocator, layer_context.world, path) catch |err| {
+            std.log.err("failed to save scene to {s}: {}", .{ path, err });
             return;
+        };
+        self.refreshAssetBrowser() catch |err| {
+            std.log.warn("failed to refresh asset browser after save: {}", .{err});
         };
     }
 
     fn loadScene(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
+        try self.loadScenePath(layer_context, autosave_path);
+    }
+
+    fn loadScenePath(self: *EditorLayer, layer_context: *engine.core.LayerContext, path: []const u8) !void {
         self.endManipulation();
-        engine.scene.loadWorldFromPath(layer_context.world.allocator, layer_context.world, autosave_path) catch |err| {
-            std.log.err("failed to load scene from {s}: {}", .{ autosave_path, err });
+        engine.scene.loadWorldFromPath(layer_context.world.allocator, layer_context.world, path) catch |err| {
+            std.log.err("failed to load scene from {s}: {}", .{ path, err });
             return;
         };
 
@@ -470,6 +497,81 @@ pub const EditorLayer = struct {
         self.syncInspectorNameBuffer(layer_context);
         try self.resetSnapshotHistory(layer_context);
         try self.refreshWindowTitle(layer_context);
+    }
+
+    fn importModelPath(self: *EditorLayer, layer_context: *engine.core.LayerContext, path: []const u8) !void {
+        const report = try layer_context.world.importGltfStaticModel(path, self.spawnTransform(layer_context));
+        _ = report;
+        try self.captureSnapshot(layer_context);
+        try self.refreshWindowTitle(layer_context);
+    }
+
+    fn refreshAssetBrowser(self: *EditorLayer) !void {
+        const allocator = self.allocator orelse return;
+        self.clearAssetBrowser();
+
+        var assets_dir = std.fs.cwd().openDir("assets", .{ .iterate = true }) catch |err| {
+            std.log.warn("failed to open assets directory: {}", .{err});
+            return;
+        };
+        defer assets_dir.close();
+
+        var walker = try assets_dir.walk(allocator);
+        defer walker.deinit();
+
+        while (try walker.next()) |entry| {
+            if (entry.kind != .file) {
+                continue;
+            }
+            const kind = assetKindForPath(entry.path) orelse continue;
+            const relative_path = try std.fs.path.join(allocator, &.{ "assets", entry.path });
+            errdefer allocator.free(relative_path);
+            const name = try allocator.dupe(u8, std.fs.path.basename(entry.path));
+            errdefer allocator.free(name);
+
+            try self.asset_entries.append(allocator, .{
+                .path = relative_path,
+                .name = name,
+                .kind = kind,
+            });
+        }
+
+        std.sort.heap(AssetEntry, self.asset_entries.items, {}, lessThanAssetEntry);
+        if (self.selected_asset_index) |selected_index| {
+            if (selected_index >= self.asset_entries.items.len) {
+                self.selected_asset_index = null;
+            }
+        }
+    }
+
+    fn clearAssetBrowser(self: *EditorLayer) void {
+        const allocator = self.allocator orelse return;
+        for (self.asset_entries.items) |entry| {
+            allocator.free(entry.path);
+            allocator.free(entry.name);
+        }
+        self.asset_entries.deinit(allocator);
+        self.asset_entries = .empty;
+        self.selected_asset_index = null;
+    }
+
+    fn selectedAsset(self: *EditorLayer) ?*const AssetEntry {
+        const index = self.selected_asset_index orelse return null;
+        if (index >= self.asset_entries.items.len) {
+            self.selected_asset_index = null;
+            return null;
+        }
+        return &self.asset_entries.items[index];
+    }
+
+    fn selectedAssetCanLoadScene(self: *EditorLayer) bool {
+        const entry = self.selectedAsset() orelse return false;
+        return entry.kind == .scene;
+    }
+
+    fn selectedAssetCanImportModel(self: *EditorLayer) bool {
+        const entry = self.selectedAsset() orelse return false;
+        return entry.kind == .model;
     }
 
     fn captureSnapshot(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
@@ -737,11 +839,116 @@ pub const EditorLayer = struct {
         try self.captureSnapshot(layer_context);
     }
 
+    fn setPrimitiveMeshComponent(
+        self: *EditorLayer,
+        layer_context: *engine.core.LayerContext,
+        entity: *engine.scene.Entity,
+        primitive: engine.scene.Primitive,
+    ) !void {
+        const mesh_handle = try layer_context.world.assets().ensurePrimitiveMesh(primitive);
+        const material_handle = try layer_context.world.assets().ensureDefaultMaterial();
+        entity.mesh = .{
+            .handle = mesh_handle,
+            .primitive = primitive,
+        };
+        if (entity.material) |*material| {
+            if (material.handle == null) {
+                material.handle = material_handle;
+            }
+        } else {
+            entity.material = .{
+                .handle = material_handle,
+            };
+        }
+        try self.captureSnapshot(layer_context);
+    }
+
+    fn clearMeshComponent(
+        self: *EditorLayer,
+        layer_context: *engine.core.LayerContext,
+        entity: *engine.scene.Entity,
+    ) !void {
+        if (entity.mesh == null and entity.material == null) {
+            return;
+        }
+        entity.mesh = null;
+        entity.material = null;
+        try self.captureSnapshot(layer_context);
+    }
+
+    fn addCameraComponent(
+        self: *EditorLayer,
+        layer_context: *engine.core.LayerContext,
+        selected: engine.scene.EntityId,
+        entity: *engine.scene.Entity,
+    ) !void {
+        if (entity.camera != null) {
+            return;
+        }
+        const had_primary = layer_context.world.primaryCameraEntity() != null;
+        entity.camera = .{};
+        if (!had_primary) {
+            _ = layer_context.world.setPrimaryCamera(selected);
+        }
+        self.scene_camera = layer_context.world.primaryCameraEntity();
+        try self.captureSnapshot(layer_context);
+    }
+
+    fn removeCameraComponent(
+        self: *EditorLayer,
+        layer_context: *engine.core.LayerContext,
+        selected: engine.scene.EntityId,
+        entity: *engine.scene.Entity,
+    ) !void {
+        _ = selected;
+        if (entity.camera == null) {
+            return;
+        }
+        entity.camera = null;
+        self.scene_camera = layer_context.world.primaryCameraEntity();
+        try self.captureSnapshot(layer_context);
+    }
+
+    fn setLightComponent(
+        self: *EditorLayer,
+        layer_context: *engine.core.LayerContext,
+        entity: *engine.scene.Entity,
+        kind: engine.scene.LightKind,
+    ) !void {
+        entity.light = .{
+            .kind = kind,
+            .intensity = switch (kind) {
+                .directional => 4.0,
+                .point => 24.0,
+                .spot => 18.0,
+            },
+            .range = switch (kind) {
+                .directional => 10.0,
+                .point => 12.0,
+                .spot => 14.0,
+            },
+        };
+        try self.captureSnapshot(layer_context);
+    }
+
+    fn removeLightComponent(
+        self: *EditorLayer,
+        layer_context: *engine.core.LayerContext,
+        entity: *engine.scene.Entity,
+    ) !void {
+        if (entity.light == null) {
+            return;
+        }
+        entity.light = null;
+        try self.captureSnapshot(layer_context);
+    }
+
     fn drawEditorUi(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
         try self.drawMenuBar(layer_context);
         try self.drawStatsWindow(layer_context);
         try self.drawSceneWindow(layer_context);
         try self.drawInspectorWindow(layer_context);
+        try self.drawContentBrowser(layer_context);
     }
 
     fn drawStatsWindow(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
@@ -916,6 +1123,66 @@ pub const EditorLayer = struct {
         var selection_count_buffer: [32]u8 = undefined;
         const selection_count_text = try std.fmt.bufPrint(&selection_count_buffer, "{d}", .{selection_count});
         engine.ui.ImGui.labelText("Selection Count", selection_count_text);
+
+        if (engine.ui.ImGui.collapsingHeader("Components", true)) {
+            if (entity.mesh == null) {
+                if (engine.ui.ImGui.button("Add Cube Mesh")) {
+                    try self.setPrimitiveMeshComponent(layer_context, entity, .cube);
+                }
+                engine.ui.ImGui.sameLine();
+                if (engine.ui.ImGui.button("Add Sphere Mesh")) {
+                    try self.setPrimitiveMeshComponent(layer_context, entity, .sphere);
+                }
+                engine.ui.ImGui.sameLine();
+                if (engine.ui.ImGui.button("Add Plane Mesh")) {
+                    try self.setPrimitiveMeshComponent(layer_context, entity, .plane);
+                }
+            } else {
+                if (engine.ui.ImGui.button("Set Cube Mesh")) {
+                    try self.setPrimitiveMeshComponent(layer_context, entity, .cube);
+                }
+                engine.ui.ImGui.sameLine();
+                if (engine.ui.ImGui.button("Set Sphere Mesh")) {
+                    try self.setPrimitiveMeshComponent(layer_context, entity, .sphere);
+                }
+                engine.ui.ImGui.sameLine();
+                if (engine.ui.ImGui.button("Set Plane Mesh")) {
+                    try self.setPrimitiveMeshComponent(layer_context, entity, .plane);
+                }
+                if (engine.ui.ImGui.button("Remove Mesh Component")) {
+                    try self.clearMeshComponent(layer_context, entity);
+                    return;
+                }
+            }
+
+            if (entity.camera == null) {
+                if (engine.ui.ImGui.button("Add Camera Component")) {
+                    try self.addCameraComponent(layer_context, selected, entity);
+                }
+            } else if (engine.ui.ImGui.button("Remove Camera Component")) {
+                try self.removeCameraComponent(layer_context, selected, entity);
+                return;
+            }
+
+            if (entity.light == null) {
+                if (engine.ui.ImGui.button("Add Directional Light")) {
+                    try self.setLightComponent(layer_context, entity, .directional);
+                }
+                engine.ui.ImGui.sameLine();
+                if (engine.ui.ImGui.button("Add Point Light")) {
+                    try self.setLightComponent(layer_context, entity, .point);
+                }
+                engine.ui.ImGui.sameLine();
+                if (engine.ui.ImGui.button("Add Spot Light")) {
+                    try self.setLightComponent(layer_context, entity, .spot);
+                }
+            } else if (engine.ui.ImGui.button("Remove Light Component")) {
+                try self.removeLightComponent(layer_context, entity);
+                return;
+            }
+
+            engine.ui.ImGui.separator();
+        }
 
         if (engine.ui.ImGui.button("Focus")) {
             self.focusSelection(layer_context);
@@ -1101,6 +1368,21 @@ pub const EditorLayer = struct {
 
         if (entity.light) |*light| {
             if (engine.ui.ImGui.collapsingHeader("Light", true)) {
+                if (engine.ui.ImGui.button("Directional")) {
+                    light.kind = .directional;
+                    try self.captureSnapshot(layer_context);
+                }
+                engine.ui.ImGui.sameLine();
+                if (engine.ui.ImGui.button("Point")) {
+                    light.kind = .point;
+                    try self.captureSnapshot(layer_context);
+                }
+                engine.ui.ImGui.sameLine();
+                if (engine.ui.ImGui.button("Spot")) {
+                    light.kind = .spot;
+                    try self.captureSnapshot(layer_context);
+                }
+
                 var light_color = light.color;
                 if (engine.ui.ImGui.dragFloat3("Color", &light_color, 0.01, 0.0, 10.0)) {
                     light.color = light_color;
@@ -1127,6 +1409,65 @@ pub const EditorLayer = struct {
                     }
                 }
             }
+        }
+    }
+
+    fn drawContentBrowser(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
+        _ = engine.ui.ImGui.beginWindow("Content Browser");
+        defer engine.ui.ImGui.endWindow();
+
+        if (engine.ui.ImGui.button("Refresh Assets")) {
+            try self.refreshAssetBrowser();
+        }
+        engine.ui.ImGui.sameLine();
+        if (engine.ui.ImGui.button("Quick Save")) {
+            self.saveScene(layer_context);
+        }
+
+        if (self.selectedAsset()) |entry| {
+            engine.ui.ImGui.labelText("Selected", entry.name);
+            engine.ui.ImGui.labelText("Type", assetKindLabel(entry.kind));
+            engine.ui.ImGui.labelText("Path", entry.path);
+
+            if (self.selectedAssetCanLoadScene() and engine.ui.ImGui.button("Load Selected Scene")) {
+                try self.loadScenePath(layer_context, entry.path);
+                return;
+            }
+            if (self.selectedAssetCanImportModel() and engine.ui.ImGui.button("Import Selected Model")) {
+                try self.importModelPath(layer_context, entry.path);
+            }
+        } else {
+            engine.ui.ImGui.text("No asset selected.");
+        }
+
+        engine.ui.ImGui.separator();
+        try self.drawAssetGroup("Scenes", .scene);
+        try self.drawAssetGroup("Models", .model);
+        try self.drawAssetGroup("Textures", .texture);
+        try self.drawAssetGroup("Shaders", .shader);
+    }
+
+    fn drawAssetGroup(self: *EditorLayer, title: []const u8, kind: AssetKind) !void {
+        if (!engine.ui.ImGui.collapsingHeader(title, kind == .scene or kind == .model)) {
+            return;
+        }
+
+        for (self.asset_entries.items, 0..) |entry, index| {
+            if (entry.kind != kind) {
+                continue;
+            }
+
+            var label_buffer: [320]u8 = undefined;
+            const label = try std.fmt.bufPrint(
+                &label_buffer,
+                "{s}{s}",
+                .{ if (self.selected_asset_index == index) "> " else "", entry.name },
+            );
+            if (engine.ui.ImGui.button(label)) {
+                self.selected_asset_index = index;
+            }
+            engine.ui.ImGui.sameLine();
+            engine.ui.ImGui.text(entry.path);
         }
     }
 
@@ -1183,6 +1524,38 @@ pub const EditorLayer = struct {
         });
     }
 };
+
+fn assetKindForPath(path: []const u8) ?AssetKind {
+    if (std.mem.endsWith(u8, path, ".guava_scene")) {
+        return .scene;
+    }
+    if (std.mem.endsWith(u8, path, ".gltf")) {
+        return .model;
+    }
+    if (std.mem.endsWith(u8, path, ".png") or std.mem.endsWith(u8, path, ".jpg") or std.mem.endsWith(u8, path, ".jpeg")) {
+        return .texture;
+    }
+    if (std.mem.endsWith(u8, path, ".glsl") or std.mem.endsWith(u8, path, ".spv") or std.mem.endsWith(u8, path, ".json")) {
+        return .shader;
+    }
+    return null;
+}
+
+fn assetKindLabel(kind: AssetKind) []const u8 {
+    return switch (kind) {
+        .scene => "Scene",
+        .model => "Model",
+        .texture => "Texture",
+        .shader => "Shader",
+    };
+}
+
+fn lessThanAssetEntry(_: void, lhs: AssetEntry, rhs: AssetEntry) bool {
+    if (@intFromEnum(lhs.kind) != @intFromEnum(rhs.kind)) {
+        return @intFromEnum(lhs.kind) < @intFromEnum(rhs.kind);
+    }
+    return std.mem.lessThan(u8, lhs.path, rhs.path);
+}
 
 fn zeroTerminatedSlice(buffer: []const u8) []const u8 {
     const end = std.mem.indexOfScalar(u8, buffer, 0) orelse buffer.len;

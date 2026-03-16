@@ -288,7 +288,7 @@ fn buildSceneFile(allocator: std.mem.Allocator, world: *const world_mod.World) !
     }
 
     return .{
-        .version = 1,
+        .version = 2,
         .meshes = try mesh_records.toOwnedSlice(allocator),
         .textures = try texture_records.toOwnedSlice(allocator),
         .materials = try material_records.toOwnedSlice(allocator),
