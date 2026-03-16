@@ -806,6 +806,12 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
         }
     }
 
+    // Show camera speed indicator when shift is held
+    if (layer_context.input.modifiers.shift) {
+        engine.ui.ImGui.sameLine();
+        engine.ui.ImGui.text("3x");
+    }
+
     if (engine.ui.ImGui.isWindowHovered()) {
         state.viewport_overlay_hovered = true;
     }

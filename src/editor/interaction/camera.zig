@@ -92,6 +92,15 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
         state.orbit_distance = utils.clampDistance(vec3.length(vec3.sub(state.focus_pivot, camera.transform.translation)));
     }
 
+    // Horizontal scroll with shift + wheel
+    if (@abs(input.mouse_wheel[0]) > 0.001) {
+        const right = vec3.rightFromYaw(state.yaw);
+        const pan_step = input.mouse_wheel[0] * state.wheel_speed * @max(state.orbit_distance * 0.3, 1.0);
+        const pan = vec3.scale(right, pan_step);
+        camera.transform.translation = vec3.add(camera.transform.translation, pan);
+        state.focus_pivot = vec3.add(state.focus_pivot, pan);
+    }
+
     camera.transform.rotation_euler = .{ state.pitch, state.yaw, 0.0 };
 }
 
