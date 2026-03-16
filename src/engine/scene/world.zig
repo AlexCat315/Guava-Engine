@@ -286,6 +286,16 @@ pub const World = struct {
         });
     }
 
+    pub fn createEmptyEntity(self: *World, transform: components.Transform) !EntityId {
+        const entity_name = try self.nextAvailableName("Empty");
+        defer self.allocator.free(entity_name);
+
+        return self.createEntity(.{
+            .name = entity_name,
+            .transform = transform,
+        });
+    }
+
     pub fn createLightEntity(
         self: *World,
         kind: components.LightKind,

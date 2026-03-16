@@ -147,6 +147,14 @@ pub fn collapsingHeader(label: []const u8, default_open: bool) bool {
     return c.guava_imgui_collapsing_header(label.ptr, label.len, default_open);
 }
 
+pub fn dragDropSourceU64(payload_type: []const u8, value: u64, preview_text: []const u8) bool {
+    return c.guava_imgui_drag_drop_source_u64(payload_type.ptr, payload_type.len, value, preview_text.ptr, preview_text.len);
+}
+
+pub fn acceptDragDropPayloadU64(payload_type: []const u8, out_value: *u64) bool {
+    return c.guava_imgui_accept_drag_drop_payload_u64(payload_type.ptr, payload_type.len, out_value);
+}
+
 fn textureFormatToSdl(format: rhi_types.TextureFormat) c.SDL_GPUTextureFormat {
     return switch (format) {
         .bgra8_unorm => @as(c.SDL_GPUTextureFormat, @intCast(c.SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM)),

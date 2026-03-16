@@ -2,6 +2,7 @@ const std = @import("std");
 const engine = @import("guava");
 
 const autosave_path = "assets/scenes/editor_autosave.guava_scene";
+const entity_drag_payload = "guava.scene.entity";
 
 const ManipulationMode = enum {
     none,
@@ -329,10 +330,19 @@ pub const EditorLayer = struct {
         try self.captureSnapshot(layer_context);
     }
 
+    fn spawnEmptyEntity(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
+        const entity_id = try layer_context.world.createEmptyEntity(self.spawnTransform(layer_context));
+        try layer_context.renderer.replaceSelection(entity_id);
+        self.syncInspectorNameBuffer(layer_context);
+        self.focusSelection(layer_context);
+        try self.captureSnapshot(layer_context);
+    }
+
     fn spawnPrimitive(self: *EditorLayer, layer_context: *engine.core.LayerContext, primitive: engine.scene.Primitive) !void {
         const spawn_transform = self.spawnTransform(layer_context);
         const entity_id = try layer_context.world.createPrimitiveEntity(primitive, spawn_transform);
         try layer_context.renderer.replaceSelection(entity_id);
+        self.syncInspectorNameBuffer(layer_context);
         self.focusSelection(layer_context);
         try self.captureSnapshot(layer_context);
     }
@@ -342,6 +352,7 @@ pub const EditorLayer = struct {
         transform.translation[1] += 1.0;
         const entity_id = try layer_context.world.createLightEntity(.point, transform, 24.0);
         try layer_context.renderer.replaceSelection(entity_id);
+        self.syncInspectorNameBuffer(layer_context);
         self.focusSelection(layer_context);
         try self.captureSnapshot(layer_context);
     }
@@ -694,6 +705,29 @@ pub const EditorLayer = struct {
         }
     }
 
+    fn reparentEntity(
+        self: *EditorLayer,
+        layer_context: *engine.core.LayerContext,
+        child_id: engine.scene.EntityId,
+        parent_id: ?engine.scene.EntityId,
+    ) !void {
+        if (self.editor_camera != null and child_id == self.editor_camera.?) {
+            return;
+        }
+
+        const changed = layer_context.world.setParent(child_id, parent_id) catch |err| {
+            std.log.warn("failed to reparent entity {d}: {}", .{ child_id, err });
+            return;
+        };
+        if (!changed) {
+            return;
+        }
+
+        try layer_context.renderer.replaceSelection(child_id);
+        self.syncInspectorNameBuffer(layer_context);
+        try self.captureSnapshot(layer_context);
+    }
+
     fn drawEditorUi(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
         try self.drawMenuBar(layer_context);
         try self.drawStatsWindow(layer_context);
@@ -759,6 +793,9 @@ pub const EditorLayer = struct {
 
         if (engine.ui.ImGui.beginMenu("Create")) {
             defer engine.ui.ImGui.endMenu();
+            if (engine.ui.ImGui.menuItem("Empty", null, false, true)) {
+                try self.spawnEmptyEntity(layer_context);
+            }
             if (engine.ui.ImGui.menuItem("Cube", "1", false, true)) {
                 try self.spawnPrimitive(layer_context, .cube);
             }
@@ -795,6 +832,15 @@ pub const EditorLayer = struct {
         _ = engine.ui.ImGui.beginWindow("Scene");
         defer engine.ui.ImGui.endWindow();
 
+        if (engine.ui.ImGui.button("Scene Root") and layer_context.renderer.selectedEntities().len > 0) {
+            try self.unparentSelection(layer_context);
+        }
+        var dropped_root: u64 = 0;
+        if (engine.ui.ImGui.acceptDragDropPayloadU64(entity_drag_payload, &dropped_root)) {
+            try self.reparentEntity(layer_context, dropped_root, null);
+        }
+        engine.ui.ImGui.separator();
+
         for (layer_context.world.entities.items) |entity| {
             if (entity.editor_only or entity.parent != null) {
                 continue;
@@ -809,7 +855,7 @@ pub const EditorLayer = struct {
             return;
         }
 
-        const is_selected = layer_context.renderer.selectedEntity() == entity_id;
+        const is_selected = self.isEntitySelected(layer_context, entity_id);
         const leaf = !self.hasVisibleChildren(layer_context.world, entity_id);
         const is_open = engine.ui.ImGui.treeNodeEntity(entity_id, entity.name, is_selected, leaf, false);
 
@@ -820,6 +866,12 @@ pub const EditorLayer = struct {
                 try layer_context.renderer.replaceSelection(entity_id);
             }
             self.syncInspectorNameBuffer(layer_context);
+        }
+
+        _ = engine.ui.ImGui.dragDropSourceU64(entity_drag_payload, entity_id, entity.name);
+        var dropped_child: u64 = 0;
+        if (engine.ui.ImGui.acceptDragDropPayloadU64(entity_drag_payload, &dropped_child)) {
+            try self.reparentEntity(layer_context, dropped_child, entity_id);
         }
 
         if (!leaf and is_open) {
@@ -841,12 +893,17 @@ pub const EditorLayer = struct {
             engine.ui.ImGui.text("No entity selected.");
             return;
         };
+        const selection_count = layer_context.renderer.selectedEntities().len;
 
         const entity = layer_context.world.getEntity(selected) orelse {
             engine.ui.ImGui.text("Selection is stale.");
             return;
         };
         const world_transform = layer_context.world.worldTransform(selected) orelse entity.transform;
+
+        var selection_count_buffer: [32]u8 = undefined;
+        const selection_count_text = try std.fmt.bufPrint(&selection_count_buffer, "{d}", .{selection_count});
+        engine.ui.ImGui.labelText("Selection Count", selection_count_text);
 
         if (engine.ui.ImGui.button("Focus")) {
             self.focusSelection(layer_context);
@@ -935,6 +992,22 @@ pub const EditorLayer = struct {
         );
         engine.ui.ImGui.labelText("World Translation", world_translation);
 
+        var world_rotation_buffer: [96]u8 = undefined;
+        const world_rotation = try std.fmt.bufPrint(
+            &world_rotation_buffer,
+            "{d:.2}, {d:.2}, {d:.2}",
+            .{ world_transform.rotation_euler[0], world_transform.rotation_euler[1], world_transform.rotation_euler[2] },
+        );
+        engine.ui.ImGui.labelText("World Rotation", world_rotation);
+
+        var world_scale_buffer: [96]u8 = undefined;
+        const world_scale = try std.fmt.bufPrint(
+            &world_scale_buffer,
+            "{d:.2}, {d:.2}, {d:.2}",
+            .{ world_transform.scale[0], world_transform.scale[1], world_transform.scale[2] },
+        );
+        engine.ui.ImGui.labelText("World Scale", world_scale);
+
         if (entity.camera != null and engine.ui.ImGui.collapsingHeader("Camera", true)) {
             if (entity.camera.?.is_primary) {
                 engine.ui.ImGui.text("Primary scene camera");
@@ -979,6 +1052,16 @@ pub const EditorLayer = struct {
         _ = self;
         for (world.entities.items) |entity| {
             if (!entity.editor_only and entity.parent == entity_id) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn isEntitySelected(self: *const EditorLayer, layer_context: *const engine.core.LayerContext, entity_id: engine.scene.EntityId) bool {
+        _ = self;
+        for (layer_context.renderer.selectedEntities()) |selected_id| {
+            if (selected_id == entity_id) {
                 return true;
             }
         }

@@ -44,6 +44,8 @@ bool guava_imgui_drag_float(const char* label, size_t label_len, float* value, f
 bool guava_imgui_drag_float3(const char* label, size_t label_len, float value[3], float speed, float min_value, float max_value);
 bool guava_imgui_checkbox(const char* label, size_t label_len, bool* value);
 bool guava_imgui_collapsing_header(const char* label, size_t label_len, bool default_open);
+bool guava_imgui_drag_drop_source_u64(const char* payload_type, size_t payload_type_len, uint64_t value, const char* preview_text, size_t preview_text_len);
+bool guava_imgui_accept_drag_drop_payload_u64(const char* payload_type, size_t payload_type_len, uint64_t* out_value);
 
 #ifdef __cplusplus
 }

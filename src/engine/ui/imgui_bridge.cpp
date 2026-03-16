@@ -332,3 +332,41 @@ extern "C" bool guava_imgui_collapsing_header(const char* label, size_t label_le
     const std::string owned_label = make_string(label, label_len);
     return ImGui::CollapsingHeader(owned_label.c_str(), flags);
 }
+
+extern "C" bool guava_imgui_drag_drop_source_u64(const char* payload_type, size_t payload_type_len, uint64_t value, const char* preview_text, size_t preview_text_len) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+    if (!ImGui::BeginDragDropSource()) {
+        return false;
+    }
+
+    const std::string owned_type = make_string(payload_type, payload_type_len);
+    ImGui::SetDragDropPayload(owned_type.c_str(), &value, sizeof(value));
+    if (preview_text != nullptr and preview_text_len > 0) {
+        ImGui::TextUnformatted(preview_text, preview_text + preview_text_len);
+    }
+    ImGui::EndDragDropSource();
+    return true;
+}
+
+extern "C" bool guava_imgui_accept_drag_drop_payload_u64(const char* payload_type, size_t payload_type_len, uint64_t* out_value) {
+    if (!g_imgui_initialized || out_value == nullptr) {
+        return false;
+    }
+    if (!ImGui::BeginDragDropTarget()) {
+        return false;
+    }
+
+    bool accepted = false;
+    const std::string owned_type = make_string(payload_type, payload_type_len);
+    if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(owned_type.c_str())) {
+        if (payload->Data != nullptr && payload->DataSize == static_cast<int>(sizeof(uint64_t))) {
+            *out_value = *static_cast<const uint64_t*>(payload->Data);
+            accepted = true;
+        }
+    }
+
+    ImGui::EndDragDropTarget();
+    return accepted;
+}
