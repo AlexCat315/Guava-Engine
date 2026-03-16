@@ -1,5 +1,6 @@
 const std = @import("std");
 const engine = @import("guava");
+const vec3 = engine.math.vec3;
 const EditorState = @import("../core/state.zig").EditorState;
 const state_mod = @import("../core/state.zig");
 const utils = @import("../common/utils.zig");
@@ -648,10 +649,55 @@ fn applyPendingViewportAssetDrop(state: *EditorState, layer_context: *engine.cor
             }
         },
         .place_actor => {
-            _ = pending.actor_kind;
-            _ = pending.world_position;
+            const actor_kind = pending.actor_kind orelse return;
+            const spawn_transform = try calculateSpawnTransformFromPixel(state, layer_context, pending.pixel);
+            switch (actor_kind) {
+                .empty => try history.spawnEmptyEntityAt(state, layer_context, spawn_transform),
+                .camera => try history.spawnCameraEntityAt(state, layer_context, spawn_transform),
+                .cube => try history.spawnPrimitiveAt(state, layer_context, .cube, spawn_transform),
+                .sphere => try history.spawnPrimitiveAt(state, layer_context, .sphere, spawn_transform),
+                .plane => try history.spawnPrimitiveAt(state, layer_context, .plane, spawn_transform),
+                .point_light => try history.spawnPointLightAt(state, layer_context, spawn_transform),
+                .spot_light => try history.spawnSpotLightAt(state, layer_context, spawn_transform),
+                .directional_light => try history.spawnDirectionalLightAt(state, layer_context, spawn_transform),
+            }
         },
     }
+}
+
+fn calculateSpawnTransformFromPixel(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    pixel: ?[2]u32,
+) !engine.scene.Transform {
+    if (pixel) |p| {
+        const camera_transform = camera.activeCameraTransform(state, layer_context);
+        const viewport_size = layer_context.renderer.sceneViewportSize();
+        if (viewport_size[0] == 0 or viewport_size[1] == 0) {
+            return history.spawnTransform(state, layer_context);
+        }
+        const ndc_x = (@as(f32, @floatFromInt(p[0])) / @as(f32, @floatFromInt(viewport_size[0]))) * 2.0 - 1.0;
+        const ndc_y = 1.0 - (@as(f32, @floatFromInt(p[1])) / @as(f32, @floatFromInt(viewport_size[1]))) * 2.0;
+        const fov_y = 1.0;
+        const aspect = @as(f32, @floatFromInt(viewport_size[0])) / @as(f32, @floatFromInt(viewport_size[1]));
+        const tan_half_fov = @tan(fov_y * 0.5);
+        const ray_dir_ndc = [3]f32{ ndc_x * tan_half_fov * aspect, ndc_y * tan_half_fov, -1.0 };
+        const ray_dir = vec3.normalize(ray_dir_ndc);
+        const ray_origin = camera_transform.translation;
+        const plane_y: f32 = 0.0;
+        if (ray_dir[1] != 0.0) {
+            const t = (plane_y - ray_origin[1]) / ray_dir[1];
+            if (t > 0.0) {
+                const hit_point = [3]f32{
+                    ray_origin[0] + ray_dir[0] * t,
+                    plane_y,
+                    ray_origin[2] + ray_dir[2] * t,
+                };
+                return .{ .translation = hit_point };
+            }
+        }
+    }
+    return history.spawnTransform(state, layer_context);
 }
 
 fn handleViewportAssetDropTargets(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -673,6 +719,16 @@ fn handleViewportAssetDropTargets(state: *EditorState, layer_context: *engine.co
                 .pixel = pixel,
             };
         }
+    }
+    var actor_kind_int: u64 = 0;
+    if (engine.ui.ImGui.acceptDragDropPayloadU64(state_mod.place_actor_drag_payload, &actor_kind_int)) {
+        const actor_kind = @as(state_mod.PlaceActorKind, @enumFromInt(actor_kind_int));
+        const pixel = viewportPixelUnderMouse(state, layer_context);
+        state.pending_viewport_drop = .{
+            .source_kind = .place_actor,
+            .actor_kind = actor_kind,
+            .pixel = pixel,
+        };
     }
 }
 

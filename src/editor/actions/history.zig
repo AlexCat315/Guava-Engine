@@ -213,6 +213,49 @@ pub fn spawnPointLight(state: *EditorState, layer_context: *engine.core.LayerCon
     try captureSnapshot(state, layer_context);
 }
 
+pub fn spawnEmptyEntityAt(state: *EditorState, layer_context: *engine.core.LayerContext, transform: engine.scene.Transform) !void {
+    const entity_id = try layer_context.world.createEmptyEntity(transform);
+    try layer_context.renderer.replaceSelection(entity_id);
+    utils.syncInspectorNameBuffer(state, layer_context);
+    try captureSnapshot(state, layer_context);
+}
+
+pub fn spawnCameraEntityAt(state: *EditorState, layer_context: *engine.core.LayerContext, transform: engine.scene.Transform) !void {
+    const entity_id = try layer_context.world.createCameraEntity(transform);
+    try layer_context.renderer.replaceSelection(entity_id);
+    state.scene_camera = entity_id;
+    utils.syncInspectorNameBuffer(state, layer_context);
+    try captureSnapshot(state, layer_context);
+}
+
+pub fn spawnPrimitiveAt(state: *EditorState, layer_context: *engine.core.LayerContext, primitive: engine.scene.Primitive, transform: engine.scene.Transform) !void {
+    const entity_id = try layer_context.world.createPrimitiveEntity(primitive, transform);
+    try layer_context.renderer.replaceSelection(entity_id);
+    utils.syncInspectorNameBuffer(state, layer_context);
+    try captureSnapshot(state, layer_context);
+}
+
+pub fn spawnPointLightAt(state: *EditorState, layer_context: *engine.core.LayerContext, transform: engine.scene.Transform) !void {
+    const entity_id = try layer_context.world.createLightEntity(.point, transform, 24.0);
+    try layer_context.renderer.replaceSelection(entity_id);
+    utils.syncInspectorNameBuffer(state, layer_context);
+    try captureSnapshot(state, layer_context);
+}
+
+pub fn spawnSpotLightAt(state: *EditorState, layer_context: *engine.core.LayerContext, transform: engine.scene.Transform) !void {
+    const entity_id = try layer_context.world.createLightEntity(.spot, transform, 24.0);
+    try layer_context.renderer.replaceSelection(entity_id);
+    utils.syncInspectorNameBuffer(state, layer_context);
+    try captureSnapshot(state, layer_context);
+}
+
+pub fn spawnDirectionalLightAt(state: *EditorState, layer_context: *engine.core.LayerContext, transform: engine.scene.Transform) !void {
+    const entity_id = try layer_context.world.createLightEntity(.directional, transform, 1.0);
+    try layer_context.renderer.replaceSelection(entity_id);
+    utils.syncInspectorNameBuffer(state, layer_context);
+    try captureSnapshot(state, layer_context);
+}
+
 pub fn spawnTransform(state: *EditorState, layer_context: *engine.core.LayerContext) engine.scene.Transform {
     const camera_transform = camera.activeCameraTransform(state, layer_context);
     const forward = vec3.forwardFromAngles(camera_transform.rotation_euler[1], camera_transform.rotation_euler[0]);

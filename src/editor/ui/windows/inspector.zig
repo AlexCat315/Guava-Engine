@@ -113,7 +113,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
             if (layer_context.world.getEntityConst(parent_id)) |parent| {
                 engine.ui.ImGui.labelText(state.text(.parent), parent.name);
             }
-            engine.ui.ImGui.pushStyleVarFloat(.item_spacing, 4.0);
+            engine.ui.ImGui.pushStyleVarVec2(.item_spacing, .{ 4.0, 4.0 });
             defer engine.ui.ImGui.popStyleVar(1);
             if (engine.ui.ImGui.buttonEx(state.text(.unparent_selected), 0.0, 0.0)) {
                 try scene_hierarchy.unparentSelection(state, layer_context);
@@ -292,7 +292,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                 }
 
                 if (material_component.handle == null or material_usage_count > 1) {
-                    engine.ui.ImGui.pushStyleVarFloat(.item_spacing, 4.0);
+                    engine.ui.ImGui.pushStyleVarVec2(.item_spacing, .{ 4.0, 4.0 });
                     defer engine.ui.ImGui.popStyleVar(1);
                     if (engine.ui.ImGui.buttonEx(state.text(.make_material_instance), 0.0, 0.0)) {
                         _ = try ensureEditableMaterialResource(state, layer_context, entity);
@@ -305,7 +305,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                 }
 
                 if (content_browser.selectedAssetCanUseAsTexture(state)) {
-                    engine.ui.ImGui.pushStyleVarFloat(.item_spacing, 4.0);
+                    engine.ui.ImGui.pushStyleVarVec2(.item_spacing, .{ 4.0, 4.0 });
                     defer engine.ui.ImGui.popStyleVar(1);
                     if (engine.ui.ImGui.buttonEx(state.text(.assign_selected_texture), 0.0, 0.0)) {
                         try assignSelectedTextureToMaterial(state, layer_context, entity);
@@ -313,7 +313,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                     }
                     engine.ui.ImGui.sameLine();
                 } else if (material_texture_handle != null) {
-                    engine.ui.ImGui.pushStyleVarFloat(.item_spacing, 4.0);
+                    engine.ui.ImGui.pushStyleVarVec2(.item_spacing, .{ 4.0, 4.0 });
                     defer engine.ui.ImGui.popStyleVar(1);
                     if (engine.ui.ImGui.buttonEx(state.text(.clear_texture), 0.0, 0.0)) {
                         if (try ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
@@ -396,7 +396,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                 if (camera_component.is_primary) {
                     engine.ui.ImGui.text(state.text(.primary_scene_camera));
                 } else {
-                    engine.ui.ImGui.pushStyleVarFloat(.item_spacing, 4.0);
+                    engine.ui.ImGui.pushStyleVarVec2(.item_spacing, .{ 4.0, 4.0 });
                     defer engine.ui.ImGui.popStyleVar(1);
                     if (engine.ui.ImGui.buttonEx(state.text(.make_primary_camera), 0.0, 0.0)) {
                         _ = layer_context.world.setPrimaryCamera(selected);
