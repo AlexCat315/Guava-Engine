@@ -228,26 +228,31 @@ pub fn syncInspectorNameBuffer(state: *EditorState, layer_context: *engine.core.
 }
 
 pub fn entityPath(buffer: []u8, world: *const engine.scene.World, entity_id: engine.scene.EntityId) ![]const u8 {
-    var segments = std.BoundedArray([]const u8, 64){};
+    var segments: [64][]const u8 = undefined;
+    var segment_count: usize = 0;
     var current: ?engine.scene.EntityId = entity_id;
     while (current) |current_id| {
         const entity = world.getEntityConst(current_id) orelse break;
-        try segments.append(entity.name);
+        if (segment_count == segments.len) {
+            return error.NoSpaceLeft;
+        }
+        segments[segment_count] = entity.name;
+        segment_count += 1;
         current = entity.parent;
     }
 
     var stream = std.io.fixedBufferStream(buffer);
     const writer = stream.writer();
-    if (segments.len == 0) {
+    if (segment_count == 0) {
         try writer.writeAll("/");
         return stream.getWritten();
     }
 
-    var index = segments.len;
+    var index = segment_count;
     while (index > 0) {
         index -= 1;
         try writer.writeAll("/");
-        try writer.writeAll(segments.get(index));
+        try writer.writeAll(segments[index]);
     }
     return stream.getWritten();
 }
