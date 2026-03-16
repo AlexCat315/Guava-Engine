@@ -11,6 +11,19 @@
 extern "C" {
 #endif
 
+enum {
+    GUAVA_IMGUI_WINDOW_NONE = 0,
+    GUAVA_IMGUI_WINDOW_NO_TITLE_BAR = 1 << 0,
+    GUAVA_IMGUI_WINDOW_NO_RESIZE = 1 << 1,
+    GUAVA_IMGUI_WINDOW_NO_MOVE = 1 << 2,
+    GUAVA_IMGUI_WINDOW_NO_SCROLLBAR = 1 << 3,
+    GUAVA_IMGUI_WINDOW_NO_SAVED_SETTINGS = 1 << 4,
+    GUAVA_IMGUI_WINDOW_NO_DOCKING = 1 << 5,
+    GUAVA_IMGUI_WINDOW_NO_COLLAPSE = 1 << 6,
+    GUAVA_IMGUI_WINDOW_NO_BACKGROUND = 1 << 7,
+    GUAVA_IMGUI_WINDOW_NO_DECORATION = 1 << 8,
+};
+
 bool guava_imgui_init(SDL_Window* window, SDL_GPUDevice* device, SDL_GPUTextureFormat color_target_format);
 void guava_imgui_shutdown(void);
 void guava_imgui_process_event(const SDL_Event* event);
@@ -23,6 +36,7 @@ bool guava_imgui_want_capture_mouse(void);
 bool guava_imgui_want_capture_keyboard(void);
 
 bool guava_imgui_begin_window(const char* name, size_t name_len);
+bool guava_imgui_begin_window_flags(const char* name, size_t name_len, uint32_t flags);
 void guava_imgui_end_window(void);
 bool guava_imgui_begin_main_menu_bar(void);
 void guava_imgui_end_main_menu_bar(void);

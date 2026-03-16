@@ -11,6 +11,19 @@ pub const Error = error{
     ImGuiInitFailed,
 };
 
+pub const WindowFlags = struct {
+    pub const none: u32 = c.GUAVA_IMGUI_WINDOW_NONE;
+    pub const no_title_bar: u32 = c.GUAVA_IMGUI_WINDOW_NO_TITLE_BAR;
+    pub const no_resize: u32 = c.GUAVA_IMGUI_WINDOW_NO_RESIZE;
+    pub const no_move: u32 = c.GUAVA_IMGUI_WINDOW_NO_MOVE;
+    pub const no_scrollbar: u32 = c.GUAVA_IMGUI_WINDOW_NO_SCROLLBAR;
+    pub const no_saved_settings: u32 = c.GUAVA_IMGUI_WINDOW_NO_SAVED_SETTINGS;
+    pub const no_docking: u32 = c.GUAVA_IMGUI_WINDOW_NO_DOCKING;
+    pub const no_collapse: u32 = c.GUAVA_IMGUI_WINDOW_NO_COLLAPSE;
+    pub const no_background: u32 = c.GUAVA_IMGUI_WINDOW_NO_BACKGROUND;
+    pub const no_decoration: u32 = c.GUAVA_IMGUI_WINDOW_NO_DECORATION;
+};
+
 pub fn init(window: *window_mod.Window, device: *rhi_mod.RhiDevice) Error!void {
     if (!c.guava_imgui_init(
         @ptrCast(window.handle),
@@ -59,6 +72,10 @@ pub fn wantsCaptureKeyboard() bool {
 
 pub fn beginWindow(name: []const u8) bool {
     return c.guava_imgui_begin_window(name.ptr, name.len);
+}
+
+pub fn beginWindowFlags(name: []const u8, flags: u32) bool {
+    return c.guava_imgui_begin_window_flags(name.ptr, name.len, flags);
 }
 
 pub fn endWindow() void {

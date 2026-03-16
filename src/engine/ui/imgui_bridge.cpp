@@ -20,6 +20,20 @@ ImDrawData* g_draw_data = nullptr;
 std::string g_ini_path;
 ImGuiID g_dockspace_id = 0;
 
+ImGuiWindowFlags to_imgui_window_flags(uint32_t flags) {
+    ImGuiWindowFlags result = ImGuiWindowFlags_None;
+    if ((flags & GUAVA_IMGUI_WINDOW_NO_TITLE_BAR) != 0) result |= ImGuiWindowFlags_NoTitleBar;
+    if ((flags & GUAVA_IMGUI_WINDOW_NO_RESIZE) != 0) result |= ImGuiWindowFlags_NoResize;
+    if ((flags & GUAVA_IMGUI_WINDOW_NO_MOVE) != 0) result |= ImGuiWindowFlags_NoMove;
+    if ((flags & GUAVA_IMGUI_WINDOW_NO_SCROLLBAR) != 0) result |= ImGuiWindowFlags_NoScrollbar;
+    if ((flags & GUAVA_IMGUI_WINDOW_NO_SAVED_SETTINGS) != 0) result |= ImGuiWindowFlags_NoSavedSettings;
+    if ((flags & GUAVA_IMGUI_WINDOW_NO_DOCKING) != 0) result |= ImGuiWindowFlags_NoDocking;
+    if ((flags & GUAVA_IMGUI_WINDOW_NO_COLLAPSE) != 0) result |= ImGuiWindowFlags_NoCollapse;
+    if ((flags & GUAVA_IMGUI_WINDOW_NO_BACKGROUND) != 0) result |= ImGuiWindowFlags_NoBackground;
+    if ((flags & GUAVA_IMGUI_WINDOW_NO_DECORATION) != 0) result |= ImGuiWindowFlags_NoDecoration;
+    return result;
+}
+
 std::string first_existing_path(std::initializer_list<const char*> candidates) {
     for (const char* candidate : candidates) {
         if (candidate == nullptr || candidate[0] == '\0') {
@@ -229,13 +243,11 @@ extern "C" void guava_imgui_reset_default_layout(void) {
     ImGuiID dock_right = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Right, 0.28f, nullptr, &dock_main);
     ImGuiID dock_bottom = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Down, 0.28f, nullptr, &dock_main);
     ImGuiID dock_top = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Up, 0.08f, nullptr, &dock_main);
-    ImGuiID dock_left_bottom = ImGui::DockBuilderSplitNode(dock_left, ImGuiDir_Down, 0.34f, nullptr, &dock_left);
     ImGuiID dock_right_bottom = ImGui::DockBuilderSplitNode(dock_right, ImGuiDir_Down, 0.42f, nullptr, &dock_right);
 
     ImGui::DockBuilderDockWindow("Viewport Toolbar###viewport_toolbar_panel", dock_top);
     ImGui::DockBuilderDockWindow("Viewport###viewport_panel", dock_main);
     ImGui::DockBuilderDockWindow("Scene###scene_panel", dock_left);
-    ImGui::DockBuilderDockWindow("Settings###settings_panel", dock_left_bottom);
     ImGui::DockBuilderDockWindow("Details###details_panel", dock_right);
     ImGui::DockBuilderDockWindow("Asset Preview###asset_preview_panel", dock_right_bottom);
     ImGui::DockBuilderDockWindow("Stats###stats_panel", dock_right_bottom);
@@ -287,6 +299,14 @@ extern "C" bool guava_imgui_begin_window(const char* name, size_t name_len) {
     }
     const std::string window_name = make_string(name, name_len);
     return ImGui::Begin(window_name.c_str());
+}
+
+extern "C" bool guava_imgui_begin_window_flags(const char* name, size_t name_len, uint32_t flags) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+    const std::string window_name = make_string(name, name_len);
+    return ImGui::Begin(window_name.c_str(), nullptr, to_imgui_window_flags(flags));
 }
 
 extern "C" void guava_imgui_end_window(void) {

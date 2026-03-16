@@ -1,5 +1,6 @@
 const std = @import("std");
 const engine = @import("guava");
+const localization = @import("localization.zig");
 
 const autosave_path = "assets/scenes/editor_autosave.guava_scene";
 const entity_drag_payload = "guava.scene.entity";
@@ -31,10 +32,7 @@ const AxisConstraint = enum {
     z,
 };
 
-const Language = enum {
-    english,
-    chinese,
-};
+const Language = localization.Language;
 
 pub const EditorLayer = struct {
     allocator: ?std.mem.Allocator = null,
@@ -66,6 +64,7 @@ pub const EditorLayer = struct {
     asset_filter_buffer: [128]u8 = [_]u8{0} ** 128,
     language: Language = .chinese,
     dock_layout_initialized: bool = false,
+    settings_open: bool = false,
     viewport_hovered: bool = false,
     viewport_focused: bool = false,
     viewport_has_image: bool = false,
@@ -999,26 +998,28 @@ pub const EditorLayer = struct {
         try self.drawInspectorWindow(layer_context);
         try self.drawContentBrowser(layer_context);
         try self.drawAssetPreviewWindow(layer_context);
-        try self.drawSettingsWindow(layer_context);
+        if (self.settings_open) {
+            try self.drawSettingsWindow(layer_context);
+        }
     }
 
     fn drawViewportToolbar(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
         var title_buffer: [96]u8 = undefined;
-        const title = try self.windowLabel(&title_buffer, "Viewport Toolbar", "视口工具条", "viewport_toolbar_panel");
-        _ = engine.ui.ImGui.beginWindow(title);
+        const title = try self.windowLabel(&title_buffer, .viewport_toolbar, "viewport_toolbar_panel");
+        _ = engine.ui.ImGui.beginWindowFlags(title, engine.ui.ImGui.WindowFlags.no_title_bar | engine.ui.ImGui.WindowFlags.no_collapse | engine.ui.ImGui.WindowFlags.no_scrollbar);
         defer engine.ui.ImGui.endWindow();
 
-        engine.ui.ImGui.labelText(self.tr("Camera", "相机"), self.tr(if (self.editor_camera_active) "Editor" else "Scene", if (self.editor_camera_active) "编辑器" else "场景"));
+        engine.ui.ImGui.labelText(self.text(.camera), if (self.editor_camera_active) self.text(.editor) else self.text(.scene));
         var mode_buffer: [32]u8 = undefined;
         const mode_text = try std.fmt.bufPrint(&mode_buffer, "{s}", .{
             switch (self.manipulation_mode) {
-                .none => self.tr("Idle", "空闲"),
-                .translate => self.tr("Move", "移动"),
-                .rotate => self.tr("Rotate", "旋转"),
-                .scale => self.tr("Scale", "缩放"),
+                .none => self.text(.idle),
+                .translate => self.text(.move),
+                .rotate => self.text(.rotate),
+                .scale => self.text(.scale),
             },
         });
-        engine.ui.ImGui.labelText(self.tr("Mode", "模式"), mode_text);
+        engine.ui.ImGui.labelText(self.text(.mode), mode_text);
 
         if (engine.ui.ImGui.button(self.tr("Toggle Camera", "切换相机"))) {
             self.toggleCameraMode(layer_context);
@@ -1072,7 +1073,7 @@ pub const EditorLayer = struct {
 
     fn drawViewportWindow(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
         var title_buffer: [80]u8 = undefined;
-        const title = try self.windowLabel(&title_buffer, "Viewport", "视口", "viewport_panel");
+        const title = try self.windowLabel(&title_buffer, .viewport, "viewport_panel");
         _ = engine.ui.ImGui.beginWindow(title);
         defer engine.ui.ImGui.endWindow();
 
@@ -1104,7 +1105,7 @@ pub const EditorLayer = struct {
 
     fn drawStatsWindow(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
         var title_buffer: [80]u8 = undefined;
-        const title = try self.windowLabel(&title_buffer, "Stats", "状态", "stats_panel");
+        const title = try self.windowLabel(&title_buffer, .stats, "stats_panel");
         _ = engine.ui.ImGui.beginWindow(title);
         defer engine.ui.ImGui.endWindow();
 
@@ -1214,11 +1215,15 @@ pub const EditorLayer = struct {
                 self.dock_layout_initialized = true;
             }
         }
+
+        if (engine.ui.ImGui.button(self.text(.settings))) {
+            self.settings_open = !self.settings_open;
+        }
     }
 
     fn drawSceneWindow(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
         var title_buffer: [80]u8 = undefined;
-        const title = try self.windowLabel(&title_buffer, "Scene", "场景", "scene_panel");
+        const title = try self.windowLabel(&title_buffer, .scene, "scene_panel");
         _ = engine.ui.ImGui.beginWindow(title);
         defer engine.ui.ImGui.endWindow();
 
@@ -1284,7 +1289,7 @@ pub const EditorLayer = struct {
 
     fn drawInspectorWindow(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
         var title_buffer: [80]u8 = undefined;
-        const title = try self.windowLabel(&title_buffer, "Details", "细节", "details_panel");
+        const title = try self.windowLabel(&title_buffer, .details, "details_panel");
         _ = engine.ui.ImGui.beginWindow(title);
         defer engine.ui.ImGui.endWindow();
 
@@ -1741,7 +1746,7 @@ pub const EditorLayer = struct {
 
     fn drawContentBrowser(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
         var title_buffer: [96]u8 = undefined;
-        const title = try self.windowLabel(&title_buffer, "Content Browser", "资源浏览", "content_browser_panel");
+        const title = try self.windowLabel(&title_buffer, .content_browser, "content_browser_panel");
         _ = engine.ui.ImGui.beginWindow(title);
         defer engine.ui.ImGui.endWindow();
 
@@ -1809,7 +1814,7 @@ pub const EditorLayer = struct {
 
     fn drawAssetPreviewWindow(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
         var title_buffer: [96]u8 = undefined;
-        const title = try self.windowLabel(&title_buffer, "Asset Preview", "资产预览", "asset_preview_panel");
+        const title = try self.windowLabel(&title_buffer, .asset_preview, "asset_preview_panel");
         _ = engine.ui.ImGui.beginWindow(title);
         defer engine.ui.ImGui.endWindow();
 
@@ -1877,19 +1882,16 @@ pub const EditorLayer = struct {
 
     fn drawSettingsWindow(self: *EditorLayer, layer_context: *engine.core.LayerContext) !void {
         var title_buffer: [80]u8 = undefined;
-        const title = try self.windowLabel(&title_buffer, "Settings", "设置", "settings_panel");
-        _ = engine.ui.ImGui.beginWindow(title);
+        const title = try self.windowLabel(&title_buffer, .settings, "settings_popup");
+        _ = engine.ui.ImGui.beginWindowFlags(title, engine.ui.ImGui.WindowFlags.no_docking);
         defer engine.ui.ImGui.endWindow();
 
-        engine.ui.ImGui.labelText(self.tr("Language", "语言"), self.tr(
-            if (self.language == .english) "English" else "Chinese",
-            if (self.language == .english) "英文" else "中文",
-        ));
-        if (engine.ui.ImGui.button("English")) {
+        engine.ui.ImGui.labelText(self.text(.language), if (self.language == .english) self.text(.english) else self.text(.chinese));
+        if (engine.ui.ImGui.button(self.text(.english))) {
             self.language = .english;
         }
         engine.ui.ImGui.sameLine();
-        if (engine.ui.ImGui.button("中文")) {
+        if (engine.ui.ImGui.button(self.text(.chinese))) {
             self.language = .chinese;
         }
 
@@ -2139,39 +2141,40 @@ pub const EditorLayer = struct {
         return count;
     }
 
-    fn tr(self: *const EditorLayer, english: []const u8, chinese: []const u8) []const u8 {
-        return switch (self.language) {
-            .english => english,
-            .chinese => chinese,
-        };
+    fn text(self: *const EditorLayer, id: localization.TextId) []const u8 {
+        return localization.text(self.language, id);
     }
 
-    fn windowLabel(self: *const EditorLayer, buffer: []u8, english: []const u8, chinese: []const u8, stable_id: []const u8) ![]const u8 {
-        return std.fmt.bufPrint(buffer, "{s}###{s}", .{ self.tr(english, chinese), stable_id });
+    fn tr(self: *const EditorLayer, english_value: []const u8, chinese_fallback: []const u8) []const u8 {
+        return localization.legacyText(self.language, english_value, chinese_fallback);
+    }
+
+    fn windowLabel(self: *const EditorLayer, buffer: []u8, id: localization.TextId, stable_id: []const u8) ![]const u8 {
+        return localization.panelLabel(self.language, buffer, id, stable_id);
     }
 
     fn assetKindLabel(self: *const EditorLayer, kind: AssetKind) []const u8 {
         return switch (kind) {
-            .scene => self.tr("Scene", "场景"),
-            .model => self.tr("Model", "模型"),
-            .texture => self.tr("Texture", "贴图"),
-            .shader => self.tr("Shader", "着色器"),
+            .scene => self.text(.scene),
+            .model => self.text(.model),
+            .texture => self.text(.texture),
+            .shader => self.text(.shader),
         };
     }
 
     fn primitiveLabel(self: *const EditorLayer, primitive: engine.scene.Primitive) []const u8 {
         return switch (primitive) {
-            .cube => self.tr("Cube", "立方体"),
-            .sphere => self.tr("Sphere", "球体"),
-            .plane => self.tr("Plane", "平面"),
-            .custom => self.tr("Custom", "自定义"),
+            .cube => self.text(.cube),
+            .sphere => self.text(.sphere),
+            .plane => self.text(.plane),
+            .custom => self.text(.custom),
         };
     }
 
     fn shadingLabel(self: *const EditorLayer, shading: engine.scene.ShadingModel) []const u8 {
         return switch (shading) {
-            .unlit => self.tr("Unlit", "无光照"),
-            .lambert => self.tr("Lambert", "兰伯特"),
+            .unlit => self.text(.unlit),
+            .lambert => self.text(.lambert),
             .pbr_metallic_roughness => "PBR",
         };
     }
