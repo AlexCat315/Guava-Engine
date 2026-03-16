@@ -290,7 +290,11 @@ pub fn drawStatusBarWindow(state: *EditorState, layer_context: *engine.core.Laye
         .world => state.text(.world_space),
     };
     const backend_text = engine.render.graphicsApiName(layer_context.renderer.backendApi());
-    const memory_mb = @as(f32, @floatFromInt(utils.estimatedWorldMemoryBytes(layer_context.world))) / (1024.0 * 1024.0);
+    var memory_buffer: [32]u8 = undefined;
+    const memory_text = if (engine.platform.processResidentMemoryBytes()) |memory_bytes| blk: {
+        const memory_mb = @as(f32, @floatFromInt(memory_bytes)) / (1024.0 * 1024.0);
+        break :blk try std.fmt.bufPrint(&memory_buffer, "{d:.1} MB", .{memory_mb});
+    } else "N/A";
 
     var path_buffer: [320]u8 = undefined;
     const selected_path = if (layer_context.renderer.selectedEntity()) |selected|
@@ -301,7 +305,7 @@ pub fn drawStatusBarWindow(state: *EditorState, layer_context: *engine.core.Laye
     var status_buffer: [768]u8 = undefined;
     const status_text = try std.fmt.bufPrint(
         &status_buffer,
-        "{s}: {d}    {s}: {d:.1}    {s}: {s}    {s}: {d:.1} MB    {s}: {s}    {s}: {s}    {s}: {s}    {s}: {s}    {s}: {s}",
+        "{s}: {d}    {s}: {d:.1}    {s}: {s}    {s}: {s}    {s}: {s}    {s}: {s}    {s}: {s}    {s}: {s}    {s}: {s}",
         .{
             state.text(.selection_count),
             selection_count,
@@ -310,7 +314,7 @@ pub fn drawStatusBarWindow(state: *EditorState, layer_context: *engine.core.Laye
             state.text(.backend),
             backend_text,
             state.text(.memory),
-            memory_mb,
+            memory_text,
             state.text(.selected_path),
             selected_path,
             state.text(.save_status),
