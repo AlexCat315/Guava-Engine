@@ -29,6 +29,14 @@ pub const StyleVar = enum(c_uint) {
     frame_padding = c.GUAVA_IMGUI_STYLE_VAR_FRAME_PADDING,
     item_spacing = c.GUAVA_IMGUI_STYLE_VAR_ITEM_SPACING,
     frame_rounding = c.GUAVA_IMGUI_STYLE_VAR_FRAME_ROUNDING,
+    window_min_size = c.GUAVA_IMGUI_STYLE_VAR_WINDOW_MIN_SIZE,
+};
+
+pub const TreeNodeEntityResult = struct {
+    open: bool = false,
+    clicked: bool = false,
+    rename_committed: bool = false,
+    rename_finished: bool = false,
 };
 
 pub const WindowFlags = struct {
@@ -42,6 +50,7 @@ pub const WindowFlags = struct {
     pub const no_collapse: u32 = c.GUAVA_IMGUI_WINDOW_NO_COLLAPSE;
     pub const no_background: u32 = c.GUAVA_IMGUI_WINDOW_NO_BACKGROUND;
     pub const no_decoration: u32 = c.GUAVA_IMGUI_WINDOW_NO_DECORATION;
+    pub const always_auto_resize: u32 = c.GUAVA_IMGUI_WINDOW_ALWAYS_AUTO_RESIZE;
 };
 
 pub fn init(window: *window_mod.Window, device: *rhi_mod.RhiDevice) Error!void {
@@ -242,6 +251,10 @@ pub fn text(value: []const u8) void {
     c.guava_imgui_text(value.ptr, value.len);
 }
 
+pub fn textWrapped(value: []const u8) void {
+    c.guava_imgui_text_wrapped(value.ptr, value.len);
+}
+
 pub fn labelText(label: []const u8, value: []const u8) void {
     c.guava_imgui_label_text(label.ptr, label.len, value.ptr, value.len);
 }
@@ -254,8 +267,18 @@ pub fn popId() void {
     c.guava_imgui_pop_id();
 }
 
-pub fn treeNodeEntity(id: u64, label: []const u8, icon_texture: ?*const rhi_mod.Texture, icon_size: f32, selected: bool, leaf: bool, default_open: bool) bool {
-    return c.guava_imgui_tree_node_entity(
+pub fn treeNodeEntity(
+    id: u64,
+    label: []const u8,
+    icon_texture: ?*const rhi_mod.Texture,
+    icon_size: f32,
+    selected: bool,
+    leaf: bool,
+    default_open: bool,
+    rename_buffer: ?[]u8,
+    request_rename_focus: bool,
+) TreeNodeEntityResult {
+    const raw_state = c.guava_imgui_tree_node_entity(
         id,
         label.ptr,
         label.len,
@@ -264,7 +287,16 @@ pub fn treeNodeEntity(id: u64, label: []const u8, icon_texture: ?*const rhi_mod.
         selected,
         leaf,
         default_open,
+        if (rename_buffer) |value| value.ptr else null,
+        if (rename_buffer) |value| value.len else 0,
+        request_rename_focus,
     );
+    return .{
+        .open = (raw_state & c.GUAVA_IMGUI_TREE_NODE_OPEN) != 0,
+        .clicked = (raw_state & c.GUAVA_IMGUI_TREE_NODE_CLICKED) != 0,
+        .rename_committed = (raw_state & c.GUAVA_IMGUI_TREE_NODE_RENAME_COMMITTED) != 0,
+        .rename_finished = (raw_state & c.GUAVA_IMGUI_TREE_NODE_RENAME_FINISHED) != 0,
+    };
 }
 
 pub fn treePop() void {

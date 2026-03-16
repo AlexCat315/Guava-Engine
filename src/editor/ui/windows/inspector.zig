@@ -13,6 +13,13 @@ const EditRowResult = struct {
     committed: bool = false,
 };
 
+const TransformResetTarget = enum {
+    translation,
+    rotation,
+    scale,
+    all,
+};
+
 const AxisStyle = struct {
     background: [4]f32,
     text: [4]f32,
@@ -100,6 +107,8 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
             .world => state.text(.world_space),
         });
         engine.ui.ImGui.dummy(0.0, 4.0);
+        try drawTransformResetButtons(state, layer_context, selected, entity, world_transform);
+        engine.ui.ImGui.dummy(0.0, 6.0);
 
         if (engine.ui.ImGui.beginTable("transform_grid", 4)) {
             defer engine.ui.ImGui.endTable();
@@ -291,7 +300,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                     try history.captureSnapshot(state, layer_context);
                 }
                 if (material_component.handle != null and material_usage_count > 1) {
-                    engine.ui.ImGui.text(state.text(.editing_now_will_affect_all_users_until_instanced));
+                    engine.ui.ImGui.textWrapped(state.text(.editing_now_will_affect_all_users_until_instanced));
                 }
             }
 
@@ -333,8 +342,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
             engine.ui.ImGui.labelText(state.text(.shading), utils.shadingLabel(state, effective_shading));
 
             var base_color_rgb: [3]f32 = .{ effective_color[0], effective_color[1], effective_color[2] };
-            engine.ui.ImGui.setNextItemWidth(-1.0);
-            if (engine.ui.ImGui.dragFloat3(state.text(.base_color), &base_color_rgb, 0.01, 0.0, 1.0)) {
+            if (drawLabeledFloat3Control(state.text(.base_color), "##material_base_color", &base_color_rgb, 0.01, 0.0, 1.0)) {
                 effective_color[0] = std.math.clamp(base_color_rgb[0], 0.0, 1.0);
                 effective_color[1] = std.math.clamp(base_color_rgb[1], 0.0, 1.0);
                 effective_color[2] = std.math.clamp(base_color_rgb[2], 0.0, 1.0);
@@ -349,8 +357,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
             }
 
             var alpha = effective_color[3];
-            engine.ui.ImGui.setNextItemWidth(-1.0);
-            if (engine.ui.ImGui.dragFloat(state.text(.opacity), &alpha, 0.01, 0.0, 1.0)) {
+            if (drawLabeledFloatControl(state.text(.opacity), "##material_opacity", &alpha, 0.01, 0.0, 1.0)) {
                 effective_color[3] = std.math.clamp(alpha, 0.0, 1.0);
                 material_component.base_color_factor = effective_color;
                 if (try ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
@@ -386,8 +393,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                 .perspective => |projection| {
                     var edited = projection;
                     var fov_degrees = engine.math.angle.radiansToDegrees(edited.fov_y_radians);
-                    engine.ui.ImGui.setNextItemWidth(-1.0);
-                    if (engine.ui.ImGui.dragFloat(state.text(.fov_y), &fov_degrees, 0.25, 10.0, 170.0)) {
+                    if (drawLabeledFloatControl(state.text(.fov_y), "##camera_fov_y", &fov_degrees, 0.25, 10.0, 170.0)) {
                         edited.fov_y_radians = engine.math.angle.degreesToRadians(fov_degrees);
                         camera_component.projection = .{ .perspective = edited };
                         if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
@@ -395,8 +401,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                         }
                     }
 
-                    engine.ui.ImGui.setNextItemWidth(-1.0);
-                    if (engine.ui.ImGui.dragFloat(state.text(.near_clip), &edited.near_clip, 0.01, 0.001, 100.0)) {
+                    if (drawLabeledFloatControl(state.text(.near_clip), "##camera_perspective_near_clip", &edited.near_clip, 0.01, 0.001, 100.0)) {
                         edited.near_clip = std.math.clamp(edited.near_clip, 0.001, 100.0);
                         edited.far_clip = @max(edited.far_clip, edited.near_clip + 0.01);
                         camera_component.projection = .{ .perspective = edited };
@@ -405,8 +410,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                         }
                     }
 
-                    engine.ui.ImGui.setNextItemWidth(-1.0);
-                    if (engine.ui.ImGui.dragFloat(state.text(.far_clip), &edited.far_clip, 1.0, 0.1, 5000.0)) {
+                    if (drawLabeledFloatControl(state.text(.far_clip), "##camera_perspective_far_clip", &edited.far_clip, 1.0, 0.1, 5000.0)) {
                         edited.near_clip = @min(edited.near_clip, edited.far_clip - 0.01);
                         edited.far_clip = std.math.clamp(edited.far_clip, edited.near_clip + 0.01, 5000.0);
                         camera_component.projection = .{ .perspective = edited };
@@ -417,8 +421,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                 },
                 .orthographic => |projection| {
                     var edited = projection;
-                    engine.ui.ImGui.setNextItemWidth(-1.0);
-                    if (engine.ui.ImGui.dragFloat(state.text(.size), &edited.size, 0.1, 0.01, 500.0)) {
+                    if (drawLabeledFloatControl(state.text(.size), "##camera_orthographic_size", &edited.size, 0.1, 0.01, 500.0)) {
                         edited.size = std.math.clamp(edited.size, 0.01, 500.0);
                         camera_component.projection = .{ .orthographic = edited };
                         if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
@@ -426,8 +429,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                         }
                     }
 
-                    engine.ui.ImGui.setNextItemWidth(-1.0);
-                    if (engine.ui.ImGui.dragFloat(state.text(.near_clip), &edited.near_clip, 0.05, -1000.0, 1000.0)) {
+                    if (drawLabeledFloatControl(state.text(.near_clip), "##camera_orthographic_near_clip", &edited.near_clip, 0.05, -1000.0, 1000.0)) {
                         edited.near_clip = std.math.clamp(edited.near_clip, -1000.0, edited.far_clip - 0.01);
                         camera_component.projection = .{ .orthographic = edited };
                         if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
@@ -435,8 +437,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                         }
                     }
 
-                    engine.ui.ImGui.setNextItemWidth(-1.0);
-                    if (engine.ui.ImGui.dragFloat(state.text(.far_clip), &edited.far_clip, 0.05, -1000.0, 1000.0)) {
+                    if (drawLabeledFloatControl(state.text(.far_clip), "##camera_orthographic_far_clip", &edited.far_clip, 0.05, -1000.0, 1000.0)) {
                         edited.far_clip = std.math.clamp(edited.far_clip, edited.near_clip + 0.01, 1000.0);
                         camera_component.projection = .{ .orthographic = edited };
                         if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
@@ -478,8 +479,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
             }
 
             var light_color = light.color;
-            engine.ui.ImGui.setNextItemWidth(-1.0);
-            if (engine.ui.ImGui.dragFloat3(state.text(.color), &light_color, 0.01, 0.0, 10.0)) {
+            if (drawLabeledFloat3Control(state.text(.color), "##light_color", &light_color, 0.01, 0.0, 10.0)) {
                 light.color = light_color;
                 if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
                     try history.captureSnapshot(state, layer_context);
@@ -487,8 +487,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
             }
 
             var intensity = light.intensity;
-            engine.ui.ImGui.setNextItemWidth(-1.0);
-            if (engine.ui.ImGui.dragFloat(state.text(.intensity), &intensity, 0.1, 0.0, 100.0)) {
+            if (drawLabeledFloatControl(state.text(.intensity), "##light_intensity", &intensity, 0.1, 0.0, 100.0)) {
                 light.intensity = intensity;
                 if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
                     try history.captureSnapshot(state, layer_context);
@@ -497,8 +496,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
 
             if (light.kind != .directional) {
                 var range = light.range;
-                engine.ui.ImGui.setNextItemWidth(-1.0);
-                if (engine.ui.ImGui.dragFloat(state.text(.range), &range, 0.1, 0.1, 100.0)) {
+                if (drawLabeledFloatControl(state.text(.range), "##light_range", &range, 0.1, 0.1, 100.0)) {
                     light.range = range;
                     if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
                         try history.captureSnapshot(state, layer_context);
@@ -514,32 +512,132 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
     }
 
     if (engine.ui.ImGui.collapsingHeader(state.text(.actions), true)) {
-        if (engine.ui.ImGui.buttonEx(state.text(.focus), 108.0, 0.0)) {
+        const action_button_width = buttonRowWidth();
+
+        if (engine.ui.ImGui.buttonEx(state.text(.focus), action_button_width, 0.0)) {
             camera.focusSelection(state, layer_context);
         }
         engine.ui.ImGui.sameLine();
-        if (engine.ui.ImGui.buttonEx(state.text(.duplicate), 108.0, 0.0)) {
+        if (engine.ui.ImGui.buttonEx(state.text(.duplicate), action_button_width, 0.0)) {
             try history.duplicateSelection(state, layer_context);
             return;
         }
         engine.ui.ImGui.sameLine();
-        if (engine.ui.ImGui.buttonEx(state.text(.delete), 108.0, 0.0)) {
+        if (engine.ui.ImGui.buttonEx(state.text(.delete), action_button_width, 0.0)) {
             try history.deleteSelection(state, layer_context);
             return;
         }
 
-        if (engine.ui.ImGui.buttonEx(state.text(.move), 108.0, 0.0)) {
+        if (engine.ui.ImGui.buttonEx(state.text(.move), action_button_width, 0.0)) {
             try manipulation.beginManipulation(state, layer_context, .translate);
         }
         engine.ui.ImGui.sameLine();
-        if (engine.ui.ImGui.buttonEx(state.text(.rotate), 108.0, 0.0)) {
+        if (engine.ui.ImGui.buttonEx(state.text(.rotate), action_button_width, 0.0)) {
             try manipulation.beginManipulation(state, layer_context, .rotate);
         }
         engine.ui.ImGui.sameLine();
-        if (engine.ui.ImGui.buttonEx(state.text(.scale), 108.0, 0.0)) {
+        if (engine.ui.ImGui.buttonEx(state.text(.scale), action_button_width, 0.0)) {
             try manipulation.beginManipulation(state, layer_context, .scale);
         }
     }
+}
+
+fn drawTransformResetButtons(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    selected: engine.scene.EntityId,
+    entity: *engine.scene.Entity,
+    world_transform: engine.scene.Transform,
+) !void {
+    const spacing = 8.0;
+    const button_width = @max((engine.ui.ImGui.contentRegionAvail()[0] - spacing * 3.0) * 0.25, 72.0);
+
+    if (engine.ui.ImGui.buttonEx(state.text(.reset_position), button_width, 0.0)) {
+        try resetTransformTarget(state, layer_context, selected, entity, world_transform, .translation);
+    }
+    engine.ui.ImGui.sameLine();
+    if (engine.ui.ImGui.buttonEx(state.text(.reset_rotation), button_width, 0.0)) {
+        try resetTransformTarget(state, layer_context, selected, entity, world_transform, .rotation);
+    }
+    engine.ui.ImGui.sameLine();
+    if (engine.ui.ImGui.buttonEx(state.text(.reset_scale), button_width, 0.0)) {
+        try resetTransformTarget(state, layer_context, selected, entity, world_transform, .scale);
+    }
+    engine.ui.ImGui.sameLine();
+    if (engine.ui.ImGui.buttonEx(state.text(.reset_all), button_width, 0.0)) {
+        try resetTransformTarget(state, layer_context, selected, entity, world_transform, .all);
+    }
+}
+
+fn resetTransformTarget(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    selected: engine.scene.EntityId,
+    entity: *engine.scene.Entity,
+    world_transform: engine.scene.Transform,
+    target: TransformResetTarget,
+) !void {
+    if (state.transform_space == .world) {
+        var updated = world_transform;
+        applyResetToTransform(&updated, target);
+        if (!transformsEqual(updated, world_transform)) {
+            _ = layer_context.world.setEntityWorldTransform(selected, updated);
+            try history.captureSnapshot(state, layer_context);
+        }
+        return;
+    }
+
+    const before = entity.transform;
+    applyResetToTransform(&entity.transform, target);
+    if (!transformsEqual(before, entity.transform)) {
+        try history.captureSnapshot(state, layer_context);
+    }
+}
+
+fn applyResetToTransform(transform: *engine.scene.Transform, target: TransformResetTarget) void {
+    switch (target) {
+        .translation => transform.translation = .{ 0.0, 0.0, 0.0 },
+        .rotation => transform.rotation_euler = .{ 0.0, 0.0, 0.0 },
+        .scale => transform.scale = .{ 1.0, 1.0, 1.0 },
+        .all => transform.* = .{},
+    }
+}
+
+fn transformsEqual(a: engine.scene.Transform, b: engine.scene.Transform) bool {
+    return std.meta.eql(a.translation, b.translation) and
+        std.meta.eql(a.rotation_euler, b.rotation_euler) and
+        std.meta.eql(a.scale, b.scale);
+}
+
+fn drawLabeledFloatControl(
+    label: []const u8,
+    widget_id: []const u8,
+    value: *f32,
+    speed: f32,
+    min_value: f32,
+    max_value: f32,
+) bool {
+    engine.ui.ImGui.text(label);
+    engine.ui.ImGui.setNextItemWidth(-1.0);
+    return engine.ui.ImGui.dragFloat(widget_id, value, speed, min_value, max_value);
+}
+
+fn drawLabeledFloat3Control(
+    label: []const u8,
+    widget_id: []const u8,
+    value: *[3]f32,
+    speed: f32,
+    min_value: f32,
+    max_value: f32,
+) bool {
+    engine.ui.ImGui.text(label);
+    engine.ui.ImGui.setNextItemWidth(-1.0);
+    return engine.ui.ImGui.dragFloat3(widget_id, value, speed, min_value, max_value);
+}
+
+fn buttonRowWidth() f32 {
+    const spacing = 8.0;
+    return @max((engine.ui.ImGui.contentRegionAvail()[0] - spacing * 2.0) / 3.0, 72.0);
 }
 
 fn drawTransformTableRow(

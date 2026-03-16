@@ -32,6 +32,7 @@ ImGuiWindowFlags to_imgui_window_flags(uint32_t flags) {
     if ((flags & GUAVA_IMGUI_WINDOW_NO_COLLAPSE) != 0) result |= ImGuiWindowFlags_NoCollapse;
     if ((flags & GUAVA_IMGUI_WINDOW_NO_BACKGROUND) != 0) result |= ImGuiWindowFlags_NoBackground;
     if ((flags & GUAVA_IMGUI_WINDOW_NO_DECORATION) != 0) result |= ImGuiWindowFlags_NoDecoration;
+    if ((flags & GUAVA_IMGUI_WINDOW_ALWAYS_AUTO_RESIZE) != 0) result |= ImGuiWindowFlags_AlwaysAutoResize;
     return result;
 }
 
@@ -60,6 +61,8 @@ ImGuiStyleVar to_imgui_style_var(uint32_t slot) {
             return ImGuiStyleVar_ItemSpacing;
         case GUAVA_IMGUI_STYLE_VAR_FRAME_ROUNDING:
             return ImGuiStyleVar_FrameRounding;
+        case GUAVA_IMGUI_STYLE_VAR_WINDOW_MIN_SIZE:
+            return ImGuiStyleVar_WindowMinSize;
         default:
             return ImGuiStyleVar_Alpha;
     }
@@ -348,6 +351,7 @@ extern "C" bool guava_imgui_init(SDL_Window* window, SDL_GPUDevice* device, SDL_
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    io.ConfigDockingAlwaysTabBar = true;
 
     if (char* pref_path = SDL_GetPrefPath("Guava", "Editor")) {
         g_ini_path = std::string(pref_path) + "imgui.ini";
@@ -827,15 +831,25 @@ extern "C" void guava_imgui_text(const char* text, size_t text_len) {
     ImGui::TextUnformatted(text, text + text_len);
 }
 
+extern "C" void guava_imgui_text_wrapped(const char* text, size_t text_len) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextUnformatted(text, text + text_len);
+    ImGui::PopTextWrapPos();
+}
+
 extern "C" void guava_imgui_label_text(const char* label, size_t label_len, const char* text, size_t text_len) {
     if (!g_imgui_initialized) {
         return;
     }
     const std::string owned_label = make_string(label, label_len);
     const std::string owned_text = make_string(text, text_len);
-    ImGui::Text("%s: ", owned_label.c_str());
-    ImGui::SameLine();
-    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "%s", owned_text.c_str());
+    ImGui::TextUnformatted(owned_label.c_str());
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
+    ImGui::TextWrapped("%s", owned_text.c_str());
+    ImGui::PopStyleColor();
 }
 
 extern "C" void guava_imgui_push_id_u64(uint64_t value) {
@@ -852,9 +866,21 @@ extern "C" void guava_imgui_pop_id(void) {
     ImGui::PopID();
 }
 
-extern "C" bool guava_imgui_tree_node_entity(uint64_t id, const char* label, size_t label_len, SDL_GPUTexture* icon_texture, float icon_size, bool selected, bool leaf, bool default_open) {
+extern "C" uint32_t guava_imgui_tree_node_entity(
+    uint64_t id,
+    const char* label,
+    size_t label_len,
+    SDL_GPUTexture* icon_texture,
+    float icon_size,
+    bool selected,
+    bool leaf,
+    bool default_open,
+    char* rename_buffer,
+    size_t rename_buffer_size,
+    bool request_rename_focus
+) {
     if (!g_imgui_initialized) {
-        return false;
+        return 0;
     }
 
     const ImVec2 cursor = ImGui::GetCursorScreenPos();
@@ -882,6 +908,13 @@ extern "C" bool guava_imgui_tree_node_entity(uint64_t id, const char* label, siz
 
     const std::string owned_label = make_string(label, label_len);
     const bool is_open = ImGui::TreeNodeEx(reinterpret_cast<void*>(static_cast<uintptr_t>(id)), flags, "%s", "");
+    uint32_t result = 0;
+    if (is_open) {
+        result |= GUAVA_IMGUI_TREE_NODE_OPEN;
+    }
+    if (ImGui::IsItemClicked()) {
+        result |= GUAVA_IMGUI_TREE_NODE_CLICKED;
+    }
     const ImRect rect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
     const float label_x = rect.Min.x + ImGui::GetTreeNodeToLabelSpacing();
     float text_x = label_x;
@@ -892,12 +925,38 @@ extern "C" bool guava_imgui_tree_node_entity(uint64_t id, const char* label, siz
         ImGui::GetWindowDrawList()->AddImage(reinterpret_cast<ImTextureID>(icon_texture), icon_min, icon_max);
         text_x += draw_size + 6.0f;
     }
-    const float text_y = rect.Min.y + (rect.GetHeight() - ImGui::GetFontSize()) * 0.5f;
-    ImGui::GetWindowDrawList()->AddText(
-        ImVec2(text_x, text_y),
-        ImGui::GetColorU32(ImGuiCol_Text),
-        owned_label.c_str()
-    );
+    if (rename_buffer != nullptr && rename_buffer_size > 0) {
+        const ImVec2 input_pos(text_x - 4.0f, rect.Min.y + 1.0f);
+        const float input_width = (std::max)(rect.Max.x - input_pos.x - style.FramePadding.x, 72.0f);
+        ImGui::SetCursorScreenPos(input_pos);
+        ImGui::SetNextItemWidth(input_width);
+        ImGui::PushID(reinterpret_cast<void*>(static_cast<uintptr_t>(id)));
+        if (request_rename_focus) {
+            ImGui::SetKeyboardFocusHere();
+        }
+        const bool submitted = ImGui::InputText(
+            "##rename",
+            rename_buffer,
+            rename_buffer_size,
+            ImGuiInputTextFlags_AutoSelectAll | ImGuiInputTextFlags_EnterReturnsTrue
+        );
+        const bool deactivated_after_edit = ImGui::IsItemDeactivatedAfterEdit();
+        const bool rename_finished = submitted || ImGui::IsItemDeactivated();
+        if (submitted || deactivated_after_edit) {
+            result |= GUAVA_IMGUI_TREE_NODE_RENAME_COMMITTED;
+        }
+        if (rename_finished) {
+            result |= GUAVA_IMGUI_TREE_NODE_RENAME_FINISHED;
+        }
+        ImGui::PopID();
+    } else {
+        const float text_y = rect.Min.y + (rect.GetHeight() - ImGui::GetFontSize()) * 0.5f;
+        ImGui::GetWindowDrawList()->AddText(
+            ImVec2(text_x, text_y),
+            ImGui::GetColorU32(ImGuiCol_Text),
+            owned_label.c_str()
+        );
+    }
     if (selected) {
         const float pulse = 0.5f + 0.5f * std::sin(ImGui::GetTime() * 3.8f);
         const int glow_alpha = 68 + static_cast<int>(pulse * 72.0f);
@@ -918,7 +977,7 @@ extern "C" bool guava_imgui_tree_node_entity(uint64_t id, const char* label, siz
             2.2f
         );
     }
-    return is_open;
+    return result;
 }
 
 extern "C" void guava_imgui_tree_pop(void) {

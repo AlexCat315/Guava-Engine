@@ -137,6 +137,18 @@ pub fn hasVisibleChildren(_: *const EditorState, world: *const engine.scene.Worl
     return false;
 }
 
+pub fn hasVisibleSceneTreeChildren(state: *const EditorState, world: *const engine.scene.World, entity_id: engine.scene.EntityId) bool {
+    for (world.entities.items) |entity| {
+        if (entity.editor_only or entity.parent != entity_id) {
+            continue;
+        }
+        if (shouldShowEntityInSceneTree(state, world, entity.id)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 pub fn shouldShowEntityInSceneTree(state: *const EditorState, world: *const engine.scene.World, entity_id: engine.scene.EntityId) bool {
     const scene_filter = zeroTerminatedSlice(state.scene_filter_buffer[0..]);
     if (scene_filter.len != 0 and !entityMatchesFilterRecursive(state, world, entity_id, scene_filter)) {

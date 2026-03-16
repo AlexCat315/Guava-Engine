@@ -22,6 +22,7 @@ enum {
     GUAVA_IMGUI_WINDOW_NO_COLLAPSE = 1 << 6,
     GUAVA_IMGUI_WINDOW_NO_BACKGROUND = 1 << 7,
     GUAVA_IMGUI_WINDOW_NO_DECORATION = 1 << 8,
+    GUAVA_IMGUI_WINDOW_ALWAYS_AUTO_RESIZE = 1 << 9,
 };
 
 enum {
@@ -42,6 +43,14 @@ enum {
     GUAVA_IMGUI_STYLE_VAR_FRAME_PADDING = 1,
     GUAVA_IMGUI_STYLE_VAR_ITEM_SPACING = 2,
     GUAVA_IMGUI_STYLE_VAR_FRAME_ROUNDING = 3,
+    GUAVA_IMGUI_STYLE_VAR_WINDOW_MIN_SIZE = 4,
+};
+
+enum {
+    GUAVA_IMGUI_TREE_NODE_OPEN = 1 << 0,
+    GUAVA_IMGUI_TREE_NODE_CLICKED = 1 << 1,
+    GUAVA_IMGUI_TREE_NODE_RENAME_COMMITTED = 1 << 2,
+    GUAVA_IMGUI_TREE_NODE_RENAME_FINISHED = 1 << 3,
 };
 
 bool guava_imgui_init(SDL_Window* window, SDL_GPUDevice* device, SDL_GPUTextureFormat color_target_format);
@@ -103,10 +112,23 @@ void guava_imgui_table_next_row(void);
 void guava_imgui_table_next_column(void);
 bool guava_imgui_selectable(const char* label, size_t label_len, bool selected, bool span_all_columns, float width, float height);
 void guava_imgui_text(const char* text, size_t text_len);
+void guava_imgui_text_wrapped(const char* text, size_t text_len);
 void guava_imgui_label_text(const char* label, size_t label_len, const char* text, size_t text_len);
 void guava_imgui_push_id_u64(uint64_t value);
 void guava_imgui_pop_id(void);
-bool guava_imgui_tree_node_entity(uint64_t id, const char* label, size_t label_len, SDL_GPUTexture* icon_texture, float icon_size, bool selected, bool leaf, bool default_open);
+uint32_t guava_imgui_tree_node_entity(
+    uint64_t id,
+    const char* label,
+    size_t label_len,
+    SDL_GPUTexture* icon_texture,
+    float icon_size,
+    bool selected,
+    bool leaf,
+    bool default_open,
+    char* rename_buffer,
+    size_t rename_buffer_size,
+    bool request_rename_focus
+);
 void guava_imgui_tree_pop(void);
 bool guava_imgui_is_item_clicked(void);
 bool guava_imgui_is_item_active(void);

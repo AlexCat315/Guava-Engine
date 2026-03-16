@@ -77,7 +77,17 @@ pub fn ensureTintedIconTexture(
     size: f32,
     tint: [4]u8,
 ) !*engine.rhi.Texture {
-    const pixel_size = @max(@as(u32, @intFromFloat(std.math.ceil(@max(size, 1.0)))), 1);
+    const window = layer_context.window;
+    const drawable_scale = blk: {
+        if (window.logical_width == 0 or window.logical_height == 0 or window.drawable_width == 0 or window.drawable_height == 0) {
+            break :blk 1.0;
+        }
+        const scale_x = @as(f32, @floatFromInt(window.drawable_width)) / @as(f32, @floatFromInt(window.logical_width));
+        const scale_y = @as(f32, @floatFromInt(window.drawable_height)) / @as(f32, @floatFromInt(window.logical_height));
+        break :blk std.math.clamp(@max(scale_x, scale_y), 1.0, 4.0);
+    };
+    const oversample: f32 = if (size <= 20.0) 1.8 else 1.5;
+    const pixel_size = @max(@as(u32, @intFromFloat(std.math.ceil(@max(size, @as(f32, 1.0)) * drawable_scale * oversample))), 1);
     return icon_cache.ensureIconTexture(state, layer_context, path, pixel_size, pixel_size, tint);
 }
 

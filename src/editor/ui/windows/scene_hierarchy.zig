@@ -12,6 +12,8 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
     _ = engine.ui.ImGui.beginWindow(title);
     defer engine.ui.ImGui.endWindow();
 
+    syncHierarchyRenameState(state, layer_context);
+
     var selection_count_buffer: [32]u8 = undefined;
     const selection_count_text = try std.fmt.bufPrint(&selection_count_buffer, "{d}", .{layer_context.renderer.selectedEntities().len});
     engine.ui.ImGui.labelText(state.text(.selection_count), selection_count_text);
@@ -19,11 +21,21 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
     engine.ui.ImGui.dummy(0.0, 4.0);
     const controls_width = engine.ui.ImGui.contentRegionAvail()[0];
     const root_button_width = 112.0;
-    engine.ui.ImGui.setNextItemWidth(@max(controls_width - root_button_width - 8.0, 96.0));
+    const rename_button_width = 88.0;
+    engine.ui.ImGui.setNextItemWidth(@max(controls_width - root_button_width - rename_button_width - 16.0, 96.0));
     _ = engine.ui.ImGui.inputText("##scene_filter", state.scene_filter_buffer[0..]);
     engine.ui.ImGui.sameLine();
     if (engine.ui.ImGui.buttonEx(state.text(.scene_root), root_button_width, 0.0) and layer_context.renderer.selectedEntities().len > 0) {
         try unparentSelection(state, layer_context);
+    }
+    engine.ui.ImGui.sameLine();
+    if (engine.ui.ImGui.buttonEx(state.text(.rename), rename_button_width, 0.0)) {
+        if (layer_context.renderer.selectedEntities().len == 1) {
+            const selected = layer_context.renderer.selectedEntity() orelse unreachable;
+            if (!utils.isEntitySelectionLocked(state, selected) and utils.shouldShowEntityInSceneTree(state, layer_context.world, selected)) {
+                beginHierarchyRename(state, layer_context.world, selected);
+            }
+        }
     }
     var dropped_root: u64 = 0;
     if (engine.ui.ImGui.acceptDragDropPayloadU64(state_mod.entity_drag_payload, &dropped_root)) {
@@ -60,8 +72,13 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
 
     const is_selected = utils.isEntitySelected(state, layer_context, entity_id);
     const is_locked = utils.isEntitySelectionLocked(state, entity_id);
-    const leaf = !utils.hasVisibleChildren(state, layer_context.world, entity_id);
+    const filter_active = utils.zeroTerminatedSlice(state.scene_filter_buffer[0..]).len != 0 or
+        utils.zeroTerminatedSlice(state.hierarchy_filter_buffer[0..]).len != 0 or
+        state.hierarchy_category != .all;
+    const has_visible_children = utils.hasVisibleSceneTreeChildren(state, layer_context.world, entity_id);
+    const leaf = !has_visible_children;
     const status_icon_size = 16.0;
+    const rename_active = state.hierarchy_rename_entity != null and state.hierarchy_rename_entity.? == entity_id;
     const icon_texture = try ui_icons.ensureTintedIconTexture(
         state,
         layer_context,
@@ -72,9 +89,26 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
 
     engine.ui.ImGui.tableNextRow();
     engine.ui.ImGui.tableNextColumn();
-    const is_open = engine.ui.ImGui.treeNodeEntity(entity_id, entity.name, icon_texture, 14.0, is_selected, leaf, false);
+    const tree_result = engine.ui.ImGui.treeNodeEntity(
+        entity_id,
+        entity.name,
+        icon_texture,
+        14.0,
+        is_selected,
+        leaf,
+        filter_active and has_visible_children,
+        if (rename_active) state.hierarchy_rename_buffer[0..] else null,
+        rename_active and state.hierarchy_rename_focus_pending,
+    );
+    const is_open = tree_result.open;
+    if (rename_active) {
+        state.hierarchy_rename_focus_pending = false;
+    }
 
-    if (engine.ui.ImGui.isItemClicked() and !is_locked) {
+    if (tree_result.clicked and !is_locked) {
+        if (state.hierarchy_rename_entity != null and state.hierarchy_rename_entity.? != entity_id) {
+            cancelHierarchyRename(state);
+        }
         if (layer_context.input.modifiers.shift or layer_context.input.modifiers.ctrl or layer_context.input.modifiers.super) {
             try layer_context.renderer.toggleSelection(entity_id);
         } else {
@@ -83,7 +117,7 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
         utils.syncInspectorNameBuffer(state, layer_context);
     }
 
-    if (!is_locked) {
+    if (!is_locked and !rename_active) {
         _ = engine.ui.ImGui.dragDropSourceU64(state_mod.entity_drag_payload, entity_id, entity.name);
         var dropped_child: u64 = 0;
         if (engine.ui.ImGui.acceptDragDropPayloadU64(state_mod.entity_drag_payload, &dropped_child)) {
@@ -126,7 +160,14 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
         }
     }
 
-    if (!leaf and is_open) {
+    if (rename_active and tree_result.rename_finished) {
+        if (tree_result.rename_committed) {
+            try commitHierarchyRename(state, layer_context, entity_id);
+        }
+        cancelHierarchyRename(state);
+    }
+
+    if (has_visible_children and is_open) {
         for (layer_context.world.entities.items) |child| {
             if (child.editor_only or child.parent != entity_id) {
                 continue;
@@ -207,4 +248,47 @@ pub fn reparentEntity(
     try layer_context.renderer.replaceSelection(child_id);
     utils.syncInspectorNameBuffer(state, layer_context);
     try history.captureSnapshot(state, layer_context);
+}
+
+fn beginHierarchyRename(state: *EditorState, world: *const engine.scene.World, entity_id: engine.scene.EntityId) void {
+    const entity = world.getEntityConst(entity_id) orelse return;
+    @memset(state.hierarchy_rename_buffer[0..], 0);
+    const copy_len = @min(entity.name.len, state.hierarchy_rename_buffer.len - 1);
+    @memcpy(state.hierarchy_rename_buffer[0..copy_len], entity.name[0..copy_len]);
+    state.hierarchy_rename_entity = entity_id;
+    state.hierarchy_rename_focus_pending = true;
+}
+
+fn cancelHierarchyRename(state: *EditorState) void {
+    state.hierarchy_rename_entity = null;
+    state.hierarchy_rename_focus_pending = false;
+    @memset(state.hierarchy_rename_buffer[0..], 0);
+}
+
+fn syncHierarchyRenameState(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+    const rename_entity = state.hierarchy_rename_entity orelse return;
+    if (layer_context.renderer.selectedEntities().len != 1 or
+        layer_context.renderer.selectedEntity() != rename_entity or
+        !layer_context.world.hasEntity(rename_entity) or
+        utils.isEntitySelectionLocked(state, rename_entity) or
+        !utils.shouldShowEntityInSceneTree(state, layer_context.world, rename_entity))
+    {
+        cancelHierarchyRename(state);
+    }
+}
+
+fn commitHierarchyRename(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity_id: engine.scene.EntityId,
+) !void {
+    const next_name = utils.zeroTerminatedSlice(state.hierarchy_rename_buffer[0..]);
+    if (next_name.len == 0) {
+        return;
+    }
+    if (try layer_context.world.renameEntity(entity_id, next_name)) {
+        utils.syncInspectorNameBuffer(state, layer_context);
+        try history.captureSnapshot(state, layer_context);
+        try history.refreshWindowTitle(state, layer_context);
+    }
 }
