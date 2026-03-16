@@ -40,10 +40,12 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
     engine.ui.ImGui.labelText(state.text(.selection_count), selection_count_text);
 
     if (engine.ui.ImGui.collapsingHeader(state.text(.identity), true)) {
+        engine.ui.ImGui.dummy(0.0, 4.0);
         var entity_id_buffer: [32]u8 = undefined;
         const entity_id_text = try std.fmt.bufPrint(&entity_id_buffer, "{d}", .{selected});
         engine.ui.ImGui.labelText(state.text(.entity_id), entity_id_text);
 
+        engine.ui.ImGui.dummy(0.0, 2.0);
         engine.ui.ImGui.setNextItemWidth(-1.0);
         if (engine.ui.ImGui.inputText(state.text(.name), state.inspector_name_buffer[0..])) {
             if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
@@ -78,10 +80,12 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
     }
 
     if (engine.ui.ImGui.collapsingHeader(state.text(.transform), true)) {
+        engine.ui.ImGui.dummy(0.0, 4.0);
         engine.ui.ImGui.labelText(state.text(.coordinate_space), switch (state.transform_space) {
             .local => state.text(.local_space),
             .world => state.text(.world_space),
         });
+        engine.ui.ImGui.dummy(0.0, 4.0);
 
         if (engine.ui.ImGui.beginTable("transform_grid", 7)) {
             defer engine.ui.ImGui.endTable();
@@ -146,6 +150,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
     }
 
     if (engine.ui.ImGui.collapsingHeader(state.text(.components), true)) {
+        engine.ui.ImGui.dummy(0.0, 4.0);
         var has_missing_component = false;
         if (entity.mesh == null) {
             has_missing_component = true;

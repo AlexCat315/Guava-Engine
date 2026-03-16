@@ -400,41 +400,41 @@ fn drawViewportOverlayControls(state: *EditorState, layer_context: *engine.core.
     const window_size = engine.ui.ImGui.windowSize();
 
     engine.ui.ImGui.setCursorPos(.{ 18.0, 14.0 });
-    if (drawOverlayActionButton(state.text(.perspective_view), 88.0)) {
+    if (drawOverlayActionButton(state.text(.perspective_view), 0.0)) {
         camera.setViewPreset(state, layer_context, .perspective);
     }
     engine.ui.ImGui.sameLine();
-    if (drawOverlayActionButton(state.text(.top_view), 58.0)) {
+    if (drawOverlayActionButton(state.text(.top_view), 0.0)) {
         camera.setViewPreset(state, layer_context, .top);
     }
     engine.ui.ImGui.sameLine();
-    if (drawOverlayActionButton(state.text(.side_view), 58.0)) {
+    if (drawOverlayActionButton(state.text(.side_view), 0.0)) {
         camera.setViewPreset(state, layer_context, .side);
     }
 
     engine.ui.ImGui.setCursorPos(.{ 18.0, 48.0 });
-    if (drawOverlayToggleButton(state.text(.textured), state.viewport_render_mode == .textured, 82.0)) {
+    if (drawOverlayToggleButton(state.text(.textured), state.viewport_render_mode == .textured, 0.0)) {
         state.viewport_render_mode = .textured;
     }
     engine.ui.ImGui.sameLine();
-    if (drawOverlayToggleButton(state.text(.wireframe), state.viewport_render_mode == .wireframe, 82.0)) {
+    if (drawOverlayToggleButton(state.text(.wireframe), state.viewport_render_mode == .wireframe, 0.0)) {
         state.viewport_render_mode = .wireframe;
     }
     engine.ui.ImGui.sameLine();
-    if (drawOverlayToggleButton(state.text(.unlit), state.viewport_render_mode == .unlit, 74.0)) {
+    if (drawOverlayToggleButton(state.text(.unlit), state.viewport_render_mode == .unlit, 0.0)) {
         state.viewport_render_mode = .unlit;
     }
 
     engine.ui.ImGui.setCursorPos(.{ 18.0, 82.0 });
-    if (drawOverlayToggleButton(state.text(.show_grid), state.viewport_show_grid, 74.0)) {
+    if (drawOverlayToggleButton(state.text(.show_grid), state.viewport_show_grid, 0.0)) {
         state.viewport_show_grid = !state.viewport_show_grid;
     }
     engine.ui.ImGui.sameLine();
-    if (drawOverlayToggleButton(state.text(.show_bones), state.viewport_show_bones, 84.0)) {
+    if (drawOverlayToggleButton(state.text(.show_bones), state.viewport_show_bones, 0.0)) {
         state.viewport_show_bones = !state.viewport_show_bones;
     }
     engine.ui.ImGui.sameLine();
-    if (drawOverlayToggleButton(state.text(.show_collision), state.viewport_show_collision, 96.0)) {
+    if (drawOverlayToggleButton(state.text(.show_collision), state.viewport_show_collision, 0.0)) {
         state.viewport_show_collision = !state.viewport_show_collision;
     }
 

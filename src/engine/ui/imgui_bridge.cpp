@@ -833,7 +833,9 @@ extern "C" void guava_imgui_label_text(const char* label, size_t label_len, cons
     }
     const std::string owned_label = make_string(label, label_len);
     const std::string owned_text = make_string(text, text_len);
-    ImGui::LabelText(owned_label.c_str(), "%s", owned_text.c_str());
+    ImGui::Text("%s: ", owned_label.c_str());
+    ImGui::SameLine();
+    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "%s", owned_text.c_str());
 }
 
 extern "C" void guava_imgui_push_id_u64(uint64_t value) {

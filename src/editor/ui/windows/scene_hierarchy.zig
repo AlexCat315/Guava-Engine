@@ -16,10 +16,11 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
     const selection_count_text = try std.fmt.bufPrint(&selection_count_buffer, "{d}", .{layer_context.renderer.selectedEntities().len});
     engine.ui.ImGui.labelText(state.text(.selection_count), selection_count_text);
 
+    engine.ui.ImGui.dummy(0.0, 4.0);
     const controls_width = engine.ui.ImGui.contentRegionAvail()[0];
     const root_button_width = 112.0;
     engine.ui.ImGui.setNextItemWidth(@max(controls_width - root_button_width - 8.0, 96.0));
-    _ = engine.ui.ImGui.inputText(state.text(.scene_filter), state.scene_filter_buffer[0..]);
+    _ = engine.ui.ImGui.inputText("##scene_filter", state.scene_filter_buffer[0..]);
     engine.ui.ImGui.sameLine();
     if (engine.ui.ImGui.buttonEx(state.text(.scene_root), root_button_width, 0.0) and layer_context.renderer.selectedEntities().len > 0) {
         try unparentSelection(state, layer_context);
@@ -28,7 +29,9 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
     if (engine.ui.ImGui.acceptDragDropPayloadU64(state_mod.entity_drag_payload, &dropped_root)) {
         try reparentEntity(state, layer_context, dropped_root, null);
     }
+    engine.ui.ImGui.dummy(0.0, 4.0);
     engine.ui.ImGui.separator();
+    engine.ui.ImGui.dummy(0.0, 4.0);
 
     if (!engine.ui.ImGui.beginTable("scene_tree_table", 3)) {
         return;
