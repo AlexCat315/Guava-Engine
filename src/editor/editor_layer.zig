@@ -57,6 +57,7 @@ pub const EditorLayer = struct {
         self.allocator = layer_context.world.allocator;
         self.scene_camera = layer_context.world.primaryCameraEntity();
         try self.createEditorCamera(layer_context);
+        self.syncGizmoState(layer_context);
         try self.resetSnapshotHistory(layer_context);
         try self.refreshWindowTitle(layer_context);
     }
@@ -72,6 +73,7 @@ pub const EditorLayer = struct {
         try self.handleEditingShortcuts(layer_context);
         self.applyManipulation(layer_context);
         self.handleCameraControls(layer_context);
+        self.syncGizmoState(layer_context);
 
         if (layer_context.frame_index % self.title_frame_interval == 0) {
             try self.refreshWindowTitle(layer_context);
@@ -524,6 +526,7 @@ pub const EditorLayer = struct {
         self.manipulation_axis = .free;
         self.manipulation_entity = selected;
         self.manipulation_origin = entity.transform;
+        self.syncGizmoState(layer_context);
         try self.refreshWindowTitle(layer_context);
     }
 
@@ -542,6 +545,7 @@ pub const EditorLayer = struct {
             entity.transform = self.manipulation_origin;
         }
         self.endManipulation();
+        self.syncGizmoState(layer_context);
     }
 
     fn applyManipulation(self: *EditorLayer, layer_context: *engine.core.LayerContext) void {
@@ -619,6 +623,23 @@ pub const EditorLayer = struct {
             .y => entity.transform.scale[1] = clampScale(entity.transform.scale[1] * scalar),
             .z => entity.transform.scale[2] = clampScale(entity.transform.scale[2] * scalar),
         }
+    }
+
+    fn syncGizmoState(self: *const EditorLayer, layer_context: *engine.core.LayerContext) void {
+        layer_context.renderer.setEditorGizmoState(.{
+            .mode = switch (self.manipulation_mode) {
+                .none => .idle,
+                .translate => .translate,
+                .rotate => .rotate,
+                .scale => .scale,
+            },
+            .axis = switch (self.manipulation_axis) {
+                .free => .free,
+                .x => .x,
+                .y => .y,
+                .z => .z,
+            },
+        });
     }
 };
 

@@ -15,6 +15,7 @@ pub const PassKind = enum {
     transparent,
     post_process,
     outline_pass,
+    gizmo_overlay,
     ui_overlay,
 };
 
@@ -53,6 +54,7 @@ pub const RenderGraph = struct {
         try self.addPass(.{ .name = "Transparent", .kind = .transparent });
         try self.addPass(.{ .name = "PostProcess", .kind = .post_process });
         try self.addPass(.{ .name = "OutlinePass", .kind = .outline_pass });
+        try self.addPass(.{ .name = "GizmoPass", .kind = .gizmo_overlay });
         try self.addPass(.{ .name = "UIOverlay", .kind = .ui_overlay });
     }
 

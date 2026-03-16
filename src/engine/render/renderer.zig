@@ -2,6 +2,7 @@ const std = @import("std");
 const base_pass_mod = @import("base_pass.zig");
 const depth_prepass_mod = @import("depth_prepass.zig");
 const id_pass_mod = @import("id_pass.zig");
+const gizmo_pass_mod = @import("gizmo_pass.zig");
 const outline_pass_mod = @import("outline_pass.zig");
 const platform_mod = @import("../core/platform.zig");
 const selection_history_mod = @import("selection_history.zig");
@@ -17,6 +18,7 @@ pub const GraphicsAPI = rhi_types.GraphicsAPI;
 pub const RuntimeInfo = rhi_types.RuntimeInfo;
 pub const SelectionHistory = selection_history_mod.SelectionHistory;
 pub const SelectionUpdateMode = selection_history_mod.SelectionUpdateMode;
+pub const EditorGizmoState = gizmo_pass_mod.EditorGizmoState;
 
 pub const RendererConfig = struct {
     requested_backends: []const rhi_types.GraphicsAPI = &.{},
@@ -69,8 +71,10 @@ pub const Renderer = struct {
     depth_prepass: depth_prepass_mod.DepthPrepass,
     base_pass: base_pass_mod.BasePass,
     outline_pass: outline_pass_mod.OutlinePass,
+    gizmo_pass: gizmo_pass_mod.GizmoPass,
     selection_history: SelectionHistory,
     selection_seeded: bool = false,
+    editor_gizmo_state: EditorGizmoState = .{},
     pending_selection_readbacks: std.ArrayList(SelectionReadbackRequest) = .empty,
     in_flight_selection_batches: std.ArrayList(InFlightSelectionBatch) = .empty,
 
@@ -100,6 +104,7 @@ pub const Renderer = struct {
             .depth_prepass = undefined,
             .base_pass = undefined,
             .outline_pass = undefined,
+            .gizmo_pass = undefined,
             .selection_history = SelectionHistory.init(allocator, 64),
         };
         errdefer renderer.in_flight_selection_batches.deinit(allocator);
@@ -121,6 +126,9 @@ pub const Renderer = struct {
         errdefer renderer.base_pass.deinit(&renderer.rhi);
 
         renderer.outline_pass = try outline_pass_mod.OutlinePass.init(&renderer.rhi);
+        errdefer renderer.outline_pass.deinit(&renderer.rhi);
+
+        renderer.gizmo_pass = try gizmo_pass_mod.GizmoPass.init(&renderer.rhi);
         return renderer;
     }
 
@@ -128,6 +136,7 @@ pub const Renderer = struct {
         self.releaseInFlightSelectionBatches();
         self.pending_selection_readbacks.deinit(self.allocator);
         self.selection_history.deinit();
+        self.gizmo_pass.deinit(&self.rhi);
         self.outline_pass.deinit(&self.rhi);
         self.base_pass.deinit(&self.rhi);
         self.depth_prepass.deinit(&self.rhi);
@@ -195,6 +204,10 @@ pub const Renderer = struct {
     pub fn toggleSelection(self: *Renderer, entity: ?scene_mod.EntityId) !void {
         _ = try self.selection_history.applyPick(entity, .toggle);
         self.selection_seeded = true;
+    }
+
+    pub fn setEditorGizmoState(self: *Renderer, state: EditorGizmoState) void {
+        self.editor_gizmo_state = state;
     }
 
     pub fn passCount(self: *const Renderer) usize {
@@ -286,6 +299,30 @@ pub const Renderer = struct {
             });
             draw_stats.add(self.outline_pass.draw(&self.rhi, frame, outline_pass, selected_entities));
             self.rhi.endRenderPass(outline_pass);
+        }
+
+        if (self.gizmo_pass.isReady()) {
+            if (self.selection_history.primarySelection()) |selected_entity_id| {
+                if (scene.getEntityConst(selected_entity_id)) |selected_entity| {
+                    const gizmo_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
+                        .color = .{
+                            .target = .swapchain,
+                            .load_op = .load,
+                            .store_op = .store,
+                        },
+                        .depth = null,
+                    });
+                    draw_stats.add(self.gizmo_pass.draw(
+                        &self.rhi,
+                        frame,
+                        gizmo_pass,
+                        &prepared_scene,
+                        selected_entity,
+                        self.editor_gizmo_state,
+                    ));
+                    self.rhi.endRenderPass(gizmo_pass);
+                }
+            }
         }
 
         if (self.pending_selection_readbacks.items.len > 0) {

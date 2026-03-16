@@ -96,6 +96,15 @@ pub const World = struct {
         return null;
     }
 
+    pub fn getEntityConst(self: *const World, id: EntityId) ?*const Entity {
+        for (self.entities.items) |*entity| {
+            if (entity.id == id) {
+                return entity;
+            }
+        }
+        return null;
+    }
+
     pub fn hasEntity(self: *const World, id: EntityId) bool {
         for (self.entities.items) |entity| {
             if (entity.id == id) {
