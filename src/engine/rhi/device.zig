@@ -12,6 +12,7 @@ pub const Error = error{
     CommandBufferAcquireFailed,
     SwapchainAcquireFailed,
     RenderPassBeginFailed,
+    FenceAcquireFailed,
     TextureCreateFailed,
     BufferCreateFailed,
     TransferBufferCreateFailed,
@@ -138,6 +139,14 @@ pub const Frame = struct {
 
 pub const RenderPass = struct {
     raw: *sdl.SDL_GPURenderPass,
+};
+
+pub const CopyPass = struct {
+    raw: *sdl.SDL_GPUCopyPass,
+};
+
+pub const Fence = struct {
+    raw: *sdl.SDL_GPUFence,
 };
 
 pub const LoadOp = enum {
@@ -292,6 +301,15 @@ pub const RhiDevice = struct {
         }
     }
 
+    pub fn submitFrameAndAcquireFence(_: *RhiDevice, frame: Frame) Error!Fence {
+        const fence = sdl.SDL_SubmitGPUCommandBufferAndAcquireFence(frame.command_buffer) orelse {
+            std.log.err("SDL_SubmitGPUCommandBufferAndAcquireFence failed: {s}", .{window_mod.lastError()});
+            return error.FenceAcquireFailed;
+        };
+
+        return .{ .raw = fence };
+    }
+
     pub fn beginRenderPass(self: *RhiDevice, frame: Frame, clear: types.ClearState) Error!RenderPass {
         return self.beginRenderPassWithDesc(frame, .{
             .color = .{
@@ -353,6 +371,19 @@ pub const RhiDevice = struct {
 
     pub fn endRenderPass(_: *RhiDevice, pass: RenderPass) void {
         sdl.SDL_EndGPURenderPass(pass.raw);
+    }
+
+    pub fn beginCopyPass(_: *RhiDevice, frame: Frame) Error!CopyPass {
+        const copy_pass = sdl.SDL_BeginGPUCopyPass(frame.command_buffer) orelse {
+            std.log.err("SDL_BeginGPUCopyPass failed: {s}", .{window_mod.lastError()});
+            return error.CopyPassBeginFailed;
+        };
+
+        return .{ .raw = copy_pass };
+    }
+
+    pub fn endCopyPass(_: *RhiDevice, pass: CopyPass) void {
+        sdl.SDL_EndGPUCopyPass(pass.raw);
     }
 
     pub fn clearAndPresent(self: *RhiDevice, frame: Frame, clear: types.ClearState) Error!void {
@@ -439,6 +470,15 @@ pub const RhiDevice = struct {
     pub fn releaseTransferBuffer(self: *RhiDevice, transfer_buffer: *TransferBuffer) void {
         sdl.SDL_ReleaseGPUTransferBuffer(self.raw, transfer_buffer.raw);
         transfer_buffer.* = undefined;
+    }
+
+    pub fn isFenceSignaled(self: *RhiDevice, fence: *const Fence) bool {
+        return sdl.SDL_QueryGPUFence(self.raw, fence.raw);
+    }
+
+    pub fn releaseFence(self: *RhiDevice, fence: *Fence) void {
+        sdl.SDL_ReleaseGPUFence(self.raw, fence.raw);
+        fence.* = undefined;
     }
 
     pub fn createTexture(self: *RhiDevice, desc: types.TextureDesc) Error!Texture {
@@ -817,24 +857,14 @@ pub const RhiDevice = struct {
         _ = sdl.SDL_WaitForGPUIdle(self.raw);
     }
 
-    pub fn readTexturePixel(self: *RhiDevice, texture: *const Texture, x: u32, y: u32) Error![4]u8 {
-        var transfer_buffer = try self.createTransferBuffer(.{
-            .size = 4,
-            .upload = false,
-        });
-        defer self.releaseTransferBuffer(&transfer_buffer);
-
-        const command_buffer = sdl.SDL_AcquireGPUCommandBuffer(self.raw) orelse {
-            std.log.err("SDL_AcquireGPUCommandBuffer failed: {s}", .{window_mod.lastError()});
-            return error.CommandBufferAcquireFailed;
-        };
-        errdefer _ = sdl.SDL_CancelGPUCommandBuffer(command_buffer);
-
-        const copy_pass = sdl.SDL_BeginGPUCopyPass(command_buffer) orelse {
-            std.log.err("SDL_BeginGPUCopyPass failed: {s}", .{window_mod.lastError()});
-            return error.CopyPassBeginFailed;
-        };
-
+    pub fn downloadTexturePixel(
+        _: *RhiDevice,
+        pass: CopyPass,
+        texture: *const Texture,
+        transfer_buffer: *const TransferBuffer,
+        x: u32,
+        y: u32,
+    ) void {
         var source = sdl.SDL_GPUTextureRegion{
             .texture = texture.raw,
             .mip_level = 0,
@@ -852,15 +882,15 @@ pub const RhiDevice = struct {
             .pixels_per_row = 1,
             .rows_per_layer = 1,
         };
-        sdl.SDL_DownloadFromGPUTexture(copy_pass, &source, &destination);
-        sdl.SDL_EndGPUCopyPass(copy_pass);
+        sdl.SDL_DownloadFromGPUTexture(pass.raw, &source, &destination);
+    }
 
-        if (!sdl.SDL_SubmitGPUCommandBuffer(command_buffer)) {
-            std.log.err("SDL_SubmitGPUCommandBuffer failed: {s}", .{window_mod.lastError()});
-            return error.CommandBufferSubmitFailed;
-        }
-
-        _ = sdl.SDL_WaitForGPUIdle(self.raw);
+    pub fn readTransferBufferBytes(
+        self: *RhiDevice,
+        transfer_buffer: *const TransferBuffer,
+        destination: []u8,
+    ) Error!void {
+        std.debug.assert(destination.len <= transfer_buffer.desc.size);
 
         const mapped = sdl.SDL_MapGPUTransferBuffer(self.raw, transfer_buffer.raw, false) orelse {
             std.log.err("SDL_MapGPUTransferBuffer failed: {s}", .{window_mod.lastError()});
@@ -869,8 +899,40 @@ pub const RhiDevice = struct {
         defer sdl.SDL_UnmapGPUTransferBuffer(self.raw, transfer_buffer.raw);
 
         const bytes: [*]u8 = @ptrCast(mapped);
+        @memcpy(destination, bytes[0..destination.len]);
+    }
+
+    pub fn readTexturePixel(self: *RhiDevice, texture: *const Texture, x: u32, y: u32) Error![4]u8 {
+        var transfer_buffer = try self.createTransferBuffer(.{
+            .size = 4,
+            .upload = false,
+        });
+        defer self.releaseTransferBuffer(&transfer_buffer);
+
+        const command_buffer = sdl.SDL_AcquireGPUCommandBuffer(self.raw) orelse {
+            std.log.err("SDL_AcquireGPUCommandBuffer failed: {s}", .{window_mod.lastError()});
+            return error.CommandBufferAcquireFailed;
+        };
+        errdefer _ = sdl.SDL_CancelGPUCommandBuffer(command_buffer);
+
+        const copy_pass = try self.beginCopyPass(.{
+            .command_buffer = command_buffer,
+            .swapchain_texture = null,
+            .width = 0,
+            .height = 0,
+        });
+        self.downloadTexturePixel(copy_pass, texture, &transfer_buffer, x, y);
+        self.endCopyPass(copy_pass);
+
+        if (!sdl.SDL_SubmitGPUCommandBuffer(command_buffer)) {
+            std.log.err("SDL_SubmitGPUCommandBuffer failed: {s}", .{window_mod.lastError()});
+            return error.CommandBufferSubmitFailed;
+        }
+
+        _ = sdl.SDL_WaitForGPUIdle(self.raw);
+
         var pixel: [4]u8 = undefined;
-        @memcpy(pixel[0..], bytes[0..4]);
+        try self.readTransferBufferBytes(&transfer_buffer, pixel[0..]);
         return pixel;
     }
 

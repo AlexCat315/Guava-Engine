@@ -162,7 +162,11 @@ pub const Application = struct {
                 },
                 .mouse_primary_down => {
                     if (drawablePickPosition(&self.window, event.x, event.y)) |position| {
-                        self.renderer.requestSelectionReadback(position.x, position.y);
+                        try self.renderer.requestSelectionReadback(
+                            position.x,
+                            position.y,
+                            if (event.extend_selection) .toggle else .replace,
+                        );
                     }
                 },
             }

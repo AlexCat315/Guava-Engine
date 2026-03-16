@@ -4,6 +4,7 @@ const depth_prepass_mod = @import("depth_prepass.zig");
 const id_pass_mod = @import("id_pass.zig");
 const outline_pass_mod = @import("outline_pass.zig");
 const platform_mod = @import("../core/platform.zig");
+const selection_history_mod = @import("selection_history.zig");
 const window_mod = @import("../platform/window.zig");
 const graph_mod = @import("render_graph.zig");
 const mesh_pass_mod = @import("mesh_pass.zig");
@@ -14,6 +15,8 @@ const types = @import("types.zig");
 
 pub const GraphicsAPI = rhi_types.GraphicsAPI;
 pub const RuntimeInfo = rhi_types.RuntimeInfo;
+pub const SelectionHistory = selection_history_mod.SelectionHistory;
+pub const SelectionUpdateMode = selection_history_mod.SelectionUpdateMode;
 
 pub const RendererConfig = struct {
     requested_backends: []const rhi_types.GraphicsAPI = &.{},
@@ -34,6 +37,26 @@ pub const FrameReport = struct {
 const SelectionReadbackRequest = struct {
     pixel_x: u32,
     pixel_y: u32,
+    mode: SelectionUpdateMode,
+};
+
+const InFlightSelectionReadback = struct {
+    request: SelectionReadbackRequest,
+    transfer_buffer: rhi_mod.TransferBuffer,
+};
+
+const InFlightSelectionBatch = struct {
+    fence: rhi_mod.Fence,
+    readbacks: []InFlightSelectionReadback,
+
+    fn deinit(self: *InFlightSelectionBatch, allocator: std.mem.Allocator, device: *rhi_mod.RhiDevice) void {
+        for (self.readbacks) |*readback| {
+            device.releaseTransferBuffer(&readback.transfer_buffer);
+        }
+        allocator.free(self.readbacks);
+        device.releaseFence(&self.fence);
+        self.* = undefined;
+    }
 };
 
 pub const Renderer = struct {
@@ -46,9 +69,10 @@ pub const Renderer = struct {
     depth_prepass: depth_prepass_mod.DepthPrepass,
     base_pass: base_pass_mod.BasePass,
     outline_pass: outline_pass_mod.OutlinePass,
-    selected_entity: ?scene_mod.EntityId = null,
+    selection_history: SelectionHistory,
     selection_seeded: bool = false,
-    pending_selection_readback: ?SelectionReadbackRequest = null,
+    pending_selection_readbacks: std.ArrayList(SelectionReadbackRequest) = .empty,
+    in_flight_selection_batches: std.ArrayList(InFlightSelectionBatch) = .empty,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -76,7 +100,11 @@ pub const Renderer = struct {
             .depth_prepass = undefined,
             .base_pass = undefined,
             .outline_pass = undefined,
+            .selection_history = SelectionHistory.init(allocator, 64),
         };
+        errdefer renderer.in_flight_selection_batches.deinit(allocator);
+        errdefer renderer.pending_selection_readbacks.deinit(allocator);
+        errdefer renderer.selection_history.deinit();
         errdefer renderer.graph.deinit();
         errdefer renderer.rhi.deinit();
 
@@ -97,6 +125,9 @@ pub const Renderer = struct {
     }
 
     pub fn deinit(self: *Renderer) void {
+        self.releaseInFlightSelectionBatches();
+        self.pending_selection_readbacks.deinit(self.allocator);
+        self.selection_history.deinit();
         self.outline_pass.deinit(&self.rhi);
         self.base_pass.deinit(&self.rhi);
         self.depth_prepass.deinit(&self.rhi);
@@ -122,16 +153,26 @@ pub const Renderer = struct {
         try self.rhi.resize(width, height);
     }
 
-    pub fn requestSelectionReadback(self: *Renderer, pixel_x: u32, pixel_y: u32) void {
-        self.pending_selection_readback = .{
+    pub fn requestSelectionReadback(
+        self: *Renderer,
+        pixel_x: u32,
+        pixel_y: u32,
+        mode: SelectionUpdateMode,
+    ) !void {
+        try self.pending_selection_readbacks.append(self.allocator, .{
             .pixel_x = pixel_x,
             .pixel_y = pixel_y,
-        };
+            .mode = mode,
+        });
         self.selection_seeded = true;
     }
 
     pub fn selectedEntity(self: *const Renderer) ?scene_mod.EntityId {
-        return self.selected_entity;
+        return self.selection_history.primarySelection();
+    }
+
+    pub fn selectedEntities(self: *const Renderer) []const scene_mod.EntityId {
+        return self.selection_history.currentSelection();
     }
 
     pub fn passCount(self: *const Renderer) usize {
@@ -139,6 +180,8 @@ pub const Renderer = struct {
     }
 
     pub fn drawFrame(self: *Renderer, scene: *const scene_mod.Scene) !FrameReport {
+        try self.resolveSelectionReadbacks();
+
         const snapshot = buildSceneSnapshot(scene);
         const frame = try self.rhi.beginFrame();
         const clear = clearAndDepthForScene(snapshot, self.passCount());
@@ -166,7 +209,10 @@ pub const Renderer = struct {
         defer prepared_scene.deinit();
 
         if (!self.selection_seeded) {
-            self.selected_entity = self.scene_cache.defaultSelectionEntity(scene);
+            _ = try self.selection_history.applyPick(
+                self.scene_cache.defaultSelectionEntity(scene),
+                .replace,
+            );
             self.selection_seeded = true;
         }
 
@@ -205,7 +251,8 @@ pub const Renderer = struct {
         draw_stats.add(self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene));
         self.rhi.endRenderPass(scene_pass);
 
-        if (self.outline_pass.isReady() and self.id_pass.texture() != null and self.selected_entity != null) {
+        const selected_entities = self.selection_history.currentSelection();
+        if (self.outline_pass.isReady() and self.id_pass.texture() != null and selected_entities.len > 0) {
             try self.outline_pass.syncTexture(&self.rhi, self.id_pass.texture().?);
             const outline_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
                 .color = .{
@@ -215,12 +262,21 @@ pub const Renderer = struct {
                 },
                 .depth = null,
             });
-            draw_stats.add(self.outline_pass.draw(&self.rhi, frame, outline_pass, self.selected_entity));
+            draw_stats.add(self.outline_pass.draw(&self.rhi, frame, outline_pass, selected_entities));
             self.rhi.endRenderPass(outline_pass);
         }
 
-        try self.rhi.submitFrame(frame);
-        try self.resolveSelectionReadback();
+        if (self.pending_selection_readbacks.items.len > 0) {
+            if (self.id_pass.texture()) |id_texture| {
+                try self.enqueueSelectionReadbacks(frame, id_texture);
+            } else {
+                try self.rhi.submitFrame(frame);
+                try self.applyPendingSelectionMisses();
+            }
+        } else {
+            try self.rhi.submitFrame(frame);
+        }
+        try self.resolveSelectionReadbacks();
 
         return .{
             .backend = self.rhi.api,
@@ -259,22 +315,78 @@ pub const Renderer = struct {
         };
     }
 
-    fn resolveSelectionReadback(self: *Renderer) !void {
-        const request = self.pending_selection_readback orelse return;
-        defer self.pending_selection_readback = null;
+    fn enqueueSelectionReadbacks(self: *Renderer, frame: rhi_mod.Frame, id_texture: *const rhi_mod.Texture) !void {
+        const pending = self.pending_selection_readbacks.items;
+        var readbacks = try self.allocator.alloc(InFlightSelectionReadback, pending.len);
+        errdefer self.allocator.free(readbacks);
 
-        const id_texture = self.id_pass.texture() orelse {
-            self.selected_entity = null;
-            return;
-        };
-        if (id_texture.desc.width == 0 or id_texture.desc.height == 0) {
-            self.selected_entity = null;
-            return;
+        var created_count: usize = 0;
+        errdefer {
+            var index: usize = 0;
+            while (index < created_count) : (index += 1) {
+                self.rhi.releaseTransferBuffer(&readbacks[index].transfer_buffer);
+            }
         }
 
-        const pixel_x = @min(request.pixel_x, id_texture.desc.width - 1);
-        const pixel_y = @min(request.pixel_y, id_texture.desc.height - 1);
-        const pixel = try self.rhi.readTexturePixel(id_texture, pixel_x, pixel_y);
-        self.selected_entity = id_pass_mod.decodeEntityIdBgra(pixel);
+        for (pending, 0..) |request, index| {
+            readbacks[index] = .{
+                .request = request,
+                .transfer_buffer = try self.rhi.createTransferBuffer(.{
+                    .size = 4,
+                    .upload = false,
+                }),
+            };
+            created_count += 1;
+        }
+
+        const copy_pass = try self.rhi.beginCopyPass(frame);
+        defer self.rhi.endCopyPass(copy_pass);
+
+        for (readbacks) |*readback| {
+            const pixel_x = @min(readback.request.pixel_x, id_texture.desc.width - 1);
+            const pixel_y = @min(readback.request.pixel_y, id_texture.desc.height - 1);
+            self.rhi.downloadTexturePixel(copy_pass, id_texture, &readback.transfer_buffer, pixel_x, pixel_y);
+        }
+
+        var fence = try self.rhi.submitFrameAndAcquireFence(frame);
+        errdefer self.rhi.releaseFence(&fence);
+
+        try self.in_flight_selection_batches.append(self.allocator, .{
+            .fence = fence,
+            .readbacks = readbacks,
+        });
+        self.pending_selection_readbacks.clearRetainingCapacity();
+    }
+
+    fn resolveSelectionReadbacks(self: *Renderer) !void {
+        while (self.in_flight_selection_batches.items.len > 0) {
+            if (!self.rhi.isFenceSignaled(&self.in_flight_selection_batches.items[0].fence)) {
+                break;
+            }
+
+            var batch = self.in_flight_selection_batches.orderedRemove(0);
+            defer batch.deinit(self.allocator, &self.rhi);
+
+            for (batch.readbacks) |*readback| {
+                var pixel: [4]u8 = undefined;
+                try self.rhi.readTransferBufferBytes(&readback.transfer_buffer, pixel[0..]);
+                const entity = id_pass_mod.decodeEntityIdBgra(pixel);
+                _ = try self.selection_history.applyPick(entity, readback.request.mode);
+            }
+        }
+    }
+
+    fn applyPendingSelectionMisses(self: *Renderer) !void {
+        for (self.pending_selection_readbacks.items) |request| {
+            _ = try self.selection_history.applyPick(null, request.mode);
+        }
+        self.pending_selection_readbacks.clearRetainingCapacity();
+    }
+
+    fn releaseInFlightSelectionBatches(self: *Renderer) void {
+        for (self.in_flight_selection_batches.items) |*batch| {
+            batch.deinit(self.allocator, &self.rhi);
+        }
+        self.in_flight_selection_batches.deinit(self.allocator);
     }
 };

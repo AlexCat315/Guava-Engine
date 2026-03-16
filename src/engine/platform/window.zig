@@ -26,6 +26,7 @@ pub const Event = struct {
     height: u32 = 0,
     x: f32 = 0.0,
     y: f32 = 0.0,
+    extend_selection: bool = false,
 };
 
 pub const Window = struct {
@@ -147,10 +148,13 @@ pub const Window = struct {
                 },
                 sdl.SDL_EVENT_MOUSE_BUTTON_DOWN => {
                     if (raw_event.button.button == sdl.SDL_BUTTON_LEFT and raw_event.button.down) {
+                        const mods = sdl.SDL_GetModState();
+                        const extend_selection = (mods & (sdl.SDL_KMOD_SHIFT | sdl.SDL_KMOD_CTRL | sdl.SDL_KMOD_GUI)) != 0;
                         return .{
                             .kind = .mouse_primary_down,
                             .x = raw_event.button.x,
                             .y = raw_event.button.y,
+                            .extend_selection = extend_selection,
                         };
                     }
                 },

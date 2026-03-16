@@ -90,27 +90,29 @@ pub const OutlinePass = struct {
         device: *rhi_mod.RhiDevice,
         frame: rhi_mod.Frame,
         pass: rhi_mod.RenderPass,
-        selected_entity: ?scene_mod.EntityId,
+        selected_entities: []const scene_mod.EntityId,
     ) mesh_pass_mod.DrawStats {
         var stats = mesh_pass_mod.DrawStats{};
-        const entity_id = selected_entity orelse return stats;
         if (!self.isReady() or self.bind_group == null) {
             return stats;
         }
 
-        var uniforms = OutlineUniforms{
-            .selected_entity_color = id_pass_mod.encodeEntityIdColor(entity_id),
-            .outline_color = .{ 1.0, 0.72, 0.18, 1.0 },
-        };
-
         device.bindGraphicsPipeline(pass, &self.pipeline.?);
         device.bindVertexBuffer(pass, 0, &self.fullscreen_vertex_buffer.?, 0);
         device.bindGroup(pass, &self.bind_group.?);
-        device.pushFragmentUniformData(frame, 0, std.mem.asBytes(&uniforms));
-        device.drawPrimitives(pass, fullscreen_triangle.len, 1, 0, 0);
 
-        stats.draw_calls = 1;
-        stats.triangles_drawn = 1;
+        for (selected_entities) |entity_id| {
+            var uniforms = OutlineUniforms{
+                .selected_entity_color = id_pass_mod.encodeEntityIdColor(entity_id),
+                .outline_color = .{ 1.0, 0.72, 0.18, 1.0 },
+            };
+
+            device.pushFragmentUniformData(frame, 0, std.mem.asBytes(&uniforms));
+            device.drawPrimitives(pass, fullscreen_triangle.len, 1, 0, 0);
+
+            stats.draw_calls += 1;
+            stats.triangles_drawn += 1;
+        }
         return stats;
     }
 
