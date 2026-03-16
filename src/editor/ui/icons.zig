@@ -25,13 +25,12 @@ pub const paths = struct {
 
     pub const viewport = struct {
         pub const perspective = "assets/ui/icons/heroicons/24/solid/cube.svg";
-        pub const top = "assets/ui/icons/heroicons/24/solid/chevron-up.svg";
-        pub const side = "assets/ui/icons/heroicons/24/solid/chevron-right.svg";
-        pub const textured = "assets/ui/icons/heroicons/24/solid/square-3d-3d.svg";
-        pub const wireframe = "assets/ui/icons/heroicons/24/solid/wireframe.svg";
-        pub const unlit = "assets/ui/icons/heroicons/24/solid/sun.svg";
-        pub const grid = "assets/ui/icons/heroicons/24/solid/table-cells.svg";
-        pub const collision = "assets/ui/icons/heroicons/24/solid/shield-check.svg";
+        pub const top = "assets/ui/icons/heroicons/24/solid/arrows-up-down.svg";
+        pub const side = "assets/ui/icons/heroicons/24/solid/cursor-arrow-rays.svg";
+        pub const textured = "assets/ui/icons/heroicons/24/solid/squares-2x2.svg";
+        pub const wireframe = "assets/ui/icons/heroicons/24/solid/squares-2x2.svg";
+        pub const unlit = "assets/ui/icons/heroicons/24/solid/eye.svg";
+        pub const grid = "assets/ui/icons/heroicons/24/solid/squares-2x2.svg";
     };
 
     pub const place_actors = struct {
@@ -50,7 +49,7 @@ pub const paths = struct {
         pub const light = "assets/ui/icons/heroicons/24/solid/light-bulb.svg";
         pub const mesh = "assets/ui/icons/heroicons/24/solid/cube.svg";
         pub const object = "assets/ui/icons/heroicons/24/solid/squares-2x2.svg";
-        pub const folder = "assets/ui/icons/heroicons/24/solid/folder.svg";
+        pub const folder = "assets/ui/icons/heroicons/24/solid/squares-2x2.svg";
         pub const eye = "assets/ui/icons/heroicons/24/solid/eye.svg";
         pub const eye_off = "assets/ui/icons/heroicons/24/solid/eye-slash.svg";
         pub const lock = "assets/ui/icons/heroicons/24/solid/lock-closed.svg";
