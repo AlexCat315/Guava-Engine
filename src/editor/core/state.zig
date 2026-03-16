@@ -4,6 +4,8 @@ const i18n = @import("../i18n/mod.zig");
 
 pub const autosave_path = "assets/scenes/editor_autosave.guava_scene";
 pub const entity_drag_payload = "guava.scene.entity";
+pub const asset_model_drag_payload = "guava.asset.model";
+pub const asset_texture_drag_payload = "guava.asset.texture";
 
 pub const AssetKind = enum {
     scene,
@@ -69,6 +71,7 @@ pub const EditorState = struct {
     scene_camera: ?engine.scene.EntityId = null,
     inspector_name_entity: ?engine.scene.EntityId = null,
     inspector_name_buffer: [256]u8 = [_]u8{0} ** 256,
+    inspector_filter_buffer: [128]u8 = [_]u8{0} ** 128,
     hierarchy_rename_entity: ?engine.scene.EntityId = null,
     hierarchy_rename_buffer: [256]u8 = [_]u8{0} ** 256,
     hierarchy_rename_focus_pending: bool = false,
@@ -124,8 +127,11 @@ pub const EditorState = struct {
     viewport_hovered: bool = false,
     viewport_focused: bool = false,
     viewport_has_image: bool = false,
+    viewport_overlay_hovered: bool = false,
     viewport_origin: [2]f32 = .{ 0.0, 0.0 },
     viewport_extent: [2]f32 = .{ 0.0, 0.0 },
+    pending_viewport_drop_asset_index: ?usize = null,
+    pending_viewport_drop_kind: ?AssetKind = null,
     playback_toolbar_window_initialized: bool = false,
     playback_toolbar_offset: [2]f32 = .{ 0.0, 0.0 },
     playback_toolbar_custom_position: bool = false,
@@ -141,6 +147,14 @@ pub const EditorState = struct {
     icon_textures: std.ArrayList(IconTextureEntry) = .empty,
     frozen_entities: std.ArrayList(engine.scene.EntityId) = .empty,
     selection_locked_entities: std.ArrayList(engine.scene.EntityId) = .empty,
+    view_cube_transition_active: bool = false,
+    view_cube_transition_elapsed: f32 = 0.0,
+    view_cube_transition_duration: f32 = 0.22,
+    view_cube_transition_start_yaw: f32 = 0.0,
+    view_cube_transition_start_pitch: f32 = 0.0,
+    view_cube_transition_target_yaw: f32 = 0.0,
+    view_cube_transition_target_pitch: f32 = 0.0,
+    view_cube_transition_target_orthographic: bool = false,
 
     pub fn text(self: *const EditorState, id: i18n.MessageId) []const u8 {
         return i18n.text(self.language, id);

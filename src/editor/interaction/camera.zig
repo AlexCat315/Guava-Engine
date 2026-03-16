@@ -1,5 +1,6 @@
 const std = @import("std");
 const engine = @import("guava");
+const mat4 = engine.math.mat4;
 const vec3 = engine.math.vec3;
 const EditorState = @import("../core/state.zig").EditorState;
 const utils = @import("../common/utils.zig");
@@ -12,8 +13,16 @@ pub const ViewPreset = enum {
 
 pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.LayerContext) void {
     const input = layer_context.input;
+    if (state.view_cube_transition_active and (input.isMouseDown(.right) or input.isMouseDown(.middle) or (input.modifiers.alt and input.isMouseDown(.left)))) {
+        state.view_cube_transition_active = false;
+    }
+    updateViewCubeTransition(state, layer_context);
+
     const viewport_interaction = state.viewport_hovered or input.isMouseDown(.right) or input.isMouseDown(.middle) or (input.modifiers.alt and input.isMouseDown(.left));
     if (!state.editor_camera_active or state.manipulation_mode != .none or !viewport_interaction) {
+        return;
+    }
+    if (state.viewport_overlay_hovered and !input.isMouseDown(.right) and !input.isMouseDown(.middle) and !(input.modifiers.alt and input.isMouseDown(.left))) {
         return;
     }
     if (engine.ui.ImGui.wantsCaptureMouse() and !state.viewport_hovered and !input.isMouseDown(.right) and !input.isMouseDown(.middle)) {
@@ -138,14 +147,14 @@ pub fn createEditorCamera(state: *EditorState, layer_context: *engine.core.Layer
 
 pub fn setViewPreset(state: *EditorState, layer_context: *engine.core.LayerContext, preset: ViewPreset) void {
     switch (preset) {
-        .perspective => applyEditorViewDirection(state, layer_context, vec3.normalize(.{ -0.45, -0.32, -0.84 }), false),
-        .top => applyEditorViewDirection(state, layer_context, .{ 0.0, -1.0, 0.0 }, true),
-        .side => applyEditorViewDirection(state, layer_context, .{ -1.0, 0.0, 0.0 }, true),
+        .perspective => requestViewOrientation(state, layer_context, vec3.normalize(.{ -0.45, -0.32, -0.84 }), false),
+        .top => requestViewOrientation(state, layer_context, .{ 0.0, -1.0, 0.0 }, true),
+        .side => requestViewOrientation(state, layer_context, .{ -1.0, 0.0, 0.0 }, true),
     }
 }
 
 pub fn lookAlongWorldAxis(state: *EditorState, layer_context: *engine.core.LayerContext, axis: [3]f32) void {
-    applyEditorViewDirection(state, layer_context, vec3.normalize(axis), true);
+    requestViewOrientation(state, layer_context, vec3.normalize(axis), true);
 }
 
 pub fn editorCameraTransform(state: *const EditorState) engine.scene.Transform {
@@ -165,6 +174,25 @@ pub fn activeCameraTransform(state: *const EditorState, layer_context: *engine.c
     return .{
         .translation = .{ 0.0, 2.0, 6.0 },
     };
+}
+
+pub fn activeCameraViewMatrix(state: *const EditorState, layer_context: *engine.core.LayerContext) [16]f32 {
+    return mat4.viewMatrix(activeCameraTransform(state, layer_context));
+}
+
+pub fn activeCameraIsOrthographic(state: *const EditorState, layer_context: *engine.core.LayerContext) bool {
+    const active_camera_id = if (state.editor_camera_active) state.editor_camera else layer_context.world.primaryCameraEntity();
+    if (active_camera_id) |camera_id| {
+        if (layer_context.world.getEntityConst(camera_id)) |entity| {
+            if (entity.camera) |camera_component| {
+                return switch (camera_component.projection) {
+                    .orthographic => true,
+                    else => false,
+                };
+            }
+        }
+    }
+    return false;
 }
 
 pub fn moveSpeed(state: *const EditorState, delta_seconds: f32) f32 {
@@ -193,4 +221,80 @@ fn applyEditorViewDirection(
     }
     _ = layer_context.world.setPrimaryCamera(camera_id);
     state.editor_camera_active = true;
+}
+
+fn requestViewOrientation(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    forward: [3]f32,
+    orthographic: bool,
+) void {
+    const camera_id = state.editor_camera orelse return;
+    if (!layer_context.world.hasEntity(camera_id)) {
+        return;
+    }
+
+    state.view_cube_transition_start_yaw = state.yaw;
+    state.view_cube_transition_start_pitch = state.pitch;
+    state.view_cube_transition_target_pitch = utils.clampPitch(std.math.asin(std.math.clamp(forward[1], -1.0, 1.0)));
+    state.view_cube_transition_target_yaw = std.math.atan2(-forward[0], -forward[2]);
+    state.view_cube_transition_elapsed = 0.0;
+    state.view_cube_transition_target_orthographic = orthographic;
+    state.view_cube_transition_active = true;
+
+    _ = layer_context.world.setPrimaryCamera(camera_id);
+    state.editor_camera_active = true;
+}
+
+fn updateViewCubeTransition(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+    if (!state.view_cube_transition_active) {
+        return;
+    }
+
+    const camera_id = state.editor_camera orelse {
+        state.view_cube_transition_active = false;
+        return;
+    };
+    const camera_entity = layer_context.world.getEntity(camera_id) orelse {
+        state.view_cube_transition_active = false;
+        return;
+    };
+
+    state.view_cube_transition_elapsed += @max(layer_context.delta_seconds, 0.0);
+    const t = std.math.clamp(
+        state.view_cube_transition_elapsed / @max(state.view_cube_transition_duration, 0.0001),
+        0.0,
+        1.0,
+    );
+    const smooth_t = t * t * (3.0 - 2.0 * t);
+    state.yaw = state.view_cube_transition_start_yaw + shortestAngleDelta(state.view_cube_transition_start_yaw, state.view_cube_transition_target_yaw) * smooth_t;
+    state.pitch = state.view_cube_transition_start_pitch + (state.view_cube_transition_target_pitch - state.view_cube_transition_start_pitch) * smooth_t;
+
+    camera_entity.transform = editorCameraTransform(state);
+    if (camera_entity.camera) |camera_component| {
+        var next_camera = camera_component;
+        next_camera.projection = if (state.view_cube_transition_target_orthographic)
+            .{ .orthographic = .{ .size = @max(state.orbit_distance * 1.1, 2.0), .near_clip = -1000.0, .far_clip = 1000.0 } }
+        else
+            .{ .perspective = .{} };
+        camera_entity.camera = next_camera;
+    }
+
+    if (t >= 0.999) {
+        state.view_cube_transition_active = false;
+        state.yaw = state.view_cube_transition_target_yaw;
+        state.pitch = state.view_cube_transition_target_pitch;
+        camera_entity.transform = editorCameraTransform(state);
+    }
+}
+
+fn shortestAngleDelta(from: f32, to: f32) f32 {
+    var delta = to - from;
+    while (delta > std.math.pi) {
+        delta -= std.math.tau;
+    }
+    while (delta < -std.math.pi) {
+        delta += std.math.tau;
+    }
+    return delta;
 }

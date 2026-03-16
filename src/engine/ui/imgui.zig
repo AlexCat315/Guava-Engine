@@ -39,6 +39,22 @@ pub const TreeNodeEntityResult = struct {
     rename_finished: bool = false,
 };
 
+pub const ViewCubeFace = enum(c_uint) {
+    none = c.GUAVA_IMGUI_VIEW_CUBE_NONE,
+    front = c.GUAVA_IMGUI_VIEW_CUBE_FRONT,
+    back = c.GUAVA_IMGUI_VIEW_CUBE_BACK,
+    left = c.GUAVA_IMGUI_VIEW_CUBE_LEFT,
+    right = c.GUAVA_IMGUI_VIEW_CUBE_RIGHT,
+    top = c.GUAVA_IMGUI_VIEW_CUBE_TOP,
+    bottom = c.GUAVA_IMGUI_VIEW_CUBE_BOTTOM,
+};
+
+pub const ViewCubeResult = struct {
+    face: ViewCubeFace = .none,
+    hovered: bool = false,
+    active: bool = false,
+};
+
 pub const WindowFlags = struct {
     pub const none: u32 = c.GUAVA_IMGUI_WINDOW_NONE;
     pub const no_title_bar: u32 = c.GUAVA_IMGUI_WINDOW_NO_TITLE_BAR;
@@ -81,6 +97,14 @@ pub fn beginDockspace() void {
 
 pub fn resetDefaultLayout() void {
     c.guava_imgui_reset_default_layout();
+}
+
+pub fn loadAnimationLayout() void {
+    c.guava_imgui_load_animation_layout();
+}
+
+pub fn saveLayout() void {
+    c.guava_imgui_save_layout();
 }
 
 pub fn render(command_buffer: *sdl.SDL_GPUCommandBuffer, render_pass: *sdl.SDL_GPURenderPass) void {
@@ -208,6 +232,10 @@ pub fn setNextWindowPos(position: [2]f32) void {
 
 pub fn setNextWindowSize(size: [2]f32) void {
     c.guava_imgui_set_next_window_size(size[0], size[1]);
+}
+
+pub fn setNextWindowBgAlpha(alpha: f32) void {
+    c.guava_imgui_set_next_window_bg_alpha(alpha);
 }
 
 pub fn pushStyleColor(slot: StyleColor, color: [4]f32) void {
@@ -418,6 +446,15 @@ pub fn setScrollHereY(center_y_ratio: f32) void {
 
 pub fn image(texture: *const rhi_mod.Texture, width: f32, height: f32) void {
     c.guava_imgui_image(@ptrCast(texture.raw), width, height);
+}
+
+pub fn drawViewCube(view: *const [16]f32, position: [2]f32, size: f32) ViewCubeResult {
+    const raw = c.guava_imgui_draw_view_cube(@ptrCast(view), position[0], position[1], size);
+    return .{
+        .face = @enumFromInt(raw & 0xff),
+        .hovered = (raw & c.GUAVA_IMGUI_VIEW_CUBE_HOVERED) != 0,
+        .active = (raw & c.GUAVA_IMGUI_VIEW_CUBE_ACTIVE) != 0,
+    };
 }
 
 fn textureFormatToSdl(format: rhi_types.TextureFormat) c.SDL_GPUTextureFormat {

@@ -4,6 +4,7 @@ const EditorState = @import("../../core/state.zig").EditorState;
 const state_mod = @import("../../core/state.zig");
 const utils = @import("../../common/utils.zig");
 const history = @import("../../actions/history.zig");
+const inspector = @import("inspector.zig");
 const ui_icons = @import("../icons.zig");
 
 pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -59,6 +60,13 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
     var dropped_root: u64 = 0;
     if (engine.ui.ImGui.acceptDragDropPayloadU64(state_mod.entity_drag_payload, &dropped_root)) {
         try reparentEntity(state, layer_context, dropped_root, null);
+    }
+    var dropped_model: u64 = 0;
+    if (engine.ui.ImGui.acceptDragDropPayloadU64(state_mod.asset_model_drag_payload, &dropped_model)) {
+        const asset_index: usize = @intCast(dropped_model);
+        if (asset_index < state.asset_entries.items.len and state.asset_entries.items[asset_index].kind == .model) {
+            try history.importModelPath(state, layer_context, state.asset_entries.items[asset_index].path);
+        }
     }
     engine.ui.ImGui.dummy(0.0, 4.0);
     engine.ui.ImGui.separator();
@@ -156,6 +164,24 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
         if (engine.ui.ImGui.acceptDragDropPayloadU64(state_mod.entity_drag_payload, &dropped_child)) {
             try reparentEntity(state, layer_context, dropped_child, entity_id);
             return error.HierarchyMutated;
+        }
+        var dropped_texture: u64 = 0;
+        if (engine.ui.ImGui.acceptDragDropPayloadU64(state_mod.asset_texture_drag_payload, &dropped_texture)) {
+            const asset_index: usize = @intCast(dropped_texture);
+            if (asset_index < state.asset_entries.items.len and state.asset_entries.items[asset_index].kind == .texture) {
+                if (entity.material == null) {
+                    try inspector.addMaterialComponent(state, layer_context, entity);
+                }
+                const entry = state.asset_entries.items[asset_index];
+                const texture_handle = try inspector.importTextureAsset(state, layer_context, entry.id, entry.path);
+                if (try inspector.ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
+                    material_resource.base_color_texture = texture_handle;
+                    if (entity.material) |*material_component| {
+                        material_component.handle = inspector.materialHandleForEntity(state, entity);
+                    }
+                    try history.captureSnapshot(state, layer_context);
+                }
+            }
         }
     }
 

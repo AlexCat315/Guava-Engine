@@ -77,6 +77,8 @@ fn drawThumbnailPresetButton(state: *EditorState, label: []const u8, size: f32) 
 fn drawProjectPanel(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     ensureSelectedAssetDirectory(state);
     try drawProjectToolbar(state, layer_context);
+    try drawBreadcrumbs(state);
+    engine.ui.ImGui.separator();
 
     engine.ui.ImGui.setNextItemWidth(-1.0);
     _ = engine.ui.ImGui.inputText("##asset_filter", state.asset_filter_buffer[0..]);
@@ -192,6 +194,11 @@ fn drawAssetCard(
     )) {
         state.selected_asset_index = index;
     }
+    switch (entry.kind) {
+        .model => _ = engine.ui.ImGui.dragDropSourceU64(state_mod.asset_model_drag_payload, @intCast(index), entry.name),
+        .texture => _ = engine.ui.ImGui.dragDropSourceU64(state_mod.asset_texture_drag_payload, @intCast(index), entry.name),
+        else => {},
+    }
 
     const label_y = icon_size + 18.0;
     engine.ui.ImGui.setCursorPos(.{ 8.0, label_y });
@@ -291,6 +298,31 @@ fn drawProjectToolbar(state: *EditorState, layer_context: *engine.core.LayerCont
     engine.ui.ImGui.setNextItemWidth(if (compact_thumbnails) width else std.math.clamp(width * 0.22, 108.0, 180.0));
     if (engine.ui.ImGui.dragFloat("##asset_thumbnail_size", &thumbnail_size, 1.0, 72.0, 160.0)) {
         state.asset_thumbnail_size = std.math.clamp(thumbnail_size, 72.0, 160.0);
+    }
+}
+
+fn drawBreadcrumbs(state: *EditorState) !void {
+    const current = selectedDirectory(state);
+    var start: usize = 0;
+    var crumb_index: usize = 0;
+
+    while (start <= current.len) {
+        const next_slash = std.mem.indexOfScalarPos(u8, current, start, '/') orelse current.len;
+        const crumb_path = current[0..next_slash];
+        const crumb_label = if (crumb_index == 0) state.text(.assets_menu) else directoryName(crumb_path);
+        if (engine.ui.ImGui.buttonEx(crumb_label, 0.0, 0.0)) {
+            setSelectedAssetDirectory(state, crumb_path);
+        }
+
+        if (next_slash == current.len) {
+            break;
+        }
+        engine.ui.ImGui.sameLine();
+        engine.ui.ImGui.text(">");
+        engine.ui.ImGui.sameLine();
+
+        start = next_slash + 1;
+        crumb_index += 1;
     }
 }
 

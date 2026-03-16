@@ -53,12 +53,26 @@ enum {
     GUAVA_IMGUI_TREE_NODE_RENAME_FINISHED = 1 << 3,
 };
 
+enum {
+    GUAVA_IMGUI_VIEW_CUBE_NONE = 0,
+    GUAVA_IMGUI_VIEW_CUBE_FRONT = 1,
+    GUAVA_IMGUI_VIEW_CUBE_BACK = 2,
+    GUAVA_IMGUI_VIEW_CUBE_LEFT = 3,
+    GUAVA_IMGUI_VIEW_CUBE_RIGHT = 4,
+    GUAVA_IMGUI_VIEW_CUBE_TOP = 5,
+    GUAVA_IMGUI_VIEW_CUBE_BOTTOM = 6,
+    GUAVA_IMGUI_VIEW_CUBE_HOVERED = 1 << 8,
+    GUAVA_IMGUI_VIEW_CUBE_ACTIVE = 1 << 9,
+};
+
 bool guava_imgui_init(SDL_Window* window, SDL_GPUDevice* device, SDL_GPUTextureFormat color_target_format);
 void guava_imgui_shutdown(void);
 void guava_imgui_process_event(const SDL_Event* event);
 void guava_imgui_new_frame(void);
 void guava_imgui_begin_dockspace(void);
 void guava_imgui_reset_default_layout(void);
+void guava_imgui_load_animation_layout(void);
+void guava_imgui_save_layout(void);
 void guava_imgui_prepare(SDL_GPUCommandBuffer* command_buffer);
 void guava_imgui_render(SDL_GPUCommandBuffer* command_buffer, SDL_GPURenderPass* render_pass);
 bool guava_imgui_want_capture_mouse(void);
@@ -100,6 +114,7 @@ void guava_imgui_separator(void);
 void guava_imgui_set_next_item_width(float width);
 void guava_imgui_set_next_window_pos(float x, float y);
 void guava_imgui_set_next_window_size(float width, float height);
+void guava_imgui_set_next_window_bg_alpha(float alpha);
 void guava_imgui_push_style_color(uint32_t slot, float r, float g, float b, float a);
 void guava_imgui_pop_style_color(int32_t count);
 void guava_imgui_push_style_var_float(uint32_t slot, float value);
@@ -156,6 +171,12 @@ float guava_imgui_get_frame_height(void);
 float guava_imgui_get_time(void);
 void guava_imgui_set_scroll_here_y(float center_y_ratio);
 void guava_imgui_image(SDL_GPUTexture* texture, float width, float height);
+uint32_t guava_imgui_draw_view_cube(
+    const float view[16],
+    float x,
+    float y,
+    float size
+);
 
 #ifdef __cplusplus
 }

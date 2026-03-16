@@ -1,6 +1,7 @@
 const std = @import("std");
 const engine = @import("guava");
 const EditorState = @import("../core/state.zig").EditorState;
+const state_mod = @import("../core/state.zig");
 const utils = @import("../common/utils.zig");
 const history = @import("../actions/history.zig");
 const camera = @import("../interaction/camera.zig");
@@ -66,105 +67,6 @@ fn drawViewportToolbarStrip(state: *EditorState, layer_context: *engine.core.Lay
     engine.ui.ImGui.sameLine();
     if (try drawToolbarIconButton(state, layer_context, "toolbar_scale", ui_icons.paths.toolbar.scale, state.manipulation_mode == .scale)) {
         try manipulation.beginManipulation(state, layer_context, .scale);
-    }
-
-    engine.ui.ImGui.sameLine();
-    engine.ui.ImGui.dummy(8.0, 1.0);
-    engine.ui.ImGui.sameLine();
-
-    if (try drawPlaybackToolbarIconButton(
-        state,
-        layer_context,
-        "toolbar_run",
-        ui_icons.paths.toolbar.play,
-        if (state.playback_state == .playing) activePlayPalette() else idlePlaybackPalette(),
-    )) {
-        setPlaybackState(state, layer_context, .playing);
-    }
-    engine.ui.ImGui.sameLine();
-    if (try drawPlaybackToolbarIconButton(
-        state,
-        layer_context,
-        "toolbar_pause",
-        ui_icons.paths.toolbar.pause,
-        if (state.playback_state == .paused) activePausePalette() else idlePlaybackPalette(),
-    )) {
-        setPlaybackState(state, layer_context, .paused);
-    }
-    engine.ui.ImGui.sameLine();
-    if (try drawPlaybackToolbarIconButton(
-        state,
-        layer_context,
-        "toolbar_step",
-        ui_icons.paths.toolbar.step,
-        stepPlaybackPalette(),
-    )) {
-        stepPlayback(state, layer_context);
-    }
-
-    if (width >= 980.0) {
-        engine.ui.ImGui.sameLine();
-        if (drawToolbarChipButton(state.text(.perspective_view), false)) {
-            camera.setViewPreset(state, layer_context, .perspective);
-        }
-        engine.ui.ImGui.sameLine();
-        if (drawToolbarChipButton(state.text(.top_view), false)) {
-            camera.setViewPreset(state, layer_context, .top);
-        }
-        engine.ui.ImGui.sameLine();
-        if (drawToolbarChipButton(state.text(.side_view), false)) {
-            camera.setViewPreset(state, layer_context, .side);
-        }
-        engine.ui.ImGui.sameLine();
-        if (drawToolbarChipButton(state.text(.textured), state.viewport_render_mode == .textured)) {
-            state.viewport_render_mode = .textured;
-        }
-        engine.ui.ImGui.sameLine();
-        if (drawToolbarChipButton(state.text(.wireframe), state.viewport_render_mode == .wireframe)) {
-            state.viewport_render_mode = .wireframe;
-        }
-        engine.ui.ImGui.sameLine();
-        if (drawToolbarChipButton(state.text(.unlit), state.viewport_render_mode == .unlit)) {
-            state.viewport_render_mode = .unlit;
-        }
-    } else {
-        engine.ui.ImGui.dummy(0.0, 6.0);
-        if (drawToolbarChipButton(state.text(.perspective_view), false)) {
-            camera.setViewPreset(state, layer_context, .perspective);
-        }
-        engine.ui.ImGui.sameLine();
-        if (drawToolbarChipButton(state.text(.top_view), false)) {
-            camera.setViewPreset(state, layer_context, .top);
-        }
-        engine.ui.ImGui.sameLine();
-        if (drawToolbarChipButton(state.text(.side_view), false)) {
-            camera.setViewPreset(state, layer_context, .side);
-        }
-        engine.ui.ImGui.sameLine();
-        if (drawToolbarChipButton(state.text(.textured), state.viewport_render_mode == .textured)) {
-            state.viewport_render_mode = .textured;
-        }
-        engine.ui.ImGui.sameLine();
-        if (drawToolbarChipButton(state.text(.wireframe), state.viewport_render_mode == .wireframe)) {
-            state.viewport_render_mode = .wireframe;
-        }
-        engine.ui.ImGui.sameLine();
-        if (drawToolbarChipButton(state.text(.unlit), state.viewport_render_mode == .unlit)) {
-            state.viewport_render_mode = .unlit;
-        }
-    }
-
-    engine.ui.ImGui.dummy(0.0, 6.0);
-    if (drawToolbarChipButton(state.text(.show_grid), state.viewport_show_grid)) {
-        state.viewport_show_grid = !state.viewport_show_grid;
-    }
-    engine.ui.ImGui.sameLine();
-    if (drawToolbarChipButton(state.text(.show_bones), state.viewport_show_bones)) {
-        state.viewport_show_bones = !state.viewport_show_bones;
-    }
-    engine.ui.ImGui.sameLine();
-    if (drawToolbarChipButton(state.text(.show_collision), state.viewport_show_collision)) {
-        state.viewport_show_collision = !state.viewport_show_collision;
     }
 
     if (width >= 860.0) {
@@ -322,6 +224,7 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
     state.viewport_hovered = false;
     state.viewport_focused = engine.ui.ImGui.isWindowFocused();
     state.viewport_has_image = false;
+    state.viewport_overlay_hovered = false;
 
     const drawable_size = utils.viewportDrawableSize(layer_context.window, state.viewport_extent);
     try layer_context.renderer.setSceneViewportSize(drawable_size[0], drawable_size[1]);
@@ -334,7 +237,10 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
         engine.ui.ImGui.image(texture, image_size[0], image_size[1]);
         state.viewport_hovered = engine.ui.ImGui.isItemHovered();
         state.viewport_has_image = true;
-        try drawNavigationGizmo(state, layer_context, image_size[0]);
+        try handleViewportAssetDropTargets(state, layer_context);
+        try drawViewportOverlayControlsWindow(state, layer_context);
+        try drawViewportPlaybackOverlayWindow(state, layer_context);
+        drawViewportViewCube(state, layer_context);
     } else {
         engine.ui.ImGui.text(state.text(.viewport_target_is_not_ready_yet));
     }
@@ -473,46 +379,21 @@ pub fn drawStatusBarWindow(state: *EditorState, layer_context: *engine.core.Laye
 
 pub fn handleViewportSelection(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const input = layer_context.input;
-    if (!state.viewport_has_image or !state.viewport_hovered or !input.wasMousePressed(.left) or input.modifiers.alt) {
+    if (!state.viewport_has_image or !state.viewport_hovered or state.viewport_overlay_hovered or !input.wasMousePressed(.left) or input.modifiers.alt) {
         return;
     }
-    if (state.viewport_extent[0] <= 1.0 or state.viewport_extent[1] <= 1.0) {
-        return;
+    if (viewportPixelUnderMouse(state, layer_context)) |pixel| {
+        try layer_context.renderer.requestSelectionReadback(
+            pixel[0],
+            pixel[1],
+            if (input.modifiers.shift or input.modifiers.ctrl or input.modifiers.super) .toggle else .replace,
+        );
     }
-
-    const local_x = input.mouse_position[0] - state.viewport_origin[0];
-    const local_y = input.mouse_position[1] - state.viewport_origin[1];
-    if (local_x < 0.0 or local_y < 0.0 or local_x > state.viewport_extent[0] or local_y > state.viewport_extent[1]) {
-        return;
-    }
-
-    const viewport_size = layer_context.renderer.sceneViewportSize();
-    if (viewport_size[0] == 0 or viewport_size[1] == 0) {
-        return;
-    }
-
-    const normalized_x = std.math.clamp(local_x / state.viewport_extent[0], 0.0, 1.0);
-    const normalized_y = std.math.clamp(local_y / state.viewport_extent[1], 0.0, 1.0);
-    const pixel_x = @as(u32, @intFromFloat(std.math.clamp(
-        normalized_x * @as(f32, @floatFromInt(viewport_size[0])),
-        0.0,
-        @as(f32, @floatFromInt(viewport_size[0] - 1)),
-    )));
-    const pixel_y = @as(u32, @intFromFloat(std.math.clamp(
-        normalized_y * @as(f32, @floatFromInt(viewport_size[1])),
-        0.0,
-        @as(f32, @floatFromInt(viewport_size[1] - 1)),
-    )));
-
-    try layer_context.renderer.requestSelectionReadback(
-        pixel_x,
-        pixel_y,
-        if (input.modifiers.shift or input.modifiers.ctrl or input.modifiers.super) .toggle else .replace,
-    );
 }
 
 pub fn drawEditorUi(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     syncViewportState(state, layer_context);
+    try applyPendingViewportAssetDrop(state, layer_context);
     syncPlaybackState(state, layer_context);
     try menu_bar.drawMenuBar(state, layer_context);
     try drawViewportWindow(state, layer_context);
@@ -526,6 +407,39 @@ pub fn drawEditorUi(state: *EditorState, layer_context: *engine.core.LayerContex
     if (state.settings_open) {
         try settings.drawSettingsWindow(state, layer_context);
     }
+}
+
+fn viewportPixelUnderMouse(state: *const EditorState, layer_context: *const engine.core.LayerContext) ?[2]u32 {
+    if (state.viewport_extent[0] <= 1.0 or state.viewport_extent[1] <= 1.0) {
+        return null;
+    }
+
+    const input = layer_context.input;
+    const local_x = input.mouse_position[0] - state.viewport_origin[0];
+    const local_y = input.mouse_position[1] - state.viewport_origin[1];
+    if (local_x < 0.0 or local_y < 0.0 or local_x > state.viewport_extent[0] or local_y > state.viewport_extent[1]) {
+        return null;
+    }
+
+    const viewport_size = layer_context.renderer.sceneViewportSize();
+    if (viewport_size[0] == 0 or viewport_size[1] == 0) {
+        return null;
+    }
+
+    const normalized_x = std.math.clamp(local_x / state.viewport_extent[0], 0.0, 1.0);
+    const normalized_y = std.math.clamp(local_y / state.viewport_extent[1], 0.0, 1.0);
+    return .{
+        @as(u32, @intFromFloat(std.math.clamp(
+            normalized_x * @as(f32, @floatFromInt(viewport_size[0])),
+            0.0,
+            @as(f32, @floatFromInt(viewport_size[0] - 1)),
+        ))),
+        @as(u32, @intFromFloat(std.math.clamp(
+            normalized_y * @as(f32, @floatFromInt(viewport_size[1])),
+            0.0,
+            @as(f32, @floatFromInt(viewport_size[1] - 1)),
+        ))),
+    };
 }
 
 fn syncViewportState(state: *EditorState, layer_context: *engine.core.LayerContext) void {
@@ -603,101 +517,205 @@ fn stepPlaybackPalette() ui_icons.ButtonPalette {
     };
 }
 
-fn drawNavigationGizmo(state: *EditorState, layer_context: *engine.core.LayerContext, window_width: f32) !void {
-    const button = 24.0;
-    const gap = 4.0;
-    const right = @max(window_width - 108.0, 16.0);
-    const top = viewportOverlayTopInset() + 6.0;
-
-    engine.ui.ImGui.setCursorPos(.{ right + button, top });
-    if (drawOverlayNavButton("+Y", button)) {
-        camera.lookAlongWorldAxis(state, layer_context, .{ 0.0, -1.0, 0.0 });
+fn applyPendingViewportAssetDrop(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const pending_index = state.pending_viewport_drop_asset_index orelse return;
+    const pending_kind = state.pending_viewport_drop_kind orelse {
+        state.pending_viewport_drop_asset_index = null;
+        return;
+    };
+    defer {
+        state.pending_viewport_drop_asset_index = null;
+        state.pending_viewport_drop_kind = null;
     }
 
-    engine.ui.ImGui.setCursorPos(.{ right, top + button + gap });
-    if (drawOverlayNavButton("-X", button)) {
-        camera.lookAlongWorldAxis(state, layer_context, .{ 1.0, 0.0, 0.0 });
+    if (pending_index >= state.asset_entries.items.len) {
+        return;
+    }
+    const entry = state.asset_entries.items[pending_index];
+
+    switch (pending_kind) {
+        .model => try history.importModelPath(state, layer_context, entry.path),
+        .texture => {
+            const selected = layer_context.renderer.selectedEntity() orelse return;
+            const entity = layer_context.world.getEntity(selected) orelse return;
+            if (entity.material == null) {
+                try inspector.addMaterialComponent(state, layer_context, entity);
+            }
+            const texture_handle = try inspector.importTextureAsset(state, layer_context, entry.id, entry.path);
+            if (try inspector.ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
+                material_resource.base_color_texture = texture_handle;
+                if (entity.material) |*material_component| {
+                    material_component.handle = inspector.materialHandleForEntity(state, entity);
+                }
+                try history.captureSnapshot(state, layer_context);
+            }
+        },
+        else => {},
+    }
+}
+
+fn handleViewportAssetDropTargets(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    var asset_index: u64 = 0;
+    if (engine.ui.ImGui.acceptDragDropPayloadU64(state_mod.asset_model_drag_payload, &asset_index)) {
+        state.pending_viewport_drop_asset_index = @as(usize, @intCast(asset_index));
+        state.pending_viewport_drop_kind = .model;
+        return;
+    }
+    if (engine.ui.ImGui.acceptDragDropPayloadU64(state_mod.asset_texture_drag_payload, &asset_index)) {
+        if (viewportPixelUnderMouse(state, layer_context)) |pixel| {
+            try layer_context.renderer.requestSelectionReadback(pixel[0], pixel[1], .replace);
+            state.pending_viewport_drop_asset_index = @as(usize, @intCast(asset_index));
+            state.pending_viewport_drop_kind = .texture;
+        }
+    }
+}
+
+fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const overlay_pos = .{
+        state.viewport_origin[0] + 14.0,
+        state.viewport_origin[1] + viewportOverlayTopInset(),
+    };
+    engine.ui.ImGui.setNextWindowPos(overlay_pos);
+    engine.ui.ImGui.setNextWindowBgAlpha(0.72);
+    _ = engine.ui.ImGui.beginWindowFlags(
+        "##viewport_overlay_controls",
+        engine.ui.ImGui.WindowFlags.no_title_bar |
+            engine.ui.ImGui.WindowFlags.no_resize |
+            engine.ui.ImGui.WindowFlags.no_move |
+            engine.ui.ImGui.WindowFlags.no_saved_settings |
+            engine.ui.ImGui.WindowFlags.no_docking |
+            engine.ui.ImGui.WindowFlags.always_auto_resize,
+    );
+    defer engine.ui.ImGui.endWindow();
+
+    engine.ui.ImGui.pushStyleVarVec2(.item_spacing, .{ 10.0, 4.0 });
+    defer engine.ui.ImGui.popStyleVar(1);
+
+    if (engine.ui.ImGui.beginMenu("View")) {
+        defer engine.ui.ImGui.endMenu();
+        if (engine.ui.ImGui.menuItem(state.text(.perspective_view), null, false, true)) {
+            camera.setViewPreset(state, layer_context, .perspective);
+        }
+        if (engine.ui.ImGui.menuItem(state.text(.top_view), null, false, true)) {
+            camera.setViewPreset(state, layer_context, .top);
+        }
+        if (engine.ui.ImGui.menuItem(state.text(.side_view), null, false, true)) {
+            camera.setViewPreset(state, layer_context, .side);
+        }
     }
     engine.ui.ImGui.sameLine();
-    if (drawOverlayNavButton("+Z", button)) {
-        camera.lookAlongWorldAxis(state, layer_context, .{ 0.0, 0.0, -1.0 });
+    if (engine.ui.ImGui.beginMenu(currentRenderModeLabel(state))) {
+        defer engine.ui.ImGui.endMenu();
+        if (engine.ui.ImGui.menuItem(state.text(.textured), null, state.viewport_render_mode == .textured, true)) {
+            state.viewport_render_mode = .textured;
+        }
+        if (engine.ui.ImGui.menuItem(state.text(.wireframe), null, state.viewport_render_mode == .wireframe, true)) {
+            state.viewport_render_mode = .wireframe;
+        }
+        if (engine.ui.ImGui.menuItem(state.text(.unlit), null, state.viewport_render_mode == .unlit, true)) {
+            state.viewport_render_mode = .unlit;
+        }
     }
     engine.ui.ImGui.sameLine();
-    if (drawOverlayNavButton("+X", button)) {
-        camera.lookAlongWorldAxis(state, layer_context, .{ -1.0, 0.0, 0.0 });
-    }
-
-    engine.ui.ImGui.setCursorPos(.{ right + button, top + (button + gap) * 2.0 });
-    if (drawOverlayNavButton("-Y", button)) {
-        camera.lookAlongWorldAxis(state, layer_context, .{ 0.0, 1.0, 0.0 });
-    }
-
-    engine.ui.ImGui.setCursorPos(.{ right + button, top + (button + gap) * 3.0 });
-    if (drawOverlayNavButton("-Z", button)) {
-        camera.lookAlongWorldAxis(state, layer_context, .{ 0.0, 0.0, 1.0 });
-    }
-}
-
-fn drawOverlayActionButton(label: []const u8, width: f32) bool {
-    return drawOverlayButton(label, false, width, 26.0);
-}
-
-fn drawOverlayToggleButton(label: []const u8, active: bool, width: f32) bool {
-    return drawOverlayButton(label, active, width, 26.0);
-}
-
-fn drawOverlayNavButton(label: []const u8, size: f32) bool {
-    return drawOverlayButton(label, false, size, size);
-}
-
-fn drawOverlayButton(label: []const u8, active: bool, width: f32, height: f32) bool {
-    const palette = if (active)
-        [3][4]f32{
-            .{ 0.25, 0.43, 0.66, 0.86 },
-            .{ 0.30, 0.50, 0.74, 0.94 },
-            .{ 0.22, 0.37, 0.56, 0.98 },
+    if (engine.ui.ImGui.beginMenu("Overlay")) {
+        defer engine.ui.ImGui.endMenu();
+        if (engine.ui.ImGui.menuItem(state.text(.show_grid), null, state.viewport_show_grid, true)) {
+            state.viewport_show_grid = !state.viewport_show_grid;
         }
-    else
-        [3][4]f32{
-            .{ 0.20, 0.20, 0.21, 0.40 },
-            .{ 0.24, 0.25, 0.27, 0.58 },
-            .{ 0.28, 0.29, 0.31, 0.70 },
-        };
-    engine.ui.ImGui.pushStyleColor(.button, palette[0]);
-    engine.ui.ImGui.pushStyleColor(.button_hovered, palette[1]);
-    engine.ui.ImGui.pushStyleColor(.button_active, palette[2]);
-    engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, 13.0);
-    engine.ui.ImGui.pushStyleVarVec2(.frame_padding, .{ 10.0, 5.0 });
-    defer {
-        engine.ui.ImGui.popStyleVar(2);
-        engine.ui.ImGui.popStyleColor(3);
+        if (engine.ui.ImGui.menuItem(state.text(.show_bones), null, state.viewport_show_bones, true)) {
+            state.viewport_show_bones = !state.viewport_show_bones;
+        }
+        if (engine.ui.ImGui.menuItem(state.text(.show_collision), null, state.viewport_show_collision, true)) {
+            state.viewport_show_collision = !state.viewport_show_collision;
+        }
     }
-    return engine.ui.ImGui.buttonEx(label, width, height);
+
+    if (engine.ui.ImGui.isWindowHovered()) {
+        state.viewport_overlay_hovered = true;
+    }
 }
 
-fn drawToolbarChipButton(label: []const u8, active: bool) bool {
-    const palette = if (active)
-        [3][4]f32{
-            .{ 0.25, 0.43, 0.66, 0.90 },
-            .{ 0.30, 0.50, 0.74, 0.96 },
-            .{ 0.22, 0.37, 0.56, 1.0 },
-        }
-    else
-        [3][4]f32{
-            .{ 0.20, 0.22, 0.25, 0.86 },
-            .{ 0.25, 0.28, 0.33, 0.94 },
-            .{ 0.18, 0.20, 0.24, 0.98 },
-        };
-    engine.ui.ImGui.pushStyleColor(.button, palette[0]);
-    engine.ui.ImGui.pushStyleColor(.button_hovered, palette[1]);
-    engine.ui.ImGui.pushStyleColor(.button_active, palette[2]);
-    engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, 8.0);
-    engine.ui.ImGui.pushStyleVarVec2(.frame_padding, .{ 8.0, 4.0 });
-    defer {
-        engine.ui.ImGui.popStyleVar(2);
-        engine.ui.ImGui.popStyleColor(3);
+fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const window_width = 126.0;
+    engine.ui.ImGui.setNextWindowPos(.{
+        state.viewport_origin[0] + @max((state.viewport_extent[0] - window_width) * 0.5, 18.0),
+        state.viewport_origin[1] + 10.0,
+    });
+    engine.ui.ImGui.setNextWindowBgAlpha(0.66);
+    _ = engine.ui.ImGui.beginWindowFlags(
+        "##viewport_playback_overlay",
+        engine.ui.ImGui.WindowFlags.no_title_bar |
+            engine.ui.ImGui.WindowFlags.no_resize |
+            engine.ui.ImGui.WindowFlags.no_move |
+            engine.ui.ImGui.WindowFlags.no_saved_settings |
+            engine.ui.ImGui.WindowFlags.no_docking |
+            engine.ui.ImGui.WindowFlags.always_auto_resize,
+    );
+    defer engine.ui.ImGui.endWindow();
+
+    if (try drawPlaybackToolbarIconButton(
+        state,
+        layer_context,
+        "viewport_play",
+        ui_icons.paths.toolbar.play,
+        if (state.playback_state == .playing) activePlayPalette() else idlePlaybackPalette(),
+    )) {
+        setPlaybackState(state, layer_context, .playing);
     }
-    return engine.ui.ImGui.buttonEx(label, 0.0, 0.0);
+    engine.ui.ImGui.sameLine();
+    if (try drawPlaybackToolbarIconButton(
+        state,
+        layer_context,
+        "viewport_pause",
+        ui_icons.paths.toolbar.pause,
+        if (state.playback_state == .paused) activePausePalette() else idlePlaybackPalette(),
+    )) {
+        setPlaybackState(state, layer_context, .paused);
+    }
+    engine.ui.ImGui.sameLine();
+    if (try drawPlaybackToolbarIconButton(
+        state,
+        layer_context,
+        "viewport_step",
+        ui_icons.paths.toolbar.step,
+        stepPlaybackPalette(),
+    )) {
+        stepPlayback(state, layer_context);
+    }
+
+    if (engine.ui.ImGui.isWindowHovered()) {
+        state.viewport_overlay_hovered = true;
+    }
+}
+
+fn drawViewportViewCube(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+    const cube_size = std.math.clamp(@min(state.viewport_extent[0], state.viewport_extent[1]) * 0.16, 84.0, 118.0);
+    const cube_pos = .{
+        state.viewport_origin[0] + state.viewport_extent[0] - cube_size - 14.0,
+        state.viewport_origin[1] + viewportOverlayTopInset(),
+    };
+    const view = camera.activeCameraViewMatrix(state, layer_context);
+    const result = engine.ui.ImGui.drawViewCube(&view, cube_pos, cube_size);
+    if (result.hovered or result.active) {
+        state.viewport_overlay_hovered = true;
+    }
+    switch (result.face) {
+        .front => camera.lookAlongWorldAxis(state, layer_context, .{ 0.0, 0.0, -1.0 }),
+        .back => camera.lookAlongWorldAxis(state, layer_context, .{ 0.0, 0.0, 1.0 }),
+        .left => camera.lookAlongWorldAxis(state, layer_context, .{ 1.0, 0.0, 0.0 }),
+        .right => camera.lookAlongWorldAxis(state, layer_context, .{ -1.0, 0.0, 0.0 }),
+        .top => camera.lookAlongWorldAxis(state, layer_context, .{ 0.0, -1.0, 0.0 }),
+        .bottom => camera.lookAlongWorldAxis(state, layer_context, .{ 0.0, 1.0, 0.0 }),
+        .none => {},
+    }
+}
+
+fn currentRenderModeLabel(state: *const EditorState) []const u8 {
+    return switch (state.viewport_render_mode) {
+        .textured => state.text(.textured),
+        .wireframe => state.text(.wireframe),
+        .unlit => state.text(.unlit),
+    };
 }
 
 fn hierarchyCategoryLabel(state: *const EditorState) []const u8 {

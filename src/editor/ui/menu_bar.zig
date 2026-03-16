@@ -75,9 +75,23 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
         if (engine.ui.ImGui.menuItem(state.text(.settings), null, state.settings_open, true)) {
             state.settings_open = !state.settings_open;
         }
-        if (engine.ui.ImGui.menuItem(state.text(.reset_dock_layout), null, false, true)) {
-            engine.ui.ImGui.resetDefaultLayout();
-            state.dock_layout_initialized = true;
+        if (engine.ui.ImGui.beginMenu(state.text(.layout))) {
+            defer engine.ui.ImGui.endMenu();
+            if (engine.ui.ImGui.menuItem(state.text(.save_current_layout), null, false, true)) {
+                engine.ui.ImGui.saveLayout();
+            }
+            if (engine.ui.ImGui.menuItem(state.text(.load_default_layout), null, false, true)) {
+                engine.ui.ImGui.resetDefaultLayout();
+                state.dock_layout_initialized = true;
+            }
+            if (engine.ui.ImGui.menuItem(state.text(.load_animation_layout), null, false, true)) {
+                engine.ui.ImGui.loadAnimationLayout();
+                state.dock_layout_initialized = true;
+            }
+            if (engine.ui.ImGui.menuItem(state.text(.reset_dock_layout), null, false, true)) {
+                engine.ui.ImGui.resetDefaultLayout();
+                state.dock_layout_initialized = true;
+            }
         }
     }
 
