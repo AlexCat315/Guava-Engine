@@ -10,10 +10,28 @@ pub const paths = struct {
         pub const move = "assets/ui/icons/heroicons/24/solid/arrows-up-down.svg";
         pub const rotate = "assets/ui/icons/heroicons/24/solid/arrow-path.svg";
         pub const scale = "assets/ui/icons/heroicons/24/solid/arrows-pointing-out.svg";
+        pub const camera = "assets/ui/icons/heroicons/24/solid/camera.svg";
+        pub const material = "assets/ui/icons/heroicons/24/solid/cube.svg";
+        pub const overlay = "assets/ui/icons/heroicons/24/solid/eye.svg";
+        pub const snap_translate = "assets/ui/icons/heroicons/24/solid/arrows-up-down.svg";
+        pub const snap_rotate = "assets/ui/icons/heroicons/24/solid/arrow-path.svg";
+        pub const snap_scale = "assets/ui/icons/heroicons/24/solid/arrows-pointing-out.svg";
+        pub const folder = "assets/ui/icons/heroicons/24/solid/squares-2x2.svg";
         pub const play = "assets/ui/icons/heroicons/24/solid/play.svg";
         pub const pause = "assets/ui/icons/heroicons/24/solid/pause.svg";
         pub const step = "assets/ui/icons/heroicons/24/solid/forward.svg";
         pub const settings = "assets/ui/icons/heroicons/24/solid/cog-6-tooth.svg";
+    };
+
+    pub const place_actors = struct {
+        pub const empty = "assets/ui/icons/heroicons/24/solid/squares-2x2.svg";
+        pub const camera = "assets/ui/icons/heroicons/24/solid/camera.svg";
+        pub const cube = "assets/ui/icons/heroicons/24/solid/cube.svg";
+        pub const sphere = "assets/ui/icons/heroicons/24/solid/cube.svg";
+        pub const plane = "assets/ui/icons/heroicons/24/solid/squares-2x2.svg";
+        pub const point_light = "assets/ui/icons/heroicons/24/solid/light-bulb.svg";
+        pub const spot_light = "assets/ui/icons/heroicons/24/solid/light-bulb.svg";
+        pub const directional_light = "assets/ui/icons/heroicons/24/solid/light-bulb.svg";
     };
 
     pub const hierarchy = struct {

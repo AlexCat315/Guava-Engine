@@ -84,7 +84,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
     const selection_count_text = try std.fmt.bufPrint(&selection_count_buffer, "{d}", .{selection_count});
     engine.ui.ImGui.labelText(state.text(.selection_count), selection_count_text);
     engine.ui.ImGui.setNextItemWidth(-1.0);
-    _ = engine.ui.ImGui.inputText("##inspector_filter", state.inspector_filter_buffer[0..]);
+    _ = engine.ui.ImGui.inputTextWithHint("##inspector_filter", state.text(.search_components), state.inspector_filter_buffer[0..]);
     const filter = inspectorFilter(state);
 
     if (inspectorSectionMatches(filter, state.text(.identity)) and engine.ui.ImGui.collapsingHeader(state.text(.identity), filter.len != 0)) {

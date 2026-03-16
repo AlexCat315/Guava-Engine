@@ -97,6 +97,7 @@ pub fn assetKindLabel(state: *const EditorState, kind: AssetKind) []const u8 {
     return switch (kind) {
         .scene => state.text(.scene),
         .model => state.text(.model),
+        .material => state.text(.material_asset),
         .texture => state.text(.texture),
         .shader => state.text(.shader),
     };

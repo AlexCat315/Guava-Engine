@@ -106,7 +106,7 @@ fn drawViewportToolbarOptions(
     }
     engine.ui.ImGui.sameLine();
     engine.ui.ImGui.setNextItemWidth(filter_width);
-    _ = engine.ui.ImGui.inputText("##viewport_hierarchy_filter", state.hierarchy_filter_buffer[0..]);
+    _ = engine.ui.ImGui.inputTextWithHint("##viewport_hierarchy_filter", state.text(.hierarchy_filter), state.hierarchy_filter_buffer[0..]);
     engine.ui.ImGui.sameLine();
     if (engine.ui.ImGui.buttonEx(hierarchyCategoryLabel(state), category_width, 0.0)) {
         state.hierarchy_category = nextHierarchyCategory(state.hierarchy_category);
@@ -142,7 +142,7 @@ fn drawViewportToolbarOptionsCompact(state: *EditorState, layer_context: *engine
         }
         engine.ui.ImGui.sameLine();
         engine.ui.ImGui.setNextItemWidth(@max(width - 38.0, 120.0));
-        _ = engine.ui.ImGui.inputText("##viewport_hierarchy_filter_compact", state.hierarchy_filter_buffer[0..]);
+        _ = engine.ui.ImGui.inputTextWithHint("##viewport_hierarchy_filter_compact", state.text(.hierarchy_filter), state.hierarchy_filter_buffer[0..]);
     } else {
         if (try ui_icons.drawIconButton(
             state,
@@ -157,7 +157,7 @@ fn drawViewportToolbarOptionsCompact(state: *EditorState, layer_context: *engine
         }
         engine.ui.ImGui.dummy(0.0, 6.0);
         engine.ui.ImGui.setNextItemWidth(-1.0);
-        _ = engine.ui.ImGui.inputText("##viewport_hierarchy_filter_narrow", state.hierarchy_filter_buffer[0..]);
+        _ = engine.ui.ImGui.inputTextWithHint("##viewport_hierarchy_filter_narrow", state.text(.hierarchy_filter), state.hierarchy_filter_buffer[0..]);
     }
 
     engine.ui.ImGui.dummy(0.0, 6.0);
@@ -614,54 +614,62 @@ fn stepPlaybackPalette() ui_icons.ButtonPalette {
 }
 
 fn applyPendingViewportAssetDrop(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
-    const pending_index = state.pending_viewport_drop_asset_index orelse return;
-    const pending_kind = state.pending_viewport_drop_kind orelse {
-        state.pending_viewport_drop_asset_index = null;
-        return;
-    };
-    defer {
-        state.pending_viewport_drop_asset_index = null;
-        state.pending_viewport_drop_kind = null;
-    }
+    const pending = state.pending_viewport_drop orelse return;
+    defer state.pending_viewport_drop = null;
 
-    if (pending_index >= state.asset_entries.items.len) {
-        return;
-    }
-    const entry = state.asset_entries.items[pending_index];
-
-    switch (pending_kind) {
-        .model => try history.importModelPath(state, layer_context, entry.path),
-        .texture => {
-            const selected = layer_context.renderer.selectedEntity() orelse return;
-            const entity = layer_context.world.getEntity(selected) orelse return;
-            if (entity.material == null) {
-                try inspector.addMaterialComponent(state, layer_context, entity);
+    switch (pending.source_kind) {
+        .asset => {
+            const asset_index = pending.asset_index orelse return;
+            if (asset_index >= state.asset_entries.items.len) {
+                return;
             }
-            const texture_handle = try inspector.importTextureAsset(state, layer_context, entry.id, entry.path);
-            if (try inspector.ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
-                material_resource.base_color_texture = texture_handle;
-                if (entity.material) |*material_component| {
-                    material_component.handle = inspector.materialHandleForEntity(state, entity);
-                }
-                try history.captureSnapshot(state, layer_context);
+            const entry = state.asset_entries.items[asset_index];
+
+            switch (entry.kind) {
+                .model => try history.importModelPath(state, layer_context, entry.path),
+                .texture => {
+                    const target_entity = pending.target_entity orelse layer_context.renderer.selectedEntity() orelse return;
+                    const entity = layer_context.world.getEntity(target_entity) orelse return;
+                    if (entity.material == null) {
+                        try inspector.addMaterialComponent(state, layer_context, entity);
+                    }
+                    const texture_handle = try inspector.importTextureAsset(state, layer_context, entry.id, entry.path);
+                    if (try inspector.ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
+                        material_resource.base_color_texture = texture_handle;
+                        if (entity.material) |*material_component| {
+                            material_component.handle = inspector.materialHandleForEntity(state, entity);
+                        }
+                        try history.captureSnapshot(state, layer_context);
+                    }
+                },
+                else => {},
             }
         },
-        else => {},
+        .place_actor => {
+            _ = pending.actor_kind;
+            _ = pending.world_position;
+        },
     }
 }
 
 fn handleViewportAssetDropTargets(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     var asset_index: u64 = 0;
     if (engine.ui.ImGui.acceptDragDropPayloadU64(state_mod.asset_model_drag_payload, &asset_index)) {
-        state.pending_viewport_drop_asset_index = @as(usize, @intCast(asset_index));
-        state.pending_viewport_drop_kind = .model;
+        state.pending_viewport_drop = .{
+            .source_kind = .asset,
+            .asset_index = @as(usize, @intCast(asset_index)),
+            .pixel = viewportPixelUnderMouse(state, layer_context),
+        };
         return;
     }
     if (engine.ui.ImGui.acceptDragDropPayloadU64(state_mod.asset_texture_drag_payload, &asset_index)) {
         if (viewportPixelUnderMouse(state, layer_context)) |pixel| {
             try layer_context.renderer.requestSelectionReadback(pixel[0], pixel[1], .replace);
-            state.pending_viewport_drop_asset_index = @as(usize, @intCast(asset_index));
-            state.pending_viewport_drop_kind = .texture;
+            state.pending_viewport_drop = .{
+                .source_kind = .asset,
+                .asset_index = @as(usize, @intCast(asset_index)),
+                .pixel = pixel,
+            };
         }
     }
 }
@@ -689,13 +697,13 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
 
     if (engine.ui.ImGui.beginMenu("View")) {
         defer engine.ui.ImGui.endMenu();
-        if (engine.ui.ImGui.menuItem(state.text(.perspective_view), null, false, true)) {
+        if (engine.ui.ImGui.menuItem(state.text(.perspective_view), null, state.viewport_view_preset == .perspective, true)) {
             camera.setViewPreset(state, layer_context, .perspective);
         }
-        if (engine.ui.ImGui.menuItem(state.text(.top_view), null, false, true)) {
+        if (engine.ui.ImGui.menuItem(state.text(.top_view), null, state.viewport_view_preset == .top, true)) {
             camera.setViewPreset(state, layer_context, .top);
         }
-        if (engine.ui.ImGui.menuItem(state.text(.side_view), null, false, true)) {
+        if (engine.ui.ImGui.menuItem(state.text(.side_view), null, state.viewport_view_preset == .side, true)) {
             camera.setViewPreset(state, layer_context, .side);
         }
     }

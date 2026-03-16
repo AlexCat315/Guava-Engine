@@ -5,11 +5,14 @@ const i18n = @import("../i18n/mod.zig");
 pub const autosave_path = "assets/scenes/editor_autosave.guava_scene";
 pub const entity_drag_payload = "guava.scene.entity";
 pub const asset_model_drag_payload = "guava.asset.model";
+pub const asset_material_drag_payload = "guava.asset.material";
 pub const asset_texture_drag_payload = "guava.asset.texture";
+pub const place_actor_drag_payload = "guava.editor.place_actor";
 
 pub const AssetKind = enum {
     scene,
     model,
+    material,
     texture,
     shader,
 };
@@ -52,6 +55,24 @@ pub const HierarchyCategory = enum {
     objects,
 };
 
+pub const PlaceActorCategory = enum {
+    basics,
+    lights,
+    shapes,
+    vfx,
+};
+
+pub const PlaceActorKind = enum {
+    empty,
+    camera,
+    cube,
+    sphere,
+    plane,
+    point_light,
+    spot_light,
+    directional_light,
+};
+
 pub const BottomPanelTab = enum {
     project,
     console,
@@ -63,7 +84,28 @@ pub const ViewportRenderMode = enum {
     unlit,
 };
 
+pub const ViewportViewPreset = enum {
+    perspective,
+    top,
+    side,
+    custom,
+};
+
 pub const AxisConstraint = engine.math.axis.Axis3;
+
+pub const PendingViewportDropSource = enum {
+    asset,
+    place_actor,
+};
+
+pub const PendingViewportDrop = struct {
+    source_kind: PendingViewportDropSource,
+    asset_index: ?usize = null,
+    actor_kind: ?PlaceActorKind = null,
+    pixel: ?[2]u32 = null,
+    target_entity: ?engine.scene.EntityId = null,
+    world_position: ?[3]f32 = null,
+};
 
 pub const EditorState = struct {
     allocator: ?std.mem.Allocator = null,
@@ -85,6 +127,12 @@ pub const EditorState = struct {
     pan_sensitivity: f32 = 0.01,
     wheel_speed: f32 = 1.2,
     move_speed: f32 = 6.0,
+    translation_snap_enabled: bool = false,
+    translation_snap_step: f32 = 10.0,
+    rotation_snap_enabled: bool = false,
+    rotation_snap_step_degrees: f32 = 15.0,
+    scale_snap_enabled: bool = false,
+    scale_snap_step: f32 = 0.1,
     manipulation_mode: ManipulationMode = .none,
     manipulation_axis: AxisConstraint = .free,
     manipulation_entity: ?engine.scene.EntityId = null,
@@ -107,6 +155,7 @@ pub const EditorState = struct {
     scene_filter_buffer: [128]u8 = [_]u8{0} ** 128,
     hierarchy_filter_buffer: [128]u8 = [_]u8{0} ** 128,
     hierarchy_category: HierarchyCategory = .all,
+    place_actor_category: PlaceActorCategory = .basics,
     asset_filter_buffer: [128]u8 = [_]u8{0} ** 128,
     asset_directory_buffer: [256]u8 = [_]u8{0} ** 256,
     asset_thumbnail_size: f32 = 104.0,
@@ -121,6 +170,7 @@ pub const EditorState = struct {
     settings_open: bool = false,
     render_settings_open: bool = false,
     viewport_render_mode: ViewportRenderMode = .textured,
+    viewport_view_preset: ViewportViewPreset = .perspective,
     viewport_show_grid: bool = true,
     viewport_show_bones: bool = false,
     viewport_show_collision: bool = false,
@@ -130,8 +180,7 @@ pub const EditorState = struct {
     viewport_overlay_hovered: bool = false,
     viewport_origin: [2]f32 = .{ 0.0, 0.0 },
     viewport_extent: [2]f32 = .{ 0.0, 0.0 },
-    pending_viewport_drop_asset_index: ?usize = null,
-    pending_viewport_drop_kind: ?AssetKind = null,
+    pending_viewport_drop: ?PendingViewportDrop = null,
     playback_toolbar_window_initialized: bool = false,
     playback_toolbar_offset: [2]f32 = .{ 0.0, 0.0 },
     playback_toolbar_custom_position: bool = false,
@@ -168,3 +217,32 @@ pub const EditorState = struct {
         return i18n.locale(self.language);
     }
 };
+
+test "viewport drop defaults and payload constants stay stable" {
+    try std.testing.expectEqualStrings("guava.asset.model", asset_model_drag_payload);
+    try std.testing.expectEqualStrings("guava.asset.material", asset_material_drag_payload);
+    try std.testing.expectEqualStrings("guava.asset.texture", asset_texture_drag_payload);
+    try std.testing.expectEqualStrings("guava.editor.place_actor", place_actor_drag_payload);
+
+    const state = EditorState{};
+    try std.testing.expectEqual(ViewportViewPreset.perspective, state.viewport_view_preset);
+    try std.testing.expectEqual(PlaceActorCategory.basics, state.place_actor_category);
+    try std.testing.expect(!state.translation_snap_enabled);
+    try std.testing.expectEqual(@as(f32, 10.0), state.translation_snap_step);
+    try std.testing.expect(!state.rotation_snap_enabled);
+    try std.testing.expectEqual(@as(f32, 15.0), state.rotation_snap_step_degrees);
+    try std.testing.expect(!state.scale_snap_enabled);
+    try std.testing.expectEqual(@as(f32, 0.1), state.scale_snap_step);
+    try std.testing.expect(state.pending_viewport_drop == null);
+
+    const pending = PendingViewportDrop{
+        .source_kind = .asset,
+        .asset_index = 7,
+    };
+    try std.testing.expectEqual(PendingViewportDropSource.asset, pending.source_kind);
+    try std.testing.expectEqual(@as(?usize, 7), pending.asset_index);
+    try std.testing.expectEqual(@as(?PlaceActorKind, null), pending.actor_kind);
+    try std.testing.expectEqual(@as(?[2]u32, null), pending.pixel);
+    try std.testing.expectEqual(@as(?engine.scene.EntityId, null), pending.target_entity);
+    try std.testing.expectEqual(@as(?[3]f32, null), pending.world_position);
+}

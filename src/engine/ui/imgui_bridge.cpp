@@ -708,6 +708,30 @@ extern "C" void guava_imgui_end_menu(void) {
     ImGui::EndMenu();
 }
 
+extern "C" void guava_imgui_open_popup(const char* id, size_t id_len) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    const std::string owned_id = make_string(id, id_len);
+    ImGui::OpenPopup(owned_id.c_str());
+}
+
+extern "C" bool guava_imgui_begin_popup(const char* id, size_t id_len) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+    const std::string owned_id = make_string(id, id_len);
+    return ImGui::BeginPopup(owned_id.c_str());
+}
+
+extern "C" bool guava_imgui_is_popup_open(const char* id, size_t id_len) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+    const std::string owned_id = make_string(id, id_len);
+    return ImGui::IsPopupOpen(owned_id.c_str());
+}
+
 extern "C" bool guava_imgui_begin_popup_context_item(const char* id, size_t id_len) {
     if (!g_imgui_initialized) {
         return false;
@@ -733,6 +757,22 @@ extern "C" void guava_imgui_end_popup(void) {
         return;
     }
     ImGui::EndPopup();
+}
+
+extern "C" bool guava_imgui_begin_combo(const char* label, size_t label_len, const char* preview, size_t preview_len) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+    const std::string owned_label = make_string(label, label_len);
+    const std::string owned_preview = preview != nullptr ? make_string(preview, preview_len) : std::string{};
+    return ImGui::BeginCombo(owned_label.c_str(), preview != nullptr ? owned_preview.c_str() : nullptr);
+}
+
+extern "C" void guava_imgui_end_combo(void) {
+    if (!g_imgui_initialized) {
+        return;
+    }
+    ImGui::EndCombo();
 }
 
 extern "C" bool guava_imgui_menu_item(const char* label, size_t label_len, const char* shortcut, size_t shortcut_len, bool selected, bool enabled) {
@@ -1238,6 +1278,22 @@ extern "C" bool guava_imgui_input_text(const char* label, size_t label_len, char
     }
     const std::string owned_label = make_string(label, label_len);
     return ImGui::InputText(owned_label.c_str(), buffer, buffer_size);
+}
+
+extern "C" bool guava_imgui_input_text_with_hint(
+    const char* label,
+    size_t label_len,
+    const char* hint,
+    size_t hint_len,
+    char* buffer,
+    size_t buffer_size
+) {
+    if (!g_imgui_initialized) {
+        return false;
+    }
+    const std::string owned_label = make_string(label, label_len);
+    const std::string owned_hint = make_string(hint, hint_len);
+    return ImGui::InputTextWithHint(owned_label.c_str(), owned_hint.c_str(), buffer, buffer_size);
 }
 
 extern "C" bool guava_imgui_drag_float(const char* label, size_t label_len, float* value, float speed, float min_value, float max_value) {

@@ -82,7 +82,7 @@ fn drawProjectPanel(state: *EditorState, layer_context: *engine.core.LayerContex
     engine.ui.ImGui.separator();
 
     engine.ui.ImGui.setNextItemWidth(-1.0);
-    _ = engine.ui.ImGui.inputText("##asset_filter", state.asset_filter_buffer[0..]);
+    _ = engine.ui.ImGui.inputTextWithHint("##asset_filter", state.text(.search_assets), state.asset_filter_buffer[0..]);
     engine.ui.ImGui.separator();
 
     if (!engine.ui.ImGui.beginTable("project_browser_layout", 2)) {
@@ -197,6 +197,7 @@ fn drawAssetCard(
     }
     switch (entry.kind) {
         .model => _ = engine.ui.ImGui.dragDropSourceU64(state_mod.asset_model_drag_payload, @intCast(index), entry.name),
+        .material => _ = engine.ui.ImGui.dragDropSourceU64(state_mod.asset_material_drag_payload, @intCast(index), entry.name),
         .texture => _ = engine.ui.ImGui.dragDropSourceU64(state_mod.asset_texture_drag_payload, @intCast(index), entry.name),
         else => {},
     }
@@ -243,6 +244,9 @@ fn drawSelectedAssetPreview(state: *EditorState, layer_context: *engine.core.Lay
                     try history.importModelPath(state, layer_context, entry.path);
                 }
                 engine.ui.ImGui.textWrapped(state.text(.models_are_imported_as_grouped_instances_with_a_movable_root_entity));
+            },
+            .material => {
+                engine.ui.ImGui.textWrapped(state.text(.drop_material_here));
             },
             .shader => {
                 engine.ui.ImGui.textWrapped(state.text(.shader_source_preview_is_currently_metadata_only));
@@ -333,6 +337,7 @@ fn assetIconPath(kind: AssetKind) []const u8 {
     return switch (kind) {
         .scene => ui_icons.paths.hierarchy.object,
         .model => ui_icons.paths.hierarchy.mesh,
+        .material => ui_icons.paths.toolbar.material,
         .texture => ui_icons.paths.toolbar.settings,
         .shader => ui_icons.paths.toolbar.rotate,
     };
@@ -342,8 +347,20 @@ fn assetIconTint(kind: AssetKind) [4]u8 {
     return switch (kind) {
         .scene => .{ 164, 203, 255, 255 },
         .model => .{ 196, 234, 255, 255 },
+        .material => .{ 186, 228, 196, 255 },
         .texture => .{ 255, 214, 150, 255 },
         .shader => .{ 214, 176, 255, 255 },
+    };
+}
+
+fn assetKindForRecordType(record_type: engine.assets.AssetType) ?AssetKind {
+    return switch (record_type) {
+        .scene => .scene,
+        .model => .model,
+        .material => .material,
+        .texture => .texture,
+        .shader => .shader,
+        else => null,
     };
 }
 
@@ -418,13 +435,7 @@ pub fn refreshAssetBrowser(state: *EditorState, _: *engine.core.LayerContext) !v
     };
 
     for (registry.records.items) |record| {
-        const kind = switch (record.type) {
-            .scene => AssetKind.scene,
-            .model => AssetKind.model,
-            .texture => AssetKind.texture,
-            .shader => AssetKind.shader,
-            else => continue,
-        };
+        const kind = assetKindForRecordType(record.type) orelse continue;
 
         try state.asset_entries.append(allocator, .{
             .id = try allocator.dupe(u8, record.id),
@@ -534,4 +545,10 @@ pub fn instantiateSelectedAsset(state: *EditorState, layer_context: *engine.core
         .model => try history.importModelPath(state, layer_context, entry.path),
         else => {},
     }
+}
+
+test "material assets map to browser visuals and kinds" {
+    try std.testing.expectEqual(AssetKind.material, assetKindForRecordType(.material).?);
+    try std.testing.expectEqualStrings(ui_icons.paths.toolbar.material, assetIconPath(.material));
+    try std.testing.expectEqual([4]u8{ 186, 228, 196, 255 }, assetIconTint(.material));
 }

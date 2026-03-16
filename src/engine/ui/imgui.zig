@@ -161,6 +161,18 @@ pub fn endMenu() void {
     c.guava_imgui_end_menu();
 }
 
+pub fn openPopup(id: []const u8) void {
+    c.guava_imgui_open_popup(id.ptr, id.len);
+}
+
+pub fn beginPopup(id: []const u8) bool {
+    return c.guava_imgui_begin_popup(id.ptr, id.len);
+}
+
+pub fn isPopupOpen(id: []const u8) bool {
+    return c.guava_imgui_is_popup_open(id.ptr, id.len);
+}
+
 pub fn beginPopupContextItem(id: ?[]const u8) bool {
     return c.guava_imgui_begin_popup_context_item(
         if (id) |value| value.ptr else null,
@@ -178,6 +190,19 @@ pub fn beginPopupContextWindow(id: ?[]const u8, open_over_items: bool) bool {
 
 pub fn endPopup() void {
     c.guava_imgui_end_popup();
+}
+
+pub fn beginCombo(label: []const u8, preview: ?[]const u8) bool {
+    return c.guava_imgui_begin_combo(
+        label.ptr,
+        label.len,
+        if (preview) |value| value.ptr else null,
+        if (preview) |value| value.len else 0,
+    );
+}
+
+pub fn endCombo() void {
+    c.guava_imgui_end_combo();
 }
 
 pub fn menuItem(label: []const u8, shortcut: ?[]const u8, selected: bool, enabled: bool) bool {
@@ -382,6 +407,10 @@ pub fn isItemDeactivatedAfterEdit() bool {
 
 pub fn inputText(label: []const u8, buffer: []u8) bool {
     return c.guava_imgui_input_text(label.ptr, label.len, buffer.ptr, buffer.len);
+}
+
+pub fn inputTextWithHint(label: []const u8, hint: []const u8, buffer: []u8) bool {
+    return c.guava_imgui_input_text_with_hint(label.ptr, label.len, hint.ptr, hint.len, buffer.ptr, buffer.len);
 }
 
 pub fn dragFloat(label: []const u8, value: *f32, speed: f32, min_value: f32, max_value: f32) bool {

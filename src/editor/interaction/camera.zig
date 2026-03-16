@@ -2,14 +2,11 @@ const std = @import("std");
 const engine = @import("guava");
 const mat4 = engine.math.mat4;
 const vec3 = engine.math.vec3;
-const EditorState = @import("../core/state.zig").EditorState;
+const state_mod = @import("../core/state.zig");
+const EditorState = state_mod.EditorState;
 const utils = @import("../common/utils.zig");
 
-pub const ViewPreset = enum {
-    perspective,
-    top,
-    side,
-};
+pub const ViewPreset = state_mod.ViewportViewPreset;
 
 pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.LayerContext) void {
     const input = layer_context.input;
@@ -38,6 +35,9 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
     if (input.modifiers.alt and input.isMouseDown(.left)) {
         state.yaw -= input.mouse_delta[0] * state.orbit_sensitivity;
         state.pitch = utils.clampPitch(state.pitch - input.mouse_delta[1] * state.orbit_sensitivity);
+        if (@abs(input.mouse_delta[0]) > 0.0001 or @abs(input.mouse_delta[1]) > 0.0001) {
+            state.viewport_view_preset = .custom;
+        }
         const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
         camera.transform.rotation_euler = .{ state.pitch, state.yaw, 0.0 };
         camera.transform.translation = vec3.sub(state.focus_pivot, vec3.scale(forward, state.orbit_distance));
@@ -45,6 +45,9 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
         if (input.isMouseDown(.right)) {
             state.yaw -= input.mouse_delta[0] * state.look_sensitivity;
             state.pitch = utils.clampPitch(state.pitch - input.mouse_delta[1] * state.look_sensitivity);
+            if (@abs(input.mouse_delta[0]) > 0.0001 or @abs(input.mouse_delta[1]) > 0.0001) {
+                state.viewport_view_preset = .custom;
+            }
         }
 
         camera.transform.rotation_euler = .{ state.pitch, state.yaw, 0.0 };
@@ -147,14 +150,15 @@ pub fn createEditorCamera(state: *EditorState, layer_context: *engine.core.Layer
 
 pub fn setViewPreset(state: *EditorState, layer_context: *engine.core.LayerContext, preset: ViewPreset) void {
     switch (preset) {
-        .perspective => requestViewOrientation(state, layer_context, vec3.normalize(.{ -0.45, -0.32, -0.84 }), false),
-        .top => requestViewOrientation(state, layer_context, .{ 0.0, -1.0, 0.0 }, true),
-        .side => requestViewOrientation(state, layer_context, .{ -1.0, 0.0, 0.0 }, true),
+        .perspective => requestViewOrientation(state, layer_context, vec3.normalize(.{ -0.45, -0.32, -0.84 }), false, .perspective),
+        .top => requestViewOrientation(state, layer_context, .{ 0.0, -1.0, 0.0 }, true, .top),
+        .side => requestViewOrientation(state, layer_context, .{ -1.0, 0.0, 0.0 }, true, .side),
+        .custom => {},
     }
 }
 
 pub fn lookAlongWorldAxis(state: *EditorState, layer_context: *engine.core.LayerContext, axis: [3]f32) void {
-    requestViewOrientation(state, layer_context, vec3.normalize(axis), true);
+    requestViewOrientation(state, layer_context, vec3.normalize(axis), true, viewPresetForAxis(axis));
 }
 
 pub fn orbitFromViewCubeDrag(state: *EditorState, layer_context: *engine.core.LayerContext, drag_delta: [2]f32) void {
@@ -164,6 +168,7 @@ pub fn orbitFromViewCubeDrag(state: *EditorState, layer_context: *engine.core.La
     state.view_cube_transition_active = false;
     state.yaw -= drag_delta[0] * state.orbit_sensitivity;
     state.pitch = utils.clampPitch(state.pitch - drag_delta[1] * state.orbit_sensitivity);
+    state.viewport_view_preset = .custom;
 
     camera_entity.transform = editorCameraTransform(state);
     _ = layer_context.world.setPrimaryCamera(camera_id);
@@ -241,6 +246,7 @@ fn requestViewOrientation(
     layer_context: *engine.core.LayerContext,
     forward: [3]f32,
     orthographic: bool,
+    preset: ViewPreset,
 ) void {
     const camera_id = state.editor_camera orelse return;
     if (!layer_context.world.hasEntity(camera_id)) {
@@ -254,9 +260,20 @@ fn requestViewOrientation(
     state.view_cube_transition_elapsed = 0.0;
     state.view_cube_transition_target_orthographic = orthographic;
     state.view_cube_transition_active = true;
+    state.viewport_view_preset = preset;
 
     _ = layer_context.world.setPrimaryCamera(camera_id);
     state.editor_camera_active = true;
+}
+
+fn viewPresetForAxis(axis: [3]f32) ViewPreset {
+    if (@abs(axis[1]) >= 0.99) {
+        return .top;
+    }
+    if (@abs(axis[0]) >= 0.99) {
+        return .side;
+    }
+    return .custom;
 }
 
 fn updateViewCubeTransition(state: *EditorState, layer_context: *engine.core.LayerContext) void {

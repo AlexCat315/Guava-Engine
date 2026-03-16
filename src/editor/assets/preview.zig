@@ -33,6 +33,9 @@ pub fn drawAssetPreviewWindow(state: *EditorState, layer_context: *engine.core.L
                     try history.importModelPath(state, layer_context, entry.path);
                 }
             },
+            .material => {
+                engine.ui.ImGui.textWrapped(state.text(.drop_material_here));
+            },
             .scene => {
                 engine.ui.ImGui.textWrapped(state.text(.scenes_can_be_loaded_directly_or_overwritten_from_the_current_world));
                 if (engine.ui.ImGui.buttonEx(state.text(.load_scene), engine.ui.ImGui.contentRegionAvail()[0], 0.0)) {

@@ -27,7 +27,7 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
         const root_button_width = std.math.clamp(controls_width * 0.22, 96.0, 124.0);
         const rename_button_width = std.math.clamp(controls_width * 0.18, 84.0, 104.0);
         engine.ui.ImGui.setNextItemWidth(@max(controls_width - root_button_width - rename_button_width - 16.0, 96.0));
-        _ = engine.ui.ImGui.inputText("##scene_filter", state.scene_filter_buffer[0..]);
+        _ = engine.ui.ImGui.inputTextWithHint("##scene_filter", state.text(.scene_filter), state.scene_filter_buffer[0..]);
         engine.ui.ImGui.sameLine();
         if (engine.ui.ImGui.buttonEx(state.text(.scene_root), root_button_width, 0.0) and layer_context.renderer.selectedEntities().len > 0) {
             try unparentSelection(state, layer_context);
@@ -38,7 +38,7 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
         }
     } else {
         engine.ui.ImGui.setNextItemWidth(-1.0);
-        _ = engine.ui.ImGui.inputText("##scene_filter", state.scene_filter_buffer[0..]);
+        _ = engine.ui.ImGui.inputTextWithHint("##scene_filter", state.text(.scene_filter), state.scene_filter_buffer[0..]);
         engine.ui.ImGui.dummy(0.0, 6.0);
         if (controls_width >= 184.0) {
             const half_width = @max((controls_width - 8.0) * 0.5, 88.0);
