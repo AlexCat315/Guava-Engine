@@ -72,8 +72,12 @@ pub fn endInspectorPropertyTable() void {
 pub fn drawInspectorPropertyRow(label: []const u8, label_color: ?[4]f32) void {
     engine.ui.ImGui.tableNextRow();
     engine.ui.ImGui.tableNextColumn();
+    const default_dimmed = [4]f32{ 0.58, 0.62, 0.68, 1.0 }; // Dimmed label color
     if (label_color) |color| {
         engine.ui.ImGui.pushStyleColor(.text, color);
+        defer engine.ui.ImGui.popStyleColor(1);
+    } else {
+        engine.ui.ImGui.pushStyleColor(.text, default_dimmed);
         defer engine.ui.ImGui.popStyleColor(1);
     }
     engine.ui.ImGui.alignTextToFramePadding();

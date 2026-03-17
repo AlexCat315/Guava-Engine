@@ -147,18 +147,27 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
         defer endInspectorPropertyGrid();
         drawInspectorTextRow(state.text(.selection_count), selection_count_text);
         drawInspectorTextRow(state.text(.entity_id), entity_id_text);
-        if (drawInspectorInputTextRow(state.text(.name), "##inspector_entity_name", state.text(.name), state.inspector_name_buffer[0..])) {
-            if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
-                const next_name = utils.zeroTerminatedSlice(state.inspector_name_buffer[0..]);
-                if (next_name.len > 0) {
-                    if (try layer_context.world.renameEntity(selected, next_name)) {
-                        utils.syncInspectorNameBuffer(state, layer_context);
-                        try history.captureSnapshot(state, layer_context);
-                        try history.refreshWindowTitle(state, layer_context);
-                    }
+        // Entity name - emphasized with bright color
+        engine.ui.ImGui.tableNextRow();
+        engine.ui.ImGui.tableNextColumn();
+        engine.ui.ImGui.pushStyleColor(.text, .{ 0.88, 0.92, 0.98, 1.0 });
+        engine.ui.ImGui.alignTextToFramePadding();
+        engine.ui.ImGui.text(entity.name);
+        engine.ui.ImGui.popStyleColor(1);
+        engine.ui.ImGui.tableNextColumn();
+        engine.ui.ImGui.setNextItemWidth(-1.0);
+        _ = engine.ui.ImGui.inputTextWithHint("##inspector_entity_name", state.text(.name), state.inspector_name_buffer[0..]);
+        if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
+            const next_name = utils.zeroTerminatedSlice(state.inspector_name_buffer[0..]);
+            if (next_name.len > 0) {
+                if (try layer_context.world.renameEntity(selected, next_name)) {
+                    utils.syncInspectorNameBuffer(state, layer_context);
+                    try history.captureSnapshot(state, layer_context);
+                    try history.refreshWindowTitle(state, layer_context);
                 }
             }
         }
+        engine.ui.ImGui.popStyleColor(1);
         _ = drawInspectorInputTextRow(
             state.text(.search_components),
             "##inspector_filter",

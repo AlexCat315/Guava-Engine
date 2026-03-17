@@ -17,9 +17,9 @@ const PlaceActorEntry = struct {
 };
 
 const category_button_height: f32 = 30.0;
-const place_actor_card_height: f32 = 58.0;
-const place_actor_card_rounding: f32 = 8.0;
-const place_actor_card_icon_size: f32 = 18.0;
+const place_actor_row_height: f32 = 26.0; // Compact list row height (reduced from 58)
+const place_actor_card_rounding: f32 = 4.0;
+const place_actor_list_icon_size: f32 = 16.0;
 const place_actor_card_icon_tint = [4]u8{ 186, 203, 228, 255 };
 const place_actor_card_text_muted = [4]f32{ 0.66, 0.70, 0.77, 1.0 };
 const place_actor_drag_preview_icon_size: f32 = 20.0;
@@ -269,25 +269,21 @@ fn drawPlaceActorEntry(
         state,
         layer_context,
         entry.icon_path,
-        place_actor_card_icon_size,
+        place_actor_list_icon_size,
         place_actor_card_icon_tint,
     );
 
-    var child_id_buffer: [64]u8 = undefined;
-    const child_id = try std.fmt.bufPrint(&child_id_buffer, "place_actor_card_{d}", .{@intFromEnum(entry.kind)});
     {
-        _ = engine.ui.ImGui.beginChild(child_id, 0.0, place_actor_card_height, false);
-        defer engine.ui.ImGui.endChild();
-
+        // Compact list row (like hierarchy)
         const row_width = @max(engine.ui.ImGui.contentRegionAvail()[0], 1.0);
         var row_button_id_buffer: [72]u8 = undefined;
         const row_button_id = try std.fmt.bufPrint(&row_button_id_buffer, "##place_actor_row_{d}", .{@intFromEnum(entry.kind)});
         engine.ui.ImGui.pushStyleColor(.button, place_actor_card_idle.button);
         engine.ui.ImGui.pushStyleColor(.button_hovered, place_actor_card_idle.hovered);
         engine.ui.ImGui.pushStyleColor(.button_active, place_actor_card_active.button);
-        engine.ui.ImGui.pushStyleVarVec2(.frame_padding, .{ 0.0, 0.0 });
+        engine.ui.ImGui.pushStyleVarVec2(.frame_padding, .{ 4.0, 2.0 });
         engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, place_actor_card_rounding);
-        const row_clicked = engine.ui.ImGui.buttonEx(row_button_id, row_width, place_actor_card_height - 4.0);
+        const row_clicked = engine.ui.ImGui.buttonEx(row_button_id, row_width, place_actor_row_height);
         const row_hovered = engine.ui.ImGui.isItemHovered();
         defer {
             engine.ui.ImGui.popStyleVar(2);
@@ -302,20 +298,11 @@ fn drawPlaceActorEntry(
             drawPlaceActorDragPreview(entry.kind, label, description, icon_texture);
         }
 
-        const icon_y = (place_actor_card_height - place_actor_card_icon_size) * 0.5 - 2.0;
-        engine.ui.ImGui.setCursorPos(.{ 12.0, @max(icon_y, 8.0) });
-        engine.ui.ImGui.image(icon_texture, place_actor_card_icon_size, place_actor_card_icon_size);
-
-        const text_x = 42.0;
-        engine.ui.ImGui.setCursorPos(.{ text_x, 8.0 });
+        // Compact layout: icon on left, label on right
+        engine.ui.ImGui.image(icon_texture, place_actor_list_icon_size, place_actor_list_icon_size);
+        engine.ui.ImGui.sameLine();
         engine.ui.ImGui.text(label);
-        engine.ui.ImGui.setCursorPos(.{ text_x, 30.0 });
-        engine.ui.ImGui.pushStyleColor(.text, place_actor_card_text_muted);
-        defer engine.ui.ImGui.popStyleColor(1);
-        engine.ui.ImGui.textWrapped(description);
     }
-
-    engine.ui.ImGui.dummy(0.0, 6.0);
 }
 
 test "categoryTabWidth distributes category buttons evenly" {
