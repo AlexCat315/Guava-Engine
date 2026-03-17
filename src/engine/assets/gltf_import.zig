@@ -75,11 +75,21 @@ const TextureInfo = struct {
 const PbrMetallicRoughness = struct {
     baseColorFactor: ?[4]f32 = null,
     baseColorTexture: ?TextureInfo = null,
+    metallicFactor: ?f32 = null,
+    roughnessFactor: ?f32 = null,
+    metallicRoughnessTexture: ?TextureInfo = null,
 };
 
 const Material = struct {
     name: ?[]const u8 = null,
     pbrMetallicRoughness: ?PbrMetallicRoughness = null,
+    normalTexture: ?TextureInfo = null,
+    occlusionTexture: ?TextureInfo = null,
+    emissiveTexture: ?TextureInfo = null,
+    emissiveFactor: ?[3]f32 = null,
+    alphaMode: ?[]const u8 = null,
+    alphaCutoff: ?f32 = null,
+    doubleSided: ?bool = null,
 };
 
 const Primitive = struct {
@@ -143,8 +153,17 @@ const CookedMaterialRecord = struct {
     asset_id: []const u8,
     name: []const u8,
     shading: components.ShadingModel = .pbr_metallic_roughness,
-    base_color_factor: [4]f32,
+    base_color_factor: [4]f32 = .{ 1.0, 1.0, 1.0, 1.0 },
     base_color_texture_asset_id: ?[]const u8 = null,
+    metallic_roughness_texture_asset_id: ?[]const u8 = null,
+    normal_texture_asset_id: ?[]const u8 = null,
+    occlusion_texture_asset_id: ?[]const u8 = null,
+    emissive_texture_asset_id: ?[]const u8 = null,
+    emissive_factor: [3]f32 = .{ 0.0, 0.0, 0.0 },
+    metallic_factor: f32 = 1.0,
+    roughness_factor: f32 = 1.0,
+    alpha_cutoff: f32 = 0.5,
+    double_sided: bool = false,
 };
 
 const CookedEntityRecord = struct {
@@ -489,20 +508,41 @@ fn instantiateCookedModel(
         const handle = if (world.resources.materialHandleByAssetId(material.asset_id)) |existing|
             existing
         else blk: {
-            const texture_handle = if (material.base_color_texture_asset_id) |texture_asset_id| blk_tex: {
-                const existed = world.resources.textureHandleByAssetId(texture_asset_id) != null;
-                const resolved = try texture_import_mod.loadTextureAsset(world.allocator, &world.resources, registry, texture_asset_id);
-                if (!existed) {
-                    report.texture_count += 1;
-                }
-                break :blk_tex resolved;
-            } else null;
+            const base_color_texture = if (material.base_color_texture_asset_id) |id|
+                try texture_import_mod.loadTextureAsset(world.allocator, &world.resources, registry, id)
+            else
+                null;
+            const metallic_roughness_texture = if (material.metallic_roughness_texture_asset_id) |id|
+                try texture_import_mod.loadTextureAsset(world.allocator, &world.resources, registry, id)
+            else
+                null;
+            const normal_texture = if (material.normal_texture_asset_id) |id|
+                try texture_import_mod.loadTextureAsset(world.allocator, &world.resources, registry, id)
+            else
+                null;
+            const occlusion_texture = if (material.occlusion_texture_asset_id) |id|
+                try texture_import_mod.loadTextureAsset(world.allocator, &world.resources, registry, id)
+            else
+                null;
+            const emissive_texture = if (material.emissive_texture_asset_id) |id|
+                try texture_import_mod.loadTextureAsset(world.allocator, &world.resources, registry, id)
+            else
+                null;
 
             const created = try world.resources.createMaterial(.{
                 .name = material.name,
                 .shading = material.shading,
                 .base_color_factor = material.base_color_factor,
-                .base_color_texture = texture_handle,
+                .base_color_texture = base_color_texture,
+                .metallic_roughness_texture = metallic_roughness_texture,
+                .normal_texture = normal_texture,
+                .occlusion_texture = occlusion_texture,
+                .emissive_texture = emissive_texture,
+                .emissive_factor = material.emissive_factor,
+                .metallic_factor = material.metallic_factor,
+                .roughness_factor = material.roughness_factor,
+                .alpha_cutoff = material.alpha_cutoff,
+                .double_sided = material.double_sided,
             });
             const record = if (findCookedAssetRecord(cooked.asset_records, material.asset_id)) |asset_record|
                 try asset_record.clone(world.allocator)
@@ -762,6 +802,55 @@ fn resolveCookedMaterial(
     else
         null;
 
+    const metallic_factor = if (pbr) |value| value.metallicFactor orelse 1.0 else 1.0;
+    const roughness_factor = if (pbr) |value| value.roughnessFactor orelse 1.0 else 1.0;
+    const metallic_roughness_texture_asset_id = if (pbr) |value|
+        try resolveTextureAssetIdForCook(
+            allocator,
+            registry,
+            document,
+            loaded_buffers,
+            texture_asset_ids,
+            if (value.metallicRoughnessTexture) |info| info.index else null,
+            base_dir,
+        )
+    else
+        null;
+
+    const normal_texture_asset_id = try resolveTextureAssetIdForCook(
+        allocator,
+        registry,
+        document,
+        loaded_buffers,
+        texture_asset_ids,
+        if (material.normalTexture) |info| info.index else null,
+        base_dir,
+    );
+
+    const occlusion_texture_asset_id = try resolveTextureAssetIdForCook(
+        allocator,
+        registry,
+        document,
+        loaded_buffers,
+        texture_asset_ids,
+        if (material.occlusionTexture) |info| info.index else null,
+        base_dir,
+    );
+
+    const emissive_factor = material.emissiveFactor orelse .{ 0.0, 0.0, 0.0 };
+    const emissive_texture_asset_id = try resolveTextureAssetIdForCook(
+        allocator,
+        registry,
+        document,
+        loaded_buffers,
+        texture_asset_ids,
+        if (material.emissiveTexture) |info| info.index else null,
+        base_dir,
+    );
+
+    const alpha_cutoff = material.alphaCutoff orelse 0.5;
+    const double_sided = material.doubleSided orelse false;
+
     var index_buffer: [16]u8 = undefined;
     const index_text = try std.fmt.bufPrint(&index_buffer, "{d}", .{index});
     const generated_name = try std.fmt.allocPrint(allocator, "{s}_material_{d}", .{
@@ -785,6 +874,15 @@ fn resolveCookedMaterial(
         .name = material_name,
         .base_color_factor = base_color_factor,
         .base_color_texture_asset_id = base_color_texture_asset_id,
+        .metallic_roughness_texture_asset_id = metallic_roughness_texture_asset_id,
+        .normal_texture_asset_id = normal_texture_asset_id,
+        .occlusion_texture_asset_id = occlusion_texture_asset_id,
+        .emissive_texture_asset_id = emissive_texture_asset_id,
+        .emissive_factor = emissive_factor,
+        .metallic_factor = metallic_factor,
+        .roughness_factor = roughness_factor,
+        .alpha_cutoff = alpha_cutoff,
+        .double_sided = double_sided,
     });
     try appendCookedAssetRecord(
         cooked_asset_records,
@@ -796,6 +894,10 @@ fn resolveCookedMaterial(
             material_name,
             base_color_factor,
             base_color_texture_asset_id,
+            metallic_roughness_texture_asset_id,
+            normal_texture_asset_id,
+            occlusion_texture_asset_id,
+            emissive_texture_asset_id,
         ),
     );
 
@@ -973,15 +1075,25 @@ fn makeCookedMaterialAssetRecord(
     asset_id: []const u8,
     name: []const u8,
     base_color_factor: [4]f32,
-    texture_asset_id: ?[]const u8,
+    base_color_texture_asset_id: ?[]const u8,
+    metallic_roughness_texture_asset_id: ?[]const u8,
+    normal_texture_asset_id: ?[]const u8,
+    occlusion_texture_asset_id: ?[]const u8,
+    emissive_texture_asset_id: ?[]const u8,
 ) !registry_mod.AssetRecord {
     const factor_hash = try registry_mod.hashBytesAlloc(allocator, std.mem.asBytes(&base_color_factor));
     defer allocator.free(factor_hash);
 
-    const dependency_ids = if (texture_asset_id) |resolved|
-        try cloneStringList(allocator, &.{resolved})
-    else
-        try allocator.alloc([]u8, 0);
+    var dependencies = std.ArrayList([]const u8).empty;
+    defer dependencies.deinit(allocator);
+
+    if (base_color_texture_asset_id) |id| try dependencies.append(allocator, id);
+    if (metallic_roughness_texture_asset_id) |id| try dependencies.append(allocator, id);
+    if (normal_texture_asset_id) |id| try dependencies.append(allocator, id);
+    if (occlusion_texture_asset_id) |id| try dependencies.append(allocator, id);
+    if (emissive_texture_asset_id) |id| try dependencies.append(allocator, id);
+
+    const dependency_ids = try cloneStringList(allocator, dependencies.items);
 
     return .{
         .id = try allocator.dupe(u8, asset_id),
@@ -1065,9 +1177,11 @@ fn freeCookedModelOwned(allocator: std.mem.Allocator, cooked: *CookedModelFile) 
     for (cooked.materials) |material| {
         allocator.free(material.asset_id);
         allocator.free(material.name);
-        if (material.base_color_texture_asset_id) |texture_asset_id| {
-            allocator.free(texture_asset_id);
-        }
+        if (material.base_color_texture_asset_id) |id| allocator.free(id);
+        if (material.metallic_roughness_texture_asset_id) |id| allocator.free(id);
+        if (material.normal_texture_asset_id) |id| allocator.free(id);
+        if (material.occlusion_texture_asset_id) |id| allocator.free(id);
+        if (material.emissive_texture_asset_id) |id| allocator.free(id);
     }
     allocator.free(cooked.materials);
 

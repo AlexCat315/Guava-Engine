@@ -70,6 +70,9 @@ pub const BasePass = struct {
             };
             var fragment_uniforms = mesh_pass_mod.BasePassUniforms{
                 .base_color_factor = item.base_color_factor,
+                .emissive_factor = item.emissive_factor,
+                .pbr_factors = item.pbr_factors,
+                .has_textures = item.has_textures,
                 .camera_world_position = prepared_scene.camera_world_position,
                 .light_direction = .{ main_light.direction[0], main_light.direction[1], main_light.direction[2], 0.0 },
                 .light_color_intensity = .{ main_light.color[0], main_light.color[1], main_light.color[2], main_light.intensity },

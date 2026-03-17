@@ -29,6 +29,9 @@ pub const VertexUniforms = extern struct {
 
 pub const BasePassUniforms = extern struct {
     base_color_factor: [4]f32,
+    emissive_factor: [4]f32, // w is intensity
+    pbr_factors: [4]f32, // x: metallic, y: roughness, z: alpha_cutoff, w: unused
+    has_textures: [4]u32, // x: base_color, y: metallic_roughness, z: normal, w: occlusion (emissive is next?)
     camera_world_position: [4]f32,
     light_direction: [4]f32,
     light_color_intensity: [4]f32,
@@ -45,6 +48,9 @@ pub const DrawItem = struct {
     index_count: u32,
     bind_group: rhi_mod.BindGroup,
     base_color_factor: [4]f32,
+    emissive_factor: [4]f32,
+    pbr_factors: [4]f32,
+    has_textures: [4]u32,
     model: [16]f32,
 };
 
@@ -135,6 +141,9 @@ const CachedMaterial = struct {
 const MaterialState = struct {
     bind_group: rhi_mod.BindGroup,
     base_color_factor: [4]f32,
+    emissive_factor: [4]f32,
+    pbr_factors: [4]f32,
+    has_textures: [4]u32,
 };
 
 const fallback_white_bgra = [_]u8{
@@ -294,6 +303,9 @@ pub const MeshSceneCache = struct {
                 .index_count = gpu_mesh.index_count,
                 .bind_group = material_state.bind_group,
                 .base_color_factor = material_state.base_color_factor,
+                .emissive_factor = material_state.emissive_factor,
+                .pbr_factors = material_state.pbr_factors,
+                .has_textures = material_state.has_textures,
                 .model = render_mesh.transform.toMatrix(),
             };
 
@@ -361,10 +373,11 @@ pub const MeshSceneCache = struct {
         });
 
         const bindings = [_]rhi_mod.TextureSamplerBinding{
-            .{
-                .texture = &self.fallback_texture.?,
-                .sampler = &self.sampler.?,
-            },
+            .{ .texture = &self.fallback_texture.?, .sampler = &self.sampler.? },
+            .{ .texture = &self.fallback_texture.?, .sampler = &self.sampler.? },
+            .{ .texture = &self.fallback_texture.?, .sampler = &self.sampler.? },
+            .{ .texture = &self.fallback_texture.?, .sampler = &self.sampler.? },
+            .{ .texture = &self.fallback_texture.?, .sampler = &self.sampler.? },
         };
         self.fallback_bind_group = try device.createBindGroup(.{
             .stage = .fragment,
@@ -420,10 +433,10 @@ pub const MeshSceneCache = struct {
         device: *rhi_mod.RhiDevice,
         handle: handles.TextureHandle,
         texture: *const texture_mod.TextureResource,
-    ) !rhi_mod.Texture {
-        for (self.textures.items) |cached| {
+    ) !*rhi_mod.Texture {
+        for (self.textures.items) |*cached| {
             if (cached.handle == handle) {
-                return cached.texture;
+                return &cached.texture;
             }
         }
 
@@ -443,7 +456,7 @@ pub const MeshSceneCache = struct {
             .handle = handle,
             .texture = gpu_texture,
         });
-        return gpu_texture;
+        return &self.textures.items[self.textures.items.len - 1].texture;
     }
 
     fn ensureMaterial(
@@ -451,7 +464,7 @@ pub const MeshSceneCache = struct {
         device: *rhi_mod.RhiDevice,
         handle: handles.MaterialHandle,
         material: *const material_mod.MaterialResource,
-        scene: *const scene_mod.Scene,
+        scene: *const scene_mod.World,
     ) !?rhi_mod.BindGroup {
         for (self.materials.items) |cached| {
             if (cached.handle == handle) {
@@ -459,21 +472,24 @@ pub const MeshSceneCache = struct {
             }
         }
 
-        const texture_handle = if (material.base_color_texture) |value| value else return null;
-        const texture = scene.resources.texture(texture_handle) orelse return null;
-        const gpu_texture = try self.ensureTexture(device, texture_handle, texture);
+        const base_color_tex = if (material.base_color_texture) |h| try self.ensureTexture(device, h, scene.resources.texture(h).?) else &self.fallback_texture.?;
+        const metallic_roughness_tex = if (material.metallic_roughness_texture) |h| try self.ensureTexture(device, h, scene.resources.texture(h).?) else &self.fallback_texture.?;
+        const normal_tex = if (material.normal_texture) |h| try self.ensureTexture(device, h, scene.resources.texture(h).?) else &self.fallback_texture.?;
+        const occlusion_tex = if (material.occlusion_texture) |h| try self.ensureTexture(device, h, scene.resources.texture(h).?) else &self.fallback_texture.?;
+        const emissive_tex = if (material.emissive_texture) |h| try self.ensureTexture(device, h, scene.resources.texture(h).?) else &self.fallback_texture.?;
 
         const bindings = [_]rhi_mod.TextureSamplerBinding{
-            .{
-                .texture = &gpu_texture,
-                .sampler = &self.sampler.?,
-            },
+            .{ .texture = base_color_tex, .sampler = &self.sampler.? },
+            .{ .texture = metallic_roughness_tex, .sampler = &self.sampler.? },
+            .{ .texture = normal_tex, .sampler = &self.sampler.? },
+            .{ .texture = occlusion_tex, .sampler = &self.sampler.? },
+            .{ .texture = emissive_tex, .sampler = &self.sampler.? },
         };
+
         const bind_group = try device.createBindGroup(.{
             .stage = .fragment,
             .texture_sampler_bindings = bindings[0..],
         });
-
         try self.materials.append(self.allocator, .{
             .handle = handle,
             .bind_group = bind_group,
@@ -484,12 +500,15 @@ pub const MeshSceneCache = struct {
     fn resolveMaterial(
         self: *MeshSceneCache,
         device: *rhi_mod.RhiDevice,
-        scene: *const scene_mod.Scene,
+        scene: *const scene_mod.World,
         material_component: ?components.Material,
     ) !MaterialState {
         var state = MaterialState{
             .bind_group = self.fallback_bind_group.?,
             .base_color_factor = [4]f32{ 1.0, 1.0, 1.0, 1.0 },
+            .emissive_factor = .{ 0.0, 0.0, 0.0, 0.0 },
+            .pbr_factors = .{ 1.0, 1.0, 0.5, 0.0 },
+            .has_textures = .{ 0, 0, 0, 0 },
         };
 
         const material_value = material_component orelse return state;
@@ -497,7 +516,16 @@ pub const MeshSceneCache = struct {
 
         const material_handle = material_value.handle orelse return state;
         const material = scene.resources.material(material_handle) orelse return state;
+
         state.base_color_factor = material.base_color_factor;
+        state.emissive_factor = .{ material.emissive_factor[0], material.emissive_factor[1], material.emissive_factor[2], 1.0 };
+        state.pbr_factors = .{ material.metallic_factor, material.roughness_factor, material.alpha_cutoff, 0.0 };
+        state.has_textures = .{
+            if (material.base_color_texture != null) 1 else 0,
+            if (material.metallic_roughness_texture != null) 1 else 0,
+            if (material.normal_texture != null) 1 else 0,
+            if (material.occlusion_texture != null) 1 else 0,
+        };
 
         if (try self.ensureMaterial(device, material_handle, material, scene)) |bind_group| {
             state.bind_group = bind_group;

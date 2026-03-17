@@ -63,6 +63,11 @@ pub const Material = struct {
     handle: ?handles.MaterialHandle = null,
     shading: ShadingModel = .pbr_metallic_roughness,
     base_color_factor: [4]f32 = .{ 1.0, 1.0, 1.0, 1.0 },
+    emissive_factor: [3]f32 = .{ 0.0, 0.0, 0.0 },
+    metallic_factor: f32 = 1.0,
+    roughness_factor: f32 = 1.0,
+    alpha_cutoff: f32 = 0.5,
+    double_sided: bool = false,
 };
 
 pub const LightKind = enum {
