@@ -25,12 +25,71 @@ pub const StyleColor = enum(c_uint) {
     button_active = c.GUAVA_IMGUI_STYLE_COLOR_BUTTON_ACTIVE,
 };
 
+pub const Col = enum(u32) {
+    text = 0,
+    text_disabled = 1,
+    window_bg = 5,
+    child_bg = 6,
+    popup_bg = 8,
+    border = 9,
+    frame_bg = 10,
+    frame_bg_hovered = 11,
+    frame_bg_active = 12,
+    title_bg = 13,
+    title_bg_active = 14,
+    title_bg_collapsed = 15,
+    menu_bar_bg = 16,
+    scrollbar_bg = 17,
+    scrollbar_grab = 18,
+    scrollbar_grab_hovered = 19,
+    scrollbar_grab_active = 20,
+    check_mark = 21,
+    slider_grab = 22,
+    slider_grab_active = 23,
+    button = 24,
+    button_hovered = 25,
+    button_active = 26,
+    header = 27,
+    header_hovered = 28,
+    header_active = 29,
+    separator = 30,
+    separator_hovered = 31,
+    separator_active = 32,
+    resize_grip = 33,
+    resize_grip_hovered = 34,
+    resize_grip_active = 35,
+    tab = 36,
+    tab_hovered = 37,
+    tab_active = 38,
+    tab_unfocused = 39,
+    tab_unfocused_active = 40,
+    docking_preview = 41,
+    docking_empty_bg = 42,
+    plot_lines = 43,
+    plot_lines_hovered = 44,
+    plot_histogram = 45,
+    plot_histogram_hovered = 46,
+    table_header_bg = 47,
+    table_border_strong = 48,
+    table_border_light = 49,
+    table_row_bg = 50,
+    table_row_bg_alt = 51,
+    text_selected_bg = 52,
+    drag_drop_target = 53,
+    nav_cursor = 54,
+    nav_highlight = 55,
+    nav_windowing_highlight = 56,
+    nav_windowing_dim_bg = 57,
+    modal_window_dim_bg = 58,
+};
+
 pub const StyleVar = enum(c_uint) {
     alpha = c.GUAVA_IMGUI_STYLE_VAR_ALPHA,
     frame_padding = c.GUAVA_IMGUI_STYLE_VAR_FRAME_PADDING,
     item_spacing = c.GUAVA_IMGUI_STYLE_VAR_ITEM_SPACING,
     frame_rounding = c.GUAVA_IMGUI_STYLE_VAR_FRAME_ROUNDING,
     window_min_size = c.GUAVA_IMGUI_STYLE_VAR_WINDOW_MIN_SIZE,
+    window_padding = c.GUAVA_IMGUI_STYLE_VAR_WINDOW_PADDING,
 };
 
 pub const TreeNodeEntityResult = struct {
@@ -300,6 +359,14 @@ pub fn popStyleColor(count: i32) void {
     c.guava_imgui_pop_style_color(count);
 }
 
+pub fn setStyleColor(color_idx: u32, color: [4]f32) void {
+    c.guava_imgui_set_style_color(color_idx, color[0], color[1], color[2], color[3]);
+}
+
+pub fn setStyleVarFloat(var_idx: u32, value: f32) void {
+    c.guava_imgui_set_style_var_float(var_idx, value);
+}
+
 pub fn pushStyleVarFloat(slot: StyleVar, value: f32) void {
     c.guava_imgui_push_style_var_float(@intFromEnum(slot), value);
 }
@@ -350,6 +417,10 @@ pub fn selectable(label: []const u8, selected: bool, span_all_columns: bool, wid
 
 pub fn text(value: []const u8) void {
     c.guava_imgui_text(value.ptr, value.len);
+}
+
+pub fn setTooltip(value: []const u8) void {
+    c.guava_imgui_set_tooltip(value.ptr, value.len);
 }
 
 pub fn textWrapped(value: []const u8) void {

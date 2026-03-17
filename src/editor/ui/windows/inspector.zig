@@ -66,8 +66,6 @@ fn beginInspectorPropertyGrid(id: []const u8) bool {
     if (!layout.beginInspectorPropertyTable(id, 0.36)) {
         return false;
     }
-    engine.ui.ImGui.tableSetupColumn("##property_label", false, 118.0);
-    engine.ui.ImGui.tableSetupColumn("##property_value", true, 1.0);
     engine.ui.ImGui.pushStyleVarVec2(.item_spacing, .{ 8.0, 6.0 });
     return true;
 }

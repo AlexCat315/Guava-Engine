@@ -111,6 +111,8 @@ ImGuiStyleVar to_imgui_style_var(uint32_t slot) {
     return ImGuiStyleVar_FrameRounding;
   case GUAVA_IMGUI_STYLE_VAR_WINDOW_MIN_SIZE:
     return ImGuiStyleVar_WindowMinSize;
+  case GUAVA_IMGUI_STYLE_VAR_WINDOW_PADDING:
+    return ImGuiStyleVar_WindowPadding;
   default:
     return ImGuiStyleVar_Alpha;
   }
@@ -279,17 +281,24 @@ void build_default_dock_layout() {
   ImGui::DockBuilderSetNodeSize(g_dockspace_id, viewport->Size);
 
   ImGuiID dock_main = g_dockspace_id;
+
+  // Left panel - Place Actors (compressed from 18% to 8%)
   ImGuiID dock_left = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Left,
-                                                  0.18f, nullptr, &dock_main);
+                                                  0.08f, nullptr, &dock_main);
+
+  // Right panel - Scene + Details
   ImGuiID dock_right = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Right,
                                                    0.26f, nullptr, &dock_main);
   ImGuiID dock_scene = ImGui::DockBuilderSplitNode(dock_right, ImGuiDir_Up,
                                                    0.52f, nullptr, &dock_right);
   ImGuiID dock_details = dock_right;
+
+  // Bottom panel - Content Browser
   ImGuiID dock_bottom = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Down,
                                                     0.22f, nullptr, &dock_main);
   ImGuiID dock_viewport = dock_main;
 
+  // Dock windows to their respective areas
   ImGui::DockBuilderDockWindow("Viewport###viewport_panel", dock_viewport);
   ImGui::DockBuilderDockWindow("Place Actors###place_actors_panel", dock_left);
   ImGui::DockBuilderDockWindow("Scene###scene_panel", dock_scene);
@@ -313,17 +322,24 @@ void build_animation_dock_layout() {
   ImGui::DockBuilderSetNodeSize(g_dockspace_id, viewport->Size);
 
   ImGuiID dock_main = g_dockspace_id;
+
+  // Left panel (compressed)
   ImGuiID dock_left = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Left,
-                                                  0.18f, nullptr, &dock_main);
+                                                  0.08f, nullptr, &dock_main);
+
+  // Right panel
   ImGuiID dock_right = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Right,
                                                    0.22f, nullptr, &dock_main);
   ImGuiID dock_scene = ImGui::DockBuilderSplitNode(dock_right, ImGuiDir_Up,
                                                    0.52f, nullptr, &dock_right);
   ImGuiID dock_details = dock_right;
+
+  // Bottom panel
   ImGuiID dock_bottom = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Down,
-                                                    0.30f, nullptr, &dock_main);
+                                                     0.30f, nullptr, &dock_main);
   ImGuiID dock_viewport = dock_main;
 
+  // Dock windows
   ImGui::DockBuilderDockWindow("Viewport###viewport_panel", dock_viewport);
   ImGui::DockBuilderDockWindow("Place Actors###place_actors_panel", dock_left);
   ImGui::DockBuilderDockWindow("Scene###scene_panel", dock_scene);
@@ -371,8 +387,8 @@ void apply_guava_editor_style(float content_scale) {
   ImVec4 *colors = style.Colors;
   colors[ImGuiCol_Text] = make_color(220, 224, 231);
   colors[ImGuiCol_TextDisabled] = make_color(144, 153, 165);
-  colors[ImGuiCol_WindowBg] = make_color(20, 21, 23);
-  colors[ImGuiCol_ChildBg] = make_color(32, 34, 37);
+  colors[ImGuiCol_WindowBg] = make_color(28, 28, 31);       // Darker background
+  colors[ImGuiCol_ChildBg] = make_color(33, 33, 36);        // Darker child background
   colors[ImGuiCol_PopupBg] = make_color(33, 35, 40, 250);
   colors[ImGuiCol_Border] = make_color(63, 70, 80, 110);
   colors[ImGuiCol_BorderShadow] = make_color(0, 0, 0, 0);
@@ -388,28 +404,38 @@ void apply_guava_editor_style(float content_scale) {
   colors[ImGuiCol_ScrollbarGrab] = make_color(77, 83, 93);
   colors[ImGuiCol_ScrollbarGrabHovered] = make_color(95, 103, 115);
   colors[ImGuiCol_ScrollbarGrabActive] = make_color(111, 121, 135);
-  colors[ImGuiCol_CheckMark] = make_color(110, 167, 255);
-  colors[ImGuiCol_SliderGrab] = make_color(108, 161, 246);
-  colors[ImGuiCol_SliderGrabActive] = make_color(128, 184, 255);
+
+  // Accent color: #22c55e (34, 197, 94) -> (0.133, 0.773, 0.369)
+  const ImVec4 accent_green = make_color(34, 197, 94);
+  const ImVec4 accent_green_hover = make_color(52, 220, 118);  // +10% brightness
+  const ImVec4 accent_green_dim = make_color(34, 197, 94, 102); // 40% opacity
+
+  colors[ImGuiCol_CheckMark] = accent_green;
+  colors[ImGuiCol_SliderGrab] = accent_green;
+  colors[ImGuiCol_SliderGrabActive] = accent_green_hover;
+
+  // Selected state for Scene Hierarchy and Content Browser
+  colors[ImGuiCol_Header] = accent_green_dim;
+  colors[ImGuiCol_HeaderHovered] = accent_green_hover;
+  colors[ImGuiCol_HeaderActive] = accent_green;
+
+  // Tab colors
+  colors[ImGuiCol_TabHovered] = accent_green_hover;
+  colors[ImGuiCol_TabActive] = accent_green;
+  colors[ImGuiCol_TabUnfocusedActive] = accent_green_dim;
 
   colors[ImGuiCol_Button] = make_color(35, 70, 130);
   colors[ImGuiCol_ButtonHovered] = make_color(45, 90, 160);
   colors[ImGuiCol_ButtonActive] = make_color(55, 100, 180);
-  colors[ImGuiCol_Header] = make_color(30, 60, 110);
-  colors[ImGuiCol_HeaderHovered] = make_color(45, 90, 160, 200);
-  colors[ImGuiCol_HeaderActive] = make_color(55, 110, 180);
   colors[ImGuiCol_Separator] = make_color(54, 60, 69, 170);
-  colors[ImGuiCol_SeparatorHovered] = make_color(93, 140, 217, 210);
-  colors[ImGuiCol_SeparatorActive] = make_color(109, 161, 246, 255);
+  colors[ImGuiCol_SeparatorHovered] = accent_green_hover;
+  colors[ImGuiCol_SeparatorActive] = accent_green;
   colors[ImGuiCol_ResizeGrip] = make_color(91, 101, 116, 70);
   colors[ImGuiCol_ResizeGripHovered] = make_color(109, 161, 246, 130);
   colors[ImGuiCol_ResizeGripActive] = make_color(128, 184, 255, 170);
   colors[ImGuiCol_Tab] = make_color(40, 43, 48);
-  colors[ImGuiCol_TabHovered] = make_color(74, 81, 91);
-  colors[ImGuiCol_TabActive] = make_color(60, 67, 76);
   colors[ImGuiCol_TabUnfocused] = make_color(34, 37, 42);
-  colors[ImGuiCol_TabUnfocusedActive] = make_color(48, 52, 58);
-  colors[ImGuiCol_DockingPreview] = make_color(110, 167, 255, 138);
+  colors[ImGuiCol_DockingPreview] = accent_green_dim;
   colors[ImGuiCol_DockingEmptyBg] = make_color(22, 24, 28);
   colors[ImGuiCol_PlotLines] = make_color(132, 142, 156);
   colors[ImGuiCol_PlotLinesHovered] = make_color(173, 197, 255);
@@ -1058,6 +1084,37 @@ extern "C" void guava_imgui_pop_style_color(int32_t count) {
   ImGui::PopStyleColor(count);
 }
 
+extern "C" void guava_imgui_set_style_color(uint32_t color_idx, float r,
+                                             float g, float b, float a) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGuiStyle &style = ImGui::GetStyle();
+  if (color_idx < ImGuiCol_COUNT) {
+    style.Colors[color_idx] = ImVec4(r, g, b, a);
+  }
+}
+
+extern "C" void guava_imgui_set_style_var_float(uint32_t var_idx, float value) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGuiStyle &style = ImGui::GetStyle();
+  switch (var_idx) {
+  case 100: // WindowBorderSize
+    style.WindowBorderSize = value;
+    break;
+  case 101: // FrameBorderSize
+    style.FrameBorderSize = value;
+    break;
+  case 102: // FrameRounding
+    style.FrameRounding = value;
+    break;
+  default:
+    break;
+  }
+}
+
 extern "C" void guava_imgui_push_style_var_float(uint32_t slot, float value) {
   if (!g_imgui_initialized) {
     return;
@@ -1572,6 +1629,13 @@ extern "C" void guava_imgui_get_window_size(float out_value[2]) {
   const ImVec2 value = ImGui::GetWindowSize();
   out_value[0] = value.x;
   out_value[1] = value.y;
+}
+
+extern "C" void guava_imgui_set_tooltip(const char *text, size_t text_len) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::SetTooltip("%.*s", (int)text_len, text);
 }
 
 extern "C" float guava_imgui_get_frame_height(void) {

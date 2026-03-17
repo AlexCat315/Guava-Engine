@@ -279,5 +279,11 @@ pub const locale = types.LocaleInfo{
         .spread = "Spread",
         .fountain = "Fountain",
         .orbit = "Orbit",
+        .select_tool = "Select (Q)",
+        .move_tool = "Move (W)",
+        .rotate_tool = "Rotate (E)",
+        .scale_tool = "Scale (R)",
+        .global = "Global",
+        .local = "Local",
     }),
 };

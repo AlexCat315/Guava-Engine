@@ -61,8 +61,14 @@ pub fn drawResponsivePropertyLabel(label: []const u8, min_control_width: f32) bo
 }
 
 pub fn beginInspectorPropertyTable(id: []const u8, label_width_ratio: f32) bool {
-    _ = label_width_ratio;
-    return engine.ui.ImGui.beginTable(id, 2);
+    const available_width = engine.ui.ImGui.contentRegionAvail()[0];
+    const label_width = available_width * label_width_ratio;
+    if (engine.ui.ImGui.beginTable(id, 2)) {
+        engine.ui.ImGui.tableSetupColumn("##property_label", false, label_width);
+        engine.ui.ImGui.tableSetupColumn("##property_value", true, 1.0);
+        return true;
+    }
+    return false;
 }
 
 pub fn endInspectorPropertyTable() void {

@@ -279,5 +279,11 @@ pub const locale = types.LocaleInfo{
         .spread = "扩散",
         .fountain = "喷泉",
         .orbit = "环绕",
+        .select_tool = "选择 (Q)",
+        .move_tool = "移动 (W)",
+        .rotate_tool = "旋转 (E)",
+        .scale_tool = "缩放 (R)",
+        .global = "全局",
+        .local = "局部",
     }),
 };

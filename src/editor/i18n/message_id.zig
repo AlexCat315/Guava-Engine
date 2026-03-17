@@ -272,4 +272,10 @@ pub const MessageId = enum {
     spread,
     fountain,
     orbit,
+    select_tool,
+    move_tool,
+    rotate_tool,
+    scale_tool,
+    global,
+    local,
 };

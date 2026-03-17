@@ -13,9 +13,10 @@ pub const paths = struct {
         pub const camera = "assets/ui/icons/heroicons/24/solid/camera.svg";
         pub const material = "assets/ui/icons/heroicons/24/solid/cube.svg";
         pub const overlay = "assets/ui/icons/heroicons/24/solid/eye.svg";
-        pub const snap_translate = "assets/ui/icons/heroicons/24/solid/arrows-up-down.svg";
-        pub const snap_rotate = "assets/ui/icons/heroicons/24/solid/arrow-path.svg";
-        pub const snap_scale = "assets/ui/icons/heroicons/24/solid/arrows-pointing-out.svg";
+        pub const snap = "assets/ui/icons/filled/grid-pattern.svg";
+        pub const snap_translate = "assets/ui/icons/filled/direction-arrows.svg";
+        pub const snap_rotate = "assets/ui/icons/filled/clock.svg";
+        pub const snap_scale = "assets/ui/icons/filled/arrow-big-up.svg";
         pub const folder = "assets/ui/icons/heroicons/24/solid/squares-2x2.svg";
         pub const play = "assets/ui/icons/heroicons/24/solid/play.svg";
         pub const pause = "assets/ui/icons/heroicons/24/solid/pause.svg";
@@ -83,6 +84,11 @@ pub const palettes = struct {
         .button = .{ 0.24, 0.41, 0.60, 0.84 },
         .hovered = .{ 0.28, 0.48, 0.69, 0.92 },
         .active = .{ 0.21, 0.35, 0.52, 0.96 },
+    };
+    pub const toolbar_accent = ButtonPalette{
+        .button = .{ 0.133, 0.773, 0.369, 0.6 },
+        .hovered = .{ 0.233, 0.873, 0.469, 0.8 },
+        .active = .{ 0.083, 0.673, 0.269, 1.0 },
     };
     pub const status_on = ButtonPalette{
         .button = .{ 0.20, 0.28, 0.31, 0.64 },

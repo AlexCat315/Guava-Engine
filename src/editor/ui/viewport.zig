@@ -27,14 +27,16 @@ fn drawToolbarIconButton(
     path: []const u8,
     active: bool,
 ) !bool {
+    const accent_tint = [4]u8{ 34, 197, 94, 255 };
+    const idle_tint = [4]u8{ 153, 153, 163, 255 };
     return ui_icons.drawIconButton(
         state,
         layer_context,
         id,
         path,
         20.0,
-        .{ 235, 239, 245, 255 },
-        if (active) ui_icons.palettes.toolbar_active else ui_icons.palettes.toolbar_idle,
+        if (active) accent_tint else idle_tint,
+        if (active) ui_icons.palettes.toolbar_accent else ui_icons.palettes.toolbar_idle,
     );
 }
 
@@ -45,14 +47,16 @@ fn drawOverlayIconButton(
     path: []const u8,
     active: bool,
 ) !bool {
+    const active_tint = [4]u8{ 34, 197, 94, 255 };
+    const idle_tint = [4]u8{ 153, 153, 163, 255 };
     return ui_icons.drawIconButton(
         state,
         layer_context,
         id,
         path,
         16.0,
-        .{ 245, 248, 252, 255 },
-        if (active) ui_icons.palettes.toolbar_active else ui_icons.palettes.toolbar_idle,
+        if (active) active_tint else idle_tint,
+        if (active) ui_icons.palettes.toolbar_accent else ui_icons.palettes.toolbar_idle,
     );
 }
 
@@ -220,14 +224,15 @@ fn drawViewportToolbarOptionsCompact(state: *EditorState, layer_context: *engine
 pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     var title_buffer: [80]u8 = undefined;
     const title = try state.windowLabel(&title_buffer, .viewport, "viewport_panel");
+
+    engine.ui.ImGui.pushStyleVarVec2(.window_padding, .{ 0.0, 0.0 });
+    defer engine.ui.ImGui.popStyleVar(1);
+
     _ = engine.ui.ImGui.beginWindowFlags(
         title,
         engine.ui.ImGui.WindowFlags.no_collapse | engine.ui.ImGui.WindowFlags.no_scrollbar,
     );
     defer engine.ui.ImGui.endWindow();
-
-    try drawViewportToolbarStrip(state, layer_context);
-    engine.ui.ImGui.separator();
 
     _ = engine.ui.ImGui.beginChild("viewport_canvas", 0.0, 0.0, false);
     defer engine.ui.ImGui.endChild();
@@ -844,16 +849,71 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
     }
     engine.ui.ImGui.sameLine();
 
+    // Transform tools (use overlay style with tooltip)
+    if (try drawOverlayIconButton(state, layer_context, "toolbar_select", ui_icons.paths.toolbar.select, state.manipulation_mode == .none)) {
+        try manipulation.selectTool(state, layer_context);
+    }
+    if (engine.ui.ImGui.isItemHovered()) {
+        engine.ui.ImGui.setTooltip(state.text(.select_tool));
+    }
+    engine.ui.ImGui.sameLine();
+    if (try drawOverlayIconButton(state, layer_context, "toolbar_move", ui_icons.paths.toolbar.move, state.manipulation_mode == .translate)) {
+        try manipulation.beginManipulation(state, layer_context, .translate);
+    }
+    if (engine.ui.ImGui.isItemHovered()) {
+        engine.ui.ImGui.setTooltip(state.text(.move_tool));
+    }
+    engine.ui.ImGui.sameLine();
+    if (try drawOverlayIconButton(state, layer_context, "toolbar_rotate", ui_icons.paths.toolbar.rotate, state.manipulation_mode == .rotate)) {
+        try manipulation.beginManipulation(state, layer_context, .rotate);
+    }
+    if (engine.ui.ImGui.isItemHovered()) {
+        engine.ui.ImGui.setTooltip(state.text(.rotate_tool));
+    }
+    engine.ui.ImGui.sameLine();
+    if (try drawOverlayIconButton(state, layer_context, "toolbar_scale", ui_icons.paths.toolbar.scale, state.manipulation_mode == .scale)) {
+        try manipulation.beginManipulation(state, layer_context, .scale);
+    }
+    if (engine.ui.ImGui.isItemHovered()) {
+        engine.ui.ImGui.setTooltip(state.text(.scale_tool));
+    }
+    engine.ui.ImGui.sameLine();
+
+    // Transform space (global/local)
+    const transform_icon_path = switch (state.transform_space) {
+        .local => ui_icons.paths.toolbar.transform_local,
+        .world => ui_icons.paths.toolbar.transform_global,
+    };
+    if (try drawOverlayIconButton(state, layer_context, "toolbar_transform_space", transform_icon_path, state.transform_space == .world)) {
+        state.transform_space = switch (state.transform_space) {
+            .local => .world,
+            .world => .local,
+        };
+    }
+    if (engine.ui.ImGui.isItemHovered()) {
+        engine.ui.ImGui.setTooltip(if (state.transform_space == .world) state.text(.global) else state.text(.local));
+    }
+    engine.ui.ImGui.sameLine();
+
     if (try drawOverlayIconButton(state, layer_context, "viewport_snap_translate", ui_icons.paths.toolbar.snap_translate, state.translation_snap_enabled)) {
         state.translation_snap_enabled = !state.translation_snap_enabled;
+    }
+    if (engine.ui.ImGui.isItemHovered()) {
+        engine.ui.ImGui.setTooltip(state.text(.translation_snap));
     }
     engine.ui.ImGui.sameLine();
     if (try drawOverlayIconButton(state, layer_context, "viewport_snap_rotate", ui_icons.paths.toolbar.snap_rotate, state.rotation_snap_enabled)) {
         state.rotation_snap_enabled = !state.rotation_snap_enabled;
     }
+    if (engine.ui.ImGui.isItemHovered()) {
+        engine.ui.ImGui.setTooltip(state.text(.rotation_snap));
+    }
     engine.ui.ImGui.sameLine();
     if (try drawOverlayIconButton(state, layer_context, "viewport_snap_scale", ui_icons.paths.toolbar.snap_scale, state.scale_snap_enabled)) {
         state.scale_snap_enabled = !state.scale_snap_enabled;
+    }
+    if (engine.ui.ImGui.isItemHovered()) {
+        engine.ui.ImGui.setTooltip(state.text(.scale_snap));
     }
 
     // Show camera speed indicator when shift is held

@@ -36,6 +36,21 @@ enum {
   GUAVA_IMGUI_STYLE_COLOR_BUTTON = 1,
   GUAVA_IMGUI_STYLE_COLOR_BUTTON_HOVERED = 2,
   GUAVA_IMGUI_STYLE_COLOR_BUTTON_ACTIVE = 3,
+  GUAVA_IMGUI_STYLE_COLOR_HEADER = 10,
+  GUAVA_IMGUI_STYLE_COLOR_HEADER_HOVERED = 11,
+  GUAVA_IMGUI_STYLE_COLOR_HEADER_ACTIVE = 12,
+  GUAVA_IMGUI_STYLE_COLOR_TAB_ACTIVE = 13,
+  GUAVA_IMGUI_STYLE_COLOR_TAB_HOVERED = 14,
+  GUAVA_IMGUI_STYLE_COLOR_TAB_UNFOCUSED_ACTIVE = 15,
+  GUAVA_IMGUI_STYLE_COLOR_SLIDER_GRAB = 16,
+  GUAVA_IMGUI_STYLE_COLOR_SLIDER_GRAB_ACTIVE = 17,
+  GUAVA_IMGUI_STYLE_COLOR_CHECK_MARK = 18,
+  GUAVA_IMGUI_STYLE_COLOR_WINDOW_BG = 19,
+  GUAVA_IMGUI_STYLE_COLOR_CHILD_BG = 20,
+  GUAVA_IMGUI_STYLE_COLOR_FRAME_BG = 21,
+  GUAVA_IMGUI_STYLE_COLOR_SEPARATOR = 22,
+  GUAVA_IMGUI_STYLE_COLOR_SEPARATOR_HOVERED = 23,
+  GUAVA_IMGUI_STYLE_COLOR_SEPARATOR_ACTIVE = 24,
 };
 
 enum {
@@ -44,6 +59,7 @@ enum {
   GUAVA_IMGUI_STYLE_VAR_ITEM_SPACING = 2,
   GUAVA_IMGUI_STYLE_VAR_FRAME_ROUNDING = 3,
   GUAVA_IMGUI_STYLE_VAR_WINDOW_MIN_SIZE = 4,
+  GUAVA_IMGUI_STYLE_VAR_WINDOW_PADDING = 5,
 };
 
 enum {
@@ -130,6 +146,9 @@ void guava_imgui_set_next_window_bg_alpha(float alpha);
 void guava_imgui_push_style_color(uint32_t slot, float r, float g, float b,
                                   float a);
 void guava_imgui_pop_style_color(int32_t count);
+void guava_imgui_set_style_color(uint32_t color_idx, float r, float g, float b,
+                                 float a);
+void guava_imgui_set_style_var_float(uint32_t var_idx, float value);
 void guava_imgui_push_style_var_float(uint32_t slot, float value);
 void guava_imgui_push_style_var_vec2(uint32_t slot, float x, float y);
 void guava_imgui_pop_style_var(int32_t count);
@@ -200,6 +219,7 @@ void guava_imgui_get_window_size(float out_value[2]);
 float guava_imgui_get_frame_height(void);
 float guava_imgui_get_time(void);
 void guava_imgui_set_scroll_here_y(float center_y_ratio);
+void guava_imgui_set_tooltip(const char *text, size_t text_len);
 void guava_imgui_image(SDL_GPUTexture *texture, float width, float height);
 uint32_t guava_imgui_draw_view_cube(const float view[16], float x, float y,
                                     float size, float out_drag_delta[2]);
