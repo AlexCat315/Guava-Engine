@@ -166,6 +166,10 @@ pub const EditorState = struct {
     asset_directory_buffer: [256]u8 = [_]u8{0} ** 256,
     asset_thumbnail_size: f32 = 104.0,
     browser_view_mode: BrowserViewMode = .grid,
+
+    // Material thumbnail render queue (asset IDs pending render)
+    material_thumbnail_queue: std.ArrayList([]const u8) = .empty,
+
     bottom_panel_tab: BottomPanelTab = .project,
     console_show_errors: bool = true,
     console_show_warnings: bool = true,
