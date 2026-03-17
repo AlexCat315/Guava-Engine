@@ -167,7 +167,6 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                 }
             }
         }
-        engine.ui.ImGui.popStyleColor(1);
         _ = drawInspectorInputTextRow(
             state.text(.search_components),
             "##inspector_filter",
