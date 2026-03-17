@@ -16,6 +16,11 @@ const PlaceActorEntry = struct {
     icon_path: []const u8,
 };
 
+const PlaceActorRowLayout = struct {
+    action_width: f32,
+    stacked: bool,
+};
+
 const categories = [_]struct {
     id: state_mod.PlaceActorCategory,
     label_id: MessageId,
@@ -89,6 +94,17 @@ fn getEntriesForCategory(category: state_mod.PlaceActorCategory) []const PlaceAc
         .lights => lights_entries[0..],
         .shapes => shapes_entries[0..],
         .vfx => &.{},
+    };
+}
+
+fn placeActorRowLayout(available_width: f32) PlaceActorRowLayout {
+    const clamped_width = @max(available_width, 1.0);
+    const preferred_action_width = std.math.clamp(clamped_width * 0.42, 108.0, 148.0);
+    const description_min_width: f32 = 92.0;
+    const stacked = clamped_width < preferred_action_width + layout.default_item_spacing + description_min_width;
+    return .{
+        .action_width = if (stacked) clamped_width else preferred_action_width,
+        .stacked = stacked,
     };
 }
 
@@ -171,9 +187,9 @@ fn drawPlaceActorEntry(
 
     // Draw a selectable for the entry (supports drag-drop)
     const entry_height: f32 = 40.0;
-    const available_width = engine.ui.ImGui.contentRegionAvail()[0];
+    const row_layout = placeActorRowLayout(engine.ui.ImGui.contentRegionAvail()[0]);
 
-    if (engine.ui.ImGui.selectable(label, false, false, available_width, entry_height)) {
+    if (engine.ui.ImGui.selectable(label, false, false, row_layout.action_width, entry_height)) {
         // Clicked - spawn at default location
         switch (entry.kind) {
             .empty => try history.spawnEmptyEntity(state, layer_context),
@@ -210,16 +226,30 @@ fn drawPlaceActorEntry(
         }
     }
 
-    // Draw description
-    engine.ui.ImGui.sameLine();
-    _ = engine.ui.ImGui.contentRegionAvail()[0];
-    engine.ui.ImGui.text(description);
-
     // Emit drag payload when hovering and dragging
     if (engine.ui.ImGui.isItemHovered()) {
         const kind_int = @intFromEnum(entry.kind);
         _ = engine.ui.ImGui.dragDropSourceU64(state_mod.place_actor_drag_payload, kind_int, label);
     }
 
+    if (row_layout.stacked) {
+        engine.ui.ImGui.dummy(0.0, 4.0);
+        engine.ui.ImGui.textWrapped(description);
+    } else {
+        engine.ui.ImGui.sameLine();
+        engine.ui.ImGui.alignTextToFramePadding();
+        engine.ui.ImGui.textWrapped(description);
+    }
+
     engine.ui.ImGui.dummy(0.0, 4.0);
+}
+
+test "placeActorRowLayout stacks descriptions in narrow panels" {
+    const narrow = placeActorRowLayout(180.0);
+    try std.testing.expect(narrow.stacked);
+    try std.testing.expectEqual(@as(f32, 180.0), narrow.action_width);
+
+    const wide = placeActorRowLayout(320.0);
+    try std.testing.expect(!wide.stacked);
+    try std.testing.expectApproxEqAbs(@as(f32, 134.4), wide.action_width, 0.01);
 }
