@@ -18,7 +18,6 @@ const ActionRowResult = enum {
     none,
     first,
     second,
-    third,
 };
 
 const TransformResetTarget = enum {
@@ -62,6 +61,65 @@ fn endInspectorSectionBody() void {
     layout.endSectionBody();
 }
 
+fn beginInspectorPropertyGrid(id: []const u8) bool {
+    if (!layout.beginInspectorPropertyTable(id, 0.36)) {
+        return false;
+    }
+    engine.ui.ImGui.tableSetupColumn("##property_label", false, 118.0);
+    engine.ui.ImGui.tableSetupColumn("##property_value", true, 1.0);
+    engine.ui.ImGui.pushStyleVarVec2(.item_spacing, .{ 8.0, 6.0 });
+    return true;
+}
+
+fn endInspectorPropertyGrid() void {
+    engine.ui.ImGui.popStyleVar(1);
+    layout.endInspectorPropertyTable();
+}
+
+fn drawInspectorTextRow(label: []const u8, value: []const u8) void {
+    layout.drawInspectorPropertyRow(label, null);
+    engine.ui.ImGui.textWrapped(value);
+}
+
+fn drawInspectorInputTextRow(label: []const u8, widget_id: []const u8, hint: []const u8, buffer: []u8) bool {
+    layout.drawInspectorPropertyRow(label, null);
+    return engine.ui.ImGui.inputTextWithHint(widget_id, hint, buffer);
+}
+
+fn drawInspectorCheckboxRow(label: []const u8, widget_id: []const u8, value: *bool) bool {
+    layout.drawInspectorPropertyRow(label, null);
+    return engine.ui.ImGui.checkbox(widget_id, value);
+}
+
+fn drawInspectorFloatRow(
+    label: []const u8,
+    widget_id: []const u8,
+    value: *f32,
+    speed: f32,
+    min_value: f32,
+    max_value: f32,
+) bool {
+    layout.drawInspectorPropertyRow(label, null);
+    return engine.ui.ImGui.dragFloat(widget_id, value, speed, min_value, max_value);
+}
+
+fn drawInspectorFloat3Row(
+    label: []const u8,
+    widget_id: []const u8,
+    value: *[3]f32,
+    speed: f32,
+    min_value: f32,
+    max_value: f32,
+) bool {
+    layout.drawInspectorPropertyRow(label, null);
+    return engine.ui.ImGui.dragFloat3(widget_id, value, speed, min_value, max_value);
+}
+
+fn beginInspectorComboRow(label: []const u8, widget_id: []const u8, preview: []const u8) bool {
+    layout.drawInspectorPropertyRow(label, null);
+    return engine.ui.ImGui.beginCombo(widget_id, preview);
+}
+
 pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     var title_buffer: [80]u8 = undefined;
     const title = try state.windowLabel(&title_buffer, .details, "details_panel");
@@ -82,21 +140,13 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
 
     var selection_count_buffer: [32]u8 = undefined;
     const selection_count_text = try std.fmt.bufPrint(&selection_count_buffer, "{d}", .{selection_count});
-    engine.ui.ImGui.labelText(state.text(.selection_count), selection_count_text);
-    engine.ui.ImGui.setNextItemWidth(-1.0);
-    _ = engine.ui.ImGui.inputTextWithHint("##inspector_filter", state.text(.search_components), state.inspector_filter_buffer[0..]);
-    const filter = inspectorFilter(state);
-
-    if (inspectorSectionMatches(filter, state.text(.identity)) and engine.ui.ImGui.collapsingHeader(state.text(.identity), filter.len != 0)) {
-        beginInspectorSectionBody();
-        defer endInspectorSectionBody();
-        engine.ui.ImGui.dummy(0.0, 4.0);
-        var entity_id_buffer: [32]u8 = undefined;
-        const entity_id_text = try std.fmt.bufPrint(&entity_id_buffer, "{d}", .{selected});
-        engine.ui.ImGui.labelText(state.text(.entity_id), entity_id_text);
-
-        engine.ui.ImGui.dummy(0.0, 2.0);
-        if (drawLabeledInputText(state.text(.name), "##inspector_entity_name", state.inspector_name_buffer[0..], 140.0)) {
+    var entity_id_buffer: [32]u8 = undefined;
+    const entity_id_text = try std.fmt.bufPrint(&entity_id_buffer, "{d}", .{selected});
+    if (beginInspectorPropertyGrid("inspector_summary_grid")) {
+        defer endInspectorPropertyGrid();
+        drawInspectorTextRow(state.text(.selection_count), selection_count_text);
+        drawInspectorTextRow(state.text(.entity_id), entity_id_text);
+        if (drawInspectorInputTextRow(state.text(.name), "##inspector_entity_name", state.text(.name), state.inspector_name_buffer[0..])) {
             if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
                 const next_name = utils.zeroTerminatedSlice(state.inspector_name_buffer[0..]);
                 if (next_name.len > 0) {
@@ -108,25 +158,48 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                 }
             }
         }
+        _ = drawInspectorInputTextRow(
+            state.text(.search_components),
+            "##inspector_filter",
+            state.text(.search_components),
+            state.inspector_filter_buffer[0..],
+        );
+    }
+    engine.ui.ImGui.dummy(0.0, 4.0);
+    engine.ui.ImGui.separator();
+    engine.ui.ImGui.dummy(0.0, 4.0);
+    const filter = inspectorFilter(state);
 
-        if (entity.parent) |parent_id| {
-            if (layer_context.world.getEntityConst(parent_id)) |parent| {
-                engine.ui.ImGui.labelText(state.text(.parent), parent.name);
+    if (inspectorSectionMatches(filter, state.text(.identity)) and engine.ui.ImGui.collapsingHeader(state.text(.identity), filter.len != 0)) {
+        beginInspectorSectionBody();
+        defer endInspectorSectionBody();
+        engine.ui.ImGui.dummy(0.0, 4.0);
+        if (beginInspectorPropertyGrid("identity_properties")) {
+            defer endInspectorPropertyGrid();
+            if (entity.parent) |parent_id| {
+                if (layer_context.world.getEntityConst(parent_id)) |parent| {
+                    drawInspectorTextRow(state.text(.parent), parent.name);
+                } else {
+                    drawInspectorTextRow(state.text(.parent), state.text(.root));
+                }
+            } else {
+                drawInspectorTextRow(state.text(.parent), state.text(.root));
             }
+
+            var editor_only = entity.editor_only;
+            if (drawInspectorCheckboxRow(state.text(.editor_only), "##identity_editor_only", &editor_only)) {
+                entity.editor_only = editor_only;
+                try history.captureSnapshot(state, layer_context);
+            }
+        }
+
+        if (entity.parent != null) {
             engine.ui.ImGui.pushStyleVarVec2(.item_spacing, .{ 4.0, 4.0 });
             defer engine.ui.ImGui.popStyleVar(1);
             if (engine.ui.ImGui.buttonEx(state.text(.unparent_selected), 0.0, 0.0)) {
                 try scene_hierarchy.unparentSelection(state, layer_context);
                 return;
             }
-        } else {
-            engine.ui.ImGui.labelText(state.text(.parent), state.text(.root));
-        }
-
-        var editor_only = entity.editor_only;
-        if (engine.ui.ImGui.checkbox(state.text(.editor_only), &editor_only)) {
-            entity.editor_only = editor_only;
-            try history.captureSnapshot(state, layer_context);
         }
     }
 
@@ -227,22 +300,27 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                 beginInspectorSectionBody();
                 defer endInspectorSectionBody();
                 engine.ui.ImGui.dummy(0.0, 4.0);
-                engine.ui.ImGui.labelText(state.text(.primitive), utils.primitiveLabel(state, mesh_component.primitive));
                 if (mesh_component.handle) |mesh_handle| {
                     if (layer_context.world.assets().mesh(mesh_handle)) |mesh_resource| {
-                        engine.ui.ImGui.labelText(state.text(.resource), mesh_resource.name);
+                        if (beginInspectorPropertyGrid("mesh_properties")) {
+                            defer endInspectorPropertyGrid();
+                            drawInspectorTextRow(state.text(.primitive), utils.primitiveLabel(state, mesh_component.primitive));
+                            drawInspectorTextRow(state.text(.resource), mesh_resource.name);
 
-                        var vertices_buffer: [32]u8 = undefined;
-                        const vertices_text = try std.fmt.bufPrint(&vertices_buffer, "{d}", .{mesh_resource.vertices.len});
-                        engine.ui.ImGui.labelText(state.text(.vertices), vertices_text);
+                            var vertices_buffer: [32]u8 = undefined;
+                            const vertices_text = try std.fmt.bufPrint(&vertices_buffer, "{d}", .{mesh_resource.vertices.len});
+                            drawInspectorTextRow(state.text(.vertices), vertices_text);
 
-                        var indices_buffer: [32]u8 = undefined;
-                        const indices_text = try std.fmt.bufPrint(&indices_buffer, "{d}", .{mesh_resource.indices.len});
-                        engine.ui.ImGui.labelText(state.text(.indices), indices_text);
+                            var indices_buffer: [32]u8 = undefined;
+                            const indices_text = try std.fmt.bufPrint(&indices_buffer, "{d}", .{mesh_resource.indices.len});
+                            drawInspectorTextRow(state.text(.indices), indices_text);
 
-                        var triangles_buffer: [32]u8 = undefined;
-                        const triangles_text = try std.fmt.bufPrint(&triangles_buffer, "{d}", .{mesh_resource.indices.len / 3});
-                        engine.ui.ImGui.labelText(state.text(.triangles), triangles_text);
+                            var triangles_buffer: [32]u8 = undefined;
+                            const triangles_text = try std.fmt.bufPrint(&triangles_buffer, "{d}", .{mesh_resource.indices.len / 3});
+                            drawInspectorTextRow(state.text(.triangles), triangles_text);
+                        }
+                    } else {
+                        engine.ui.ImGui.text(state.text(.mesh_component_has_no_bound_resource));
                     }
                 } else {
                     engine.ui.ImGui.text(state.text(.mesh_component_has_no_bound_resource));
@@ -265,30 +343,31 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                 var effective_color = material_component.base_color_factor;
                 var material_usage_count: usize = 0;
                 var material_texture_handle: ?engine.assets.TextureHandle = null;
+                var resource_text: []const u8 = state.text(.embedded);
+                var scope_label: []const u8 = state.text(.scope);
+                var scope_value: []const u8 = state.text(.instance);
+                var texture_text: []const u8 = state.text(.none);
+                var shared_by_buffer: [32]u8 = undefined;
                 if (material_component.handle) |material_handle| {
                     material_usage_count = materialUsageCount(state, layer_context.world, material_handle);
                     if (layer_context.world.assets().material(material_handle)) |material_resource| {
                         effective_shading = material_resource.shading;
                         effective_color = material_resource.base_color_factor;
                         material_texture_handle = material_resource.base_color_texture;
-                        engine.ui.ImGui.labelText(state.text(.resource), material_resource.name);
+                        resource_text = material_resource.name;
                         if (material_usage_count > 1) {
-                            var shared_buffer: [32]u8 = undefined;
-                            const shared_text = try std.fmt.bufPrint(&shared_buffer, "{d}", .{material_usage_count});
-                            engine.ui.ImGui.labelText(state.text(.shared_by), shared_text);
+                            scope_label = state.text(.shared_by);
+                            scope_value = try std.fmt.bufPrint(&shared_by_buffer, "{d}", .{material_usage_count});
                         } else {
-                            engine.ui.ImGui.labelText(state.text(.scope), state.text(.instance));
+                            scope_label = state.text(.scope);
+                            scope_value = state.text(.instance);
                         }
                         if (material_texture_handle) |texture_handle| {
                             if (layer_context.world.assets().texture(texture_handle)) |texture_resource| {
-                                engine.ui.ImGui.labelText(state.text(.texture), texture_resource.name);
+                                texture_text = texture_resource.name;
                             }
-                        } else {
-                            engine.ui.ImGui.labelText(state.text(.texture), state.text(.none));
                         }
                     }
-                } else {
-                    engine.ui.ImGui.labelText(state.text(.resource), state.text(.embedded));
                 }
 
                 if (material_component.handle == null or material_usage_count > 1) {
@@ -329,16 +408,51 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                 }
                 engine.ui.ImGui.text(state.text(.texture));
 
-                if (engine.ui.ImGui.beginMenu(state.text(.shading))) {
-                    defer engine.ui.ImGui.endMenu();
-                    if (engine.ui.ImGui.menuItem(state.text(.unlit), null, effective_shading == .unlit, true)) {
-                        effective_shading = .unlit;
+                if (beginInspectorPropertyGrid("material_properties")) {
+                    defer endInspectorPropertyGrid();
+                    drawInspectorTextRow(state.text(.resource), resource_text);
+                    drawInspectorTextRow(scope_label, scope_value);
+                    drawInspectorTextRow(state.text(.texture), texture_text);
+
+                    if (beginInspectorComboRow(state.text(.shading), "##material_shading", utils.shadingLabel(state, effective_shading))) {
+                        defer engine.ui.ImGui.endCombo();
+                        if (engine.ui.ImGui.menuItem(state.text(.unlit), null, effective_shading == .unlit, true)) {
+                            effective_shading = .unlit;
+                        }
+                        if (engine.ui.ImGui.menuItem(state.text(.lambert), null, effective_shading == .lambert, true)) {
+                            effective_shading = .lambert;
+                        }
+                        if (engine.ui.ImGui.menuItem(state.text(.pbr), null, effective_shading == .pbr_metallic_roughness, true)) {
+                            effective_shading = .pbr_metallic_roughness;
+                        }
                     }
-                    if (engine.ui.ImGui.menuItem(state.text(.lambert), null, effective_shading == .lambert, true)) {
-                        effective_shading = .lambert;
+
+                    var base_color_rgb: [3]f32 = .{ effective_color[0], effective_color[1], effective_color[2] };
+                    if (drawInspectorFloat3Row(state.text(.base_color), "##material_base_color", &base_color_rgb, 0.01, 0.0, 1.0)) {
+                        effective_color[0] = std.math.clamp(base_color_rgb[0], 0.0, 1.0);
+                        effective_color[1] = std.math.clamp(base_color_rgb[1], 0.0, 1.0);
+                        effective_color[2] = std.math.clamp(base_color_rgb[2], 0.0, 1.0);
+                        material_component.base_color_factor = effective_color;
+                        if (try ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
+                            material_resource.base_color_factor = effective_color;
+                            material_component.handle = materialHandleForEntity(state, entity);
+                        }
+                        if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
+                            try history.captureSnapshot(state, layer_context);
+                        }
                     }
-                    if (engine.ui.ImGui.menuItem(state.text(.pbr), null, effective_shading == .pbr_metallic_roughness, true)) {
-                        effective_shading = .pbr_metallic_roughness;
+
+                    var alpha = effective_color[3];
+                    if (drawInspectorFloatRow(state.text(.opacity), "##material_opacity", &alpha, 0.01, 0.0, 1.0)) {
+                        effective_color[3] = std.math.clamp(alpha, 0.0, 1.0);
+                        material_component.base_color_factor = effective_color;
+                        if (try ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
+                            material_resource.base_color_factor = effective_color;
+                            material_component.handle = materialHandleForEntity(state, entity);
+                        }
+                        if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
+                            try history.captureSnapshot(state, layer_context);
+                        }
                     }
                 }
 
@@ -349,35 +463,6 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                         material_component.handle = materialHandleForEntity(state, entity);
                     }
                     try history.captureSnapshot(state, layer_context);
-                }
-                engine.ui.ImGui.labelText(state.text(.shading), utils.shadingLabel(state, effective_shading));
-
-                var base_color_rgb: [3]f32 = .{ effective_color[0], effective_color[1], effective_color[2] };
-                if (drawLabeledFloat3Control(state.text(.base_color), "##material_base_color", &base_color_rgb, 0.01, 0.0, 1.0)) {
-                    effective_color[0] = std.math.clamp(base_color_rgb[0], 0.0, 1.0);
-                    effective_color[1] = std.math.clamp(base_color_rgb[1], 0.0, 1.0);
-                    effective_color[2] = std.math.clamp(base_color_rgb[2], 0.0, 1.0);
-                    material_component.base_color_factor = effective_color;
-                    if (try ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
-                        material_resource.base_color_factor = effective_color;
-                        material_component.handle = materialHandleForEntity(state, entity);
-                    }
-                    if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
-                        try history.captureSnapshot(state, layer_context);
-                    }
-                }
-
-                var alpha = effective_color[3];
-                if (drawLabeledFloatControl(state.text(.opacity), "##material_opacity", &alpha, 0.01, 0.0, 1.0)) {
-                    effective_color[3] = std.math.clamp(alpha, 0.0, 1.0);
-                    material_component.base_color_factor = effective_color;
-                    if (try ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
-                        material_resource.base_color_factor = effective_color;
-                        material_component.handle = materialHandleForEntity(state, entity);
-                    }
-                    if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
-                        try history.captureSnapshot(state, layer_context);
-                    }
                 }
             }
         }
@@ -414,66 +499,69 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                         camera_component.projection = .{ .orthographic = .{} };
                         try history.captureSnapshot(state, layer_context);
                     },
-                    .third => {},
                     .none => {},
                 }
 
-                switch (camera_component.projection) {
-                    .perspective => |projection| {
-                        var edited = projection;
-                        var fov_degrees = engine.math.angle.radiansToDegrees(edited.fov_y_radians);
-                        if (drawLabeledFloatControl(state.text(.fov_y), "##camera_fov_y", &fov_degrees, 0.25, 10.0, 170.0)) {
-                            edited.fov_y_radians = engine.math.angle.degreesToRadians(fov_degrees);
-                            camera_component.projection = .{ .perspective = edited };
-                            if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
-                                try history.captureSnapshot(state, layer_context);
-                            }
-                        }
+                if (beginInspectorPropertyGrid("camera_properties")) {
+                    defer endInspectorPropertyGrid();
 
-                        if (drawLabeledFloatControl(state.text(.near_clip), "##camera_perspective_near_clip", &edited.near_clip, 0.01, 0.001, 100.0)) {
-                            edited.near_clip = std.math.clamp(edited.near_clip, 0.001, 100.0);
-                            edited.far_clip = @max(edited.far_clip, edited.near_clip + 0.01);
-                            camera_component.projection = .{ .perspective = edited };
-                            if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
-                                try history.captureSnapshot(state, layer_context);
+                    switch (camera_component.projection) {
+                        .perspective => |projection| {
+                            var edited = projection;
+                            var fov_degrees = engine.math.angle.radiansToDegrees(edited.fov_y_radians);
+                            if (drawInspectorFloatRow(state.text(.fov_y), "##camera_fov_y", &fov_degrees, 0.25, 10.0, 170.0)) {
+                                edited.fov_y_radians = engine.math.angle.degreesToRadians(fov_degrees);
+                                camera_component.projection = .{ .perspective = edited };
+                                if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
+                                    try history.captureSnapshot(state, layer_context);
+                                }
                             }
-                        }
 
-                        if (drawLabeledFloatControl(state.text(.far_clip), "##camera_perspective_far_clip", &edited.far_clip, 1.0, 0.1, 5000.0)) {
-                            edited.near_clip = @min(edited.near_clip, edited.far_clip - 0.01);
-                            edited.far_clip = std.math.clamp(edited.far_clip, edited.near_clip + 0.01, 5000.0);
-                            camera_component.projection = .{ .perspective = edited };
-                            if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
-                                try history.captureSnapshot(state, layer_context);
+                            if (drawInspectorFloatRow(state.text(.near_clip), "##camera_perspective_near_clip", &edited.near_clip, 0.01, 0.001, 100.0)) {
+                                edited.near_clip = std.math.clamp(edited.near_clip, 0.001, 100.0);
+                                edited.far_clip = @max(edited.far_clip, edited.near_clip + 0.01);
+                                camera_component.projection = .{ .perspective = edited };
+                                if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
+                                    try history.captureSnapshot(state, layer_context);
+                                }
                             }
-                        }
-                    },
-                    .orthographic => |projection| {
-                        var edited = projection;
-                        if (drawLabeledFloatControl(state.text(.size), "##camera_orthographic_size", &edited.size, 0.1, 0.01, 500.0)) {
-                            edited.size = std.math.clamp(edited.size, 0.01, 500.0);
-                            camera_component.projection = .{ .orthographic = edited };
-                            if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
-                                try history.captureSnapshot(state, layer_context);
-                            }
-                        }
 
-                        if (drawLabeledFloatControl(state.text(.near_clip), "##camera_orthographic_near_clip", &edited.near_clip, 0.05, -1000.0, 1000.0)) {
-                            edited.near_clip = std.math.clamp(edited.near_clip, -1000.0, edited.far_clip - 0.01);
-                            camera_component.projection = .{ .orthographic = edited };
-                            if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
-                                try history.captureSnapshot(state, layer_context);
+                            if (drawInspectorFloatRow(state.text(.far_clip), "##camera_perspective_far_clip", &edited.far_clip, 1.0, 0.1, 5000.0)) {
+                                edited.near_clip = @min(edited.near_clip, edited.far_clip - 0.01);
+                                edited.far_clip = std.math.clamp(edited.far_clip, edited.near_clip + 0.01, 5000.0);
+                                camera_component.projection = .{ .perspective = edited };
+                                if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
+                                    try history.captureSnapshot(state, layer_context);
+                                }
                             }
-                        }
+                        },
+                        .orthographic => |projection| {
+                            var edited = projection;
+                            if (drawInspectorFloatRow(state.text(.size), "##camera_orthographic_size", &edited.size, 0.1, 0.01, 500.0)) {
+                                edited.size = std.math.clamp(edited.size, 0.01, 500.0);
+                                camera_component.projection = .{ .orthographic = edited };
+                                if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
+                                    try history.captureSnapshot(state, layer_context);
+                                }
+                            }
 
-                        if (drawLabeledFloatControl(state.text(.far_clip), "##camera_orthographic_far_clip", &edited.far_clip, 0.05, -1000.0, 1000.0)) {
-                            edited.far_clip = std.math.clamp(edited.far_clip, edited.near_clip + 0.01, 1000.0);
-                            camera_component.projection = .{ .orthographic = edited };
-                            if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
-                                try history.captureSnapshot(state, layer_context);
+                            if (drawInspectorFloatRow(state.text(.near_clip), "##camera_orthographic_near_clip", &edited.near_clip, 0.05, -1000.0, 1000.0)) {
+                                edited.near_clip = std.math.clamp(edited.near_clip, -1000.0, edited.far_clip - 0.01);
+                                camera_component.projection = .{ .orthographic = edited };
+                                if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
+                                    try history.captureSnapshot(state, layer_context);
+                                }
                             }
-                        }
-                    },
+
+                            if (drawInspectorFloatRow(state.text(.far_clip), "##camera_orthographic_far_clip", &edited.far_clip, 0.05, -1000.0, 1000.0)) {
+                                edited.far_clip = std.math.clamp(edited.far_clip, edited.near_clip + 0.01, 1000.0);
+                                camera_component.projection = .{ .orthographic = edited };
+                                if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
+                                    try history.captureSnapshot(state, layer_context);
+                                }
+                            }
+                        },
+                    }
                 }
             }
         }
@@ -489,50 +577,52 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                 beginInspectorSectionBody();
                 defer endInspectorSectionBody();
                 engine.ui.ImGui.dummy(0.0, 4.0);
-                engine.ui.ImGui.labelText(state.text(.type), switch (light.kind) {
-                    .directional => state.text(.directional),
-                    .point => state.text(.point),
-                    .spot => state.text(.spot),
-                });
+                if (beginInspectorPropertyGrid("light_properties")) {
+                    defer endInspectorPropertyGrid();
+                    const current_kind_label = switch (light.kind) {
+                        .directional => state.text(.directional),
+                        .point => state.text(.point),
+                        .spot => state.text(.spot),
+                    };
+                    if (beginInspectorComboRow(state.text(.type), "##light_type", current_kind_label)) {
+                        defer engine.ui.ImGui.endCombo();
+                        if (engine.ui.ImGui.menuItem(state.text(.directional), null, light.kind == .directional, true)) {
+                            light.kind = .directional;
+                            try history.captureSnapshot(state, layer_context);
+                        }
+                        if (engine.ui.ImGui.menuItem(state.text(.point), null, light.kind == .point, true)) {
+                            light.kind = .point;
+                            try history.captureSnapshot(state, layer_context);
+                        }
+                        if (engine.ui.ImGui.menuItem(state.text(.spot), null, light.kind == .spot, true)) {
+                            light.kind = .spot;
+                            try history.captureSnapshot(state, layer_context);
+                        }
+                    }
 
-                if (engine.ui.ImGui.beginMenu(state.text(.type))) {
-                    defer engine.ui.ImGui.endMenu();
-                    if (engine.ui.ImGui.menuItem(state.text(.directional), null, light.kind == .directional, true)) {
-                        light.kind = .directional;
-                        try history.captureSnapshot(state, layer_context);
-                    }
-                    if (engine.ui.ImGui.menuItem(state.text(.point), null, light.kind == .point, true)) {
-                        light.kind = .point;
-                        try history.captureSnapshot(state, layer_context);
-                    }
-                    if (engine.ui.ImGui.menuItem(state.text(.spot), null, light.kind == .spot, true)) {
-                        light.kind = .spot;
-                        try history.captureSnapshot(state, layer_context);
-                    }
-                }
-
-                var light_color = light.color;
-                if (drawLabeledFloat3Control(state.text(.color), "##light_color", &light_color, 0.01, 0.0, 10.0)) {
-                    light.color = light_color;
-                    if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
-                        try history.captureSnapshot(state, layer_context);
-                    }
-                }
-
-                var intensity = light.intensity;
-                if (drawLabeledFloatControl(state.text(.intensity), "##light_intensity", &intensity, 0.1, 0.0, 100.0)) {
-                    light.intensity = intensity;
-                    if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
-                        try history.captureSnapshot(state, layer_context);
-                    }
-                }
-
-                if (light.kind != .directional) {
-                    var range = light.range;
-                    if (drawLabeledFloatControl(state.text(.range), "##light_range", &range, 0.1, 0.1, 100.0)) {
-                        light.range = range;
+                    var light_color = light.color;
+                    if (drawInspectorFloat3Row(state.text(.color), "##light_color", &light_color, 0.01, 0.0, 10.0)) {
+                        light.color = light_color;
                         if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
                             try history.captureSnapshot(state, layer_context);
+                        }
+                    }
+
+                    var intensity = light.intensity;
+                    if (drawInspectorFloatRow(state.text(.intensity), "##light_intensity", &intensity, 0.1, 0.0, 100.0)) {
+                        light.intensity = intensity;
+                        if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
+                            try history.captureSnapshot(state, layer_context);
+                        }
+                    }
+
+                    if (light.kind != .directional) {
+                        var range = light.range;
+                        if (drawInspectorFloatRow(state.text(.range), "##light_range", &range, 0.1, 0.1, 100.0)) {
+                            light.range = range;
+                            if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
+                                try history.captureSnapshot(state, layer_context);
+                            }
                         }
                     }
                 }
@@ -573,33 +663,6 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
             try manipulation.beginManipulation(state, layer_context, .scale);
         }
     }
-}
-
-fn drawTransformComponentToolbar(
-    state: *EditorState,
-    layer_context: *engine.core.LayerContext,
-    selected: engine.scene.EntityId,
-    entity: *engine.scene.Entity,
-    world_transform: engine.scene.Transform,
-) !bool {
-    switch (drawActionRow3(state.text(.copy), state.text(.paste), state.text(.reset_all), 96.0)) {
-        .first => state.transform_component_clipboard = entity.transform,
-        .second => {
-            if (state.transform_component_clipboard) |clipboard| {
-                if (!transformsEqual(entity.transform, clipboard)) {
-                    entity.transform = clipboard;
-                    try history.captureSnapshot(state, layer_context);
-                    return true;
-                }
-            }
-        },
-        .third => {
-            try resetTransformTarget(state, layer_context, selected, entity, world_transform, .all);
-            return true;
-        },
-        .none => {},
-    }
-    return false;
 }
 
 fn drawAddComponentControls(
@@ -665,114 +728,6 @@ fn drawAddComponentControls(
 
     return false;
 }
-
-fn drawMeshComponentToolbar(
-    state: *EditorState,
-    layer_context: *engine.core.LayerContext,
-    entity: *engine.scene.Entity,
-    mesh_component: engine.scene.Mesh,
-) !bool {
-    switch (drawActionRow3(state.text(.copy), state.text(.paste), state.text(.remove_mesh_component), 112.0)) {
-        .first => state.mesh_component_clipboard = mesh_component,
-        .second => {
-            if (state.mesh_component_clipboard) |clipboard| {
-                entity.mesh = clipboard;
-                if (entity.material == null) {
-                    const material_handle = try layer_context.world.assets().ensureDefaultMaterial();
-                    entity.material = .{ .handle = material_handle };
-                }
-                try history.captureSnapshot(state, layer_context);
-                return true;
-            }
-        },
-        .third => {
-            try clearMeshComponent(state, layer_context, entity);
-            return true;
-        },
-        .none => {},
-    }
-    return false;
-}
-
-fn drawMaterialComponentToolbar(
-    state: *EditorState,
-    layer_context: *engine.core.LayerContext,
-    entity: *engine.scene.Entity,
-    material_component: engine.scene.Material,
-) !bool {
-    switch (drawActionRow3(state.text(.copy), state.text(.paste), state.text(.remove_material_component), 112.0)) {
-        .first => state.material_component_clipboard = material_component,
-        .second => {
-            if (state.material_component_clipboard) |clipboard| {
-                entity.material = clipboard;
-                try history.captureSnapshot(state, layer_context);
-                return true;
-            }
-        },
-        .third => {
-            try removeMaterialComponent(state, layer_context, entity);
-            return true;
-        },
-        .none => {},
-    }
-    return false;
-}
-
-fn drawCameraComponentToolbar(
-    state: *EditorState,
-    layer_context: *engine.core.LayerContext,
-    selected: engine.scene.EntityId,
-    entity: *engine.scene.Entity,
-    camera_component: engine.scene.Camera,
-) !bool {
-    switch (drawActionRow3(state.text(.copy), state.text(.paste), state.text(.remove_camera_component), 112.0)) {
-        .first => state.camera_component_clipboard = camera_component,
-        .second => {
-            if (state.camera_component_clipboard) |clipboard| {
-                var pasted = clipboard;
-                pasted.is_primary = false;
-                entity.camera = pasted;
-                if (layer_context.world.primaryCameraEntity() == null) {
-                    _ = layer_context.world.setPrimaryCamera(selected);
-                }
-                state.scene_camera = layer_context.world.primaryCameraEntity();
-                try history.captureSnapshot(state, layer_context);
-                return true;
-            }
-        },
-        .third => {
-            try removeCameraComponent(state, layer_context, selected, entity);
-            return true;
-        },
-        .none => {},
-    }
-    return false;
-}
-
-fn drawLightComponentToolbar(
-    state: *EditorState,
-    layer_context: *engine.core.LayerContext,
-    entity: *engine.scene.Entity,
-    light_component: engine.scene.Light,
-) !bool {
-    switch (drawActionRow3(state.text(.copy), state.text(.paste), state.text(.remove_light_component), 112.0)) {
-        .first => state.light_component_clipboard = light_component,
-        .second => {
-            if (state.light_component_clipboard) |clipboard| {
-                entity.light = clipboard;
-                try history.captureSnapshot(state, layer_context);
-                return true;
-            }
-        },
-        .third => {
-            try removeLightComponent(state, layer_context, entity);
-            return true;
-        },
-        .none => {},
-    }
-    return false;
-}
-
 fn drawTransformHeaderContextMenu(
     state: *EditorState,
     layer_context: *engine.core.LayerContext,
@@ -927,33 +882,6 @@ fn drawLightHeaderContextMenu(
     return false;
 }
 
-fn drawTransformResetButtons(
-    state: *EditorState,
-    layer_context: *engine.core.LayerContext,
-    selected: engine.scene.EntityId,
-    entity: *engine.scene.Entity,
-    world_transform: engine.scene.Transform,
-) !void {
-    const columns = layout.responsiveButtonColumns(4, 88.0);
-    const button_width = layout.responsiveButtonWidth(columns);
-
-    if (engine.ui.ImGui.buttonEx(state.text(.reset_position), button_width, 0.0)) {
-        try resetTransformTarget(state, layer_context, selected, entity, world_transform, .translation);
-    }
-    layout.advanceResponsiveRow(1, columns);
-    if (engine.ui.ImGui.buttonEx(state.text(.reset_rotation), button_width, 0.0)) {
-        try resetTransformTarget(state, layer_context, selected, entity, world_transform, .rotation);
-    }
-    layout.advanceResponsiveRow(2, columns);
-    if (engine.ui.ImGui.buttonEx(state.text(.reset_scale), button_width, 0.0)) {
-        try resetTransformTarget(state, layer_context, selected, entity, world_transform, .scale);
-    }
-    layout.advanceResponsiveRow(3, columns);
-    if (engine.ui.ImGui.buttonEx(state.text(.reset_all), button_width, 0.0)) {
-        try resetTransformTarget(state, layer_context, selected, entity, world_transform, .all);
-    }
-}
-
 fn resetTransformTarget(
     state: *EditorState,
     layer_context: *engine.core.LayerContext,
@@ -994,43 +922,6 @@ fn transformsEqual(a: engine.scene.Transform, b: engine.scene.Transform) bool {
         std.meta.eql(a.scale, b.scale);
 }
 
-fn drawLabeledFloatControl(
-    label: []const u8,
-    widget_id: []const u8,
-    value: *f32,
-    speed: f32,
-    min_value: f32,
-    max_value: f32,
-) bool {
-    _ = layout.drawResponsivePropertyLabel(label, 104.0);
-    engine.ui.ImGui.setNextItemWidth(-1.0);
-    return engine.ui.ImGui.dragFloat(widget_id, value, speed, min_value, max_value);
-}
-
-fn drawLabeledInputText(
-    label: []const u8,
-    widget_id: []const u8,
-    buffer: []u8,
-    min_control_width: f32,
-) bool {
-    _ = layout.drawResponsivePropertyLabel(label, min_control_width);
-    engine.ui.ImGui.setNextItemWidth(-1.0);
-    return engine.ui.ImGui.inputText(widget_id, buffer);
-}
-
-fn drawLabeledFloat3Control(
-    label: []const u8,
-    widget_id: []const u8,
-    value: *[3]f32,
-    speed: f32,
-    min_value: f32,
-    max_value: f32,
-) bool {
-    _ = layout.drawResponsivePropertyLabel(label, 178.0);
-    engine.ui.ImGui.setNextItemWidth(-1.0);
-    return engine.ui.ImGui.dragFloat3(widget_id, value, speed, min_value, max_value);
-}
-
 fn drawActionRow2(first: []const u8, second: []const u8, min_button_width: f32) ActionRowResult {
     const columns = layout.responsiveButtonColumns(2, min_button_width);
     const width = layout.responsiveButtonWidth(columns);
@@ -1040,23 +931,6 @@ fn drawActionRow2(first: []const u8, second: []const u8, min_button_width: f32) 
     layout.advanceResponsiveRow(1, columns);
     if (engine.ui.ImGui.buttonEx(second, width, 0.0)) {
         return .second;
-    }
-    return .none;
-}
-
-fn drawActionRow3(first: []const u8, second: []const u8, third: []const u8, min_button_width: f32) ActionRowResult {
-    const columns = layout.responsiveButtonColumns(3, min_button_width);
-    const width = layout.responsiveButtonWidth(columns);
-    if (engine.ui.ImGui.buttonEx(first, width, 0.0)) {
-        return .first;
-    }
-    layout.advanceResponsiveRow(1, columns);
-    if (engine.ui.ImGui.buttonEx(second, width, 0.0)) {
-        return .second;
-    }
-    layout.advanceResponsiveRow(2, columns);
-    if (engine.ui.ImGui.buttonEx(third, width, 0.0)) {
-        return .third;
     }
     return .none;
 }
