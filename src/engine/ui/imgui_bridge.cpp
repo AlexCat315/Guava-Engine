@@ -343,18 +343,18 @@ void apply_guava_editor_style(float content_scale) {
     ImVec4* colors = style.Colors;
     colors[ImGuiCol_Text] = make_color(220, 224, 231);
     colors[ImGuiCol_TextDisabled] = make_color(144, 153, 165);
-    colors[ImGuiCol_WindowBg] = make_color(28, 30, 34);
-    colors[ImGuiCol_ChildBg] = make_color(34, 37, 42);
+    colors[ImGuiCol_WindowBg] = make_color(20, 21, 23);
+    colors[ImGuiCol_ChildBg] = make_color(32, 34, 37);
     colors[ImGuiCol_PopupBg] = make_color(33, 35, 40, 250);
     colors[ImGuiCol_Border] = make_color(63, 70, 80, 110);
     colors[ImGuiCol_BorderShadow] = make_color(0, 0, 0, 0);
 
-    colors[ImGuiCol_FrameBg] = make_color(52, 56, 63);
-    colors[ImGuiCol_FrameBgHovered] = make_color(67, 74, 84);
-    colors[ImGuiCol_FrameBgActive] = make_color(80, 89, 101);
-    colors[ImGuiCol_TitleBg] = make_color(24, 26, 31);
-    colors[ImGuiCol_TitleBgActive] = make_color(34, 37, 42);
-    colors[ImGuiCol_TitleBgCollapsed] = make_color(24, 26, 31, 210);
+    colors[ImGuiCol_FrameBg] = make_color(15, 16, 17);
+    colors[ImGuiCol_FrameBgHovered] = make_color(45, 90, 160, 200);
+    colors[ImGuiCol_FrameBgActive] = make_color(35, 70, 130, 220);
+    colors[ImGuiCol_TitleBg] = make_color(20, 21, 23);
+    colors[ImGuiCol_TitleBgActive] = make_color(28, 30, 34);
+    colors[ImGuiCol_TitleBgCollapsed] = make_color(20, 21, 23, 210);
     colors[ImGuiCol_MenuBarBg] = make_color(31, 34, 39);
     colors[ImGuiCol_ScrollbarBg] = make_color(23, 24, 27);
     colors[ImGuiCol_ScrollbarGrab] = make_color(77, 83, 93);
@@ -364,12 +364,12 @@ void apply_guava_editor_style(float content_scale) {
     colors[ImGuiCol_SliderGrab] = make_color(108, 161, 246);
     colors[ImGuiCol_SliderGrabActive] = make_color(128, 184, 255);
 
-    colors[ImGuiCol_Button] = make_color(58, 62, 70);
-    colors[ImGuiCol_ButtonHovered] = make_color(74, 81, 91);
-    colors[ImGuiCol_ButtonActive] = make_color(87, 96, 109);
-    colors[ImGuiCol_Header] = make_color(58, 64, 72);
-    colors[ImGuiCol_HeaderHovered] = make_color(75, 83, 95);
-    colors[ImGuiCol_HeaderActive] = make_color(90, 99, 112);
+    colors[ImGuiCol_Button] = make_color(35, 70, 130);
+    colors[ImGuiCol_ButtonHovered] = make_color(45, 90, 160);
+    colors[ImGuiCol_ButtonActive] = make_color(55, 100, 180);
+    colors[ImGuiCol_Header] = make_color(30, 60, 110);
+    colors[ImGuiCol_HeaderHovered] = make_color(45, 90, 160, 200);
+    colors[ImGuiCol_HeaderActive] = make_color(55, 110, 180);
     colors[ImGuiCol_Separator] = make_color(54, 60, 69, 170);
     colors[ImGuiCol_SeparatorHovered] = make_color(93, 140, 217, 210);
     colors[ImGuiCol_SeparatorActive] = make_color(109, 161, 246, 255);
@@ -392,7 +392,7 @@ void apply_guava_editor_style(float content_scale) {
     colors[ImGuiCol_TableBorderLight] = make_color(47, 51, 58);
     colors[ImGuiCol_TableRowBg] = make_color(0, 0, 0, 0);
     colors[ImGuiCol_TableRowBgAlt] = make_color(255, 255, 255, 9);
-    colors[ImGuiCol_TextSelectedBg] = make_color(94, 146, 227, 95);
+    colors[ImGuiCol_TextSelectedBg] = make_color(45, 90, 160, 100);
     colors[ImGuiCol_DragDropTarget] = make_color(250, 199, 88);
     colors[ImGuiCol_NavCursor] = make_color(110, 167, 255);
     colors[ImGuiCol_NavWindowingHighlight] = make_color(255, 255, 255, 70);
