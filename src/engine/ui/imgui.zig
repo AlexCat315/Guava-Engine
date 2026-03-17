@@ -1,3 +1,4 @@
+const std = @import("std");
 const rhi_mod = @import("../rhi/device.zig");
 const rhi_types = @import("../rhi/types.zig");
 const sdl = @import("../platform/sdl.zig").c;
@@ -107,6 +108,20 @@ pub fn loadAnimationLayout() void {
 
 pub fn saveLayout() void {
     c.guava_imgui_save_layout();
+}
+
+pub fn saveLayoutToPath(path: []const u8) bool {
+    return c.guava_imgui_save_layout_to_path(path.ptr, path.len);
+}
+
+pub fn loadLayoutFromPath(path: []const u8) bool {
+    return c.guava_imgui_load_layout_from_path(path.ptr, path.len);
+}
+
+pub fn editorPrefPathAlloc(allocator: std.mem.Allocator) (error{PreferencePathUnavailable} || std.mem.Allocator.Error)![]u8 {
+    const pref_path = sdl.SDL_GetPrefPath("Guava", "Editor") orelse return error.PreferencePathUnavailable;
+    defer sdl.SDL_free(pref_path);
+    return allocator.dupe(u8, std.mem.span(pref_path));
 }
 
 pub fn render(command_buffer: *sdl.SDL_GPUCommandBuffer, render_pass: *sdl.SDL_GPURenderPass) void {

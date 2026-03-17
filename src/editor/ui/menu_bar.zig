@@ -114,6 +114,20 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
             if (engine.ui.ImGui.menuItem(state.text(.reset_dock_layout), null, false, true)) {
                 layout.resetDockLayout(state);
             }
+            engine.ui.ImGui.separator();
+            try layout.ensureLayoutTemplatesLoaded(state);
+            if (engine.ui.ImGui.beginMenu(state.text(.layout_templates))) {
+                defer engine.ui.ImGui.endMenu();
+                if (state.layout_templates.items.len == 0) {
+                    _ = engine.ui.ImGui.menuItem(state.text(.no_saved_layout_templates), null, false, false);
+                } else {
+                    for (state.layout_templates.items) |entry| {
+                        if (engine.ui.ImGui.menuItem(entry.name, null, false, true)) {
+                            _ = layout.loadUserLayoutTemplate(state, entry.path);
+                        }
+                    }
+                }
+            }
         }
     }
 

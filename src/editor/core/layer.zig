@@ -9,6 +9,7 @@ const content_browser = @import("../assets/browser.zig");
 const asset_preview = @import("../assets/preview.zig");
 const history = @import("../actions/history.zig");
 const vfx_runtime = @import("../runtime/vfx.zig");
+const layout = @import("../ui/layout.zig");
 
 pub const EditorLayer = struct {
     state: EditorState = .{},
@@ -54,6 +55,7 @@ pub const EditorLayer = struct {
             self.state.selection_locked_entities = .empty;
         }
         vfx_runtime.releaseState(&self.state);
+        layout.releaseLayoutTemplates(&self.state);
         content_browser.clearAssetBrowser(&self.state);
         if (self.state.asset_registry) |*registry| {
             registry.deinit();

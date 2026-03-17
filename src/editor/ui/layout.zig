@@ -1,10 +1,12 @@
 const std = @import("std");
 const engine = @import("guava");
 const EditorState = @import("../core/state.zig").EditorState;
+const state_mod = @import("../core/state.zig");
 
 pub const default_section_padding: f32 = 10.0;
 pub const default_item_spacing: f32 = 7.0;
 pub const default_row_spacing: f32 = 5.0;
+const layout_template_extension = ".ini";
 
 pub fn beginSectionBody() void {
     engine.ui.ImGui.indent(default_section_padding);
@@ -88,4 +90,156 @@ pub fn resetDockLayout(state: *EditorState) void {
 pub fn loadAnimationDockLayout(state: *EditorState) void {
     engine.ui.ImGui.loadAnimationLayout();
     state.dock_layout_initialized = true;
+}
+
+pub fn ensureLayoutTemplatesLoaded(state: *EditorState) !void {
+    if (state.layout_templates_loaded) {
+        return;
+    }
+    try refreshLayoutTemplates(state);
+}
+
+pub fn refreshLayoutTemplates(state: *EditorState) !void {
+    const allocator = state.allocator orelse return;
+    clearLayoutTemplates(state);
+
+    const directory = try layoutTemplatesDirectoryAlloc(allocator);
+    defer allocator.free(directory);
+    std.fs.makeDirAbsolute(directory) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return err,
+    };
+
+    var dir = try std.fs.openDirAbsolute(directory, .{ .iterate = true });
+    defer dir.close();
+
+    var iterator = dir.iterate();
+    while (try iterator.next()) |entry| {
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, layout_template_extension)) {
+            continue;
+        }
+
+        const stem = entry.name[0 .. entry.name.len - layout_template_extension.len];
+        const full_path = try std.fs.path.join(allocator, &.{ directory, entry.name });
+        try state.layout_templates.append(allocator, .{
+            .name = try allocator.dupe(u8, stem),
+            .path = full_path,
+        });
+    }
+
+    std.sort.heap(state_mod.LayoutTemplateEntry, state.layout_templates.items, {}, lessThanLayoutTemplateEntry);
+    state.layout_templates_loaded = true;
+}
+
+pub fn releaseLayoutTemplates(state: *EditorState) void {
+    clearLayoutTemplates(state);
+}
+
+pub fn saveUserLayoutTemplate(state: *EditorState, raw_name: []const u8) !bool {
+    const allocator = state.allocator orelse return false;
+    const stem = try sanitizeTemplateStemAlloc(allocator, raw_name);
+    defer allocator.free(stem);
+    if (stem.len == 0) {
+        return false;
+    }
+
+    const path = try layoutTemplatePathAlloc(allocator, stem);
+    defer allocator.free(path);
+    if (!engine.ui.ImGui.saveLayoutToPath(path)) {
+        return false;
+    }
+    try refreshLayoutTemplates(state);
+    return true;
+}
+
+pub fn loadUserLayoutTemplate(state: *EditorState, path: []const u8) bool {
+    if (!engine.ui.ImGui.loadLayoutFromPath(path)) {
+        return false;
+    }
+    state.dock_layout_initialized = true;
+    return true;
+}
+
+pub fn deleteUserLayoutTemplate(state: *EditorState, index: usize) !bool {
+    if (index >= state.layout_templates.items.len) {
+        return false;
+    }
+    const path = state.layout_templates.items[index].path;
+    std.fs.deleteFileAbsolute(path) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
+    try refreshLayoutTemplates(state);
+    return true;
+}
+
+fn clearLayoutTemplates(state: *EditorState) void {
+    const allocator = state.allocator orelse return;
+    for (state.layout_templates.items) |entry| {
+        allocator.free(entry.name);
+        allocator.free(entry.path);
+    }
+    state.layout_templates.deinit(allocator);
+    state.layout_templates = .empty;
+    state.layout_templates_loaded = false;
+}
+
+fn layoutTemplatesDirectoryAlloc(allocator: std.mem.Allocator) ![]u8 {
+    const pref_path = try engine.ui.ImGui.editorPrefPathAlloc(allocator);
+    defer allocator.free(pref_path);
+    return std.fs.path.join(allocator, &.{ pref_path, "layouts" });
+}
+
+fn layoutTemplatePathAlloc(allocator: std.mem.Allocator, stem: []const u8) ![]u8 {
+    const directory = try layoutTemplatesDirectoryAlloc(allocator);
+    defer allocator.free(directory);
+    const filename = try std.fmt.allocPrint(allocator, "{s}{s}", .{ stem, layout_template_extension });
+    defer allocator.free(filename);
+    return std.fs.path.join(allocator, &.{ directory, filename });
+}
+
+fn sanitizeTemplateStemAlloc(allocator: std.mem.Allocator, raw_name: []const u8) ![]u8 {
+    const trimmed = std.mem.trim(u8, raw_name, &std.ascii.whitespace);
+    if (trimmed.len == 0) {
+        return allocator.alloc(u8, 0);
+    }
+
+    var sanitized = std.ArrayList(u8).empty;
+    defer sanitized.deinit(allocator);
+
+    var previous_separator = false;
+    for (trimmed) |char| {
+        const is_reserved = char < 0x20 or char == '/' or char == '\\' or char == ':' or char == '*' or char == '?' or char == '"' or char == '<' or char == '>' or char == '|';
+        if (is_reserved) {
+            continue;
+        }
+        const is_separator = char == ' ' or char == '\t';
+        if (is_separator) {
+            if (sanitized.items.len == 0 or previous_separator) {
+                continue;
+            }
+            try sanitized.append(allocator, '-');
+            previous_separator = true;
+            continue;
+        }
+        try sanitized.append(allocator, char);
+        previous_separator = false;
+    }
+
+    while (sanitized.items.len > 0 and sanitized.items[sanitized.items.len - 1] == '-') {
+        _ = sanitized.pop();
+    }
+
+    return sanitized.toOwnedSlice(allocator);
+}
+
+fn lessThanLayoutTemplateEntry(_: void, lhs: state_mod.LayoutTemplateEntry, rhs: state_mod.LayoutTemplateEntry) bool {
+    return std.mem.order(u8, lhs.name, rhs.name) == .lt;
+}
+
+test "sanitizeTemplateStemAlloc strips reserved characters and normalizes spaces" {
+    const allocator = std.testing.allocator;
+    const sanitized = try sanitizeTemplateStemAlloc(allocator, "  动画 Layout : v2  ");
+    defer allocator.free(sanitized);
+    try std.testing.expectEqualStrings("动画-Layout-v2", sanitized);
 }

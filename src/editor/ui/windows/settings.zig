@@ -47,6 +47,49 @@ pub fn drawSettingsWindow(state: *EditorState, layer_context: *engine.core.Layer
         layout.resetDockLayout(state);
     }
 
+    engine.ui.ImGui.dummy(0.0, 6.0);
+    engine.ui.ImGui.separator();
+    engine.ui.ImGui.dummy(0.0, 6.0);
+    engine.ui.ImGui.text(state.text(.layout_templates));
+    _ = engine.ui.ImGui.inputTextWithHint(
+        "##layout_template_name",
+        state.text(.template_name),
+        state.layout_template_name_buffer[0..],
+    );
+    if (engine.ui.ImGui.buttonEx(state.text(.save_as_template), engine.ui.ImGui.contentRegionAvail()[0], 0.0)) {
+        const template_name = std.mem.sliceTo(state.layout_template_name_buffer[0..], 0);
+        if (try layout.saveUserLayoutTemplate(state, template_name)) {
+            @memset(state.layout_template_name_buffer[0..], 0);
+        }
+    }
+
+    try layout.ensureLayoutTemplatesLoaded(state);
+    if (state.layout_templates.items.len == 0) {
+        engine.ui.ImGui.textWrapped(state.text(.no_saved_layout_templates));
+    } else {
+        for (state.layout_templates.items, 0..) |entry, index| {
+            engine.ui.ImGui.pushIdU64(index);
+            defer engine.ui.ImGui.popId();
+
+            engine.ui.ImGui.text(entry.name);
+            engine.ui.ImGui.sameLineEx(160.0, 10.0);
+
+            var load_label_buffer: [96]u8 = undefined;
+            const load_label = try std.fmt.bufPrint(&load_label_buffer, "{s}##load_template_{d}", .{ state.text(.load_template), index });
+            if (engine.ui.ImGui.buttonEx(load_label, 92.0, 0.0)) {
+                _ = layout.loadUserLayoutTemplate(state, entry.path);
+            }
+            engine.ui.ImGui.sameLine();
+
+            var delete_label_buffer: [96]u8 = undefined;
+            const delete_label = try std.fmt.bufPrint(&delete_label_buffer, "{s}##delete_template_{d}", .{ state.text(.delete_template), index });
+            if (engine.ui.ImGui.buttonEx(delete_label, 92.0, 0.0)) {
+                _ = try layout.deleteUserLayoutTemplate(state, index);
+                break;
+            }
+        }
+    }
+
     const debug_icon = try icon_cache.ensureIconTexture(state, layer_context, debug_icon_path, 28, 28, debug_icon_tint);
     engine.ui.ImGui.text("SVG icon preview");
     engine.ui.ImGui.image(debug_icon, 28.0, 28.0);

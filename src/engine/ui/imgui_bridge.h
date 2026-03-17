@@ -74,6 +74,8 @@ void guava_imgui_begin_dockspace(void);
 void guava_imgui_reset_default_layout(void);
 void guava_imgui_load_animation_layout(void);
 void guava_imgui_save_layout(void);
+bool guava_imgui_save_layout_to_path(const char* path, size_t path_len);
+bool guava_imgui_load_layout_from_path(const char* path, size_t path_len);
 void guava_imgui_prepare(SDL_GPUCommandBuffer* command_buffer);
 void guava_imgui_render(SDL_GPUCommandBuffer* command_buffer, SDL_GPURenderPass* render_pass);
 bool guava_imgui_want_capture_mouse(void);

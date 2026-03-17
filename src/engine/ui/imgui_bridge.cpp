@@ -620,6 +620,47 @@ extern "C" void guava_imgui_save_layout(void) {
     ImGui::SaveIniSettingsToDisk(g_ini_path.c_str());
 }
 
+extern "C" bool guava_imgui_save_layout_to_path(const char* path, size_t path_len) {
+    if (!g_imgui_initialized || path == nullptr || path_len == 0) {
+        return false;
+    }
+
+    const std::string owned_path = make_string(path, path_len);
+    if (owned_path.empty()) {
+        return false;
+    }
+
+    std::error_code ec;
+    const std::filesystem::path fs_path(owned_path);
+    if (fs_path.has_parent_path()) {
+        std::filesystem::create_directories(fs_path.parent_path(), ec);
+    }
+    ImGui::SaveIniSettingsToDisk(owned_path.c_str());
+    return true;
+}
+
+extern "C" bool guava_imgui_load_layout_from_path(const char* path, size_t path_len) {
+    if (!g_imgui_initialized || path == nullptr || path_len == 0) {
+        return false;
+    }
+
+    const std::string owned_path = make_string(path, path_len);
+    if (owned_path.empty()) {
+        return false;
+    }
+
+    std::error_code ec;
+    if (!std::filesystem::exists(owned_path, ec)) {
+        return false;
+    }
+
+    ImGui::LoadIniSettingsFromDisk(owned_path.c_str());
+    if (!g_ini_path.empty()) {
+        ImGui::SaveIniSettingsToDisk(g_ini_path.c_str());
+    }
+    return true;
+}
+
 extern "C" void guava_imgui_prepare(SDL_GPUCommandBuffer* command_buffer) {
     if (!g_imgui_initialized) {
         return;
