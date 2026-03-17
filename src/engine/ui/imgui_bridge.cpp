@@ -6,1795 +6,1937 @@
 #include <initializer_list>
 #include <string>
 
-#include "imgui.h"
-#include "imgui_internal.h"
 #include "backends/imgui_impl_sdl3.h"
 #include "backends/imgui_impl_sdlgpu3.h"
+#include "imgui.h"
+#include "imgui_internal.h"
 
 namespace {
 
-std::string make_string(const char* text, size_t text_len) {
-    return std::string(text, text_len);
+std::string make_string(const char *text, size_t text_len) {
+  return std::string(text, text_len);
 }
 
 bool g_imgui_initialized = false;
-ImDrawData* g_draw_data = nullptr;
+ImDrawData *g_draw_data = nullptr;
 std::string g_ini_path;
 ImGuiID g_dockspace_id = 0;
 
 struct ViewCubePoint3 {
-    float x;
-    float y;
-    float z;
+  float x;
+  float y;
+  float z;
 };
 
 struct ViewCubePoint2 {
-    float x;
-    float y;
+  float x;
+  float y;
 };
 
 struct ViewCubeFaceInfo {
-    uint32_t id;
-    const char* label;
-    ViewCubePoint3 normal;
-    int corners[4];
-    ImU32 color;
+  uint32_t id;
+  const char *label;
+  ViewCubePoint3 normal;
+  int corners[4];
+  ImU32 color;
 };
 
 struct ViewCubeAxisInfo {
-    uint32_t id;
-    const char* label;
-    ViewCubePoint3 direction;
-    ImU32 color;
-    bool positive;
+  uint32_t id;
+  const char *label;
+  ViewCubePoint3 direction;
+  ImU32 color;
+  bool positive;
 };
 
 struct ViewCubeAxisHandle {
-    uint32_t id;
-    const char* label;
-    ImU32 color;
-    bool positive;
-    ImVec2 center;
-    float radius;
-    float depth;
+  uint32_t id;
+  const char *label;
+  ImU32 color;
+  bool positive;
+  ImVec2 center;
+  float radius;
+  float depth;
 };
 
 ImGuiWindowFlags to_imgui_window_flags(uint32_t flags) {
-    ImGuiWindowFlags result = ImGuiWindowFlags_None;
-    if ((flags & GUAVA_IMGUI_WINDOW_NO_TITLE_BAR) != 0) result |= ImGuiWindowFlags_NoTitleBar;
-    if ((flags & GUAVA_IMGUI_WINDOW_NO_RESIZE) != 0) result |= ImGuiWindowFlags_NoResize;
-    if ((flags & GUAVA_IMGUI_WINDOW_NO_MOVE) != 0) result |= ImGuiWindowFlags_NoMove;
-    if ((flags & GUAVA_IMGUI_WINDOW_NO_SCROLLBAR) != 0) result |= ImGuiWindowFlags_NoScrollbar;
-    if ((flags & GUAVA_IMGUI_WINDOW_NO_SAVED_SETTINGS) != 0) result |= ImGuiWindowFlags_NoSavedSettings;
-    if ((flags & GUAVA_IMGUI_WINDOW_NO_DOCKING) != 0) result |= ImGuiWindowFlags_NoDocking;
-    if ((flags & GUAVA_IMGUI_WINDOW_NO_COLLAPSE) != 0) result |= ImGuiWindowFlags_NoCollapse;
-    if ((flags & GUAVA_IMGUI_WINDOW_NO_BACKGROUND) != 0) result |= ImGuiWindowFlags_NoBackground;
-    if ((flags & GUAVA_IMGUI_WINDOW_NO_DECORATION) != 0) result |= ImGuiWindowFlags_NoDecoration;
-    if ((flags & GUAVA_IMGUI_WINDOW_ALWAYS_AUTO_RESIZE) != 0) result |= ImGuiWindowFlags_AlwaysAutoResize;
-    return result;
+  ImGuiWindowFlags result = ImGuiWindowFlags_None;
+  if ((flags & GUAVA_IMGUI_WINDOW_NO_TITLE_BAR) != 0)
+    result |= ImGuiWindowFlags_NoTitleBar;
+  if ((flags & GUAVA_IMGUI_WINDOW_NO_RESIZE) != 0)
+    result |= ImGuiWindowFlags_NoResize;
+  if ((flags & GUAVA_IMGUI_WINDOW_NO_MOVE) != 0)
+    result |= ImGuiWindowFlags_NoMove;
+  if ((flags & GUAVA_IMGUI_WINDOW_NO_SCROLLBAR) != 0)
+    result |= ImGuiWindowFlags_NoScrollbar;
+  if ((flags & GUAVA_IMGUI_WINDOW_NO_SAVED_SETTINGS) != 0)
+    result |= ImGuiWindowFlags_NoSavedSettings;
+  if ((flags & GUAVA_IMGUI_WINDOW_NO_DOCKING) != 0)
+    result |= ImGuiWindowFlags_NoDocking;
+  if ((flags & GUAVA_IMGUI_WINDOW_NO_COLLAPSE) != 0)
+    result |= ImGuiWindowFlags_NoCollapse;
+  if ((flags & GUAVA_IMGUI_WINDOW_NO_BACKGROUND) != 0)
+    result |= ImGuiWindowFlags_NoBackground;
+  if ((flags & GUAVA_IMGUI_WINDOW_NO_DECORATION) != 0)
+    result |= ImGuiWindowFlags_NoDecoration;
+  if ((flags & GUAVA_IMGUI_WINDOW_ALWAYS_AUTO_RESIZE) != 0)
+    result |= ImGuiWindowFlags_AlwaysAutoResize;
+  return result;
 }
 
 ImGuiCol to_imgui_style_color(uint32_t slot) {
-    switch (slot) {
-        case GUAVA_IMGUI_STYLE_COLOR_TEXT:
-            return ImGuiCol_Text;
-        case GUAVA_IMGUI_STYLE_COLOR_BUTTON:
-            return ImGuiCol_Button;
-        case GUAVA_IMGUI_STYLE_COLOR_BUTTON_HOVERED:
-            return ImGuiCol_ButtonHovered;
-        case GUAVA_IMGUI_STYLE_COLOR_BUTTON_ACTIVE:
-            return ImGuiCol_ButtonActive;
-        default:
-            return ImGuiCol_Text;
-    }
+  switch (slot) {
+  case GUAVA_IMGUI_STYLE_COLOR_TEXT:
+    return ImGuiCol_Text;
+  case GUAVA_IMGUI_STYLE_COLOR_BUTTON:
+    return ImGuiCol_Button;
+  case GUAVA_IMGUI_STYLE_COLOR_BUTTON_HOVERED:
+    return ImGuiCol_ButtonHovered;
+  case GUAVA_IMGUI_STYLE_COLOR_BUTTON_ACTIVE:
+    return ImGuiCol_ButtonActive;
+  default:
+    return ImGuiCol_Text;
+  }
 }
 
 ImGuiStyleVar to_imgui_style_var(uint32_t slot) {
-    switch (slot) {
-        case GUAVA_IMGUI_STYLE_VAR_ALPHA:
-            return ImGuiStyleVar_Alpha;
-        case GUAVA_IMGUI_STYLE_VAR_FRAME_PADDING:
-            return ImGuiStyleVar_FramePadding;
-        case GUAVA_IMGUI_STYLE_VAR_ITEM_SPACING:
-            return ImGuiStyleVar_ItemSpacing;
-        case GUAVA_IMGUI_STYLE_VAR_FRAME_ROUNDING:
-            return ImGuiStyleVar_FrameRounding;
-        case GUAVA_IMGUI_STYLE_VAR_WINDOW_MIN_SIZE:
-            return ImGuiStyleVar_WindowMinSize;
-        default:
-            return ImGuiStyleVar_Alpha;
-    }
+  switch (slot) {
+  case GUAVA_IMGUI_STYLE_VAR_ALPHA:
+    return ImGuiStyleVar_Alpha;
+  case GUAVA_IMGUI_STYLE_VAR_FRAME_PADDING:
+    return ImGuiStyleVar_FramePadding;
+  case GUAVA_IMGUI_STYLE_VAR_ITEM_SPACING:
+    return ImGuiStyleVar_ItemSpacing;
+  case GUAVA_IMGUI_STYLE_VAR_FRAME_ROUNDING:
+    return ImGuiStyleVar_FrameRounding;
+  case GUAVA_IMGUI_STYLE_VAR_WINDOW_MIN_SIZE:
+    return ImGuiStyleVar_WindowMinSize;
+  default:
+    return ImGuiStyleVar_Alpha;
+  }
 }
 
-std::string first_existing_path(std::initializer_list<const char*> candidates) {
-    for (const char* candidate : candidates) {
-        if (candidate == nullptr || candidate[0] == '\0') {
-            continue;
-        }
-        std::error_code ec;
-        if (std::filesystem::exists(candidate, ec)) {
-            return std::string(candidate);
-        }
+std::string
+first_existing_path(std::initializer_list<const char *> candidates) {
+  for (const char *candidate : candidates) {
+    if (candidate == nullptr || candidate[0] == '\0') {
+      continue;
     }
-    return {};
+    std::error_code ec;
+    if (std::filesystem::exists(candidate, ec)) {
+      return std::string(candidate);
+    }
+  }
+  return {};
 }
 
 std::string find_ui_font_path() {
 #if defined(__APPLE__)
-    return first_existing_path({
-        "/System/Library/Fonts/SFNS.ttf",
-        "/System/Library/Fonts/Helvetica.ttc",
-        "/System/Library/Fonts/Supplemental/Arial.ttf",
-    });
+  return first_existing_path({
+      "/System/Library/Fonts/SFNS.ttf",
+      "/System/Library/Fonts/Helvetica.ttc",
+      "/System/Library/Fonts/Supplemental/Arial.ttf",
+  });
 #elif defined(_WIN32)
-    return first_existing_path({
-        "C:/Windows/Fonts/segoeui.ttf",
-        "C:/Windows/Fonts/arial.ttf",
-    });
+  return first_existing_path({
+      "C:/Windows/Fonts/segoeui.ttf",
+      "C:/Windows/Fonts/arial.ttf",
+  });
 #else
-    return first_existing_path({
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
-        "/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf",
-    });
+  return first_existing_path({
+      "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+      "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+      "/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf",
+  });
 #endif
 }
 
 std::string find_bundled_ui_font_path() {
-    return first_existing_path({
-        "assets/ui/fonts/Inter-Regular.ttf",
-        "assets/ui/fonts/Inter-Medium.ttf",
-    });
+  return first_existing_path({
+      "assets/ui/fonts/Inter-Regular.ttf",
+      "assets/ui/fonts/Inter-Medium.ttf",
+  });
 }
 
 std::string find_cjk_font_path() {
 #if defined(__APPLE__)
-    return first_existing_path({
-        "/System/Library/Fonts/Hiragino Sans GB.ttc",
-        "/System/Library/Fonts/STHeiti Light.ttc",
-        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-        "/Library/Fonts/Arial Unicode.ttf",
-    });
+  return first_existing_path({
+      "/System/Library/Fonts/Hiragino Sans GB.ttc",
+      "/System/Library/Fonts/STHeiti Light.ttc",
+      "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+      "/Library/Fonts/Arial Unicode.ttf",
+  });
 #elif defined(_WIN32)
-    return first_existing_path({
-        "C:/Windows/Fonts/msyh.ttc",
-        "C:/Windows/Fonts/msyh.ttf",
-        "C:/Windows/Fonts/simhei.ttf",
-        "C:/Windows/Fonts/simsun.ttc",
-    });
+  return first_existing_path({
+      "C:/Windows/Fonts/msyh.ttc",
+      "C:/Windows/Fonts/msyh.ttf",
+      "C:/Windows/Fonts/simhei.ttf",
+      "C:/Windows/Fonts/simsun.ttc",
+  });
 #else
-    return first_existing_path({
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
-        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-    });
+  return first_existing_path({
+      "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+      "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+      "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+      "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+  });
 #endif
 }
 
 std::string find_bundled_cjk_font_path() {
-    return first_existing_path({
-        "assets/ui/fonts/NotoSansSC-Regular.otf",
-        "assets/ui/fonts/NotoSansSC-Regular.ttf",
-        "assets/ui/fonts/NotoSansCJKsc-Regular.otf",
-    });
+  return first_existing_path({
+      "assets/ui/fonts/NotoSansSC-Regular.otf",
+      "assets/ui/fonts/NotoSansSC-Regular.ttf",
+      "assets/ui/fonts/NotoSansCJKsc-Regular.otf",
+  });
 }
 
 ImVec4 make_color(int r, int g, int b, int a = 255) {
-    constexpr float inv_255 = 1.0f / 255.0f;
-    return ImVec4(
-        static_cast<float>(r) * inv_255,
-        static_cast<float>(g) * inv_255,
-        static_cast<float>(b) * inv_255,
-        static_cast<float>(a) * inv_255
-    );
+  constexpr float inv_255 = 1.0f / 255.0f;
+  return ImVec4(
+      static_cast<float>(r) * inv_255, static_cast<float>(g) * inv_255,
+      static_cast<float>(b) * inv_255, static_cast<float>(a) * inv_255);
 }
 
 ViewCubePoint3 rotate_by_view(const float view[16], ViewCubePoint3 point) {
-    return {
-        view[0] * point.x + view[4] * point.y + view[8] * point.z,
-        view[1] * point.x + view[5] * point.y + view[9] * point.z,
-        view[2] * point.x + view[6] * point.y + view[10] * point.z,
-    };
+  return {
+      view[0] * point.x + view[4] * point.y + view[8] * point.z,
+      view[1] * point.x + view[5] * point.y + view[9] * point.z,
+      view[2] * point.x + view[6] * point.y + view[10] * point.z,
+  };
 }
 
-ViewCubePoint2 project_view_cube_point(ViewCubePoint3 point, ImVec2 center, float radius) {
-    constexpr float viewer_distance = 4.5f;
-    const float denom = (std::max)(viewer_distance - point.z, 0.8f);
-    return {
-        center.x + point.x * radius / denom,
-        center.y - point.y * radius / denom,
-    };
+ViewCubePoint2 project_view_cube_point(ViewCubePoint3 point, ImVec2 center,
+                                       float radius) {
+  constexpr float viewer_distance = 4.5f;
+  const float denom = (std::max)(viewer_distance - point.z, 0.8f);
+  return {
+      center.x + point.x * radius / denom,
+      center.y - point.y * radius / denom,
+  };
 }
 
 float signed_area_2d(ViewCubePoint2 a, ViewCubePoint2 b, ImVec2 point) {
-    return (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x);
+  return (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x);
 }
 
-bool point_in_quad(const ViewCubePoint2* points, ImVec2 point) {
-    bool has_positive = false;
-    bool has_negative = false;
-    for (int index = 0; index < 4; ++index) {
-        const float cross = signed_area_2d(points[index], points[(index + 1) % 4], point);
-        has_positive |= cross > 0.0f;
-        has_negative |= cross < 0.0f;
-        if (has_positive && has_negative) {
-            return false;
-        }
+bool point_in_quad(const ViewCubePoint2 *points, ImVec2 point) {
+  bool has_positive = false;
+  bool has_negative = false;
+  for (int index = 0; index < 4; ++index) {
+    const float cross =
+        signed_area_2d(points[index], points[(index + 1) % 4], point);
+    has_positive |= cross > 0.0f;
+    has_negative |= cross < 0.0f;
+    if (has_positive && has_negative) {
+      return false;
     }
-    return true;
+  }
+  return true;
 }
 
 ImU32 scale_color(ImU32 color, float factor) {
-    const int r = (std::min)(255, static_cast<int>(((color >> IM_COL32_R_SHIFT) & 0xff) * factor));
-    const int g = (std::min)(255, static_cast<int>(((color >> IM_COL32_G_SHIFT) & 0xff) * factor));
-    const int b = (std::min)(255, static_cast<int>(((color >> IM_COL32_B_SHIFT) & 0xff) * factor));
-    const int a = static_cast<int>((color >> IM_COL32_A_SHIFT) & 0xff);
-    return IM_COL32(r, g, b, a);
+  const int r =
+      (std::min)(255, static_cast<int>(((color >> IM_COL32_R_SHIFT) & 0xff) *
+                                       factor));
+  const int g =
+      (std::min)(255, static_cast<int>(((color >> IM_COL32_G_SHIFT) & 0xff) *
+                                       factor));
+  const int b =
+      (std::min)(255, static_cast<int>(((color >> IM_COL32_B_SHIFT) & 0xff) *
+                                       factor));
+  const int a = static_cast<int>((color >> IM_COL32_A_SHIFT) & 0xff);
+  return IM_COL32(r, g, b, a);
 }
 
 ViewCubePoint3 scale_point3(ViewCubePoint3 point, float factor) {
-    return {
-        point.x * factor,
-        point.y * factor,
-        point.z * factor,
-    };
+  return {
+      point.x * factor,
+      point.y * factor,
+      point.z * factor,
+  };
 }
 
-ImVec2 to_imvec2(ViewCubePoint2 point) {
-    return ImVec2(point.x, point.y);
-}
+ImVec2 to_imvec2(ViewCubePoint2 point) { return ImVec2(point.x, point.y); }
 
 float distance_squared(ImVec2 a, ImVec2 b) {
-    const float dx = a.x - b.x;
-    const float dy = a.y - b.y;
-    return dx * dx + dy * dy;
+  const float dx = a.x - b.x;
+  const float dy = a.y - b.y;
+  return dx * dx + dy * dy;
 }
 
 void build_default_dock_layout() {
-    ImGuiViewport* viewport = ImGui::GetMainViewport();
-    if (viewport == nullptr) {
-        return;
-    }
+  ImGuiViewport *viewport = ImGui::GetMainViewport();
+  if (viewport == nullptr) {
+    return;
+  }
 
-    g_dockspace_id = ImGui::GetID("GuavaEditorDockspace");
-    ImGui::DockBuilderRemoveNode(g_dockspace_id);
-    ImGui::DockBuilderAddNode(g_dockspace_id, ImGuiDockNodeFlags_DockSpace | ImGuiDockNodeFlags_PassthruCentralNode);
-    ImGui::DockBuilderSetNodeSize(g_dockspace_id, viewport->Size);
+  g_dockspace_id = ImGui::GetID("GuavaEditorDockspace");
+  ImGui::DockBuilderRemoveNode(g_dockspace_id);
+  ImGui::DockBuilderAddNode(g_dockspace_id,
+                            ImGuiDockNodeFlags_DockSpace |
+                                ImGuiDockNodeFlags_PassthruCentralNode);
+  ImGui::DockBuilderSetNodeSize(g_dockspace_id, viewport->Size);
 
-    ImGuiID dock_main = g_dockspace_id;
-    ImGuiID dock_left = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Left, 0.18f, nullptr, &dock_main);
-    ImGuiID dock_right = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Right, 0.26f, nullptr, &dock_main);
-    ImGuiID dock_scene = ImGui::DockBuilderSplitNode(dock_right, ImGuiDir_Up, 0.52f, nullptr, &dock_right);
-    ImGuiID dock_details = dock_right;
-    ImGuiID dock_bottom = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Down, 0.22f, nullptr, &dock_main);
-    ImGuiID dock_viewport = dock_main;
+  ImGuiID dock_main = g_dockspace_id;
+  ImGuiID dock_left = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Left,
+                                                  0.18f, nullptr, &dock_main);
+  ImGuiID dock_right = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Right,
+                                                   0.26f, nullptr, &dock_main);
+  ImGuiID dock_scene = ImGui::DockBuilderSplitNode(dock_right, ImGuiDir_Up,
+                                                   0.52f, nullptr, &dock_right);
+  ImGuiID dock_details = dock_right;
+  ImGuiID dock_bottom = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Down,
+                                                    0.22f, nullptr, &dock_main);
+  ImGuiID dock_viewport = dock_main;
 
-    ImGui::DockBuilderDockWindow("Viewport###viewport_panel", dock_viewport);
-    ImGui::DockBuilderDockWindow("Place Actors###place_actors_panel", dock_left);
-    ImGui::DockBuilderDockWindow("Scene###scene_panel", dock_scene);
-    ImGui::DockBuilderDockWindow("Details###details_panel", dock_details);
-    ImGui::DockBuilderDockWindow("Content Browser###content_browser_panel", dock_bottom);
-    ImGui::DockBuilderFinish(g_dockspace_id);
+  ImGui::DockBuilderDockWindow("Viewport###viewport_panel", dock_viewport);
+  ImGui::DockBuilderDockWindow("Place Actors###place_actors_panel", dock_left);
+  ImGui::DockBuilderDockWindow("Scene###scene_panel", dock_scene);
+  ImGui::DockBuilderDockWindow("Details###details_panel", dock_details);
+  ImGui::DockBuilderDockWindow("Content Browser###content_browser_panel",
+                               dock_bottom);
+  ImGui::DockBuilderFinish(g_dockspace_id);
 }
 
 void build_animation_dock_layout() {
-    ImGuiViewport* viewport = ImGui::GetMainViewport();
-    if (viewport == nullptr) {
-        return;
-    }
+  ImGuiViewport *viewport = ImGui::GetMainViewport();
+  if (viewport == nullptr) {
+    return;
+  }
 
-    g_dockspace_id = ImGui::GetID("GuavaEditorDockspace");
-    ImGui::DockBuilderRemoveNode(g_dockspace_id);
-    ImGui::DockBuilderAddNode(g_dockspace_id, ImGuiDockNodeFlags_DockSpace | ImGuiDockNodeFlags_PassthruCentralNode);
-    ImGui::DockBuilderSetNodeSize(g_dockspace_id, viewport->Size);
+  g_dockspace_id = ImGui::GetID("GuavaEditorDockspace");
+  ImGui::DockBuilderRemoveNode(g_dockspace_id);
+  ImGui::DockBuilderAddNode(g_dockspace_id,
+                            ImGuiDockNodeFlags_DockSpace |
+                                ImGuiDockNodeFlags_PassthruCentralNode);
+  ImGui::DockBuilderSetNodeSize(g_dockspace_id, viewport->Size);
 
-    ImGuiID dock_main = g_dockspace_id;
-    ImGuiID dock_left = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Left, 0.18f, nullptr, &dock_main);
-    ImGuiID dock_right = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Right, 0.22f, nullptr, &dock_main);
-    ImGuiID dock_scene = ImGui::DockBuilderSplitNode(dock_right, ImGuiDir_Up, 0.52f, nullptr, &dock_right);
-    ImGuiID dock_details = dock_right;
-    ImGuiID dock_bottom = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Down, 0.30f, nullptr, &dock_main);
-    ImGuiID dock_viewport = dock_main;
+  ImGuiID dock_main = g_dockspace_id;
+  ImGuiID dock_left = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Left,
+                                                  0.18f, nullptr, &dock_main);
+  ImGuiID dock_right = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Right,
+                                                   0.22f, nullptr, &dock_main);
+  ImGuiID dock_scene = ImGui::DockBuilderSplitNode(dock_right, ImGuiDir_Up,
+                                                   0.52f, nullptr, &dock_right);
+  ImGuiID dock_details = dock_right;
+  ImGuiID dock_bottom = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Down,
+                                                    0.30f, nullptr, &dock_main);
+  ImGuiID dock_viewport = dock_main;
 
-    ImGui::DockBuilderDockWindow("Viewport###viewport_panel", dock_viewport);
-    ImGui::DockBuilderDockWindow("Place Actors###place_actors_panel", dock_left);
-    ImGui::DockBuilderDockWindow("Scene###scene_panel", dock_scene);
-    ImGui::DockBuilderDockWindow("Details###details_panel", dock_details);
-    ImGui::DockBuilderDockWindow("Content Browser###content_browser_panel", dock_bottom);
-    ImGui::DockBuilderFinish(g_dockspace_id);
+  ImGui::DockBuilderDockWindow("Viewport###viewport_panel", dock_viewport);
+  ImGui::DockBuilderDockWindow("Place Actors###place_actors_panel", dock_left);
+  ImGui::DockBuilderDockWindow("Scene###scene_panel", dock_scene);
+  ImGui::DockBuilderDockWindow("Details###details_panel", dock_details);
+  ImGui::DockBuilderDockWindow("Content Browser###content_browser_panel",
+                               dock_bottom);
+  ImGui::DockBuilderFinish(g_dockspace_id);
 }
 
 void apply_guava_editor_style(float content_scale) {
-    ImGuiStyle& style = ImGui::GetStyle();
-    style = ImGuiStyle();
+  ImGuiStyle &style = ImGui::GetStyle();
+  style = ImGuiStyle();
 
-    style.WindowPadding = ImVec2(10.0f, 8.0f);
-    style.FramePadding = ImVec2(8.0f, 5.0f);
-    style.CellPadding = ImVec2(7.0f, 5.0f);
-    style.ItemSpacing = ImVec2(7.0f, 6.0f);
-    style.ItemInnerSpacing = ImVec2(5.0f, 4.0f);
-    style.TouchExtraPadding = ImVec2(0.0f, 0.0f);
-    style.IndentSpacing = 18.0f;
-    style.ScrollbarSize = 13.0f;
-    style.GrabMinSize = 10.0f;
+  style.WindowPadding = ImVec2(10.0f, 8.0f);
+  style.FramePadding = ImVec2(8.0f, 5.0f);
+  style.CellPadding = ImVec2(7.0f, 5.0f);
+  style.ItemSpacing = ImVec2(7.0f, 6.0f);
+  style.ItemInnerSpacing = ImVec2(5.0f, 4.0f);
+  style.TouchExtraPadding = ImVec2(0.0f, 0.0f);
+  style.IndentSpacing = 18.0f;
+  style.ScrollbarSize = 13.0f;
+  style.GrabMinSize = 10.0f;
 
-    style.WindowBorderSize = 0.0f;
-    style.ChildBorderSize = 0.0f;
-    style.PopupBorderSize = 1.0f;
-    style.FrameBorderSize = 0.0f;
-    style.TabBorderSize = 0.0f;
+  style.WindowBorderSize = 0.0f;
+  style.ChildBorderSize = 0.0f;
+  style.PopupBorderSize = 1.0f;
+  style.FrameBorderSize = 0.0f;
+  style.TabBorderSize = 0.0f;
 
-    style.WindowRounding = 4.0f;
-    style.ChildRounding = 4.0f;
-    style.FrameRounding = 3.0f;
-    style.PopupRounding = 4.0f;
-    style.ScrollbarRounding = 6.0f;
-    style.GrabRounding = 3.0f;
-    style.TabRounding = 3.0f;
+  style.WindowRounding = 4.0f;
+  style.ChildRounding = 4.0f;
+  style.FrameRounding = 3.0f;
+  style.PopupRounding = 4.0f;
+  style.ScrollbarRounding = 6.0f;
+  style.GrabRounding = 3.0f;
+  style.TabRounding = 3.0f;
 
-    style.WindowTitleAlign = ImVec2(0.02f, 0.5f);
-    style.WindowMenuButtonPosition = ImGuiDir_None;
-    style.ColorButtonPosition = ImGuiDir_Right;
-    style.ButtonTextAlign = ImVec2(0.5f, 0.5f);
-    style.SelectableTextAlign = ImVec2(0.0f, 0.5f);
-    style.WindowMinSize = ImVec2(220.0f, 120.0f);
+  style.WindowTitleAlign = ImVec2(0.02f, 0.5f);
+  style.WindowMenuButtonPosition = ImGuiDir_None;
+  style.ColorButtonPosition = ImGuiDir_Right;
+  style.ButtonTextAlign = ImVec2(0.5f, 0.5f);
+  style.SelectableTextAlign = ImVec2(0.0f, 0.5f);
+  style.WindowMinSize = ImVec2(220.0f, 120.0f);
 
-    ImVec4* colors = style.Colors;
-    colors[ImGuiCol_Text] = make_color(220, 224, 231);
-    colors[ImGuiCol_TextDisabled] = make_color(144, 153, 165);
-    colors[ImGuiCol_WindowBg] = make_color(20, 21, 23);
-    colors[ImGuiCol_ChildBg] = make_color(32, 34, 37);
-    colors[ImGuiCol_PopupBg] = make_color(33, 35, 40, 250);
-    colors[ImGuiCol_Border] = make_color(63, 70, 80, 110);
-    colors[ImGuiCol_BorderShadow] = make_color(0, 0, 0, 0);
+  ImVec4 *colors = style.Colors;
+  colors[ImGuiCol_Text] = make_color(220, 224, 231);
+  colors[ImGuiCol_TextDisabled] = make_color(144, 153, 165);
+  colors[ImGuiCol_WindowBg] = make_color(20, 21, 23);
+  colors[ImGuiCol_ChildBg] = make_color(32, 34, 37);
+  colors[ImGuiCol_PopupBg] = make_color(33, 35, 40, 250);
+  colors[ImGuiCol_Border] = make_color(63, 70, 80, 110);
+  colors[ImGuiCol_BorderShadow] = make_color(0, 0, 0, 0);
 
-    colors[ImGuiCol_FrameBg] = make_color(15, 16, 17);
-    colors[ImGuiCol_FrameBgHovered] = make_color(45, 90, 160, 200);
-    colors[ImGuiCol_FrameBgActive] = make_color(35, 70, 130, 220);
-    colors[ImGuiCol_TitleBg] = make_color(20, 21, 23);
-    colors[ImGuiCol_TitleBgActive] = make_color(28, 30, 34);
-    colors[ImGuiCol_TitleBgCollapsed] = make_color(20, 21, 23, 210);
-    colors[ImGuiCol_MenuBarBg] = make_color(31, 34, 39);
-    colors[ImGuiCol_ScrollbarBg] = make_color(23, 24, 27);
-    colors[ImGuiCol_ScrollbarGrab] = make_color(77, 83, 93);
-    colors[ImGuiCol_ScrollbarGrabHovered] = make_color(95, 103, 115);
-    colors[ImGuiCol_ScrollbarGrabActive] = make_color(111, 121, 135);
-    colors[ImGuiCol_CheckMark] = make_color(110, 167, 255);
-    colors[ImGuiCol_SliderGrab] = make_color(108, 161, 246);
-    colors[ImGuiCol_SliderGrabActive] = make_color(128, 184, 255);
+  colors[ImGuiCol_FrameBg] = make_color(15, 16, 17);
+  colors[ImGuiCol_FrameBgHovered] = make_color(45, 90, 160, 200);
+  colors[ImGuiCol_FrameBgActive] = make_color(35, 70, 130, 220);
+  colors[ImGuiCol_TitleBg] = make_color(20, 21, 23);
+  colors[ImGuiCol_TitleBgActive] = make_color(28, 30, 34);
+  colors[ImGuiCol_TitleBgCollapsed] = make_color(20, 21, 23, 210);
+  colors[ImGuiCol_MenuBarBg] = make_color(31, 34, 39);
+  colors[ImGuiCol_ScrollbarBg] = make_color(23, 24, 27);
+  colors[ImGuiCol_ScrollbarGrab] = make_color(77, 83, 93);
+  colors[ImGuiCol_ScrollbarGrabHovered] = make_color(95, 103, 115);
+  colors[ImGuiCol_ScrollbarGrabActive] = make_color(111, 121, 135);
+  colors[ImGuiCol_CheckMark] = make_color(110, 167, 255);
+  colors[ImGuiCol_SliderGrab] = make_color(108, 161, 246);
+  colors[ImGuiCol_SliderGrabActive] = make_color(128, 184, 255);
 
-    colors[ImGuiCol_Button] = make_color(35, 70, 130);
-    colors[ImGuiCol_ButtonHovered] = make_color(45, 90, 160);
-    colors[ImGuiCol_ButtonActive] = make_color(55, 100, 180);
-    colors[ImGuiCol_Header] = make_color(30, 60, 110);
-    colors[ImGuiCol_HeaderHovered] = make_color(45, 90, 160, 200);
-    colors[ImGuiCol_HeaderActive] = make_color(55, 110, 180);
-    colors[ImGuiCol_Separator] = make_color(54, 60, 69, 170);
-    colors[ImGuiCol_SeparatorHovered] = make_color(93, 140, 217, 210);
-    colors[ImGuiCol_SeparatorActive] = make_color(109, 161, 246, 255);
-    colors[ImGuiCol_ResizeGrip] = make_color(91, 101, 116, 70);
-    colors[ImGuiCol_ResizeGripHovered] = make_color(109, 161, 246, 130);
-    colors[ImGuiCol_ResizeGripActive] = make_color(128, 184, 255, 170);
-    colors[ImGuiCol_Tab] = make_color(40, 43, 48);
-    colors[ImGuiCol_TabHovered] = make_color(74, 81, 91);
-    colors[ImGuiCol_TabActive] = make_color(60, 67, 76);
-    colors[ImGuiCol_TabUnfocused] = make_color(34, 37, 42);
-    colors[ImGuiCol_TabUnfocusedActive] = make_color(48, 52, 58);
-    colors[ImGuiCol_DockingPreview] = make_color(110, 167, 255, 138);
-    colors[ImGuiCol_DockingEmptyBg] = make_color(22, 24, 28);
-    colors[ImGuiCol_PlotLines] = make_color(132, 142, 156);
-    colors[ImGuiCol_PlotLinesHovered] = make_color(173, 197, 255);
-    colors[ImGuiCol_PlotHistogram] = make_color(110, 167, 255);
-    colors[ImGuiCol_PlotHistogramHovered] = make_color(132, 184, 255);
-    colors[ImGuiCol_TableHeaderBg] = make_color(43, 47, 54);
-    colors[ImGuiCol_TableBorderStrong] = make_color(64, 69, 78);
-    colors[ImGuiCol_TableBorderLight] = make_color(47, 51, 58);
-    colors[ImGuiCol_TableRowBg] = make_color(0, 0, 0, 0);
-    colors[ImGuiCol_TableRowBgAlt] = make_color(255, 255, 255, 9);
-    colors[ImGuiCol_TextSelectedBg] = make_color(45, 90, 160, 100);
-    colors[ImGuiCol_DragDropTarget] = make_color(250, 199, 88);
-    colors[ImGuiCol_NavCursor] = make_color(110, 167, 255);
-    colors[ImGuiCol_NavWindowingHighlight] = make_color(255, 255, 255, 70);
-    colors[ImGuiCol_NavWindowingDimBg] = make_color(0, 0, 0, 90);
-    colors[ImGuiCol_ModalWindowDimBg] = make_color(0, 0, 0, 110);
+  colors[ImGuiCol_Button] = make_color(35, 70, 130);
+  colors[ImGuiCol_ButtonHovered] = make_color(45, 90, 160);
+  colors[ImGuiCol_ButtonActive] = make_color(55, 100, 180);
+  colors[ImGuiCol_Header] = make_color(30, 60, 110);
+  colors[ImGuiCol_HeaderHovered] = make_color(45, 90, 160, 200);
+  colors[ImGuiCol_HeaderActive] = make_color(55, 110, 180);
+  colors[ImGuiCol_Separator] = make_color(54, 60, 69, 170);
+  colors[ImGuiCol_SeparatorHovered] = make_color(93, 140, 217, 210);
+  colors[ImGuiCol_SeparatorActive] = make_color(109, 161, 246, 255);
+  colors[ImGuiCol_ResizeGrip] = make_color(91, 101, 116, 70);
+  colors[ImGuiCol_ResizeGripHovered] = make_color(109, 161, 246, 130);
+  colors[ImGuiCol_ResizeGripActive] = make_color(128, 184, 255, 170);
+  colors[ImGuiCol_Tab] = make_color(40, 43, 48);
+  colors[ImGuiCol_TabHovered] = make_color(74, 81, 91);
+  colors[ImGuiCol_TabActive] = make_color(60, 67, 76);
+  colors[ImGuiCol_TabUnfocused] = make_color(34, 37, 42);
+  colors[ImGuiCol_TabUnfocusedActive] = make_color(48, 52, 58);
+  colors[ImGuiCol_DockingPreview] = make_color(110, 167, 255, 138);
+  colors[ImGuiCol_DockingEmptyBg] = make_color(22, 24, 28);
+  colors[ImGuiCol_PlotLines] = make_color(132, 142, 156);
+  colors[ImGuiCol_PlotLinesHovered] = make_color(173, 197, 255);
+  colors[ImGuiCol_PlotHistogram] = make_color(110, 167, 255);
+  colors[ImGuiCol_PlotHistogramHovered] = make_color(132, 184, 255);
+  colors[ImGuiCol_TableHeaderBg] = make_color(43, 47, 54);
+  colors[ImGuiCol_TableBorderStrong] = make_color(64, 69, 78);
+  colors[ImGuiCol_TableBorderLight] = make_color(47, 51, 58);
+  colors[ImGuiCol_TableRowBg] = make_color(0, 0, 0, 0);
+  colors[ImGuiCol_TableRowBgAlt] = make_color(255, 255, 255, 9);
+  colors[ImGuiCol_TextSelectedBg] = make_color(45, 90, 160, 100);
+  colors[ImGuiCol_DragDropTarget] = make_color(250, 199, 88);
+  colors[ImGuiCol_NavCursor] = make_color(110, 167, 255);
+  colors[ImGuiCol_NavWindowingHighlight] = make_color(255, 255, 255, 70);
+  colors[ImGuiCol_NavWindowingDimBg] = make_color(0, 0, 0, 90);
+  colors[ImGuiCol_ModalWindowDimBg] = make_color(0, 0, 0, 110);
 
-    const float scale = content_scale > 0.0f ? content_scale : 1.0f;
-    style.ScaleAllSizes(scale);
-    style.FontScaleDpi = 1.0f;
+  const float scale = content_scale > 0.0f ? content_scale : 1.0f;
+  style.ScaleAllSizes(scale);
+  style.FontScaleDpi = 1.0f;
 }
 
 void configure_fonts(float content_scale) {
-    ImGuiIO& io = ImGui::GetIO();
-    io.ConfigDpiScaleFonts = false;
-    io.Fonts->Clear();
-    io.Fonts->Flags |= ImFontAtlasFlags_NoPowerOfTwoHeight;
+  ImGuiIO &io = ImGui::GetIO();
+  io.ConfigDpiScaleFonts = false;
+  io.Fonts->Clear();
+  io.Fonts->Flags |= ImFontAtlasFlags_NoPowerOfTwoHeight;
 
-    const float scale = content_scale > 0.0f ? content_scale : 1.0f;
-    const float font_size = 16.0f * scale;
+  const float scale = content_scale > 0.0f ? content_scale : 1.0f;
+  const float font_size = 16.0f * scale;
 
-    ImFontConfig base_cfg = {};
-    base_cfg.OversampleH = 2;
-    base_cfg.OversampleV = 1;
-    base_cfg.RasterizerMultiply = 1.1f;
-    base_cfg.FontNo = 0;
+  ImFontConfig base_cfg = {};
+  base_cfg.OversampleH = 2;
+  base_cfg.OversampleV = 1;
+  base_cfg.RasterizerMultiply = 1.1f;
+  base_cfg.FontNo = 0;
 
-    const std::string bundled_ui_font_path = find_bundled_ui_font_path();
-    const std::string bundled_cjk_font_path = find_bundled_cjk_font_path();
-    const std::string ui_font_path = !bundled_ui_font_path.empty() ? bundled_ui_font_path : find_ui_font_path();
-    const std::string cjk_font_path = !bundled_cjk_font_path.empty() ? bundled_cjk_font_path : find_cjk_font_path();
+  const std::string bundled_ui_font_path = find_bundled_ui_font_path();
+  const std::string bundled_cjk_font_path = find_bundled_cjk_font_path();
+  const std::string ui_font_path = !bundled_ui_font_path.empty()
+                                       ? bundled_ui_font_path
+                                       : find_ui_font_path();
+  const std::string cjk_font_path = !bundled_cjk_font_path.empty()
+                                        ? bundled_cjk_font_path
+                                        : find_cjk_font_path();
 
-    ImFont* primary_font = nullptr;
-    bool primary_uses_ui_font = false;
-    if (!ui_font_path.empty()) {
-        primary_font = io.Fonts->AddFontFromFileTTF(ui_font_path.c_str(), font_size, &base_cfg, io.Fonts->GetGlyphRangesDefault());
-        primary_uses_ui_font = primary_font != nullptr;
-    }
-    if (primary_font == nullptr && !cjk_font_path.empty()) {
-        primary_font = io.Fonts->AddFontFromFileTTF(cjk_font_path.c_str(), font_size, &base_cfg, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
-    }
-    if (primary_font == nullptr) {
-        primary_font = io.Fonts->AddFontDefault();
-    }
+  ImFont *primary_font = nullptr;
+  bool primary_uses_ui_font = false;
+  if (!ui_font_path.empty()) {
+    primary_font =
+        io.Fonts->AddFontFromFileTTF(ui_font_path.c_str(), font_size, &base_cfg,
+                                     io.Fonts->GetGlyphRangesDefault());
+    primary_uses_ui_font = primary_font != nullptr;
+  }
+  if (primary_font == nullptr && !cjk_font_path.empty()) {
+    primary_font = io.Fonts->AddFontFromFileTTF(
+        cjk_font_path.c_str(), font_size, &base_cfg,
+        io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+  }
+  if (primary_font == nullptr) {
+    primary_font = io.Fonts->AddFontDefault();
+  }
 
-    if (primary_uses_ui_font && !cjk_font_path.empty()) {
-        ImFontConfig merge_cfg = base_cfg;
-        merge_cfg.MergeMode = true;
-        merge_cfg.FontNo = 0;
-        merge_cfg.GlyphMinAdvanceX = font_size * 0.5f;
-        io.Fonts->AddFontFromFileTTF(cjk_font_path.c_str(), font_size, &merge_cfg, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
-    }
+  if (primary_uses_ui_font && !cjk_font_path.empty()) {
+    ImFontConfig merge_cfg = base_cfg;
+    merge_cfg.MergeMode = true;
+    merge_cfg.FontNo = 0;
+    merge_cfg.GlyphMinAdvanceX = font_size * 0.5f;
+    io.Fonts->AddFontFromFileTTF(
+        cjk_font_path.c_str(), font_size, &merge_cfg,
+        io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+  }
 
-    io.FontDefault = primary_font;
+  io.FontDefault = primary_font;
 }
 
-void draw_window_control_icon(ImDrawList* draw_list, ImRect rect, uint32_t kind, bool toggled, ImU32 color) {
-    const ImVec2 center = rect.GetCenter();
-    const float half_w = rect.GetWidth() * 0.18f;
-    const float half_h = rect.GetHeight() * 0.18f;
-    const float thickness = 1.5f;
+void draw_window_control_icon(ImDrawList *draw_list, ImRect rect, uint32_t kind,
+                              bool toggled, ImU32 color) {
+  const ImVec2 center = rect.GetCenter();
+  const float half_w = rect.GetWidth() * 0.18f;
+  const float half_h = rect.GetHeight() * 0.18f;
+  const float thickness = 1.5f;
 
-    switch (kind) {
-        case GUAVA_IMGUI_WINDOW_CONTROL_MINIMIZE:
-            draw_list->AddLine(
-                ImVec2(center.x - half_w, center.y + half_h * 0.45f),
-                ImVec2(center.x + half_w, center.y + half_h * 0.45f),
-                color,
-                thickness
-            );
-            break;
-        case GUAVA_IMGUI_WINDOW_CONTROL_MAXIMIZE:
-            if (toggled) {
-                draw_list->AddRect(
-                    ImVec2(center.x - half_w * 0.55f, center.y - half_h * 1.25f),
-                    ImVec2(center.x + half_w * 1.05f, center.y + half_h * 0.35f),
-                    color,
-                    1.5f,
-                    0,
-                    thickness
-                );
-                draw_list->AddRect(
-                    ImVec2(center.x - half_w * 1.05f, center.y - half_h * 0.35f),
-                    ImVec2(center.x + half_w * 0.55f, center.y + half_h * 1.25f),
-                    color,
-                    1.5f,
-                    0,
-                    thickness
-                );
-            } else {
-                draw_list->AddRect(
-                    ImVec2(center.x - half_w, center.y - half_h),
-                    ImVec2(center.x + half_w, center.y + half_h),
-                    color,
-                    1.5f,
-                    0,
-                    thickness
-                );
-            }
-            break;
-        case GUAVA_IMGUI_WINDOW_CONTROL_CLOSE:
-            draw_list->AddLine(
-                ImVec2(center.x - half_w, center.y - half_h),
-                ImVec2(center.x + half_w, center.y + half_h),
-                color,
-                thickness
-            );
-            draw_list->AddLine(
-                ImVec2(center.x - half_w, center.y + half_h),
-                ImVec2(center.x + half_w, center.y - half_h),
-                color,
-                thickness
-            );
-            break;
-        default:
-            break;
+  switch (kind) {
+  case GUAVA_IMGUI_WINDOW_CONTROL_MINIMIZE:
+    draw_list->AddLine(ImVec2(center.x - half_w, center.y + half_h * 0.45f),
+                       ImVec2(center.x + half_w, center.y + half_h * 0.45f),
+                       color, thickness);
+    break;
+  case GUAVA_IMGUI_WINDOW_CONTROL_MAXIMIZE:
+    if (toggled) {
+      draw_list->AddRect(
+          ImVec2(center.x - half_w * 0.55f, center.y - half_h * 1.25f),
+          ImVec2(center.x + half_w * 1.05f, center.y + half_h * 0.35f), color,
+          1.5f, 0, thickness);
+      draw_list->AddRect(
+          ImVec2(center.x - half_w * 1.05f, center.y - half_h * 0.35f),
+          ImVec2(center.x + half_w * 0.55f, center.y + half_h * 1.25f), color,
+          1.5f, 0, thickness);
+    } else {
+      draw_list->AddRect(ImVec2(center.x - half_w, center.y - half_h),
+                         ImVec2(center.x + half_w, center.y + half_h), color,
+                         1.5f, 0, thickness);
     }
+    break;
+  case GUAVA_IMGUI_WINDOW_CONTROL_CLOSE:
+    draw_list->AddLine(ImVec2(center.x - half_w, center.y - half_h),
+                       ImVec2(center.x + half_w, center.y + half_h), color,
+                       thickness);
+    draw_list->AddLine(ImVec2(center.x - half_w, center.y + half_h),
+                       ImVec2(center.x + half_w, center.y - half_h), color,
+                       thickness);
+    break;
+  default:
+    break;
+  }
 }
 
 } // namespace
 
-extern "C" bool guava_imgui_init(SDL_Window* window, SDL_GPUDevice* device, SDL_GPUTextureFormat color_target_format) {
-    if (g_imgui_initialized) {
-        return true;
-    }
-
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-    ImGuiIO& io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-    io.ConfigDockingAlwaysTabBar = true;
-
-    if (char* pref_path = SDL_GetPrefPath("Guava", "Editor")) {
-        g_ini_path = std::string(pref_path) + "imgui.ini";
-        io.IniFilename = g_ini_path.c_str();
-        SDL_free(pref_path);
-    } else {
-        g_ini_path.clear();
-        io.IniFilename = nullptr;
-    }
-
-    const float reported_scale = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
-    const float main_scale = reported_scale > 0.0f ? reported_scale : 1.0f;
-    configure_fonts(main_scale);
-
-    apply_guava_editor_style(main_scale);
-
-    if (!ImGui_ImplSDL3_InitForSDLGPU(window)) {
-        ImGui::DestroyContext();
-        return false;
-    }
-
-    ImGui_ImplSDLGPU3_InitInfo init_info = {};
-    init_info.Device = device;
-    init_info.ColorTargetFormat = color_target_format;
-    init_info.MSAASamples = SDL_GPU_SAMPLECOUNT_1;
-    init_info.SwapchainComposition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
-    init_info.PresentMode = SDL_GPU_PRESENTMODE_VSYNC;
-
-    if (!ImGui_ImplSDLGPU3_Init(&init_info)) {
-        ImGui_ImplSDL3_Shutdown();
-        ImGui::DestroyContext();
-        return false;
-    }
-
-    g_imgui_initialized = true;
+extern "C" bool guava_imgui_init(SDL_Window *window, SDL_GPUDevice *device,
+                                 SDL_GPUTextureFormat color_target_format) {
+  if (g_imgui_initialized) {
     return true;
+  }
+
+  IMGUI_CHECKVERSION();
+  ImGui::CreateContext();
+  ImGuiIO &io = ImGui::GetIO();
+  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+  io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+  io.ConfigDockingAlwaysTabBar = true;
+
+  if (char *pref_path = SDL_GetPrefPath("Guava", "Editor")) {
+    g_ini_path = std::string(pref_path) + "imgui.ini";
+    io.IniFilename = g_ini_path.c_str();
+    SDL_free(pref_path);
+  } else {
+    g_ini_path.clear();
+    io.IniFilename = nullptr;
+  }
+
+  const float reported_scale =
+      SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
+  const float main_scale = reported_scale > 0.0f ? reported_scale : 1.0f;
+  configure_fonts(main_scale);
+
+  apply_guava_editor_style(main_scale);
+
+  if (!ImGui_ImplSDL3_InitForSDLGPU(window)) {
+    ImGui::DestroyContext();
+    return false;
+  }
+
+  ImGui_ImplSDLGPU3_InitInfo init_info = {};
+  init_info.Device = device;
+  init_info.ColorTargetFormat = color_target_format;
+  init_info.MSAASamples = SDL_GPU_SAMPLECOUNT_1;
+  init_info.SwapchainComposition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
+  init_info.PresentMode = SDL_GPU_PRESENTMODE_VSYNC;
+
+  if (!ImGui_ImplSDLGPU3_Init(&init_info)) {
+    ImGui_ImplSDL3_Shutdown();
+    ImGui::DestroyContext();
+    return false;
+  }
+
+  g_imgui_initialized = true;
+  return true;
 }
 
 extern "C" void guava_imgui_shutdown(void) {
-    if (!g_imgui_initialized) {
-        return;
-    }
+  if (!g_imgui_initialized) {
+    return;
+  }
 
-    ImGui_ImplSDLGPU3_Shutdown();
-    ImGui_ImplSDL3_Shutdown();
-    ImGui::DestroyContext();
-    g_draw_data = nullptr;
-    g_ini_path.clear();
-    g_imgui_initialized = false;
+  ImGui_ImplSDLGPU3_Shutdown();
+  ImGui_ImplSDL3_Shutdown();
+  ImGui::DestroyContext();
+  g_draw_data = nullptr;
+  g_ini_path.clear();
+  g_imgui_initialized = false;
 }
 
-extern "C" void guava_imgui_process_event(const SDL_Event* event) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui_ImplSDL3_ProcessEvent(event);
+extern "C" void guava_imgui_process_event(const SDL_Event *event) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui_ImplSDL3_ProcessEvent(event);
 }
 
 extern "C" void guava_imgui_new_frame(void) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui_ImplSDLGPU3_NewFrame();
-    ImGui_ImplSDL3_NewFrame();
-    ImGui::NewFrame();
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui_ImplSDLGPU3_NewFrame();
+  ImGui_ImplSDL3_NewFrame();
+  ImGui::NewFrame();
 }
 
 extern "C" void guava_imgui_begin_dockspace(void) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    g_dockspace_id = ImGui::GetID("GuavaEditorDockspace");
-    ImGui::DockSpaceOverViewport(g_dockspace_id, nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
+  if (!g_imgui_initialized) {
+    return;
+  }
+  g_dockspace_id = ImGui::GetID("GuavaEditorDockspace");
+  ImGui::DockSpaceOverViewport(g_dockspace_id, nullptr,
+                               ImGuiDockNodeFlags_PassthruCentralNode);
 }
 
 extern "C" void guava_imgui_reset_default_layout(void) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    build_default_dock_layout();
+  if (!g_imgui_initialized) {
+    return;
+  }
+  build_default_dock_layout();
 }
 
 extern "C" void guava_imgui_load_animation_layout(void) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    build_animation_dock_layout();
+  if (!g_imgui_initialized) {
+    return;
+  }
+  build_animation_dock_layout();
 }
 
 extern "C" void guava_imgui_save_layout(void) {
-    if (!g_imgui_initialized || g_ini_path.empty()) {
-        return;
-    }
+  if (!g_imgui_initialized || g_ini_path.empty()) {
+    return;
+  }
+  ImGui::SaveIniSettingsToDisk(g_ini_path.c_str());
+}
+
+extern "C" bool guava_imgui_save_layout_to_path(const char *path,
+                                                size_t path_len) {
+  if (!g_imgui_initialized || path == nullptr || path_len == 0) {
+    return false;
+  }
+
+  const std::string owned_path = make_string(path, path_len);
+  if (owned_path.empty()) {
+    return false;
+  }
+
+  std::error_code ec;
+  const std::filesystem::path fs_path(owned_path);
+  if (fs_path.has_parent_path()) {
+    std::filesystem::create_directories(fs_path.parent_path(), ec);
+  }
+  ImGui::SaveIniSettingsToDisk(owned_path.c_str());
+  return true;
+}
+
+extern "C" bool guava_imgui_load_layout_from_path(const char *path,
+                                                  size_t path_len) {
+  if (!g_imgui_initialized || path == nullptr || path_len == 0) {
+    return false;
+  }
+
+  const std::string owned_path = make_string(path, path_len);
+  if (owned_path.empty()) {
+    return false;
+  }
+
+  std::error_code ec;
+  if (!std::filesystem::exists(owned_path, ec)) {
+    return false;
+  }
+
+  ImGui::LoadIniSettingsFromDisk(owned_path.c_str());
+  if (!g_ini_path.empty()) {
     ImGui::SaveIniSettingsToDisk(g_ini_path.c_str());
+  }
+  return true;
 }
 
-extern "C" bool guava_imgui_save_layout_to_path(const char* path, size_t path_len) {
-    if (!g_imgui_initialized || path == nullptr || path_len == 0) {
-        return false;
-    }
+extern "C" void guava_imgui_prepare(SDL_GPUCommandBuffer *command_buffer) {
+  if (!g_imgui_initialized) {
+    return;
+  }
 
-    const std::string owned_path = make_string(path, path_len);
-    if (owned_path.empty()) {
-        return false;
-    }
+  g_draw_data = nullptr;
+  ImGui::Render();
+  g_draw_data = ImGui::GetDrawData();
+  if (g_draw_data == nullptr || g_draw_data->DisplaySize.x <= 0.0f ||
+      g_draw_data->DisplaySize.y <= 0.0f) {
+    return;
+  }
 
-    std::error_code ec;
-    const std::filesystem::path fs_path(owned_path);
-    if (fs_path.has_parent_path()) {
-        std::filesystem::create_directories(fs_path.parent_path(), ec);
-    }
-    ImGui::SaveIniSettingsToDisk(owned_path.c_str());
-    return true;
+  ImGui_ImplSDLGPU3_PrepareDrawData(g_draw_data, command_buffer);
 }
 
-extern "C" bool guava_imgui_load_layout_from_path(const char* path, size_t path_len) {
-    if (!g_imgui_initialized || path == nullptr || path_len == 0) {
-        return false;
-    }
+extern "C" void guava_imgui_render(SDL_GPUCommandBuffer *command_buffer,
+                                   SDL_GPURenderPass *render_pass) {
+  if (!g_imgui_initialized || g_draw_data == nullptr ||
+      g_draw_data->DisplaySize.x <= 0.0f ||
+      g_draw_data->DisplaySize.y <= 0.0f) {
+    return;
+  }
 
-    const std::string owned_path = make_string(path, path_len);
-    if (owned_path.empty()) {
-        return false;
-    }
-
-    std::error_code ec;
-    if (!std::filesystem::exists(owned_path, ec)) {
-        return false;
-    }
-
-    ImGui::LoadIniSettingsFromDisk(owned_path.c_str());
-    if (!g_ini_path.empty()) {
-        ImGui::SaveIniSettingsToDisk(g_ini_path.c_str());
-    }
-    return true;
-}
-
-extern "C" void guava_imgui_prepare(SDL_GPUCommandBuffer* command_buffer) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-
-    g_draw_data = nullptr;
-    ImGui::Render();
-    g_draw_data = ImGui::GetDrawData();
-    if (g_draw_data == nullptr || g_draw_data->DisplaySize.x <= 0.0f || g_draw_data->DisplaySize.y <= 0.0f) {
-        return;
-    }
-
-    ImGui_ImplSDLGPU3_PrepareDrawData(g_draw_data, command_buffer);
-}
-
-extern "C" void guava_imgui_render(SDL_GPUCommandBuffer* command_buffer, SDL_GPURenderPass* render_pass) {
-    if (!g_imgui_initialized || g_draw_data == nullptr || g_draw_data->DisplaySize.x <= 0.0f || g_draw_data->DisplaySize.y <= 0.0f) {
-        return;
-    }
-
-    ImGui_ImplSDLGPU3_RenderDrawData(g_draw_data, command_buffer, render_pass);
+  ImGui_ImplSDLGPU3_RenderDrawData(g_draw_data, command_buffer, render_pass);
 }
 
 extern "C" bool guava_imgui_want_capture_mouse(void) {
-    if (!g_imgui_initialized) {
-        return false;
-    }
-    return ImGui::GetIO().WantCaptureMouse;
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  return ImGui::GetIO().WantCaptureMouse;
 }
 
 extern "C" bool guava_imgui_want_capture_keyboard(void) {
-    if (!g_imgui_initialized) {
-        return false;
-    }
-    return ImGui::GetIO().WantCaptureKeyboard;
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  return ImGui::GetIO().WantCaptureKeyboard;
 }
 
-extern "C" bool guava_imgui_begin_window(const char* name, size_t name_len) {
-    if (!g_imgui_initialized) {
-        return false;
-    }
-    const std::string window_name = make_string(name, name_len);
-    return ImGui::Begin(window_name.c_str());
+extern "C" bool guava_imgui_begin_window(const char *name, size_t name_len) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string window_name = make_string(name, name_len);
+  return ImGui::Begin(window_name.c_str());
 }
 
-extern "C" bool guava_imgui_begin_window_flags(const char* name, size_t name_len, uint32_t flags) {
-    if (!g_imgui_initialized) {
-        return false;
-    }
-    const std::string window_name = make_string(name, name_len);
-    return ImGui::Begin(window_name.c_str(), nullptr, to_imgui_window_flags(flags));
+extern "C" bool guava_imgui_begin_window_flags(const char *name,
+                                               size_t name_len,
+                                               uint32_t flags) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string window_name = make_string(name, name_len);
+  return ImGui::Begin(window_name.c_str(), nullptr,
+                      to_imgui_window_flags(flags));
 }
 
-extern "C" bool guava_imgui_begin_window_open(const char* name, size_t name_len, bool* open) {
-    if (!g_imgui_initialized) {
-        return false;
-    }
-    const std::string window_name = make_string(name, name_len);
-    return ImGui::Begin(window_name.c_str(), open);
+extern "C" bool guava_imgui_begin_window_open(const char *name, size_t name_len,
+                                              bool *open) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string window_name = make_string(name, name_len);
+  return ImGui::Begin(window_name.c_str(), open);
 }
 
-extern "C" bool guava_imgui_begin_window_flags_open(const char* name, size_t name_len, bool* open, uint32_t flags) {
-    if (!g_imgui_initialized) {
-        return false;
-    }
-    const std::string window_name = make_string(name, name_len);
-    return ImGui::Begin(window_name.c_str(), open, to_imgui_window_flags(flags));
+extern "C" bool guava_imgui_begin_window_flags_open(const char *name,
+                                                    size_t name_len, bool *open,
+                                                    uint32_t flags) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string window_name = make_string(name, name_len);
+  return ImGui::Begin(window_name.c_str(), open, to_imgui_window_flags(flags));
 }
 
 extern "C" void guava_imgui_end_window(void) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui::End();
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::End();
 }
 
 extern "C" bool guava_imgui_begin_main_menu_bar(void) {
-    if (!g_imgui_initialized) {
-        return false;
-    }
-    return ImGui::BeginMainMenuBar();
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  return ImGui::BeginMainMenuBar();
 }
 
 extern "C" void guava_imgui_end_main_menu_bar(void) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui::EndMainMenuBar();
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::EndMainMenuBar();
 }
 
-extern "C" bool guava_imgui_begin_menu(const char* label, size_t label_len) {
-    if (!g_imgui_initialized) {
-        return false;
-    }
-    const std::string owned_label = make_string(label, label_len);
-    return ImGui::BeginMenu(owned_label.c_str());
+extern "C" bool guava_imgui_begin_menu(const char *label, size_t label_len) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string owned_label = make_string(label, label_len);
+  return ImGui::BeginMenu(owned_label.c_str());
 }
 
 extern "C" void guava_imgui_end_menu(void) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui::EndMenu();
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::EndMenu();
 }
 
-extern "C" void guava_imgui_open_popup(const char* id, size_t id_len) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    const std::string owned_id = make_string(id, id_len);
-    ImGui::OpenPopup(owned_id.c_str());
+extern "C" void guava_imgui_open_popup(const char *id, size_t id_len) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  const std::string owned_id = make_string(id, id_len);
+  ImGui::OpenPopup(owned_id.c_str());
 }
 
-extern "C" bool guava_imgui_begin_popup(const char* id, size_t id_len) {
-    if (!g_imgui_initialized) {
-        return false;
-    }
-    const std::string owned_id = make_string(id, id_len);
-    return ImGui::BeginPopup(owned_id.c_str());
+extern "C" bool guava_imgui_begin_popup(const char *id, size_t id_len) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string owned_id = make_string(id, id_len);
+  return ImGui::BeginPopup(owned_id.c_str());
 }
 
-extern "C" bool guava_imgui_is_popup_open(const char* id, size_t id_len) {
-    if (!g_imgui_initialized) {
-        return false;
-    }
-    const std::string owned_id = make_string(id, id_len);
-    return ImGui::IsPopupOpen(owned_id.c_str());
+extern "C" bool guava_imgui_is_popup_open(const char *id, size_t id_len) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string owned_id = make_string(id, id_len);
+  return ImGui::IsPopupOpen(owned_id.c_str());
 }
 
-extern "C" bool guava_imgui_begin_popup_context_item(const char* id, size_t id_len) {
-    if (!g_imgui_initialized) {
-        return false;
-    }
-    const std::string owned_id = id != nullptr ? make_string(id, id_len) : std::string{};
-    return ImGui::BeginPopupContextItem(owned_id.empty() ? nullptr : owned_id.c_str());
+extern "C" bool guava_imgui_begin_popup_context_item(const char *id,
+                                                     size_t id_len) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string owned_id =
+      id != nullptr ? make_string(id, id_len) : std::string{};
+  return ImGui::BeginPopupContextItem(owned_id.empty() ? nullptr
+                                                       : owned_id.c_str());
 }
 
-extern "C" bool guava_imgui_begin_popup_context_window(const char* id, size_t id_len, bool open_over_items) {
-    if (!g_imgui_initialized) {
-        return false;
-    }
-    const std::string owned_id = id != nullptr ? make_string(id, id_len) : std::string{};
-    ImGuiPopupFlags flags = ImGuiPopupFlags_MouseButtonRight;
-    if (!open_over_items) {
-        flags |= ImGuiPopupFlags_NoOpenOverItems;
-    }
-    return ImGui::BeginPopupContextWindow(owned_id.empty() ? nullptr : owned_id.c_str(), flags);
+extern "C" bool guava_imgui_begin_popup_context_window(const char *id,
+                                                       size_t id_len,
+                                                       bool open_over_items) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string owned_id =
+      id != nullptr ? make_string(id, id_len) : std::string{};
+  ImGuiPopupFlags flags = ImGuiPopupFlags_MouseButtonRight;
+  if (!open_over_items) {
+    flags |= ImGuiPopupFlags_NoOpenOverItems;
+  }
+  return ImGui::BeginPopupContextWindow(
+      owned_id.empty() ? nullptr : owned_id.c_str(), flags);
 }
 
 extern "C" void guava_imgui_end_popup(void) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui::EndPopup();
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::EndPopup();
 }
 
-extern "C" bool guava_imgui_begin_combo(const char* label, size_t label_len, const char* preview, size_t preview_len) {
-    if (!g_imgui_initialized) {
-        return false;
-    }
-    const std::string owned_label = make_string(label, label_len);
-    const std::string owned_preview = preview != nullptr ? make_string(preview, preview_len) : std::string{};
-    return ImGui::BeginCombo(owned_label.c_str(), preview != nullptr ? owned_preview.c_str() : nullptr);
+extern "C" bool guava_imgui_begin_combo(const char *label, size_t label_len,
+                                        const char *preview,
+                                        size_t preview_len) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string owned_label = make_string(label, label_len);
+  const std::string owned_preview =
+      preview != nullptr ? make_string(preview, preview_len) : std::string{};
+  return ImGui::BeginCombo(owned_label.c_str(), preview != nullptr
+                                                    ? owned_preview.c_str()
+                                                    : nullptr);
 }
 
 extern "C" void guava_imgui_end_combo(void) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui::EndCombo();
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::EndCombo();
 }
 
-extern "C" bool guava_imgui_menu_item(const char* label, size_t label_len, const char* shortcut, size_t shortcut_len, bool selected, bool enabled) {
-    if (!g_imgui_initialized) {
-        return false;
-    }
-    const std::string owned_label = make_string(label, label_len);
-    const std::string owned_shortcut = shortcut != nullptr ? make_string(shortcut, shortcut_len) : std::string();
-    return ImGui::MenuItem(
-        owned_label.c_str(),
-        shortcut != nullptr ? owned_shortcut.c_str() : nullptr,
-        selected,
-        enabled
-    );
+extern "C" bool guava_imgui_menu_item(const char *label, size_t label_len,
+                                      const char *shortcut, size_t shortcut_len,
+                                      bool selected, bool enabled) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string owned_label = make_string(label, label_len);
+  const std::string owned_shortcut =
+      shortcut != nullptr ? make_string(shortcut, shortcut_len) : std::string();
+  return ImGui::MenuItem(owned_label.c_str(),
+                         shortcut != nullptr ? owned_shortcut.c_str() : nullptr,
+                         selected, enabled);
 }
 
-extern "C" bool guava_imgui_button(const char* label, size_t label_len) {
-    if (!g_imgui_initialized) {
-        return false;
-    }
-    const std::string owned_label = make_string(label, label_len);
-    return ImGui::Button(owned_label.c_str());
+extern "C" bool guava_imgui_button(const char *label, size_t label_len) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string owned_label = make_string(label, label_len);
+  return ImGui::Button(owned_label.c_str());
 }
 
-extern "C" bool guava_imgui_button_ex(const char* label, size_t label_len, float width, float height) {
-    if (!g_imgui_initialized) {
-        return false;
-    }
-    const std::string owned_label = make_string(label, label_len);
-    return ImGui::Button(owned_label.c_str(), ImVec2(width, height));
+extern "C" bool guava_imgui_button_ex(const char *label, size_t label_len,
+                                      float width, float height) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string owned_label = make_string(label, label_len);
+  return ImGui::Button(owned_label.c_str(), ImVec2(width, height));
 }
 
-extern "C" bool guava_imgui_image_button(
-    const char* id,
-    size_t id_len,
-    SDL_GPUTexture* texture,
-    float width,
-    float height,
-    float bg_r,
-    float bg_g,
-    float bg_b,
-    float bg_a,
-    float tint_r,
-    float tint_g,
-    float tint_b,
-    float tint_a
-) {
-    if (!g_imgui_initialized || texture == nullptr) {
-        return false;
-    }
-    const std::string owned_id = make_string(id, id_len);
-    return ImGui::ImageButton(
-        owned_id.c_str(),
-        reinterpret_cast<ImTextureID>(texture),
-        ImVec2(width, height),
-        ImVec2(0.0f, 0.0f),
-        ImVec2(1.0f, 1.0f),
-        ImVec4(bg_r, bg_g, bg_b, bg_a),
-        ImVec4(tint_r, tint_g, tint_b, tint_a)
-    );
+extern "C" bool guava_imgui_image_button(const char *id, size_t id_len,
+                                         SDL_GPUTexture *texture, float width,
+                                         float height, float bg_r, float bg_g,
+                                         float bg_b, float bg_a, float tint_r,
+                                         float tint_g, float tint_b,
+                                         float tint_a) {
+  if (!g_imgui_initialized || texture == nullptr) {
+    return false;
+  }
+  const std::string owned_id = make_string(id, id_len);
+  return ImGui::ImageButton(
+      owned_id.c_str(), reinterpret_cast<ImTextureID>(texture),
+      ImVec2(width, height), ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f),
+      ImVec4(bg_r, bg_g, bg_b, bg_a), ImVec4(tint_r, tint_g, tint_b, tint_a));
 }
 
-extern "C" bool guava_imgui_invisible_button(const char* id, size_t id_len, float width, float height) {
-    if (!g_imgui_initialized) {
-        return false;
-    }
-    const std::string owned_id = make_string(id, id_len);
-    return ImGui::InvisibleButton(owned_id.c_str(), ImVec2(width, height));
+extern "C" bool guava_imgui_invisible_button(const char *id, size_t id_len,
+                                             float width, float height) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string owned_id = make_string(id, id_len);
+  return ImGui::InvisibleButton(owned_id.c_str(), ImVec2(width, height));
 }
 
 extern "C" bool guava_imgui_window_control_button(uint32_t kind, bool toggled) {
-    if (!g_imgui_initialized) {
-        return false;
+  if (!g_imgui_initialized) {
+    return false;
+  }
+
+  const float height = ImGui::GetFrameHeight();
+  const ImVec2 size(height * 1.42f, height * 0.9f);
+  const float rounding = 6.0f;
+  ImGui::PushID(static_cast<int>(kind));
+  const bool clicked = ImGui::InvisibleButton("##window_control", size);
+
+  const bool hovered = ImGui::IsItemHovered();
+  const bool active = ImGui::IsItemActive();
+  const ImRect rect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
+  ImDrawList *draw_list = ImGui::GetWindowDrawList();
+
+  ImU32 bg_color = IM_COL32(0, 0, 0, 0);
+  ImU32 border_color = IM_COL32(136, 150, 172, 42);
+  if (kind == GUAVA_IMGUI_WINDOW_CONTROL_CLOSE) {
+    if (active) {
+      bg_color = IM_COL32(172, 44, 49, 255);
+      border_color = IM_COL32(217, 111, 116, 110);
+    } else if (hovered) {
+      bg_color = IM_COL32(208, 64, 72, 245);
+      border_color = IM_COL32(242, 149, 152, 120);
     }
-
-    const float height = ImGui::GetFrameHeight();
-    const ImVec2 size(height * 1.42f, height * 0.9f);
-    const float rounding = 6.0f;
-    ImGui::PushID(static_cast<int>(kind));
-    const bool clicked = ImGui::InvisibleButton("##window_control", size);
-
-    const bool hovered = ImGui::IsItemHovered();
-    const bool active = ImGui::IsItemActive();
-    const ImRect rect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
-    ImDrawList* draw_list = ImGui::GetWindowDrawList();
-
-    ImU32 bg_color = IM_COL32(0, 0, 0, 0);
-    ImU32 border_color = IM_COL32(136, 150, 172, 42);
-    if (kind == GUAVA_IMGUI_WINDOW_CONTROL_CLOSE) {
-        if (active) {
-            bg_color = IM_COL32(172, 44, 49, 255);
-            border_color = IM_COL32(217, 111, 116, 110);
-        } else if (hovered) {
-            bg_color = IM_COL32(208, 64, 72, 245);
-            border_color = IM_COL32(242, 149, 152, 120);
-        }
+  } else {
+    if (active) {
+      bg_color = IM_COL32(82, 92, 112, 176);
+      border_color = IM_COL32(168, 180, 198, 92);
+    } else if (hovered) {
+      bg_color = IM_COL32(60, 71, 88, 132);
+      border_color = IM_COL32(160, 174, 194, 88);
     } else {
-        if (active) {
-            bg_color = IM_COL32(82, 92, 112, 176);
-            border_color = IM_COL32(168, 180, 198, 92);
-        } else if (hovered) {
-            bg_color = IM_COL32(60, 71, 88, 132);
-            border_color = IM_COL32(160, 174, 194, 88);
-        } else {
-            bg_color = IM_COL32(255, 255, 255, 8);
-        }
+      bg_color = IM_COL32(255, 255, 255, 8);
     }
+  }
 
-    if ((bg_color & IM_COL32_A_MASK) != 0) {
-        draw_list->AddRectFilled(rect.Min, rect.Max, bg_color, rounding);
-    }
-    if ((border_color & IM_COL32_A_MASK) != 0) {
-        draw_list->AddRect(rect.Min, rect.Max, border_color, rounding);
-    }
+  if ((bg_color & IM_COL32_A_MASK) != 0) {
+    draw_list->AddRectFilled(rect.Min, rect.Max, bg_color, rounding);
+  }
+  if ((border_color & IM_COL32_A_MASK) != 0) {
+    draw_list->AddRect(rect.Min, rect.Max, border_color, rounding);
+  }
 
-    const ImU32 icon_color = hovered || active
-        ? IM_COL32(245, 247, 250, 255)
-        : IM_COL32(176, 188, 207, 212);
-    draw_window_control_icon(draw_list, rect, kind, toggled, icon_color);
+  const ImU32 icon_color = hovered || active ? IM_COL32(245, 247, 250, 255)
+                                             : IM_COL32(176, 188, 207, 212);
+  draw_window_control_icon(draw_list, rect, kind, toggled, icon_color);
 
-    ImGui::PopID();
-    return clicked;
+  ImGui::PopID();
+  return clicked;
 }
 
 extern "C" void guava_imgui_dummy(float width, float height) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui::Dummy(ImVec2(width, height));
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::Dummy(ImVec2(width, height));
 }
 
 extern "C" void guava_imgui_same_line(void) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui::SameLine();
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::SameLine();
 }
 
-extern "C" void guava_imgui_same_line_ex(float offset_from_start_x, float spacing) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui::SameLine(offset_from_start_x, spacing);
+extern "C" void guava_imgui_same_line_ex(float offset_from_start_x,
+                                         float spacing) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::SameLine(offset_from_start_x, spacing);
 }
 
 extern "C" void guava_imgui_separator(void) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui::Separator();
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::Separator();
 }
 
 extern "C" void guava_imgui_set_next_item_width(float width) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui::SetNextItemWidth(width);
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::SetNextItemWidth(width);
 }
 
 extern "C" void guava_imgui_set_next_window_pos(float x, float y) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui::SetNextWindowPos(ImVec2(x, y));
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::SetNextWindowPos(ImVec2(x, y));
 }
 
 extern "C" void guava_imgui_set_next_window_size(float width, float height) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui::SetNextWindowSize(ImVec2(width, height));
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::SetNextWindowSize(ImVec2(width, height));
 }
 
 extern "C" void guava_imgui_set_next_window_bg_alpha(float alpha) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui::SetNextWindowBgAlpha(alpha);
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::SetNextWindowBgAlpha(alpha);
 }
 
-extern "C" void guava_imgui_push_style_color(uint32_t slot, float r, float g, float b, float a) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui::PushStyleColor(to_imgui_style_color(slot), ImVec4(r, g, b, a));
+extern "C" void guava_imgui_push_style_color(uint32_t slot, float r, float g,
+                                             float b, float a) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::PushStyleColor(to_imgui_style_color(slot), ImVec4(r, g, b, a));
 }
 
 extern "C" void guava_imgui_pop_style_color(int32_t count) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui::PopStyleColor(count);
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::PopStyleColor(count);
 }
 
 extern "C" void guava_imgui_push_style_var_float(uint32_t slot, float value) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui::PushStyleVar(to_imgui_style_var(slot), value);
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::PushStyleVar(to_imgui_style_var(slot), value);
 }
 
-extern "C" void guava_imgui_push_style_var_vec2(uint32_t slot, float x, float y) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui::PushStyleVar(to_imgui_style_var(slot), ImVec2(x, y));
+extern "C" void guava_imgui_push_style_var_vec2(uint32_t slot, float x,
+                                                float y) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::PushStyleVar(to_imgui_style_var(slot), ImVec2(x, y));
 }
 
 extern "C" void guava_imgui_pop_style_var(int32_t count) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui::PopStyleVar(count);
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::PopStyleVar(count);
 }
 
-extern "C" bool guava_imgui_begin_child(const char* id, size_t id_len, float width, float height, bool border) {
-    if (!g_imgui_initialized) {
-        return false;
-    }
-    const std::string owned_id = make_string(id, id_len);
-    return ImGui::BeginChild(owned_id.c_str(), ImVec2(width, height), border);
+extern "C" bool guava_imgui_begin_child(const char *id, size_t id_len,
+                                        float width, float height,
+                                        bool border) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string owned_id = make_string(id, id_len);
+  return ImGui::BeginChild(owned_id.c_str(), ImVec2(width, height), border);
 }
 
 extern "C" void guava_imgui_end_child(void) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui::EndChild();
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::EndChild();
 }
 
-extern "C" bool guava_imgui_begin_table(const char* id, size_t id_len, int32_t columns) {
-    if (!g_imgui_initialized || columns <= 0) {
-        return false;
-    }
-    const std::string owned_id = make_string(id, id_len);
-    constexpr ImGuiTableFlags flags =
-        ImGuiTableFlags_RowBg |
-        ImGuiTableFlags_SizingStretchProp |
-        ImGuiTableFlags_Resizable;
-    return ImGui::BeginTable(owned_id.c_str(), columns, flags);
+extern "C" bool guava_imgui_begin_table(const char *id, size_t id_len,
+                                        int32_t columns) {
+  if (!g_imgui_initialized || columns <= 0) {
+    return false;
+  }
+  const std::string owned_id = make_string(id, id_len);
+  constexpr ImGuiTableFlags flags = ImGuiTableFlags_RowBg |
+                                    ImGuiTableFlags_SizingStretchProp |
+                                    ImGuiTableFlags_Resizable;
+  return ImGui::BeginTable(owned_id.c_str(), columns, flags);
 }
 
 extern "C" void guava_imgui_end_table(void) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui::EndTable();
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::EndTable();
 }
 
-extern "C" void guava_imgui_table_setup_column(const char* label, size_t label_len, bool stretch, float init_width_or_weight) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    const std::string owned_label = make_string(label, label_len);
-    const ImGuiTableColumnFlags flags = stretch ? ImGuiTableColumnFlags_WidthStretch : ImGuiTableColumnFlags_WidthFixed;
-    ImGui::TableSetupColumn(owned_label.c_str(), flags, init_width_or_weight);
+extern "C" void guava_imgui_table_setup_column(const char *label,
+                                               size_t label_len, bool stretch,
+                                               float init_width_or_weight) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  const std::string owned_label = make_string(label, label_len);
+  const ImGuiTableColumnFlags flags = stretch
+                                          ? ImGuiTableColumnFlags_WidthStretch
+                                          : ImGuiTableColumnFlags_WidthFixed;
+  ImGui::TableSetupColumn(owned_label.c_str(), flags, init_width_or_weight);
 }
 
 extern "C" void guava_imgui_table_headers_row(void) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui::TableHeadersRow();
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::TableHeadersRow();
 }
 
 extern "C" void guava_imgui_table_next_row(void) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui::TableNextRow();
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::TableNextRow();
 }
 
 extern "C" void guava_imgui_table_next_column(void) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui::TableNextColumn();
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::TableNextColumn();
 }
 
-extern "C" bool guava_imgui_selectable(const char* label, size_t label_len, bool selected, bool span_all_columns, float width, float height) {
-    if (!g_imgui_initialized) {
-        return false;
-    }
-    const std::string owned_label = make_string(label, label_len);
-    ImGuiSelectableFlags flags = ImGuiSelectableFlags_None;
-    if (span_all_columns) {
-        flags |= ImGuiSelectableFlags_SpanAllColumns;
-    }
-    return ImGui::Selectable(owned_label.c_str(), selected, flags, ImVec2(width, height));
+extern "C" bool guava_imgui_selectable(const char *label, size_t label_len,
+                                       bool selected, bool span_all_columns,
+                                       float width, float height) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string owned_label = make_string(label, label_len);
+  ImGuiSelectableFlags flags = ImGuiSelectableFlags_None;
+  if (span_all_columns) {
+    flags |= ImGuiSelectableFlags_SpanAllColumns;
+  }
+  return ImGui::Selectable(owned_label.c_str(), selected, flags,
+                           ImVec2(width, height));
 }
 
-extern "C" void guava_imgui_text(const char* text, size_t text_len) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui::TextUnformatted(text, text + text_len);
+extern "C" void guava_imgui_text(const char *text, size_t text_len) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::TextUnformatted(text, text + text_len);
 }
 
-extern "C" void guava_imgui_text_wrapped(const char* text, size_t text_len) {
-    if (!g_imgui_initialized) {
-        return;
-    }
+extern "C" void guava_imgui_text_wrapped(const char *text, size_t text_len) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::PushTextWrapPos(0.0f);
+  ImGui::TextUnformatted(text, text + text_len);
+  ImGui::PopTextWrapPos();
+}
+
+extern "C" void guava_imgui_label_text(const char *label, size_t label_len,
+                                       const char *text, size_t text_len) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  const std::string owned_label = make_string(label, label_len);
+  const std::string owned_text = make_string(text, text_len);
+  constexpr float min_inline_value_width = 88.0f;
+  constexpr float min_label_width = 84.0f;
+  constexpr float max_label_width = 152.0f;
+  const float available_width = ImGui::GetContentRegionAvail().x;
+  const float spacing = ImGui::GetStyle().ItemInnerSpacing.x;
+  const ImVec2 label_size = ImGui::CalcTextSize(owned_label.c_str());
+  float label_width =
+      std::clamp(available_width * 0.34f, min_label_width, max_label_width);
+  label_width = (std::max)(label_width, label_size.x + spacing + 4.0f);
+
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextUnformatted(owned_label.c_str());
+  ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.72f, 0.74f, 0.79f, 1.0f));
+  if (available_width >= label_width + min_inline_value_width) {
+    ImGui::SameLine(label_width, spacing);
     ImGui::PushTextWrapPos(0.0f);
-    ImGui::TextUnformatted(text, text + text_len);
+    ImGui::TextWrapped("%s", owned_text.c_str());
     ImGui::PopTextWrapPos();
-}
-
-extern "C" void guava_imgui_label_text(const char* label, size_t label_len, const char* text, size_t text_len) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    const std::string owned_label = make_string(label, label_len);
-    const std::string owned_text = make_string(text, text_len);
-    constexpr float min_inline_value_width = 88.0f;
-    constexpr float min_label_width = 84.0f;
-    constexpr float max_label_width = 152.0f;
-    const float available_width = ImGui::GetContentRegionAvail().x;
-    const float spacing = ImGui::GetStyle().ItemInnerSpacing.x;
-    const ImVec2 label_size = ImGui::CalcTextSize(owned_label.c_str());
-    float label_width = std::clamp(available_width * 0.34f, min_label_width, max_label_width);
-    label_width = (std::max)(label_width, label_size.x + spacing + 4.0f);
-
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(owned_label.c_str());
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.72f, 0.74f, 0.79f, 1.0f));
-    if (available_width >= label_width + min_inline_value_width) {
-        ImGui::SameLine(label_width, spacing);
-        ImGui::PushTextWrapPos(0.0f);
-        ImGui::TextWrapped("%s", owned_text.c_str());
-        ImGui::PopTextWrapPos();
-    } else {
-        ImGui::TextWrapped("%s", owned_text.c_str());
-    }
-    ImGui::PopStyleColor();
+  } else {
+    ImGui::TextWrapped("%s", owned_text.c_str());
+  }
+  ImGui::PopStyleColor();
 }
 
 extern "C" void guava_imgui_push_id_u64(uint64_t value) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui::PushID(reinterpret_cast<void*>(static_cast<uintptr_t>(value)));
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::PushID(reinterpret_cast<void *>(static_cast<uintptr_t>(value)));
 }
 
 extern "C" void guava_imgui_pop_id(void) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui::PopID();
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::PopID();
 }
 
-extern "C" uint32_t guava_imgui_tree_node_entity(
-    uint64_t id,
-    const char* label,
-    size_t label_len,
-    SDL_GPUTexture* icon_texture,
-    float icon_size,
-    bool selected,
-    bool leaf,
-    bool default_open,
-    char* rename_buffer,
-    size_t rename_buffer_size,
-    bool request_rename_focus
-) {
-    if (!g_imgui_initialized) {
-        return 0;
-    }
+extern "C" uint32_t
+guava_imgui_tree_node_entity(uint64_t id, const char *label, size_t label_len,
+                             SDL_GPUTexture *icon_texture, float icon_size,
+                             bool selected, bool leaf, bool default_open,
+                             char *rename_buffer, size_t rename_buffer_size,
+                             bool request_rename_focus) {
+  if (!g_imgui_initialized) {
+    return 0;
+  }
 
-    const ImVec2 cursor = ImGui::GetCursorScreenPos();
-    const ImGuiStyle& style = ImGui::GetStyle();
-    const float row_height = ImGui::GetFrameHeight();
-    const float row_pitch = row_height + style.ItemSpacing.y;
-    const float window_top = ImGui::GetWindowPos().y + style.WindowPadding.y;
-    const int row_index = static_cast<int>((cursor.y - window_top) / (row_pitch > 0.0f ? row_pitch : 1.0f));
-    const ImVec2 row_min(ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMin().x, cursor.y);
-    const ImVec2 row_max(ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x, cursor.y + row_height);
-    if ((row_index & 1) != 0) {
-        ImGui::GetWindowDrawList()->AddRectFilled(row_min, row_max, IM_COL32(255, 255, 255, 8), 4.0f);
-    }
+  const ImVec2 cursor = ImGui::GetCursorScreenPos();
+  const ImGuiStyle &style = ImGui::GetStyle();
+  const float row_height = ImGui::GetFrameHeight();
+  const float row_pitch = row_height + style.ItemSpacing.y;
+  const float window_top = ImGui::GetWindowPos().y + style.WindowPadding.y;
+  const int row_index = static_cast<int>((cursor.y - window_top) /
+                                         (row_pitch > 0.0f ? row_pitch : 1.0f));
+  const ImVec2 row_min(
+      ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMin().x, cursor.y);
+  const ImVec2 row_max(ImGui::GetWindowPos().x +
+                           ImGui::GetWindowContentRegionMax().x,
+                       cursor.y + row_height);
+  if ((row_index & 1) != 0) {
+    ImGui::GetWindowDrawList()->AddRectFilled(row_min, row_max,
+                                              IM_COL32(255, 255, 255, 8), 4.0f);
+  }
 
-    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | ImGuiTreeNodeFlags_SpanFullWidth | ImGuiTreeNodeFlags_FramePadding;
-    if (selected) {
-        flags |= ImGuiTreeNodeFlags_Selected;
-    }
-    if (leaf) {
-        flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
-    }
-    if (default_open) {
-        flags |= ImGuiTreeNodeFlags_DefaultOpen;
-    }
+  ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow |
+                             ImGuiTreeNodeFlags_SpanFullWidth |
+                             ImGuiTreeNodeFlags_FramePadding;
+  if (selected) {
+    flags |= ImGuiTreeNodeFlags_Selected;
+  }
+  if (leaf) {
+    flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+  }
+  if (default_open) {
+    flags |= ImGuiTreeNodeFlags_DefaultOpen;
+  }
 
-    const std::string owned_label = make_string(label, label_len);
-    const bool is_open = ImGui::TreeNodeEx(reinterpret_cast<void*>(static_cast<uintptr_t>(id)), flags, "%s", "");
-    uint32_t result = 0;
-    if (is_open) {
-        result |= GUAVA_IMGUI_TREE_NODE_OPEN;
+  const std::string owned_label = make_string(label, label_len);
+  const bool is_open = ImGui::TreeNodeEx(
+      reinterpret_cast<void *>(static_cast<uintptr_t>(id)), flags, "%s", "");
+  uint32_t result = 0;
+  if (is_open) {
+    result |= GUAVA_IMGUI_TREE_NODE_OPEN;
+  }
+  if (ImGui::IsItemClicked()) {
+    result |= GUAVA_IMGUI_TREE_NODE_CLICKED;
+  }
+  const ImRect rect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
+  const float label_x = rect.Min.x + ImGui::GetTreeNodeToLabelSpacing();
+  float text_x = label_x;
+  if (icon_texture != nullptr && icon_size > 0.0f) {
+    const float draw_size = (std::min)(icon_size, rect.GetHeight() - 4.0f);
+    const float icon_slot_width = icon_size + 8.0f;
+    const ImVec2 icon_min(label_x + (icon_slot_width - draw_size) * 0.5f,
+                          rect.Min.y + (rect.GetHeight() - draw_size) * 0.5f);
+    const ImVec2 icon_max(icon_min.x + draw_size, icon_min.y + draw_size);
+    ImGui::GetWindowDrawList()->AddImage(
+        reinterpret_cast<ImTextureID>(icon_texture), icon_min, icon_max);
+    text_x += icon_slot_width;
+  }
+  if (rename_buffer != nullptr && rename_buffer_size > 0) {
+    const ImVec2 input_pos(text_x - 4.0f, rect.Min.y + 1.0f);
+    const float input_width =
+        (std::max)(rect.Max.x - input_pos.x - style.FramePadding.x, 72.0f);
+    ImGui::SetCursorScreenPos(input_pos);
+    ImGui::SetNextItemWidth(input_width);
+    ImGui::PushID(reinterpret_cast<void *>(static_cast<uintptr_t>(id)));
+    if (request_rename_focus) {
+      ImGui::SetKeyboardFocusHere();
     }
-    if (ImGui::IsItemClicked()) {
-        result |= GUAVA_IMGUI_TREE_NODE_CLICKED;
+    const bool submitted =
+        ImGui::InputText("##rename", rename_buffer, rename_buffer_size,
+                         ImGuiInputTextFlags_AutoSelectAll |
+                             ImGuiInputTextFlags_EnterReturnsTrue);
+    const bool deactivated_after_edit = ImGui::IsItemDeactivatedAfterEdit();
+    const bool rename_finished = submitted || ImGui::IsItemDeactivated();
+    if (submitted || deactivated_after_edit) {
+      result |= GUAVA_IMGUI_TREE_NODE_RENAME_COMMITTED;
     }
-    const ImRect rect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
-    const float label_x = rect.Min.x + ImGui::GetTreeNodeToLabelSpacing();
-    float text_x = label_x;
-    if (icon_texture != nullptr && icon_size > 0.0f) {
-        const float draw_size = (std::min)(icon_size, rect.GetHeight() - 4.0f);
-        const float icon_slot_width = icon_size + 8.0f;
-        const ImVec2 icon_min(
-            label_x + (icon_slot_width - draw_size) * 0.5f,
-            rect.Min.y + (rect.GetHeight() - draw_size) * 0.5f
-        );
-        const ImVec2 icon_max(icon_min.x + draw_size, icon_min.y + draw_size);
-        ImGui::GetWindowDrawList()->AddImage(reinterpret_cast<ImTextureID>(icon_texture), icon_min, icon_max);
-        text_x += icon_slot_width;
+    if (rename_finished) {
+      result |= GUAVA_IMGUI_TREE_NODE_RENAME_FINISHED;
     }
-    if (rename_buffer != nullptr && rename_buffer_size > 0) {
-        const ImVec2 input_pos(text_x - 4.0f, rect.Min.y + 1.0f);
-        const float input_width = (std::max)(rect.Max.x - input_pos.x - style.FramePadding.x, 72.0f);
-        ImGui::SetCursorScreenPos(input_pos);
-        ImGui::SetNextItemWidth(input_width);
-        ImGui::PushID(reinterpret_cast<void*>(static_cast<uintptr_t>(id)));
-        if (request_rename_focus) {
-            ImGui::SetKeyboardFocusHere();
-        }
-        const bool submitted = ImGui::InputText(
-            "##rename",
-            rename_buffer,
-            rename_buffer_size,
-            ImGuiInputTextFlags_AutoSelectAll | ImGuiInputTextFlags_EnterReturnsTrue
-        );
-        const bool deactivated_after_edit = ImGui::IsItemDeactivatedAfterEdit();
-        const bool rename_finished = submitted || ImGui::IsItemDeactivated();
-        if (submitted || deactivated_after_edit) {
-            result |= GUAVA_IMGUI_TREE_NODE_RENAME_COMMITTED;
-        }
-        if (rename_finished) {
-            result |= GUAVA_IMGUI_TREE_NODE_RENAME_FINISHED;
-        }
-        ImGui::PopID();
-    } else {
-        const float text_y = rect.Min.y + std::floor((rect.GetHeight() - ImGui::GetFontSize()) * 0.5f);
-        ImGui::GetWindowDrawList()->AddText(
-            ImVec2(text_x, text_y),
-            ImGui::GetColorU32(ImGuiCol_Text),
-            owned_label.c_str()
-        );
-    }
-    if (selected) {
-        const float pulse = 0.5f + 0.5f * std::sin(ImGui::GetTime() * 3.8f);
-        const int glow_alpha = 68 + static_cast<int>(pulse * 72.0f);
-        ImGui::GetWindowDrawList()->AddRect(
-            rect.Min,
-            rect.Max,
-            IM_COL32(114, 170, 255, glow_alpha),
-            4.0f,
-            0,
-            1.6f
-        );
-        ImGui::GetWindowDrawList()->AddRect(
-            ImVec2(rect.Min.x - 1.0f, rect.Min.y - 1.0f),
-            ImVec2(rect.Max.x + 1.0f, rect.Max.y + 1.0f),
-            IM_COL32(88, 144, 255, glow_alpha / 2),
-            5.0f,
-            0,
-            2.2f
-        );
-    }
-    return result;
+    ImGui::PopID();
+  } else {
+    const float text_y =
+        rect.Min.y +
+        std::floor((rect.GetHeight() - ImGui::GetFontSize()) * 0.5f);
+    ImGui::GetWindowDrawList()->AddText(ImVec2(text_x, text_y),
+                                        ImGui::GetColorU32(ImGuiCol_Text),
+                                        owned_label.c_str());
+  }
+  if (selected) {
+    const float pulse = 0.5f + 0.5f * std::sin(ImGui::GetTime() * 3.8f);
+    const int glow_alpha = 68 + static_cast<int>(pulse * 72.0f);
+    ImGui::GetWindowDrawList()->AddRect(
+        rect.Min, rect.Max, IM_COL32(114, 170, 255, glow_alpha), 4.0f, 0, 1.6f);
+    ImGui::GetWindowDrawList()->AddRect(
+        ImVec2(rect.Min.x - 1.0f, rect.Min.y - 1.0f),
+        ImVec2(rect.Max.x + 1.0f, rect.Max.y + 1.0f),
+        IM_COL32(88, 144, 255, glow_alpha / 2), 5.0f, 0, 2.2f);
+  }
+  return result;
 }
 
 extern "C" void guava_imgui_tree_pop(void) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui::TreePop();
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::TreePop();
 }
 
 extern "C" bool guava_imgui_is_item_clicked(void) {
-    if (!g_imgui_initialized) {
-        return false;
-    }
-    return ImGui::IsItemClicked();
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  return ImGui::IsItemClicked();
 }
 
 extern "C" bool guava_imgui_is_item_active(void) {
-    if (!g_imgui_initialized) {
-        return false;
-    }
-    return ImGui::IsItemActive();
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  return ImGui::IsItemActive();
 }
 
 extern "C" bool guava_imgui_is_item_hovered(void) {
-    if (!g_imgui_initialized) {
-        return false;
-    }
-    return ImGui::IsItemHovered();
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  return ImGui::IsItemHovered();
 }
 
 extern "C" bool guava_imgui_is_item_deactivated_after_edit(void) {
-    if (!g_imgui_initialized) {
-        return false;
-    }
-    return ImGui::IsItemDeactivatedAfterEdit();
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  return ImGui::IsItemDeactivatedAfterEdit();
 }
 
-extern "C" bool guava_imgui_input_text(const char* label, size_t label_len, char* buffer, size_t buffer_size) {
-    if (!g_imgui_initialized) {
-        return false;
-    }
-    const std::string owned_label = make_string(label, label_len);
-    return ImGui::InputText(owned_label.c_str(), buffer, buffer_size);
+extern "C" bool guava_imgui_input_text(const char *label, size_t label_len,
+                                       char *buffer, size_t buffer_size) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string owned_label = make_string(label, label_len);
+  return ImGui::InputText(owned_label.c_str(), buffer, buffer_size);
 }
 
-extern "C" bool guava_imgui_input_text_with_hint(
-    const char* label,
-    size_t label_len,
-    const char* hint,
-    size_t hint_len,
-    char* buffer,
-    size_t buffer_size
-) {
-    if (!g_imgui_initialized) {
-        return false;
-    }
-    const std::string owned_label = make_string(label, label_len);
-    const std::string owned_hint = make_string(hint, hint_len);
-    return ImGui::InputTextWithHint(owned_label.c_str(), owned_hint.c_str(), buffer, buffer_size);
+extern "C" bool guava_imgui_input_text_with_hint(const char *label,
+                                                 size_t label_len,
+                                                 const char *hint,
+                                                 size_t hint_len, char *buffer,
+                                                 size_t buffer_size) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string owned_label = make_string(label, label_len);
+  const std::string owned_hint = make_string(hint, hint_len);
+  return ImGui::InputTextWithHint(owned_label.c_str(), owned_hint.c_str(),
+                                  buffer, buffer_size);
 }
 
-extern "C" bool guava_imgui_drag_float(const char* label, size_t label_len, float* value, float speed, float min_value, float max_value) {
-    if (!g_imgui_initialized) {
-        return false;
-    }
-    const std::string owned_label = make_string(label, label_len);
-    return ImGui::DragFloat(owned_label.c_str(), value, speed, min_value, max_value);
+extern "C" bool guava_imgui_drag_float(const char *label, size_t label_len,
+                                       float *value, float speed,
+                                       float min_value, float max_value) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string owned_label = make_string(label, label_len);
+  return ImGui::DragFloat(owned_label.c_str(), value, speed, min_value,
+                          max_value);
 }
 
-extern "C" bool guava_imgui_drag_float3(const char* label, size_t label_len, float value[3], float speed, float min_value, float max_value) {
-    if (!g_imgui_initialized) {
-        return false;
-    }
-    const std::string owned_label = make_string(label, label_len);
-    return ImGui::DragFloat3(owned_label.c_str(), value, speed, min_value, max_value);
+extern "C" bool guava_imgui_drag_float3(const char *label, size_t label_len,
+                                        float value[3], float speed,
+                                        float min_value, float max_value) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string owned_label = make_string(label, label_len);
+  return ImGui::DragFloat3(owned_label.c_str(), value, speed, min_value,
+                           max_value);
 }
 
-extern "C" bool guava_imgui_checkbox(const char* label, size_t label_len, bool* value) {
-    if (!g_imgui_initialized) {
-        return false;
-    }
-    const std::string owned_label = make_string(label, label_len);
-    return ImGui::Checkbox(owned_label.c_str(), value);
+extern "C" bool guava_imgui_checkbox(const char *label, size_t label_len,
+                                     bool *value) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string owned_label = make_string(label, label_len);
+  return ImGui::Checkbox(owned_label.c_str(), value);
 }
 
-extern "C" bool guava_imgui_collapsing_header(const char* label, size_t label_len, bool default_open) {
-    if (!g_imgui_initialized) {
-        return false;
-    }
-    ImGuiTreeNodeFlags flags = default_open ? ImGuiTreeNodeFlags_DefaultOpen : ImGuiTreeNodeFlags_None;
-    const std::string owned_label = make_string(label, label_len);
-    return ImGui::CollapsingHeader(owned_label.c_str(), flags);
+extern "C" bool guava_imgui_collapsing_header(const char *label,
+                                              size_t label_len,
+                                              bool default_open) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  ImGuiTreeNodeFlags flags =
+      default_open ? ImGuiTreeNodeFlags_DefaultOpen : ImGuiTreeNodeFlags_None;
+  const std::string owned_label = make_string(label, label_len);
+  return ImGui::CollapsingHeader(owned_label.c_str(), flags);
 }
 
-extern "C" bool guava_imgui_drag_drop_source_u64(const char* payload_type, size_t payload_type_len, uint64_t value, const char* preview_text, size_t preview_text_len) {
-    if (!g_imgui_initialized) {
-        return false;
-    }
-    if (!ImGui::BeginDragDropSource()) {
-        return false;
-    }
+extern "C" bool guava_imgui_begin_drag_drop_source_u64(const char *payload_type,
+                                                       size_t payload_type_len,
+                                                       uint64_t value) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  if (!ImGui::BeginDragDropSource()) {
+    return false;
+  }
 
-    const std::string owned_type = make_string(payload_type, payload_type_len);
-    ImGui::SetDragDropPayload(owned_type.c_str(), &value, sizeof(value));
-    if (preview_text != nullptr and preview_text_len > 0) {
-        ImGui::TextUnformatted(preview_text, preview_text + preview_text_len);
-    }
-    ImGui::EndDragDropSource();
-    return true;
+  const std::string owned_type = make_string(payload_type, payload_type_len);
+  ImGui::SetDragDropPayload(owned_type.c_str(), &value, sizeof(value));
+  return true;
 }
 
-extern "C" bool guava_imgui_accept_drag_drop_payload_u64(const char* payload_type, size_t payload_type_len, uint64_t* out_value) {
-    if (!g_imgui_initialized || out_value == nullptr) {
-        return false;
-    }
-    if (!ImGui::BeginDragDropTarget()) {
-        return false;
-    }
+extern "C" void guava_imgui_end_drag_drop_source(void) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::EndDragDropSource();
+}
 
-    bool accepted = false;
-    const std::string owned_type = make_string(payload_type, payload_type_len);
-    if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(owned_type.c_str())) {
-        if (payload->Data != nullptr && payload->DataSize == static_cast<int>(sizeof(uint64_t))) {
-            *out_value = *static_cast<const uint64_t*>(payload->Data);
-            accepted = true;
-        }
-    }
+extern "C" bool guava_imgui_drag_drop_source_u64(const char *payload_type,
+                                                 size_t payload_type_len,
+                                                 uint64_t value,
+                                                 const char *preview_text,
+                                                 size_t preview_text_len) {
+  if (!guava_imgui_begin_drag_drop_source_u64(payload_type, payload_type_len,
+                                              value)) {
+    return false;
+  }
+  if (preview_text != nullptr and preview_text_len > 0) {
+    ImGui::TextUnformatted(preview_text, preview_text + preview_text_len);
+  }
+  guava_imgui_end_drag_drop_source();
+  return true;
+}
 
-    ImGui::EndDragDropTarget();
-    return accepted;
+extern "C" bool guava_imgui_accept_drag_drop_payload_u64(
+    const char *payload_type, size_t payload_type_len, uint64_t *out_value) {
+  if (!g_imgui_initialized || out_value == nullptr) {
+    return false;
+  }
+  if (!ImGui::BeginDragDropTarget()) {
+    return false;
+  }
+
+  bool accepted = false;
+  const std::string owned_type = make_string(payload_type, payload_type_len);
+  if (const ImGuiPayload *payload =
+          ImGui::AcceptDragDropPayload(owned_type.c_str())) {
+    if (payload->Data != nullptr &&
+        payload->DataSize == static_cast<int>(sizeof(uint64_t))) {
+      *out_value = *static_cast<const uint64_t *>(payload->Data);
+      accepted = true;
+    }
+  }
+
+  ImGui::EndDragDropTarget();
+  return accepted;
 }
 
 extern "C" bool guava_imgui_is_window_hovered(void) {
-    if (!g_imgui_initialized) {
-        return false;
-    }
-    return ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  return ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
 }
 
 extern "C" bool guava_imgui_is_window_focused(void) {
-    if (!g_imgui_initialized) {
-        return false;
-    }
-    return ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  return ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
 }
 
 extern "C" void guava_imgui_get_content_region_avail(float out_value[2]) {
-    if (!g_imgui_initialized || out_value == nullptr) {
-        return;
-    }
-    const ImVec2 value = ImGui::GetContentRegionAvail();
-    out_value[0] = value.x;
-    out_value[1] = value.y;
+  if (!g_imgui_initialized || out_value == nullptr) {
+    return;
+  }
+  const ImVec2 value = ImGui::GetContentRegionAvail();
+  out_value[0] = value.x;
+  out_value[1] = value.y;
 }
 
 extern "C" void guava_imgui_get_cursor_screen_pos(float out_value[2]) {
-    if (!g_imgui_initialized || out_value == nullptr) {
-        return;
-    }
-    const ImVec2 value = ImGui::GetCursorScreenPos();
-    out_value[0] = value.x;
-    out_value[1] = value.y;
+  if (!g_imgui_initialized || out_value == nullptr) {
+    return;
+  }
+  const ImVec2 value = ImGui::GetCursorScreenPos();
+  out_value[0] = value.x;
+  out_value[1] = value.y;
 }
 
 extern "C" void guava_imgui_set_cursor_pos(float x, float y) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui::SetCursorPos(ImVec2(x, y));
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::SetCursorPos(ImVec2(x, y));
 }
 
 extern "C" void guava_imgui_set_cursor_pos_y(float y) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui::SetCursorPosY(y);
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::SetCursorPosY(y);
 }
 
 extern "C" void guava_imgui_align_text_to_frame_padding(void) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui::AlignTextToFramePadding();
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::AlignTextToFramePadding();
 }
 
 extern "C" void guava_imgui_indent(float width) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui::Indent(width);
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::Indent(width);
 }
 
 extern "C" void guava_imgui_unindent(float width) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui::Unindent(width);
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::Unindent(width);
 }
 
 extern "C" void guava_imgui_get_window_size(float out_value[2]) {
-    if (!g_imgui_initialized) {
-        out_value[0] = 0.0f;
-        out_value[1] = 0.0f;
-        return;
-    }
-    const ImVec2 value = ImGui::GetWindowSize();
-    out_value[0] = value.x;
-    out_value[1] = value.y;
+  if (!g_imgui_initialized) {
+    out_value[0] = 0.0f;
+    out_value[1] = 0.0f;
+    return;
+  }
+  const ImVec2 value = ImGui::GetWindowSize();
+  out_value[0] = value.x;
+  out_value[1] = value.y;
 }
 
 extern "C" float guava_imgui_get_frame_height(void) {
-    if (!g_imgui_initialized) {
-        return 0.0f;
-    }
-    return ImGui::GetFrameHeight();
+  if (!g_imgui_initialized) {
+    return 0.0f;
+  }
+  return ImGui::GetFrameHeight();
 }
 
 extern "C" float guava_imgui_get_time(void) {
-    if (!g_imgui_initialized) {
-        return 0.0f;
-    }
-    return static_cast<float>(ImGui::GetTime());
+  if (!g_imgui_initialized) {
+    return 0.0f;
+  }
+  return static_cast<float>(ImGui::GetTime());
 }
 
 extern "C" void guava_imgui_set_scroll_here_y(float center_y_ratio) {
-    if (!g_imgui_initialized) {
-        return;
-    }
-    ImGui::SetScrollHereY(center_y_ratio);
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::SetScrollHereY(center_y_ratio);
 }
 
-extern "C" void guava_imgui_image(SDL_GPUTexture* texture, float width, float height) {
-    if (!g_imgui_initialized || texture == nullptr) {
-        return;
-    }
-    ImGui::Image((ImTextureID)(intptr_t)texture, ImVec2(width, height));
+extern "C" void guava_imgui_image(SDL_GPUTexture *texture, float width,
+                                  float height) {
+  if (!g_imgui_initialized || texture == nullptr) {
+    return;
+  }
+  ImGui::Image((ImTextureID)(intptr_t)texture, ImVec2(width, height));
 }
 
-extern "C" uint32_t guava_imgui_draw_view_cube(const float view[16], float x, float y, float size, float out_drag_delta[2]) {
-    if (out_drag_delta != nullptr) {
-        out_drag_delta[0] = 0.0f;
-        out_drag_delta[1] = 0.0f;
-    }
-    if (!g_imgui_initialized || view == nullptr || size <= 0.0f) {
-        return GUAVA_IMGUI_VIEW_CUBE_NONE;
-    }
+extern "C" uint32_t guava_imgui_draw_view_cube(const float view[16], float x,
+                                               float y, float size,
+                                               float out_drag_delta[2]) {
+  if (out_drag_delta != nullptr) {
+    out_drag_delta[0] = 0.0f;
+    out_drag_delta[1] = 0.0f;
+  }
+  if (!g_imgui_initialized || view == nullptr || size <= 0.0f) {
+    return GUAVA_IMGUI_VIEW_CUBE_NONE;
+  }
 
-    const ImVec2 cube_pos(x, y);
-    const ImVec2 cube_size(size, size);
-    const ImVec2 center(x + size * 0.5f, y + size * 0.5f);
-    const float radius = size * 1.38f;
-    const float plate_radius = size * 0.47f;
-    const float positive_axis_radius = size * 0.078f;
-    const float negative_axis_radius = size * 0.056f;
+  const ImVec2 cube_pos(x, y);
+  const ImVec2 cube_size(size, size);
+  const ImVec2 center(x + size * 0.5f, y + size * 0.5f);
+  const float radius = size * 1.38f;
+  const float plate_radius = size * 0.47f;
+  const float positive_axis_radius = size * 0.078f;
+  const float negative_axis_radius = size * 0.056f;
 
-    static const ViewCubePoint3 cube_vertices[8] = {
-        { -1.0f, -1.0f, -1.0f },
-        {  1.0f, -1.0f, -1.0f },
-        {  1.0f,  1.0f, -1.0f },
-        { -1.0f,  1.0f, -1.0f },
-        { -1.0f, -1.0f,  1.0f },
-        {  1.0f, -1.0f,  1.0f },
-        {  1.0f,  1.0f,  1.0f },
-        { -1.0f,  1.0f,  1.0f },
+  static const ViewCubePoint3 cube_vertices[8] = {
+      {-1.0f, -1.0f, -1.0f}, {1.0f, -1.0f, -1.0f}, {1.0f, 1.0f, -1.0f},
+      {-1.0f, 1.0f, -1.0f},  {-1.0f, -1.0f, 1.0f}, {1.0f, -1.0f, 1.0f},
+      {1.0f, 1.0f, 1.0f},    {-1.0f, 1.0f, 1.0f},
+  };
+  static const ViewCubeFaceInfo faces[6] = {
+      {GUAVA_IMGUI_VIEW_CUBE_FRONT,
+       "Front",
+       {0.0f, 0.0f, 1.0f},
+       {4, 5, 6, 7},
+       IM_COL32(128, 140, 158, 236)},
+      {GUAVA_IMGUI_VIEW_CUBE_BACK,
+       "Back",
+       {0.0f, 0.0f, -1.0f},
+       {1, 0, 3, 2},
+       IM_COL32(92, 99, 112, 226)},
+      {GUAVA_IMGUI_VIEW_CUBE_LEFT,
+       "Left",
+       {-1.0f, 0.0f, 0.0f},
+       {0, 4, 7, 3},
+       IM_COL32(120, 112, 114, 232)},
+      {GUAVA_IMGUI_VIEW_CUBE_RIGHT,
+       "Right",
+       {1.0f, 0.0f, 0.0f},
+       {5, 1, 2, 6},
+       IM_COL32(140, 120, 114, 236)},
+      {GUAVA_IMGUI_VIEW_CUBE_TOP,
+       "Top",
+       {0.0f, 1.0f, 0.0f},
+       {7, 6, 2, 3},
+       IM_COL32(120, 132, 120, 236)},
+      {GUAVA_IMGUI_VIEW_CUBE_BOTTOM,
+       "Bottom",
+       {0.0f, -1.0f, 0.0f},
+       {0, 1, 5, 4},
+       IM_COL32(96, 102, 96, 226)},
+  };
+  static const ViewCubeAxisInfo axes[6] = {
+      {GUAVA_IMGUI_VIEW_CUBE_RIGHT,
+       "X",
+       {1.0f, 0.0f, 0.0f},
+       IM_COL32(224, 94, 84, 255),
+       true},
+      {GUAVA_IMGUI_VIEW_CUBE_LEFT,
+       "-X",
+       {-1.0f, 0.0f, 0.0f},
+       IM_COL32(224, 94, 84, 255),
+       false},
+      {GUAVA_IMGUI_VIEW_CUBE_TOP,
+       "Y",
+       {0.0f, 1.0f, 0.0f},
+       IM_COL32(100, 192, 94, 255),
+       true},
+      {GUAVA_IMGUI_VIEW_CUBE_BOTTOM,
+       "-Y",
+       {0.0f, -1.0f, 0.0f},
+       IM_COL32(100, 192, 94, 255),
+       false},
+      {GUAVA_IMGUI_VIEW_CUBE_FRONT,
+       "Z",
+       {0.0f, 0.0f, 1.0f},
+       IM_COL32(86, 146, 228, 255),
+       true},
+      {GUAVA_IMGUI_VIEW_CUBE_BACK,
+       "-Z",
+       {0.0f, 0.0f, -1.0f},
+       IM_COL32(86, 146, 228, 255),
+       false},
+  };
+
+  ViewCubePoint3 rotated_vertices[8];
+  ViewCubePoint2 projected_vertices[8];
+  for (int index = 0; index < 8; ++index) {
+    rotated_vertices[index] = rotate_by_view(view, cube_vertices[index]);
+    projected_vertices[index] =
+        project_view_cube_point(rotated_vertices[index], center, radius);
+  }
+
+  ViewCubeAxisHandle axis_handles[6];
+  for (int index = 0; index < 6; ++index) {
+    const ViewCubePoint3 rotated_axis =
+        rotate_by_view(view, scale_point3(axes[index].direction, 1.58f));
+    const ViewCubePoint2 projected_axis =
+        project_view_cube_point(rotated_axis, center, radius);
+    axis_handles[index] = {
+        axes[index].id,
+        axes[index].label,
+        axes[index].color,
+        axes[index].positive,
+        to_imvec2(projected_axis),
+        axes[index].positive ? positive_axis_radius : negative_axis_radius,
+        rotated_axis.z,
     };
-    static const ViewCubeFaceInfo faces[6] = {
-        { GUAVA_IMGUI_VIEW_CUBE_FRONT, "Front",  { 0.0f, 0.0f, 1.0f },  { 4, 5, 6, 7 }, IM_COL32(128, 140, 158, 236) },
-        { GUAVA_IMGUI_VIEW_CUBE_BACK,  "Back",   { 0.0f, 0.0f, -1.0f }, { 1, 0, 3, 2 }, IM_COL32(92, 99, 112, 226) },
-        { GUAVA_IMGUI_VIEW_CUBE_LEFT,  "Left",   { -1.0f, 0.0f, 0.0f }, { 0, 4, 7, 3 }, IM_COL32(120, 112, 114, 232) },
-        { GUAVA_IMGUI_VIEW_CUBE_RIGHT, "Right",  { 1.0f, 0.0f, 0.0f },  { 5, 1, 2, 6 }, IM_COL32(140, 120, 114, 236) },
-        { GUAVA_IMGUI_VIEW_CUBE_TOP,   "Top",    { 0.0f, 1.0f, 0.0f },  { 7, 6, 2, 3 }, IM_COL32(120, 132, 120, 236) },
-        { GUAVA_IMGUI_VIEW_CUBE_BOTTOM,"Bottom", { 0.0f, -1.0f, 0.0f }, { 0, 1, 5, 4 }, IM_COL32(96, 102, 96, 226) },
-    };
-    static const ViewCubeAxisInfo axes[6] = {
-        { GUAVA_IMGUI_VIEW_CUBE_RIGHT,  "X",  { 1.0f, 0.0f, 0.0f },  IM_COL32(224, 94, 84, 255), true },
-        { GUAVA_IMGUI_VIEW_CUBE_LEFT,   "-X", { -1.0f, 0.0f, 0.0f }, IM_COL32(224, 94, 84, 255), false },
-        { GUAVA_IMGUI_VIEW_CUBE_TOP,    "Y",  { 0.0f, 1.0f, 0.0f },  IM_COL32(100, 192, 94, 255), true },
-        { GUAVA_IMGUI_VIEW_CUBE_BOTTOM, "-Y", { 0.0f, -1.0f, 0.0f }, IM_COL32(100, 192, 94, 255), false },
-        { GUAVA_IMGUI_VIEW_CUBE_FRONT,  "Z",  { 0.0f, 0.0f, 1.0f },  IM_COL32(86, 146, 228, 255), true },
-        { GUAVA_IMGUI_VIEW_CUBE_BACK,   "-Z", { 0.0f, 0.0f, -1.0f }, IM_COL32(86, 146, 228, 255), false },
-    };
+  }
 
-    ViewCubePoint3 rotated_vertices[8];
-    ViewCubePoint2 projected_vertices[8];
-    for (int index = 0; index < 8; ++index) {
-        rotated_vertices[index] = rotate_by_view(view, cube_vertices[index]);
-        projected_vertices[index] = project_view_cube_point(rotated_vertices[index], center, radius);
+  ImGui::PushID("guava_editor_view_cube");
+  ImGui::SetCursorScreenPos(cube_pos);
+  ImGui::InvisibleButton("##view_cube", cube_size,
+                         ImGuiButtonFlags_MouseButtonLeft);
+  const bool hovered =
+      ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+  const bool active = ImGui::IsItemActive();
+  const bool dragging =
+      active && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 2.5f);
+  const ImGuiID item_id = ImGui::GetItemID();
+  const ImGuiID pressed_target_key = item_id ^ 0x51a13d7u;
+  const ImGuiID dragged_key = item_id ^ 0x2c8f48b1u;
+  ImGuiStorage *storage = ImGui::GetStateStorage();
+  const ImVec2 mouse = ImGui::GetIO().MousePos;
+  ImDrawList *draw_list = ImGui::GetWindowDrawList();
+
+  int axis_hit_order[6] = {0, 1, 2, 3, 4, 5};
+  std::sort(axis_hit_order, axis_hit_order + 6, [&](int lhs, int rhs) {
+    const bool lhs_front = axis_handles[lhs].depth >= 0.0f;
+    const bool rhs_front = axis_handles[rhs].depth >= 0.0f;
+    if (lhs_front != rhs_front) {
+      return lhs_front > rhs_front;
     }
-
-    ViewCubeAxisHandle axis_handles[6];
-    for (int index = 0; index < 6; ++index) {
-        const ViewCubePoint3 rotated_axis = rotate_by_view(view, scale_point3(axes[index].direction, 1.58f));
-        const ViewCubePoint2 projected_axis = project_view_cube_point(rotated_axis, center, radius);
-        axis_handles[index] = {
-            axes[index].id,
-            axes[index].label,
-            axes[index].color,
-            axes[index].positive,
-            to_imvec2(projected_axis),
-            axes[index].positive ? positive_axis_radius : negative_axis_radius,
-            rotated_axis.z,
-        };
+    if (axis_handles[lhs].depth != axis_handles[rhs].depth) {
+      return axis_handles[lhs].depth > axis_handles[rhs].depth;
     }
+    return axis_handles[lhs].positive > axis_handles[rhs].positive;
+  });
 
-    ImGui::PushID("guava_editor_view_cube");
-    ImGui::SetCursorScreenPos(cube_pos);
-    ImGui::InvisibleButton("##view_cube", cube_size, ImGuiButtonFlags_MouseButtonLeft);
-    const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
-    const bool active = ImGui::IsItemActive();
-    const bool dragging = active && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 2.5f);
-    const ImGuiID item_id = ImGui::GetItemID();
-    const ImGuiID pressed_target_key = item_id ^ 0x51a13d7u;
-    const ImGuiID dragged_key = item_id ^ 0x2c8f48b1u;
-    ImGuiStorage* storage = ImGui::GetStateStorage();
-    const ImVec2 mouse = ImGui::GetIO().MousePos;
-    ImDrawList* draw_list = ImGui::GetWindowDrawList();
-
-    int axis_hit_order[6] = { 0, 1, 2, 3, 4, 5 };
-    std::sort(axis_hit_order, axis_hit_order + 6, [&](int lhs, int rhs) {
-        const bool lhs_front = axis_handles[lhs].depth >= 0.0f;
-        const bool rhs_front = axis_handles[rhs].depth >= 0.0f;
-        if (lhs_front != rhs_front) {
-            return lhs_front > rhs_front;
-        }
-        if (axis_handles[lhs].depth != axis_handles[rhs].depth) {
-            return axis_handles[lhs].depth > axis_handles[rhs].depth;
-        }
-        return axis_handles[lhs].positive > axis_handles[rhs].positive;
-    });
-
-    uint32_t hovered_face = GUAVA_IMGUI_VIEW_CUBE_NONE;
-    if (hovered) {
-        for (int order_index = 0; order_index < 6; ++order_index) {
-            const ViewCubeAxisHandle& handle = axis_handles[axis_hit_order[order_index]];
-            if (distance_squared(handle.center, mouse) <= handle.radius * handle.radius) {
-                hovered_face = handle.id;
-                break;
-            }
-        }
-    }
-
-    int draw_order[6] = { 0, 1, 2, 3, 4, 5 };
-    std::sort(draw_order, draw_order + 6, [&](int lhs, int rhs) {
-        float lhs_depth = 0.0f;
-        float rhs_depth = 0.0f;
-        for (int corner = 0; corner < 4; ++corner) {
-            lhs_depth += rotated_vertices[faces[lhs].corners[corner]].z;
-            rhs_depth += rotated_vertices[faces[rhs].corners[corner]].z;
-        }
-        return lhs_depth < rhs_depth;
-    });
-
-    if (hovered_face == GUAVA_IMGUI_VIEW_CUBE_NONE && hovered) {
-        for (int order_index = 5; order_index >= 0; --order_index) {
-            const ViewCubeFaceInfo& face = faces[draw_order[order_index]];
-            const ViewCubePoint3 rotated_normal = rotate_by_view(view, face.normal);
-            if (rotated_normal.z <= 0.0f) {
-                continue;
-            }
-            ViewCubePoint2 polygon[4];
-            for (int corner = 0; corner < 4; ++corner) {
-                polygon[corner] = projected_vertices[face.corners[corner]];
-            }
-            if (point_in_quad(polygon, mouse)) {
-                hovered_face = face.id;
-                break;
-            }
-        }
-    }
-
-    if (ImGui::IsItemActivated()) {
-        storage->SetInt(pressed_target_key, static_cast<int>(hovered_face));
-        storage->SetBool(dragged_key, false);
-    }
-    if (dragging) {
-        storage->SetBool(dragged_key, true);
-        if (out_drag_delta != nullptr) {
-            out_drag_delta[0] = ImGui::GetIO().MouseDelta.x;
-            out_drag_delta[1] = ImGui::GetIO().MouseDelta.y;
-        }
-    }
-
-    draw_list->AddCircleFilled(
-        ImVec2(center.x, center.y + size * 0.026f),
-        plate_radius,
-        IM_COL32(0, 0, 0, hovered ? 54 : 34),
-        48
-    );
-    draw_list->AddCircleFilled(center, plate_radius, IM_COL32(20, 24, 30, hovered ? 214 : 184), 48);
-    draw_list->AddCircle(center, plate_radius, IM_COL32(122, 134, 150, hovered ? 132 : 92), 48, 1.2f);
-    draw_list->AddCircle(center, plate_radius * 0.82f, IM_COL32(255, 255, 255, 18), 48, 1.0f);
-
-    for (int index = 0; index < 6; ++index) {
-        const ViewCubeAxisHandle& handle = axis_handles[index];
-        if (handle.depth >= 0.0f) {
-            continue;
-        }
-        const bool axis_hovered = hovered_face == handle.id;
-        draw_list->AddLine(center, handle.center, scale_color(handle.color, axis_hovered ? 0.72f : 0.54f), axis_hovered ? 1.9f : 1.4f);
-        draw_list->AddCircleFilled(handle.center, handle.radius, IM_COL32(204, 210, 220, axis_hovered ? 210 : 168), 20);
-        draw_list->AddCircle(handle.center, handle.radius, scale_color(handle.color, axis_hovered ? 1.12f : 0.84f), 20, axis_hovered ? 1.5f : 1.1f);
-    }
-
+  uint32_t hovered_face = GUAVA_IMGUI_VIEW_CUBE_NONE;
+  if (hovered) {
     for (int order_index = 0; order_index < 6; ++order_index) {
-        const ViewCubeFaceInfo& face = faces[draw_order[order_index]];
-        const ViewCubePoint3 rotated_normal = rotate_by_view(view, face.normal);
-        if (rotated_normal.z <= 0.0f) {
-            continue;
-        }
+      const ViewCubeAxisHandle &handle =
+          axis_handles[axis_hit_order[order_index]];
+      if (distance_squared(handle.center, mouse) <=
+          handle.radius * handle.radius) {
+        hovered_face = handle.id;
+        break;
+      }
+    }
+  }
 
-        ViewCubePoint2 polygon[4];
-        ImVec2 polygon_imgui[4];
-        ImVec2 label_center(0.0f, 0.0f);
-        float min_x = projected_vertices[face.corners[0]].x;
-        float max_x = min_x;
-        float min_y = projected_vertices[face.corners[0]].y;
-        float max_y = min_y;
-        for (int corner = 0; corner < 4; ++corner) {
-            polygon[corner] = projected_vertices[face.corners[corner]];
-            polygon_imgui[corner] = to_imvec2(polygon[corner]);
-            label_center.x += polygon_imgui[corner].x;
-            label_center.y += polygon_imgui[corner].y;
-            min_x = (std::min)(min_x, polygon_imgui[corner].x);
-            max_x = (std::max)(max_x, polygon_imgui[corner].x);
-            min_y = (std::min)(min_y, polygon_imgui[corner].y);
-            max_y = (std::max)(max_y, polygon_imgui[corner].y);
-        }
-        label_center.x *= 0.25f;
-        label_center.y *= 0.25f;
+  int draw_order[6] = {0, 1, 2, 3, 4, 5};
+  std::sort(draw_order, draw_order + 6, [&](int lhs, int rhs) {
+    float lhs_depth = 0.0f;
+    float rhs_depth = 0.0f;
+    for (int corner = 0; corner < 4; ++corner) {
+      lhs_depth += rotated_vertices[faces[lhs].corners[corner]].z;
+      rhs_depth += rotated_vertices[faces[rhs].corners[corner]].z;
+    }
+    return lhs_depth < rhs_depth;
+  });
 
-        const bool face_hovered = hovered_face == face.id;
-        const float lighting = 0.76f + rotated_normal.z * 0.28f + (face_hovered ? 0.22f : 0.0f);
-        const ImU32 fill = scale_color(face.color, lighting);
-        draw_list->AddConvexPolyFilled(polygon_imgui, 4, fill);
-        draw_list->AddPolyline(polygon_imgui, 4, IM_COL32(240, 243, 248, face_hovered ? 224 : 132), ImDrawFlags_Closed, face_hovered ? 1.7f : 1.1f);
+  if (hovered_face == GUAVA_IMGUI_VIEW_CUBE_NONE && hovered) {
+    for (int order_index = 5; order_index >= 0; --order_index) {
+      const ViewCubeFaceInfo &face = faces[draw_order[order_index]];
+      const ViewCubePoint3 rotated_normal = rotate_by_view(view, face.normal);
+      if (rotated_normal.z <= 0.0f) {
+        continue;
+      }
+      ViewCubePoint2 polygon[4];
+      for (int corner = 0; corner < 4; ++corner) {
+        polygon[corner] = projected_vertices[face.corners[corner]];
+      }
+      if (point_in_quad(polygon, mouse)) {
+        hovered_face = face.id;
+        break;
+      }
+    }
+  }
 
-        const float font_size = (std::max)(10.0f, (std::min)(12.5f, size * 0.105f));
-        const ImVec2 label_size = ImGui::CalcTextSize(face.label);
-        if ((max_x - min_x) >= label_size.x + 8.0f && (max_y - min_y) >= font_size + 6.0f) {
-            draw_list->AddText(
-                ImGui::GetFont(),
-                font_size,
-                ImVec2(label_center.x - label_size.x * 0.5f, label_center.y - font_size * 0.5f),
-                IM_COL32(246, 248, 252, face_hovered ? 252 : 228),
-                face.label
-            );
-        }
+  if (ImGui::IsItemActivated()) {
+    storage->SetInt(pressed_target_key, static_cast<int>(hovered_face));
+    storage->SetBool(dragged_key, false);
+  }
+  if (dragging) {
+    storage->SetBool(dragged_key, true);
+    if (out_drag_delta != nullptr) {
+      out_drag_delta[0] = ImGui::GetIO().MouseDelta.x;
+      out_drag_delta[1] = ImGui::GetIO().MouseDelta.y;
+    }
+  }
+
+  draw_list->AddCircleFilled(ImVec2(center.x, center.y + size * 0.026f),
+                             plate_radius, IM_COL32(0, 0, 0, hovered ? 54 : 34),
+                             48);
+  draw_list->AddCircleFilled(center, plate_radius,
+                             IM_COL32(20, 24, 30, hovered ? 214 : 184), 48);
+  draw_list->AddCircle(center, plate_radius,
+                       IM_COL32(122, 134, 150, hovered ? 132 : 92), 48, 1.2f);
+  draw_list->AddCircle(center, plate_radius * 0.82f,
+                       IM_COL32(255, 255, 255, 18), 48, 1.0f);
+
+  for (int index = 0; index < 6; ++index) {
+    const ViewCubeAxisHandle &handle = axis_handles[index];
+    if (handle.depth >= 0.0f) {
+      continue;
+    }
+    const bool axis_hovered = hovered_face == handle.id;
+    draw_list->AddLine(center, handle.center,
+                       scale_color(handle.color, axis_hovered ? 0.72f : 0.54f),
+                       axis_hovered ? 1.9f : 1.4f);
+    draw_list->AddCircleFilled(
+        handle.center, handle.radius,
+        IM_COL32(204, 210, 220, axis_hovered ? 210 : 168), 20);
+    draw_list->AddCircle(
+        handle.center, handle.radius,
+        scale_color(handle.color, axis_hovered ? 1.12f : 0.84f), 20,
+        axis_hovered ? 1.5f : 1.1f);
+  }
+
+  for (int order_index = 0; order_index < 6; ++order_index) {
+    const ViewCubeFaceInfo &face = faces[draw_order[order_index]];
+    const ViewCubePoint3 rotated_normal = rotate_by_view(view, face.normal);
+    if (rotated_normal.z <= 0.0f) {
+      continue;
     }
 
-    for (int index = 0; index < 6; ++index) {
-        const ViewCubeAxisHandle& handle = axis_handles[index];
-        if (handle.depth < 0.0f) {
-            continue;
-        }
-        const bool axis_hovered = hovered_face == handle.id;
-        const float line_thickness = handle.positive ? (axis_hovered ? 2.4f : 1.9f) : (axis_hovered ? 1.9f : 1.4f);
-        draw_list->AddLine(center, handle.center, scale_color(handle.color, axis_hovered ? 1.08f : 0.82f), line_thickness);
-
-        if (handle.positive) {
-            draw_list->AddCircleFilled(handle.center, handle.radius, handle.color, 24);
-            draw_list->AddCircle(handle.center, handle.radius, IM_COL32(246, 248, 252, axis_hovered ? 244 : 182), 24, axis_hovered ? 1.8f : 1.2f);
-            const ImVec2 label_size = ImGui::CalcTextSize(handle.label);
-            draw_list->AddText(
-                ImGui::GetFont(),
-                (std::max)(10.0f, (std::min)(12.5f, size * 0.11f)),
-                ImVec2(handle.center.x - label_size.x * 0.5f, handle.center.y - ImGui::GetFontSize() * 0.52f),
-                IM_COL32(248, 250, 253, 248),
-                handle.label
-            );
-        } else {
-            draw_list->AddCircleFilled(handle.center, handle.radius, IM_COL32(208, 214, 224, axis_hovered ? 220 : 184), 20);
-            draw_list->AddCircle(handle.center, handle.radius, scale_color(handle.color, axis_hovered ? 1.08f : 0.82f), 20, axis_hovered ? 1.6f : 1.1f);
-        }
+    ViewCubePoint2 polygon[4];
+    ImVec2 polygon_imgui[4];
+    ImVec2 label_center(0.0f, 0.0f);
+    float min_x = projected_vertices[face.corners[0]].x;
+    float max_x = min_x;
+    float min_y = projected_vertices[face.corners[0]].y;
+    float max_y = min_y;
+    for (int corner = 0; corner < 4; ++corner) {
+      polygon[corner] = projected_vertices[face.corners[corner]];
+      polygon_imgui[corner] = to_imvec2(polygon[corner]);
+      label_center.x += polygon_imgui[corner].x;
+      label_center.y += polygon_imgui[corner].y;
+      min_x = (std::min)(min_x, polygon_imgui[corner].x);
+      max_x = (std::max)(max_x, polygon_imgui[corner].x);
+      min_y = (std::min)(min_y, polygon_imgui[corner].y);
+      max_y = (std::max)(max_y, polygon_imgui[corner].y);
     }
+    label_center.x *= 0.25f;
+    label_center.y *= 0.25f;
 
-    draw_list->AddCircleFilled(center, size * 0.03f, IM_COL32(234, 238, 244, hovered ? 228 : 196), 18);
+    const bool face_hovered = hovered_face == face.id;
+    const float lighting =
+        0.76f + rotated_normal.z * 0.28f + (face_hovered ? 0.22f : 0.0f);
+    const ImU32 fill = scale_color(face.color, lighting);
+    draw_list->AddConvexPolyFilled(polygon_imgui, 4, fill);
+    draw_list->AddPolyline(polygon_imgui, 4,
+                           IM_COL32(240, 243, 248, face_hovered ? 224 : 132),
+                           ImDrawFlags_Closed, face_hovered ? 1.7f : 1.1f);
 
-    uint32_t result = GUAVA_IMGUI_VIEW_CUBE_NONE;
-    if (hovered) {
-        result |= GUAVA_IMGUI_VIEW_CUBE_HOVERED;
+    const float font_size = (std::max)(10.0f, (std::min)(12.5f, size * 0.105f));
+    const ImVec2 label_size = ImGui::CalcTextSize(face.label);
+    if ((max_x - min_x) >= label_size.x + 8.0f &&
+        (max_y - min_y) >= font_size + 6.0f) {
+      draw_list->AddText(ImGui::GetFont(), font_size,
+                         ImVec2(label_center.x - label_size.x * 0.5f,
+                                label_center.y - font_size * 0.5f),
+                         IM_COL32(246, 248, 252, face_hovered ? 252 : 228),
+                         face.label);
     }
-    if (active) {
-        result |= GUAVA_IMGUI_VIEW_CUBE_ACTIVE;
-    }
-    if (dragging) {
-        result |= GUAVA_IMGUI_VIEW_CUBE_DRAGGING;
-    }
+  }
 
-    if (ImGui::IsItemDeactivated()) {
-        const uint32_t pressed_target = static_cast<uint32_t>(storage->GetInt(pressed_target_key, 0));
-        const bool was_dragged = storage->GetBool(dragged_key, false);
-        if (!was_dragged && pressed_target != GUAVA_IMGUI_VIEW_CUBE_NONE && hovered_face == pressed_target) {
-            result = (result & ~0xffu) | pressed_target;
-        }
-        storage->SetInt(pressed_target_key, 0);
-        storage->SetBool(dragged_key, false);
+  for (int index = 0; index < 6; ++index) {
+    const ViewCubeAxisHandle &handle = axis_handles[index];
+    if (handle.depth < 0.0f) {
+      continue;
     }
+    const bool axis_hovered = hovered_face == handle.id;
+    const float line_thickness = handle.positive ? (axis_hovered ? 2.4f : 1.9f)
+                                                 : (axis_hovered ? 1.9f : 1.4f);
+    draw_list->AddLine(center, handle.center,
+                       scale_color(handle.color, axis_hovered ? 1.08f : 0.82f),
+                       line_thickness);
 
-    ImGui::PopID();
-    return result;
+    if (handle.positive) {
+      draw_list->AddCircleFilled(handle.center, handle.radius, handle.color,
+                                 24);
+      draw_list->AddCircle(handle.center, handle.radius,
+                           IM_COL32(246, 248, 252, axis_hovered ? 244 : 182),
+                           24, axis_hovered ? 1.8f : 1.2f);
+      const ImVec2 label_size = ImGui::CalcTextSize(handle.label);
+      draw_list->AddText(ImGui::GetFont(),
+                         (std::max)(10.0f, (std::min)(12.5f, size * 0.11f)),
+                         ImVec2(handle.center.x - label_size.x * 0.5f,
+                                handle.center.y - ImGui::GetFontSize() * 0.52f),
+                         IM_COL32(248, 250, 253, 248), handle.label);
+    } else {
+      draw_list->AddCircleFilled(
+          handle.center, handle.radius,
+          IM_COL32(208, 214, 224, axis_hovered ? 220 : 184), 20);
+      draw_list->AddCircle(
+          handle.center, handle.radius,
+          scale_color(handle.color, axis_hovered ? 1.08f : 0.82f), 20,
+          axis_hovered ? 1.6f : 1.1f);
+    }
+  }
+
+  draw_list->AddCircleFilled(center, size * 0.03f,
+                             IM_COL32(234, 238, 244, hovered ? 228 : 196), 18);
+
+  uint32_t result = GUAVA_IMGUI_VIEW_CUBE_NONE;
+  if (hovered) {
+    result |= GUAVA_IMGUI_VIEW_CUBE_HOVERED;
+  }
+  if (active) {
+    result |= GUAVA_IMGUI_VIEW_CUBE_ACTIVE;
+  }
+  if (dragging) {
+    result |= GUAVA_IMGUI_VIEW_CUBE_DRAGGING;
+  }
+
+  if (ImGui::IsItemDeactivated()) {
+    const uint32_t pressed_target =
+        static_cast<uint32_t>(storage->GetInt(pressed_target_key, 0));
+    const bool was_dragged = storage->GetBool(dragged_key, false);
+    if (!was_dragged && pressed_target != GUAVA_IMGUI_VIEW_CUBE_NONE &&
+        hovered_face == pressed_target) {
+      result = (result & ~0xffu) | pressed_target;
+    }
+    storage->SetInt(pressed_target_key, 0);
+    storage->SetBool(dragged_key, false);
+  }
+
+  ImGui::PopID();
+  return result;
 }

@@ -6,6 +6,7 @@ const utils = @import("../../common/utils.zig");
 const history = @import("../../actions/history.zig");
 const content_browser = @import("../../assets/browser.zig");
 const inspector = @import("inspector.zig");
+const camera = @import("../../interaction/camera.zig");
 const ui_icons = @import("../icons.zig");
 const layout = @import("../layout.zig");
 
@@ -13,6 +14,44 @@ const hierarchy_row_icon_size: f32 = 14.0;
 const hierarchy_status_icon_size: f32 = 16.0;
 const hierarchy_status_button_extent: f32 = 28.0;
 const hierarchy_status_column_width: f32 = 34.0;
+const hierarchy_drag_preview_icon_size: f32 = 18.0;
+
+fn entityDragPreviewTypeLabel(state: *const EditorState, entity: *const engine.scene.Entity) []const u8 {
+    if (entity.is_folder) {
+        return state.text(.folder);
+    }
+    if (entity.camera != null) {
+        return state.text(.camera);
+    }
+    if (entity.light != null) {
+        return state.text(.light);
+    }
+    if (entity.vfx != null) {
+        return state.text(.vfx);
+    }
+    if (entity.mesh != null) {
+        return state.text(.mesh);
+    }
+    return state.text(.empty);
+}
+
+fn drawHierarchyDragPreview(state: *EditorState, entity: *const engine.scene.Entity, icon_texture: *engine.rhi.Texture) void {
+    if (!engine.ui.ImGui.beginDragDropSourceU64(state_mod.entity_drag_payload, entity.id)) {
+        return;
+    }
+    defer engine.ui.ImGui.endDragDropSource();
+
+    var preview_buffer: [320]u8 = undefined;
+    const preview_text = std.fmt.bufPrint(
+        &preview_buffer,
+        "{s}\n{s}",
+        .{ entity.name, entityDragPreviewTypeLabel(state, entity) },
+    ) catch entity.name;
+
+    engine.ui.ImGui.image(icon_texture, hierarchy_drag_preview_icon_size, hierarchy_drag_preview_icon_size);
+    engine.ui.ImGui.sameLine();
+    engine.ui.ImGui.text(preview_text);
+}
 
 pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     var title_buffer: [80]u8 = undefined;
@@ -158,16 +197,20 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
         if (state.hierarchy_rename_entity != null and state.hierarchy_rename_entity.? != entity_id) {
             cancelHierarchyRename(state);
         }
-        if (layer_context.input.modifiers.shift or layer_context.input.modifiers.ctrl or layer_context.input.modifiers.super) {
+        const multi_select = layer_context.input.modifiers.shift or layer_context.input.modifiers.ctrl or layer_context.input.modifiers.super;
+        if (multi_select) {
             try layer_context.renderer.toggleSelection(entity_id);
         } else {
             try layer_context.renderer.replaceSelection(entity_id);
         }
         utils.syncInspectorNameBuffer(state, layer_context);
+        if (!multi_select and layer_context.input.wasMouseDoubleClicked(.left)) {
+            camera.focusSelection(state, layer_context);
+        }
     }
 
     if (!is_locked and !is_frozen and !rename_active) {
-        _ = engine.ui.ImGui.dragDropSourceU64(state_mod.entity_drag_payload, entity_id, entity.name);
+        drawHierarchyDragPreview(state, entity, icon_texture);
         var dropped_child: u64 = 0;
         if (engine.ui.ImGui.acceptDragDropPayloadU64(state_mod.entity_drag_payload, &dropped_child)) {
             if (try handleHierarchyEntityDrop(state, layer_context, dropped_child, entity_id)) {

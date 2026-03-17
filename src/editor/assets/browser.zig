@@ -13,6 +13,7 @@ const layout = @import("../ui/layout.zig");
 const AssetKind = state_mod.AssetKind;
 const AssetEntry = state_mod.AssetEntry;
 const BottomPanelTab = state_mod.BottomPanelTab;
+const asset_drag_preview_icon_size: f32 = 24.0;
 
 pub fn drawContentBrowser(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     var title_buffer: [96]u8 = undefined;
@@ -46,6 +47,39 @@ fn drawBottomTabs(state: *EditorState) !void {
     }
     if (drawTabButton(state, .console, state.text(.console), tab_width)) {
         state.bottom_panel_tab = .console;
+    }
+}
+
+fn drawAssetDragPreview(
+    state: *EditorState,
+    entry: AssetEntry,
+    payload_type: []const u8,
+    payload_value: u64,
+    preview_texture: *const engine.rhi.Texture,
+) void {
+    if (!engine.ui.ImGui.beginDragDropSourceU64(payload_type, payload_value)) {
+        return;
+    }
+    defer engine.ui.ImGui.endDragDropSource();
+
+    var preview_buffer: [384]u8 = undefined;
+    const preview_text = std.fmt.bufPrint(
+        &preview_buffer,
+        "{s}\n{s}",
+        .{ entry.name, utils.assetKindLabel(state, entry.kind) },
+    ) catch entry.name;
+
+    engine.ui.ImGui.image(preview_texture, asset_drag_preview_icon_size, asset_drag_preview_icon_size);
+    engine.ui.ImGui.sameLine();
+    engine.ui.ImGui.text(preview_text);
+}
+
+fn drawAssetDragSource(state: *EditorState, entry: AssetEntry, index: usize, preview_texture: *const engine.rhi.Texture) void {
+    switch (entry.kind) {
+        .model => drawAssetDragPreview(state, entry, state_mod.asset_model_drag_payload, @intCast(index), preview_texture),
+        .material => drawAssetDragPreview(state, entry, state_mod.asset_material_drag_payload, @intCast(index), preview_texture),
+        .texture => drawAssetDragPreview(state, entry, state_mod.asset_texture_drag_payload, @intCast(index), preview_texture),
+        else => {},
     }
 }
 
@@ -209,6 +243,7 @@ fn drawAssetListView(state: *EditorState, layer_context: *engine.core.LayerConte
         if (engine.ui.ImGui.selectable(button_id, selected, false, 0.0, row_height)) {
             state.selected_asset_index = index;
         }
+        drawAssetDragSource(state, entry, index, row_texture);
 
         // Draw icon on the same line
         engine.ui.ImGui.sameLine();
@@ -217,14 +252,6 @@ fn drawAssetListView(state: *EditorState, layer_context: *engine.core.LayerConte
         // Draw name on the same line
         engine.ui.ImGui.sameLine();
         engine.ui.ImGui.text(entry.name);
-
-        // Add drag drop source
-        switch (entry.kind) {
-            .model => _ = engine.ui.ImGui.dragDropSourceU64(state_mod.asset_model_drag_payload, @intCast(index), entry.name),
-            .material => _ = engine.ui.ImGui.dragDropSourceU64(state_mod.asset_material_drag_payload, @intCast(index), entry.name),
-            .texture => _ = engine.ui.ImGui.dragDropSourceU64(state_mod.asset_texture_drag_payload, @intCast(index), entry.name),
-            else => {},
-        }
     }
 }
 
@@ -269,12 +296,7 @@ fn drawAssetCard(
     )) {
         state.selected_asset_index = index;
     }
-    switch (entry.kind) {
-        .model => _ = engine.ui.ImGui.dragDropSourceU64(state_mod.asset_model_drag_payload, @intCast(index), entry.name),
-        .material => _ = engine.ui.ImGui.dragDropSourceU64(state_mod.asset_material_drag_payload, @intCast(index), entry.name),
-        .texture => _ = engine.ui.ImGui.dragDropSourceU64(state_mod.asset_texture_drag_payload, @intCast(index), entry.name),
-        else => {},
-    }
+    drawAssetDragSource(state, entry, index, card_texture);
 
     const label_y = icon_size + 18.0;
     engine.ui.ImGui.setCursorPos(.{ 8.0, label_y });

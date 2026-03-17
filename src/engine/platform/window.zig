@@ -50,6 +50,7 @@ pub const Event = struct {
     y: f32 = 0.0,
     delta_x: f32 = 0.0,
     delta_y: f32 = 0.0,
+    clicks: u8 = 0,
     button: ?input_mod.MouseButton = null,
     key: ?input_mod.Key = null,
     repeat: bool = false,
@@ -216,6 +217,7 @@ pub const Window = struct {
                             .raw = raw_event,
                             .x = raw_event.button.x,
                             .y = raw_event.button.y,
+                            .clicks = raw_event.button.clicks,
                             .button = button,
                             .modifiers = currentModifiers(),
                         };
@@ -229,6 +231,7 @@ pub const Window = struct {
                             .raw = raw_event,
                             .x = raw_event.button.x,
                             .y = raw_event.button.y,
+                            .clicks = raw_event.button.clicks,
                             .button = button,
                             .modifiers = currentModifiers(),
                         };

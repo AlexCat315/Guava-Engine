@@ -58,12 +58,14 @@ pub const InputState = struct {
     mouse_down: [mouse_button_count]bool = [_]bool{false} ** mouse_button_count,
     mouse_pressed: [mouse_button_count]bool = [_]bool{false} ** mouse_button_count,
     mouse_released: [mouse_button_count]bool = [_]bool{false} ** mouse_button_count,
+    mouse_double_clicked: [mouse_button_count]bool = [_]bool{false} ** mouse_button_count,
 
     pub fn beginFrame(self: *InputState) void {
         @memset(self.key_pressed[0..], false);
         @memset(self.key_released[0..], false);
         @memset(self.mouse_pressed[0..], false);
         @memset(self.mouse_released[0..], false);
+        @memset(self.mouse_double_clicked[0..], false);
         self.mouse_delta = .{ 0.0, 0.0 };
         self.mouse_wheel = .{ 0.0, 0.0 };
     }
@@ -85,12 +87,15 @@ pub const InputState = struct {
         self.key_down[index] = is_down;
     }
 
-    pub fn setMouseButton(self: *InputState, button: MouseButton, is_down: bool) void {
+    pub fn setMouseButton(self: *InputState, button: MouseButton, is_down: bool, clicks: u8) void {
         const index = @intFromEnum(button);
         const was_down = self.mouse_down[index];
         if (is_down) {
             if (!was_down) {
                 self.mouse_pressed[index] = true;
+                if (clicks >= 2) {
+                    self.mouse_double_clicked[index] = true;
+                }
             }
         } else if (was_down) {
             self.mouse_released[index] = true;
@@ -136,4 +141,28 @@ pub const InputState = struct {
     pub fn wasMouseReleased(self: *const InputState, button: MouseButton) bool {
         return self.mouse_released[@intFromEnum(button)];
     }
+
+    pub fn wasMouseDoubleClicked(self: *const InputState, button: MouseButton) bool {
+        return self.mouse_double_clicked[@intFromEnum(button)];
+    }
 };
+
+test "mouse double click is reported only on the press frame" {
+    var input = InputState{};
+
+    input.beginFrame();
+    input.setMouseButton(.left, true, 2);
+    try std.testing.expect(input.wasMousePressed(.left));
+    try std.testing.expect(input.wasMouseDoubleClicked(.left));
+
+    input.beginFrame();
+    try std.testing.expect(!input.wasMouseDoubleClicked(.left));
+
+    input.setMouseButton(.left, false, 0);
+    try std.testing.expect(input.wasMouseReleased(.left));
+
+    input.beginFrame();
+    input.setMouseButton(.left, true, 1);
+    try std.testing.expect(input.wasMousePressed(.left));
+    try std.testing.expect(!input.wasMouseDoubleClicked(.left));
+}

@@ -184,7 +184,7 @@ pub const Application = struct {
                     self.input.setModifiers(event.modifiers);
                     self.input.updateMousePosition(event.x, event.y);
                     if (event.button) |button| {
-                        self.input.setMouseButton(button, true);
+                        self.input.setMouseButton(button, true, event.clicks);
                         if (button == .left and !event.modifiers.alt and !imgui_mod.wantsCaptureMouse()) {
                             if (drawablePickPosition(&self.window, event.x, event.y)) |position| {
                                 try self.renderer.requestSelectionReadback(
@@ -200,7 +200,7 @@ pub const Application = struct {
                     self.input.setModifiers(event.modifiers);
                     self.input.updateMousePosition(event.x, event.y);
                     if (event.button) |button| {
-                        self.input.setMouseButton(button, false);
+                        self.input.setMouseButton(button, false, event.clicks);
                     }
                 },
                 .mouse_moved => {

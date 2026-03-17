@@ -22,6 +22,7 @@ const place_actor_card_rounding: f32 = 8.0;
 const place_actor_card_icon_size: f32 = 18.0;
 const place_actor_card_icon_tint = [4]u8{ 186, 203, 228, 255 };
 const place_actor_card_text_muted = [4]f32{ 0.66, 0.70, 0.77, 1.0 };
+const place_actor_drag_preview_icon_size: f32 = 20.0;
 const place_actor_card_idle = ui_icons.ButtonPalette{
     .button = .{ 0.18, 0.19, 0.22, 0.72 },
     .hovered = .{ 0.24, 0.26, 0.30, 0.88 },
@@ -122,6 +123,20 @@ fn getEntriesForCategory(category: state_mod.PlaceActorCategory) []const PlaceAc
         .shapes => shapes_entries[0..],
         .vfx => vfx_entries[0..],
     };
+}
+
+fn drawPlaceActorDragPreview(kind: state_mod.PlaceActorKind, label: []const u8, description: []const u8, icon_texture: *engine.rhi.Texture) void {
+    if (!engine.ui.ImGui.beginDragDropSourceU64(state_mod.place_actor_drag_payload, @intFromEnum(kind))) {
+        return;
+    }
+    defer engine.ui.ImGui.endDragDropSource();
+
+    var preview_buffer: [320]u8 = undefined;
+    const preview_text = std.fmt.bufPrint(&preview_buffer, "{s}\n{s}", .{ label, description }) catch label;
+
+    engine.ui.ImGui.image(icon_texture, place_actor_drag_preview_icon_size, place_actor_drag_preview_icon_size);
+    engine.ui.ImGui.sameLine();
+    engine.ui.ImGui.text(preview_text);
 }
 
 fn categoryTabWidth(available_width: f32, category_count: usize) f32 {
@@ -284,8 +299,7 @@ fn drawPlaceActorEntry(
         }
 
         if (row_hovered) {
-            const kind_int = @intFromEnum(entry.kind);
-            _ = engine.ui.ImGui.dragDropSourceU64(state_mod.place_actor_drag_payload, kind_int, label);
+            drawPlaceActorDragPreview(entry.kind, label, description, icon_texture);
         }
 
         const icon_y = (place_actor_card_height - place_actor_card_icon_size) * 0.5 - 2.0;

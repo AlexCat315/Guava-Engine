@@ -12,111 +12,112 @@ extern "C" {
 #endif
 
 enum {
-    GUAVA_IMGUI_WINDOW_NONE = 0,
-    GUAVA_IMGUI_WINDOW_NO_TITLE_BAR = 1 << 0,
-    GUAVA_IMGUI_WINDOW_NO_RESIZE = 1 << 1,
-    GUAVA_IMGUI_WINDOW_NO_MOVE = 1 << 2,
-    GUAVA_IMGUI_WINDOW_NO_SCROLLBAR = 1 << 3,
-    GUAVA_IMGUI_WINDOW_NO_SAVED_SETTINGS = 1 << 4,
-    GUAVA_IMGUI_WINDOW_NO_DOCKING = 1 << 5,
-    GUAVA_IMGUI_WINDOW_NO_COLLAPSE = 1 << 6,
-    GUAVA_IMGUI_WINDOW_NO_BACKGROUND = 1 << 7,
-    GUAVA_IMGUI_WINDOW_NO_DECORATION = 1 << 8,
-    GUAVA_IMGUI_WINDOW_ALWAYS_AUTO_RESIZE = 1 << 9,
+  GUAVA_IMGUI_WINDOW_NONE = 0,
+  GUAVA_IMGUI_WINDOW_NO_TITLE_BAR = 1 << 0,
+  GUAVA_IMGUI_WINDOW_NO_RESIZE = 1 << 1,
+  GUAVA_IMGUI_WINDOW_NO_MOVE = 1 << 2,
+  GUAVA_IMGUI_WINDOW_NO_SCROLLBAR = 1 << 3,
+  GUAVA_IMGUI_WINDOW_NO_SAVED_SETTINGS = 1 << 4,
+  GUAVA_IMGUI_WINDOW_NO_DOCKING = 1 << 5,
+  GUAVA_IMGUI_WINDOW_NO_COLLAPSE = 1 << 6,
+  GUAVA_IMGUI_WINDOW_NO_BACKGROUND = 1 << 7,
+  GUAVA_IMGUI_WINDOW_NO_DECORATION = 1 << 8,
+  GUAVA_IMGUI_WINDOW_ALWAYS_AUTO_RESIZE = 1 << 9,
 };
 
 enum {
-    GUAVA_IMGUI_WINDOW_CONTROL_MINIMIZE = 0,
-    GUAVA_IMGUI_WINDOW_CONTROL_MAXIMIZE = 1,
-    GUAVA_IMGUI_WINDOW_CONTROL_CLOSE = 2,
+  GUAVA_IMGUI_WINDOW_CONTROL_MINIMIZE = 0,
+  GUAVA_IMGUI_WINDOW_CONTROL_MAXIMIZE = 1,
+  GUAVA_IMGUI_WINDOW_CONTROL_CLOSE = 2,
 };
 
 enum {
-    GUAVA_IMGUI_STYLE_COLOR_TEXT = 0,
-    GUAVA_IMGUI_STYLE_COLOR_BUTTON = 1,
-    GUAVA_IMGUI_STYLE_COLOR_BUTTON_HOVERED = 2,
-    GUAVA_IMGUI_STYLE_COLOR_BUTTON_ACTIVE = 3,
+  GUAVA_IMGUI_STYLE_COLOR_TEXT = 0,
+  GUAVA_IMGUI_STYLE_COLOR_BUTTON = 1,
+  GUAVA_IMGUI_STYLE_COLOR_BUTTON_HOVERED = 2,
+  GUAVA_IMGUI_STYLE_COLOR_BUTTON_ACTIVE = 3,
 };
 
 enum {
-    GUAVA_IMGUI_STYLE_VAR_ALPHA = 0,
-    GUAVA_IMGUI_STYLE_VAR_FRAME_PADDING = 1,
-    GUAVA_IMGUI_STYLE_VAR_ITEM_SPACING = 2,
-    GUAVA_IMGUI_STYLE_VAR_FRAME_ROUNDING = 3,
-    GUAVA_IMGUI_STYLE_VAR_WINDOW_MIN_SIZE = 4,
+  GUAVA_IMGUI_STYLE_VAR_ALPHA = 0,
+  GUAVA_IMGUI_STYLE_VAR_FRAME_PADDING = 1,
+  GUAVA_IMGUI_STYLE_VAR_ITEM_SPACING = 2,
+  GUAVA_IMGUI_STYLE_VAR_FRAME_ROUNDING = 3,
+  GUAVA_IMGUI_STYLE_VAR_WINDOW_MIN_SIZE = 4,
 };
 
 enum {
-    GUAVA_IMGUI_TREE_NODE_OPEN = 1 << 0,
-    GUAVA_IMGUI_TREE_NODE_CLICKED = 1 << 1,
-    GUAVA_IMGUI_TREE_NODE_RENAME_COMMITTED = 1 << 2,
-    GUAVA_IMGUI_TREE_NODE_RENAME_FINISHED = 1 << 3,
+  GUAVA_IMGUI_TREE_NODE_OPEN = 1 << 0,
+  GUAVA_IMGUI_TREE_NODE_CLICKED = 1 << 1,
+  GUAVA_IMGUI_TREE_NODE_RENAME_COMMITTED = 1 << 2,
+  GUAVA_IMGUI_TREE_NODE_RENAME_FINISHED = 1 << 3,
 };
 
 enum {
-    GUAVA_IMGUI_VIEW_CUBE_NONE = 0,
-    GUAVA_IMGUI_VIEW_CUBE_FRONT = 1,
-    GUAVA_IMGUI_VIEW_CUBE_BACK = 2,
-    GUAVA_IMGUI_VIEW_CUBE_LEFT = 3,
-    GUAVA_IMGUI_VIEW_CUBE_RIGHT = 4,
-    GUAVA_IMGUI_VIEW_CUBE_TOP = 5,
-    GUAVA_IMGUI_VIEW_CUBE_BOTTOM = 6,
-    GUAVA_IMGUI_VIEW_CUBE_HOVERED = 1 << 8,
-    GUAVA_IMGUI_VIEW_CUBE_ACTIVE = 1 << 9,
-    GUAVA_IMGUI_VIEW_CUBE_DRAGGING = 1 << 10,
+  GUAVA_IMGUI_VIEW_CUBE_NONE = 0,
+  GUAVA_IMGUI_VIEW_CUBE_FRONT = 1,
+  GUAVA_IMGUI_VIEW_CUBE_BACK = 2,
+  GUAVA_IMGUI_VIEW_CUBE_LEFT = 3,
+  GUAVA_IMGUI_VIEW_CUBE_RIGHT = 4,
+  GUAVA_IMGUI_VIEW_CUBE_TOP = 5,
+  GUAVA_IMGUI_VIEW_CUBE_BOTTOM = 6,
+  GUAVA_IMGUI_VIEW_CUBE_HOVERED = 1 << 8,
+  GUAVA_IMGUI_VIEW_CUBE_ACTIVE = 1 << 9,
+  GUAVA_IMGUI_VIEW_CUBE_DRAGGING = 1 << 10,
 };
 
-bool guava_imgui_init(SDL_Window* window, SDL_GPUDevice* device, SDL_GPUTextureFormat color_target_format);
+bool guava_imgui_init(SDL_Window *window, SDL_GPUDevice *device,
+                      SDL_GPUTextureFormat color_target_format);
 void guava_imgui_shutdown(void);
-void guava_imgui_process_event(const SDL_Event* event);
+void guava_imgui_process_event(const SDL_Event *event);
 void guava_imgui_new_frame(void);
 void guava_imgui_begin_dockspace(void);
 void guava_imgui_reset_default_layout(void);
 void guava_imgui_load_animation_layout(void);
 void guava_imgui_save_layout(void);
-bool guava_imgui_save_layout_to_path(const char* path, size_t path_len);
-bool guava_imgui_load_layout_from_path(const char* path, size_t path_len);
-void guava_imgui_prepare(SDL_GPUCommandBuffer* command_buffer);
-void guava_imgui_render(SDL_GPUCommandBuffer* command_buffer, SDL_GPURenderPass* render_pass);
+bool guava_imgui_save_layout_to_path(const char *path, size_t path_len);
+bool guava_imgui_load_layout_from_path(const char *path, size_t path_len);
+void guava_imgui_prepare(SDL_GPUCommandBuffer *command_buffer);
+void guava_imgui_render(SDL_GPUCommandBuffer *command_buffer,
+                        SDL_GPURenderPass *render_pass);
 bool guava_imgui_want_capture_mouse(void);
 bool guava_imgui_want_capture_keyboard(void);
 
-bool guava_imgui_begin_window(const char* name, size_t name_len);
-bool guava_imgui_begin_window_flags(const char* name, size_t name_len, uint32_t flags);
-bool guava_imgui_begin_window_open(const char* name, size_t name_len, bool* open);
-bool guava_imgui_begin_window_flags_open(const char* name, size_t name_len, bool* open, uint32_t flags);
+bool guava_imgui_begin_window(const char *name, size_t name_len);
+bool guava_imgui_begin_window_flags(const char *name, size_t name_len,
+                                    uint32_t flags);
+bool guava_imgui_begin_window_open(const char *name, size_t name_len,
+                                   bool *open);
+bool guava_imgui_begin_window_flags_open(const char *name, size_t name_len,
+                                         bool *open, uint32_t flags);
 void guava_imgui_end_window(void);
 bool guava_imgui_begin_main_menu_bar(void);
 void guava_imgui_end_main_menu_bar(void);
-bool guava_imgui_begin_menu(const char* label, size_t label_len);
+bool guava_imgui_begin_menu(const char *label, size_t label_len);
 void guava_imgui_end_menu(void);
-void guava_imgui_open_popup(const char* id, size_t id_len);
-bool guava_imgui_begin_popup(const char* id, size_t id_len);
-bool guava_imgui_is_popup_open(const char* id, size_t id_len);
-bool guava_imgui_begin_popup_context_item(const char* id, size_t id_len);
-bool guava_imgui_begin_popup_context_window(const char* id, size_t id_len, bool open_over_items);
+void guava_imgui_open_popup(const char *id, size_t id_len);
+bool guava_imgui_begin_popup(const char *id, size_t id_len);
+bool guava_imgui_is_popup_open(const char *id, size_t id_len);
+bool guava_imgui_begin_popup_context_item(const char *id, size_t id_len);
+bool guava_imgui_begin_popup_context_window(const char *id, size_t id_len,
+                                            bool open_over_items);
 void guava_imgui_end_popup(void);
-bool guava_imgui_begin_combo(const char* label, size_t label_len, const char* preview, size_t preview_len);
+bool guava_imgui_begin_combo(const char *label, size_t label_len,
+                             const char *preview, size_t preview_len);
 void guava_imgui_end_combo(void);
-bool guava_imgui_menu_item(const char* label, size_t label_len, const char* shortcut, size_t shortcut_len, bool selected, bool enabled);
-bool guava_imgui_button(const char* label, size_t label_len);
-bool guava_imgui_button_ex(const char* label, size_t label_len, float width, float height);
-bool guava_imgui_image_button(
-    const char* id,
-    size_t id_len,
-    SDL_GPUTexture* texture,
-    float width,
-    float height,
-    float bg_r,
-    float bg_g,
-    float bg_b,
-    float bg_a,
-    float tint_r,
-    float tint_g,
-    float tint_b,
-    float tint_a
-);
-bool guava_imgui_invisible_button(const char* id, size_t id_len, float width, float height);
+bool guava_imgui_menu_item(const char *label, size_t label_len,
+                           const char *shortcut, size_t shortcut_len,
+                           bool selected, bool enabled);
+bool guava_imgui_button(const char *label, size_t label_len);
+bool guava_imgui_button_ex(const char *label, size_t label_len, float width,
+                           float height);
+bool guava_imgui_image_button(const char *id, size_t id_len,
+                              SDL_GPUTexture *texture, float width,
+                              float height, float bg_r, float bg_g, float bg_b,
+                              float bg_a, float tint_r, float tint_g,
+                              float tint_b, float tint_a);
+bool guava_imgui_invisible_button(const char *id, size_t id_len, float width,
+                                  float height);
 bool guava_imgui_window_control_button(uint32_t kind, bool toggled);
 void guava_imgui_dummy(float width, float height);
 void guava_imgui_same_line(void);
@@ -126,51 +127,66 @@ void guava_imgui_set_next_item_width(float width);
 void guava_imgui_set_next_window_pos(float x, float y);
 void guava_imgui_set_next_window_size(float width, float height);
 void guava_imgui_set_next_window_bg_alpha(float alpha);
-void guava_imgui_push_style_color(uint32_t slot, float r, float g, float b, float a);
+void guava_imgui_push_style_color(uint32_t slot, float r, float g, float b,
+                                  float a);
 void guava_imgui_pop_style_color(int32_t count);
 void guava_imgui_push_style_var_float(uint32_t slot, float value);
 void guava_imgui_push_style_var_vec2(uint32_t slot, float x, float y);
 void guava_imgui_pop_style_var(int32_t count);
-bool guava_imgui_begin_child(const char* id, size_t id_len, float width, float height, bool border);
+bool guava_imgui_begin_child(const char *id, size_t id_len, float width,
+                             float height, bool border);
 void guava_imgui_end_child(void);
-bool guava_imgui_begin_table(const char* id, size_t id_len, int32_t columns);
+bool guava_imgui_begin_table(const char *id, size_t id_len, int32_t columns);
 void guava_imgui_end_table(void);
-void guava_imgui_table_setup_column(const char* label, size_t label_len, bool stretch, float init_width_or_weight);
+void guava_imgui_table_setup_column(const char *label, size_t label_len,
+                                    bool stretch, float init_width_or_weight);
 void guava_imgui_table_headers_row(void);
 void guava_imgui_table_next_row(void);
 void guava_imgui_table_next_column(void);
-bool guava_imgui_selectable(const char* label, size_t label_len, bool selected, bool span_all_columns, float width, float height);
-void guava_imgui_text(const char* text, size_t text_len);
-void guava_imgui_text_wrapped(const char* text, size_t text_len);
-void guava_imgui_label_text(const char* label, size_t label_len, const char* text, size_t text_len);
+bool guava_imgui_selectable(const char *label, size_t label_len, bool selected,
+                            bool span_all_columns, float width, float height);
+void guava_imgui_text(const char *text, size_t text_len);
+void guava_imgui_text_wrapped(const char *text, size_t text_len);
+void guava_imgui_label_text(const char *label, size_t label_len,
+                            const char *text, size_t text_len);
 void guava_imgui_push_id_u64(uint64_t value);
 void guava_imgui_pop_id(void);
-uint32_t guava_imgui_tree_node_entity(
-    uint64_t id,
-    const char* label,
-    size_t label_len,
-    SDL_GPUTexture* icon_texture,
-    float icon_size,
-    bool selected,
-    bool leaf,
-    bool default_open,
-    char* rename_buffer,
-    size_t rename_buffer_size,
-    bool request_rename_focus
-);
+uint32_t guava_imgui_tree_node_entity(uint64_t id, const char *label,
+                                      size_t label_len,
+                                      SDL_GPUTexture *icon_texture,
+                                      float icon_size, bool selected, bool leaf,
+                                      bool default_open, char *rename_buffer,
+                                      size_t rename_buffer_size,
+                                      bool request_rename_focus);
 void guava_imgui_tree_pop(void);
 bool guava_imgui_is_item_clicked(void);
 bool guava_imgui_is_item_active(void);
 bool guava_imgui_is_item_hovered(void);
 bool guava_imgui_is_item_deactivated_after_edit(void);
-bool guava_imgui_input_text(const char* label, size_t label_len, char* buffer, size_t buffer_size);
-bool guava_imgui_input_text_with_hint(const char* label, size_t label_len, const char* hint, size_t hint_len, char* buffer, size_t buffer_size);
-bool guava_imgui_drag_float(const char* label, size_t label_len, float* value, float speed, float min_value, float max_value);
-bool guava_imgui_drag_float3(const char* label, size_t label_len, float value[3], float speed, float min_value, float max_value);
-bool guava_imgui_checkbox(const char* label, size_t label_len, bool* value);
-bool guava_imgui_collapsing_header(const char* label, size_t label_len, bool default_open);
-bool guava_imgui_drag_drop_source_u64(const char* payload_type, size_t payload_type_len, uint64_t value, const char* preview_text, size_t preview_text_len);
-bool guava_imgui_accept_drag_drop_payload_u64(const char* payload_type, size_t payload_type_len, uint64_t* out_value);
+bool guava_imgui_input_text(const char *label, size_t label_len, char *buffer,
+                            size_t buffer_size);
+bool guava_imgui_input_text_with_hint(const char *label, size_t label_len,
+                                      const char *hint, size_t hint_len,
+                                      char *buffer, size_t buffer_size);
+bool guava_imgui_drag_float(const char *label, size_t label_len, float *value,
+                            float speed, float min_value, float max_value);
+bool guava_imgui_drag_float3(const char *label, size_t label_len,
+                             float value[3], float speed, float min_value,
+                             float max_value);
+bool guava_imgui_checkbox(const char *label, size_t label_len, bool *value);
+bool guava_imgui_collapsing_header(const char *label, size_t label_len,
+                                   bool default_open);
+bool guava_imgui_begin_drag_drop_source_u64(const char *payload_type,
+                                            size_t payload_type_len,
+                                            uint64_t value);
+void guava_imgui_end_drag_drop_source(void);
+bool guava_imgui_drag_drop_source_u64(const char *payload_type,
+                                      size_t payload_type_len, uint64_t value,
+                                      const char *preview_text,
+                                      size_t preview_text_len);
+bool guava_imgui_accept_drag_drop_payload_u64(const char *payload_type,
+                                              size_t payload_type_len,
+                                              uint64_t *out_value);
 bool guava_imgui_is_window_hovered(void);
 bool guava_imgui_is_window_focused(void);
 void guava_imgui_get_content_region_avail(float out_value[2]);
@@ -184,14 +200,9 @@ void guava_imgui_get_window_size(float out_value[2]);
 float guava_imgui_get_frame_height(void);
 float guava_imgui_get_time(void);
 void guava_imgui_set_scroll_here_y(float center_y_ratio);
-void guava_imgui_image(SDL_GPUTexture* texture, float width, float height);
-uint32_t guava_imgui_draw_view_cube(
-    const float view[16],
-    float x,
-    float y,
-    float size,
-    float out_drag_delta[2]
-);
+void guava_imgui_image(SDL_GPUTexture *texture, float width, float height);
+uint32_t guava_imgui_draw_view_cube(const float view[16], float x, float y,
+                                    float size, float out_drag_delta[2]);
 
 #ifdef __cplusplus
 }

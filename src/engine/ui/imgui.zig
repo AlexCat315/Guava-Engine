@@ -444,8 +444,23 @@ pub fn collapsingHeader(label: []const u8, default_open: bool) bool {
     return c.guava_imgui_collapsing_header(label.ptr, label.len, default_open);
 }
 
+pub fn beginDragDropSourceU64(payload_type: []const u8, value: u64) bool {
+    return c.guava_imgui_begin_drag_drop_source_u64(payload_type.ptr, payload_type.len, value);
+}
+
+pub fn endDragDropSource() void {
+    c.guava_imgui_end_drag_drop_source();
+}
+
 pub fn dragDropSourceU64(payload_type: []const u8, value: u64, preview_text: []const u8) bool {
-    return c.guava_imgui_drag_drop_source_u64(payload_type.ptr, payload_type.len, value, preview_text.ptr, preview_text.len);
+    if (!beginDragDropSourceU64(payload_type, value)) {
+        return false;
+    }
+    defer endDragDropSource();
+    if (preview_text.len > 0) {
+        text(preview_text);
+    }
+    return true;
 }
 
 pub fn acceptDragDropPayloadU64(payload_type: []const u8, out_value: *u64) bool {
