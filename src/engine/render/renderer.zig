@@ -239,7 +239,7 @@ const MaterialThumbnailPreview = struct {
     preview_texture_handle: ?handles.TextureHandle = null,
 
     fn init(allocator: std.mem.Allocator) !MaterialThumbnailPreview {
-        var world = scene_mod.World.init(allocator);
+        var world = scene_mod.World.init(allocator, null);
         errdefer world.deinit();
 
         const sphere_mesh = try world.assets().ensurePrimitiveMesh(.sphere);

@@ -5,6 +5,7 @@ const raycast_mod = @import("raycast.zig");
 const components = @import("components.zig");
 const vec3 = @import("../math/vec3.zig");
 const AABB = @import("../math/aabb.zig").AABB;
+const job_system_mod = @import("../core/job_system.zig");
 
 const compose_epsilon = 0.0001;
 
@@ -63,12 +64,14 @@ pub const World = struct {
     entities: std.ArrayList(Entity) = .empty,
     id_to_index: std.AutoHashMap(EntityId, usize),
     next_id: EntityId = 1,
+    job_system: ?*job_system_mod.JobSystem = null,
 
-    pub fn init(allocator: std.mem.Allocator) World {
+    pub fn init(allocator: std.mem.Allocator, job_system: ?*job_system_mod.JobSystem) World {
         return .{
             .allocator = allocator,
-            .resources = assets_lib.ResourceLibrary.init(allocator),
+            .resources = assets_lib.ResourceLibrary.init(allocator, job_system),
             .id_to_index = std.AutoHashMap(EntityId, usize).init(allocator),
+            .job_system = job_system,
         };
     }
 
@@ -90,7 +93,7 @@ pub const World = struct {
         if (reinitialize) {
             self.entities = .empty;
             self.id_to_index = std.AutoHashMap(EntityId, usize).init(self.allocator);
-            self.resources = assets_lib.ResourceLibrary.init(self.allocator);
+            self.resources = assets_lib.ResourceLibrary.init(self.allocator, self.job_system);
             self.next_id = 1;
         }
     }
@@ -655,6 +658,44 @@ pub const World = struct {
         root_transform: components.Transform,
     ) !gltf_import.ImportReport {
         return gltf_import.importStaticModel(self, path, root_transform);
+    }
+
+    const AsyncImportContext = struct {
+        world: *World,
+        path: []const u8,
+        root_transform: components.Transform,
+        callback: ?*const fn (report: gltf_import.ImportReport) void = null,
+    };
+
+    fn asyncImportTask(context: ?*anyopaque) void {
+        const ctx: *AsyncImportContext = @ptrCast(@alignCast(context));
+        const report = ctx.world.importGltfStaticModel(ctx.path, ctx.root_transform) catch |err| {
+            std.log.err("Async GLTF import failed: {s}, error: {}", .{ ctx.path, err });
+            return;
+        };
+        if (ctx.callback) |cb| {
+            cb(report);
+        }
+        ctx.world.allocator.free(ctx.path);
+        ctx.world.allocator.destroy(ctx);
+    }
+
+    pub fn importGltfAsync(
+        self: *World,
+        path: []const u8,
+        root_transform: components.Transform,
+        callback: ?*const fn (report: gltf_import.ImportReport) void,
+    ) !job_system_mod.JobHandle {
+        const job_system = self.job_system orelse return error.NoJobSystem;
+        const ctx = try self.allocator.create(AsyncImportContext);
+        ctx.* = .{
+            .world = self,
+            .path = try self.allocator.dupe(u8, path),
+            .root_transform = root_transform,
+            .callback = callback,
+        };
+
+        return job_system.enqueue(asyncImportTask, ctx, .normal);
     }
 
     pub fn importGltfStaticModelInstance(

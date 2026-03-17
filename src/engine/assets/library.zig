@@ -5,9 +5,11 @@ const mesh_mod = @import("mesh_resource.zig");
 const registry_mod = @import("registry.zig");
 const texture_mod = @import("texture_resource.zig");
 const components = @import("../scene/components.zig");
+const job_system_mod = @import("../core/job_system.zig");
 
 pub const ResourceLibrary = struct {
     allocator: std.mem.Allocator,
+    job_system: ?*job_system_mod.JobSystem = null,
     meshes: std.ArrayList(mesh_mod.MeshResource) = .empty,
     materials: std.ArrayList(material_mod.MaterialResource) = .empty,
     textures: std.ArrayList(texture_mod.TextureResource) = .empty,
@@ -24,9 +26,10 @@ pub const ResourceLibrary = struct {
     default_material: ?handles.MaterialHandle = null,
     white_texture: ?handles.TextureHandle = null,
 
-    pub fn init(allocator: std.mem.Allocator) ResourceLibrary {
+    pub fn init(allocator: std.mem.Allocator, job_system: ?*job_system_mod.JobSystem) ResourceLibrary {
         return .{
             .allocator = allocator,
+            .job_system = job_system,
             .asset_registry = registry_mod.AssetRegistry.init(allocator),
             .mesh_records = std.AutoHashMap(handles.MeshHandle, usize).init(allocator),
             .material_records = std.AutoHashMap(handles.MaterialHandle, usize).init(allocator),

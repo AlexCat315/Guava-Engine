@@ -8,6 +8,7 @@ const render_types = @import("../render/types.zig");
 const imgui_mod = @import("../ui/imgui.zig");
 const window_mod = @import("../platform/window.zig");
 const scene_mod = @import("../scene/scene.zig");
+const job_system_mod = @import("job_system.zig");
 
 pub const ApplicationConfig = struct {
     name: []const u8 = "Guava Engine",
@@ -20,6 +21,7 @@ pub const ApplicationConfig = struct {
     backend_selection_policy: render_types.BackendSelectionPolicy = .explicit_order,
     enable_validation: bool = true,
     frames_in_flight: u32 = 2,
+    thread_count: ?usize = null,
 };
 
 pub const RunReport = struct {
@@ -40,6 +42,7 @@ pub const Application = struct {
     renderer: renderer_mod.Renderer,
     world: scene_mod.World,
     layers: layer_stack_mod.LayerStack,
+    job_system: *job_system_mod.JobSystem,
     input: input_mod.InputState = .{},
     playback_controller: layer_mod.PlaybackController = .{},
     initialized: bool = false,
@@ -56,7 +59,10 @@ pub const Application = struct {
         });
         errdefer window.deinit();
 
-        var world = scene_mod.World.init(allocator);
+        const job_system = try job_system_mod.JobSystem.init(allocator, config.thread_count);
+        errdefer job_system.deinit();
+
+        var world = scene_mod.World.init(allocator, job_system);
         errdefer world.deinit();
         try world.bootstrap3D();
 
@@ -74,6 +80,7 @@ pub const Application = struct {
             .window = window,
             .renderer = renderer,
             .world = world,
+            .job_system = job_system,
             .layers = layer_stack_mod.LayerStack.init(allocator),
             .input = .{},
         };
@@ -87,6 +94,7 @@ pub const Application = struct {
         self.world.deinit();
         self.renderer.deinit();
         self.window.deinit();
+        self.job_system.deinit();
     }
 
     pub fn pushLayer(self: *Application, layer: layer_mod.Layer) !void {

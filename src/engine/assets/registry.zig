@@ -187,10 +187,12 @@ const SourceDiscovery = struct {
 pub const AssetRegistry = struct {
     allocator: std.mem.Allocator,
     records: std.ArrayList(AssetRecord) = .empty,
+    id_to_index: std.StringHashMap(usize),
 
     pub fn init(allocator: std.mem.Allocator) AssetRegistry {
         return .{
             .allocator = allocator,
+            .id_to_index = std.StringHashMap(usize).init(allocator),
         };
     }
 
