@@ -8,6 +8,11 @@ const inspector = @import("inspector.zig");
 const ui_icons = @import("../icons.zig");
 const layout = @import("../layout.zig");
 
+const hierarchy_row_icon_size: f32 = 14.0;
+const hierarchy_status_icon_size: f32 = 16.0;
+const hierarchy_status_button_extent: f32 = 28.0;
+const hierarchy_status_column_width: f32 = 34.0;
+
 pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     var title_buffer: [80]u8 = undefined;
     const title = try state.windowLabel(&title_buffer, .scene, "scene_panel");
@@ -79,9 +84,9 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
         return;
     }
     engine.ui.ImGui.tableSetupColumn(state.text(.name), true, 1.0);
-    engine.ui.ImGui.tableSetupColumn("##scene_visible", false, 24.0);
-    engine.ui.ImGui.tableSetupColumn("##scene_frozen", false, 22.0);
-    engine.ui.ImGui.tableSetupColumn("##scene_locked", false, 24.0);
+    engine.ui.ImGui.tableSetupColumn("##scene_visible", false, hierarchy_status_column_width);
+    engine.ui.ImGui.tableSetupColumn("##scene_frozen", false, hierarchy_status_column_width);
+    engine.ui.ImGui.tableSetupColumn("##scene_locked", false, hierarchy_status_column_width);
 
     for (layer_context.world.entities.items) |entity| {
         if (entity.editor_only or entity.parent != null) {
@@ -116,13 +121,12 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
         state.hierarchy_category != .all;
     const has_visible_children = utils.hasVisibleSceneTreeChildren(state, layer_context.world, entity_id);
     const leaf = !has_visible_children;
-    const status_icon_size = 16.0;
     const rename_active = state.hierarchy_rename_entity != null and state.hierarchy_rename_entity.? == entity_id;
     const icon_texture = try ui_icons.ensureTintedIconTexture(
         state,
         layer_context,
         ui_icons.entityIconPath(entity),
-        14.0,
+        hierarchy_row_icon_size,
         if (is_frozen)
             .{ 122, 132, 145, 255 }
         else if (entity.visible)
@@ -137,7 +141,7 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
         entity_id,
         entity.name,
         icon_texture,
-        14.0,
+        hierarchy_row_icon_size,
         is_selected,
         leaf,
         filter_active and has_visible_children,
@@ -205,12 +209,12 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
     engine.ui.ImGui.tableNextColumn();
     var visibility_button_id_buffer: [48]u8 = undefined;
     const visibility_button_id = try std.fmt.bufPrint(&visibility_button_id_buffer, "{d}_visibility", .{entity_id});
-    if (try ui_icons.drawIconButton(
+    if (try drawHierarchyStatusIconButton(
         state,
         layer_context,
         visibility_button_id,
         if (entity.visible) ui_icons.paths.hierarchy.eye else ui_icons.paths.hierarchy.eye_off,
-        status_icon_size,
+        hierarchy_status_icon_size,
         if (entity.visible) .{ 176, 203, 224, 255 } else .{ 145, 151, 162, 255 },
         if (entity.visible) ui_icons.palettes.status_on else ui_icons.palettes.status_off,
     )) {
@@ -228,12 +232,12 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
     engine.ui.ImGui.tableNextColumn();
     var lock_button_id_buffer: [40]u8 = undefined;
     const lock_button_id = try std.fmt.bufPrint(&lock_button_id_buffer, "{d}_lock", .{entity_id});
-    if (try ui_icons.drawIconButton(
+    if (try drawHierarchyStatusIconButton(
         state,
         layer_context,
         lock_button_id,
         if (is_locked) ui_icons.paths.hierarchy.lock else ui_icons.paths.hierarchy.unlock,
-        status_icon_size,
+        hierarchy_status_icon_size,
         if (is_locked) .{ 170, 203, 188, 255 } else .{ 148, 154, 166, 255 },
         if (is_locked) ui_icons.palettes.status_on else ui_icons.palettes.status_off,
     )) {
@@ -695,15 +699,37 @@ fn drawFreezeToggleButton(id: []const u8, active: bool) !bool {
     engine.ui.ImGui.pushStyleColor(.button, if (active) .{ 0.19, 0.29, 0.34, 0.82 } else .{ 0.16, 0.17, 0.19, 0.54 });
     engine.ui.ImGui.pushStyleColor(.button_hovered, if (active) .{ 0.24, 0.36, 0.42, 0.92 } else .{ 0.21, 0.23, 0.27, 0.74 });
     engine.ui.ImGui.pushStyleColor(.button_active, if (active) .{ 0.18, 0.26, 0.31, 0.96 } else .{ 0.18, 0.20, 0.24, 0.86 });
-    engine.ui.ImGui.pushStyleVarVec2(.frame_padding, .{ 2.0, 2.0 });
-    engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, 6.0);
+    engine.ui.ImGui.pushStyleVarVec2(.frame_padding, .{ 0.0, 0.0 });
+    engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, 7.0);
     defer {
         engine.ui.ImGui.popStyleVar(2);
         engine.ui.ImGui.popStyleColor(4);
     }
     var label_buffer: [64]u8 = undefined;
     const label = try std.fmt.bufPrint(&label_buffer, "F##{s}", .{id});
-    return engine.ui.ImGui.buttonEx(label, 18.0, 18.0);
+    return engine.ui.ImGui.buttonEx(label, hierarchy_status_button_extent, hierarchy_status_button_extent);
+}
+
+fn drawHierarchyStatusIconButton(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    id: []const u8,
+    path: []const u8,
+    size: f32,
+    tint: [4]u8,
+    palette: ui_icons.ButtonPalette,
+) !bool {
+    const texture = try ui_icons.ensureTintedIconTexture(state, layer_context, path, size, tint);
+    engine.ui.ImGui.pushStyleColor(.button, palette.button);
+    engine.ui.ImGui.pushStyleColor(.button_hovered, palette.hovered);
+    engine.ui.ImGui.pushStyleColor(.button_active, palette.active);
+    engine.ui.ImGui.pushStyleVarVec2(.frame_padding, .{ 6.0, 6.0 });
+    engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, 7.0);
+    defer {
+        engine.ui.ImGui.popStyleVar(2);
+        engine.ui.ImGui.popStyleColor(3);
+    }
+    return engine.ui.ImGui.imageButton(id, texture, size, size, .{ 0.0, 0.0, 0.0, 0.0 }, .{ 1.0, 1.0, 1.0, 1.0 });
 }
 
 fn createFolderEntity(state: *EditorState, layer_context: *engine.core.LayerContext) !void {

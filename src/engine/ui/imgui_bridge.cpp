@@ -1175,10 +1175,14 @@ extern "C" uint32_t guava_imgui_tree_node_entity(
     float text_x = label_x;
     if (icon_texture != nullptr && icon_size > 0.0f) {
         const float draw_size = (std::min)(icon_size, rect.GetHeight() - 4.0f);
-        const ImVec2 icon_min(label_x, rect.Min.y + (rect.GetHeight() - draw_size) * 0.5f);
+        const float icon_slot_width = icon_size + 8.0f;
+        const ImVec2 icon_min(
+            label_x + (icon_slot_width - draw_size) * 0.5f,
+            rect.Min.y + (rect.GetHeight() - draw_size) * 0.5f
+        );
         const ImVec2 icon_max(icon_min.x + draw_size, icon_min.y + draw_size);
         ImGui::GetWindowDrawList()->AddImage(reinterpret_cast<ImTextureID>(icon_texture), icon_min, icon_max);
-        text_x += draw_size + 6.0f;
+        text_x += icon_slot_width;
     }
     if (rename_buffer != nullptr && rename_buffer_size > 0) {
         const ImVec2 input_pos(text_x - 4.0f, rect.Min.y + 1.0f);
@@ -1205,7 +1209,7 @@ extern "C" uint32_t guava_imgui_tree_node_entity(
         }
         ImGui::PopID();
     } else {
-        const float text_y = rect.Min.y + (rect.GetHeight() - ImGui::GetFontSize()) * 0.5f;
+        const float text_y = rect.Min.y + std::floor((rect.GetHeight() - ImGui::GetFontSize()) * 0.5f);
         ImGui::GetWindowDrawList()->AddText(
             ImVec2(text_x, text_y),
             ImGui::GetColorU32(ImGuiCol_Text),
