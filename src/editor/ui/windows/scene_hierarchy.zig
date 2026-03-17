@@ -62,7 +62,7 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
     layout.endSectionBody();
     var dropped_root: u64 = 0;
     if (engine.ui.ImGui.acceptDragDropPayloadU64(state_mod.entity_drag_payload, &dropped_root)) {
-        try reparentEntity(state, layer_context, dropped_root, null);
+        _ = try handleHierarchyEntityDrop(state, layer_context, dropped_root, null);
     }
     var dropped_model: u64 = 0;
     if (engine.ui.ImGui.acceptDragDropPayloadU64(state_mod.asset_model_drag_payload, &dropped_model)) {
@@ -165,8 +165,9 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
         _ = engine.ui.ImGui.dragDropSourceU64(state_mod.entity_drag_payload, entity_id, entity.name);
         var dropped_child: u64 = 0;
         if (engine.ui.ImGui.acceptDragDropPayloadU64(state_mod.entity_drag_payload, &dropped_child)) {
-            try reparentEntity(state, layer_context, dropped_child, entity_id);
-            return error.HierarchyMutated;
+            if (try handleHierarchyEntityDrop(state, layer_context, dropped_child, entity_id)) {
+                return error.HierarchyMutated;
+            }
         }
         var dropped_texture: u64 = 0;
         if (engine.ui.ImGui.acceptDragDropPayloadU64(state_mod.asset_texture_drag_payload, &dropped_texture)) {
@@ -301,26 +302,165 @@ pub fn reparentEntity(
     child_id: engine.scene.EntityId,
     parent_id: ?engine.scene.EntityId,
 ) !void {
-    if (state.editor_camera != null and child_id == state.editor_camera.?) {
-        return;
+    _ = try reparentEntities(state, layer_context, &.{child_id}, parent_id, false);
+}
+
+fn handleHierarchyEntityDrop(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    dragged_entity_id: engine.scene.EntityId,
+    parent_id: ?engine.scene.EntityId,
+) !bool {
+    const allocator = state.allocator orelse layer_context.world.allocator;
+    const selection = layer_context.renderer.selectedEntities();
+    const preserve_selection = selection.len > 1 and sliceContainsEntity(selection, dragged_entity_id);
+
+    var roots = std.ArrayList(engine.scene.EntityId).empty;
+    defer roots.deinit(allocator);
+    try collectDraggedEntityRoots(
+        allocator,
+        layer_context.world,
+        selection,
+        dragged_entity_id,
+        state.editor_camera,
+        &roots,
+    );
+    return reparentEntities(state, layer_context, roots.items, parent_id, preserve_selection);
+}
+
+fn reparentEntities(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity_ids: []const engine.scene.EntityId,
+    parent_id: ?engine.scene.EntityId,
+    preserve_selection: bool,
+) !bool {
+    if (entity_ids.len == 0) {
+        return false;
     }
-    if (utils.isEntityFrozen(state, child_id) or
-        (parent_id != null and utils.isEntityFrozen(state, parent_id.?)))
-    {
-        return;
+    if (parent_id) |resolved_parent_id| {
+        if (utils.isEntityFrozen(state, resolved_parent_id) or utils.isEntitySelectionLocked(state, resolved_parent_id)) {
+            return false;
+        }
     }
 
-    const changed = layer_context.world.setParent(child_id, parent_id) catch |err| {
-        std.log.warn("failed to reparent entity {d}: {}", .{ child_id, err });
-        return;
-    };
-    if (!changed) {
-        return;
+    const allocator = state.allocator orelse layer_context.world.allocator;
+    var moved = std.ArrayList(engine.scene.EntityId).empty;
+    defer moved.deinit(allocator);
+
+    for (entity_ids) |entity_id| {
+        if (state.editor_camera != null and entity_id == state.editor_camera.?) {
+            continue;
+        }
+        if (!layer_context.world.hasEntity(entity_id)) {
+            continue;
+        }
+        if (utils.isEntityFrozen(state, entity_id) or utils.isEntitySelectionLocked(state, entity_id)) {
+            continue;
+        }
+        if (wouldCreateHierarchyCycle(layer_context.world, entity_id, parent_id)) {
+            continue;
+        }
+
+        const changed = layer_context.world.setParent(entity_id, parent_id) catch |err| {
+            std.log.warn("failed to reparent entity {d}: {}", .{ entity_id, err });
+            continue;
+        };
+        if (!changed) {
+            continue;
+        }
+        try moved.append(allocator, entity_id);
     }
 
-    try layer_context.renderer.replaceSelection(child_id);
+    if (moved.items.len == 0) {
+        return false;
+    }
+
+    if (!preserve_selection) {
+        try layer_context.renderer.replaceSelection(moved.items[0]);
+    }
     utils.syncInspectorNameBuffer(state, layer_context);
     try history.captureSnapshot(state, layer_context);
+    return true;
+}
+
+fn collectDraggedEntityRoots(
+    allocator: std.mem.Allocator,
+    world: *const engine.scene.World,
+    selection: []const engine.scene.EntityId,
+    dragged_entity_id: engine.scene.EntityId,
+    editor_camera: ?engine.scene.EntityId,
+    out_roots: *std.ArrayList(engine.scene.EntityId),
+) !void {
+    if (selection.len > 1 and sliceContainsEntity(selection, dragged_entity_id)) {
+        try collectSelectionRoots(allocator, world, selection, editor_camera, out_roots);
+        return;
+    }
+
+    if (editor_camera != null and dragged_entity_id == editor_camera.?) {
+        return;
+    }
+    if (!world.hasEntity(dragged_entity_id)) {
+        return;
+    }
+    try out_roots.append(allocator, dragged_entity_id);
+}
+
+fn collectSelectionRoots(
+    allocator: std.mem.Allocator,
+    world: *const engine.scene.World,
+    entity_ids: []const engine.scene.EntityId,
+    editor_camera: ?engine.scene.EntityId,
+    out_roots: *std.ArrayList(engine.scene.EntityId),
+) !void {
+    for (entity_ids) |entity_id| {
+        if (editor_camera != null and entity_id == editor_camera.?) {
+            continue;
+        }
+        if (!world.hasEntity(entity_id) or selectionContainsAncestor(world, entity_ids, entity_id)) {
+            continue;
+        }
+        try out_roots.append(allocator, entity_id);
+    }
+}
+
+fn selectionContainsAncestor(
+    world: *const engine.scene.World,
+    entity_ids: []const engine.scene.EntityId,
+    entity_id: engine.scene.EntityId,
+) bool {
+    var current = world.parentEntity(entity_id);
+    while (current) |current_id| {
+        if (sliceContainsEntity(entity_ids, current_id)) {
+            return true;
+        }
+        current = world.parentEntity(current_id);
+    }
+    return false;
+}
+
+fn wouldCreateHierarchyCycle(
+    world: *const engine.scene.World,
+    child_id: engine.scene.EntityId,
+    parent_id: ?engine.scene.EntityId,
+) bool {
+    var current = parent_id;
+    while (current) |current_id| {
+        if (current_id == child_id) {
+            return true;
+        }
+        current = world.parentEntity(current_id);
+    }
+    return false;
+}
+
+fn sliceContainsEntity(entity_ids: []const engine.scene.EntityId, entity_id: engine.scene.EntityId) bool {
+    for (entity_ids) |candidate| {
+        if (candidate == entity_id) {
+            return true;
+        }
+    }
+    return false;
 }
 
 fn beginHierarchyRename(state: *EditorState, world: *const engine.scene.World, entity_id: engine.scene.EntityId) void {
@@ -572,4 +712,34 @@ fn createFolderEntity(state: *EditorState, layer_context: *engine.core.LayerCont
     try layer_context.renderer.replaceSelection(entity_id);
     utils.syncInspectorNameBuffer(state, layer_context);
     try history.captureSnapshot(state, layer_context);
+}
+
+test "collectDraggedEntityRoots keeps only selection roots during multi-drag" {
+    var world = engine.scene.World.init(std.testing.allocator);
+    defer world.deinit();
+
+    const root = try world.createEntity(.{ .name = "Root" });
+    const child = try world.createEntity(.{ .name = "Child", .parent = root });
+    const sibling = try world.createEntity(.{ .name = "Sibling" });
+
+    var roots = std.ArrayList(engine.scene.EntityId).empty;
+    defer roots.deinit(std.testing.allocator);
+
+    try collectDraggedEntityRoots(std.testing.allocator, &world, &.{ child, root, sibling }, child, null, &roots);
+    try std.testing.expectEqualSlices(engine.scene.EntityId, &.{ root, sibling }, roots.items);
+}
+
+test "wouldCreateHierarchyCycle rejects descendant drop targets" {
+    var world = engine.scene.World.init(std.testing.allocator);
+    defer world.deinit();
+
+    const root = try world.createEntity(.{ .name = "Root" });
+    const child = try world.createEntity(.{ .name = "Child", .parent = root });
+    const grandchild = try world.createEntity(.{ .name = "GrandChild", .parent = child });
+    const sibling = try world.createEntity(.{ .name = "Sibling" });
+
+    try std.testing.expect(wouldCreateHierarchyCycle(&world, root, grandchild));
+    try std.testing.expect(wouldCreateHierarchyCycle(&world, child, grandchild));
+    try std.testing.expect(!wouldCreateHierarchyCycle(&world, grandchild, root));
+    try std.testing.expect(!wouldCreateHierarchyCycle(&world, sibling, grandchild));
 }
