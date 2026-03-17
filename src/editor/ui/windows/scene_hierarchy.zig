@@ -700,7 +700,7 @@ fn drawFreezeToggleButton(id: []const u8, active: bool) !bool {
     engine.ui.ImGui.pushStyleColor(.button_hovered, if (active) .{ 0.24, 0.36, 0.42, 0.92 } else .{ 0.21, 0.23, 0.27, 0.74 });
     engine.ui.ImGui.pushStyleColor(.button_active, if (active) .{ 0.18, 0.26, 0.31, 0.96 } else .{ 0.18, 0.20, 0.24, 0.86 });
     engine.ui.ImGui.pushStyleVarVec2(.frame_padding, .{ 0.0, 0.0 });
-    engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, 7.0);
+    engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, ui_icons.regular_icon_button_rounding);
     defer {
         engine.ui.ImGui.popStyleVar(2);
         engine.ui.ImGui.popStyleColor(4);
@@ -723,8 +723,8 @@ fn drawHierarchyStatusIconButton(
     engine.ui.ImGui.pushStyleColor(.button, palette.button);
     engine.ui.ImGui.pushStyleColor(.button_hovered, palette.hovered);
     engine.ui.ImGui.pushStyleColor(.button_active, palette.active);
-    engine.ui.ImGui.pushStyleVarVec2(.frame_padding, .{ 6.0, 6.0 });
-    engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, 7.0);
+    engine.ui.ImGui.pushStyleVarVec2(.frame_padding, ui_icons.regular_icon_button_padding);
+    engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, ui_icons.regular_icon_button_rounding);
     defer {
         engine.ui.ImGui.popStyleVar(2);
         engine.ui.ImGui.popStyleColor(3);

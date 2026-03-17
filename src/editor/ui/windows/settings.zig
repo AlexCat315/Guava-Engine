@@ -44,8 +44,7 @@ pub fn drawSettingsWindow(state: *EditorState, layer_context: *engine.core.Layer
 
     engine.ui.ImGui.dummy(0.0, 6.0);
     if (engine.ui.ImGui.buttonEx(state.text(.reset_dock_layout), engine.ui.ImGui.contentRegionAvail()[0], 0.0)) {
-        engine.ui.ImGui.resetDefaultLayout();
-        state.dock_layout_initialized = true;
+        layout.resetDockLayout(state);
     }
 
     const debug_icon = try icon_cache.ensureIconTexture(state, layer_context, debug_icon_path, 28, 28, debug_icon_tint);

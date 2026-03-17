@@ -140,6 +140,13 @@ std::string find_ui_font_path() {
 #endif
 }
 
+std::string find_bundled_ui_font_path() {
+    return first_existing_path({
+        "assets/ui/fonts/Inter-Regular.ttf",
+        "assets/ui/fonts/Inter-Medium.ttf",
+    });
+}
+
 std::string find_cjk_font_path() {
 #if defined(__APPLE__)
     return first_existing_path({
@@ -163,6 +170,14 @@ std::string find_cjk_font_path() {
         "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
     });
 #endif
+}
+
+std::string find_bundled_cjk_font_path() {
+    return first_existing_path({
+        "assets/ui/fonts/NotoSansSC-Regular.otf",
+        "assets/ui/fonts/NotoSansSC-Regular.ttf",
+        "assets/ui/fonts/NotoSansCJKsc-Regular.otf",
+    });
 }
 
 ImVec4 make_color(int r, int g, int b, int a = 255) {
@@ -294,14 +309,14 @@ void apply_guava_editor_style(float content_scale) {
     ImGuiStyle& style = ImGui::GetStyle();
     style = ImGuiStyle();
 
-    style.WindowPadding = ImVec2(12.0f, 10.0f);
-    style.FramePadding = ImVec2(10.0f, 6.0f);
-    style.CellPadding = ImVec2(8.0f, 7.0f);
-    style.ItemSpacing = ImVec2(8.0f, 7.0f);
-    style.ItemInnerSpacing = ImVec2(6.0f, 4.0f);
+    style.WindowPadding = ImVec2(10.0f, 8.0f);
+    style.FramePadding = ImVec2(8.0f, 5.0f);
+    style.CellPadding = ImVec2(7.0f, 5.0f);
+    style.ItemSpacing = ImVec2(7.0f, 6.0f);
+    style.ItemInnerSpacing = ImVec2(5.0f, 4.0f);
     style.TouchExtraPadding = ImVec2(0.0f, 0.0f);
-    style.IndentSpacing = 20.0f;
-    style.ScrollbarSize = 14.0f;
+    style.IndentSpacing = 18.0f;
+    style.ScrollbarSize = 13.0f;
     style.GrabMinSize = 10.0f;
 
     style.WindowBorderSize = 0.0f;
@@ -310,13 +325,13 @@ void apply_guava_editor_style(float content_scale) {
     style.FrameBorderSize = 0.0f;
     style.TabBorderSize = 0.0f;
 
-    style.WindowRounding = 7.0f;
-    style.ChildRounding = 6.0f;
-    style.FrameRounding = 5.0f;
-    style.PopupRounding = 6.0f;
-    style.ScrollbarRounding = 8.0f;
-    style.GrabRounding = 4.0f;
-    style.TabRounding = 4.0f;
+    style.WindowRounding = 4.0f;
+    style.ChildRounding = 4.0f;
+    style.FrameRounding = 3.0f;
+    style.PopupRounding = 4.0f;
+    style.ScrollbarRounding = 6.0f;
+    style.GrabRounding = 3.0f;
+    style.TabRounding = 3.0f;
 
     style.WindowTitleAlign = ImVec2(0.02f, 0.5f);
     style.WindowMenuButtonPosition = ImGuiDir_None;
@@ -404,12 +419,16 @@ void configure_fonts(float content_scale) {
     base_cfg.RasterizerMultiply = 1.1f;
     base_cfg.FontNo = 0;
 
-    const std::string ui_font_path = find_ui_font_path();
-    const std::string cjk_font_path = find_cjk_font_path();
+    const std::string bundled_ui_font_path = find_bundled_ui_font_path();
+    const std::string bundled_cjk_font_path = find_bundled_cjk_font_path();
+    const std::string ui_font_path = !bundled_ui_font_path.empty() ? bundled_ui_font_path : find_ui_font_path();
+    const std::string cjk_font_path = !bundled_cjk_font_path.empty() ? bundled_cjk_font_path : find_cjk_font_path();
 
     ImFont* primary_font = nullptr;
+    bool primary_uses_ui_font = false;
     if (!ui_font_path.empty()) {
         primary_font = io.Fonts->AddFontFromFileTTF(ui_font_path.c_str(), font_size, &base_cfg, io.Fonts->GetGlyphRangesDefault());
+        primary_uses_ui_font = primary_font != nullptr;
     }
     if (primary_font == nullptr && !cjk_font_path.empty()) {
         primary_font = io.Fonts->AddFontFromFileTTF(cjk_font_path.c_str(), font_size, &base_cfg, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
@@ -418,7 +437,7 @@ void configure_fonts(float content_scale) {
         primary_font = io.Fonts->AddFontDefault();
     }
 
-    if (!cjk_font_path.empty()) {
+    if (primary_uses_ui_font && !cjk_font_path.empty()) {
         ImFontConfig merge_cfg = base_cfg;
         merge_cfg.MergeMode = true;
         merge_cfg.FontNo = 0;

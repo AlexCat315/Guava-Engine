@@ -5,6 +5,7 @@ const history = @import("../actions/history.zig");
 const camera = @import("../interaction/camera.zig");
 const content_browser = @import("../assets/browser.zig");
 const scene_hierarchy = @import("windows/scene_hierarchy.zig");
+const layout = @import("layout.zig");
 const i18n = @import("../i18n/mod.zig");
 
 pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -105,16 +106,13 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
                 engine.ui.ImGui.saveLayout();
             }
             if (engine.ui.ImGui.menuItem(state.text(.load_default_layout), null, false, true)) {
-                engine.ui.ImGui.resetDefaultLayout();
-                state.dock_layout_initialized = true;
+                layout.resetDockLayout(state);
             }
             if (engine.ui.ImGui.menuItem(state.text(.load_animation_layout), null, false, true)) {
-                engine.ui.ImGui.loadAnimationLayout();
-                state.dock_layout_initialized = true;
+                layout.loadAnimationDockLayout(state);
             }
             if (engine.ui.ImGui.menuItem(state.text(.reset_dock_layout), null, false, true)) {
-                engine.ui.ImGui.resetDefaultLayout();
-                state.dock_layout_initialized = true;
+                layout.resetDockLayout(state);
             }
         }
     }

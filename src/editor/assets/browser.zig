@@ -64,7 +64,7 @@ fn drawThumbnailPresetButton(state: *EditorState, label: []const u8, size: f32) 
     engine.ui.ImGui.pushStyleColor(.button, palette.button);
     engine.ui.ImGui.pushStyleColor(.button_hovered, palette.hovered);
     engine.ui.ImGui.pushStyleColor(.button_active, palette.active);
-    engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, 9.0);
+    engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, ui_icons.compact_icon_button_rounding);
     defer {
         engine.ui.ImGui.popStyleVar(1);
         engine.ui.ImGui.popStyleColor(3);

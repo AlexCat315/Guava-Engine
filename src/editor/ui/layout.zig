@@ -1,9 +1,10 @@
 const std = @import("std");
 const engine = @import("guava");
+const EditorState = @import("../core/state.zig").EditorState;
 
 pub const default_section_padding: f32 = 10.0;
-pub const default_item_spacing: f32 = 8.0;
-pub const default_row_spacing: f32 = 6.0;
+pub const default_item_spacing: f32 = 7.0;
+pub const default_row_spacing: f32 = 5.0;
 
 pub fn beginSectionBody() void {
     engine.ui.ImGui.indent(default_section_padding);
@@ -77,4 +78,14 @@ pub fn drawInspectorPropertyRow(label: []const u8, label_color: ?[4]f32) void {
     engine.ui.ImGui.text(label);
     engine.ui.ImGui.tableNextColumn();
     engine.ui.ImGui.setNextItemWidth(-1.0);
+}
+
+pub fn resetDockLayout(state: *EditorState) void {
+    engine.ui.ImGui.resetDefaultLayout();
+    state.dock_layout_initialized = true;
+}
+
+pub fn loadAnimationDockLayout(state: *EditorState) void {
+    engine.ui.ImGui.loadAnimationLayout();
+    state.dock_layout_initialized = true;
 }

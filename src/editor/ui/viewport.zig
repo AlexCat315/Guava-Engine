@@ -597,8 +597,8 @@ fn drawPlaybackToolbarIconButton(
     engine.ui.ImGui.pushStyleColor(.button, palette.button);
     engine.ui.ImGui.pushStyleColor(.button_hovered, palette.hovered);
     engine.ui.ImGui.pushStyleColor(.button_active, palette.active);
-    engine.ui.ImGui.pushStyleVarVec2(.frame_padding, .{ 5.0, 5.0 });
-    engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, 9.0);
+    engine.ui.ImGui.pushStyleVarVec2(.frame_padding, ui_icons.regular_icon_button_padding);
+    engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, ui_icons.regular_icon_button_rounding);
     defer {
         engine.ui.ImGui.popStyleVar(2);
         engine.ui.ImGui.popStyleColor(3);

@@ -63,6 +63,11 @@ pub const ButtonPalette = struct {
     active: [4]f32,
 };
 
+pub const compact_icon_button_padding = [2]f32{ 3.0, 3.0 };
+pub const regular_icon_button_padding = [2]f32{ 5.0, 5.0 };
+pub const compact_icon_button_rounding: f32 = 5.0;
+pub const regular_icon_button_rounding: f32 = 6.0;
+
 pub const palettes = struct {
     pub const toolbar_idle = ButtonPalette{
         .button = .{ 0.18, 0.20, 0.23, 0.66 },
@@ -133,12 +138,12 @@ pub fn drawIconButton(
     palette: ButtonPalette,
 ) !bool {
     const texture = try ensureTintedIconTexture(state, layer_context, path, size, tint);
-    const padding = if (size >= 28.0) [2]f32{ 6.0, 6.0 } else [2]f32{ 3.0, 3.0 };
+    const padding = if (size >= 28.0) regular_icon_button_padding else compact_icon_button_padding;
     engine.ui.ImGui.pushStyleColor(.button, palette.button);
     engine.ui.ImGui.pushStyleColor(.button_hovered, palette.hovered);
     engine.ui.ImGui.pushStyleColor(.button_active, palette.active);
     engine.ui.ImGui.pushStyleVarVec2(.frame_padding, padding);
-    engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, if (size >= 28.0) 10.0 else 7.0);
+    engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, if (size >= 28.0) regular_icon_button_rounding else compact_icon_button_rounding);
     defer {
         engine.ui.ImGui.popStyleVar(2);
         engine.ui.ImGui.popStyleColor(3);
