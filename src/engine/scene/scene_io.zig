@@ -61,7 +61,7 @@ const MaterialComponentRecord = struct {
 const EntityRecord = struct {
     name: []const u8,
     parent: ?u32 = null,
-    transform: components.Transform = .{},
+    local_transform: components.Transform = .{},
     camera: ?components.Camera = null,
     mesh: ?MeshComponentRecord = null,
     material: ?MaterialComponentRecord = null,
@@ -281,7 +281,7 @@ fn buildSceneFile(allocator: std.mem.Allocator, world: *const world_mod.World) !
         try entity_records.append(allocator, .{
             .name = entity.name,
             .parent = if (entity.parent) |parent_id| entity_indices.get(parent_id) else null,
-            .transform = entity.transform,
+            .local_transform = entity.local_transform,
             .camera = entity.camera,
             .mesh = mesh_component,
             .material = material_component,
@@ -388,7 +388,7 @@ fn deserializeWorldV4FromSlice(allocator: std.mem.Allocator, world: *world_mod.W
     for (scene.entities, 0..) |entity, index| {
         entity_ids[index] = try world.createEntity(.{
             .name = entity.name,
-            .transform = entity.transform,
+            .local_transform = entity.local_transform,
             .camera = entity.camera,
             .mesh = if (entity.mesh) |mesh_component|
                 .{
@@ -494,7 +494,7 @@ fn deserializeLegacyWorldFromSlice(allocator: std.mem.Allocator, world: *world_m
     for (scene.entities, 0..) |entity, index| {
         entity_ids[index] = try world.createEntity(.{
             .name = entity.name,
-            .transform = entity.transform,
+            .local_transform = entity.transform,
             .camera = entity.camera,
             .mesh = if (entity.mesh) |mesh_component|
                 .{

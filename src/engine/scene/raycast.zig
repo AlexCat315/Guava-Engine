@@ -29,7 +29,7 @@ pub fn raycastSurface(world: *const world_mod.World, ray: Ray) ?SurfaceRaycastHi
             continue;
         }
 
-        const world_transform = world.worldTransform(entity.id) orelse entity.transform;
+        const world_transform = world.worldTransformConst(entity.id) orelse entity.local_transform;
         var triangle_index: usize = 0;
         while (triangle_index + 2 < mesh.indices.len) : (triangle_index += 3) {
             const v0 = transformPoint(world_transform, mesh.vertices[mesh.indices[triangle_index]].position);

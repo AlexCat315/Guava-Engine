@@ -135,7 +135,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
         engine.ui.ImGui.text(state.text(.selection_is_stale));
         return;
     };
-    const world_transform = layer_context.world.worldTransform(selected) orelse entity.transform;
+    const world_transform = layer_context.world.worldTransform(selected) orelse entity.local_transform;
 
     var selection_count_buffer: [32]u8 = undefined;
     const selection_count_text = try std.fmt.bufPrint(&selection_count_buffer, "{d}", .{selection_count});
@@ -235,7 +235,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                 engine.ui.ImGui.pushStyleVarVec2(.item_spacing, .{ 6.0, 4.0 });
                 defer engine.ui.ImGui.popStyleVar(1);
 
-                var editable_translation = if (state.transform_space == .world) world_transform.translation else entity.transform.translation;
+                var editable_translation = if (state.transform_space == .world) world_transform.translation else entity.local_transform.translation;
                 const translation_result = try drawTransformTableRow("Pos", "translation", &editable_translation, 0.05, -500.0, 500.0);
                 if (translation_result.changed) {
                     if (state.transform_space == .world) {
@@ -243,14 +243,14 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                         updated.translation = editable_translation;
                         _ = layer_context.world.setEntityWorldTransform(selected, updated);
                     } else {
-                        entity.transform.translation = editable_translation;
+                        entity.local_transform.translation = editable_translation;
                     }
                     if (translation_result.committed) {
                         try history.captureSnapshot(state, layer_context);
                     }
                 }
 
-                var editable_rotation = if (state.transform_space == .world) engine.math.quat.toEuler(world_transform.rotation) else engine.math.quat.toEuler(entity.transform.rotation);
+                var editable_rotation = if (state.transform_space == .world) engine.math.quat.toEuler(world_transform.rotation) else engine.math.quat.toEuler(entity.local_transform.rotation);
                 const rotation_result = try drawTransformTableRow("Rot", "rotation", &editable_rotation, 0.01, -std.math.tau, std.math.tau);
                 if (rotation_result.changed) {
                     if (state.transform_space == .world) {
@@ -258,14 +258,14 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                         updated.rotation = engine.math.quat.fromEuler(editable_rotation);
                         _ = layer_context.world.setEntityWorldTransform(selected, updated);
                     } else {
-                        entity.transform.rotation = engine.math.quat.fromEuler(editable_rotation);
+                        entity.local_transform.rotation = engine.math.quat.fromEuler(editable_rotation);
                     }
                     if (rotation_result.committed) {
                         try history.captureSnapshot(state, layer_context);
                     }
                 }
 
-                var editable_scale = if (state.transform_space == .world) world_transform.scale else entity.transform.scale;
+                var editable_scale = if (state.transform_space == .world) world_transform.scale else entity.local_transform.scale;
                 const scale_result = try drawTransformTableRow("Scl", "scale", &editable_scale, 0.01, 0.05, 100.0);
                 if (scale_result.changed) {
                     editable_scale = .{
@@ -278,7 +278,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                         updated.scale = editable_scale;
                         _ = layer_context.world.setEntityWorldTransform(selected, updated);
                     } else {
-                        entity.transform.scale = editable_scale;
+                        entity.local_transform.scale = editable_scale;
                     }
                     if (scale_result.committed) {
                         try history.captureSnapshot(state, layer_context);
@@ -903,12 +903,12 @@ fn drawTransformHeaderContextMenu(
     defer engine.ui.ImGui.endPopup();
 
     if (engine.ui.ImGui.menuItem(state.text(.copy), null, false, true)) {
-        state.transform_component_clipboard = entity.transform;
+        state.transform_component_clipboard = entity.local_transform;
     }
     if (engine.ui.ImGui.menuItem(state.text(.paste), null, false, state.transform_component_clipboard != null)) {
         if (state.transform_component_clipboard) |clipboard| {
-            if (!transformsEqual(entity.transform, clipboard)) {
-                entity.transform = clipboard;
+            if (!transformsEqual(entity.local_transform, clipboard)) {
+                entity.local_transform = clipboard;
                 try history.captureSnapshot(state, layer_context);
                 return true;
             }
@@ -1096,9 +1096,9 @@ fn resetTransformTarget(
         return;
     }
 
-    const before = entity.transform;
-    applyResetToTransform(&entity.transform, target);
-    if (!transformsEqual(before, entity.transform)) {
+    const before = entity.local_transform;
+    applyResetToTransform(&entity.local_transform, target);
+    if (!transformsEqual(before, entity.local_transform)) {
         try history.captureSnapshot(state, layer_context);
     }
 }
@@ -1373,7 +1373,7 @@ pub fn setVfxComponent(
             .handle = mesh_handle,
             .primitive = .sphere,
         };
-        entity.transform.scale = .{ 0.18, 0.18, 0.18 };
+        entity.local_transform.scale = .{ 0.18, 0.18, 0.18 };
     }
     if (entity.material == null) {
         entity.material = .{};

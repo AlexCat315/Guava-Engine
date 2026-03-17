@@ -113,8 +113,8 @@ fn updateEmitter(state: *EditorState, layer_context: *engine.core.LayerContext, 
         if (layer_context.world.getEntity(particle.entity_id)) |particle_entity| {
             const life_alpha = 1.0 - (particle.age / particle.lifetime);
             const scale_value = std.math.clamp(vfx.size * (0.45 + life_alpha * 0.9), 0.02, 10.0);
-            particle_entity.transform.translation = particle.position;
-            particle_entity.transform.scale = .{ scale_value, scale_value, scale_value };
+            particle_entity.local_transform.translation = particle.position;
+            particle_entity.local_transform.scale = .{ scale_value, scale_value, scale_value };
             if (particle_entity.material) |*material| {
                 const tint = std.math.clamp(0.65 + life_alpha * 0.35, 0.0, 1.0);
                 material.shading = .unlit;
@@ -177,7 +177,7 @@ fn spawnParticle(
             .base_color_factor = .{ vfx.color[0], vfx.color[1], vfx.color[2], 1.0 },
         },
         .editor_only = true,
-        .transform = .{
+        .local_transform = .{
             .scale = .{ vfx.size, vfx.size, vfx.size },
         },
     });

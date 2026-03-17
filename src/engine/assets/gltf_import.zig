@@ -303,13 +303,17 @@ pub fn validateCookedModelAsset(
     }
 
     for (cooked.entities) |entity| {
-        if (findCookedMeshRecord(cooked.meshes, entity.mesh_asset_id) == null) {
-            return error.MeshAssetNotFound;
+        if (entity.mesh_asset_id) |mesh_asset_id| {
+            if (findCookedMeshRecord(cooked.meshes, mesh_asset_id) == null) {
+                return error.MeshAssetNotFound;
+            }
         }
-        if (findCookedMaterialRecord(cooked.materials, entity.material_asset_id) == null and
-            !std.mem.eql(u8, entity.material_asset_id, default_material_asset_id))
-        {
-            return error.MaterialAssetNotFound;
+        if (entity.material_asset_id) |material_asset_id| {
+            if (findCookedMaterialRecord(cooked.materials, material_asset_id) == null and
+                !std.mem.eql(u8, material_asset_id, default_material_asset_id))
+            {
+                return error.MaterialAssetNotFound;
+            }
         }
     }
 }
@@ -397,7 +401,7 @@ fn cookModelRecord(
             texture_asset_ids,
             default_material_asset_id,
             node_index,
-            math.identity(),
+            null,
             base_dir,
             source_stem,
             &cooked_meshes,
@@ -1069,8 +1073,12 @@ fn freeCookedModelOwned(allocator: std.mem.Allocator, cooked: *CookedModelFile) 
 
     for (cooked.entities) |entity| {
         allocator.free(entity.name);
-        allocator.free(entity.mesh_asset_id);
-        allocator.free(entity.material_asset_id);
+        if (entity.mesh_asset_id) |mesh_asset_id| {
+            allocator.free(mesh_asset_id);
+        }
+        if (entity.material_asset_id) |material_asset_id| {
+            allocator.free(material_asset_id);
+        }
     }
     allocator.free(cooked.entities);
 }
