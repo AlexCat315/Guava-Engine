@@ -78,6 +78,11 @@ pub const BottomPanelTab = enum {
     console,
 };
 
+pub const BrowserViewMode = enum {
+    grid,
+    list,
+};
+
 pub const ViewportRenderMode = enum {
     textured,
     wireframe,
@@ -160,6 +165,7 @@ pub const EditorState = struct {
     asset_filter_buffer: [128]u8 = [_]u8{0} ** 128,
     asset_directory_buffer: [256]u8 = [_]u8{0} ** 256,
     asset_thumbnail_size: f32 = 104.0,
+    browser_view_mode: BrowserViewMode = .grid,
     bottom_panel_tab: BottomPanelTab = .project,
     console_show_errors: bool = true,
     console_show_warnings: bool = true,

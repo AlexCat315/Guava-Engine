@@ -144,6 +144,13 @@ fn drawFolderRow(state: *EditorState, directory: []const u8) !void {
 }
 
 fn drawAssetGrid(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    switch (state.browser_view_mode) {
+        .grid => try drawAssetGridView(state, layer_context),
+        .list => try drawAssetListView(state, layer_context),
+    }
+}
+
+fn drawAssetGridView(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const available = engine.ui.ImGui.contentRegionAvail();
     const tile_size = std.math.clamp(state.asset_thumbnail_size, 72.0, 160.0);
     const stride = tile_size + 20.0;
@@ -166,10 +173,54 @@ fn drawAssetGrid(state: *EditorState, layer_context: *engine.core.LayerContext) 
         engine.ui.ImGui.tableNextColumn();
         try drawAssetCard(state, layer_context, entry, index, tile_size);
     }
+}
 
-    if (shown == 0) {
-        engine.ui.ImGui.tableNextColumn();
-        engine.ui.ImGui.text(state.text(.none));
+fn drawAssetListView(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    // List view: icon + name in a single row
+    const row_height: f32 = 36.0;
+
+    for (state.asset_entries.items, 0..) |entry, index| {
+        if (!assetVisibleInDirectory(state, entry)) {
+            continue;
+        }
+        if (!utils.assetMatchesFilter(state, entry)) {
+            continue;
+        }
+
+        var button_id_buffer: [64]u8 = undefined;
+        const button_id = try std.fmt.bufPrint(&button_id_buffer, "asset_list_{d}", .{index});
+
+        const icon_size: f32 = 24.0;
+        const icon_path = assetIconPath(entry.kind);
+        const icon_texture = try ui_icons.ensureTintedIconTexture(
+            state,
+            layer_context,
+            icon_path,
+            icon_size,
+            assetIconTint(entry.kind),
+        );
+
+        // Create a selectable for the entire row
+        const selected = state.selected_asset_index == index;
+        if (engine.ui.ImGui.selectable(button_id, selected, false, 0.0, row_height)) {
+            state.selected_asset_index = index;
+        }
+
+        // Draw icon on the same line
+        engine.ui.ImGui.sameLine();
+        engine.ui.ImGui.image(icon_texture, icon_size, icon_size);
+
+        // Draw name on the same line
+        engine.ui.ImGui.sameLine();
+        engine.ui.ImGui.text(entry.name);
+
+        // Add drag drop source
+        switch (entry.kind) {
+            .model => _ = engine.ui.ImGui.dragDropSourceU64(state_mod.asset_model_drag_payload, @intCast(index), entry.name),
+            .material => _ = engine.ui.ImGui.dragDropSourceU64(state_mod.asset_material_drag_payload, @intCast(index), entry.name),
+            .texture => _ = engine.ui.ImGui.dragDropSourceU64(state_mod.asset_texture_drag_payload, @intCast(index), entry.name),
+            else => {},
+        }
     }
 }
 
@@ -321,6 +372,27 @@ fn drawProjectToolbar(state: *EditorState, layer_context: *engine.core.LayerCont
     if (engine.ui.ImGui.dragFloat("##asset_thumbnail_size", &thumbnail_size, 1.0, 72.0, 160.0)) {
         state.asset_thumbnail_size = std.math.clamp(thumbnail_size, 72.0, 160.0);
     }
+
+    // View mode toggle (Grid / List)
+    engine.ui.ImGui.dummy(0.0, 8.0);
+    const view_mode_palette_grid = if (state.browser_view_mode == .grid) ui_icons.palettes.toolbar_active else ui_icons.palettes.toolbar_idle;
+    const view_mode_palette_list = if (state.browser_view_mode == .list) ui_icons.palettes.toolbar_active else ui_icons.palettes.toolbar_idle;
+
+    engine.ui.ImGui.pushStyleColor(.button, view_mode_palette_grid.button);
+    engine.ui.ImGui.pushStyleColor(.button_hovered, view_mode_palette_grid.hovered);
+    engine.ui.ImGui.pushStyleColor(.button_active, view_mode_palette_grid.active);
+    if (engine.ui.ImGui.buttonEx(state.text(.grid_view), 54.0, 30.0)) {
+        state.browser_view_mode = .grid;
+    }
+    engine.ui.ImGui.popStyleColor(3);
+
+    engine.ui.ImGui.pushStyleColor(.button, view_mode_palette_list.button);
+    engine.ui.ImGui.pushStyleColor(.button_hovered, view_mode_palette_list.hovered);
+    engine.ui.ImGui.pushStyleColor(.button_active, view_mode_palette_list.active);
+    if (engine.ui.ImGui.buttonEx(state.text(.list_view), 54.0, 30.0)) {
+        state.browser_view_mode = .list;
+    }
+    engine.ui.ImGui.popStyleColor(3);
 }
 
 fn drawBreadcrumbs(state: *EditorState) !void {

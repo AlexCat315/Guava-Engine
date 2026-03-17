@@ -256,5 +256,7 @@ pub const locale = types.LocaleInfo{
         .window_title_format = "Guava Editor [{s}] Sel:{s} Mode:{s}/{s} | RMB fly | Alt+LMB orbit | MMB pan | Wheel dolly | G/R/S edit | X/Y/Z axis | Space apply | Esc cancel | P parent | Shift+P unparent | Ctrl+S save | Ctrl+O load | 1 cube 2 sphere 3 plane | L light | F focus | Ctrl+D duplicate | Del delete | Tab camera",
         .viewport_view_preset_tooltip = "View: Perspective/Top/Side",
         .viewport_render_mode_tooltip = "Render: Textured/Wireframe/Unlit",
+        .grid_view = "Grid",
+        .list_view = "List",
     }),
 };
