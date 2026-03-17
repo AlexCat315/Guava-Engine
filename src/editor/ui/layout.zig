@@ -3,9 +3,9 @@ const engine = @import("guava");
 const EditorState = @import("../core/state.zig").EditorState;
 const state_mod = @import("../core/state.zig");
 
-pub const default_section_padding: f32 = 10.0;
-pub const default_item_spacing: f32 = 7.0;
-pub const default_row_spacing: f32 = 5.0;
+pub const default_section_padding: f32 = 12.0;
+pub const default_item_spacing: f32 = 8.0;
+pub const default_row_spacing: f32 = 6.0;
 const layout_template_extension = ".ini";
 
 pub fn beginSectionBody() void {

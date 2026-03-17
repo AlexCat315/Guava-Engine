@@ -71,8 +71,8 @@ pub const ButtonPalette = struct {
 
 pub const compact_icon_button_padding = [2]f32{ 3.0, 3.0 };
 pub const regular_icon_button_padding = [2]f32{ 5.0, 5.0 };
-pub const compact_icon_button_rounding: f32 = 5.0;
-pub const regular_icon_button_rounding: f32 = 6.0;
+pub const compact_icon_button_rounding: f32 = 6.0;
+pub const regular_icon_button_rounding: f32 = 8.0;
 
 pub const palettes = struct {
     pub const toolbar_idle = ButtonPalette{

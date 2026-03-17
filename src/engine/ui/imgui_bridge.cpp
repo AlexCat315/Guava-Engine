@@ -282,15 +282,15 @@ void build_default_dock_layout() {
 
   ImGuiID dock_main = g_dockspace_id;
 
-  // Left panel - Place Actors (compressed from 18% to 8%)
+  // Left panel - Place Actors (compressed from 8% to 12%)
   ImGuiID dock_left = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Left,
-                                                  0.08f, nullptr, &dock_main);
+                                                  0.12f, nullptr, &dock_main);
 
   // Right panel - Scene + Details
   ImGuiID dock_right = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Right,
-                                                   0.26f, nullptr, &dock_main);
+                                                   0.28f, nullptr, &dock_main);
   ImGuiID dock_scene = ImGui::DockBuilderSplitNode(dock_right, ImGuiDir_Up,
-                                                   0.52f, nullptr, &dock_right);
+                                                   0.50f, nullptr, &dock_right);
   ImGuiID dock_details = dock_right;
 
   // Bottom panel - Content Browser
@@ -325,13 +325,13 @@ void build_animation_dock_layout() {
 
   // Left panel (compressed)
   ImGuiID dock_left = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Left,
-                                                  0.08f, nullptr, &dock_main);
+                                                  0.10f, nullptr, &dock_main);
 
   // Right panel
   ImGuiID dock_right = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Right,
-                                                   0.22f, nullptr, &dock_main);
+                                                   0.24f, nullptr, &dock_main);
   ImGuiID dock_scene = ImGui::DockBuilderSplitNode(dock_right, ImGuiDir_Up,
-                                                   0.52f, nullptr, &dock_right);
+                                                   0.50f, nullptr, &dock_right);
   ImGuiID dock_details = dock_right;
 
   // Bottom panel
@@ -353,31 +353,31 @@ void apply_guava_editor_style(float content_scale) {
   ImGuiStyle &style = ImGui::GetStyle();
   style = ImGuiStyle();
 
-  style.WindowPadding = ImVec2(10.0f, 8.0f);
-  style.FramePadding = ImVec2(8.0f, 5.0f);
-  style.CellPadding = ImVec2(7.0f, 5.0f);
-  style.ItemSpacing = ImVec2(7.0f, 6.0f);
-  style.ItemInnerSpacing = ImVec2(5.0f, 4.0f);
+  style.WindowPadding = ImVec2(10.0f, 10.0f);
+  style.FramePadding = ImVec2(8.0f, 6.0f);
+  style.CellPadding = ImVec2(8.0f, 6.0f);
+  style.ItemSpacing = ImVec2(8.0f, 6.0f);
+  style.ItemInnerSpacing = ImVec2(6.0f, 4.0f);
   style.TouchExtraPadding = ImVec2(0.0f, 0.0f);
-  style.IndentSpacing = 18.0f;
-  style.ScrollbarSize = 13.0f;
-  style.GrabMinSize = 10.0f;
+  style.IndentSpacing = 20.0f;
+  style.ScrollbarSize = 12.0f;
+  style.GrabMinSize = 12.0f;
 
   style.WindowBorderSize = 0.0f;
-  style.ChildBorderSize = 0.0f;
+  style.ChildBorderSize = 1.0f;
   style.PopupBorderSize = 1.0f;
   style.FrameBorderSize = 0.0f;
   style.TabBorderSize = 0.0f;
 
-  style.WindowRounding = 4.0f;
-  style.ChildRounding = 4.0f;
-  style.FrameRounding = 3.0f;
-  style.PopupRounding = 4.0f;
-  style.ScrollbarRounding = 6.0f;
-  style.GrabRounding = 3.0f;
-  style.TabRounding = 3.0f;
+  style.WindowRounding = 6.0f;
+  style.ChildRounding = 6.0f;
+  style.FrameRounding = 5.0f;
+  style.PopupRounding = 6.0f;
+  style.ScrollbarRounding = 8.0f;
+  style.GrabRounding = 4.0f;
+  style.TabRounding = 5.0f;
 
-  style.WindowTitleAlign = ImVec2(0.02f, 0.5f);
+  style.WindowTitleAlign = ImVec2(0.03f, 0.5f);
   style.WindowMenuButtonPosition = ImGuiDir_None;
   style.ColorButtonPosition = ImGuiDir_Right;
   style.ButtonTextAlign = ImVec2(0.5f, 0.5f);
@@ -385,30 +385,30 @@ void apply_guava_editor_style(float content_scale) {
   style.WindowMinSize = ImVec2(220.0f, 120.0f);
 
   ImVec4 *colors = style.Colors;
-  colors[ImGuiCol_Text] = make_color(220, 224, 231);
-  colors[ImGuiCol_TextDisabled] = make_color(144, 153, 165);
-  colors[ImGuiCol_WindowBg] = make_color(28, 28, 31);       // Darker background
-  colors[ImGuiCol_ChildBg] = make_color(33, 33, 36);        // Darker child background
-  colors[ImGuiCol_PopupBg] = make_color(33, 35, 40, 250);
-  colors[ImGuiCol_Border] = make_color(63, 70, 80, 110);
+  colors[ImGuiCol_Text] = make_color(225, 230, 240);
+  colors[ImGuiCol_TextDisabled] = make_color(140, 150, 165);
+  colors[ImGuiCol_WindowBg] = make_color(24, 25, 28);       // Darker background
+  colors[ImGuiCol_ChildBg] = make_color(30, 31, 34);        // Darker child background
+  colors[ImGuiCol_PopupBg] = make_color(32, 34, 40, 245);
+  colors[ImGuiCol_Border] = make_color(58, 64, 75, 120);
   colors[ImGuiCol_BorderShadow] = make_color(0, 0, 0, 0);
 
-  colors[ImGuiCol_FrameBg] = make_color(15, 16, 17);
-  colors[ImGuiCol_FrameBgHovered] = make_color(45, 90, 160, 200);
-  colors[ImGuiCol_FrameBgActive] = make_color(35, 70, 130, 220);
-  colors[ImGuiCol_TitleBg] = make_color(20, 21, 23);
-  colors[ImGuiCol_TitleBgActive] = make_color(28, 30, 34);
-  colors[ImGuiCol_TitleBgCollapsed] = make_color(20, 21, 23, 210);
-  colors[ImGuiCol_MenuBarBg] = make_color(31, 34, 39);
-  colors[ImGuiCol_ScrollbarBg] = make_color(23, 24, 27);
-  colors[ImGuiCol_ScrollbarGrab] = make_color(77, 83, 93);
-  colors[ImGuiCol_ScrollbarGrabHovered] = make_color(95, 103, 115);
-  colors[ImGuiCol_ScrollbarGrabActive] = make_color(111, 121, 135);
+  colors[ImGuiCol_FrameBg] = make_color(18, 19, 21);
+  colors[ImGuiCol_FrameBgHovered] = make_color(45, 90, 160, 160);
+  colors[ImGuiCol_FrameBgActive] = make_color(35, 70, 130, 180);
+  colors[ImGuiCol_TitleBg] = make_color(22, 23, 26);
+  colors[ImGuiCol_TitleBgActive] = make_color(30, 32, 36);
+  colors[ImGuiCol_TitleBgCollapsed] = make_color(20, 21, 23, 180);
+  colors[ImGuiCol_MenuBarBg] = make_color(28, 30, 34);
+  colors[ImGuiCol_ScrollbarBg] = make_color(20, 21, 24, 120);
+  colors[ImGuiCol_ScrollbarGrab] = make_color(70, 75, 85, 160);
+  colors[ImGuiCol_ScrollbarGrabHovered] = make_color(90, 100, 115, 180);
+  colors[ImGuiCol_ScrollbarGrabActive] = make_color(110, 120, 140, 200);
 
   // Accent color: #22c55e (34, 197, 94) -> (0.133, 0.773, 0.369)
-  const ImVec4 accent_green = make_color(34, 197, 94);
-  const ImVec4 accent_green_hover = make_color(52, 220, 118);  // +10% brightness
-  const ImVec4 accent_green_dim = make_color(34, 197, 94, 102); // 40% opacity
+  const ImVec4 accent_green = make_color(34, 205, 100);       // Slightly more vibrant
+  const ImVec4 accent_green_hover = make_color(50, 225, 120);  // +10% brightness
+  const ImVec4 accent_green_dim = make_color(34, 205, 100, 80); // 30% opacity
 
   colors[ImGuiCol_CheckMark] = accent_green;
   colors[ImGuiCol_SliderGrab] = accent_green;
@@ -416,42 +416,42 @@ void apply_guava_editor_style(float content_scale) {
 
   // Selected state for Scene Hierarchy and Content Browser
   colors[ImGuiCol_Header] = accent_green_dim;
-  colors[ImGuiCol_HeaderHovered] = accent_green_hover;
-  colors[ImGuiCol_HeaderActive] = accent_green;
+  colors[ImGuiCol_HeaderHovered] = make_color(34, 205, 100, 120);
+  colors[ImGuiCol_HeaderActive] = make_color(34, 205, 100, 160);
 
   // Tab colors
   colors[ImGuiCol_TabHovered] = accent_green_hover;
   colors[ImGuiCol_TabActive] = accent_green;
   colors[ImGuiCol_TabUnfocusedActive] = accent_green_dim;
 
-  colors[ImGuiCol_Button] = make_color(35, 70, 130);
-  colors[ImGuiCol_ButtonHovered] = make_color(45, 90, 160);
-  colors[ImGuiCol_ButtonActive] = make_color(55, 100, 180);
-  colors[ImGuiCol_Separator] = make_color(54, 60, 69, 170);
+  colors[ImGuiCol_Button] = make_color(45, 48, 54);
+  colors[ImGuiCol_ButtonHovered] = make_color(60, 65, 72);
+  colors[ImGuiCol_ButtonActive] = accent_green;
+  colors[ImGuiCol_Separator] = make_color(54, 60, 69, 140);
   colors[ImGuiCol_SeparatorHovered] = accent_green_hover;
   colors[ImGuiCol_SeparatorActive] = accent_green;
-  colors[ImGuiCol_ResizeGrip] = make_color(91, 101, 116, 70);
-  colors[ImGuiCol_ResizeGripHovered] = make_color(109, 161, 246, 130);
-  colors[ImGuiCol_ResizeGripActive] = make_color(128, 184, 255, 170);
-  colors[ImGuiCol_Tab] = make_color(40, 43, 48);
-  colors[ImGuiCol_TabUnfocused] = make_color(34, 37, 42);
+  colors[ImGuiCol_ResizeGrip] = make_color(85, 95, 110, 60);
+  colors[ImGuiCol_ResizeGripHovered] = accent_green_hover;
+  colors[ImGuiCol_ResizeGripActive] = accent_green;
+  colors[ImGuiCol_Tab] = make_color(36, 39, 44);
+  colors[ImGuiCol_TabUnfocused] = make_color(30, 33, 37);
   colors[ImGuiCol_DockingPreview] = accent_green_dim;
-  colors[ImGuiCol_DockingEmptyBg] = make_color(22, 24, 28);
-  colors[ImGuiCol_PlotLines] = make_color(132, 142, 156);
-  colors[ImGuiCol_PlotLinesHovered] = make_color(173, 197, 255);
-  colors[ImGuiCol_PlotHistogram] = make_color(110, 167, 255);
-  colors[ImGuiCol_PlotHistogramHovered] = make_color(132, 184, 255);
-  colors[ImGuiCol_TableHeaderBg] = make_color(43, 47, 54);
-  colors[ImGuiCol_TableBorderStrong] = make_color(64, 69, 78);
-  colors[ImGuiCol_TableBorderLight] = make_color(47, 51, 58);
+  colors[ImGuiCol_DockingEmptyBg] = make_color(20, 22, 26);
+  colors[ImGuiCol_PlotLines] = accent_green;
+  colors[ImGuiCol_PlotLinesHovered] = accent_green_hover;
+  colors[ImGuiCol_PlotHistogram] = accent_green;
+  colors[ImGuiCol_PlotHistogramHovered] = accent_green_hover;
+  colors[ImGuiCol_TableHeaderBg] = make_color(42, 46, 52);
+  colors[ImGuiCol_TableBorderStrong] = make_color(60, 65, 75);
+  colors[ImGuiCol_TableBorderLight] = make_color(45, 49, 56);
   colors[ImGuiCol_TableRowBg] = make_color(0, 0, 0, 0);
-  colors[ImGuiCol_TableRowBgAlt] = make_color(255, 255, 255, 9);
-  colors[ImGuiCol_TextSelectedBg] = make_color(45, 90, 160, 100);
-  colors[ImGuiCol_DragDropTarget] = make_color(250, 199, 88);
-  colors[ImGuiCol_NavCursor] = make_color(110, 167, 255);
-  colors[ImGuiCol_NavWindowingHighlight] = make_color(255, 255, 255, 70);
-  colors[ImGuiCol_NavWindowingDimBg] = make_color(0, 0, 0, 90);
-  colors[ImGuiCol_ModalWindowDimBg] = make_color(0, 0, 0, 110);
+  colors[ImGuiCol_TableRowBgAlt] = make_color(255, 255, 255, 8);
+  colors[ImGuiCol_TextSelectedBg] = make_color(34, 205, 100, 80);
+  colors[ImGuiCol_DragDropTarget] = accent_green_hover;
+  colors[ImGuiCol_NavCursor] = accent_green;
+  colors[ImGuiCol_NavWindowingHighlight] = make_color(255, 255, 255, 60);
+  colors[ImGuiCol_NavWindowingDimBg] = make_color(0, 0, 0, 100);
+  colors[ImGuiCol_ModalWindowDimBg] = make_color(0, 0, 0, 120);
 
   const float scale = content_scale > 0.0f ? content_scale : 1.0f;
   style.ScaleAllSizes(scale);
