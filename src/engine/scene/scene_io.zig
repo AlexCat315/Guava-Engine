@@ -6,7 +6,7 @@ const rhi_types = @import("../rhi/types.zig");
 const components = @import("components.zig");
 const world_mod = @import("world.zig");
 
-const current_scene_version: u32 = 3;
+const current_scene_version: u32 = 4;
 
 const SceneHeader = struct {
     version: u32 = 1,
@@ -66,6 +66,7 @@ const EntityRecord = struct {
     mesh: ?MeshComponentRecord = null,
     material: ?MaterialComponentRecord = null,
     light: ?components.Light = null,
+    vfx: ?components.Vfx = null,
     visible: bool = true,
     editor_only: bool = false,
     is_folder: bool = false,
@@ -167,7 +168,7 @@ pub fn deserializeWorldFromSlice(allocator: std.mem.Allocator, world: *world_mod
 
     switch (header_parse.value.version) {
         1, 2 => try deserializeLegacyWorldFromSlice(allocator, world, source),
-        3 => try deserializeWorldV3FromSlice(allocator, world, source),
+        3, 4 => try deserializeWorldV4FromSlice(allocator, world, source),
         else => return error.UnsupportedSceneVersion,
     }
 }
@@ -285,6 +286,7 @@ fn buildSceneFile(allocator: std.mem.Allocator, world: *const world_mod.World) !
             .mesh = mesh_component,
             .material = material_component,
             .light = entity.light,
+            .vfx = entity.vfx,
             .visible = entity.visible,
             .editor_only = entity.editor_only,
             .is_folder = entity.is_folder,
@@ -309,14 +311,14 @@ fn buildSceneFile(allocator: std.mem.Allocator, world: *const world_mod.World) !
     };
 }
 
-fn deserializeWorldV3FromSlice(allocator: std.mem.Allocator, world: *world_mod.World, source: []const u8) !void {
+fn deserializeWorldV4FromSlice(allocator: std.mem.Allocator, world: *world_mod.World, source: []const u8) !void {
     var parsed = try std.json.parseFromSlice(SceneFile, allocator, source, .{
         .ignore_unknown_fields = true,
     });
     defer parsed.deinit();
 
     const scene = parsed.value;
-    if (scene.version != current_scene_version) {
+    if (scene.version != 3 and scene.version != current_scene_version) {
         return error.UnsupportedSceneVersion;
     }
 
@@ -410,6 +412,7 @@ fn deserializeWorldV3FromSlice(allocator: std.mem.Allocator, world: *world_mod.W
             else
                 null,
             .light = entity.light,
+            .vfx = entity.vfx,
             .visible = entity.visible,
             .editor_only = entity.editor_only,
             .is_folder = entity.is_folder,
@@ -1109,4 +1112,25 @@ test "scene serialization round-trips folder entities" {
     const loaded_folder = loaded.findEntityByName("Folder").?;
     try std.testing.expect(loaded_folder.is_folder);
     try std.testing.expectEqual(loaded_folder.id, loaded.findEntityByName("Child").?.parent.?);
+}
+
+test "scene serialization round-trips vfx entities" {
+    var world = world_mod.World.init(std.testing.allocator);
+    defer world.deinit();
+
+    _ = try world.createVfxEntity(.orbit, .{
+        .translation = .{ 2.0, 0.5, -1.0 },
+    });
+
+    const encoded = try serializeWorldAlloc(std.testing.allocator, &world);
+    defer std.testing.allocator.free(encoded);
+
+    var loaded = world_mod.World.init(std.testing.allocator);
+    defer loaded.deinit();
+    try deserializeWorldFromSlice(std.testing.allocator, &loaded, encoded);
+
+    const loaded_vfx = loaded.findEntityByName("OrbitVfx").?;
+    try std.testing.expect(loaded_vfx.vfx != null);
+    try std.testing.expectEqual(components.VfxKind.orbit, loaded_vfx.vfx.?.kind);
+    try std.testing.expectApproxEqAbs(@as(f32, 2.0), loaded_vfx.transform.translation[0], 0.0001);
 }

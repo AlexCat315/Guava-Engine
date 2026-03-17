@@ -100,12 +100,27 @@ const shapes_entries = [_]PlaceActorEntry{
     },
 };
 
+const vfx_entries = [_]PlaceActorEntry{
+    .{
+        .kind = .vfx_fountain,
+        .label_id = .vfx_fountain,
+        .description_id = .vfx_fountain_actor_description,
+        .icon_path = ui_icons.paths.place_actors.vfx_fountain,
+    },
+    .{
+        .kind = .vfx_orbit,
+        .label_id = .vfx_orbit,
+        .description_id = .vfx_orbit_actor_description,
+        .icon_path = ui_icons.paths.place_actors.vfx_orbit,
+    },
+};
+
 fn getEntriesForCategory(category: state_mod.PlaceActorCategory) []const PlaceActorEntry {
     return switch (category) {
         .basics => basics_entries[0..],
         .lights => lights_entries[0..],
         .shapes => shapes_entries[0..],
-        .vfx => &.{},
+        .vfx => vfx_entries[0..],
     };
 }
 
@@ -166,6 +181,8 @@ fn triggerPlaceActorEntry(
             camera.focusSelection(state, layer_context);
             try history.captureSnapshot(state, layer_context);
         },
+        .vfx_fountain => try history.spawnVfxEntity(state, layer_context, .fountain),
+        .vfx_orbit => try history.spawnVfxEntity(state, layer_context, .orbit),
     }
 }
 

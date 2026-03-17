@@ -689,6 +689,8 @@ fn applyPendingViewportAssetDrop(state: *EditorState, layer_context: *engine.cor
                 .point_light => try history.spawnPointLightAt(state, layer_context, spawn_transform),
                 .spot_light => try history.spawnSpotLightAt(state, layer_context, spawn_transform),
                 .directional_light => try history.spawnDirectionalLightAt(state, layer_context, spawn_transform),
+                .vfx_fountain => try history.spawnVfxEntityAt(state, layer_context, .fountain, spawn_transform),
+                .vfx_orbit => try history.spawnVfxEntityAt(state, layer_context, .orbit, spawn_transform),
             }
         },
     }

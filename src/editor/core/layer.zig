@@ -8,6 +8,7 @@ const icon_cache = @import("../ui/icon_cache.zig");
 const content_browser = @import("../assets/browser.zig");
 const asset_preview = @import("../assets/preview.zig");
 const history = @import("../actions/history.zig");
+const vfx_runtime = @import("../runtime/vfx.zig");
 
 pub const EditorLayer = struct {
     state: EditorState = .{},
@@ -52,6 +53,7 @@ pub const EditorLayer = struct {
             self.state.selection_locked_entities.deinit(allocator);
             self.state.selection_locked_entities = .empty;
         }
+        vfx_runtime.releaseState(&self.state);
         content_browser.clearAssetBrowser(&self.state);
         if (self.state.asset_registry) |*registry| {
             registry.deinit();
@@ -63,6 +65,7 @@ pub const EditorLayer = struct {
 
     fn onUpdate(context: *anyopaque, layer_context: *engine.core.LayerContext) !void {
         const self: *EditorLayer = @ptrCast(@alignCast(context));
+        try vfx_runtime.update(&self.state, layer_context);
         try history.pruneMissingSelection(&self.state, layer_context);
         utils.pruneFrozenEntities(&self.state, layer_context.world);
         utils.pruneSelectionLockEntities(&self.state, layer_context.world);

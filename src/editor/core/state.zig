@@ -71,6 +71,36 @@ pub const PlaceActorKind = enum {
     point_light,
     spot_light,
     directional_light,
+    vfx_fountain,
+    vfx_orbit,
+};
+
+pub const VfxRuntimeParticle = struct {
+    entity_id: engine.scene.EntityId,
+    age: f32,
+    lifetime: f32,
+    position: [3]f32,
+    velocity: [3]f32,
+    orbit_radius: f32 = 0.0,
+    angular_position: f32 = 0.0,
+    angular_velocity: f32 = 0.0,
+    vertical_offset: f32 = 0.0,
+    vertical_velocity: f32 = 0.0,
+    phase: f32 = 0.0,
+};
+
+pub const VfxRuntimeEmitter = struct {
+    entity_id: engine.scene.EntityId,
+    seed: u32 = 0,
+    elapsed: f32 = 0.0,
+    emission_accumulator: f32 = 0.0,
+    one_shot_remaining: u16 = 0,
+    particles: std.ArrayList(VfxRuntimeParticle) = .empty,
+};
+
+pub const LayoutTemplateEntry = struct {
+    name: []u8,
+    path: []u8,
 };
 
 pub const BottomPanelTab = enum {
@@ -147,6 +177,7 @@ pub const EditorState = struct {
     material_component_clipboard: ?engine.scene.Material = null,
     camera_component_clipboard: ?engine.scene.Camera = null,
     light_component_clipboard: ?engine.scene.Light = null,
+    vfx_component_clipboard: ?engine.scene.Vfx = null,
     playback_state: PlaybackState = .stopped,
     transform_space: TransformSpace = .local,
     snapshot_history: std.ArrayList([]u8) = .empty,
@@ -169,6 +200,7 @@ pub const EditorState = struct {
 
     // Material thumbnail render queue (asset IDs pending render)
     material_thumbnail_queue: std.ArrayList([]const u8) = .empty,
+    vfx_runtime_emitters: std.ArrayList(VfxRuntimeEmitter) = .empty,
 
     bottom_panel_tab: BottomPanelTab = .project,
     console_show_errors: bool = true,
@@ -181,6 +213,9 @@ pub const EditorState = struct {
     settings_open: bool = false,
     render_settings_open: bool = false,
     material_editor_open: bool = false,
+    layout_template_name_buffer: [128]u8 = [_]u8{0} ** 128,
+    layout_templates: std.ArrayList(LayoutTemplateEntry) = .empty,
+    layout_templates_loaded: bool = false,
     viewport_render_mode: ViewportRenderMode = .textured,
     viewport_view_preset: ViewportViewPreset = .perspective,
     viewport_show_grid: bool = true,

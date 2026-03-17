@@ -118,6 +118,9 @@ pub const IdPass = struct {
 
         device.bindGraphicsPipeline(pass, &self.pipeline.?);
         for (prepared_scene.items) |item| {
+            if (!item.pickable) {
+                continue;
+            }
             var vertex_uniforms = mesh_pass_mod.VertexUniforms{
                 .view_projection = prepared_scene.view_projection,
                 .model = item.model,

@@ -6,6 +6,7 @@ const history = @import("../../actions/history.zig");
 const manipulation = @import("../../interaction/manipulation.zig");
 const camera = @import("../../interaction/camera.zig");
 const content_browser = @import("../../assets/browser.zig");
+const vfx_runtime = @import("../../runtime/vfx.zig");
 const scene_hierarchy = @import("scene_hierarchy.zig");
 const layout = @import("../layout.zig");
 
@@ -630,6 +631,149 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
         }
     }
 
+    if (entity.vfx) |*vfx_component| {
+        if (inspectorSectionMatches(filter, state.text(.vfx))) {
+            const vfx_open = engine.ui.ImGui.collapsingHeader(state.text(.vfx), filter.len != 0);
+            if (try drawVfxHeaderContextMenu(state, layer_context, selected, entity, vfx_component.*)) {
+                return;
+            }
+            if (vfx_open) {
+                beginInspectorSectionBody();
+                defer endInspectorSectionBody();
+                engine.ui.ImGui.dummy(0.0, 4.0);
+                if (beginInspectorPropertyGrid("vfx_properties")) {
+                    defer endInspectorPropertyGrid();
+
+                    const current_kind_label = switch (vfx_component.kind) {
+                        .fountain => state.text(.fountain),
+                        .orbit => state.text(.orbit),
+                    };
+                    if (beginInspectorComboRow(state.text(.type), "##vfx_type", current_kind_label)) {
+                        defer engine.ui.ImGui.endCombo();
+                        if (engine.ui.ImGui.menuItem(state.text(.fountain), null, vfx_component.kind == .fountain, true)) {
+                            vfx_component.* = engine.scene.Vfx{
+                                .kind = .fountain,
+                                .looping = vfx_component.looping,
+                                .emission_rate = vfx_component.emission_rate,
+                                .particle_lifetime = vfx_component.particle_lifetime,
+                                .speed = vfx_component.speed,
+                                .max_particles = vfx_component.max_particles,
+                                .radius = vfx_component.radius,
+                                .spread = vfx_component.spread,
+                                .size = vfx_component.size,
+                                .color = vfx_component.color,
+                            };
+                            vfx_runtime.clearEmitterRuntime(state, layer_context, selected);
+                            try history.captureSnapshot(state, layer_context);
+                        }
+                        if (engine.ui.ImGui.menuItem(state.text(.orbit), null, vfx_component.kind == .orbit, true)) {
+                            vfx_component.* = engine.scene.Vfx{
+                                .kind = .orbit,
+                                .looping = vfx_component.looping,
+                                .emission_rate = vfx_component.emission_rate,
+                                .particle_lifetime = vfx_component.particle_lifetime,
+                                .speed = vfx_component.speed,
+                                .max_particles = vfx_component.max_particles,
+                                .radius = vfx_component.radius,
+                                .spread = vfx_component.spread,
+                                .size = vfx_component.size,
+                                .color = vfx_component.color,
+                            };
+                            vfx_runtime.clearEmitterRuntime(state, layer_context, selected);
+                            try history.captureSnapshot(state, layer_context);
+                        }
+                    }
+
+                    var looping = vfx_component.looping;
+                    if (drawInspectorCheckboxRow(state.text(.looping), "##vfx_looping", &looping)) {
+                        vfx_component.looping = looping;
+                        vfx_runtime.clearEmitterRuntime(state, layer_context, selected);
+                        try history.captureSnapshot(state, layer_context);
+                    }
+
+                    var emission_rate = vfx_component.emission_rate;
+                    if (drawInspectorFloatRow(state.text(.emission_rate), "##vfx_emission_rate", &emission_rate, 0.25, 0.0, 200.0)) {
+                        vfx_component.emission_rate = std.math.clamp(emission_rate, 0.0, 200.0);
+                        if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
+                            vfx_runtime.clearEmitterRuntime(state, layer_context, selected);
+                            try history.captureSnapshot(state, layer_context);
+                        }
+                    }
+
+                    var lifetime = vfx_component.particle_lifetime;
+                    if (drawInspectorFloatRow(state.text(.particle_lifetime), "##vfx_particle_lifetime", &lifetime, 0.01, 0.1, 10.0)) {
+                        vfx_component.particle_lifetime = std.math.clamp(lifetime, 0.1, 10.0);
+                        if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
+                            vfx_runtime.clearEmitterRuntime(state, layer_context, selected);
+                            try history.captureSnapshot(state, layer_context);
+                        }
+                    }
+
+                    var speed = vfx_component.speed;
+                    if (drawInspectorFloatRow(state.text(.speed), "##vfx_speed", &speed, 0.05, 0.05, 20.0)) {
+                        vfx_component.speed = std.math.clamp(speed, 0.05, 20.0);
+                        if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
+                            vfx_runtime.clearEmitterRuntime(state, layer_context, selected);
+                            try history.captureSnapshot(state, layer_context);
+                        }
+                    }
+
+                    var max_particles = @as(f32, @floatFromInt(vfx_component.max_particles));
+                    if (drawInspectorFloatRow(state.text(.max_particles), "##vfx_max_particles", &max_particles, 1.0, 1.0, 128.0)) {
+                        vfx_component.max_particles = @intFromFloat(std.math.clamp(@round(max_particles), 1.0, 128.0));
+                        if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
+                            vfx_runtime.clearEmitterRuntime(state, layer_context, selected);
+                            try history.captureSnapshot(state, layer_context);
+                        }
+                    }
+
+                    var radius = vfx_component.radius;
+                    if (drawInspectorFloatRow(state.text(.radius), "##vfx_radius", &radius, 0.01, 0.01, 8.0)) {
+                        vfx_component.radius = std.math.clamp(radius, 0.01, 8.0);
+                        if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
+                            vfx_runtime.clearEmitterRuntime(state, layer_context, selected);
+                            try history.captureSnapshot(state, layer_context);
+                        }
+                    }
+
+                    var spread = vfx_component.spread;
+                    if (drawInspectorFloatRow(state.text(.spread), "##vfx_spread", &spread, 0.01, 0.0, 2.5)) {
+                        vfx_component.spread = std.math.clamp(spread, 0.0, 2.5);
+                        if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
+                            vfx_runtime.clearEmitterRuntime(state, layer_context, selected);
+                            try history.captureSnapshot(state, layer_context);
+                        }
+                    }
+
+                    var size = vfx_component.size;
+                    if (drawInspectorFloatRow(state.text(.size), "##vfx_size", &size, 0.005, 0.02, 1.0)) {
+                        vfx_component.size = std.math.clamp(size, 0.02, 1.0);
+                        if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
+                            vfx_runtime.clearEmitterRuntime(state, layer_context, selected);
+                            try history.captureSnapshot(state, layer_context);
+                        }
+                    }
+
+                    var color = vfx_component.color;
+                    if (drawInspectorFloat3Row(state.text(.color), "##vfx_color", &color, 0.01, 0.0, 1.0)) {
+                        vfx_component.color = .{
+                            std.math.clamp(color[0], 0.0, 1.0),
+                            std.math.clamp(color[1], 0.0, 1.0),
+                            std.math.clamp(color[2], 0.0, 1.0),
+                        };
+                        if (entity.material) |*material| {
+                            material.shading = .unlit;
+                            material.base_color_factor = .{ vfx_component.color[0], vfx_component.color[1], vfx_component.color[2], 1.0 };
+                        }
+                        if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
+                            try history.captureSnapshot(state, layer_context);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     if (inspectorSectionMatches(filter, state.text(.actions)) and engine.ui.ImGui.collapsingHeader(state.text(.actions), filter.len != 0)) {
         beginInspectorSectionBody();
         defer endInspectorSectionBody();
@@ -671,7 +815,7 @@ fn drawAddComponentControls(
     selected: engine.scene.EntityId,
     entity: *engine.scene.Entity,
 ) !bool {
-    const has_missing_component = entity.mesh == null or entity.material == null or entity.camera == null or entity.light == null;
+    const has_missing_component = entity.mesh == null or entity.material == null or entity.camera == null or entity.light == null or entity.vfx == null;
     if (!has_missing_component) {
         engine.ui.ImGui.text(state.text(.none));
         return false;
@@ -722,6 +866,18 @@ fn drawAddComponentControls(
         }
         if (engine.ui.ImGui.menuItem(state.text(.add_spot_light), null, false, true)) {
             try setLightComponent(state, layer_context, entity, .spot);
+            return true;
+        }
+    }
+
+    if (entity.vfx == null and engine.ui.ImGui.beginMenu(state.text(.vfx))) {
+        defer engine.ui.ImGui.endMenu();
+        if (engine.ui.ImGui.menuItem(state.text(.vfx_fountain), null, false, true)) {
+            try setVfxComponent(state, layer_context, selected, entity, .fountain);
+            return true;
+        }
+        if (engine.ui.ImGui.menuItem(state.text(.vfx_orbit), null, false, true)) {
+            try setVfxComponent(state, layer_context, selected, entity, .orbit);
             return true;
         }
     }
@@ -877,6 +1033,40 @@ fn drawLightHeaderContextMenu(
     }
     if (engine.ui.ImGui.menuItem(state.text(.remove_light_component), null, false, true)) {
         try removeLightComponent(state, layer_context, entity);
+        return true;
+    }
+    return false;
+}
+
+fn drawVfxHeaderContextMenu(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    selected: engine.scene.EntityId,
+    entity: *engine.scene.Entity,
+    vfx_component: engine.scene.Vfx,
+) !bool {
+    if (!engine.ui.ImGui.beginPopupContextItem("vfx_header_context")) {
+        return false;
+    }
+    defer engine.ui.ImGui.endPopup();
+
+    if (engine.ui.ImGui.menuItem(state.text(.copy), null, false, true)) {
+        state.vfx_component_clipboard = vfx_component;
+    }
+    if (engine.ui.ImGui.menuItem(state.text(.paste), null, false, state.vfx_component_clipboard != null)) {
+        if (state.vfx_component_clipboard) |clipboard| {
+            entity.vfx = clipboard;
+            if (entity.material) |*material| {
+                material.shading = .unlit;
+                material.base_color_factor = .{ clipboard.color[0], clipboard.color[1], clipboard.color[2], 1.0 };
+            }
+            vfx_runtime.clearEmitterRuntime(state, layer_context, selected);
+            try history.captureSnapshot(state, layer_context);
+            return true;
+        }
+    }
+    if (engine.ui.ImGui.menuItem(state.text(.remove_vfx_component), null, false, true)) {
+        try removeVfxComponent(state, layer_context, selected, entity);
         return true;
     }
     return false;
@@ -1134,6 +1324,73 @@ pub fn removeLightComponent(
         return;
     }
     entity.light = null;
+    try history.captureSnapshot(state, layer_context);
+}
+
+pub fn setVfxComponent(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    selected: engine.scene.EntityId,
+    entity: *engine.scene.Entity,
+    kind: engine.scene.VfxKind,
+) !void {
+    const vfx = switch (kind) {
+        .fountain => engine.scene.Vfx{
+            .kind = .fountain,
+            .looping = true,
+            .emission_rate = 18.0,
+            .particle_lifetime = 1.2,
+            .speed = 2.6,
+            .max_particles = 28,
+            .radius = 0.42,
+            .spread = 0.38,
+            .size = 0.11,
+            .color = .{ 1.0, 0.58, 0.26 },
+        },
+        .orbit => engine.scene.Vfx{
+            .kind = .orbit,
+            .looping = true,
+            .emission_rate = 12.0,
+            .particle_lifetime = 1.8,
+            .speed = 1.2,
+            .max_particles = 20,
+            .radius = 0.72,
+            .spread = 0.18,
+            .size = 0.1,
+            .color = .{ 0.42, 0.82, 1.0 },
+        },
+    };
+    entity.vfx = vfx;
+    if (entity.mesh == null) {
+        const mesh_handle = try layer_context.world.assets().ensurePrimitiveMesh(.sphere);
+        entity.mesh = .{
+            .handle = mesh_handle,
+            .primitive = .sphere,
+        };
+        entity.transform.scale = .{ 0.18, 0.18, 0.18 };
+    }
+    if (entity.material == null) {
+        entity.material = .{};
+    }
+    if (entity.material) |*material| {
+        material.shading = .unlit;
+        material.base_color_factor = .{ vfx.color[0], vfx.color[1], vfx.color[2], 1.0 };
+    }
+    vfx_runtime.clearEmitterRuntime(state, layer_context, selected);
+    try history.captureSnapshot(state, layer_context);
+}
+
+pub fn removeVfxComponent(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    selected: engine.scene.EntityId,
+    entity: *engine.scene.Entity,
+) !void {
+    if (entity.vfx == null) {
+        return;
+    }
+    entity.vfx = null;
+    vfx_runtime.clearEmitterRuntime(state, layer_context, selected);
     try history.captureSnapshot(state, layer_context);
 }
 

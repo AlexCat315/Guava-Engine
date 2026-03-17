@@ -7,6 +7,7 @@ const utils = @import("../common/utils.zig");
 const camera = @import("../interaction/camera.zig");
 const manipulation = @import("../interaction/manipulation.zig");
 const content_browser = @import("../assets/browser.zig");
+const vfx_runtime = @import("../runtime/vfx.zig");
 const autosave_path = state_mod.autosave_path;
 
 pub fn captureSnapshot(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -87,6 +88,7 @@ pub fn restoreSnapshot(state: *EditorState, layer_context: *engine.core.LayerCon
 
     manipulation.endManipulation(state);
     const snapshot = state.snapshot_history.items[index];
+    vfx_runtime.clearAll(state, layer_context);
     try engine.scene.deserializeWorldFromSlice(layer_context.world.allocator, layer_context.world, snapshot);
     try layer_context.renderer.resetSceneState();
     state.scene_camera = layer_context.world.primaryCameraEntity();
@@ -213,6 +215,14 @@ pub fn spawnPointLight(state: *EditorState, layer_context: *engine.core.LayerCon
     try captureSnapshot(state, layer_context);
 }
 
+pub fn spawnVfxEntity(state: *EditorState, layer_context: *engine.core.LayerContext, kind: engine.scene.VfxKind) !void {
+    const entity_id = try layer_context.world.createVfxEntity(kind, spawnTransform(state, layer_context));
+    try layer_context.renderer.replaceSelection(entity_id);
+    utils.syncInspectorNameBuffer(state, layer_context);
+    camera.focusSelection(state, layer_context);
+    try captureSnapshot(state, layer_context);
+}
+
 pub fn spawnEmptyEntityAt(state: *EditorState, layer_context: *engine.core.LayerContext, transform: engine.scene.Transform) !void {
     const entity_id = try layer_context.world.createEmptyEntity(transform);
     try layer_context.renderer.replaceSelection(entity_id);
@@ -256,6 +266,13 @@ pub fn spawnDirectionalLightAt(state: *EditorState, layer_context: *engine.core.
     try captureSnapshot(state, layer_context);
 }
 
+pub fn spawnVfxEntityAt(state: *EditorState, layer_context: *engine.core.LayerContext, kind: engine.scene.VfxKind, transform: engine.scene.Transform) !void {
+    const entity_id = try layer_context.world.createVfxEntity(kind, transform);
+    try layer_context.renderer.replaceSelection(entity_id);
+    utils.syncInspectorNameBuffer(state, layer_context);
+    try captureSnapshot(state, layer_context);
+}
+
 pub fn spawnTransform(state: *EditorState, layer_context: *engine.core.LayerContext) engine.scene.Transform {
     const camera_transform = camera.activeCameraTransform(state, layer_context);
     const forward = vec3.forwardFromAngles(camera_transform.rotation_euler[1], camera_transform.rotation_euler[0]);
@@ -287,6 +304,7 @@ pub fn loadScene(state: *EditorState, layer_context: *engine.core.LayerContext) 
 
 pub fn newScene(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     manipulation.endManipulation(state);
+    vfx_runtime.clearAll(state, layer_context);
     layer_context.world.clear();
     try layer_context.renderer.resetSceneState();
     state.scene_camera = null;
@@ -305,6 +323,7 @@ pub fn newScene(state: *EditorState, layer_context: *engine.core.LayerContext) !
 
 pub fn loadScenePath(state: *EditorState, layer_context: *engine.core.LayerContext, path: []const u8) !void {
     manipulation.endManipulation(state);
+    vfx_runtime.clearAll(state, layer_context);
     engine.scene.loadWorldFromPath(layer_context.world.allocator, layer_context.world, path) catch |err| {
         std.log.err("failed to load scene from {s}: {}", .{ path, err });
         return;

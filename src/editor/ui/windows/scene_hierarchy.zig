@@ -568,6 +568,14 @@ fn drawSceneWindowContextMenu(state: *EditorState, layer_context: *engine.core.L
             try history.spawnPointLight(state, layer_context);
             return true;
         }
+        if (engine.ui.ImGui.menuItem(state.text(.vfx_fountain), null, false, true)) {
+            try history.spawnVfxEntity(state, layer_context, .fountain);
+            return true;
+        }
+        if (engine.ui.ImGui.menuItem(state.text(.vfx_orbit), null, false, true)) {
+            try history.spawnVfxEntity(state, layer_context, .orbit);
+            return true;
+        }
     }
     return false;
 }

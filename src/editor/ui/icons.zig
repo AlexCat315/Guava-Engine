@@ -42,11 +42,14 @@ pub const paths = struct {
         pub const point_light = "assets/ui/icons/heroicons/24/solid/light-bulb.svg";
         pub const spot_light = "assets/ui/icons/heroicons/24/solid/light-bulb.svg";
         pub const directional_light = "assets/ui/icons/heroicons/24/solid/light-bulb.svg";
+        pub const vfx_fountain = "assets/ui/icons/heroicons/24/solid/play.svg";
+        pub const vfx_orbit = "assets/ui/icons/heroicons/24/solid/arrow-path.svg";
     };
 
     pub const hierarchy = struct {
         pub const camera = "assets/ui/icons/heroicons/24/solid/camera.svg";
         pub const light = "assets/ui/icons/heroicons/24/solid/light-bulb.svg";
+        pub const vfx = "assets/ui/icons/heroicons/24/solid/play.svg";
         pub const mesh = "assets/ui/icons/heroicons/24/solid/cube.svg";
         pub const object = "assets/ui/icons/heroicons/24/solid/squares-2x2.svg";
         pub const folder = "assets/ui/icons/heroicons/24/solid/squares-2x2.svg";
@@ -100,6 +103,9 @@ pub fn entityIconPath(entity: *const engine.scene.Entity) []const u8 {
     }
     if (entity.light != null) {
         return paths.hierarchy.light;
+    }
+    if (entity.vfx != null) {
+        return paths.hierarchy.vfx;
     }
     if (entity.mesh != null) {
         return paths.hierarchy.mesh;

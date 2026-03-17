@@ -18,6 +18,7 @@ pub const Entity = struct {
     mesh: ?components.Mesh = null,
     material: ?components.Material = null,
     light: ?components.Light = null,
+    vfx: ?components.Vfx = null,
     visible: bool = true,
     editor_only: bool = false,
     is_folder: bool = false,
@@ -31,6 +32,7 @@ pub const EntityDesc = struct {
     mesh: ?components.Mesh = null,
     material: ?components.Material = null,
     light: ?components.Light = null,
+    vfx: ?components.Vfx = null,
     visible: bool = true,
     editor_only: bool = false,
     is_folder: bool = false,
@@ -42,6 +44,7 @@ pub const Summary = struct {
     mesh_count: usize = 0,
     material_count: usize = 0,
     light_count: usize = 0,
+    vfx_count: usize = 0,
 };
 
 pub const World = struct {
@@ -98,6 +101,7 @@ pub const World = struct {
             .mesh = desc.mesh,
             .material = desc.material,
             .light = desc.light,
+            .vfx = desc.vfx,
             .visible = desc.visible,
             .editor_only = desc.editor_only,
             .is_folder = desc.is_folder,
@@ -387,6 +391,41 @@ pub const World = struct {
         });
     }
 
+    pub fn createVfxEntity(
+        self: *World,
+        kind: components.VfxKind,
+        transform: components.Transform,
+    ) !EntityId {
+        const base_name = switch (kind) {
+            .fountain => "FountainVfx",
+            .orbit => "OrbitVfx",
+        };
+        const entity_name = try self.nextAvailableName(base_name);
+        defer self.allocator.free(entity_name);
+
+        const mesh_handle = try self.resources.ensurePrimitiveMesh(.sphere);
+        const vfx = components.defaultVfx(kind);
+        var root_transform = transform;
+        root_transform.scale = switch (kind) {
+            .fountain => .{ 0.18, 0.18, 0.18 },
+            .orbit => .{ 0.2, 0.2, 0.2 },
+        };
+
+        return self.createEntity(.{
+            .name = entity_name,
+            .transform = root_transform,
+            .mesh = .{
+                .handle = mesh_handle,
+                .primitive = .sphere,
+            },
+            .material = .{
+                .shading = .unlit,
+                .base_color_factor = .{ vfx.color[0], vfx.color[1], vfx.color[2], 1.0 },
+            },
+            .vfx = vfx,
+        });
+    }
+
     pub fn summary(self: *const World) Summary {
         var result = Summary{
             .entity_count = self.entities.items.len,
@@ -404,6 +443,9 @@ pub const World = struct {
             }
             if (entity.light != null) {
                 result.light_count += 1;
+            }
+            if (entity.vfx != null) {
+                result.vfx_count += 1;
             }
         }
 
@@ -570,12 +612,17 @@ pub const World = struct {
             .mesh = source.mesh,
             .material = source.material,
             .light = source.light,
+            .vfx = source.vfx,
             .visible = source.visible,
             .editor_only = source.editor_only,
             .is_folder = source.is_folder,
         });
 
         for (child_ids.items) |child_id| {
+            const child = self.getEntityConst(child_id) orelse continue;
+            if (child.editor_only) {
+                continue;
+            }
             _ = try self.duplicateEntityRecursive(child_id, duplicate_id);
         }
 
@@ -753,6 +800,21 @@ test "world supports editor duplicate and destroy operations" {
     try std.testing.expect(world.findEntityByName("Hero Copy") != null);
     try std.testing.expect(world.destroyEntity(source));
     try std.testing.expect(world.findEntityByName("Hero") == null);
+}
+
+test "createVfxEntity adds a selectable VFX anchor entity" {
+    var world = World.init(std.testing.allocator);
+    defer world.deinit();
+
+    const entity_id = try world.createVfxEntity(.fountain, .{
+        .translation = .{ 1.0, 2.0, 3.0 },
+    });
+    const entity = world.getEntityConst(entity_id).?;
+    try std.testing.expect(entity.vfx != null);
+    try std.testing.expectEqual(components.VfxKind.fountain, entity.vfx.?.kind);
+    try std.testing.expect(entity.mesh != null);
+    try std.testing.expect(entity.material != null);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), entity.transform.translation[0], 0.0001);
 }
 
 test "world hierarchy composes transforms and preserves world space on reparent" {

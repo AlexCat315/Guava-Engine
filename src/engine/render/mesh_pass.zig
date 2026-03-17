@@ -37,6 +37,7 @@ pub const BasePassUniforms = extern struct {
 
 pub const DrawItem = struct {
     entity_id: scene_mod.EntityId,
+    pickable: bool,
     vertex_buffer: rhi_mod.Buffer,
     index_buffer: rhi_mod.Buffer,
     index_count: u32,
@@ -206,6 +207,7 @@ pub const MeshSceneCache = struct {
 
             try items.append(self.allocator, .{
                 .entity_id = entity.id,
+                .pickable = !entity.editor_only,
                 .vertex_buffer = gpu_mesh.vertex_buffer,
                 .index_buffer = gpu_mesh.index_buffer,
                 .index_count = gpu_mesh.index_count,
@@ -259,6 +261,9 @@ pub const MeshSceneCache = struct {
             return entity.id;
         }
         for (scene.entities.items) |entity| {
+            if (entity.editor_only) {
+                continue;
+            }
             if (entity.mesh != null) {
                 return entity.id;
             }
