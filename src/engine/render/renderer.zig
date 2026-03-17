@@ -377,8 +377,8 @@ pub const Renderer = struct {
     graph: graph_mod.RenderGraph,
     scene_cache: mesh_pass_mod.MeshSceneCache,
     thumbnail_scene_cache: mesh_pass_mod.MeshSceneCache,
-    render_scene: scene_extraction.RenderScene,
-    thumbnail_render_scene: scene_extraction.RenderScene,
+    render_world: scene_extraction.RenderWorld,
+    thumbnail_render_world: scene_extraction.RenderWorld,
     id_pass: id_pass_mod.IdPass,
     depth_prepass: depth_prepass_mod.DepthPrepass,
     base_pass: base_pass_mod.BasePass,
@@ -418,8 +418,8 @@ pub const Renderer = struct {
             .graph = try graph_mod.RenderGraph.initDefault3D(allocator),
             .scene_cache = undefined,
             .thumbnail_scene_cache = undefined,
-            .render_scene = scene_extraction.RenderScene.init(allocator),
-            .thumbnail_render_scene = scene_extraction.RenderScene.init(allocator),
+            .render_world = scene_extraction.RenderWorld.init(allocator),
+            .thumbnail_render_world = scene_extraction.RenderWorld.init(allocator),
             .id_pass = undefined,
             .depth_prepass = undefined,
             .base_pass = undefined,
@@ -477,8 +477,8 @@ pub const Renderer = struct {
         self.depth_prepass.deinit(&self.rhi);
         self.id_pass.deinit(&self.rhi);
         self.scene_cache.deinit(&self.rhi);
-        self.thumbnail_render_scene.deinit();
-        self.render_scene.deinit();
+        self.thumbnail_render_world.deinit();
+        self.render_world.deinit();
         self.rhi.deinit();
         self.graph.deinit();
     }
@@ -640,9 +640,9 @@ pub const Renderer = struct {
             const render_width = if (viewport_active) self.scene_viewport.width else frame.width;
             const render_height = if (viewport_active) self.scene_viewport.height else frame.height;
 
-            try scene_extraction.extractScene(
+            try scene_extraction.extractWorld(
                 scene,
-                &self.render_scene,
+                &self.render_world,
                 self.selection_history.primarySelection(),
                 self.selection_history.currentSelection(),
             );
@@ -650,6 +650,7 @@ pub const Renderer = struct {
             var prepared_scene = try self.scene_cache.prepareScene(
                 &self.rhi,
                 scene,
+                &self.render_world,
                 render_width,
                 render_height,
             );
@@ -947,9 +948,17 @@ pub const Renderer = struct {
             try self.material_thumbnail_preview.syncFromSource(source);
             self.thumbnail_scene_cache.invalidateMaterialResources(&self.rhi);
 
+            try scene_extraction.extractWorld(
+                &self.material_thumbnail_preview.world,
+                &self.thumbnail_render_world,
+                null,
+                &.{},
+            );
+
             var prepared_scene = try self.thumbnail_scene_cache.prepareScene(
                 &self.rhi,
                 &self.material_thumbnail_preview.world,
+                &self.thumbnail_render_world,
                 material_thumbnail_dimension,
                 material_thumbnail_dimension,
             );

@@ -26,6 +26,12 @@ pub const Entity = struct {
     visible: bool = true,
     editor_only: bool = false,
     is_folder: bool = false,
+    children: std.ArrayListUnmanaged(EntityId) = .empty,
+
+    pub fn deinit(self: *Entity, allocator: std.mem.Allocator) void {
+        self.children.deinit(allocator);
+        allocator.free(self.name);
+    }
 };
 
 pub const EntityDesc = struct {
@@ -55,12 +61,14 @@ pub const World = struct {
     allocator: std.mem.Allocator,
     resources: assets_lib.ResourceLibrary,
     entities: std.ArrayList(Entity) = .empty,
+    id_to_index: std.AutoHashMap(EntityId, usize),
     next_id: EntityId = 1,
 
     pub fn init(allocator: std.mem.Allocator) World {
         return .{
             .allocator = allocator,
             .resources = assets_lib.ResourceLibrary.init(allocator),
+            .id_to_index = std.AutoHashMap(EntityId, usize).init(allocator),
         };
     }
 
@@ -73,13 +81,15 @@ pub const World = struct {
     }
 
     fn clearStorage(self: *World, reinitialize: bool) void {
-        for (self.entities.items) |entity| {
-            self.allocator.free(entity.name);
+        for (self.entities.items) |*entity| {
+            entity.deinit(self.allocator);
         }
         self.entities.deinit(self.allocator);
+        self.id_to_index.deinit();
         self.resources.deinit();
         if (reinitialize) {
             self.entities = .empty;
+            self.id_to_index = std.AutoHashMap(EntityId, usize).init(self.allocator);
             self.resources = assets_lib.ResourceLibrary.init(self.allocator);
             self.next_id = 1;
         }
@@ -95,10 +105,10 @@ pub const World = struct {
         const id = self.next_id;
         self.next_id += 1;
 
-        const owned_name = try self.allocator.dupe(u8, desc.name);
+        const index = self.entities.items.len;
         try self.entities.append(self.allocator, .{
             .id = id,
-            .name = owned_name,
+            .name = try self.allocator.dupe(u8, desc.name),
             .parent = desc.parent,
             .local_transform = desc.local_transform,
             .camera = desc.camera,
@@ -112,27 +122,29 @@ pub const World = struct {
             .world_transform_cache = .{},
             .world_bounds_cache = null,
             .dirty = true,
+            .children = .empty,
         });
+
+
+        try self.id_to_index.put(id, index);
+
+        if (desc.parent) |parent_id| {
+            if (self.getEntity(parent_id)) |parent| {
+                try parent.children.append(self.allocator, id);
+            }
+        }
 
         return id;
     }
 
     pub fn getEntity(self: *World, id: EntityId) ?*Entity {
-        for (self.entities.items) |*entity| {
-            if (entity.id == id) {
-                return entity;
-            }
-        }
-        return null;
+        const index = self.id_to_index.get(id) orelse return null;
+        return &self.entities.items[index];
     }
 
     pub fn getEntityConst(self: *const World, id: EntityId) ?*const Entity {
-        for (self.entities.items) |*entity| {
-            if (entity.id == id) {
-                return entity;
-            }
-        }
-        return null;
+        const index = self.id_to_index.get(id) orelse return null;
+        return &self.entities.items[index];
     }
 
     pub fn hasEntity(self: *const World, id: EntityId) bool {
@@ -148,10 +160,8 @@ pub const World = struct {
         const entity = self.getEntity(id) orelse return;
         if (entity.dirty) return;
         entity.dirty = true;
-        for (self.entities.items) |*child| {
-            if (child.parent == id) {
-                self.markDirty(child.id);
-            }
+        for (entity.children.items) |child_id| {
+            self.markDirty(child_id);
         }
     }
 
@@ -164,6 +174,26 @@ pub const World = struct {
     pub fn localTransform(self: *const World, id: EntityId) components.Transform {
         const entity = self.getEntityConst(id) orelse return .{};
         return entity.local_transform;
+    }
+
+    pub fn updateTransforms(self: *World) void {
+        for (self.entities.items) |*entity| {
+            if (entity.parent == null and entity.dirty) {
+                self.updateTransformRecursive(entity.id, null);
+            }
+        }
+    }
+
+    fn updateTransformRecursive(self: *World, id: EntityId, parent_world: ?components.Transform) void {
+        const entity = self.getEntity(id) orelse return;
+
+        const new_world = if (parent_world) |pw| composeTransform(pw, entity.local_transform) else entity.local_transform;
+        entity.world_transform_cache = new_world;
+        entity.dirty = false;
+
+        for (entity.children.items) |child_id| {
+            self.updateTransformRecursive(child_id, new_world);
+        }
     }
 
     pub fn worldTransform(self: *World, id: EntityId) ?components.Transform {
@@ -294,7 +324,27 @@ pub const World = struct {
             return false;
         }
 
+        // Remove from old parent
+        if (entity.parent) |old_parent_id| {
+            if (self.getEntity(old_parent_id)) |old_parent| {
+                for (old_parent.children.items, 0..) |cid, i| {
+                    if (cid == child_id) {
+                        _ = old_parent.children.swapRemove(i);
+                        break;
+                    }
+                }
+            }
+        }
+
         entity.parent = parent_id;
+
+        // Add to new parent
+        if (parent_id) |new_parent_id| {
+            if (self.getEntity(new_parent_id)) |new_parent| {
+                try new_parent.children.append(self.allocator, child_id);
+            }
+        }
+
         return self.setEntityWorldTransform(child_id, current_world);
     }
 
@@ -316,7 +366,29 @@ pub const World = struct {
         if (entity.parent == parent_id) {
             return false;
         }
+
+        // Remove from old parent
+        if (entity.parent) |old_parent_id| {
+            if (self.getEntity(old_parent_id)) |old_parent| {
+                for (old_parent.children.items, 0..) |cid, i| {
+                    if (cid == child_id) {
+                        _ = old_parent.children.swapRemove(i);
+                        break;
+                    }
+                }
+            }
+        }
+
         entity.parent = parent_id;
+
+        // Add to new parent
+        if (parent_id) |new_parent_id| {
+            if (self.getEntity(new_parent_id)) |new_parent| {
+                try new_parent.children.append(self.allocator, child_id);
+            }
+        }
+
+        self.markDirty(child_id);
         return true;
     }
 
@@ -651,12 +723,28 @@ pub const World = struct {
     }
 
     fn removeEntityById(self: *World, id: EntityId) void {
-        for (self.entities.items, 0..) |entity, index| {
-            if (entity.id == id) {
-                self.allocator.free(entity.name);
-                _ = self.entities.orderedRemove(index);
-                return;
+        const index = self.id_to_index.get(id) orelse return;
+        const entity = &self.entities.items[index];
+
+        // Remove from parent's children list
+        if (entity.parent) |parent_id| {
+            if (self.getEntity(parent_id)) |parent| {
+                for (parent.children.items, 0..) |child_id, child_idx| {
+                    if (child_id == id) {
+                        _ = parent.children.swapRemove(child_idx);
+                        break;
+                    }
+                }
             }
+        }
+
+        entity.deinit(self.allocator);
+        _ = self.entities.orderedRemove(index);
+        _ = self.id_to_index.remove(id);
+
+        // Update indices in the map because orderedRemove shifts items
+        for (self.entities.items[index..], index..) |shifted, i| {
+            self.id_to_index.put(shifted.id, i) catch {};
         }
     }
 

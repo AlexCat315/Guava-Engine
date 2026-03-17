@@ -75,7 +75,7 @@ pub const RenderEntity = struct {
     world_transform: components.Transform,
 };
 
-pub const RenderScene = struct {
+pub const RenderWorld = struct {
     allocator: std.mem.Allocator,
     entities: std.ArrayList(RenderEntity) = .empty,
     cameras: std.ArrayList(RenderCamera) = .empty,
@@ -83,14 +83,14 @@ pub const RenderScene = struct {
     meshes: std.ArrayList(RenderMesh) = .empty,
     vfxs: std.ArrayList(RenderVfx) = .empty,
 
-    pub fn init(allocator: std.mem.Allocator) RenderScene {
+    pub fn init(allocator: std.mem.Allocator) RenderWorld {
         return .{
             .allocator = allocator,
             .lights = RenderLightArray.init(allocator),
         };
     }
 
-    pub fn deinit(self: *RenderScene) void {
+    pub fn deinit(self: *RenderWorld) void {
         self.entities.deinit(self.allocator);
         self.cameras.deinit(self.allocator);
         self.lights.deinit();
@@ -98,7 +98,7 @@ pub const RenderScene = struct {
         self.vfxs.deinit(self.allocator);
     }
 
-    pub fn clear(self: *RenderScene) void {
+    pub fn clear(self: *RenderWorld) void {
         self.entities.clearRetainingCapacity();
         self.cameras.clearRetainingCapacity();
         self.lights.clear();
@@ -107,18 +107,18 @@ pub const RenderScene = struct {
     }
 };
 
-pub fn extractScene(
-    scene: *const scene_mod.Scene,
-    render_scene: *RenderScene,
+pub fn extractWorld(
+    world: *const scene_mod.World,
+    render_world: *RenderWorld,
     primary_selection: ?scene_mod.EntityId,
     selection_list: []const scene_mod.EntityId,
 ) !void {
-    render_scene.clear();
+    render_world.clear();
 
-    for (scene.entities.items) |entity| {
-        const world_transform = scene.worldTransformConst(entity.id) orelse entity.local_transform;
+    for (world.entities.items) |entity| {
+        const world_transform = world.worldTransformConst(entity.id) orelse entity.local_transform;
 
-        try render_scene.entities.append(render_scene.allocator, .{
+        try render_world.entities.append(render_world.allocator, .{
             .id = entity.id,
             .parent = entity.parent,
             .world_transform = world_transform,
@@ -131,7 +131,7 @@ pub fn extractScene(
         const is_selected = isEntitySelected(entity.id, primary_selection, selection_list);
 
         if (entity.camera) |camera| {
-            try render_scene.cameras.append(render_scene.allocator, .{
+            try render_world.cameras.append(render_world.allocator, .{
                 .entity_id = entity.id,
                 .transform = world_transform,
                 .camera = camera,
@@ -139,7 +139,7 @@ pub fn extractScene(
         }
 
         if (entity.light) |light| {
-            try render_scene.lights.add(.{
+            try render_world.lights.add(.{
                 .entity_id = entity.id,
                 .transform = world_transform,
                 .light = light,
@@ -147,7 +147,7 @@ pub fn extractScene(
         }
 
         if (entity.mesh) |mesh| {
-            try render_scene.meshes.append(render_scene.allocator, .{
+            try render_world.meshes.append(render_world.allocator, .{
                 .entity_id = entity.id,
                 .transform = world_transform,
                 .mesh = mesh,
@@ -157,7 +157,7 @@ pub fn extractScene(
         }
 
         if (entity.vfx) |vfx| {
-            try render_scene.vfxs.append(render_scene.allocator, .{
+            try render_world.vfxs.append(render_world.allocator, .{
                 .entity_id = entity.id,
                 .transform = world_transform,
                 .vfx = vfx,

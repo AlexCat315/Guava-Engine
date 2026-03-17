@@ -71,6 +71,45 @@ pub fn toEuler(q: Quat) components.Vec3 {
     return euler;
 }
 
+pub fn fromRotationMatrix(m: [16]f32) Quat {
+    const trace = m[0] + m[5] + m[10];
+    if (trace > 0.0) {
+        const s = 0.5 / std.math.sqrt(trace + 1.0);
+        return .{
+            (m[6] - m[9]) * s,
+            (m[8] - m[2]) * s,
+            (m[1] - m[4]) * s,
+            0.25 / s,
+        };
+    } else {
+        if (m[0] > m[5] and m[0] > m[10]) {
+            const s = 2.0 * std.math.sqrt(1.0 + m[0] - m[5] - m[10]);
+            return .{
+                0.25 * s,
+                (m[1] + m[4]) / s,
+                (m[2] + m[8]) / s,
+                (m[6] - m[9]) / s,
+            };
+        } else if (m[5] > m[10]) {
+            const s = 2.0 * std.math.sqrt(1.0 + m[5] - m[0] - m[10]);
+            return .{
+                (m[1] + m[4]) / s,
+                0.25 * s,
+                (m[6] + m[9]) / s,
+                (m[8] - m[2]) / s,
+            };
+        } else {
+            const s = 2.0 * std.math.sqrt(1.0 + m[10] - m[0] - m[5]);
+            return .{
+                (m[2] + m[8]) / s,
+                (m[6] + m[9]) / s,
+                0.25 * s,
+                (m[1] - m[4]) / s,
+            };
+        }
+    }
+}
+
 pub fn rotateVec3(q: Quat, v: components.Vec3) components.Vec3 {
     const q_vec: components.Vec3 = .{ q[0], q[1], q[2] };
     const t = vec3.scale(vec3.cross(q_vec, v), 2.0);

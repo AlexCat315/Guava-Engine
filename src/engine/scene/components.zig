@@ -8,6 +8,19 @@ pub const Transform = struct {
     translation: Vec3 = .{ 0.0, 0.0, 0.0 },
     rotation: Quat = .{ 0.0, 0.0, 0.0, 1.0 },
     scale: Vec3 = .{ 1.0, 1.0, 1.0 },
+
+    pub fn identity() Transform {
+        return .{};
+    }
+
+    pub fn toMatrix(self: Transform) [16]f32 {
+        const mat4 = @import("../math/mat4.zig");
+        const quat = @import("../math/quat.zig");
+        const t = mat4.translation(self.translation);
+        const r = quat.toMat4(self.rotation);
+        const s = mat4.scale(self.scale);
+        return mat4.mul(t, mat4.mul(r, s));
+    }
 };
 
 pub const CameraProjection = union(enum) {

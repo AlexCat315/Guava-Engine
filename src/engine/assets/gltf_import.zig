@@ -1986,9 +1986,31 @@ fn componentCount(type_name: []const u8) ?usize {
 }
 
 fn nodeTransform(node: Node) components.Transform {
-    if (node.matrix) |_| {
-        // Full matrix decomposition is complex, assuming TRS for now
-        // A complete implementation would extract T, R, S from the 4x4 matrix
+    if (node.matrix) |m| {
+        // Simple decomposition for glTF's column-major matrix
+        const translation = components.Vec3{ m[12], m[13], m[14] };
+
+        // Extraction of scale
+        const s_x = std.math.sqrt(m[0] * m[0] + m[1] * m[1] + m[2] * m[2]);
+        const s_y = std.math.sqrt(m[4] * m[4] + m[5] * m[5] + m[6] * m[6]);
+        const s_z = std.math.sqrt(m[8] * m[8] + m[9] * m[9] + m[10] * m[10]);
+        const scale = components.Vec3{ s_x, s_y, s_z };
+
+        // Extraction of rotation (normalized matrix)
+        const quat = @import("../math/quat.zig");
+        const r_m = [_]f32{
+            m[0] / s_x, m[1] / s_x, m[2] / s_x, 0.0,
+            m[4] / s_y, m[5] / s_y, m[6] / s_y, 0.0,
+            m[8] / s_z, m[9] / s_z, m[10] / s_z, 0.0,
+            0.0,        0.0,        0.0,         1.0,
+        };
+        const rotation = quat.fromRotationMatrix(r_m);
+
+        return .{
+            .translation = translation,
+            .rotation = rotation,
+            .scale = scale,
+        };
     }
     return .{
         .translation = node.translation orelse .{ 0.0, 0.0, 0.0 },
