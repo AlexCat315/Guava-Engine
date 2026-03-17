@@ -153,6 +153,20 @@ pub const MeshSceneCache = struct {
         self.* = undefined;
     }
 
+    pub fn invalidateMaterialResources(self: *MeshSceneCache, device: *rhi_mod.RhiDevice) void {
+        for (self.materials.items) |*material| {
+            device.releaseBindGroup(&material.bind_group);
+        }
+        self.materials.deinit(self.allocator);
+        self.materials = .empty;
+
+        for (self.textures.items) |*texture| {
+            device.releaseTexture(&texture.texture);
+        }
+        self.textures.deinit(self.allocator);
+        self.textures = .empty;
+    }
+
     pub fn prepareScene(
         self: *MeshSceneCache,
         device: *rhi_mod.RhiDevice,

@@ -199,6 +199,10 @@ fn drawAssetListView(state: *EditorState, layer_context: *engine.core.LayerConte
             icon_size,
             assetIconTint(entry.kind),
         );
+        const row_texture = if (entry.kind == .material)
+            (try queueAndResolveMaterialThumbnailTexture(state, layer_context, &entry) orelse icon_texture)
+        else
+            icon_texture;
 
         // Create a selectable for the entire row
         const selected = state.selected_asset_index == index;
@@ -208,7 +212,7 @@ fn drawAssetListView(state: *EditorState, layer_context: *engine.core.LayerConte
 
         // Draw icon on the same line
         engine.ui.ImGui.sameLine();
-        engine.ui.ImGui.image(icon_texture, icon_size, icon_size);
+        engine.ui.ImGui.image(row_texture, icon_size, icon_size);
 
         // Draw name on the same line
         engine.ui.ImGui.sameLine();
@@ -246,6 +250,10 @@ fn drawAssetCard(
         icon_size,
         assetIconTint(entry.kind),
     );
+    const card_texture = if (entry.kind == .material)
+        (try queueAndResolveMaterialThumbnailTexture(state, layer_context, &entry) orelse icon_texture)
+    else
+        icon_texture;
     const x_padding = @max((tile_size + 10.0 - icon_size) * 0.5, 4.0);
     engine.ui.ImGui.setCursorPos(.{ x_padding, 10.0 });
 
@@ -253,7 +261,7 @@ fn drawAssetCard(
     const button_id = try std.fmt.bufPrint(&button_id_buffer, "asset_thumb_{d}", .{index});
     if (engine.ui.ImGui.imageButton(
         button_id,
-        icon_texture,
+        card_texture,
         icon_size,
         icon_size,
         if (state.selected_asset_index == index) .{ 0.12, 0.32, 0.58, 0.88 } else .{ 0.0, 0.0, 0.0, 0.0 },
@@ -559,6 +567,9 @@ fn syncEntityMaterialFromResource(
 }
 
 fn drawMaterialAssetPreview(state: *EditorState, layer_context: *engine.core.LayerContext, entry: *const AssetEntry) !void {
+    const preview_texture = try queueAndResolveMaterialThumbnailTexture(state, layer_context, entry);
+    try drawMaterialThumbnailPreview(state, layer_context, preview_texture);
+
     const material_handle = materialHandleForAssetEntry(layer_context, entry);
 
     if (material_handle) |handle| {
@@ -599,6 +610,39 @@ fn drawMaterialAssetPreview(state: *EditorState, layer_context: *engine.core.Lay
     }
 
     engine.ui.ImGui.textWrapped(state.text(.drop_material_here));
+}
+
+fn drawMaterialThumbnailPreview(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    texture: ?*const engine.rhi.Texture,
+) !void {
+    _ = engine.ui.ImGui.beginChild("project_material_thumbnail", 0.0, 116.0, true);
+    defer engine.ui.ImGui.endChild();
+
+    const available = engine.ui.ImGui.contentRegionAvail();
+    const preview_size = std.math.clamp(@min(available[0], available[1]) - 8.0, 72.0, 104.0);
+    const offset_x = @max((available[0] - preview_size) * 0.5, 0.0);
+    const offset_y = @max((available[1] - preview_size) * 0.5, 0.0);
+    engine.ui.ImGui.setCursorPos(.{ offset_x, offset_y });
+
+    if (texture) |resolved| {
+        engine.ui.ImGui.image(resolved, preview_size, preview_size);
+        return;
+    }
+
+    const fallback_size = preview_size * 0.62;
+    const fallback_offset_x = @max((available[0] - fallback_size) * 0.5, 0.0);
+    const fallback_offset_y = @max((available[1] - fallback_size) * 0.5, 0.0);
+    engine.ui.ImGui.setCursorPos(.{ fallback_offset_x, fallback_offset_y });
+    const fallback_texture = try ui_icons.ensureTintedIconTexture(
+        state,
+        layer_context,
+        ui_icons.paths.toolbar.material,
+        fallback_size,
+        assetIconTint(.material),
+    );
+    engine.ui.ImGui.image(fallback_texture, fallback_size, fallback_size);
 }
 
 pub fn applyMaterialAssetToEntity(
@@ -711,6 +755,7 @@ fn lessThanDirectory(_: void, lhs: []u8, rhs: []u8) bool {
 }
 
 pub fn clearAssetBrowser(state: *EditorState) void {
+    clearMaterialThumbnailRequestQueue(state);
     const allocator = state.allocator orelse return;
     for (state.asset_entries.items) |entry| {
         allocator.free(entry.id);
@@ -757,10 +802,65 @@ pub fn instantiateSelectedAsset(state: *EditorState, layer_context: *engine.core
     }
 }
 
+fn queueAndResolveMaterialThumbnailTexture(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entry: *const AssetEntry,
+) !?*const engine.rhi.Texture {
+    if (entry.kind != .material) {
+        return null;
+    }
+    try queueMaterialThumbnailRequest(state, entry.id);
+    return layer_context.renderer.materialThumbnailTexture(entry.id);
+}
+
+fn queueMaterialThumbnailRequest(state: *EditorState, asset_id: []const u8) !void {
+    const allocator = state.allocator orelse return;
+    for (state.material_thumbnail_queue.items) |existing| {
+        if (std.mem.eql(u8, existing, asset_id)) {
+            return;
+        }
+    }
+    try state.material_thumbnail_queue.append(allocator, try allocator.dupe(u8, asset_id));
+}
+
+pub fn flushMaterialThumbnailRequests(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const allocator = state.allocator orelse return;
+    for (state.material_thumbnail_queue.items) |asset_id| {
+        defer allocator.free(asset_id);
+        try layer_context.renderer.requestMaterialThumbnail(layer_context.scene, asset_id, layer_context.frame_index);
+    }
+    state.material_thumbnail_queue.clearRetainingCapacity();
+}
+
+pub fn clearMaterialThumbnailRequestQueue(state: *EditorState) void {
+    const allocator = state.allocator orelse return;
+    for (state.material_thumbnail_queue.items) |asset_id| {
+        allocator.free(asset_id);
+    }
+    state.material_thumbnail_queue.deinit(allocator);
+    state.material_thumbnail_queue = .empty;
+}
+
 test "material assets map to browser visuals and kinds" {
     try std.testing.expectEqual(AssetKind.material, assetKindForRecordType(.material).?);
     try std.testing.expectEqualStrings(ui_icons.paths.toolbar.material, assetIconPath(.material));
     try std.testing.expectEqual([4]u8{ 186, 228, 196, 255 }, assetIconTint(.material));
+}
+
+test "material thumbnail request queue deduplicates asset ids" {
+    var state = EditorState{
+        .allocator = std.testing.allocator,
+    };
+    defer clearMaterialThumbnailRequestQueue(&state);
+
+    try queueMaterialThumbnailRequest(&state, "material://brick");
+    try queueMaterialThumbnailRequest(&state, "material://brick");
+    try queueMaterialThumbnailRequest(&state, "material://stone");
+
+    try std.testing.expectEqual(@as(usize, 2), state.material_thumbnail_queue.items.len);
+    try std.testing.expectEqualStrings("material://brick", state.material_thumbnail_queue.items[0]);
+    try std.testing.expectEqualStrings("material://stone", state.material_thumbnail_queue.items[1]);
 }
 
 fn makeOwnedMaterialRecord(

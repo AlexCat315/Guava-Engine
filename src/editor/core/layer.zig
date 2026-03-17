@@ -75,6 +75,7 @@ pub const EditorLayer = struct {
             self.state.dock_layout_initialized = true;
         }
         try viewport.drawEditorUi(&self.state, layer_context);
+        try content_browser.flushMaterialThumbnailRequests(&self.state, layer_context);
         try viewport.handleViewportSelection(&self.state, layer_context);
         try manipulation.handleEditingShortcuts(&self.state, layer_context);
         manipulation.applyManipulation(&self.state, layer_context);

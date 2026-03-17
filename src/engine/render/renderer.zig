@@ -1,4 +1,9 @@
 const std = @import("std");
+const assets_lib = @import("../assets/library.zig");
+const handles = @import("../assets/handles.zig");
+const material_resource_mod = @import("../assets/material_resource.zig");
+const registry_mod = @import("../assets/registry.zig");
+const texture_resource_mod = @import("../assets/texture_resource.zig");
 const base_pass_mod = @import("base_pass.zig");
 const depth_prepass_mod = @import("depth_prepass.zig");
 const id_pass_mod = @import("id_pass.zig");
@@ -139,12 +144,238 @@ const SceneViewportState = struct {
     }
 };
 
+const material_thumbnail_dimension: u32 = 128;
+const material_thumbnail_jobs_per_frame: usize = 2;
+const material_thumbnail_cache_limit: usize = 48;
+const material_thumbnail_clear_color = [4]f32{ 0.075, 0.08, 0.09, 1.0 };
+const thumbnail_viewport_state = EditorViewportState{
+    .render_mode = .textured,
+    .show_grid = false,
+    .show_bones = false,
+    .show_collision = false,
+};
+
+const MaterialThumbnailTextureFingerprint = struct {
+    handle: ?handles.TextureHandle = null,
+    width: u32 = 0,
+    height: u32 = 0,
+    format: rhi_types.TextureFormat = .unknown,
+};
+
+const MaterialThumbnailSignature = struct {
+    shading: components.ShadingModel = .pbr_metallic_roughness,
+    base_color_factor: [4]f32 = .{ 1.0, 1.0, 1.0, 1.0 },
+    texture: MaterialThumbnailTextureFingerprint = .{},
+};
+
+const MaterialThumbnailSource = struct {
+    material_handle: handles.MaterialHandle,
+    material: *const material_resource_mod.MaterialResource,
+    texture: ?*const texture_resource_mod.TextureResource = null,
+    signature: MaterialThumbnailSignature,
+};
+
+const ThumbnailRenderTarget = struct {
+    color_texture: rhi_mod.Texture,
+    depth_texture: rhi_mod.Texture,
+
+    fn init(device: *rhi_mod.RhiDevice) !ThumbnailRenderTarget {
+        const color_texture = try device.createTexture(.{
+            .width = material_thumbnail_dimension,
+            .height = material_thumbnail_dimension,
+            .format = .bgra8_unorm,
+            .usage = rhi_types.TextureUsage.color_target | rhi_types.TextureUsage.sampler,
+        });
+        errdefer {
+            var owned = color_texture;
+            device.releaseTexture(&owned);
+        }
+
+        const depth_texture = try device.createTexture(.{
+            .width = material_thumbnail_dimension,
+            .height = material_thumbnail_dimension,
+            .format = .d32_float,
+            .usage = rhi_types.TextureUsage.depth_stencil_target,
+        });
+        errdefer {
+            var owned = depth_texture;
+            device.releaseTexture(&owned);
+        }
+
+        return .{
+            .color_texture = color_texture,
+            .depth_texture = depth_texture,
+        };
+    }
+
+    fn deinit(self: *ThumbnailRenderTarget, device: *rhi_mod.RhiDevice) void {
+        device.releaseTexture(&self.color_texture);
+        device.releaseTexture(&self.depth_texture);
+        self.* = undefined;
+    }
+};
+
+const MaterialThumbnailCacheEntry = struct {
+    asset_id: []u8,
+    target: ThumbnailRenderTarget,
+    signature: MaterialThumbnailSignature = .{},
+    dirty: bool = true,
+    queued: bool = false,
+    ready: bool = false,
+    last_requested_frame: usize = 0,
+
+    fn deinit(self: *MaterialThumbnailCacheEntry, allocator: std.mem.Allocator, device: *rhi_mod.RhiDevice) void {
+        allocator.free(self.asset_id);
+        self.target.deinit(device);
+        self.* = undefined;
+    }
+};
+
+const MaterialThumbnailPreview = struct {
+    world: scene_mod.World,
+    preview_entity: scene_mod.EntityId,
+    preview_material_handle: handles.MaterialHandle,
+    preview_texture_handle: ?handles.TextureHandle = null,
+
+    fn init(allocator: std.mem.Allocator) !MaterialThumbnailPreview {
+        var world = scene_mod.World.init(allocator);
+        errdefer world.deinit();
+
+        const sphere_mesh = try world.assets().ensurePrimitiveMesh(.sphere);
+        const preview_material_handle = try world.assets().createMaterial(.{
+            .name = "ThumbnailMaterial",
+            .shading = .pbr_metallic_roughness,
+            .base_color_factor = .{ 1.0, 1.0, 1.0, 1.0 },
+        });
+
+        const preview_entity = try world.createEntity(.{
+            .name = "ThumbnailSphere",
+            .transform = .{
+                .rotation_euler = .{ 0.0, 0.42, 0.0 },
+                .scale = .{ 1.08, 1.08, 1.08 },
+            },
+            .mesh = .{
+                .handle = sphere_mesh,
+                .primitive = .sphere,
+            },
+            .material = .{
+                .handle = preview_material_handle,
+            },
+        });
+
+        const camera_position = [3]f32{ 1.8, 1.05, 2.45 };
+        _ = try world.createEntity(.{
+            .name = "ThumbnailCamera",
+            .camera = .{
+                .is_primary = true,
+                .projection = .{
+                    .perspective = .{
+                        .fov_y_radians = 0.68,
+                        .near_clip = 0.1,
+                        .far_clip = 32.0,
+                    },
+                },
+            },
+            .transform = .{
+                .translation = camera_position,
+                .rotation_euler = lookRotationEuler(camera_position, .{ 0.0, 0.0, 0.0 }),
+            },
+        });
+
+        _ = try world.createEntity(.{
+            .name = "ThumbnailKeyLight",
+            .light = .{
+                .kind = .directional,
+                .color = .{ 1.0, 0.98, 0.94 },
+                .intensity = 2.6,
+            },
+            .transform = .{
+                .rotation_euler = .{ -0.88, 0.68, 0.0 },
+            },
+        });
+
+        _ = try world.createEntity(.{
+            .name = "ThumbnailFillLight",
+            .light = .{
+                .kind = .point,
+                .color = .{ 0.72, 0.82, 1.0 },
+                .intensity = 5.8,
+                .range = 8.0,
+            },
+            .transform = .{
+                .translation = .{ 1.7, 1.25, 1.2 },
+            },
+        });
+
+        return .{
+            .world = world,
+            .preview_entity = preview_entity,
+            .preview_material_handle = preview_material_handle,
+        };
+    }
+
+    fn deinit(self: *MaterialThumbnailPreview) void {
+        self.world.deinit();
+        self.* = undefined;
+    }
+
+    fn syncFromSource(self: *MaterialThumbnailPreview, source: MaterialThumbnailSource) !void {
+        var preview_texture_handle: ?handles.TextureHandle = null;
+        if (source.texture) |texture| {
+            preview_texture_handle = try self.upsertPreviewTexture(texture);
+        }
+
+        const material_index = handles.indexOf(self.preview_material_handle);
+        const preview_material = &self.world.resources.materials.items[material_index];
+        preview_material.shading = source.material.shading;
+        preview_material.base_color_factor = source.material.base_color_factor;
+        preview_material.base_color_texture = preview_texture_handle;
+
+        if (self.world.getEntity(self.preview_entity)) |entity| {
+            entity.material = .{
+                .handle = self.preview_material_handle,
+                .shading = source.material.shading,
+                .base_color_factor = source.material.base_color_factor,
+            };
+        }
+    }
+
+    fn upsertPreviewTexture(
+        self: *MaterialThumbnailPreview,
+        source_texture: *const texture_resource_mod.TextureResource,
+    ) !handles.TextureHandle {
+        if (self.preview_texture_handle) |handle| {
+            const owned_pixels = try self.world.allocator.dupe(u8, source_texture.pixels);
+            errdefer self.world.allocator.free(owned_pixels);
+
+            const preview_texture = &self.world.resources.textures.items[handles.indexOf(handle)];
+            self.world.allocator.free(preview_texture.pixels);
+            preview_texture.width = source_texture.width;
+            preview_texture.height = source_texture.height;
+            preview_texture.format = source_texture.format;
+            preview_texture.pixels = owned_pixels;
+            return handle;
+        }
+
+        const created = try self.world.assets().createTexture(.{
+            .name = "ThumbnailTexture",
+            .width = source_texture.width,
+            .height = source_texture.height,
+            .format = source_texture.format,
+            .pixels = source_texture.pixels,
+        });
+        self.preview_texture_handle = created;
+        return created;
+    }
+};
+
 pub const Renderer = struct {
     allocator: std.mem.Allocator,
     platform: platform_mod.Platform,
     rhi: rhi_mod.RhiDevice,
     graph: graph_mod.RenderGraph,
     scene_cache: mesh_pass_mod.MeshSceneCache,
+    thumbnail_scene_cache: mesh_pass_mod.MeshSceneCache,
     id_pass: id_pass_mod.IdPass,
     depth_prepass: depth_prepass_mod.DepthPrepass,
     base_pass: base_pass_mod.BasePass,
@@ -157,6 +388,9 @@ pub const Renderer = struct {
     pending_selection_readbacks: std.ArrayList(SelectionReadbackRequest) = .empty,
     in_flight_selection_batches: std.ArrayList(InFlightSelectionBatch) = .empty,
     scene_viewport: SceneViewportState = .{},
+    material_thumbnail_preview: MaterialThumbnailPreview,
+    material_thumbnail_cache: std.ArrayList(MaterialThumbnailCacheEntry) = .empty,
+    material_thumbnail_requests: std.ArrayList([]u8) = .empty,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -180,12 +414,14 @@ pub const Renderer = struct {
             ),
             .graph = try graph_mod.RenderGraph.initDefault3D(allocator),
             .scene_cache = undefined,
+            .thumbnail_scene_cache = undefined,
             .id_pass = undefined,
             .depth_prepass = undefined,
             .base_pass = undefined,
             .outline_pass = undefined,
             .gizmo_pass = undefined,
             .selection_history = SelectionHistory.init(allocator, 64),
+            .material_thumbnail_preview = undefined,
         };
         errdefer renderer.in_flight_selection_batches.deinit(allocator);
         errdefer renderer.pending_selection_readbacks.deinit(allocator);
@@ -195,6 +431,12 @@ pub const Renderer = struct {
 
         renderer.scene_cache = try mesh_pass_mod.MeshSceneCache.init(allocator, &renderer.rhi);
         errdefer renderer.scene_cache.deinit(&renderer.rhi);
+
+        renderer.thumbnail_scene_cache = try mesh_pass_mod.MeshSceneCache.init(allocator, &renderer.rhi);
+        errdefer renderer.thumbnail_scene_cache.deinit(&renderer.rhi);
+
+        renderer.material_thumbnail_preview = try MaterialThumbnailPreview.init(allocator);
+        errdefer renderer.material_thumbnail_preview.deinit();
 
         renderer.id_pass = try id_pass_mod.IdPass.init(&renderer.rhi);
         errdefer renderer.id_pass.deinit(&renderer.rhi);
@@ -220,6 +462,10 @@ pub const Renderer = struct {
         self.pending_selection_readbacks.deinit(self.allocator);
         self.selection_history.deinit();
         self.scene_viewport.deinit(&self.rhi);
+        self.releaseMaterialThumbnailRequests();
+        self.releaseMaterialThumbnailCache();
+        self.material_thumbnail_preview.deinit();
+        self.thumbnail_scene_cache.deinit(&self.rhi);
         self.gizmo_pass.deinit(&self.rhi);
         self.outline_pass.deinit(&self.rhi);
         self.base_pass.deinit(&self.rhi);
@@ -276,6 +522,9 @@ pub const Renderer = struct {
         self.selection_history.deinit();
         self.selection_history = SelectionHistory.init(self.allocator, 64);
         self.selection_seeded = false;
+        self.releaseMaterialThumbnailRequests();
+        self.releaseMaterialThumbnailCache();
+        self.thumbnail_scene_cache.invalidateMaterialResources(&self.rhi);
         self.scene_cache.deinit(&self.rhi);
         self.scene_cache = try mesh_pass_mod.MeshSceneCache.init(self.allocator, &self.rhi);
     }
@@ -320,6 +569,32 @@ pub const Renderer = struct {
 
     pub fn passCount(self: *const Renderer) usize {
         return self.graph.passCount();
+    }
+
+    pub fn requestMaterialThumbnail(self: *Renderer, scene: *const scene_mod.Scene, asset_id: []const u8, frame_index: usize) !void {
+        const source = resolveMaterialThumbnailSource(&scene.resources, asset_id) orelse {
+            self.removeMaterialThumbnail(asset_id);
+            return;
+        };
+
+        const entry = try self.ensureMaterialThumbnailEntry(asset_id);
+        entry.last_requested_frame = frame_index;
+        if (!std.meta.eql(entry.signature, source.signature)) {
+            entry.signature = source.signature;
+            entry.dirty = true;
+        }
+        if (entry.dirty and !entry.queued) {
+            try self.enqueueMaterialThumbnailRequest(entry);
+        }
+    }
+
+    pub fn materialThumbnailTexture(self: *const Renderer, asset_id: []const u8) ?*const rhi_mod.Texture {
+        const index = self.findMaterialThumbnailCacheIndex(asset_id) orelse return null;
+        const entry = &self.material_thumbnail_cache.items[index];
+        if (!entry.ready) {
+            return null;
+        }
+        return &entry.target.color_texture;
     }
 
     pub fn drawFrame(self: *Renderer, scene: *const scene_mod.Scene) !FrameReport {
@@ -482,6 +757,9 @@ pub const Renderer = struct {
                 self.rhi.endRenderPass(gizmo_pass);
             }
 
+            const thumbnail_stats = try self.processMaterialThumbnailRequests(frame, scene);
+            draw_stats.add(thumbnail_stats);
+
             imgui_mod.prepare(frame.command_buffer);
             const ui_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
                 .color = .{
@@ -558,6 +836,166 @@ pub const Renderer = struct {
             },
             .depth = 1.0,
         };
+    }
+
+    fn processMaterialThumbnailRequests(
+        self: *Renderer,
+        frame: rhi_mod.Frame,
+        scene: *const scene_mod.Scene,
+    ) !mesh_pass_mod.DrawStats {
+        var stats = mesh_pass_mod.DrawStats{};
+        if (!self.depth_prepass.isReady() or !self.base_pass.isReady()) {
+            return stats;
+        }
+
+        var processed: usize = 0;
+        while (processed < material_thumbnail_jobs_per_frame and self.material_thumbnail_requests.items.len > 0) : (processed += 1) {
+            const asset_id = self.material_thumbnail_requests.orderedRemove(0);
+            defer self.allocator.free(asset_id);
+
+            const cache_index = self.findMaterialThumbnailCacheIndex(asset_id) orelse continue;
+            const entry = &self.material_thumbnail_cache.items[cache_index];
+            entry.queued = false;
+
+            const source = resolveMaterialThumbnailSource(&scene.resources, asset_id) orelse {
+                self.removeMaterialThumbnail(asset_id);
+                continue;
+            };
+
+            try self.material_thumbnail_preview.syncFromSource(source);
+            self.thumbnail_scene_cache.invalidateMaterialResources(&self.rhi);
+
+            var prepared_scene = try self.thumbnail_scene_cache.prepareScene(
+                &self.rhi,
+                &self.material_thumbnail_preview.world,
+                material_thumbnail_dimension,
+                material_thumbnail_dimension,
+            );
+            defer prepared_scene.deinit();
+
+            const render_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
+                .color = .{
+                    .target = .{ .texture = &entry.target.color_texture },
+                    .clear_color = material_thumbnail_clear_color,
+                    .load_op = .clear,
+                    .store_op = .store,
+                },
+                .depth = .{
+                    .texture = &entry.target.depth_texture,
+                    .clear_depth = 1.0,
+                    .clear_stencil = 0,
+                    .load_op = .clear,
+                    .store_op = .dont_care,
+                    .stencil_load_op = .dont_care,
+                    .stencil_store_op = .dont_care,
+                },
+            });
+
+            const depth_stats = self.depth_prepass.draw(&self.rhi, frame, render_pass, &prepared_scene);
+            stats.add(depth_stats);
+            const base_stats = self.base_pass.draw(&self.rhi, frame, render_pass, &prepared_scene, thumbnail_viewport_state);
+            stats.add(base_stats);
+            self.rhi.endRenderPass(render_pass);
+
+            entry.signature = source.signature;
+            entry.dirty = false;
+            entry.ready = true;
+        }
+
+        return stats;
+    }
+
+    fn findMaterialThumbnailCacheIndex(self: *const Renderer, asset_id: []const u8) ?usize {
+        for (self.material_thumbnail_cache.items, 0..) |entry, index| {
+            if (std.mem.eql(u8, entry.asset_id, asset_id)) {
+                return index;
+            }
+        }
+        return null;
+    }
+
+    fn ensureMaterialThumbnailEntry(self: *Renderer, asset_id: []const u8) !*MaterialThumbnailCacheEntry {
+        if (self.findMaterialThumbnailCacheIndex(asset_id)) |index| {
+            return &self.material_thumbnail_cache.items[index];
+        }
+
+        if (self.material_thumbnail_cache.items.len >= material_thumbnail_cache_limit) {
+            self.evictMaterialThumbnailEntry(asset_id);
+        }
+
+        const target = try ThumbnailRenderTarget.init(&self.rhi);
+        errdefer {
+            var owned = target;
+            owned.deinit(&self.rhi);
+        }
+
+        try self.material_thumbnail_cache.append(self.allocator, .{
+            .asset_id = try self.allocator.dupe(u8, asset_id),
+            .target = target,
+        });
+        return &self.material_thumbnail_cache.items[self.material_thumbnail_cache.items.len - 1];
+    }
+
+    fn enqueueMaterialThumbnailRequest(self: *Renderer, entry: *MaterialThumbnailCacheEntry) !void {
+        try self.material_thumbnail_requests.append(self.allocator, try self.allocator.dupe(u8, entry.asset_id));
+        entry.queued = true;
+    }
+
+    fn evictMaterialThumbnailEntry(self: *Renderer, keep_asset_id: []const u8) void {
+        var candidate_index: ?usize = null;
+        var candidate_frame: usize = 0;
+
+        for (self.material_thumbnail_cache.items, 0..) |entry, index| {
+            if (std.mem.eql(u8, entry.asset_id, keep_asset_id)) {
+                continue;
+            }
+            if (entry.queued) {
+                continue;
+            }
+            if (candidate_index == null or entry.last_requested_frame < candidate_frame) {
+                candidate_index = index;
+                candidate_frame = entry.last_requested_frame;
+            }
+        }
+
+        if (candidate_index == null) {
+            for (self.material_thumbnail_cache.items, 0..) |entry, index| {
+                if (std.mem.eql(u8, entry.asset_id, keep_asset_id)) {
+                    continue;
+                }
+                if (candidate_index == null or entry.last_requested_frame < candidate_frame) {
+                    candidate_index = index;
+                    candidate_frame = entry.last_requested_frame;
+                }
+            }
+        }
+
+        if (candidate_index) |index| {
+            var entry = self.material_thumbnail_cache.orderedRemove(index);
+            entry.deinit(self.allocator, &self.rhi);
+        }
+    }
+
+    fn removeMaterialThumbnail(self: *Renderer, asset_id: []const u8) void {
+        const index = self.findMaterialThumbnailCacheIndex(asset_id) orelse return;
+        var entry = self.material_thumbnail_cache.orderedRemove(index);
+        entry.deinit(self.allocator, &self.rhi);
+    }
+
+    fn releaseMaterialThumbnailCache(self: *Renderer) void {
+        for (self.material_thumbnail_cache.items) |*entry| {
+            entry.deinit(self.allocator, &self.rhi);
+        }
+        self.material_thumbnail_cache.deinit(self.allocator);
+        self.material_thumbnail_cache = .empty;
+    }
+
+    fn releaseMaterialThumbnailRequests(self: *Renderer) void {
+        for (self.material_thumbnail_requests.items) |asset_id| {
+            self.allocator.free(asset_id);
+        }
+        self.material_thumbnail_requests.deinit(self.allocator);
+        self.material_thumbnail_requests = .empty;
     }
 
     fn durationNs(start: i128, end: i128) u64 {
@@ -833,3 +1271,164 @@ pub const Renderer = struct {
         self.in_flight_selection_batches.deinit(self.allocator);
     }
 };
+
+fn resolveMaterialThumbnailSource(
+    resources: *const assets_lib.ResourceLibrary,
+    asset_id: []const u8,
+) ?MaterialThumbnailSource {
+    const material_handle = resources.materialHandleByAssetId(asset_id) orelse return null;
+    const material = resources.material(material_handle) orelse return null;
+
+    var source = MaterialThumbnailSource{
+        .material_handle = material_handle,
+        .material = material,
+        .signature = .{
+            .shading = material.shading,
+            .base_color_factor = material.base_color_factor,
+        },
+    };
+
+    if (material.base_color_texture) |texture_handle| {
+        if (resources.texture(texture_handle)) |texture| {
+            source.texture = texture;
+            source.signature.texture = .{
+                .handle = texture_handle,
+                .width = texture.width,
+                .height = texture.height,
+                .format = texture.format,
+            };
+        }
+    }
+
+    return source;
+}
+
+fn lookRotationEuler(from: [3]f32, to: [3]f32) [3]f32 {
+    const direction = vec3.normalize(vec3.sub(to, from));
+    return .{
+        std.math.asin(std.math.clamp(direction[1], -1.0, 1.0)),
+        std.math.atan2(-direction[0], -direction[2]),
+        0.0,
+    };
+}
+
+fn makeOwnedTestAssetRecord(
+    allocator: std.mem.Allocator,
+    asset_type: registry_mod.AssetType,
+    id: []const u8,
+    source_path: []const u8,
+    display_name: []const u8,
+) !registry_mod.AssetRecord {
+    return .{
+        .id = try allocator.dupe(u8, id),
+        .type = asset_type,
+        .source_path = try allocator.dupe(u8, source_path),
+        .source_hash = try allocator.dupe(u8, "thumbnail-test-source"),
+        .import_settings_hash = try allocator.dupe(u8, "thumbnail-test-settings"),
+        .import_version = asset_type.importVersion(),
+        .dependency_ids = try allocator.alloc([]u8, 0),
+        .outputs = try allocator.alloc(registry_mod.AssetOutput, 0),
+        .metadata = .{
+            .display_name = try allocator.dupe(u8, display_name),
+            .importer = try allocator.dupe(u8, asset_type.importerName()),
+            .source_extension = try allocator.dupe(u8, ".thumb"),
+        },
+    };
+}
+
+test "resolveMaterialThumbnailSource captures loaded material signatures" {
+    var world = scene_mod.World.init(std.testing.allocator);
+    defer world.deinit();
+
+    const texture_handle = try world.assets().createTexture(.{
+        .name = "PreviewAlbedo",
+        .width = 4,
+        .height = 2,
+        .pixels = &[_]u8{
+            255, 255, 255, 255,
+            255, 255, 255, 255,
+            255, 255, 255, 255,
+            255, 255, 255, 255,
+            255, 255, 255, 255,
+            255, 255, 255, 255,
+            255, 255, 255, 255,
+            255, 255, 255, 255,
+        },
+    });
+    _ = try world.assets().bindTextureAssetRecord(
+        texture_handle,
+        try makeOwnedTestAssetRecord(std.testing.allocator, .texture, "texture://preview", "assets/textures/preview.png", "Preview Texture"),
+    );
+
+    const material_handle = try world.assets().createMaterial(.{
+        .name = "PreviewMaterial",
+        .shading = .lambert,
+        .base_color_factor = .{ 0.2, 0.4, 0.6, 1.0 },
+        .base_color_texture = texture_handle,
+    });
+    _ = try world.assets().bindMaterialAssetRecord(
+        material_handle,
+        try makeOwnedTestAssetRecord(std.testing.allocator, .material, "material://preview", "assets/materials/preview.guava_material", "Preview Material"),
+    );
+
+    const source = resolveMaterialThumbnailSource(world.assets(), "material://preview").?;
+    try std.testing.expectEqual(material_handle, source.material_handle);
+    try std.testing.expectEqual(components.ShadingModel.lambert, source.signature.shading);
+    try std.testing.expectEqualDeep([4]f32{ 0.2, 0.4, 0.6, 1.0 }, source.signature.base_color_factor);
+    try std.testing.expectEqual(texture_handle, source.signature.texture.handle.?);
+    try std.testing.expectEqual(@as(u32, 4), source.signature.texture.width);
+    try std.testing.expectEqual(@as(u32, 2), source.signature.texture.height);
+}
+
+test "material thumbnail preview scene mirrors source material resources" {
+    var world = scene_mod.World.init(std.testing.allocator);
+    defer world.deinit();
+
+    const texture_handle = try world.assets().createTexture(.{
+        .name = "PreviewSyncTexture",
+        .width = 2,
+        .height = 2,
+        .pixels = &[_]u8{
+            255, 128, 0, 255,
+            255, 128, 0, 255,
+            255, 128, 0, 255,
+            255, 128, 0, 255,
+        },
+    });
+    _ = try world.assets().bindTextureAssetRecord(
+        texture_handle,
+        try makeOwnedTestAssetRecord(std.testing.allocator, .texture, "texture://sync", "assets/textures/sync.png", "Sync Texture"),
+    );
+
+    const material_handle = try world.assets().createMaterial(.{
+        .name = "PreviewSyncMaterial",
+        .shading = .unlit,
+        .base_color_factor = .{ 0.9, 0.3, 0.1, 1.0 },
+        .base_color_texture = texture_handle,
+    });
+    _ = try world.assets().bindMaterialAssetRecord(
+        material_handle,
+        try makeOwnedTestAssetRecord(std.testing.allocator, .material, "material://sync", "assets/materials/sync.guava_material", "Sync Material"),
+    );
+
+    var preview = try MaterialThumbnailPreview.init(std.testing.allocator);
+    defer preview.deinit();
+
+    const source = resolveMaterialThumbnailSource(world.assets(), "material://sync").?;
+    try preview.syncFromSource(source);
+
+    const preview_material = preview.world.resources.material(preview.preview_material_handle).?;
+    try std.testing.expectEqual(components.ShadingModel.unlit, preview_material.shading);
+    try std.testing.expectEqualDeep([4]f32{ 0.9, 0.3, 0.1, 1.0 }, preview_material.base_color_factor);
+    try std.testing.expect(preview_material.base_color_texture != null);
+
+    const preview_texture = preview.world.resources.texture(preview_material.base_color_texture.?).?;
+    try std.testing.expectEqual(@as(u32, 2), preview_texture.width);
+    try std.testing.expectEqual(@as(u32, 2), preview_texture.height);
+    try std.testing.expectEqualSlices(u8, &[_]u8{
+        255, 128, 0, 255,
+        255, 128, 0, 255,
+        255, 128, 0, 255,
+        255, 128, 0, 255,
+    }, preview_texture.pixels);
+}
