@@ -81,9 +81,9 @@ pub const palettes = struct {
         .active = .{ 0.22, 0.25, 0.29, 0.92 },
     };
     pub const toolbar_active = ButtonPalette{
-        .button = .{ 0.24, 0.41, 0.60, 0.84 },
-        .hovered = .{ 0.28, 0.48, 0.69, 0.92 },
-        .active = .{ 0.21, 0.35, 0.52, 0.96 },
+        .button = .{ 0.13, 0.50, 0.30, 0.84 },
+        .hovered = .{ 0.18, 0.60, 0.35, 0.92 },
+        .active = .{ 0.10, 0.40, 0.22, 0.96 },
     };
     pub const toolbar_accent = ButtonPalette{
         .button = .{ 0.133, 0.773, 0.369, 0.6 },

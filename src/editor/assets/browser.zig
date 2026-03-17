@@ -220,20 +220,22 @@ fn drawAssetListView(state: *EditorState, layer_context: *engine.core.LayerConte
 
         const icon_size: f32 = 24.0;
         const icon_path = assetIconPath(entry.kind);
+
+        // Create a selectable for the entire row
+        const selected = state.selected_asset_index == index;
+        const icon_tint: [4]u8 = if (selected) .{ 34, 197, 94, 255 } else assetIconTint(entry.kind);
         const icon_texture = try ui_icons.ensureTintedIconTexture(
             state,
             layer_context,
             icon_path,
             icon_size,
-            assetIconTint(entry.kind),
+            icon_tint,
         );
         const row_texture = if (entry.kind == .material)
             (try queueAndResolveMaterialThumbnailTexture(state, layer_context, &entry) orelse icon_texture)
         else
             icon_texture;
 
-        // Create a selectable for the entire row
-        const selected = state.selected_asset_index == index;
         if (engine.ui.ImGui.selectable(button_id, selected, false, 0.0, row_height)) {
             state.selected_asset_index = index;
         }
@@ -285,7 +287,7 @@ fn drawAssetCard(
         card_texture,
         icon_size,
         icon_size,
-        if (state.selected_asset_index == index) .{ 0.12, 0.32, 0.58, 0.88 } else .{ 0.0, 0.0, 0.0, 0.0 },
+        if (state.selected_asset_index == index) .{ 0.13, 0.55, 0.35, 0.88 } else .{ 0.0, 0.0, 0.0, 0.0 },
         .{ 1.0, 1.0, 1.0, 1.0 },
     )) {
         state.selected_asset_index = index;

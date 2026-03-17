@@ -29,9 +29,9 @@ const place_actor_card_idle = ui_icons.ButtonPalette{
     .active = .{ 0.21, 0.24, 0.29, 0.96 },
 };
 const place_actor_card_active = ui_icons.ButtonPalette{
-    .button = .{ 0.23, 0.39, 0.58, 0.84 },
-    .hovered = .{ 0.27, 0.46, 0.67, 0.92 },
-    .active = .{ 0.21, 0.34, 0.50, 0.98 },
+    .button = .{ 0.13, 0.50, 0.30, 0.84 },
+    .hovered = .{ 0.18, 0.60, 0.35, 0.92 },
+    .active = .{ 0.10, 0.40, 0.22, 0.98 },
 };
 
 const categories = [_]struct {

@@ -167,7 +167,9 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
         layer_context,
         ui_icons.entityIconPath(entity),
         hierarchy_row_icon_size,
-        if (is_frozen)
+        if (is_selected)
+            .{ 34, 197, 94, 255 }
+        else if (is_frozen)
             .{ 122, 132, 145, 255 }
         else if (entity.visible)
             .{ 188, 203, 228, 255 }
@@ -766,10 +768,10 @@ fn anyEntityHasParent(world: *const engine.scene.World, entity_ids: []const engi
 }
 
 fn drawFreezeToggleButton(id: []const u8, active: bool) !bool {
-    engine.ui.ImGui.pushStyleColor(.text, if (active) .{ 0.74, 0.92, 0.98, 1.0 } else .{ 0.55, 0.58, 0.62, 1.0 });
-    engine.ui.ImGui.pushStyleColor(.button, if (active) .{ 0.19, 0.29, 0.34, 0.82 } else .{ 0.16, 0.17, 0.19, 0.54 });
-    engine.ui.ImGui.pushStyleColor(.button_hovered, if (active) .{ 0.24, 0.36, 0.42, 0.92 } else .{ 0.21, 0.23, 0.27, 0.74 });
-    engine.ui.ImGui.pushStyleColor(.button_active, if (active) .{ 0.18, 0.26, 0.31, 0.96 } else .{ 0.18, 0.20, 0.24, 0.86 });
+    engine.ui.ImGui.pushStyleColor(.text, if (active) .{ 0.34, 0.90, 0.60, 1.0 } else .{ 0.55, 0.58, 0.62, 1.0 });
+    engine.ui.ImGui.pushStyleColor(.button, if (active) .{ 0.13, 0.45, 0.28, 0.82 } else .{ 0.16, 0.17, 0.19, 0.54 });
+    engine.ui.ImGui.pushStyleColor(.button_hovered, if (active) .{ 0.18, 0.55, 0.35, 0.92 } else .{ 0.21, 0.23, 0.27, 0.74 });
+    engine.ui.ImGui.pushStyleColor(.button_active, if (active) .{ 0.10, 0.35, 0.22, 0.96 } else .{ 0.18, 0.20, 0.24, 0.86 });
     engine.ui.ImGui.pushStyleVarVec2(.frame_padding, .{ 0.0, 0.0 });
     engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, ui_icons.regular_icon_button_rounding);
     defer {
