@@ -730,9 +730,14 @@ fn resolveCookedMaterial(
     });
     material_asset_ids[index] = asset_id;
 
+    const material_name = if (material.name) |name| blk: {
+        defer allocator.free(generated_name);
+        break :blk try allocator.dupe(u8, name);
+    } else generated_name;
+
     try cooked_materials.append(allocator, .{
         .asset_id = asset_id,
-        .name = material.name orelse generated_name,
+        .name = material_name,
         .base_color_factor = base_color_factor,
         .base_color_texture_asset_id = base_color_texture_asset_id,
     });
@@ -743,7 +748,7 @@ fn resolveCookedMaterial(
             allocator,
             model_record,
             asset_id,
-            material.name orelse generated_name,
+            material_name,
             base_color_factor,
             base_color_texture_asset_id,
         ),

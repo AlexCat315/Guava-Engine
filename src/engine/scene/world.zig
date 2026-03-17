@@ -19,6 +19,7 @@ pub const Entity = struct {
     light: ?components.Light = null,
     visible: bool = true,
     editor_only: bool = false,
+    is_folder: bool = false,
 };
 
 pub const EntityDesc = struct {
@@ -31,6 +32,7 @@ pub const EntityDesc = struct {
     light: ?components.Light = null,
     visible: bool = true,
     editor_only: bool = false,
+    is_folder: bool = false,
 };
 
 pub const Summary = struct {
@@ -97,6 +99,7 @@ pub const World = struct {
             .light = desc.light,
             .visible = desc.visible,
             .editor_only = desc.editor_only,
+            .is_folder = desc.is_folder,
         });
 
         return id;
@@ -297,6 +300,17 @@ pub const World = struct {
         return self.createEntity(.{
             .name = entity_name,
             .transform = transform,
+        });
+    }
+
+    pub fn createFolderEntity(self: *World, transform: components.Transform) !EntityId {
+        const entity_name = try self.nextAvailableName("Folder");
+        defer self.allocator.free(entity_name);
+
+        return self.createEntity(.{
+            .name = entity_name,
+            .transform = transform,
+            .is_folder = true,
         });
     }
 
@@ -553,6 +567,7 @@ pub const World = struct {
             .light = source.light,
             .visible = source.visible,
             .editor_only = source.editor_only,
+            .is_folder = source.is_folder,
         });
 
         for (child_ids.items) |child_id| {
@@ -800,4 +815,18 @@ test "duplicateEntity copies subtrees and destroyEntity removes descendants" {
     try std.testing.expect(world.findEntityByName("RigRoot Copy") != null);
     try std.testing.expect(world.findEntityByName("RigChild Copy") != null);
     _ = child;
+}
+
+test "folder entities preserve folder state through duplication" {
+    var world = World.init(std.testing.allocator);
+    defer world.deinit();
+
+    const folder = try world.createFolderEntity(.{
+        .translation = .{ 2.0, 0.0, 0.0 },
+    });
+    try std.testing.expect(world.getEntityConst(folder).?.is_folder);
+    try std.testing.expect(!world.getEntityConst(folder).?.editor_only);
+
+    const duplicate = try world.duplicateEntity(folder);
+    try std.testing.expect(world.getEntityConst(duplicate).?.is_folder);
 }

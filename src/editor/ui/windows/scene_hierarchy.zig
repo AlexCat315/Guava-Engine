@@ -568,12 +568,7 @@ fn drawFreezeToggleButton(id: []const u8, active: bool) !bool {
 
 fn createFolderEntity(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const transform = history.spawnTransform(state, layer_context);
-    const entity_id = try layer_context.world.createEmptyEntity(transform);
-    _ = layer_context.world.renameEntity(entity_id, "Folder") catch {};
-    // Mark as folder by setting editor_only = true
-    if (layer_context.world.getEntity(entity_id)) |entity| {
-        entity.editor_only = true;
-    }
+    const entity_id = try layer_context.world.createFolderEntity(transform);
     try layer_context.renderer.replaceSelection(entity_id);
     utils.syncInspectorNameBuffer(state, layer_context);
     try history.captureSnapshot(state, layer_context);

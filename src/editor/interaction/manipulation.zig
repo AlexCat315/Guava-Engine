@@ -66,18 +66,6 @@ pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.L
         return;
     }
 
-    if (input.modifiers.ctrl and input.wasKeyPressed(.s)) {
-        history.saveScene(state, layer_context);
-        return;
-    }
-    if (input.modifiers.ctrl and input.wasKeyPressed(.o)) {
-        try history.loadScene(state, layer_context);
-        return;
-    }
-    if (input.modifiers.ctrl and input.wasKeyPressed(.n)) {
-        try history.newScene(state, layer_context);
-        return;
-    }
     if (input.modifiers.ctrl and input.modifiers.shift and input.wasKeyPressed(.t)) {
         state.translation_snap_enabled = !state.translation_snap_enabled;
         return;
@@ -88,6 +76,18 @@ pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.L
     }
     if (input.modifiers.ctrl and input.modifiers.shift and input.wasKeyPressed(.s)) {
         state.scale_snap_enabled = !state.scale_snap_enabled;
+        return;
+    }
+    if (input.modifiers.ctrl and input.wasKeyPressed(.s)) {
+        history.saveScene(state, layer_context);
+        return;
+    }
+    if (input.modifiers.ctrl and input.wasKeyPressed(.o)) {
+        try history.loadScene(state, layer_context);
+        return;
+    }
+    if (input.modifiers.ctrl and input.wasKeyPressed(.n)) {
+        try history.newScene(state, layer_context);
         return;
     }
 

@@ -87,11 +87,8 @@ pub const palettes = struct {
 };
 
 pub fn entityIconPath(entity: *const engine.scene.Entity) []const u8 {
-    // Check for folder - editor_only entity with no components and name starting with "Folder"
-    if (entity.editor_only and entity.camera == null and entity.mesh == null and entity.light == null) {
-        if (entity.name.len >= 6 and std.mem.eql(u8, entity.name[0..6], "Folder")) {
-            return paths.hierarchy.folder;
-        }
+    if (entity.is_folder) {
+        return paths.hierarchy.folder;
     }
     if (entity.camera != null) {
         return paths.hierarchy.camera;

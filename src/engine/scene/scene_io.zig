@@ -68,6 +68,7 @@ const EntityRecord = struct {
     light: ?components.Light = null,
     visible: bool = true,
     editor_only: bool = false,
+    is_folder: bool = false,
 };
 
 const LegacySceneFile = struct {
@@ -286,6 +287,7 @@ fn buildSceneFile(allocator: std.mem.Allocator, world: *const world_mod.World) !
             .light = entity.light,
             .visible = entity.visible,
             .editor_only = entity.editor_only,
+            .is_folder = entity.is_folder,
         });
     }
 
@@ -410,6 +412,7 @@ fn deserializeWorldV3FromSlice(allocator: std.mem.Allocator, world: *world_mod.W
             .light = entity.light,
             .visible = entity.visible,
             .editor_only = entity.editor_only,
+            .is_folder = entity.is_folder,
         });
     }
 
@@ -1082,4 +1085,28 @@ test "scene serialization round-trips parent relationships" {
     const world_transform = loaded.worldTransform(loaded_child.id).?;
     try std.testing.expectApproxEqAbs(@as(f32, 2.0), world_transform.translation[1], 0.0001);
     _ = child;
+}
+
+test "scene serialization round-trips folder entities" {
+    var world = world_mod.World.init(std.testing.allocator);
+    defer world.deinit();
+
+    const folder = try world.createFolderEntity(.{
+        .translation = .{ 4.0, 0.0, 0.0 },
+    });
+    _ = try world.createEntity(.{
+        .name = "Child",
+        .parent = folder,
+    });
+
+    const encoded = try serializeWorldAlloc(std.testing.allocator, &world);
+    defer std.testing.allocator.free(encoded);
+
+    var loaded = world_mod.World.init(std.testing.allocator);
+    defer loaded.deinit();
+    try deserializeWorldFromSlice(std.testing.allocator, &loaded, encoded);
+
+    const loaded_folder = loaded.findEntityByName("Folder").?;
+    try std.testing.expect(loaded_folder.is_folder);
+    try std.testing.expectEqual(loaded_folder.id, loaded.findEntityByName("Child").?.parent.?);
 }

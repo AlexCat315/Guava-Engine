@@ -38,6 +38,24 @@ fn drawToolbarIconButton(
     );
 }
 
+fn drawOverlayIconButton(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    id: []const u8,
+    path: []const u8,
+    active: bool,
+) !bool {
+    return ui_icons.drawIconButton(
+        state,
+        layer_context,
+        id,
+        path,
+        16.0,
+        .{ 245, 248, 252, 255 },
+        if (active) ui_icons.palettes.toolbar_active else ui_icons.palettes.toolbar_idle,
+    );
+}
+
 fn setPlaybackState(state: *EditorState, layer_context: *engine.core.LayerContext, playback_state: PlaybackState) void {
     state.playback_state = playback_state;
     layer_context.playback_controller.setState(playback_state);
@@ -740,6 +758,13 @@ fn handleViewportAssetDropTargets(state: *EditorState, layer_context: *engine.co
 }
 
 fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const view_popup_id = "viewport_view_popup";
+    const render_popup_id = "viewport_render_popup";
+    const overlay_popup_id = "viewport_overlay_popup";
+    const view_popup_open = engine.ui.ImGui.isPopupOpen(view_popup_id);
+    const render_popup_open = engine.ui.ImGui.isPopupOpen(render_popup_id);
+    const overlay_popup_open = engine.ui.ImGui.isPopupOpen(overlay_popup_id);
+
     const overlay_pos = .{
         state.viewport_origin[0] + 14.0,
         state.viewport_origin[1] + viewportOverlayTopInset(),
@@ -761,70 +786,66 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
     engine.ui.ImGui.pushStyleVarVec2(.item_spacing, .{ 6.0, 4.0 });
     defer engine.ui.ImGui.popStyleVar(1);
 
-    // View preset buttons with icons
-    const view_icon = switch (state.viewport_view_preset) {
-        .perspective => ui_icons.paths.viewport.perspective,
-        .top => ui_icons.paths.viewport.top,
-        .side => ui_icons.paths.viewport.side,
-        .custom => ui_icons.paths.viewport.perspective,
-    };
-    const view_palette = if (true) ui_icons.palettes.toolbar_active else ui_icons.palettes.toolbar_idle;
-    if (try ui_icons.drawIconButton(state, layer_context, "##view_btn", view_icon, 16.0, .{ 245, 248, 252, 255 }, view_palette)) {
-        // Cycle through view presets: perspective -> top -> side -> perspective
-        const next_preset: camera.ViewPreset = switch (state.viewport_view_preset) {
-            .perspective => .top,
-            .top => .side,
-            .side => .perspective,
-            .custom => .perspective,
-        };
-        camera.setViewPreset(state, layer_context, next_preset);
+    if (try drawOverlayIconButton(state, layer_context, "viewport_overlay_view", currentViewPresetIcon(state), view_popup_open)) {
+        engine.ui.ImGui.openPopup(view_popup_id);
     }
-
+    if (engine.ui.ImGui.beginPopup(view_popup_id)) {
+        defer engine.ui.ImGui.endPopup();
+        if (engine.ui.ImGui.menuItem(state.text(.perspective_view), null, state.viewport_view_preset == .perspective, true)) {
+            camera.setViewPreset(state, layer_context, .perspective);
+        }
+        if (engine.ui.ImGui.menuItem(state.text(.top_view), null, state.viewport_view_preset == .top, true)) {
+            camera.setViewPreset(state, layer_context, .top);
+        }
+        if (engine.ui.ImGui.menuItem(state.text(.side_view), null, state.viewport_view_preset == .side, true)) {
+            camera.setViewPreset(state, layer_context, .side);
+        }
+    }
     engine.ui.ImGui.sameLine();
 
-    // Render mode button
-    const render_icon = switch (state.viewport_render_mode) {
-        .textured => ui_icons.paths.viewport.textured,
-        .wireframe => ui_icons.paths.viewport.wireframe,
-        .unlit => ui_icons.paths.viewport.unlit,
-    };
-    const render_palette = if (true) ui_icons.palettes.toolbar_active else ui_icons.palettes.toolbar_idle;
-    if (try ui_icons.drawIconButton(state, layer_context, "##render_btn", render_icon, 16.0, .{ 245, 248, 252, 255 }, render_palette)) {
-        // Cycle through render modes: textured -> wireframe -> unlit -> textured
-        state.viewport_render_mode = switch (state.viewport_render_mode) {
-            .textured => .wireframe,
-            .wireframe => .unlit,
-            .unlit => .textured,
-        };
+    if (try drawOverlayIconButton(state, layer_context, "viewport_overlay_render", currentRenderModeIcon(state), render_popup_open)) {
+        engine.ui.ImGui.openPopup(render_popup_id);
     }
-
+    if (engine.ui.ImGui.beginPopup(render_popup_id)) {
+        defer engine.ui.ImGui.endPopup();
+        if (engine.ui.ImGui.menuItem(state.text(.textured), null, state.viewport_render_mode == .textured, true)) {
+            state.viewport_render_mode = .textured;
+        }
+        if (engine.ui.ImGui.menuItem(state.text(.wireframe), null, state.viewport_render_mode == .wireframe, true)) {
+            state.viewport_render_mode = .wireframe;
+        }
+        if (engine.ui.ImGui.menuItem(state.text(.unlit), null, state.viewport_render_mode == .unlit, true)) {
+            state.viewport_render_mode = .unlit;
+        }
+    }
     engine.ui.ImGui.sameLine();
 
-    // Grid toggle button
-    const grid_palette = if (state.viewport_show_grid) ui_icons.palettes.status_on else ui_icons.palettes.status_off;
-    if (try ui_icons.drawIconButton(state, layer_context, "##grid_btn", ui_icons.paths.viewport.grid, 16.0, .{ 245, 248, 252, 255 }, grid_palette)) {
-        state.viewport_show_grid = !state.viewport_show_grid;
+    if (try drawOverlayIconButton(state, layer_context, "viewport_overlay_options", ui_icons.paths.toolbar.overlay, overlay_popup_open)) {
+        engine.ui.ImGui.openPopup(overlay_popup_id);
     }
-
+    if (engine.ui.ImGui.beginPopup(overlay_popup_id)) {
+        defer engine.ui.ImGui.endPopup();
+        if (engine.ui.ImGui.menuItem(state.text(.show_grid), null, state.viewport_show_grid, true)) {
+            state.viewport_show_grid = !state.viewport_show_grid;
+        }
+        if (engine.ui.ImGui.menuItem(state.text(.show_bones), null, state.viewport_show_bones, true)) {
+            state.viewport_show_bones = !state.viewport_show_bones;
+        }
+        if (engine.ui.ImGui.menuItem(state.text(.show_collision), null, state.viewport_show_collision, true)) {
+            state.viewport_show_collision = !state.viewport_show_collision;
+        }
+    }
     engine.ui.ImGui.sameLine();
 
-    // Snap buttons
-    const snap_translate_palette = if (state.translation_snap_enabled) ui_icons.palettes.status_on else ui_icons.palettes.status_off;
-    if (try ui_icons.drawIconButton(state, layer_context, "##snap_t_btn", ui_icons.paths.toolbar.snap_translate, 16.0, .{ 245, 248, 252, 255 }, snap_translate_palette)) {
+    if (try drawOverlayIconButton(state, layer_context, "viewport_snap_translate", ui_icons.paths.toolbar.snap_translate, state.translation_snap_enabled)) {
         state.translation_snap_enabled = !state.translation_snap_enabled;
     }
-
     engine.ui.ImGui.sameLine();
-
-    const snap_rotate_palette = if (state.rotation_snap_enabled) ui_icons.palettes.status_on else ui_icons.palettes.status_off;
-    if (try ui_icons.drawIconButton(state, layer_context, "##snap_r_btn", ui_icons.paths.toolbar.snap_rotate, 16.0, .{ 245, 248, 252, 255 }, snap_rotate_palette)) {
+    if (try drawOverlayIconButton(state, layer_context, "viewport_snap_rotate", ui_icons.paths.toolbar.snap_rotate, state.rotation_snap_enabled)) {
         state.rotation_snap_enabled = !state.rotation_snap_enabled;
     }
-
     engine.ui.ImGui.sameLine();
-
-    const snap_scale_palette = if (state.scale_snap_enabled) ui_icons.palettes.status_on else ui_icons.palettes.status_off;
-    if (try ui_icons.drawIconButton(state, layer_context, "##snap_s_btn", ui_icons.paths.toolbar.snap_scale, 16.0, .{ 245, 248, 252, 255 }, snap_scale_palette)) {
+    if (try drawOverlayIconButton(state, layer_context, "viewport_snap_scale", ui_icons.paths.toolbar.snap_scale, state.scale_snap_enabled)) {
         state.scale_snap_enabled = !state.scale_snap_enabled;
     }
 
@@ -834,7 +855,7 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
         engine.ui.ImGui.text("3x");
     }
 
-    if (engine.ui.ImGui.isWindowHovered()) {
+    if (engine.ui.ImGui.isWindowHovered() or view_popup_open or render_popup_open or overlay_popup_open) {
         state.viewport_overlay_hovered = true;
     }
 }
@@ -923,6 +944,22 @@ fn currentRenderModeLabel(state: *const EditorState) []const u8 {
         .textured => state.text(.textured),
         .wireframe => state.text(.wireframe),
         .unlit => state.text(.unlit),
+    };
+}
+
+fn currentViewPresetIcon(state: *const EditorState) []const u8 {
+    return switch (state.viewport_view_preset) {
+        .perspective, .custom => ui_icons.paths.viewport.perspective,
+        .top => ui_icons.paths.viewport.top,
+        .side => ui_icons.paths.viewport.side,
+    };
+}
+
+fn currentRenderModeIcon(state: *const EditorState) []const u8 {
+    return switch (state.viewport_render_mode) {
+        .textured => ui_icons.paths.viewport.textured,
+        .wireframe => ui_icons.paths.viewport.wireframe,
+        .unlit => ui_icons.paths.viewport.unlit,
     };
 }
 
