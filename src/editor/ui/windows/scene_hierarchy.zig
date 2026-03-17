@@ -257,42 +257,54 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
         }
     }
 
-    engine.ui.ImGui.tableNextColumn();
-    var visibility_button_id_buffer: [48]u8 = undefined;
-    const visibility_button_id = try std.fmt.bufPrint(&visibility_button_id_buffer, "{d}_visibility", .{entity_id});
-    if (try drawHierarchyStatusIconButton(
-        state,
-        layer_context,
-        visibility_button_id,
-        if (entity.visible) ui_icons.paths.hierarchy.eye else ui_icons.paths.hierarchy.eye_off,
-        hierarchy_status_icon_size,
-        if (entity.visible) .{ 176, 203, 224, 255 } else .{ 145, 151, 162, 255 },
-        if (entity.visible) ui_icons.palettes.status_on else ui_icons.palettes.status_off,
-    )) {
-        entity.visible = !entity.visible;
-        try history.captureSnapshot(state, layer_context);
-    }
+    // Only show status icons when hovered OR entity has non-default state
+    // This reduces visual clutter for normal entities
+    const show_status_buttons = engine.ui.ImGui.isItemHovered() or
+        !entity.visible or is_locked or is_frozen;
 
-    engine.ui.ImGui.tableNextColumn();
-    var freeze_button_id_buffer: [40]u8 = undefined;
-    const freeze_button_id = try std.fmt.bufPrint(&freeze_button_id_buffer, "{d}_freeze", .{entity_id});
-    if (try drawFreezeToggleButton(freeze_button_id, is_frozen)) {
-        try setFrozenForEntities(state, layer_context, &.{entity_id}, !is_frozen);
-    }
+    if (show_status_buttons) {
+        engine.ui.ImGui.tableNextColumn();
+        var visibility_button_id_buffer: [48]u8 = undefined;
+        const visibility_button_id = try std.fmt.bufPrint(&visibility_button_id_buffer, "{d}_visibility", .{entity_id});
+        if (try drawHierarchyStatusIconButton(
+            state,
+            layer_context,
+            visibility_button_id,
+            if (entity.visible) ui_icons.paths.hierarchy.eye else ui_icons.paths.hierarchy.eye_off,
+            hierarchy_status_icon_size,
+            if (entity.visible) .{ 176, 203, 224, 255 } else .{ 145, 151, 162, 255 },
+            if (entity.visible) ui_icons.palettes.status_on else ui_icons.palettes.status_off,
+        )) {
+            entity.visible = !entity.visible;
+            try history.captureSnapshot(state, layer_context);
+        }
 
-    engine.ui.ImGui.tableNextColumn();
-    var lock_button_id_buffer: [40]u8 = undefined;
-    const lock_button_id = try std.fmt.bufPrint(&lock_button_id_buffer, "{d}_lock", .{entity_id});
-    if (try drawHierarchyStatusIconButton(
-        state,
-        layer_context,
-        lock_button_id,
-        if (is_locked) ui_icons.paths.hierarchy.lock else ui_icons.paths.hierarchy.unlock,
-        hierarchy_status_icon_size,
-        if (is_locked) .{ 170, 203, 188, 255 } else .{ 148, 154, 166, 255 },
-        if (is_locked) ui_icons.palettes.status_on else ui_icons.palettes.status_off,
-    )) {
-        try setLockedForEntities(state, layer_context, &.{entity_id}, !is_locked);
+        engine.ui.ImGui.tableNextColumn();
+        var freeze_button_id_buffer: [40]u8 = undefined;
+        const freeze_button_id = try std.fmt.bufPrint(&freeze_button_id_buffer, "{d}_freeze", .{entity_id});
+        if (try drawFreezeToggleButton(freeze_button_id, is_frozen)) {
+            try setFrozenForEntities(state, layer_context, &.{entity_id}, !is_frozen);
+        }
+
+        engine.ui.ImGui.tableNextColumn();
+        var lock_button_id_buffer: [40]u8 = undefined;
+        const lock_button_id = try std.fmt.bufPrint(&lock_button_id_buffer, "{d}_lock", .{entity_id});
+        if (try drawHierarchyStatusIconButton(
+            state,
+            layer_context,
+            lock_button_id,
+            if (is_locked) ui_icons.paths.hierarchy.lock else ui_icons.paths.hierarchy.unlock,
+            hierarchy_status_icon_size,
+            if (is_locked) .{ 170, 203, 188, 255 } else .{ 148, 154, 166, 255 },
+            if (is_locked) ui_icons.palettes.status_on else ui_icons.palettes.status_off,
+        )) {
+            try setLockedForEntities(state, layer_context, &.{entity_id}, !is_locked);
+        }
+    } else {
+        // Empty columns to maintain table structure
+        engine.ui.ImGui.tableNextColumn();
+        engine.ui.ImGui.tableNextColumn();
+        engine.ui.ImGui.tableNextColumn();
     }
 
     if (rename_active and tree_result.rename_finished) {

@@ -126,13 +126,7 @@ fn drawBreadcrumbButton(label: []const u8, active: bool, width: f32) bool {
 
 fn drawProjectPanel(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     ensureSelectedAssetDirectory(state);
-    try drawProjectToolbar(state, layer_context);
-    try drawBreadcrumbs(state);
-    engine.ui.ImGui.separator();
-
-    engine.ui.ImGui.setNextItemWidth(-1.0);
-    _ = engine.ui.ImGui.inputTextWithHint("##asset_filter", state.text(.search_assets), state.asset_filter_buffer[0..]);
-    engine.ui.ImGui.separator();
+    try drawProjectPanelHeader(state, layer_context);
 
     if (!engine.ui.ImGui.beginTable("project_browser_layout", 2)) {
         return;
@@ -353,6 +347,90 @@ fn drawSelectedAssetPreview(state: *EditorState, layer_context: *engine.core.Lay
     }
 
     engine.ui.ImGui.textWrapped(state.text(.no_asset_selected));
+}
+
+// Compressed single-line header: breadcrumbs (left), search (center), thumbnail slider (right)
+fn drawProjectPanelHeader(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    _ = layer_context; // Reserved for future use (e.g., context menu on breadcrumb)
+    const width = engine.ui.ImGui.contentRegionAvail()[0];
+
+    // Left: Breadcrumb path (clickable)
+    const breadcrumb_width = std.math.clamp(width * 0.35, 120.0, 280.0);
+    if (engine.ui.ImGui.buttonEx(state.text(.assets_menu), breadcrumb_width, 26.0)) {
+        setSelectedAssetDirectory(state, "/");
+    }
+
+    // Show sub-path buttons if there's more content
+    const current = selectedDirectory(state);
+    var path_buffer: [256]u8 = undefined;
+    var path_pos: usize = 1; // Start after root "/"
+    while (path_pos < current.len) {
+        engine.ui.ImGui.sameLine();
+        const next_slash = std.mem.indexOfScalarPos(u8, current, path_pos, '/') orelse current.len;
+        const segment = current[path_pos..next_slash];
+        if (segment.len > 0) {
+            const segment_label = try std.fmt.bufPrint(&path_buffer, "/{s}", .{segment});
+            if (engine.ui.ImGui.buttonEx(segment_label, 0.0, 26.0)) {
+                setSelectedAssetDirectory(state, current[0..next_slash]);
+            }
+        }
+        path_pos = next_slash + 1;
+    }
+
+    // Center: Search box
+    const search_width = std.math.clamp(width * 0.30, 140.0, 260.0);
+    engine.ui.ImGui.sameLine();
+    engine.ui.ImGui.setNextItemWidth(search_width);
+    _ = engine.ui.ImGui.inputTextWithHint("##asset_filter", state.text(.search_assets), state.asset_filter_buffer[0..]);
+
+    // Right: Thumbnail size slider + view mode toggle
+    const controls_start = breadcrumb_width + search_width + 32.0;
+    const controls_width = width - controls_start;
+
+    engine.ui.ImGui.sameLine();
+    if (controls_width >= 180.0) {
+        // Full controls
+        engine.ui.ImGui.setNextItemWidth(controls_width * 0.45);
+        var thumbnail_size = state.asset_thumbnail_size;
+        if (engine.ui.ImGui.dragFloat("##asset_thumbnail_size", &thumbnail_size, 1.0, 72.0, 160.0)) {
+            state.asset_thumbnail_size = std.math.clamp(thumbnail_size, 72.0, 160.0);
+        }
+        engine.ui.ImGui.sameLine();
+
+        // View mode toggle
+        const view_mode_palette = if (state.browser_view_mode == .grid)
+            ui_icons.palettes.toolbar_active
+        else
+            ui_icons.palettes.toolbar_idle;
+        engine.ui.ImGui.pushStyleColor(.button, view_mode_palette.button);
+        engine.ui.ImGui.pushStyleColor(.button_hovered, view_mode_palette.hovered);
+        engine.ui.ImGui.pushStyleColor(.button_active, view_mode_palette.active);
+        if (engine.ui.ImGui.buttonEx(if (state.browser_view_mode == .grid) " Grid " else " List ", 0.0, 26.0)) {
+            state.browser_view_mode = switch (state.browser_view_mode) {
+                .grid => .list,
+                .list => .grid,
+            };
+        }
+        engine.ui.ImGui.popStyleColor(3);
+    } else if (controls_width >= 80.0) {
+        // Compact - just view mode
+        const view_mode_palette = if (state.browser_view_mode == .grid)
+            ui_icons.palettes.toolbar_active
+        else
+            ui_icons.palettes.toolbar_idle;
+        engine.ui.ImGui.pushStyleColor(.button, view_mode_palette.button);
+        engine.ui.ImGui.pushStyleColor(.button_hovered, view_mode_palette.hovered);
+        engine.ui.ImGui.pushStyleColor(.button_active, view_mode_palette.active);
+        if (engine.ui.ImGui.buttonEx(if (state.browser_view_mode == .grid) "Grid" else "List", 0.0, 26.0)) {
+            state.browser_view_mode = switch (state.browser_view_mode) {
+                .grid => .list,
+                .list => .grid,
+            };
+        }
+        engine.ui.ImGui.popStyleColor(3);
+    }
+
+    engine.ui.ImGui.separator();
 }
 
 fn drawProjectToolbar(state: *EditorState, layer_context: *engine.core.LayerContext) !void {

@@ -112,8 +112,9 @@ fn drawViewportToolbarOptions(
     layer_context: *engine.core.LayerContext,
     filter_width: f32,
     category_width: f32,
-    space_width: f32,
+    space_width: f32, // Kept for signature compatibility
 ) !void {
+    _ = space_width;
     if (try ui_icons.drawIconButton(
         state,
         layer_context,
@@ -133,14 +134,12 @@ fn drawViewportToolbarOptions(
         state.hierarchy_category = nextHierarchyCategory(state.hierarchy_category);
     }
     engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.buttonEx(
-        switch (state.transform_space) {
-            .local => state.text(.local_space),
-            .world => state.text(.world_space),
-        },
-        space_width,
-        0.0,
-    )) {
+    // Global/Local toggle - now uses icons instead of text
+    const transform_icon_path = switch (state.transform_space) {
+        .local => ui_icons.paths.toolbar.transform_local,
+        .world => ui_icons.paths.toolbar.transform_global,
+    };
+    if (try drawToolbarIconButton(state, layer_context, "toolbar_transform_space", transform_icon_path, state.transform_space == .world)) {
         state.transform_space = switch (state.transform_space) {
             .local => .world,
             .world => .local,
@@ -188,14 +187,12 @@ fn drawViewportToolbarOptionsCompact(state: *EditorState, layer_context: *engine
             state.hierarchy_category = nextHierarchyCategory(state.hierarchy_category);
         }
         engine.ui.ImGui.sameLine();
-        if (engine.ui.ImGui.buttonEx(
-            switch (state.transform_space) {
-                .local => state.text(.local_space),
-                .world => state.text(.world_space),
-            },
-            half_width,
-            0.0,
-        )) {
+        // Global/Local toggle - now uses icons instead of text
+        const transform_icon_path = switch (state.transform_space) {
+            .local => ui_icons.paths.toolbar.transform_local,
+            .world => ui_icons.paths.toolbar.transform_global,
+        };
+        if (try drawToolbarIconButton(state, layer_context, "toolbar_transform_space_compact", transform_icon_path, state.transform_space == .world)) {
             state.transform_space = switch (state.transform_space) {
                 .local => .world,
                 .world => .local,
@@ -206,14 +203,12 @@ fn drawViewportToolbarOptionsCompact(state: *EditorState, layer_context: *engine
             state.hierarchy_category = nextHierarchyCategory(state.hierarchy_category);
         }
         engine.ui.ImGui.dummy(0.0, 6.0);
-        if (engine.ui.ImGui.buttonEx(
-            switch (state.transform_space) {
-                .local => state.text(.local_space),
-                .world => state.text(.world_space),
-            },
-            width,
-            0.0,
-        )) {
+        // Global/Local toggle - now uses icons instead of text
+        const transform_icon_path = switch (state.transform_space) {
+            .local => ui_icons.paths.toolbar.transform_local,
+            .world => ui_icons.paths.toolbar.transform_global,
+        };
+        if (try drawToolbarIconButton(state, layer_context, "toolbar_transform_space_narrow", transform_icon_path, state.transform_space == .world)) {
             state.transform_space = switch (state.transform_space) {
                 .local => .world,
                 .world => .local,
@@ -928,9 +923,10 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
 
 fn drawViewportViewCube(state: *EditorState, layer_context: *engine.core.LayerContext) void {
     const cube_size = std.math.clamp(@min(state.viewport_extent[0], state.viewport_extent[1]) * 0.16, 84.0, 118.0);
+    // Increased padding from 14 to 20 pixels to avoid collision with overlay controls
     const cube_pos = .{
-        state.viewport_origin[0] + state.viewport_extent[0] - cube_size - 14.0,
-        state.viewport_origin[1] + viewportOverlayTopInset(),
+        state.viewport_origin[0] + state.viewport_extent[0] - cube_size - 20.0,
+        state.viewport_origin[1] + viewportOverlayTopInset() + 6.0,
     };
     const view = camera.activeCameraViewMatrix(state, layer_context);
     const result = engine.ui.ImGui.drawViewCube(&view, cube_pos, cube_size);

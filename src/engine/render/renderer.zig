@@ -1025,13 +1025,14 @@ pub const Renderer = struct {
             var grid_lines = std.ArrayList(gizmo_pass_mod.WorldLineVertex).empty;
             defer grid_lines.deinit(self.allocator);
             try appendGridLines(self.allocator, &grid_lines);
+            // Darker grid color (0.12, 0.14, 0.18) - subtle gray that won't compete with scene objects
             const grid_stats = try self.gizmo_pass.drawWorldLines(
                 &self.rhi,
                 frame,
                 pass,
                 prepared_scene.view_projection,
                 grid_lines.items,
-                .{ 0.22, 0.25, 0.30, 1.0 },
+                .{ 0.12, 0.14, 0.18, 0.7 },
             );
             stats.add(grid_stats);
         }
@@ -1073,7 +1074,8 @@ pub const Renderer = struct {
         allocator: std.mem.Allocator,
         lines: *std.ArrayList(gizmo_pass_mod.WorldLineVertex),
     ) !void {
-        const half_extent: i32 = 16;
+        // Reduced grid extent from 16 to 12 - less visual clutter
+        const half_extent: i32 = 12;
         var index: i32 = -half_extent;
         while (index <= half_extent) : (index += 1) {
             const offset = @as(f32, @floatFromInt(index));
