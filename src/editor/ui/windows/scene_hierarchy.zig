@@ -10,11 +10,11 @@ const camera = @import("../../interaction/camera.zig");
 const ui_icons = @import("../icons.zig");
 const layout = @import("../layout.zig");
 
-const hierarchy_row_icon_size: f32 = 14.0;
+const hierarchy_row_icon_size: f32 = 16.0;
 const hierarchy_status_icon_size: f32 = 16.0;
-const hierarchy_status_button_extent: f32 = 28.0;
-const hierarchy_status_column_width: f32 = 34.0;
-const hierarchy_drag_preview_icon_size: f32 = 18.0;
+const hierarchy_status_button_extent: f32 = 26.0;
+const hierarchy_status_column_width: f32 = 32.0;
+const hierarchy_drag_preview_icon_size: f32 = 20.0;
 
 fn entityDragPreviewTypeLabel(state: *const EditorState, entity: *const engine.scene.Entity) []const u8 {
     if (entity.is_folder) {
@@ -64,33 +64,39 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
     layout.beginSectionBody();
     var selection_count_buffer: [32]u8 = undefined;
     const selection_count_text = try std.fmt.bufPrint(&selection_count_buffer, "{d}", .{layer_context.renderer.selectedEntities().len});
-    engine.ui.ImGui.labelText(state.text(.selection_count), selection_count_text);
+    
+    // 采用更精致的层级面板顶部布局
+    engine.ui.ImGui.pushStyleColor(.text, .{ 0.64, 0.68, 0.74, 1.0 });
+    engine.ui.ImGui.text(state.text(.selection_count));
+    engine.ui.ImGui.sameLine();
+    engine.ui.ImGui.popStyleColor(1);
+    engine.ui.ImGui.text(selection_count_text);
 
-    engine.ui.ImGui.dummy(0.0, 4.0);
+    engine.ui.ImGui.dummy(0.0, 6.0);
     const controls_width = engine.ui.ImGui.contentRegionAvail()[0];
     if (controls_width >= 360.0) {
         const root_button_width = std.math.clamp(controls_width * 0.22, 96.0, 124.0);
         const rename_button_width = std.math.clamp(controls_width * 0.18, 84.0, 104.0);
         engine.ui.ImGui.setNextItemWidth(@max(controls_width - root_button_width - rename_button_width - 16.0, 96.0));
         _ = engine.ui.ImGui.inputTextWithHint("##scene_filter", state.text(.scene_filter), state.scene_filter_buffer[0..]);
-        engine.ui.ImGui.sameLine();
+        engine.ui.ImGui.sameLineEx(0.0, 8.0);
         if (engine.ui.ImGui.buttonEx(state.text(.scene_root), root_button_width, 0.0) and layer_context.renderer.selectedEntities().len > 0) {
             try unparentSelection(state, layer_context);
         }
-        engine.ui.ImGui.sameLine();
+        engine.ui.ImGui.sameLineEx(0.0, 8.0);
         if (engine.ui.ImGui.buttonEx(state.text(.rename), rename_button_width, 0.0)) {
             try beginSelectedHierarchyRename(state, layer_context);
         }
     } else {
         engine.ui.ImGui.setNextItemWidth(-1.0);
         _ = engine.ui.ImGui.inputTextWithHint("##scene_filter", state.text(.scene_filter), state.scene_filter_buffer[0..]);
-        engine.ui.ImGui.dummy(0.0, 6.0);
+        engine.ui.ImGui.dummy(0.0, 8.0);
         if (controls_width >= 184.0) {
             const half_width = @max((controls_width - 8.0) * 0.5, 88.0);
             if (engine.ui.ImGui.buttonEx(state.text(.scene_root), half_width, 0.0) and layer_context.renderer.selectedEntities().len > 0) {
                 try unparentSelection(state, layer_context);
             }
-            engine.ui.ImGui.sameLine();
+            engine.ui.ImGui.sameLineEx(0.0, 8.0);
             if (engine.ui.ImGui.buttonEx(state.text(.rename), half_width, 0.0)) {
                 try beginSelectedHierarchyRename(state, layer_context);
             }
@@ -98,7 +104,7 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
             if (engine.ui.ImGui.buttonEx(state.text(.scene_root), controls_width, 0.0) and layer_context.renderer.selectedEntities().len > 0) {
                 try unparentSelection(state, layer_context);
             }
-            engine.ui.ImGui.dummy(0.0, 6.0);
+            engine.ui.ImGui.dummy(0.0, 8.0);
             if (engine.ui.ImGui.buttonEx(state.text(.rename), controls_width, 0.0)) {
                 try beginSelectedHierarchyRename(state, layer_context);
             }
@@ -168,13 +174,13 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
         ui_icons.entityIconPath(entity),
         hierarchy_row_icon_size,
         if (is_selected)
-            .{ 34, 197, 94, 255 }
+            .{ 41, 150, 112, 255 }
         else if (is_frozen)
-            .{ 122, 132, 145, 255 }
+            .{ 148, 158, 173, 255 }
         else if (entity.visible)
-            .{ 188, 203, 228, 255 }
+            .{ 224, 230, 235, 255 }
         else
-            .{ 108, 116, 128, 255 },
+            .{ 100, 105, 115, 255 },
     );
 
     engine.ui.ImGui.tableNextRow();
@@ -259,54 +265,43 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
         }
     }
 
-    // Only show status icons when hovered OR entity has non-default state
-    // This reduces visual clutter for normal entities
-    const show_status_buttons = engine.ui.ImGui.isItemHovered() or
-        !entity.visible or is_locked or is_frozen;
+    // Always show status buttons for better accessibility and discoverability
+    engine.ui.ImGui.tableNextColumn();
+    var visibility_button_id_buffer: [48]u8 = undefined;
+    const visibility_button_id = try std.fmt.bufPrint(&visibility_button_id_buffer, "{d}_visibility", .{entity_id});
+    if (try drawHierarchyStatusIconButton(
+        state,
+        layer_context,
+        visibility_button_id,
+        if (entity.visible) ui_icons.paths.hierarchy.eye else ui_icons.paths.hierarchy.eye_off,
+        hierarchy_status_icon_size,
+        if (entity.visible) .{ 41, 150, 112, 255 } else .{ 148, 158, 173, 255 },
+        if (entity.visible) ui_icons.palettes.status_on else ui_icons.palettes.status_off,
+    )) {
+        entity.visible = !entity.visible;
+        try history.captureSnapshot(state, layer_context);
+    }
 
-    if (show_status_buttons) {
-        engine.ui.ImGui.tableNextColumn();
-        var visibility_button_id_buffer: [48]u8 = undefined;
-        const visibility_button_id = try std.fmt.bufPrint(&visibility_button_id_buffer, "{d}_visibility", .{entity_id});
-        if (try drawHierarchyStatusIconButton(
-            state,
-            layer_context,
-            visibility_button_id,
-            if (entity.visible) ui_icons.paths.hierarchy.eye else ui_icons.paths.hierarchy.eye_off,
-            hierarchy_status_icon_size,
-            if (entity.visible) .{ 176, 203, 224, 255 } else .{ 145, 151, 162, 255 },
-            if (entity.visible) ui_icons.palettes.status_on else ui_icons.palettes.status_off,
-        )) {
-            entity.visible = !entity.visible;
-            try history.captureSnapshot(state, layer_context);
-        }
+    engine.ui.ImGui.tableNextColumn();
+    var freeze_button_id_buffer: [40]u8 = undefined;
+    const freeze_button_id = try std.fmt.bufPrint(&freeze_button_id_buffer, "{d}_freeze", .{entity_id});
+    if (try drawFreezeToggleButton(freeze_button_id, is_frozen)) {
+        try setFrozenForEntities(state, layer_context, &.{entity_id}, !is_frozen);
+    }
 
-        engine.ui.ImGui.tableNextColumn();
-        var freeze_button_id_buffer: [40]u8 = undefined;
-        const freeze_button_id = try std.fmt.bufPrint(&freeze_button_id_buffer, "{d}_freeze", .{entity_id});
-        if (try drawFreezeToggleButton(freeze_button_id, is_frozen)) {
-            try setFrozenForEntities(state, layer_context, &.{entity_id}, !is_frozen);
-        }
-
-        engine.ui.ImGui.tableNextColumn();
-        var lock_button_id_buffer: [40]u8 = undefined;
-        const lock_button_id = try std.fmt.bufPrint(&lock_button_id_buffer, "{d}_lock", .{entity_id});
-        if (try drawHierarchyStatusIconButton(
-            state,
-            layer_context,
-            lock_button_id,
-            if (is_locked) ui_icons.paths.hierarchy.lock else ui_icons.paths.hierarchy.unlock,
-            hierarchy_status_icon_size,
-            if (is_locked) .{ 170, 203, 188, 255 } else .{ 148, 154, 166, 255 },
-            if (is_locked) ui_icons.palettes.status_on else ui_icons.palettes.status_off,
-        )) {
-            try setLockedForEntities(state, layer_context, &.{entity_id}, !is_locked);
-        }
-    } else {
-        // Empty columns to maintain table structure
-        engine.ui.ImGui.tableNextColumn();
-        engine.ui.ImGui.tableNextColumn();
-        engine.ui.ImGui.tableNextColumn();
+    engine.ui.ImGui.tableNextColumn();
+    var lock_button_id_buffer: [40]u8 = undefined;
+    const lock_button_id = try std.fmt.bufPrint(&lock_button_id_buffer, "{d}_lock", .{entity_id});
+    if (try drawHierarchyStatusIconButton(
+        state,
+        layer_context,
+        lock_button_id,
+        if (is_locked) ui_icons.paths.hierarchy.lock else ui_icons.paths.hierarchy.unlock,
+        hierarchy_status_icon_size,
+        if (is_locked) .{ 41, 150, 112, 255 } else .{ 148, 158, 173, 255 },
+        if (is_locked) ui_icons.palettes.status_on else ui_icons.palettes.status_off,
+    )) {
+        try setLockedForEntities(state, layer_context, &.{entity_id}, !is_locked);
     }
 
     if (rename_active and tree_result.rename_finished) {

@@ -3,9 +3,9 @@ const engine = @import("guava");
 const EditorState = @import("../core/state.zig").EditorState;
 const state_mod = @import("../core/state.zig");
 
-pub const default_section_padding: f32 = 12.0;
-pub const default_item_spacing: f32 = 8.0;
-pub const default_row_spacing: f32 = 6.0;
+pub const default_section_padding: f32 = 14.0;
+pub const default_item_spacing: f32 = 10.0;
+pub const default_row_spacing: f32 = 8.0;
 const layout_template_extension = ".ini";
 
 pub fn beginSectionBody() void {
@@ -78,7 +78,7 @@ pub fn endInspectorPropertyTable() void {
 pub fn drawInspectorPropertyRow(label: []const u8, label_color: ?[4]f32) void {
     engine.ui.ImGui.tableNextRow();
     engine.ui.ImGui.tableNextColumn();
-    const default_dimmed = [4]f32{ 0.58, 0.62, 0.68, 1.0 }; // Dimmed label color
+    const default_dimmed = [4]f32{ 0.64, 0.68, 0.74, 1.0 }; // Slightly brighter dimmed label
     if (label_color) |color| {
         engine.ui.ImGui.pushStyleColor(.text, color);
         defer engine.ui.ImGui.popStyleColor(1);

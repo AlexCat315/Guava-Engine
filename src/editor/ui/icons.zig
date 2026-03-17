@@ -76,29 +76,29 @@ pub const regular_icon_button_rounding: f32 = 8.0;
 
 pub const palettes = struct {
     pub const toolbar_idle = ButtonPalette{
-        .button = .{ 0.18, 0.20, 0.23, 0.66 },
-        .hovered = .{ 0.24, 0.27, 0.31, 0.82 },
-        .active = .{ 0.22, 0.25, 0.29, 0.92 },
+        .button = .{ 0.16, 0.17, 0.18, 0.0 }, // Transparent by default
+        .hovered = .{ 0.20, 0.21, 0.22, 0.6 },
+        .active = .{ 0.14, 0.15, 0.16, 0.8 },
     };
     pub const toolbar_active = ButtonPalette{
-        .button = .{ 0.13, 0.50, 0.30, 0.84 },
-        .hovered = .{ 0.18, 0.60, 0.35, 0.92 },
-        .active = .{ 0.10, 0.40, 0.22, 0.96 },
+        .button = .{ 0.16, 0.59, 0.44, 0.8 },
+        .hovered = .{ 0.20, 0.69, 0.52, 0.9 },
+        .active = .{ 0.12, 0.49, 0.36, 1.0 },
     };
     pub const toolbar_accent = ButtonPalette{
-        .button = .{ 0.133, 0.773, 0.369, 0.6 },
-        .hovered = .{ 0.233, 0.873, 0.469, 0.8 },
-        .active = .{ 0.083, 0.673, 0.269, 1.0 },
+        .button = .{ 0.16, 0.59, 0.44, 0.6 },
+        .hovered = .{ 0.20, 0.69, 0.52, 0.8 },
+        .active = .{ 0.12, 0.49, 0.36, 1.0 },
     };
     pub const status_on = ButtonPalette{
-        .button = .{ 0.20, 0.28, 0.31, 0.64 },
-        .hovered = .{ 0.24, 0.34, 0.39, 0.82 },
-        .active = .{ 0.18, 0.26, 0.30, 0.92 },
+        .button = .{ 0.16, 0.59, 0.44, 0.3 },
+        .hovered = .{ 0.16, 0.59, 0.44, 0.5 },
+        .active = .{ 0.16, 0.59, 0.44, 0.7 },
     };
     pub const status_off = ButtonPalette{
-        .button = .{ 0.17, 0.18, 0.20, 0.52 },
-        .hovered = .{ 0.22, 0.24, 0.28, 0.72 },
-        .active = .{ 0.18, 0.20, 0.23, 0.84 },
+        .button = .{ 0.58, 0.62, 0.68, 0.1 },
+        .hovered = .{ 0.58, 0.62, 0.68, 0.3 },
+        .active = .{ 0.58, 0.62, 0.68, 0.5 },
     };
 };
 

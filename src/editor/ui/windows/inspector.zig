@@ -34,16 +34,16 @@ const AxisStyle = struct {
 };
 
 const axis_x_style = AxisStyle{
-    .background = .{ 0.54, 0.40, 0.38, 1.0 },
-    .text = .{ 0.12, 0.12, 0.13, 1.0 },
+    .background = .{ 0.82, 0.23, 0.23, 1.0 }, // 现代红
+    .text = .{ 1.0, 1.0, 1.0, 1.0 },
 };
 const axis_y_style = AxisStyle{
-    .background = .{ 0.42, 0.49, 0.43, 1.0 },
-    .text = .{ 0.12, 0.12, 0.13, 1.0 },
+    .background = .{ 0.16, 0.59, 0.44, 1.0 }, // 现代绿 (翡翠绿)
+    .text = .{ 1.0, 1.0, 1.0, 1.0 },
 };
 const axis_z_style = AxisStyle{
-    .background = .{ 0.40, 0.49, 0.53, 1.0 },
-    .text = .{ 0.12, 0.12, 0.13, 1.0 },
+    .background = .{ 0.20, 0.45, 0.85, 1.0 }, // 现代蓝
+    .text = .{ 1.0, 1.0, 1.0, 1.0 },
 };
 
 fn inspectorFilter(state: *const EditorState) []const u8 {
@@ -63,10 +63,10 @@ fn endInspectorSectionBody() void {
 }
 
 fn beginInspectorPropertyGrid(id: []const u8) bool {
-    if (!layout.beginInspectorPropertyTable(id, 0.36)) {
+    if (!layout.beginInspectorPropertyTable(id, 0.38)) {
         return false;
     }
-    engine.ui.ImGui.pushStyleVarVec2(.item_spacing, .{ 8.0, 6.0 });
+    engine.ui.ImGui.pushStyleVarVec2(.item_spacing, .{ 10.0, 8.0 });
     return true;
 }
 

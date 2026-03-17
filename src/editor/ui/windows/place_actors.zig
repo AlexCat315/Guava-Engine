@@ -20,18 +20,18 @@ const category_button_height: f32 = 30.0;
 const place_actor_row_height: f32 = 26.0; // Compact list row height (reduced from 58)
 const place_actor_card_rounding: f32 = 4.0;
 const place_actor_list_icon_size: f32 = 16.0;
-const place_actor_card_icon_tint = [4]u8{ 186, 203, 228, 255 };
+const place_actor_card_icon_tint = [4]u8{ 224, 230, 235, 255 };
 const place_actor_card_text_muted = [4]f32{ 0.66, 0.70, 0.77, 1.0 };
 const place_actor_drag_preview_icon_size: f32 = 20.0;
 const place_actor_card_idle = ui_icons.ButtonPalette{
-    .button = .{ 0.18, 0.19, 0.22, 0.72 },
-    .hovered = .{ 0.24, 0.26, 0.30, 0.88 },
-    .active = .{ 0.21, 0.24, 0.29, 0.96 },
+    .button = .{ 0.16, 0.17, 0.18, 0.64 },
+    .hovered = .{ 0.20, 0.21, 0.22, 0.82 },
+    .active = .{ 0.14, 0.15, 0.16, 0.92 },
 };
 const place_actor_card_active = ui_icons.ButtonPalette{
-    .button = .{ 0.13, 0.50, 0.30, 0.84 },
-    .hovered = .{ 0.18, 0.60, 0.35, 0.92 },
-    .active = .{ 0.10, 0.40, 0.22, 0.98 },
+    .button = .{ 0.16, 0.59, 0.44, 0.8 },
+    .hovered = .{ 0.20, 0.69, 0.52, 0.9 },
+    .active = .{ 0.12, 0.49, 0.36, 1.0 },
 };
 
 const categories = [_]struct {

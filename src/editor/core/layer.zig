@@ -12,61 +12,64 @@ const vfx_runtime = @import("../runtime/vfx.zig");
 const layout = @import("../ui/layout.zig");
 
 fn initEditorStyle() void {
-    // 翡翠绿强调色 - #22c55e
-    const accent_green = .{ 0.133, 0.773, 0.369, 1.0 };
-    const accent_green_hover = .{ 0.233, 0.873, 0.469, 1.0 };
-    const accent_green_dim = .{ 0.133, 0.773, 0.369, 0.4 };
+    // 现代深色主题 - 采用更平衡的中性灰阶和专业感十足的翡翠蓝绿
+    const accent_primary = .{ 0.16, 0.59, 0.44, 1.0 };     // 翡翠蓝绿 #289670
+    const accent_hover = .{ 0.20, 0.69, 0.52, 1.0 };       // 稍亮 #33b085
+    const accent_active = .{ 0.12, 0.49, 0.36, 1.0 };      // 稍暗 #1e7d5c
+    const accent_dimmed = .{ 0.16, 0.59, 0.44, 0.4 };
 
-    // 暗板岩灰灰阶体系 - 构建空间纵深感
-    const slate_mid = .{ 0.11, 0.12, 0.13, 1.0 };
-    const slate_light = .{ 0.14, 0.15, 0.16, 1.0 };
-    const slate_child = .{ 0.13, 0.13, 0.14, 1.0 };
-    const slate_frame = .{ 0.08, 0.08, 0.09, 1.0 };
+    // 中性灰阶体系 - 提升纵深感和对比度
+    const bg_mid = .{ 0.12, 0.13, 0.14, 1.0 };             // 标准窗口背景
+    const bg_light = .{ 0.16, 0.17, 0.18, 1.0 };           // 弹出窗口/悬浮背景
+    const bg_frame = .{ 0.06, 0.07, 0.08, 1.0 };           // 输入框/子窗口背景
+    
+    const text_main = .{ 0.88, 0.90, 0.92, 1.0 };          // 主文本
+    const text_dim = .{ 0.58, 0.62, 0.68, 1.0 };           // 次要文本
 
     // 强调色应用
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.header), accent_green_dim);
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.header_hovered), accent_green_hover);
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.header_active), accent_green);
+    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.header), accent_dimmed);
+    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.header_hovered), accent_hover);
+    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.header_active), accent_primary);
 
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.tab_active), accent_green);
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.tab_hovered), accent_green_hover);
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.tab_unfocused_active), accent_green_dim);
+    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.tab_active), accent_primary);
+    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.tab_hovered), accent_hover);
+    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.tab_unfocused_active), accent_dimmed);
 
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.slider_grab), accent_green);
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.slider_grab_active), accent_green_hover);
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.check_mark), accent_green);
+    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.slider_grab), accent_primary);
+    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.slider_grab_active), accent_active);
+    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.check_mark), accent_primary);
 
     // 灰阶背景体系
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.window_bg), slate_mid);
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.child_bg), slate_child);
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.frame_bg), slate_frame);
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.popup_bg), slate_light);
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.modal_window_dim_bg), .{ 0.08, 0.08, 0.10, 0.6 });
+    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.text), text_main);
+    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.text_disabled), text_dim);
+    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.window_bg), bg_mid);
+    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.child_bg), bg_frame);
+    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.frame_bg), bg_frame);
+    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.popup_bg), bg_light);
+    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.modal_window_dim_bg), .{ 0.06, 0.06, 0.08, 0.6 });
 
-    // 边框设置为0 - 去边框化
-    engine.ui.ImGui.setStyleVarFloat(100, 0.0);
-    engine.ui.ImGui.setStyleVarFloat(101, 0.0);
-    engine.ui.ImGui.setStyleVarFloat(102, 3.0);
+    // 视觉细节优化 - 圆角与边框
+    engine.ui.ImGui.setStyleVarFloat(100, 0.0); // WindowBorderSize
+    engine.ui.ImGui.setStyleVarFloat(101, 1.0); // FrameBorderSize
+    engine.ui.ImGui.setStyleVarFloat(102, 4.0); // FrameRounding
 
-    // 1. 分割线 - 解决鼠标悬停和拖拽面板边缘时变蓝的问题
-    const accent_hover = .{ 0.180, 0.820, 0.420, 1.0 };
+    // 分割线与高亮
     engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.separator_hovered), accent_hover);
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.separator_active), accent_green);
+    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.separator_active), accent_primary);
 
-    // 2. 文本选中背景 - 解决在 Inspector 输入框里拖拽选中文字时出现的蓝色高亮
-    const accent_dim = .{ 0.133, 0.773, 0.369, 0.3 };
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.text_selected_bg), accent_dim);
+    // 文本选中背景
+    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.text_selected_bg), accent_dimmed);
 
-    // 3. 拖拽与停靠高亮 - 解决拖拽面板停靠或从浏览器拖拽资产时出现的蓝色外框
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.drag_drop_target), accent_green);
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.docking_preview), accent_dim);
+    // 拖拽与停靠高亮
+    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.drag_drop_target), accent_primary);
+    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.docking_preview), accent_dimmed);
 
-    // 4. 调整大小角标 - 解决右下角拖拽缩放标识变蓝的问题
+    // 调整大小角标
     engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.resize_grip_hovered), accent_hover);
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.resize_grip_active), accent_green);
+    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.resize_grip_active), accent_primary);
 
-    // 5. 键盘导航高亮 - 解决用键盘切换 UI 焦点时出现的蓝色边框
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.nav_highlight), accent_green);
+    // 键盘导航高亮
+    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.nav_highlight), accent_primary);
 }
 
 pub const EditorLayer = struct {
