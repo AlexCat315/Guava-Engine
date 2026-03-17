@@ -4,6 +4,7 @@ const EditorState = @import("../../core/state.zig").EditorState;
 const state_mod = @import("../../core/state.zig");
 const utils = @import("../../common/utils.zig");
 const history = @import("../../actions/history.zig");
+const content_browser = @import("../../assets/browser.zig");
 const inspector = @import("inspector.zig");
 const ui_icons = @import("../icons.zig");
 const layout = @import("../layout.zig");
@@ -171,6 +172,13 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
         if (engine.ui.ImGui.acceptDragDropPayloadU64(state_mod.entity_drag_payload, &dropped_child)) {
             if (try handleHierarchyEntityDrop(state, layer_context, dropped_child, entity_id)) {
                 return error.HierarchyMutated;
+            }
+        }
+        var dropped_material: u64 = 0;
+        if (engine.ui.ImGui.acceptDragDropPayloadU64(state_mod.asset_material_drag_payload, &dropped_material)) {
+            const asset_index: usize = @intCast(dropped_material);
+            if (asset_index < state.asset_entries.items.len and state.asset_entries.items[asset_index].kind == .material) {
+                _ = try content_browser.applyMaterialAssetToEntity(state, layer_context, &state.asset_entries.items[asset_index], entity_id);
             }
         }
         var dropped_texture: u64 = 0;

@@ -648,12 +648,16 @@ fn applyPendingViewportAssetDrop(state: *EditorState, layer_context: *engine.cor
             if (asset_index >= state.asset_entries.items.len) {
                 return;
             }
-            const entry = state.asset_entries.items[asset_index];
+            const entry = &state.asset_entries.items[asset_index];
 
             switch (entry.kind) {
                 .model => {
                     const spawn_transform = try calculateSpawnTransformFromPixel(state, layer_context, pending.pixel);
                     try history.importModelPathAt(state, layer_context, entry.path, spawn_transform);
+                },
+                .material => {
+                    const target_entity = pending.target_entity orelse layer_context.renderer.selectedEntity() orelse return;
+                    _ = try content_browser.applyMaterialAssetToEntity(state, layer_context, entry, target_entity);
                 },
                 .texture => {
                     const target_entity = pending.target_entity orelse layer_context.renderer.selectedEntity() orelse return;
@@ -744,6 +748,18 @@ fn handleViewportAssetDropTargets(state: *EditorState, layer_context: *engine.co
                 .pixel = pixel,
             };
         }
+        return;
+    }
+    if (engine.ui.ImGui.acceptDragDropPayloadU64(state_mod.asset_material_drag_payload, &asset_index)) {
+        if (viewportPixelUnderMouse(state, layer_context)) |pixel| {
+            try layer_context.renderer.requestSelectionReadback(pixel[0], pixel[1], .replace);
+            state.pending_viewport_drop = .{
+                .source_kind = .asset,
+                .asset_index = @as(usize, @intCast(asset_index)),
+                .pixel = pixel,
+            };
+        }
+        return;
     }
     var actor_kind_int: u64 = 0;
     if (engine.ui.ImGui.acceptDragDropPayloadU64(state_mod.place_actor_drag_payload, &actor_kind_int)) {

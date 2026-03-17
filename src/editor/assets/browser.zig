@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const std = @import("std");
 const engine = @import("guava");
 const EditorState = @import("../core/state.zig").EditorState;
@@ -73,6 +74,20 @@ fn drawThumbnailPresetButton(state: *EditorState, label: []const u8, size: f32) 
     if (engine.ui.ImGui.buttonEx(label, 32.0, 30.0)) {
         state.asset_thumbnail_size = size;
     }
+}
+
+fn drawBreadcrumbButton(label: []const u8, active: bool, width: f32) bool {
+    const palette = if (active) ui_icons.palettes.toolbar_active else ui_icons.palettes.toolbar_idle;
+    engine.ui.ImGui.pushStyleColor(.button, palette.button);
+    engine.ui.ImGui.pushStyleColor(.button_hovered, palette.hovered);
+    engine.ui.ImGui.pushStyleColor(.button_active, palette.active);
+    engine.ui.ImGui.pushStyleVarVec2(.frame_padding, ui_icons.compact_icon_button_padding);
+    engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, ui_icons.compact_icon_button_rounding);
+    defer {
+        engine.ui.ImGui.popStyleVar(2);
+        engine.ui.ImGui.popStyleColor(3);
+    }
+    return engine.ui.ImGui.buttonEx(label, width, 0.0);
 }
 
 fn drawProjectPanel(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -246,6 +261,16 @@ fn drawSelectedAssetPreview(state: *EditorState, layer_context: *engine.core.Lay
                 engine.ui.ImGui.textWrapped(state.text(.models_are_imported_as_grouped_instances_with_a_movable_root_entity));
             },
             .material => {
+                const loaded_material = materialHandleForAssetEntry(layer_context, entry) != null;
+                if (loaded_material) {
+                    if (layer_context.renderer.selectedEntity()) |entity_id| {
+                        if (engine.ui.ImGui.buttonEx(state.text(.apply_material), engine.ui.ImGui.contentRegionAvail()[0], 0.0)) {
+                            _ = try applyMaterialAssetToEntity(state, layer_context, entry, entity_id);
+                        }
+                    }
+                } else {
+                    engine.ui.ImGui.textWrapped(state.text(.material_asset_not_loaded_in_current_world));
+                }
                 engine.ui.ImGui.textWrapped(state.text(.drop_material_here));
             },
             .shader => {
@@ -308,12 +333,13 @@ fn drawBreadcrumbs(state: *EditorState) !void {
         const next_slash = std.mem.indexOfScalarPos(u8, current, start, '/') orelse current.len;
         const crumb_path = current[0..next_slash];
         const crumb_label = if (crumb_index == 0) state.text(.assets_menu) else directoryName(crumb_path);
+        const is_current = next_slash == current.len;
         var stacked_label_buffer: [160]u8 = undefined;
         const button_label = if (stacked and crumb_index > 0)
             try std.fmt.bufPrint(&stacked_label_buffer, "> {s}", .{crumb_label})
         else
             crumb_label;
-        if (engine.ui.ImGui.buttonEx(button_label, if (stacked) engine.ui.ImGui.contentRegionAvail()[0] else 0.0, 0.0)) {
+        if (drawBreadcrumbButton(button_label, is_current, if (stacked) engine.ui.ImGui.contentRegionAvail()[0] else 0.0)) {
             setSelectedAssetDirectory(state, crumb_path);
         }
 
@@ -322,7 +348,9 @@ fn drawBreadcrumbs(state: *EditorState) !void {
         }
         if (!stacked) {
             engine.ui.ImGui.sameLine();
+            engine.ui.ImGui.pushStyleColor(.text, .{ 0.58, 0.62, 0.68, 1.0 });
             engine.ui.ImGui.text(">");
+            engine.ui.ImGui.popStyleColor(1);
             engine.ui.ImGui.sameLine();
         } else {
             engine.ui.ImGui.dummy(0.0, 4.0);
@@ -418,6 +446,82 @@ fn directoryDepth(path: []const u8) usize {
 pub fn selectedAssetCanUseAsTexture(state: *EditorState) bool {
     const entry = selectedAsset(state) orelse return false;
     return entry.kind == .texture;
+}
+
+fn materialHandleForAssetEntryInResources(
+    resources: *const engine.assets.ResourceLibrary,
+    entry: *const AssetEntry,
+) ?engine.assets.MaterialHandle {
+    if (entry.kind != .material) {
+        return null;
+    }
+    return resources.materialHandleByAssetId(entry.id);
+}
+
+pub fn materialHandleForAssetEntry(
+    layer_context: *engine.core.LayerContext,
+    entry: *const AssetEntry,
+) ?engine.assets.MaterialHandle {
+    return materialHandleForAssetEntryInResources(layer_context.world.assets(), entry);
+}
+
+fn syncEntityMaterialFromResource(
+    entity: *engine.scene.Entity,
+    material_handle: engine.assets.MaterialHandle,
+    material_resource: *const engine.assets.MaterialResource,
+) bool {
+    if (entity.material) |*material_component| {
+        var changed = false;
+        if (material_component.handle != material_handle) {
+            material_component.handle = material_handle;
+            changed = true;
+        }
+        if (material_component.shading != material_resource.shading) {
+            material_component.shading = material_resource.shading;
+            changed = true;
+        }
+        if (!std.meta.eql(material_component.base_color_factor, material_resource.base_color_factor)) {
+            material_component.base_color_factor = material_resource.base_color_factor;
+            changed = true;
+        }
+        return changed;
+    }
+
+    entity.material = .{
+        .handle = material_handle,
+        .shading = material_resource.shading,
+        .base_color_factor = material_resource.base_color_factor,
+    };
+    return true;
+}
+
+pub fn applyMaterialAssetToEntity(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entry: *const AssetEntry,
+    entity_id: engine.scene.EntityId,
+) !bool {
+    const material_handle = materialHandleForAssetEntry(layer_context, entry) orelse {
+        if (!builtin.is_test and entry.kind == .material) {
+            std.log.warn("material asset '{s}' is not loaded into the current world", .{entry.path});
+        }
+        return false;
+    };
+    if (state.editor_camera != null and entity_id == state.editor_camera.?) {
+        return false;
+    }
+    if (utils.isEntityFrozen(state, entity_id) or utils.isEntitySelectionLocked(state, entity_id)) {
+        return false;
+    }
+
+    const entity = layer_context.world.getEntity(entity_id) orelse return false;
+    const material_resource = layer_context.world.assets().material(material_handle) orelse return false;
+    if (!syncEntityMaterialFromResource(entity, material_handle, material_resource)) {
+        return false;
+    }
+
+    try history.captureSnapshot(state, layer_context);
+    return true;
 }
 
 pub fn refreshAssetBrowser(state: *EditorState, _: *engine.core.LayerContext) !void {
@@ -551,4 +655,119 @@ test "material assets map to browser visuals and kinds" {
     try std.testing.expectEqual(AssetKind.material, assetKindForRecordType(.material).?);
     try std.testing.expectEqualStrings(ui_icons.paths.toolbar.material, assetIconPath(.material));
     try std.testing.expectEqual([4]u8{ 186, 228, 196, 255 }, assetIconTint(.material));
+}
+
+fn makeOwnedMaterialRecord(
+    allocator: std.mem.Allocator,
+    id: []const u8,
+    source_path: []const u8,
+    display_name: []const u8,
+) !engine.assets.AssetRecord {
+    return .{
+        .id = try allocator.dupe(u8, id),
+        .type = .material,
+        .source_path = try allocator.dupe(u8, source_path),
+        .source_hash = try allocator.dupe(u8, "test-source-hash"),
+        .import_settings_hash = try allocator.dupe(u8, "test-import-settings"),
+        .import_version = engine.assets.AssetType.material.importVersion(),
+        .dependency_ids = try allocator.alloc([]u8, 0),
+        .outputs = try allocator.alloc(engine.assets.AssetOutput, 0),
+        .metadata = .{
+            .display_name = try allocator.dupe(u8, display_name),
+            .importer = try allocator.dupe(u8, engine.assets.AssetType.material.importerName()),
+            .source_extension = try allocator.dupe(u8, ".guava_material"),
+        },
+    };
+}
+
+test "applyMaterialAssetToEntity assigns loaded material assets to entities" {
+    var world = engine.scene.World.init(std.testing.allocator);
+    defer world.deinit();
+
+    const material_handle = try world.assets().createMaterial(.{
+        .name = "Brick Material",
+        .shading = .lambert,
+        .base_color_factor = .{ 0.22, 0.41, 0.63, 1.0 },
+    });
+    _ = try world.assets().bindMaterialAssetRecord(
+        material_handle,
+        try makeOwnedMaterialRecord(std.testing.allocator, "material://brick", "assets/materials/brick.guava_material", "Brick"),
+    );
+
+    const entity_id = try world.createEntity(.{ .name = "Cube" });
+
+    var entry = AssetEntry{
+        .id = try std.testing.allocator.dupe(u8, "material://brick"),
+        .path = try std.testing.allocator.dupe(u8, "assets/materials/brick.guava_material"),
+        .name = try std.testing.allocator.dupe(u8, "Brick"),
+        .kind = .material,
+    };
+    defer {
+        std.testing.allocator.free(entry.id);
+        std.testing.allocator.free(entry.path);
+        std.testing.allocator.free(entry.name);
+    }
+
+    var state = EditorState{};
+    var scene: engine.scene.Scene = undefined;
+    var renderer: engine.render.Renderer = undefined;
+    var input: engine.core.InputState = undefined;
+    var window: engine.platform.Window = undefined;
+    var playback_controller = engine.core.PlaybackController{};
+    var layer_context = engine.core.LayerContext{
+        .world = &world,
+        .scene = &scene,
+        .renderer = &renderer,
+        .input = &input,
+        .window = &window,
+        .playback_controller = &playback_controller,
+        .frame_index = 0,
+        .delta_seconds = 0.0,
+    };
+
+    try std.testing.expect(try applyMaterialAssetToEntity(&state, &layer_context, &entry, entity_id));
+    const entity = world.getEntityConst(entity_id).?;
+    try std.testing.expect(entity.material != null);
+    try std.testing.expectEqual(material_handle, entity.material.?.handle.?);
+    try std.testing.expectEqual(engine.scene.ShadingModel.lambert, entity.material.?.shading);
+    try std.testing.expectEqualDeep([4]f32{ 0.22, 0.41, 0.63, 1.0 }, entity.material.?.base_color_factor);
+}
+
+test "applyMaterialAssetToEntity rejects unloaded material assets" {
+    var world = engine.scene.World.init(std.testing.allocator);
+    defer world.deinit();
+
+    const entity_id = try world.createEntity(.{ .name = "Cube" });
+
+    var entry = AssetEntry{
+        .id = try std.testing.allocator.dupe(u8, "material://missing"),
+        .path = try std.testing.allocator.dupe(u8, "assets/materials/missing.guava_material"),
+        .name = try std.testing.allocator.dupe(u8, "Missing"),
+        .kind = .material,
+    };
+    defer {
+        std.testing.allocator.free(entry.id);
+        std.testing.allocator.free(entry.path);
+        std.testing.allocator.free(entry.name);
+    }
+
+    var state = EditorState{};
+    var scene: engine.scene.Scene = undefined;
+    var renderer: engine.render.Renderer = undefined;
+    var input: engine.core.InputState = undefined;
+    var window: engine.platform.Window = undefined;
+    var playback_controller = engine.core.PlaybackController{};
+    var layer_context = engine.core.LayerContext{
+        .world = &world,
+        .scene = &scene,
+        .renderer = &renderer,
+        .input = &input,
+        .window = &window,
+        .playback_controller = &playback_controller,
+        .frame_index = 0,
+        .delta_seconds = 0.0,
+    };
+
+    try std.testing.expect(!(try applyMaterialAssetToEntity(&state, &layer_context, &entry, entity_id)));
+    try std.testing.expect(world.getEntityConst(entity_id).?.material == null);
 }

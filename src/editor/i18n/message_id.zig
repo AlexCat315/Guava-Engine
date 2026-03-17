@@ -157,6 +157,7 @@ pub const MessageId = enum {
     textures,
     shaders,
     apply_material,
+    material_asset_not_loaded_in_current_world,
     drop_model_here,
     drop_material_here,
     use_this_texture_from_details_gt_material,

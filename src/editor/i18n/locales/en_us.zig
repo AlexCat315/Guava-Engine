@@ -164,6 +164,7 @@ pub const locale = types.LocaleInfo{
         .textures = "Textures",
         .shaders = "Shaders",
         .apply_material = "Apply Material",
+        .material_asset_not_loaded_in_current_world = "This material asset is not loaded into the current world yet.",
         .drop_model_here = "Drag this model into the Hierarchy or Viewport to instantiate it.",
         .drop_material_here = "Drag this material onto a hierarchy node or viewport target to apply it.",
         .use_this_texture_from_details_gt_material = "Use this texture from Details > Material.",

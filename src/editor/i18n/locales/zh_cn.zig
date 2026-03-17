@@ -164,6 +164,7 @@ pub const locale = types.LocaleInfo{
         .textures = "贴图",
         .shaders = "着色器",
         .apply_material = "应用材质",
+        .material_asset_not_loaded_in_current_world = "当前 world 里还没有加载这个材质资源。",
         .drop_model_here = "将模型拖到层级或视口中即可实例化。",
         .drop_material_here = "将材质拖到对象节点或视口目标上即可应用。",
         .use_this_texture_from_details_gt_material = "可在 细节 > 材质 中把这张贴图指定给当前对象。",
