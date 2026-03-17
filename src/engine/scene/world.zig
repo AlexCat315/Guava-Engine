@@ -1,6 +1,7 @@
 const std = @import("std");
 const assets_lib = @import("../assets/library.zig");
 const gltf_import = @import("../assets/gltf_import.zig");
+const raycast_mod = @import("raycast.zig");
 const components = @import("components.zig");
 const vec3 = @import("../math/vec3.zig");
 
@@ -476,6 +477,10 @@ pub const World = struct {
         root_transform: components.Transform,
     ) !gltf_import.ImportReport {
         return gltf_import.importStaticModelInstance(self, path, root_transform);
+    }
+
+    pub fn raycastSurface(self: *const World, ray: raycast_mod.Ray) ?raycast_mod.SurfaceRaycastHit {
+        return raycast_mod.raycastSurface(self, ray);
     }
 
     pub fn assets(self: *World) *assets_lib.ResourceLibrary {

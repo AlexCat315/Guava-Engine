@@ -203,6 +203,63 @@ pub fn activeCameraTransform(state: *const EditorState, layer_context: *engine.c
     };
 }
 
+pub fn activeCameraComponent(state: *const EditorState, layer_context: *engine.core.LayerContext) engine.scene.Camera {
+    const active_camera_id = if (state.editor_camera_active) state.editor_camera else layer_context.world.primaryCameraEntity();
+    if (active_camera_id) |camera_id| {
+        if (layer_context.world.getEntityConst(camera_id)) |entity| {
+            if (entity.camera) |camera_component| {
+                return camera_component;
+            }
+        }
+    }
+    return .{};
+}
+
+pub fn activeCameraRayFromViewportPixel(
+    state: *const EditorState,
+    layer_context: *engine.core.LayerContext,
+    pixel: [2]u32,
+    viewport_size: [2]u32,
+) ?engine.scene.Ray {
+    if (viewport_size[0] == 0 or viewport_size[1] == 0) {
+        return null;
+    }
+
+    const camera_transform = activeCameraTransform(state, layer_context);
+    const camera_component = activeCameraComponent(state, layer_context);
+    const ndc_x = ((@as(f32, @floatFromInt(pixel[0])) + 0.5) / @as(f32, @floatFromInt(viewport_size[0]))) * 2.0 - 1.0;
+    const ndc_y = 1.0 - ((@as(f32, @floatFromInt(pixel[1])) + 0.5) / @as(f32, @floatFromInt(viewport_size[1]))) * 2.0;
+    const aspect = @as(f32, @floatFromInt(viewport_size[0])) / @as(f32, @floatFromInt(viewport_size[1]));
+
+    return switch (camera_component.projection) {
+        .perspective => |projection| blk: {
+            const tan_half_fov = @tan(projection.fov_y_radians * 0.5);
+            const local_direction = normalize(.{
+                ndc_x * tan_half_fov * aspect,
+                ndc_y * tan_half_fov,
+                -1.0,
+            });
+            break :blk .{
+                .origin = camera_transform.translation,
+                .direction = normalize(rotateVec3Euler(camera_transform.rotation_euler, local_direction)),
+            };
+        },
+        .orthographic => |projection| blk: {
+            const half_height = projection.size * 0.5;
+            const half_width = half_height * aspect;
+            const local_origin = .{
+                ndc_x * half_width,
+                ndc_y * half_height,
+                0.0,
+            };
+            break :blk .{
+                .origin = vec3.add(camera_transform.translation, rotateVec3Euler(camera_transform.rotation_euler, local_origin)),
+                .direction = normalize(rotateVec3Euler(camera_transform.rotation_euler, .{ 0.0, 0.0, -1.0 })),
+            };
+        },
+    };
+}
+
 pub fn activeCameraViewMatrix(state: *const EditorState, layer_context: *engine.core.LayerContext) [16]f32 {
     return mat4.viewMatrix(activeCameraTransform(state, layer_context));
 }
@@ -336,4 +393,50 @@ fn shortestAngleDelta(from: f32, to: f32) f32 {
         delta += std.math.tau;
     }
     return delta;
+}
+
+fn rotateVec3Euler(rotation: [3]f32, vector: [3]f32) [3]f32 {
+    return rotateZ(rotation[2], rotateY(rotation[1], rotateX(rotation[0], vector)));
+}
+
+fn rotateX(radians: f32, vector: [3]f32) [3]f32 {
+    const c = std.math.cos(radians);
+    const s = std.math.sin(radians);
+    return .{
+        vector[0],
+        vector[1] * c - vector[2] * s,
+        vector[1] * s + vector[2] * c,
+    };
+}
+
+fn rotateY(radians: f32, vector: [3]f32) [3]f32 {
+    const c = std.math.cos(radians);
+    const s = std.math.sin(radians);
+    return .{
+        vector[0] * c + vector[2] * s,
+        vector[1],
+        -vector[0] * s + vector[2] * c,
+    };
+}
+
+fn rotateZ(radians: f32, vector: [3]f32) [3]f32 {
+    const c = std.math.cos(radians);
+    const s = std.math.sin(radians);
+    return .{
+        vector[0] * c - vector[1] * s,
+        vector[0] * s + vector[1] * c,
+        vector[2],
+    };
+}
+
+fn normalize(vector: [3]f32) [3]f32 {
+    const len = vec3.length(vector);
+    if (len <= 0.0001) {
+        return .{ 0.0, 0.0, -1.0 };
+    }
+    return .{
+        vector[0] / len,
+        vector[1] / len,
+        vector[2] / len,
+    };
 }

@@ -700,29 +700,23 @@ fn calculateSpawnTransformFromPixel(
     pixel: ?[2]u32,
 ) !engine.scene.Transform {
     if (pixel) |p| {
-        const camera_transform = camera.activeCameraTransform(state, layer_context);
         const viewport_size = layer_context.renderer.sceneViewportSize();
-        if (viewport_size[0] == 0 or viewport_size[1] == 0) {
-            return history.spawnTransform(state, layer_context);
-        }
-        const ndc_x = (@as(f32, @floatFromInt(p[0])) / @as(f32, @floatFromInt(viewport_size[0]))) * 2.0 - 1.0;
-        const ndc_y = 1.0 - (@as(f32, @floatFromInt(p[1])) / @as(f32, @floatFromInt(viewport_size[1]))) * 2.0;
-        const fov_y = 1.0;
-        const aspect = @as(f32, @floatFromInt(viewport_size[0])) / @as(f32, @floatFromInt(viewport_size[1]));
-        const tan_half_fov = @tan(fov_y * 0.5);
-        const ray_dir_ndc = [3]f32{ ndc_x * tan_half_fov * aspect, ndc_y * tan_half_fov, -1.0 };
-        const ray_dir = vec3.normalize(ray_dir_ndc);
-        const ray_origin = camera_transform.translation;
-        const plane_y: f32 = 0.0;
-        if (ray_dir[1] != 0.0) {
-            const t = (plane_y - ray_origin[1]) / ray_dir[1];
-            if (t > 0.0) {
-                const hit_point = [3]f32{
-                    ray_origin[0] + ray_dir[0] * t,
-                    plane_y,
-                    ray_origin[2] + ray_dir[2] * t,
-                };
-                return .{ .translation = hit_point };
+        if (camera.activeCameraRayFromViewportPixel(state, layer_context, p, viewport_size)) |ray| {
+            if (layer_context.world.raycastSurface(ray)) |hit| {
+                return .{ .translation = hit.position };
+            }
+
+            const plane_y: f32 = 0.0;
+            if (ray.direction[1] != 0.0) {
+                const t = (plane_y - ray.origin[1]) / ray.direction[1];
+                if (t > 0.0) {
+                    const hit_point = [3]f32{
+                        ray.origin[0] + ray.direction[0] * t,
+                        plane_y,
+                        ray.origin[2] + ray.direction[2] * t,
+                    };
+                    return .{ .translation = hit_point };
+                }
             }
         }
     }
