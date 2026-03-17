@@ -312,17 +312,8 @@ fn drawSelectedAssetPreview(state: *EditorState, layer_context: *engine.core.Lay
                 engine.ui.ImGui.textWrapped(state.text(.models_are_imported_as_grouped_instances_with_a_movable_root_entity));
             },
             .material => {
-                const loaded_material = materialHandleForAssetEntry(layer_context, entry) != null;
-                if (loaded_material) {
-                    if (layer_context.renderer.selectedEntity()) |entity_id| {
-                        if (engine.ui.ImGui.buttonEx(state.text(.apply_material), engine.ui.ImGui.contentRegionAvail()[0], 0.0)) {
-                            _ = try applyMaterialAssetToEntity(state, layer_context, entry, entity_id);
-                        }
-                    }
-                } else {
-                    engine.ui.ImGui.textWrapped(state.text(.material_asset_not_loaded_in_current_world));
-                }
-                engine.ui.ImGui.textWrapped(state.text(.drop_material_here));
+                // Try to show material preview
+                try drawMaterialAssetPreview(state, layer_context, entry);
             },
             .shader => {
                 engine.ui.ImGui.textWrapped(state.text(.shader_source_preview_is_currently_metadata_only));
@@ -565,6 +556,49 @@ fn syncEntityMaterialFromResource(
         .base_color_factor = material_resource.base_color_factor,
     };
     return true;
+}
+
+fn drawMaterialAssetPreview(state: *EditorState, layer_context: *engine.core.LayerContext, entry: *const AssetEntry) !void {
+    const material_handle = materialHandleForAssetEntry(layer_context, entry);
+
+    if (material_handle) |handle| {
+        // Material is loaded - show preview info
+        if (layer_context.world.assets().material(handle)) |material_resource| {
+            // Show shading model
+            const shading_label = switch (material_resource.shading) {
+                .unlit => "Unlit",
+                .lambert => "Lambert",
+                .pbr_metallic_roughness => "PBR Metallic",
+            };
+            engine.ui.ImGui.labelText("Shading", shading_label);
+
+            // Show base color
+            const color = material_resource.base_color_factor;
+            var color_text: [32]u8 = undefined;
+            const color_str = try std.fmt.bufPrint(&color_text, "R:{d:.2} G:{d:.2} B:{d:.2}", .{ color[0], color[1], color[2] });
+            engine.ui.ImGui.labelText("Base Color", color_str);
+
+            // Show texture info
+            if (material_resource.base_color_texture != null) {
+                engine.ui.ImGui.labelText("Texture", "Assigned");
+            } else {
+                engine.ui.ImGui.labelText("Texture", "None");
+            }
+        }
+
+        // Show apply button if entity is selected
+        if (layer_context.renderer.selectedEntity()) |entity_id| {
+            engine.ui.ImGui.dummy(0.0, 8.0);
+            if (engine.ui.ImGui.buttonEx(state.text(.apply_material), engine.ui.ImGui.contentRegionAvail()[0], 0.0)) {
+                _ = try applyMaterialAssetToEntity(state, layer_context, entry, entity_id);
+            }
+        }
+    } else {
+        // Material not loaded - show placeholder
+        engine.ui.ImGui.textWrapped(state.text(.material_asset_not_loaded_in_current_world));
+    }
+
+    engine.ui.ImGui.textWrapped(state.text(.drop_material_here));
 }
 
 pub fn applyMaterialAssetToEntity(
