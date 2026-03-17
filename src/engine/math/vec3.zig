@@ -48,11 +48,25 @@ pub fn normalize(vector: Vec3) Vec3 {
     if (len <= 0.0001) {
         return .{ 0.0, 0.0, -1.0 };
     }
-    return .{
-        vector[0] / len,
-        vector[1] / len,
-        vector[2] / len,
-    };
+    return scale(vector, 1.0 / len);
+}
+
+test "Vec3 basic operations" {
+    const a: Vec3 = .{ 1.0, 2.0, 3.0 };
+    const b: Vec3 = .{ 4.0, 5.0, 6.0 };
+
+    try std.testing.expectEqual(Vec3{ 5.0, 7.0, 9.0 }, add(a, b));
+    try std.testing.expectEqual(Vec3{ -3.0, -3.0, -3.0 }, sub(a, b));
+    try std.testing.expectEqual(Vec3{ 4.0, 10.0, 18.0 }, mul(a, b));
+    try std.testing.expectEqual(32.0, dot(a, b));
+}
+
+test "Vec3 length and normalize" {
+    const v: Vec3 = .{ 3.0, 0.0, 4.0 };
+    try std.testing.expectEqual(5.0, length(v));
+    const n = normalize(v);
+    try std.testing.expectEqual(Vec3{ 0.6, 0.0, 0.8 }, n);
+    try std.testing.expectEqual(1.0, length(n));
 }
 
 pub fn angleBetween(a: Vec3, b: Vec3) f32 {
