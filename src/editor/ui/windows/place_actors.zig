@@ -16,9 +16,21 @@ const PlaceActorEntry = struct {
     icon_path: []const u8,
 };
 
-const PlaceActorRowLayout = struct {
-    action_width: f32,
-    stacked: bool,
+const category_button_height: f32 = 30.0;
+const place_actor_card_height: f32 = 58.0;
+const place_actor_card_rounding: f32 = 8.0;
+const place_actor_card_icon_size: f32 = 18.0;
+const place_actor_card_icon_tint = [4]u8{ 186, 203, 228, 255 };
+const place_actor_card_text_muted = [4]f32{ 0.66, 0.70, 0.77, 1.0 };
+const place_actor_card_idle = ui_icons.ButtonPalette{
+    .button = .{ 0.18, 0.19, 0.22, 0.72 },
+    .hovered = .{ 0.24, 0.26, 0.30, 0.88 },
+    .active = .{ 0.21, 0.24, 0.29, 0.96 },
+};
+const place_actor_card_active = ui_icons.ButtonPalette{
+    .button = .{ 0.23, 0.39, 0.58, 0.84 },
+    .hovered = .{ 0.27, 0.46, 0.67, 0.92 },
+    .active = .{ 0.21, 0.34, 0.50, 0.98 },
 };
 
 const categories = [_]struct {
@@ -97,15 +109,64 @@ fn getEntriesForCategory(category: state_mod.PlaceActorCategory) []const PlaceAc
     };
 }
 
-fn placeActorRowLayout(available_width: f32) PlaceActorRowLayout {
-    const clamped_width = @max(available_width, 1.0);
-    const preferred_action_width = std.math.clamp(clamped_width * 0.42, 108.0, 148.0);
-    const description_min_width: f32 = 92.0;
-    const stacked = clamped_width < preferred_action_width + layout.default_item_spacing + description_min_width;
-    return .{
-        .action_width = if (stacked) clamped_width else preferred_action_width,
-        .stacked = stacked,
-    };
+fn categoryTabWidth(available_width: f32, category_count: usize) f32 {
+    if (category_count == 0) {
+        return 0.0;
+    }
+    return (available_width - @as(f32, @floatFromInt(category_count - 1)) * 4.0) / @as(f32, @floatFromInt(category_count));
+}
+
+fn drawCategoryButton(state: *EditorState, category: state_mod.PlaceActorCategory, label: []const u8, width: f32) bool {
+    const palette = if (state.place_actor_category == category) ui_icons.palettes.toolbar_active else ui_icons.palettes.toolbar_idle;
+    engine.ui.ImGui.pushStyleColor(.button, palette.button);
+    engine.ui.ImGui.pushStyleColor(.button_hovered, palette.hovered);
+    engine.ui.ImGui.pushStyleColor(.button_active, palette.active);
+    engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, ui_icons.regular_icon_button_rounding);
+    defer {
+        engine.ui.ImGui.popStyleVar(1);
+        engine.ui.ImGui.popStyleColor(3);
+    }
+    return engine.ui.ImGui.buttonEx(label, width, category_button_height);
+}
+
+fn triggerPlaceActorEntry(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    kind: state_mod.PlaceActorKind,
+) !void {
+    switch (kind) {
+        .empty => try history.spawnEmptyEntity(state, layer_context),
+        .camera => try history.spawnCameraEntity(state, layer_context),
+        .cube => try history.spawnPrimitive(state, layer_context, .cube),
+        .sphere => try history.spawnPrimitive(state, layer_context, .sphere),
+        .plane => try history.spawnPrimitive(state, layer_context, .plane),
+        .point_light => {
+            var transform = history.spawnTransform(state, layer_context);
+            transform.translation[1] += 1.0;
+            const entity_id = try layer_context.world.createLightEntity(.point, transform, 24.0);
+            try layer_context.renderer.replaceSelection(entity_id);
+            utils.syncInspectorNameBuffer(state, layer_context);
+            camera.focusSelection(state, layer_context);
+            try history.captureSnapshot(state, layer_context);
+        },
+        .spot_light => {
+            var transform = history.spawnTransform(state, layer_context);
+            transform.translation[1] += 1.0;
+            const entity_id = try layer_context.world.createLightEntity(.spot, transform, 24.0);
+            try layer_context.renderer.replaceSelection(entity_id);
+            utils.syncInspectorNameBuffer(state, layer_context);
+            camera.focusSelection(state, layer_context);
+            try history.captureSnapshot(state, layer_context);
+        },
+        .directional_light => {
+            const transform = history.spawnTransform(state, layer_context);
+            const entity_id = try layer_context.world.createLightEntity(.directional, transform, 3.0);
+            try layer_context.renderer.replaceSelection(entity_id);
+            utils.syncInspectorNameBuffer(state, layer_context);
+            camera.focusSelection(state, layer_context);
+            try history.captureSnapshot(state, layer_context);
+        },
+    }
 }
 
 pub fn drawPlaceActorsWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -119,23 +180,15 @@ pub fn drawPlaceActorsWindow(state: *EditorState, layer_context: *engine.core.La
     // Category tabs
     const available_width = engine.ui.ImGui.contentRegionAvail()[0];
     const category_count = categories.len;
-    const tab_width = (available_width - @as(f32, @floatFromInt(category_count - 1)) * 4.0) / @as(f32, @floatFromInt(category_count));
+    const tab_width = categoryTabWidth(available_width, category_count);
 
     for (categories, 0..) |category, i| {
         if (i > 0) {
             engine.ui.ImGui.sameLine();
         }
-        const is_selected = state.place_actor_category == category.id;
         const label = state.text(category.label_id);
-        if (engine.ui.ImGui.buttonEx(label, tab_width, 28.0)) {
+        if (drawCategoryButton(state, category.id, label, tab_width)) {
             state.place_actor_category = category.id;
-        }
-
-        if (is_selected) {
-            engine.ui.ImGui.pushStyleColor(.button, .{ 0.24, 0.41, 0.60, 0.84 });
-            engine.ui.ImGui.pushStyleColor(.button_hovered, .{ 0.28, 0.48, 0.69, 0.92 });
-            engine.ui.ImGui.pushStyleColor(.button_active, .{ 0.21, 0.35, 0.52, 0.96 });
-            defer engine.ui.ImGui.popStyleColor(3);
         }
     }
 
@@ -180,76 +233,61 @@ fn drawPlaceActorEntry(
         }
     }
 
-    // Preload the icon texture
-    const icon_size: f32 = 20.0;
-    const tint = [4]u8{ 176, 196, 220, 255 };
-    _ = try ui_icons.ensureTintedIconTexture(state, layer_context, entry.icon_path, icon_size, tint);
+    const icon_texture = try ui_icons.ensureTintedIconTexture(
+        state,
+        layer_context,
+        entry.icon_path,
+        place_actor_card_icon_size,
+        place_actor_card_icon_tint,
+    );
 
-    // Draw a selectable for the entry (supports drag-drop)
-    const entry_height: f32 = 40.0;
-    const row_layout = placeActorRowLayout(engine.ui.ImGui.contentRegionAvail()[0]);
+    var child_id_buffer: [64]u8 = undefined;
+    const child_id = try std.fmt.bufPrint(&child_id_buffer, "place_actor_card_{d}", .{@intFromEnum(entry.kind)});
+    {
+        _ = engine.ui.ImGui.beginChild(child_id, 0.0, place_actor_card_height, false);
+        defer engine.ui.ImGui.endChild();
 
-    if (engine.ui.ImGui.selectable(label, false, false, row_layout.action_width, entry_height)) {
-        // Clicked - spawn at default location
-        switch (entry.kind) {
-            .empty => try history.spawnEmptyEntity(state, layer_context),
-            .camera => try history.spawnCameraEntity(state, layer_context),
-            .cube => try history.spawnPrimitive(state, layer_context, .cube),
-            .sphere => try history.spawnPrimitive(state, layer_context, .sphere),
-            .plane => try history.spawnPrimitive(state, layer_context, .plane),
-            .point_light => {
-                var transform = history.spawnTransform(state, layer_context);
-                transform.translation[1] += 1.0;
-                const entity_id = try layer_context.world.createLightEntity(.point, transform, 24.0);
-                try layer_context.renderer.replaceSelection(entity_id);
-                utils.syncInspectorNameBuffer(state, layer_context);
-                camera.focusSelection(state, layer_context);
-                try history.captureSnapshot(state, layer_context);
-            },
-            .spot_light => {
-                var transform = history.spawnTransform(state, layer_context);
-                transform.translation[1] += 1.0;
-                const entity_id = try layer_context.world.createLightEntity(.spot, transform, 24.0);
-                try layer_context.renderer.replaceSelection(entity_id);
-                utils.syncInspectorNameBuffer(state, layer_context);
-                camera.focusSelection(state, layer_context);
-                try history.captureSnapshot(state, layer_context);
-            },
-            .directional_light => {
-                const transform = history.spawnTransform(state, layer_context);
-                const entity_id = try layer_context.world.createLightEntity(.directional, transform, 3.0);
-                try layer_context.renderer.replaceSelection(entity_id);
-                utils.syncInspectorNameBuffer(state, layer_context);
-                camera.focusSelection(state, layer_context);
-                try history.captureSnapshot(state, layer_context);
-            },
+        const row_width = @max(engine.ui.ImGui.contentRegionAvail()[0], 1.0);
+        var row_button_id_buffer: [72]u8 = undefined;
+        const row_button_id = try std.fmt.bufPrint(&row_button_id_buffer, "##place_actor_row_{d}", .{@intFromEnum(entry.kind)});
+        engine.ui.ImGui.pushStyleColor(.button, place_actor_card_idle.button);
+        engine.ui.ImGui.pushStyleColor(.button_hovered, place_actor_card_idle.hovered);
+        engine.ui.ImGui.pushStyleColor(.button_active, place_actor_card_active.button);
+        engine.ui.ImGui.pushStyleVarVec2(.frame_padding, .{ 0.0, 0.0 });
+        engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, place_actor_card_rounding);
+        const row_clicked = engine.ui.ImGui.buttonEx(row_button_id, row_width, place_actor_card_height - 4.0);
+        const row_hovered = engine.ui.ImGui.isItemHovered();
+        defer {
+            engine.ui.ImGui.popStyleVar(2);
+            engine.ui.ImGui.popStyleColor(3);
         }
-    }
 
-    // Emit drag payload when hovering and dragging
-    if (engine.ui.ImGui.isItemHovered()) {
-        const kind_int = @intFromEnum(entry.kind);
-        _ = engine.ui.ImGui.dragDropSourceU64(state_mod.place_actor_drag_payload, kind_int, label);
-    }
+        if (row_clicked) {
+            try triggerPlaceActorEntry(state, layer_context, entry.kind);
+        }
 
-    if (row_layout.stacked) {
-        engine.ui.ImGui.dummy(0.0, 4.0);
+        if (row_hovered) {
+            const kind_int = @intFromEnum(entry.kind);
+            _ = engine.ui.ImGui.dragDropSourceU64(state_mod.place_actor_drag_payload, kind_int, label);
+        }
+
+        const icon_y = (place_actor_card_height - place_actor_card_icon_size) * 0.5 - 2.0;
+        engine.ui.ImGui.setCursorPos(.{ 12.0, @max(icon_y, 8.0) });
+        engine.ui.ImGui.image(icon_texture, place_actor_card_icon_size, place_actor_card_icon_size);
+
+        const text_x = 42.0;
+        engine.ui.ImGui.setCursorPos(.{ text_x, 8.0 });
+        engine.ui.ImGui.text(label);
+        engine.ui.ImGui.setCursorPos(.{ text_x, 30.0 });
+        engine.ui.ImGui.pushStyleColor(.text, place_actor_card_text_muted);
+        defer engine.ui.ImGui.popStyleColor(1);
         engine.ui.ImGui.textWrapped(description);
-    } else {
-        engine.ui.ImGui.sameLine();
-        engine.ui.ImGui.alignTextToFramePadding();
-        engine.ui.ImGui.textWrapped(description);
     }
 
-    engine.ui.ImGui.dummy(0.0, 4.0);
+    engine.ui.ImGui.dummy(0.0, 6.0);
 }
 
-test "placeActorRowLayout stacks descriptions in narrow panels" {
-    const narrow = placeActorRowLayout(180.0);
-    try std.testing.expect(narrow.stacked);
-    try std.testing.expectEqual(@as(f32, 180.0), narrow.action_width);
-
-    const wide = placeActorRowLayout(320.0);
-    try std.testing.expect(!wide.stacked);
-    try std.testing.expectApproxEqAbs(@as(f32, 134.4), wide.action_width, 0.01);
+test "categoryTabWidth distributes category buttons evenly" {
+    try std.testing.expectApproxEqAbs(@as(f32, 106.0), categoryTabWidth(436.0, 4), 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), categoryTabWidth(320.0, 0), 0.01);
 }
