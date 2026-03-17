@@ -200,7 +200,7 @@ pub const MeshSceneCache = struct {
             if (mesh.primitive_type != .triangle_list) {
                 continue;
             }
-            const world_transform = scene.worldTransform(entity.id) orelse entity.transform;
+            const world_transform = scene.worldTransformConst(entity.id) orelse entity.local_transform;
 
             const gpu_mesh = try self.ensureMesh(device, mesh_handle, mesh);
             const material_state = try self.resolveMaterial(device, scene, entity.material);
@@ -440,7 +440,7 @@ fn chooseCamera(scene: *const scene_mod.Scene) CameraState {
 
     for (scene.entities.items) |entity| {
         const camera = entity.camera orelse continue;
-        const world_transform = scene.worldTransform(entity.id) orelse entity.transform;
+        const world_transform = scene.worldTransformConst(entity.id) orelse entity.local_transform;
         const candidate: CameraState = .{
             .transform = world_transform,
             .camera = camera,
@@ -471,10 +471,10 @@ fn chooseMainLight(scene: *const scene_mod.Scene) LightState {
         if (light.kind != .directional) {
             continue;
         }
-        const world_transform = scene.worldTransform(entity.id) orelse entity.transform;
+        const world_transform = scene.worldTransformConst(entity.id) orelse entity.local_transform;
 
         return .{
-            .direction = forwardFromEuler(world_transform.rotation_euler),
+            .direction = @import("../math/quat.zig").rotateVec3(world_transform.rotation, .{ 0.0, 0.0, -1.0 }),
             .color = light.color,
             .intensity = light.intensity,
         };
@@ -496,7 +496,7 @@ fn choosePointLight(scene: *const scene_mod.Scene) PointLightState {
         if (light.kind != .point) {
             continue;
         }
-        const world_transform = scene.worldTransform(entity.id) orelse entity.transform;
+        const world_transform = scene.worldTransformConst(entity.id) orelse entity.local_transform;
 
         return .{
             .position = world_transform.translation,
@@ -512,8 +512,4 @@ fn choosePointLight(scene: *const scene_mod.Scene) PointLightState {
         .intensity = 0.0,
         .range = 1.0,
     };
-}
-
-fn forwardFromEuler(rotation_euler: components.Vec3) [3]f32 {
-    return vec3.forwardFromAngles(rotation_euler[1], rotation_euler[0]);
 }

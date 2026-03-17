@@ -100,7 +100,7 @@ fn rayTriangleIntersection(
 fn transformPoint(transform: components.Transform, point: [3]f32) [3]f32 {
     return add(
         transform.translation,
-        rotateVec3Euler(transform.rotation_euler, mul(transform.scale, point)),
+        @import("../math/quat.zig").rotateVec3(transform.rotation, mul(transform.scale, point)),
     );
 }
 
@@ -191,11 +191,11 @@ test "raycastSurface hits the nearest visible triangle" {
 
     const front = try world.createPrimitiveEntity(.plane, .{
         .translation = .{ 0.0, 0.0, 0.0 },
-        .rotation_euler = .{ -std.math.pi * 0.5, 0.0, 0.0 },
+        .rotation = @import("../math/quat.zig").fromEuler(.{ -std.math.pi * 0.5, 0.0, 0.0 }),
     });
     _ = try world.createPrimitiveEntity(.plane, .{
         .translation = .{ 0.0, 0.0, -3.0 },
-        .rotation_euler = .{ -std.math.pi * 0.5, 0.0, 0.0 },
+        .rotation = @import("../math/quat.zig").fromEuler(.{ -std.math.pi * 0.5, 0.0, 0.0 }),
     });
 
     const hit = raycastSurface(&world, .{
@@ -225,7 +225,7 @@ test "raycastSurface ignores editor only meshes" {
             .handle = material_handle,
         },
         .transform = .{
-            .rotation_euler = .{ -std.math.pi * 0.5, 0.0, 0.0 },
+            .rotation = @import("../math/quat.zig").fromEuler(.{ -std.math.pi * 0.5, 0.0, 0.0 }),
         },
     });
 

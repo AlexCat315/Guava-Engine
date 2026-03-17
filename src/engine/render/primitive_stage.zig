@@ -184,7 +184,7 @@ pub const PrimitiveStage = struct {
             .view_projection = view_projection,
             .model = math.transformMatrix(.{
                 .translation = .{ -2.1, 1.1, 0.0 },
-                .rotation_euler = .{ 0.0, -0.5, 0.0 },
+                .rotation = @import("../math/quat.zig").fromEuler(.{ 0.0, -0.5, 0.0 }),
                 .scale = .{ 1.0, 1.0, 1.0 },
             }),
             .tint = .{ 1.0, 1.0, 1.0, 1.0 },

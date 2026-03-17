@@ -1,5 +1,6 @@
 const std = @import("std");
 const rhi_types = @import("../rhi/types.zig");
+const AABB = @import("../math/aabb.zig").AABB;
 
 pub const Vertex = extern struct {
     position: [3]f32,
@@ -14,6 +15,7 @@ pub const MeshResource = struct {
     vertices: []Vertex,
     indices: []u32,
     primitive_type: rhi_types.PrimitiveType = .triangle_list,
+    local_bounds: AABB = .{},
 
     pub fn deinit(self: *MeshResource, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
@@ -31,10 +33,16 @@ pub const MeshResourceDesc = struct {
 };
 
 pub fn clone(allocator: std.mem.Allocator, desc: MeshResourceDesc) !MeshResource {
+    var local_bounds = AABB.empty();
+    for (desc.vertices) |vertex| {
+        local_bounds.expand(vertex.position);
+    }
+
     return .{
         .name = try allocator.dupe(u8, desc.name),
         .vertices = try allocator.dupe(Vertex, desc.vertices),
         .indices = try allocator.dupe(u32, desc.indices),
         .primitive_type = desc.primitive_type,
+        .local_bounds = local_bounds,
     };
 }

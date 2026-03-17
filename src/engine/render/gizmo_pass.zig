@@ -479,8 +479,9 @@ fn scaleForSelection(camera_world_position: [4]f32, target_position: [3]f32) f32
 }
 
 fn rotationForSpace(selected_transform: components.Transform, space: EditorGizmoSpace) [3]f32 {
+    const quat = @import("../math/quat.zig");
     return switch (space) {
-        .local => selected_transform.rotation_euler,
+        .local => quat.toEuler(selected_transform.rotation),
         .world => .{ 0.0, 0.0, 0.0 },
     };
 }
@@ -534,9 +535,14 @@ test "axisColor dims unconstrained axes when locked" {
 }
 
 test "rotationForSpace resets world gizmo orientation" {
+    const quat = @import("../math/quat.zig");
+    const euler = [3]f32{ 0.25, 0.5, 0.75 };
     const selected = components.Transform{
-        .rotation_euler = .{ 0.25, 0.5, 0.75 },
+        .rotation = quat.fromEuler(euler),
     };
-    try std.testing.expectEqualSlices(f32, &selected.rotation_euler, &rotationForSpace(selected, .local));
+    const local_rot = rotationForSpace(selected, .local);
+    try std.testing.expectApproxEqAbs(euler[0], local_rot[0], 0.0001);
+    try std.testing.expectApproxEqAbs(euler[1], local_rot[1], 0.0001);
+    try std.testing.expectApproxEqAbs(euler[2], local_rot[2], 0.0001);
     try std.testing.expectEqualSlices(f32, &.{ 0.0, 0.0, 0.0 }, &rotationForSpace(selected, .world));
 }

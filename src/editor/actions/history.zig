@@ -275,7 +275,7 @@ pub fn spawnVfxEntityAt(state: *EditorState, layer_context: *engine.core.LayerCo
 
 pub fn spawnTransform(state: *EditorState, layer_context: *engine.core.LayerContext) engine.scene.Transform {
     const camera_transform = camera.activeCameraTransform(state, layer_context);
-    const forward = vec3.forwardFromAngles(camera_transform.rotation_euler[1], camera_transform.rotation_euler[0]);
+    const forward = engine.math.quat.rotateVec3(camera_transform.rotation, .{ 0.0, 0.0, -1.0 });
     const spawn_position = vec3.add(camera_transform.translation, vec3.scale(forward, 3.0));
 
     return .{

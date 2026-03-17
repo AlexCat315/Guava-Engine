@@ -2,10 +2,11 @@ const handles = @import("../assets/handles.zig");
 
 pub const Vec2 = [2]f32;
 pub const Vec3 = [3]f32;
+pub const Quat = [4]f32;
 
 pub const Transform = struct {
     translation: Vec3 = .{ 0.0, 0.0, 0.0 },
-    rotation_euler: Vec3 = .{ 0.0, 0.0, 0.0 },
+    rotation: Quat = .{ 0.0, 0.0, 0.0, 1.0 },
     scale: Vec3 = .{ 1.0, 1.0, 1.0 },
 };
 

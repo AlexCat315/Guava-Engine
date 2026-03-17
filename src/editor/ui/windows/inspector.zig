@@ -250,15 +250,15 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                     }
                 }
 
-                var editable_rotation = if (state.transform_space == .world) world_transform.rotation_euler else entity.transform.rotation_euler;
+                var editable_rotation = if (state.transform_space == .world) engine.math.quat.toEuler(world_transform.rotation) else engine.math.quat.toEuler(entity.transform.rotation);
                 const rotation_result = try drawTransformTableRow("Rot", "rotation", &editable_rotation, 0.01, -std.math.tau, std.math.tau);
                 if (rotation_result.changed) {
                     if (state.transform_space == .world) {
                         var updated = world_transform;
-                        updated.rotation_euler = editable_rotation;
+                        updated.rotation = engine.math.quat.fromEuler(editable_rotation);
                         _ = layer_context.world.setEntityWorldTransform(selected, updated);
                     } else {
-                        entity.transform.rotation_euler = editable_rotation;
+                        entity.transform.rotation = engine.math.quat.fromEuler(editable_rotation);
                     }
                     if (rotation_result.committed) {
                         try history.captureSnapshot(state, layer_context);
@@ -1106,7 +1106,7 @@ fn resetTransformTarget(
 fn applyResetToTransform(transform: *engine.scene.Transform, target: TransformResetTarget) void {
     switch (target) {
         .translation => transform.translation = .{ 0.0, 0.0, 0.0 },
-        .rotation => transform.rotation_euler = .{ 0.0, 0.0, 0.0 },
+        .rotation => transform.rotation = engine.math.quat.identity(),
         .scale => transform.scale = .{ 1.0, 1.0, 1.0 },
         .all => transform.* = .{},
     }
@@ -1114,7 +1114,7 @@ fn applyResetToTransform(transform: *engine.scene.Transform, target: TransformRe
 
 fn transformsEqual(a: engine.scene.Transform, b: engine.scene.Transform) bool {
     return std.meta.eql(a.translation, b.translation) and
-        std.meta.eql(a.rotation_euler, b.rotation_euler) and
+        std.meta.eql(a.rotation, b.rotation) and
         std.meta.eql(a.scale, b.scale);
 }
 

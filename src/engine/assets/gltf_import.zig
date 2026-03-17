@@ -149,8 +149,10 @@ const CookedMaterialRecord = struct {
 
 const CookedEntityRecord = struct {
     name: []const u8,
-    mesh_asset_id: []const u8,
-    material_asset_id: []const u8,
+    mesh_asset_id: ?[]const u8 = null,
+    material_asset_id: ?[]const u8 = null,
+    local_transform: components.Transform = .{},
+    parent_index: ?usize = null,
 };
 
 const CookedModelFile = struct {
@@ -430,6 +432,19 @@ fn cookModelRecord(
     });
 }
 
+fn composeTransform(parent: components.Transform, local: components.Transform) components.Transform {
+    const quat = @import("../math/quat.zig");
+    const vec3 = @import("../math/vec3.zig");
+    return .{
+        .translation = vec3.add(
+            parent.translation,
+            quat.rotateVec3(parent.rotation, vec3.mul(parent.scale, local.translation)),
+        ),
+        .rotation = quat.mul(parent.rotation, local.rotation),
+        .scale = vec3.mul(parent.scale, local.scale),
+    };
+}
+
 fn instantiateCookedModel(
     world: anytype,
     registry: *const registry_mod.AssetRegistry,
@@ -501,25 +516,33 @@ fn instantiateCookedModel(
     else
         null;
 
-    for (cooked.entities) |entity| {
-        const mesh_handle = findMeshHandle(mesh_handles.items, entity.mesh_asset_id) orelse return error.MeshAssetNotFound;
-        const material_handle = if (std.mem.eql(u8, entity.material_asset_id, default_material_asset_id))
-            try world.resources.ensureDefaultMaterial()
-        else
-            findMaterialHandle(material_handles.items, entity.material_asset_id) orelse return error.MaterialAssetNotFound;
+    var entity_ids = try world.allocator.alloc(u64, cooked.entities.len);
+    defer world.allocator.free(entity_ids);
 
-        _ = try world.createEntity(.{
+    for (cooked.entities, 0..) |entity, index| {
+        const mesh_handle = if (entity.mesh_asset_id) |asset_id|
+            findMeshHandle(mesh_handles.items, asset_id) orelse return error.MeshAssetNotFound
+        else
+            null;
+
+        const material_handle = if (entity.material_asset_id) |asset_id|
+            if (std.mem.eql(u8, asset_id, default_material_asset_id))
+                try world.resources.ensureDefaultMaterial()
+            else
+                findMaterialHandle(material_handles.items, asset_id) orelse return error.MaterialAssetNotFound
+        else
+            null;
+
+        const parent_id = if (entity.parent_index) |p_idx| entity_ids[p_idx] else import_parent;
+
+        const entity_id = try world.createEntity(.{
             .name = entity.name,
-            .parent = import_parent,
-            .mesh = .{
-                .handle = mesh_handle,
-                .primitive = .custom,
-            },
-            .material = .{
-                .handle = material_handle,
-            },
-            .transform = if (import_parent != null) .{} else root_transform,
+            .parent = parent_id,
+            .mesh = if (mesh_handle) |h| .{ .handle = h, .primitive = .custom } else null,
+            .material = if (material_handle) |h| .{ .handle = h } else null,
+            .local_transform = if (entity.parent_index != null) entity.local_transform else if (import_parent != null) entity.local_transform else composeTransform(root_transform, entity.local_transform),
         });
+        entity_ids[index] = entity_id;
         report.entity_count += 1;
     }
 
@@ -536,7 +559,7 @@ fn cookNodeRecursive(
     texture_asset_ids: []?[]const u8,
     default_material_asset_id: []const u8,
     node_index: u32,
-    parent_matrix: math.Mat4,
+    parent_entity_index: ?usize,
     base_dir: []const u8,
     source_stem: []const u8,
     cooked_meshes: *std.ArrayList(CookedMeshRecord),
@@ -550,7 +573,19 @@ fn cookNodeRecursive(
     }
 
     const node = document_nodes[node_index];
-    const node_world = math.mul(parent_matrix, nodeMatrix(node));
+    const node_transform = nodeTransform(node);
+    const entity_index = cooked_entities.items.len;
+
+    const node_name = if (node.name) |n|
+        try std.fmt.allocPrint(allocator, "{s}_{s}", .{ source_stem, n })
+    else
+        try std.fmt.allocPrint(allocator, "{s}_Node_{d}", .{ source_stem, node_index });
+
+    try cooked_entities.append(allocator, .{
+        .name = node_name,
+        .local_transform = node_transform,
+        .parent_index = parent_entity_index,
+    });
 
     if (node.mesh) |mesh_index| {
         try cookNodeMesh(
@@ -564,7 +599,7 @@ fn cookNodeRecursive(
             default_material_asset_id,
             mesh_index,
             node,
-            node_world,
+            entity_index,
             base_dir,
             source_stem,
             cooked_meshes,
@@ -586,7 +621,7 @@ fn cookNodeRecursive(
                 texture_asset_ids,
                 default_material_asset_id,
                 child_index,
-                node_world,
+                entity_index,
                 base_dir,
                 source_stem,
                 cooked_meshes,
@@ -609,7 +644,7 @@ fn cookNodeMesh(
     default_material_asset_id: []const u8,
     mesh_index: u32,
     node: Node,
-    node_world: math.Mat4,
+    entity_index: usize,
     base_dir: []const u8,
     source_stem: []const u8,
     cooked_meshes: *std.ArrayList(CookedMeshRecord),
@@ -635,7 +670,6 @@ fn cookNodeMesh(
             document,
             loaded_buffers,
             primitive,
-            node_world,
             mesh_index,
             mesh.name,
             primitive_index,
@@ -659,17 +693,24 @@ fn cookNodeMesh(
             cooked_asset_records,
         );
 
-        const entity_name = try entityNameForPrimitive(
-            allocator,
-            source_stem,
-            node.name orelse mesh.name orelse "Node",
-            primitive_index,
-        );
-        try cooked_entities.append(allocator, .{
-            .name = entity_name,
-            .mesh_asset_id = cooked_mesh.record.asset_id,
-            .material_asset_id = material.asset_id,
-        });
+        if (primitive_index == 0) {
+            cooked_entities.items[entity_index].mesh_asset_id = cooked_mesh.record.asset_id;
+            cooked_entities.items[entity_index].material_asset_id = material.asset_id;
+        } else {
+            const entity_name = try entityNameForPrimitive(
+                allocator,
+                source_stem,
+                node.name orelse mesh.name orelse "Node",
+                primitive_index,
+            );
+            try cooked_entities.append(allocator, .{
+                .name = entity_name,
+                .mesh_asset_id = cooked_mesh.record.asset_id,
+                .material_asset_id = material.asset_id,
+                .parent_index = entity_index,
+                .local_transform = .{},
+            });
+        }
     }
 }
 
@@ -805,7 +846,6 @@ fn createCookedMeshForPrimitive(
     document: GltfDocument,
     loaded_buffers: []const []u8,
     primitive: Primitive,
-    node_world: math.Mat4,
     mesh_index: u32,
     mesh_name: ?[]const u8,
     primitive_index: usize,
@@ -842,14 +882,13 @@ fn createCookedMeshForPrimitive(
 
     const vertices = try allocator.alloc(mesh_mod.Vertex, position_view.count);
     for (vertices, 0..) |*vertex, index| {
-        const position = try readVec3(position_view, index);
-        vertex.position = transformPoint(node_world, position);
+        vertex.position = try readVec3(position_view, index);
         vertex.normal = if (normal_view) |view|
-            normalize3(transformDirection(node_world, try readVec3(view, index)))
+            normalize3(try readVec3(view, index))
         else
             .{ 0.0, 1.0, 0.0 };
         vertex.tangent = if (tangent_view) |view|
-            transformTangent(node_world, try readVec4(view, index))
+            try readVec4(view, index)
         else
             defaultTangent(vertex.normal);
         vertex.color = if (color_view) |view| try readColor(view, index) else .{ 1.0, 1.0, 1.0, 1.0 };
@@ -1247,7 +1286,6 @@ fn importStaticModelInternal(
             texture_handles,
             default_material,
             node_index,
-            math.identity(),
             root_transform,
             import_parent,
             base_dir,
@@ -1267,7 +1305,6 @@ fn importNodeRecursive(
     texture_handles: []?handles.TextureHandle,
     default_material: handles.MaterialHandle,
     node_index: u32,
-    parent_matrix: math.Mat4,
     root_transform: components.Transform,
     import_parent: ?u64,
     base_dir: []const u8,
@@ -1280,7 +1317,21 @@ fn importNodeRecursive(
     }
 
     const node = document_nodes[node_index];
-    const node_world = math.mul(parent_matrix, nodeMatrix(node));
+
+    // Create an entity for this glTF node
+    const node_name = if (node.name) |n|
+        try std.fmt.allocPrint(world.allocator, "{s}_{s}", .{ source_stem, n })
+    else
+        try std.fmt.allocPrint(world.allocator, "{s}_Node_{d}", .{ source_stem, node_index });
+    defer world.allocator.free(node_name);
+
+    const node_transform = nodeTransform(node);
+    const node_entity_id = try world.createEntity(.{
+        .name = node_name,
+        .parent = import_parent,
+        .local_transform = node_transform,
+    });
+    report.entity_count += 1;
 
     if (node.mesh) |mesh_index| {
         try importNodeMesh(
@@ -1292,9 +1343,8 @@ fn importNodeRecursive(
             default_material,
             mesh_index,
             node,
-            node_world,
             root_transform,
-            import_parent,
+            node_entity_id,
             base_dir,
             source_stem,
             report,
@@ -1311,9 +1361,8 @@ fn importNodeRecursive(
                 texture_handles,
                 default_material,
                 child_index,
-                node_world,
                 root_transform,
-                import_parent,
+                node_entity_id,
                 base_dir,
                 source_stem,
                 report,
@@ -1331,7 +1380,6 @@ fn importNodeMesh(
     default_material: handles.MaterialHandle,
     mesh_index: u32,
     node: Node,
-    node_world: math.Mat4,
     root_transform: components.Transform,
     import_parent: ?u64,
     base_dir: []const u8,
@@ -1356,7 +1404,6 @@ fn importNodeMesh(
             document,
             loaded_buffers,
             primitive,
-            node_world,
             mesh.name,
             primitive_index,
         );
@@ -1390,7 +1437,7 @@ fn importNodeMesh(
             .material = .{
                 .handle = material.handle,
             },
-            .transform = if (import_parent != null) .{} else root_transform,
+            .local_transform = if (import_parent != null) .{} else root_transform,
         });
 
         report.entity_count += 1;
@@ -1412,7 +1459,7 @@ fn createImportRoot(
 
     const root_id = try world.createEntity(.{
         .name = root_name,
-        .transform = root_transform,
+        .local_transform = root_transform,
     });
     report.root_entity = root_id;
     report.entity_count += 1;
@@ -1424,7 +1471,6 @@ fn createMeshForPrimitive(
     document: GltfDocument,
     loaded_buffers: []const []u8,
     primitive: Primitive,
-    node_world: math.Mat4,
     mesh_name: ?[]const u8,
     primitive_index: usize,
 ) !handles.MeshHandle {
@@ -1462,16 +1508,15 @@ fn createMeshForPrimitive(
     defer world.allocator.free(vertices);
 
     for (vertices, 0..) |*vertex, index| {
-        const position = try readVec3(position_view, index);
-        vertex.position = transformPoint(node_world, position);
+        vertex.position = try readVec3(position_view, index);
 
         vertex.normal = if (normal_view) |view|
-            normalize3(transformDirection(node_world, try readVec3(view, index)))
+            normalize3(try readVec3(view, index))
         else
             .{ 0.0, 1.0, 0.0 };
 
         vertex.tangent = if (tangent_view) |view|
-            transformTangent(node_world, try readVec4(view, index))
+            try readVec4(view, index)
         else
             defaultTangent(vertex.normal);
 
@@ -1930,6 +1975,18 @@ fn componentCount(type_name: []const u8) ?usize {
     if (std.mem.eql(u8, type_name, "VEC3")) return 3;
     if (std.mem.eql(u8, type_name, "VEC4")) return 4;
     return null;
+}
+
+fn nodeTransform(node: Node) components.Transform {
+    if (node.matrix) |_| {
+        // Full matrix decomposition is complex, assuming TRS for now
+        // A complete implementation would extract T, R, S from the 4x4 matrix
+    }
+    return .{
+        .translation = node.translation orelse .{ 0.0, 0.0, 0.0 },
+        .rotation = node.rotation orelse .{ 0.0, 0.0, 0.0, 1.0 },
+        .scale = node.scale orelse .{ 1.0, 1.0, 1.0 },
+    };
 }
 
 fn nodeMatrix(node: Node) math.Mat4 {

@@ -1,6 +1,7 @@
 const std = @import("std");
 const engine = @import("guava");
 const vec3 = engine.math.vec3;
+const quat = engine.math.quat;
 const EditorState = @import("../core/state.zig").EditorState;
 const state_mod = @import("../core/state.zig");
 const utils = @import("../common/utils.zig");
@@ -214,8 +215,9 @@ pub fn applyTranslate(
 ) void {
     const input = layer_context.input;
     const camera_transform = camera.activeCameraTransform(state, layer_context);
-    const right = vec3.rightFromYaw(camera_transform.rotation_euler[1]);
-    const forward = vec3.forwardFromAngles(camera_transform.rotation_euler[1], camera_transform.rotation_euler[0]);
+    const camera_euler = quat.toEuler(camera_transform.rotation);
+    const right = vec3.rightFromYaw(camera_euler[1]);
+    const forward = vec3.forwardFromAngles(camera_euler[1], camera_euler[0]);
     const up = vec3.normalize(vec3.cross(right, forward));
     const distance = @max(vec3.length(vec3.sub(camera_transform.translation, entity_transform.translation)), 1.0);
     const move_scale = distance * 0.0025;
@@ -229,7 +231,7 @@ pub fn applyTranslate(
             entity_transform.translation = vec3.add(entity_transform.translation, delta);
         },
         .x, .y, .z => {
-            const axis = manipulationAxisVector(state.transform_space, state.manipulation_axis, entity_transform.rotation_euler);
+            const axis = manipulationAxisVector(state.transform_space, state.manipulation_axis, entity_transform.rotation);
             const scalar = (input.mouse_delta[0] - input.mouse_delta[1]) * move_scale;
             entity_transform.translation = vec3.add(entity_transform.translation, vec3.scale(axis, scalar));
         },
@@ -252,29 +254,31 @@ pub fn applyTranslate(
 
 pub fn applyRotate(state: *const EditorState, input: *const engine.core.InputState, entity_transform: *engine.scene.Transform) void {
     const scalar = (input.mouse_delta[0] - input.mouse_delta[1]) * 0.01;
+    var euler = quat.toEuler(entity_transform.rotation);
     switch (state.manipulation_axis) {
         .free => {
-            entity_transform.rotation_euler[1] -= input.mouse_delta[0] * 0.01;
-            entity_transform.rotation_euler[0] -= input.mouse_delta[1] * 0.01;
+            euler[1] -= input.mouse_delta[0] * 0.01;
+            euler[0] -= input.mouse_delta[1] * 0.01;
         },
-        .x => entity_transform.rotation_euler[0] += scalar,
-        .y => entity_transform.rotation_euler[1] += scalar,
-        .z => entity_transform.rotation_euler[2] += scalar,
+        .x => euler[0] += scalar,
+        .y => euler[1] += scalar,
+        .z => euler[2] += scalar,
     }
 
     if (state.rotation_snap_enabled) {
         // Snap relative to manipulation origin
-        const origin = state.manipulation_origin.rotation_euler;
+        const origin_euler = quat.toEuler(state.manipulation_origin.rotation);
         const snap_radians = state.rotation_snap_step_degrees * std.math.pi / 180.0;
-        const delta_x = entity_transform.rotation_euler[0] - origin[0];
-        const delta_y = entity_transform.rotation_euler[1] - origin[1];
-        const delta_z = entity_transform.rotation_euler[2] - origin[2];
-        entity_transform.rotation_euler = .{
-            origin[0] + @round(delta_x / snap_radians) * snap_radians,
-            origin[1] + @round(delta_y / snap_radians) * snap_radians,
-            origin[2] + @round(delta_z / snap_radians) * snap_radians,
+        const delta_x = euler[0] - origin_euler[0];
+        const delta_y = euler[1] - origin_euler[1];
+        const delta_z = euler[2] - origin_euler[2];
+        euler = .{
+            origin_euler[0] + @round(delta_x / snap_radians) * snap_radians,
+            origin_euler[1] + @round(delta_y / snap_radians) * snap_radians,
+            origin_euler[2] + @round(delta_z / snap_radians) * snap_radians,
         };
     }
+    entity_transform.rotation = quat.fromEuler(euler);
 }
 
 pub fn applyScale(state: *const EditorState, input: *const engine.core.InputState, entity_transform: *engine.scene.Transform) void {
@@ -323,11 +327,11 @@ pub fn syncGizmoState(state: *const EditorState, layer_context: *engine.core.Lay
     });
 }
 
-fn manipulationAxisVector(space: TransformSpace, axis: state_mod.AxisConstraint, rotation_euler: [3]f32) [3]f32 {
+fn manipulationAxisVector(space: TransformSpace, axis: state_mod.AxisConstraint, rotation: [4]f32) [3]f32 {
     const base_axis = engine.math.axis.vector(axis);
     return switch (space) {
         .world => base_axis,
-        .local => rotateVec3Euler(rotation_euler, base_axis),
+        .local => engine.math.quat.rotateVec3(rotation, base_axis),
     };
 }
 

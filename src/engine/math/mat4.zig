@@ -1,5 +1,6 @@
 const std = @import("std");
 const components = @import("../scene/components.zig");
+const quat = @import("quat.zig");
 
 pub const Mat4 = [16]f32;
 
@@ -81,7 +82,7 @@ pub fn rotationZ(radians: f32) Mat4 {
 }
 
 pub fn transformMatrix(transform: components.Transform) Mat4 {
-    const rotate = mul(mul(rotationZ(transform.rotation_euler[2]), rotationY(transform.rotation_euler[1])), rotationX(transform.rotation_euler[0]));
+    const rotate = quat.toMat4(transform.rotation);
     return mul(mul(translation(transform.translation), rotate), scale(transform.scale));
 }
 
@@ -91,10 +92,7 @@ pub fn viewMatrix(transform: components.Transform) Mat4 {
         -transform.translation[1],
         -transform.translation[2],
     });
-    const inverse_rotate = mul(
-        mul(rotationX(-transform.rotation_euler[0]), rotationY(-transform.rotation_euler[1])),
-        rotationZ(-transform.rotation_euler[2]),
-    );
+    const inverse_rotate = quat.toMat4(quat.inverse(transform.rotation));
     return mul(inverse_rotate, inverse_translate);
 }
 

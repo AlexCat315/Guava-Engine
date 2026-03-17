@@ -128,6 +128,23 @@ pub const EditorLayer = struct {
 
     fn onUpdate(context: *anyopaque, layer_context: *engine.core.LayerContext) !void {
         const self: *EditorLayer = @ptrCast(@alignCast(context));
+
+        {
+            const modifiers = layer_context.input.modifiers;
+            const key_d = layer_context.input.key_down[@intFromEnum(engine.core.InputKey.d)];
+            const ai_snapshot = @import("../debug/ai_snapshot.zig");
+            if (modifiers.super and modifiers.shift and key_d) {
+                try ai_snapshot.captureAndSaveSnapshot(self.state.allocator.?, &self.state, layer_context);
+            } else if (ai_snapshot.shouldAutoCapture()) {
+                try ai_snapshot.captureAndSaveSnapshot(self.state.allocator.?, &self.state, layer_context);
+                ai_snapshot.resetFrameCounter();
+
+                // TODO: Enable auto debug when ai_auto_debug is fixed
+                // const ai_auto_debug = @import("../debug/ai_auto_debug.zig");
+                // ai_auto_debug.analyzeAndDebug(self.state.allocator.?, layer_context, layer_context.world, &self.state) catch {};
+            }
+        }
+
         try vfx_runtime.update(&self.state, layer_context);
         try history.pruneMissingSelection(&self.state, layer_context);
         utils.pruneFrozenEntities(&self.state, layer_context.world);

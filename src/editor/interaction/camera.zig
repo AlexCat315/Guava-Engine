@@ -2,6 +2,7 @@ const std = @import("std");
 const engine = @import("guava");
 const mat4 = engine.math.mat4;
 const vec3 = engine.math.vec3;
+const quat = engine.math.quat;
 const state_mod = @import("../core/state.zig");
 const EditorState = state_mod.EditorState;
 const utils = @import("../common/utils.zig");
@@ -39,7 +40,7 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
             state.viewport_view_preset = .custom;
         }
         const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
-        camera.transform.rotation_euler = .{ state.pitch, state.yaw, 0.0 };
+        camera.transform.rotation = quat.fromEuler(.{ state.pitch, state.yaw, 0.0 });
         camera.transform.translation = vec3.sub(state.focus_pivot, vec3.scale(forward, state.orbit_distance));
     } else {
         if (input.isMouseDown(.right)) {
@@ -50,7 +51,7 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
             }
         }
 
-        camera.transform.rotation_euler = .{ state.pitch, state.yaw, 0.0 };
+        camera.transform.rotation = quat.fromEuler(.{ state.pitch, state.yaw, 0.0 });
 
         if (input.isMouseDown(.right)) {
             const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
@@ -101,7 +102,7 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
         state.focus_pivot = vec3.add(state.focus_pivot, pan);
     }
 
-    camera.transform.rotation_euler = .{ state.pitch, state.yaw, 0.0 };
+    camera.transform.rotation = quat.fromEuler(.{ state.pitch, state.yaw, 0.0 });
 }
 
 pub fn toggleCameraMode(state: *EditorState, layer_context: *engine.core.LayerContext) void {
@@ -187,7 +188,7 @@ pub fn orbitFromViewCubeDrag(state: *EditorState, layer_context: *engine.core.La
 pub fn editorCameraTransform(state: *const EditorState) engine.scene.Transform {
     return .{
         .translation = vec3.sub(state.focus_pivot, vec3.scale(vec3.forwardFromAngles(state.yaw, state.pitch), state.orbit_distance)),
-        .rotation_euler = .{ state.pitch, state.yaw, 0.0 },
+        .rotation = quat.fromEuler(.{ state.pitch, state.yaw, 0.0 }),
     };
 }
 
@@ -241,7 +242,7 @@ pub fn activeCameraRayFromViewportPixel(
             });
             break :blk .{
                 .origin = camera_transform.translation,
-                .direction = normalize(rotateVec3Euler(camera_transform.rotation_euler, local_direction)),
+                .direction = normalize(quat.rotateVec3(camera_transform.rotation, local_direction)),
             };
         },
         .orthographic => |projection| blk: {
@@ -253,8 +254,8 @@ pub fn activeCameraRayFromViewportPixel(
                 0.0,
             };
             break :blk .{
-                .origin = vec3.add(camera_transform.translation, rotateVec3Euler(camera_transform.rotation_euler, local_origin)),
-                .direction = normalize(rotateVec3Euler(camera_transform.rotation_euler, .{ 0.0, 0.0, -1.0 })),
+                .origin = vec3.add(camera_transform.translation, quat.rotateVec3(camera_transform.rotation, local_origin)),
+                .direction = normalize(quat.rotateVec3(camera_transform.rotation, .{ 0.0, 0.0, -1.0 })),
             };
         },
     };
@@ -393,40 +394,6 @@ fn shortestAngleDelta(from: f32, to: f32) f32 {
         delta += std.math.tau;
     }
     return delta;
-}
-
-fn rotateVec3Euler(rotation: [3]f32, vector: [3]f32) [3]f32 {
-    return rotateZ(rotation[2], rotateY(rotation[1], rotateX(rotation[0], vector)));
-}
-
-fn rotateX(radians: f32, vector: [3]f32) [3]f32 {
-    const c = std.math.cos(radians);
-    const s = std.math.sin(radians);
-    return .{
-        vector[0],
-        vector[1] * c - vector[2] * s,
-        vector[1] * s + vector[2] * c,
-    };
-}
-
-fn rotateY(radians: f32, vector: [3]f32) [3]f32 {
-    const c = std.math.cos(radians);
-    const s = std.math.sin(radians);
-    return .{
-        vector[0] * c + vector[2] * s,
-        vector[1],
-        -vector[0] * s + vector[2] * c,
-    };
-}
-
-fn rotateZ(radians: f32, vector: [3]f32) [3]f32 {
-    const c = std.math.cos(radians);
-    const s = std.math.sin(radians);
-    return .{
-        vector[0] * c - vector[1] * s,
-        vector[0] * s + vector[1] * c,
-        vector[2],
-    };
 }
 
 fn normalize(vector: [3]f32) [3]f32 {

@@ -4,6 +4,7 @@ const gltf_import = @import("../assets/gltf_import.zig");
 const raycast_mod = @import("raycast.zig");
 const components = @import("components.zig");
 const vec3 = @import("../math/vec3.zig");
+const AABB = @import("../math/aabb.zig").AABB;
 
 const compose_epsilon = 0.0001;
 
@@ -13,7 +14,10 @@ pub const Entity = struct {
     id: EntityId,
     name: []u8,
     parent: ?EntityId = null,
-    transform: components.Transform = .{},
+    local_transform: components.Transform = .{},
+    world_transform_cache: components.Transform = .{},
+    world_bounds_cache: ?AABB = null,
+    dirty: bool = true,
     camera: ?components.Camera = null,
     mesh: ?components.Mesh = null,
     material: ?components.Material = null,
@@ -27,7 +31,7 @@ pub const Entity = struct {
 pub const EntityDesc = struct {
     name: []const u8,
     parent: ?EntityId = null,
-    transform: components.Transform = .{},
+    local_transform: components.Transform = .{},
     camera: ?components.Camera = null,
     mesh: ?components.Mesh = null,
     material: ?components.Material = null,
@@ -96,7 +100,7 @@ pub const World = struct {
             .id = id,
             .name = owned_name,
             .parent = desc.parent,
-            .transform = desc.transform,
+            .local_transform = desc.local_transform,
             .camera = desc.camera,
             .mesh = desc.mesh,
             .material = desc.material,
@@ -105,6 +109,9 @@ pub const World = struct {
             .visible = desc.visible,
             .editor_only = desc.editor_only,
             .is_folder = desc.is_folder,
+            .world_transform_cache = .{},
+            .world_bounds_cache = null,
+            .dirty = true,
         });
 
         return id;
@@ -137,18 +144,83 @@ pub const World = struct {
         return entity.parent;
     }
 
-    pub fn worldTransform(self: *const World, id: EntityId) ?components.Transform {
+    pub fn markDirty(self: *World, id: EntityId) void {
+        const entity = self.getEntity(id) orelse return;
+        if (entity.dirty) return;
+        entity.dirty = true;
+        for (self.entities.items) |*child| {
+            if (child.parent == id) {
+                self.markDirty(child.id);
+            }
+        }
+    }
+
+    pub fn setLocalTransform(self: *World, id: EntityId, local_transform: components.Transform) void {
+        const entity = self.getEntity(id) orelse return;
+        entity.local_transform = local_transform;
+        self.markDirty(id);
+    }
+
+    pub fn localTransform(self: *const World, id: EntityId) components.Transform {
+        const entity = self.getEntityConst(id) orelse return .{};
+        return entity.local_transform;
+    }
+
+    pub fn worldTransform(self: *World, id: EntityId) ?components.Transform {
+        const entity = self.getEntity(id) orelse return null;
+        if (!entity.dirty) {
+            return entity.world_transform_cache;
+        }
+
+        const parent_world = if (entity.parent) |parent_id| self.worldTransform(parent_id) else null;
+        const new_world = if (parent_world) |pw| composeTransform(pw, entity.local_transform) else entity.local_transform;
+
+        // Re-fetch entity because worldTransform(parent_id) might have reallocated entities array
+        const entity_ref = self.getEntity(id).?;
+        entity_ref.world_transform_cache = new_world;
+        entity_ref.dirty = false;
+        return new_world;
+    }
+
+    pub fn worldTransformConst(self: *const World, id: EntityId) ?components.Transform {
+        const entity = self.getEntityConst(id) orelse return null;
+        if (!entity.dirty) {
+            return entity.world_transform_cache;
+        }
         return self.worldTransformRecursive(id, 0);
+    }
+
+    pub fn worldBounds(self: *World, id: EntityId) ?AABB {
+        const entity = self.getEntity(id) orelse return null;
+        if (!entity.dirty and entity.world_bounds_cache != null) {
+            return entity.world_bounds_cache.?;
+        }
+
+        const world_transform_val = self.worldTransform(id) orelse return null;
+        var bounds: ?AABB = null;
+
+        const re_entity = self.getEntity(id).?;
+        if (re_entity.mesh) |mesh_component| {
+            if (mesh_component.handle) |handle| {
+                if (self.resources.mesh(handle)) |mesh| {
+                    bounds = mesh.local_bounds.transformed(world_transform_val);
+                }
+            }
+        }
+
+        re_entity.world_bounds_cache = bounds;
+        return bounds;
     }
 
     pub fn setEntityWorldTransform(self: *World, id: EntityId, world_transform: components.Transform) bool {
         const entity = self.getEntity(id) orelse return false;
         if (entity.parent) |parent_id| {
             const parent_world = self.worldTransform(parent_id) orelse return false;
-            entity.transform = relativeTransform(parent_world, world_transform);
+            entity.local_transform = relativeTransform(parent_world, world_transform);
         } else {
-            entity.transform = world_transform;
+            entity.local_transform = world_transform;
         }
+        self.markDirty(id);
         return true;
     }
 
@@ -287,7 +359,7 @@ pub const World = struct {
 
         return self.createEntity(.{
             .name = entity_name,
-            .transform = transform,
+            .local_transform = transform,
             .mesh = .{
                 .handle = mesh_handle,
                 .primitive = primitive,
@@ -304,7 +376,7 @@ pub const World = struct {
 
         return self.createEntity(.{
             .name = entity_name,
-            .transform = transform,
+            .local_transform = transform,
         });
     }
 
@@ -314,7 +386,7 @@ pub const World = struct {
 
         return self.createEntity(.{
             .name = entity_name,
-            .transform = transform,
+            .local_transform = transform,
             .is_folder = true,
         });
     }
@@ -325,7 +397,7 @@ pub const World = struct {
 
         return self.createEntity(.{
             .name = entity_name,
-            .transform = transform,
+            .local_transform = transform,
             .camera = .{},
         });
     }
@@ -380,7 +452,7 @@ pub const World = struct {
 
         return self.createEntity(.{
             .name = entity_name,
-            .transform = light_transform,
+            .local_transform = light_transform,
             .mesh = mesh,
             .material = material,
             .light = .{
@@ -413,7 +485,7 @@ pub const World = struct {
 
         return self.createEntity(.{
             .name = entity_name,
-            .transform = root_transform,
+            .local_transform = root_transform,
             .mesh = .{
                 .handle = mesh_handle,
                 .primitive = .sphere,
@@ -460,7 +532,7 @@ pub const World = struct {
         _ = try self.createEntity(.{
             .name = "MainCamera",
             .camera = .{ .is_primary = true },
-            .transform = .{
+            .local_transform = .{
                 .translation = .{ 0.0, 1.5, 5.0 },
             },
         });
@@ -471,8 +543,8 @@ pub const World = struct {
                 .kind = .directional,
                 .intensity = 4.0,
             },
-            .transform = .{
-                .rotation_euler = .{ -0.9, 0.6, 0.0 },
+            .local_transform = .{
+                .rotation = @import("../math/quat.zig").fromEuler(.{ -0.9, 0.6, 0.0 }),
             },
         });
 
@@ -485,7 +557,7 @@ pub const World = struct {
             .material = .{
                 .handle = default_material,
             },
-            .transform = .{
+            .local_transform = .{
                 .scale = .{ 10.0, 1.0, 10.0 },
             },
         });
@@ -499,7 +571,7 @@ pub const World = struct {
             .material = .{
                 .handle = default_material,
             },
-            .transform = .{
+            .local_transform = .{
                 .translation = .{ 0.0, 1.0, 0.0 },
             },
         });
@@ -537,9 +609,9 @@ pub const World = struct {
         const entity = self.getEntityConst(id) orelse return null;
         if (entity.parent) |parent_id| {
             const parent_world = self.worldTransformRecursive(parent_id, depth + 1) orelse return null;
-            return composeTransform(parent_world, entity.transform);
+            return composeTransform(parent_world, entity.local_transform);
         }
-        return entity.transform;
+        return entity.local_transform;
     }
 
     fn isDescendantOf(self: *const World, candidate_id: EntityId, ancestor_id: EntityId) bool {
@@ -607,7 +679,7 @@ pub const World = struct {
         const duplicate_id = try self.createEntity(.{
             .name = duplicate_name,
             .parent = new_parent,
-            .transform = source.transform,
+            .local_transform = source.local_transform,
             .camera = duplicate_camera,
             .mesh = source.mesh,
             .material = source.material,
@@ -661,27 +733,29 @@ pub const World = struct {
 };
 
 fn composeTransform(parent: components.Transform, local: components.Transform) components.Transform {
+    const quat = @import("../math/quat.zig");
     return .{
         .translation = vec3.add(
             parent.translation,
-            rotateVec3Euler(parent.rotation_euler, vec3.mul(parent.scale, local.translation)),
+            quat.rotateVec3(parent.rotation, vec3.mul(parent.scale, local.translation)),
         ),
-        .rotation_euler = vec3.add(parent.rotation_euler, local.rotation_euler),
+        .rotation = quat.mul(parent.rotation, local.rotation),
         .scale = vec3.mul(parent.scale, local.scale),
     };
 }
 
 fn relativeTransform(parent: components.Transform, world: components.Transform) components.Transform {
+    const quat = @import("../math/quat.zig");
     const delta = vec3.sub(world.translation, parent.translation);
     const local_translation = vec3.divSafe(
-        inverseRotateVec3Euler(parent.rotation_euler, delta),
+        quat.rotateVec3(quat.inverse(parent.rotation), delta),
         parent.scale,
         compose_epsilon,
     );
 
     return .{
         .translation = local_translation,
-        .rotation_euler = vec3.sub(world.rotation_euler, parent.rotation_euler),
+        .rotation = quat.mul(quat.inverse(parent.rotation), world.rotation),
         .scale = vec3.divSafe(world.scale, parent.scale, compose_epsilon),
     };
 }
@@ -780,7 +854,7 @@ test "glTF instance import creates a movable root entity" {
     try std.testing.expect(report.root_entity != null);
     const root = world.getEntityConst(report.root_entity.?).?;
     try std.testing.expectEqualStrings("guava_showcase Instance", root.name);
-    try std.testing.expectApproxEqAbs(@as(f32, 3.0), root.transform.translation[0], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 3.0), root.local_transform.translation[0], 0.0001);
 
     const imported = world.findEntityByName("guava_showcase_GuavaShowcase_0").?;
     try std.testing.expectEqual(report.root_entity.?, imported.parent.?);
@@ -814,7 +888,7 @@ test "createVfxEntity adds a selectable VFX anchor entity" {
     try std.testing.expectEqual(components.VfxKind.fountain, entity.vfx.?.kind);
     try std.testing.expect(entity.mesh != null);
     try std.testing.expect(entity.material != null);
-    try std.testing.expectApproxEqAbs(@as(f32, 1.0), entity.transform.translation[0], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), entity.local_transform.translation[0], 0.0001);
 }
 
 test "world hierarchy composes transforms and preserves world space on reparent" {
@@ -823,20 +897,20 @@ test "world hierarchy composes transforms and preserves world space on reparent"
 
     const parent_a = try world.createEntity(.{
         .name = "ParentA",
-        .transform = .{
+        .local_transform = .{
             .translation = .{ 2.0, 0.0, 0.0 },
         },
     });
     const parent_b = try world.createEntity(.{
         .name = "ParentB",
-        .transform = .{
+        .local_transform = .{
             .translation = .{ 10.0, 0.0, 0.0 },
         },
     });
     const child = try world.createEntity(.{
         .name = "Child",
         .parent = parent_a,
-        .transform = .{
+        .local_transform = .{
             .translation = .{ 1.0, 0.0, 0.0 },
         },
     });
@@ -847,7 +921,7 @@ test "world hierarchy composes transforms and preserves world space on reparent"
     try std.testing.expect(try world.setParent(child, parent_b));
     const after = world.worldTransform(child).?;
     try std.testing.expectApproxEqAbs(@as(f32, 3.0), after.translation[0], 0.0001);
-    const local = world.getEntityConst(child).?.transform;
+    const local = world.getEntityConst(child).?.local_transform;
     try std.testing.expectApproxEqAbs(@as(f32, -7.0), local.translation[0], 0.0001);
 }
 
@@ -857,14 +931,14 @@ test "duplicateEntity copies subtrees and destroyEntity removes descendants" {
 
     const root = try world.createEntity(.{
         .name = "RigRoot",
-        .transform = .{
+        .local_transform = .{
             .translation = .{ 1.0, 0.0, 0.0 },
         },
     });
     const child = try world.createEntity(.{
         .name = "RigChild",
         .parent = root,
-        .transform = .{
+        .local_transform = .{
             .translation = .{ 0.0, 2.0, 0.0 },
         },
     });

@@ -250,8 +250,8 @@ const MaterialThumbnailPreview = struct {
 
         const preview_entity = try world.createEntity(.{
             .name = "ThumbnailSphere",
-            .transform = .{
-                .rotation_euler = .{ 0.0, 0.42, 0.0 },
+            .local_transform = .{
+                .rotation = @import("../math/quat.zig").fromEuler(.{ 0.0, 0.42, 0.0 }),
                 .scale = .{ 1.08, 1.08, 1.08 },
             },
             .mesh = .{
@@ -276,9 +276,9 @@ const MaterialThumbnailPreview = struct {
                     },
                 },
             },
-            .transform = .{
+            .local_transform = .{
                 .translation = camera_position,
-                .rotation_euler = lookRotationEuler(camera_position, .{ 0.0, 0.0, 0.0 }),
+                .rotation = @import("../math/quat.zig").fromEuler(lookRotationEuler(camera_position, .{ 0.0, 0.0, 0.0 })),
             },
         });
 
@@ -289,8 +289,8 @@ const MaterialThumbnailPreview = struct {
                 .color = .{ 1.0, 0.98, 0.94 },
                 .intensity = 2.6,
             },
-            .transform = .{
-                .rotation_euler = .{ -0.88, 0.68, 0.0 },
+            .local_transform = .{
+                .rotation = @import("../math/quat.zig").fromEuler(.{ -0.88, 0.68, 0.0 }),
             },
         });
 
@@ -302,7 +302,7 @@ const MaterialThumbnailPreview = struct {
                 .intensity = 5.8,
                 .range = 8.0,
             },
-            .transform = .{
+            .local_transform = .{
                 .translation = .{ 1.7, 1.25, 1.2 },
             },
         });
@@ -736,7 +736,7 @@ pub const Renderer = struct {
                 const gizmo_start = std.time.nanoTimestamp();
                 var gizmo_overlay_stats = mesh_pass_mod.DrawStats{};
                 if (self.selection_history.primarySelection()) |selected_entity_id| {
-                    if (scene.worldTransform(selected_entity_id)) |selected_transform| {
+                    if (scene.worldTransformConst(selected_entity_id)) |selected_transform| {
                         const gizmo_stats = self.gizmo_pass.draw(
                             &self.rhi,
                             frame,
@@ -1091,8 +1091,8 @@ pub const Renderer = struct {
     ) !void {
         for (scene.entities.items) |entity| {
             const parent_id = entity.parent orelse continue;
-            const parent_transform = scene.worldTransform(parent_id) orelse continue;
-            const child_transform = scene.worldTransform(entity.id) orelse entity.transform;
+            const parent_transform = scene.worldTransformConst(parent_id) orelse continue;
+            const child_transform = scene.worldTransformConst(entity.id) orelse entity.local_transform;
             try appendLine(allocator, lines, parent_transform.translation, child_transform.translation);
         }
     }
@@ -1109,7 +1109,7 @@ pub const Renderer = struct {
             if (mesh.vertices.len == 0) {
                 continue;
             }
-            const world_transform = scene.worldTransform(entity.id) orelse entity.transform;
+            const world_transform = scene.worldTransformConst(entity.id) orelse entity.local_transform;
 
             var local_min = mesh.vertices[0].position;
             var local_max = mesh.vertices[0].position;
@@ -1159,7 +1159,7 @@ pub const Renderer = struct {
     fn transformPoint(transform: components.Transform, point: [3]f32) [3]f32 {
         return vec3.add(
             transform.translation,
-            rotateVec3Euler(transform.rotation_euler, vec3.mul(transform.scale, point)),
+            @import("../math/quat.zig").rotateVec3(transform.rotation, vec3.mul(transform.scale, point)),
         );
     }
 
