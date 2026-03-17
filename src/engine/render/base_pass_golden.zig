@@ -85,7 +85,7 @@ pub fn renderScenePpmAlloc(
         else
             [4]f32{ 1.0, 1.0, 1.0, 1.0 };
 
-        const model = math.transformMatrix(scene.worldTransform(entity.id) orelse entity.transform);
+        const model = math.transformMatrix(scene.worldTransformConst(entity.id) orelse entity.local_transform);
         var triangle_index: usize = 0;
         while (triangle_index + 2 < mesh.indices.len) : (triangle_index += 3) {
             const a = mesh.vertices[mesh.indices[triangle_index]];
@@ -275,7 +275,7 @@ fn chooseCamera(scene: *const scene_mod.Scene) CameraState {
     var fallback: ?CameraState = null;
     for (scene.entities.items) |entity| {
         const camera = entity.camera orelse continue;
-        const world_transform = scene.worldTransform(entity.id) orelse entity.transform;
+        const world_transform = scene.worldTransformConst(entity.id) orelse entity.local_transform;
         const candidate: CameraState = .{
             .transform = world_transform,
             .camera = camera,
@@ -302,7 +302,7 @@ fn chooseMainLight(scene: *const scene_mod.Scene) LightState {
         if (light.kind != .directional) {
             continue;
         }
-        const world_transform = scene.worldTransform(entity.id) orelse entity.transform;
+        const world_transform = scene.worldTransformConst(entity.id) orelse entity.local_transform;
         const quat = @import("../math/quat.zig");
         return .{
             .direction = quat.rotateVec3(world_transform.rotation, .{ 0.0, 0.0, -1.0 }),
@@ -327,7 +327,7 @@ fn choosePointLight(scene: *const scene_mod.Scene) PointLightState {
         if (light.kind != .point) {
             continue;
         }
-        const world_transform = scene.worldTransform(entity.id) orelse entity.transform;
+        const world_transform = scene.worldTransformConst(entity.id) orelse entity.local_transform;
         return .{
             .position = world_transform.translation,
             .color = light.color,

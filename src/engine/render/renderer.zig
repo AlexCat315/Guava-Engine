@@ -830,6 +830,69 @@ pub const Renderer = struct {
         return result;
     }
 
+    pub fn downloadFinalFrameAlloc(self: *Renderer, allocator: std.mem.Allocator) ![]u8 {
+        const texture = self.scene_viewport.color_texture orelse return error.TextureNotFound;
+        const width = texture.desc.width;
+        const height = texture.desc.height;
+        const pixel_count = width * height;
+        const byte_count = pixel_count * 4;
+
+        var transfer_buffer = try self.rhi.createTransferBuffer(.{
+            .size = byte_count,
+            .upload = false,
+        });
+        defer self.rhi.releaseTransferBuffer(&transfer_buffer);
+
+        const command_buffer = self.rhi.acquireCommandBuffer() orelse return error.CommandBufferAcquireFailed;
+        const copy_pass = try self.rhi.beginCopyPass(.{
+            .command_buffer = command_buffer,
+            .swapchain_texture = null,
+            .width = width,
+            .height = height,
+        });
+
+        const sdl = @import("../platform/sdl.zig").c;
+        const source = sdl.SDL_GPUTextureRegion{
+            .texture = texture.raw,
+            .mip_level = 0,
+            .layer = 0,
+            .x = 0,
+            .y = 0,
+            .z = 0,
+            .w = width,
+            .h = height,
+            .d = 1,
+        };
+        const destination = sdl.SDL_GPUTextureTransferInfo{
+            .transfer_buffer = transfer_buffer.raw,
+            .offset = 0,
+            .pixels_per_row = width,
+            .rows_per_layer = height,
+        };
+        sdl.SDL_DownloadFromGPUTexture(copy_pass.raw, &source, &destination);
+
+        self.rhi.endCopyPass(copy_pass);
+        if (!self.rhi.submitCommandBuffer(command_buffer)) return error.CommandBufferSubmitFailed;
+        _ = self.rhi.waitForIdle();
+
+        const rgba_data = try allocator.alloc(u8, byte_count);
+        defer allocator.free(rgba_data);
+        try self.rhi.readTransferBufferBytes(&transfer_buffer, rgba_data);
+
+        // Convert RGBA to PPM (RGB)
+        var ppm_data = try allocator.alloc(u8, 128 + pixel_count * 3);
+        var fbs = std.io.fixedBufferStream(ppm_data);
+        const writer = fbs.writer();
+        try writer.print("P6\n{d} {d}\n255\n", .{ width, height });
+        var i: usize = 0;
+        while (i < pixel_count) : (i += 1) {
+            try writer.writeByte(rgba_data[i * 4 + 0]);
+            try writer.writeByte(rgba_data[i * 4 + 1]);
+            try writer.writeByte(rgba_data[i * 4 + 2]);
+        }
+        return try allocator.dupe(u8, ppm_data[0..fbs.pos]);
+    }
+
     fn buildSceneSnapshot(scene: *const scene_mod.Scene) types.SceneSnapshot {
         const summary = scene.summary();
         return .{

@@ -254,6 +254,18 @@ pub const RhiDevice = struct {
         return null;
     }
 
+    pub fn acquireCommandBuffer(self: *RhiDevice) ?*sdl.SDL_GPUCommandBuffer {
+        return sdl.SDL_AcquireGPUCommandBuffer(self.raw);
+    }
+
+    pub fn submitCommandBuffer(_: *RhiDevice, command_buffer: *sdl.SDL_GPUCommandBuffer) bool {
+        return sdl.SDL_SubmitGPUCommandBuffer(command_buffer);
+    }
+
+    pub fn waitForIdle(self: *RhiDevice) bool {
+        return sdl.SDL_WaitForGPUIdle(self.raw);
+    }
+
     pub fn beginFrame(self: *RhiDevice) Error!Frame {
         const command_buffer = sdl.SDL_AcquireGPUCommandBuffer(self.raw) orelse {
             std.log.err("SDL_AcquireGPUCommandBuffer failed: {s}", .{window_mod.lastError()});

@@ -56,6 +56,7 @@ pub fn captureAndSaveSnapshot(allocator: std.mem.Allocator, editor_st: *EditorSt
     try writeManifest(full_dir, timestamp_str, layer_context);
     try exportWorldState(full_dir);
     try exportSelectionState(full_dir, editor_st);
+    try exportRenderState(full_dir, layer_context);
     try exportIntegrityReport(full_dir, layer_context.world, editor_st);
     try exportGapClosureStatus(full_dir);
 
@@ -73,9 +74,10 @@ fn writeManifest(dir: []const u8, timestamp_str: []const u8, layer_context: *eng
     const world = layer_context.world;
 
     const content = try std.fmt.allocPrint(std.heap.page_allocator,
-        \\{{"schema":"guava.ai_debug.manifest","version":1,"captured_at_utc":"{s}","runtime":{{"platform":"macos","graphics_api":"vulkan","window_logical_size":[{},{}],"window_drawable_size":[{},{}],"entity_count":{},"frame_index":{}}}}}
+        \\{{"schema":"guava.ai_debug.manifest","version":1,"captured_at_utc":"{s}","runtime":{{"platform":"macos","graphics_api":"{s}","window_logical_size":[{},{}],"window_drawable_size":[{},{}],"entity_count":{},"frame_index":{}}}}}
     , .{
         timestamp_str,
+        engine.render.graphicsApiName(layer_context.renderer.backendApi()),
         window.logical_width,
         window.logical_height,
         window.drawable_width,
@@ -86,6 +88,41 @@ fn writeManifest(dir: []const u8, timestamp_str: []const u8, layer_context: *eng
     defer std.heap.page_allocator.free(content);
 
     try file.writeAll(content);
+}
+
+fn exportRenderState(dir: []const u8, layer_context: *engine.core.LayerContext) anyerror!void {
+    const report_path = try std.fmt.allocPrint(std.heap.page_allocator, "{s}/frame_report.json", .{dir});
+    defer std.heap.page_allocator.free(report_path);
+    const graph_path = try std.fmt.allocPrint(std.heap.page_allocator, "{s}/render_graph.json", .{dir});
+    defer std.heap.page_allocator.free(graph_path);
+
+    // Copy from dist/reports if they exist, or trigger a write
+    // For now, we assume the engine just wrote them to dist/reports/latest_frame_report.json
+    // and dist/reports/render_graph.json
+    std.fs.cwd().copyFile("dist/reports/latest_frame_report.json", std.fs.cwd(), report_path, .{}) catch {};
+    std.fs.cwd().copyFile("dist/reports/render_graph.json", std.fs.cwd(), graph_path, .{}) catch {};
+
+    const gpu_img_path = try std.fmt.allocPrint(std.heap.page_allocator, "{s}/viewport_gpu.ppm", .{dir});
+    defer std.heap.page_allocator.free(gpu_img_path);
+    const software_img_path = try std.fmt.allocPrint(std.heap.page_allocator, "{s}/viewport_software.ppm", .{dir});
+    defer std.heap.page_allocator.free(software_img_path);
+
+    std.fs.cwd().copyFile("dist/reports/render_comparison/gpu.ppm", std.fs.cwd(), gpu_img_path, .{}) catch {};
+    std.fs.cwd().copyFile("dist/reports/render_comparison/software.ppm", std.fs.cwd(), software_img_path, .{}) catch {};
+
+    const findings_path = try std.fmt.allocPrint(std.heap.page_allocator, "{s}/render_findings.json", .{dir});
+    defer std.heap.page_allocator.free(findings_path);
+    const findings_file = try std.fs.cwd().createFile(findings_path, .{});
+    defer findings_file.close();
+
+    const has_depth = layer_context.renderer.runtimeInfo().has_depth;
+    const content = try std.fmt.allocPrint(std.heap.page_allocator,
+        \\{{"schema":"guava.ai_debug.render_findings","version":1,"issues":[ {s} ]}}
+    , .{
+        if (!has_depth) "\"GPU depth buffer missing\"" else "",
+    });
+    defer std.heap.page_allocator.free(content);
+    try findings_file.writeAll(content);
 }
 
 fn exportWorldState(dir: []const u8) anyerror!void {
