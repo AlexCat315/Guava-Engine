@@ -81,14 +81,14 @@ pub const palettes = struct {
         .active = .{ 0.14, 0.15, 0.16, 0.8 },
     };
     pub const toolbar_active = ButtonPalette{
-        .button = .{ 0.16, 0.59, 0.44, 0.8 },
-        .hovered = .{ 0.20, 0.69, 0.52, 0.9 },
-        .active = .{ 0.12, 0.49, 0.36, 1.0 },
+        .button = .{ 0.20, 0.60, 0.45, 0.15 }, // Subtle background tint
+        .hovered = .{ 0.20, 0.60, 0.45, 0.25 },
+        .active = .{ 0.20, 0.60, 0.45, 0.35 },
     };
     pub const toolbar_accent = ButtonPalette{
-        .button = .{ 0.16, 0.59, 0.44, 0.6 },
-        .hovered = .{ 0.20, 0.69, 0.52, 0.8 },
-        .active = .{ 0.12, 0.49, 0.36, 1.0 },
+        .button = .{ 0.20, 0.60, 0.45, 0.4 },
+        .hovered = .{ 0.25, 0.70, 0.55, 0.6 },
+        .active = .{ 0.15, 0.50, 0.35, 0.8 },
     };
     pub const status_on = ButtonPalette{
         .button = .{ 0.16, 0.59, 0.44, 0.3 },

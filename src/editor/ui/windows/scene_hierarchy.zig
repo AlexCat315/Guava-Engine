@@ -65,51 +65,39 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
     var selection_count_buffer: [32]u8 = undefined;
     const selection_count_text = try std.fmt.bufPrint(&selection_count_buffer, "{d}", .{layer_context.renderer.selectedEntities().len});
     
-    // 采用更精致的层级面板顶部布局
-    engine.ui.ImGui.pushStyleColor(.text, .{ 0.64, 0.68, 0.74, 1.0 });
-    engine.ui.ImGui.text(state.text(.selection_count));
-    engine.ui.ImGui.sameLine();
-    engine.ui.ImGui.popStyleColor(1);
-    engine.ui.ImGui.text(selection_count_text);
-
-    engine.ui.ImGui.dummy(0.0, 6.0);
+    // 采用更精致、低调的筛选区域布局
     const controls_width = engine.ui.ImGui.contentRegionAvail()[0];
-    if (controls_width >= 360.0) {
-        const root_button_width = std.math.clamp(controls_width * 0.22, 96.0, 124.0);
-        const rename_button_width = std.math.clamp(controls_width * 0.18, 84.0, 104.0);
-        engine.ui.ImGui.setNextItemWidth(@max(controls_width - root_button_width - rename_button_width - 16.0, 96.0));
+    const show_full_ui = controls_width >= 280.0;
+
+    if (show_full_ui) {
+        engine.ui.ImGui.setNextItemWidth(controls_width * 0.45);
         _ = engine.ui.ImGui.inputTextWithHint("##scene_filter", state.text(.scene_filter), state.scene_filter_buffer[0..]);
         engine.ui.ImGui.sameLineEx(0.0, 8.0);
-        if (engine.ui.ImGui.buttonEx(state.text(.scene_root), root_button_width, 0.0) and layer_context.renderer.selectedEntities().len > 0) {
+        
+        engine.ui.ImGui.pushStyleColor(.text, .{ 0.55, 0.58, 0.62, 1.0 });
+        engine.ui.ImGui.text(selection_count_text);
+        engine.ui.ImGui.popStyleColor(1);
+        if (engine.ui.ImGui.isItemHovered()) {
+            engine.ui.ImGui.setTooltip(state.text(.selection_count));
+        }
+
+        engine.ui.ImGui.sameLineEx(controls_width - 72.0, 0.0);
+        if (engine.ui.ImGui.buttonEx(state.text(.scene_root), 34.0, 0.0)) {
             try unparentSelection(state, layer_context);
         }
-        engine.ui.ImGui.sameLineEx(0.0, 8.0);
-        if (engine.ui.ImGui.buttonEx(state.text(.rename), rename_button_width, 0.0)) {
+        if (engine.ui.ImGui.isItemHovered()) engine.ui.ImGui.setTooltip(state.text(.scene_root));
+        
+        engine.ui.ImGui.sameLineEx(controls_width - 34.0, 4.0);
+        if (engine.ui.ImGui.buttonEx(state.text(.rename), 34.0, 0.0)) {
             try beginSelectedHierarchyRename(state, layer_context);
         }
+        if (engine.ui.ImGui.isItemHovered()) engine.ui.ImGui.setTooltip(state.text(.rename));
     } else {
         engine.ui.ImGui.setNextItemWidth(-1.0);
         _ = engine.ui.ImGui.inputTextWithHint("##scene_filter", state.text(.scene_filter), state.scene_filter_buffer[0..]);
-        engine.ui.ImGui.dummy(0.0, 8.0);
-        if (controls_width >= 184.0) {
-            const half_width = @max((controls_width - 8.0) * 0.5, 88.0);
-            if (engine.ui.ImGui.buttonEx(state.text(.scene_root), half_width, 0.0) and layer_context.renderer.selectedEntities().len > 0) {
-                try unparentSelection(state, layer_context);
-            }
-            engine.ui.ImGui.sameLineEx(0.0, 8.0);
-            if (engine.ui.ImGui.buttonEx(state.text(.rename), half_width, 0.0)) {
-                try beginSelectedHierarchyRename(state, layer_context);
-            }
-        } else {
-            if (engine.ui.ImGui.buttonEx(state.text(.scene_root), controls_width, 0.0) and layer_context.renderer.selectedEntities().len > 0) {
-                try unparentSelection(state, layer_context);
-            }
-            engine.ui.ImGui.dummy(0.0, 8.0);
-            if (engine.ui.ImGui.buttonEx(state.text(.rename), controls_width, 0.0)) {
-                try beginSelectedHierarchyRename(state, layer_context);
-            }
-        }
     }
+    
+    engine.ui.ImGui.dummy(0.0, 4.0);
     layout.endSectionBody();
     var dropped_root: u64 = 0;
     if (engine.ui.ImGui.acceptDragDropPayloadU64(state_mod.entity_drag_payload, &dropped_root)) {

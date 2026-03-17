@@ -16,13 +16,13 @@ const PlaceActorEntry = struct {
     icon_path: []const u8,
 };
 
-const category_button_height: f32 = 30.0;
-const place_actor_row_height: f32 = 26.0; // Compact list row height (reduced from 58)
-const place_actor_card_rounding: f32 = 4.0;
-const place_actor_list_icon_size: f32 = 16.0;
-const place_actor_card_icon_tint = [4]u8{ 224, 230, 235, 255 };
-const place_actor_card_text_muted = [4]f32{ 0.66, 0.70, 0.77, 1.0 };
-const place_actor_drag_preview_icon_size: f32 = 20.0;
+const category_button_height: f32 = 28.0;
+const place_actor_row_height: f32 = 32.0; 
+const place_actor_card_rounding: f32 = 3.0;
+const place_actor_list_icon_size: f32 = 18.0;
+const place_actor_card_icon_tint = [4]u8{ 210, 215, 220, 255 };
+const place_actor_card_text_muted = [4]f32{ 0.55, 0.58, 0.62, 1.0 };
+const place_actor_drag_preview_icon_size: f32 = 22.0;
 const place_actor_card_idle = ui_icons.ButtonPalette{
     .button = .{ 0.16, 0.17, 0.18, 0.64 },
     .hovered = .{ 0.20, 0.21, 0.22, 0.82 },
@@ -147,16 +147,27 @@ fn categoryTabWidth(available_width: f32, category_count: usize) f32 {
 }
 
 fn drawCategoryButton(state: *EditorState, category: state_mod.PlaceActorCategory, label: []const u8, width: f32) bool {
-    const palette = if (state.place_actor_category == category) ui_icons.palettes.toolbar_active else ui_icons.palettes.toolbar_idle;
+    const active = state.place_actor_category == category;
+    const palette = if (active) ui_icons.palettes.toolbar_active else ui_icons.palettes.toolbar_idle;
+    
     engine.ui.ImGui.pushStyleColor(.button, palette.button);
     engine.ui.ImGui.pushStyleColor(.button_hovered, palette.hovered);
     engine.ui.ImGui.pushStyleColor(.button_active, palette.active);
     engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, ui_icons.regular_icon_button_rounding);
-    defer {
-        engine.ui.ImGui.popStyleVar(1);
-        engine.ui.ImGui.popStyleColor(3);
+    
+    if (active) {
+        engine.ui.ImGui.pushStyleColor(.text, .{ 0.20, 0.60, 0.45, 1.0 });
     }
-    return engine.ui.ImGui.buttonEx(label, width, category_button_height);
+    
+    const clicked = engine.ui.ImGui.buttonEx(label, width, category_button_height);
+    
+    if (active) {
+        engine.ui.ImGui.popStyleColor(1);
+    }
+    
+    engine.ui.ImGui.popStyleVar(1);
+    engine.ui.ImGui.popStyleColor(3);
+    return clicked;
 }
 
 fn triggerPlaceActorEntry(

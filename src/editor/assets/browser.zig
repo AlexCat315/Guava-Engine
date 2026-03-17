@@ -86,11 +86,39 @@ fn drawAssetDragSource(state: *EditorState, entry: AssetEntry, index: usize, pre
 fn drawTabButton(state: *EditorState, tab: BottomPanelTab, label: []const u8, width: f32) bool {
     const active = state.bottom_panel_tab == tab;
     const palette = if (active) ui_icons.palettes.toolbar_active else ui_icons.palettes.toolbar_idle;
+    
     engine.ui.ImGui.pushStyleColor(.button, palette.button);
     engine.ui.ImGui.pushStyleColor(.button_hovered, palette.hovered);
     engine.ui.ImGui.pushStyleColor(.button_active, palette.active);
-    defer engine.ui.ImGui.popStyleColor(3);
-    return engine.ui.ImGui.buttonEx(label, width, 0.0);
+    
+    // 如果是激活状态，文字颜色也使用强调色，增加区分度
+    if (active) {
+        engine.ui.ImGui.pushStyleColor(.text, .{ 0.20, 0.60, 0.45, 1.0 });
+    }
+    
+    const clicked = engine.ui.ImGui.buttonEx(label, width, 0.0);
+    
+    if (active) {
+        engine.ui.ImGui.popStyleColor(1);
+        
+        // 绘制底部的指示条 (Indicator)
+        const pos_min = engine.ui.ImGui.getItemRectMin();
+        const pos_max = engine.ui.ImGui.getItemRectMax();
+        const draw_list = engine.ui.ImGui.getWindowDrawList();
+        
+        const indicator_y = pos_max[1] - 2.0;
+        const indicator_color = engine.ui.ImGui.getColorU32Slot(.text);
+        
+        draw_list.addLine(
+            .{ pos_min[0] + 4.0, indicator_y },
+            .{ pos_max[0] - 4.0, indicator_y },
+            indicator_color,
+            2.0,
+        );
+    }
+    
+    engine.ui.ImGui.popStyleColor(3);
+    return clicked;
 }
 
 fn drawThumbnailPresetButton(state: *EditorState, label: []const u8, size: f32) void {
@@ -112,16 +140,27 @@ fn drawThumbnailPresetButton(state: *EditorState, label: []const u8, size: f32) 
 
 fn drawBreadcrumbButton(label: []const u8, active: bool, width: f32) bool {
     const palette = if (active) ui_icons.palettes.toolbar_active else ui_icons.palettes.toolbar_idle;
+    
     engine.ui.ImGui.pushStyleColor(.button, palette.button);
     engine.ui.ImGui.pushStyleColor(.button_hovered, palette.hovered);
     engine.ui.ImGui.pushStyleColor(.button_active, palette.active);
+    
+    if (active) {
+        engine.ui.ImGui.pushStyleColor(.text, .{ 0.20, 0.60, 0.45, 1.0 });
+    }
+    
     engine.ui.ImGui.pushStyleVarVec2(.frame_padding, ui_icons.compact_icon_button_padding);
     engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, ui_icons.compact_icon_button_rounding);
-    defer {
-        engine.ui.ImGui.popStyleVar(2);
-        engine.ui.ImGui.popStyleColor(3);
+    
+    const clicked = engine.ui.ImGui.buttonEx(label, width, 0.0);
+    
+    if (active) {
+        engine.ui.ImGui.popStyleColor(1);
     }
-    return engine.ui.ImGui.buttonEx(label, width, 0.0);
+    
+    engine.ui.ImGui.popStyleVar(2);
+    engine.ui.ImGui.popStyleColor(3);
+    return clicked;
 }
 
 fn drawProjectPanel(state: *EditorState, layer_context: *engine.core.LayerContext) !void {

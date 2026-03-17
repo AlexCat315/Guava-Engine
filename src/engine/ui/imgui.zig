@@ -199,6 +199,39 @@ pub fn wantsCaptureKeyboard() bool {
     return c.guava_imgui_want_capture_keyboard();
 }
 
+pub fn getItemRectMin() [2]f32 {
+    var x: f32 = 0;
+    var y: f32 = 0;
+    c.guava_imgui_get_item_rect_min(&x, &y);
+    return .{ x, y };
+}
+
+pub fn getItemRectMax() [2]f32 {
+    var x: f32 = 0;
+    var y: f32 = 0;
+    c.guava_imgui_get_item_rect_max(&x, &y);
+    return .{ x, y };
+}
+
+pub fn getColorU32(color: [4]f32) u32 {
+    return c.guava_imgui_get_color_u32(color[0], color[1], color[2], color[3]);
+}
+
+pub fn getColorU32Slot(slot: Col) u32 {
+    return c.guava_imgui_get_color_u32_idx(@intFromEnum(slot));
+}
+
+pub const DrawList = struct {
+    pub fn addLine(self: DrawList, p1: [2]f32, p2: [2]f32, color: u32, thickness: f32) void {
+        _ = self;
+        c.guava_imgui_draw_list_add_line(p1[0], p1[1], p2[0], p2[1], color, thickness);
+    }
+};
+
+pub fn getWindowDrawList() DrawList {
+    return .{};
+}
+
 pub fn beginWindow(name: []const u8) bool {
     return c.guava_imgui_begin_window(name.ptr, name.len);
 }

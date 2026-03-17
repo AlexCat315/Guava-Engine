@@ -12,63 +12,65 @@ const vfx_runtime = @import("../runtime/vfx.zig");
 const layout = @import("../ui/layout.zig");
 
 fn initEditorStyle() void {
-    // 现代深色主题 - 采用更平衡的中性灰阶和专业感十足的翡翠蓝绿
-    const accent_primary = .{ 0.16, 0.59, 0.44, 1.0 };     // 翡翠蓝绿 #289670
-    const accent_hover = .{ 0.20, 0.69, 0.52, 1.0 };       // 稍亮 #33b085
-    const accent_active = .{ 0.12, 0.49, 0.36, 1.0 };      // 稍暗 #1e7d5c
-    const accent_dimmed = .{ 0.16, 0.59, 0.44, 0.4 };
+    // 采用更沉稳、现代的深灰色调，精简强调色应用以减少视觉疲劳
+    const accent_primary = .{ 0.20, 0.60, 0.45, 1.0 };     // 调暗的翡翠绿，更专业
+    const accent_hover = .{ 0.25, 0.70, 0.55, 1.0 };       
+    const accent_active = .{ 0.15, 0.50, 0.35, 1.0 };      
+    const accent_dimmed = .{ 0.20, 0.60, 0.45, 0.25 };     // 更淡的背景高亮
 
-    // 中性灰阶体系 - 提升纵深感和对比度
-    const bg_mid = .{ 0.12, 0.13, 0.14, 1.0 };             // 标准窗口背景
-    const bg_light = .{ 0.16, 0.17, 0.18, 1.0 };           // 弹出窗口/悬浮背景
-    const bg_frame = .{ 0.06, 0.07, 0.08, 1.0 };           // 输入框/子窗口背景
+    // 中性灰阶体系 - 提升纵深感，减少绿色冲击
+    const bg_mid = .{ 0.11, 0.12, 0.13, 1.0 };             // 主背景
+    const bg_light = .{ 0.15, 0.16, 0.17, 1.0 };           // 浮窗背景
+    const bg_frame = .{ 0.08, 0.09, 0.10, 1.0 };           // 控件背景
     
-    const text_main = .{ 0.88, 0.90, 0.92, 1.0 };          // 主文本
-    const text_dim = .{ 0.58, 0.62, 0.68, 1.0 };           // 次要文本
+    const text_main = .{ 0.85, 0.87, 0.90, 1.0 };          
+    const text_dim = .{ 0.55, 0.58, 0.62, 1.0 };           
 
-    // 强调色应用
+    // 强调色精简应用
     engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.header), accent_dimmed);
     engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.header_hovered), accent_hover);
     engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.header_active), accent_primary);
 
+    // Tab 样式优化 - 仅激活状态显示强调色
+    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.tab), .{ 0.11, 0.12, 0.13, 0.0 });
     engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.tab_active), accent_primary);
     engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.tab_hovered), accent_hover);
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.tab_unfocused_active), accent_dimmed);
+    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.tab_unfocused), .{ 0.11, 0.12, 0.13, 0.0 });
+    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.tab_unfocused_active), .{ 0.15, 0.16, 0.17, 1.0 });
 
     engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.slider_grab), accent_primary);
     engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.slider_grab_active), accent_active);
     engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.check_mark), accent_primary);
 
-    // 灰阶背景体系
+    // 按钮样式调整 - 降低默认亮度
+    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.button), .{ 0.18, 0.19, 0.21, 1.0 });
+    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.button_hovered), .{ 0.24, 0.25, 0.28, 1.0 });
+    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.button_active), accent_primary);
+
+    // 背景体系
     engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.text), text_main);
     engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.text_disabled), text_dim);
     engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.window_bg), bg_mid);
     engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.child_bg), bg_frame);
     engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.frame_bg), bg_frame);
     engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.popup_bg), bg_light);
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.modal_window_dim_bg), .{ 0.06, 0.06, 0.08, 0.6 });
+    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.modal_window_dim_bg), .{ 0.05, 0.05, 0.06, 0.7 });
 
-    // 视觉细节优化 - 圆角与边框
+    // 边框与间距优化
     engine.ui.ImGui.setStyleVarFloat(100, 0.0); // WindowBorderSize
     engine.ui.ImGui.setStyleVarFloat(101, 1.0); // FrameBorderSize
-    engine.ui.ImGui.setStyleVarFloat(102, 4.0); // FrameRounding
-
-    // 分割线与高亮
+    engine.ui.ImGui.setStyleVarFloat(102, 3.0); // FrameRounding
+    
+    // 分割线颜色调暗
+    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.separator), .{ 0.15, 0.16, 0.18, 1.0 });
     engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.separator_hovered), accent_hover);
     engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.separator_active), accent_primary);
 
-    // 文本选中背景
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.text_selected_bg), accent_dimmed);
-
-    // 拖拽与停靠高亮
+    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.text_selected_bg), .{ 0.20, 0.60, 0.45, 0.35 });
     engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.drag_drop_target), accent_primary);
     engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.docking_preview), accent_dimmed);
-
-    // 调整大小角标
     engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.resize_grip_hovered), accent_hover);
     engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.resize_grip_active), accent_primary);
-
-    // 键盘导航高亮
     engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.nav_highlight), accent_primary);
 }
 

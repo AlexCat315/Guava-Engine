@@ -163,6 +163,7 @@ std::string find_bundled_ui_font_path() {
 std::string find_cjk_font_path() {
 #if defined(__APPLE__)
   return first_existing_path({
+      "/System/Library/Fonts/PingFang.ttc",
       "/System/Library/Fonts/Hiragino Sans GB.ttc",
       "/System/Library/Fonts/STHeiti Light.ttc",
       "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
@@ -282,13 +283,13 @@ void build_default_dock_layout() {
 
   ImGuiID dock_main = g_dockspace_id;
 
-  // Left panel - Place Actors (compressed from 8% to 12%)
+  // Left panel - Place Actors (expanded from 12% to 18% for better readability)
   ImGuiID dock_left = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Left,
-                                                  0.12f, nullptr, &dock_main);
+                                                  0.18f, nullptr, &dock_main);
 
-  // Right panel - Scene + Details
+  // Right panel - Scene + Details (adjusted to 26% for better balance)
   ImGuiID dock_right = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Right,
-                                                   0.28f, nullptr, &dock_main);
+                                                   0.26f, nullptr, &dock_main);
   ImGuiID dock_scene = ImGui::DockBuilderSplitNode(dock_right, ImGuiDir_Up,
                                                    0.50f, nullptr, &dock_right);
   ImGuiID dock_details = dock_right;
@@ -465,12 +466,12 @@ void configure_fonts(float content_scale) {
   io.Fonts->Flags |= ImFontAtlasFlags_NoPowerOfTwoHeight;
 
   const float scale = content_scale > 0.0f ? content_scale : 1.0f;
-  const float font_size = 16.0f * scale;
+  const float font_size = 15.0f * scale; // 从 16px 降至 15px，提升紧凑感
 
   ImFontConfig base_cfg = {};
-  base_cfg.OversampleH = 2;
+  base_cfg.OversampleH = 3; // 提升采样质量
   base_cfg.OversampleV = 1;
-  base_cfg.RasterizerMultiply = 1.1f;
+  base_cfg.RasterizerMultiply = 1.0f; // 移除 1.1x 的人工加粗，使中文字体更清爽
   base_cfg.FontNo = 0;
 
   const std::string bundled_ui_font_path = find_bundled_ui_font_path();
@@ -748,6 +749,54 @@ extern "C" bool guava_imgui_want_capture_keyboard(void) {
     return false;
   }
   return ImGui::GetIO().WantCaptureKeyboard;
+}
+
+extern "C" void guava_imgui_get_item_rect_min(float *x, float *y) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  const ImVec2 pos = ImGui::GetItemRectMin();
+  if (x)
+    *x = pos.x;
+  if (y)
+    *y = pos.y;
+}
+
+extern "C" void guava_imgui_get_item_rect_max(float *x, float *y) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  const ImVec2 pos = ImGui::GetItemRectMax();
+  if (x)
+    *x = pos.x;
+  if (y)
+    *y = pos.y;
+}
+
+extern "C" void guava_imgui_draw_list_add_line(float p1_x, float p1_y,
+                                               float p2_x, float p2_y,
+                                               uint32_t color,
+                                               float thickness) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::GetWindowDrawList()->AddLine(ImVec2(p1_x, p1_y), ImVec2(p2_x, p2_y),
+                                      color, thickness);
+}
+
+extern "C" uint32_t guava_imgui_get_color_u32(float r, float g, float b,
+                                              float a) {
+  if (!g_imgui_initialized) {
+    return 0;
+  }
+  return ImGui::GetColorU32(ImVec4(r, g, b, a));
+}
+
+extern "C" uint32_t guava_imgui_get_color_u32_idx(uint32_t color_idx) {
+  if (!g_imgui_initialized) {
+    return 0;
+  }
+  return ImGui::GetColorU32(static_cast<ImGuiCol>(color_idx));
 }
 
 extern "C" bool guava_imgui_begin_window(const char *name, size_t name_len) {

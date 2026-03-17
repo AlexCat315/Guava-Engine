@@ -99,6 +99,13 @@ void guava_imgui_render(SDL_GPUCommandBuffer *command_buffer,
 bool guava_imgui_want_capture_mouse(void);
 bool guava_imgui_want_capture_keyboard(void);
 
+void guava_imgui_get_item_rect_min(float *x, float *y);
+void guava_imgui_get_item_rect_max(float *x, float *y);
+void guava_imgui_draw_list_add_line(float p1_x, float p1_y, float p2_x, float p2_y,
+                                    uint32_t color, float thickness);
+uint32_t guava_imgui_get_color_u32(float r, float g, float b, float a);
+uint32_t guava_imgui_get_color_u32_idx(uint32_t color_idx);
+
 bool guava_imgui_begin_window(const char *name, size_t name_len);
 bool guava_imgui_begin_window_flags(const char *name, size_t name_len,
                                     uint32_t flags);
