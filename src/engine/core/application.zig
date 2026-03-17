@@ -132,6 +132,9 @@ pub const Application = struct {
             try self.pumpEvents();
             imgui_mod.newFrame();
 
+            // P1: Update hierarchy transforms and bounds once per frame
+            self.world.updateHierarchy();
+
             const delta_seconds = @as(f32, @floatFromInt(self.config.frame_delay_ms)) / 1000.0;
             var layer_context = self.makeLayerContext(frames_rendered, delta_seconds);
             const should_advance_simulation = self.playback_controller.shouldAdvance();

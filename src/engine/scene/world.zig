@@ -162,16 +162,95 @@ pub const World = struct {
     pub fn markDirty(self: *World, id: EntityId) void {
         const entity = self.getEntity(id) orelse return;
         if (entity.dirty) return;
+
         entity.dirty = true;
         for (entity.children.items) |child_id| {
             self.markDirty(child_id);
         }
     }
 
-    pub fn setLocalTransform(self: *World, id: EntityId, local_transform: components.Transform) void {
+    pub fn updateHierarchy(self: *World) void {
+        // First pass: update world transforms
+        for (self.entities.items) |*entity| {
+            if (entity.parent == null) {
+                self.updateTransformRecursive(entity.id, components.Transform.identity());
+            }
+        }
+
+        // Second pass: update bounds (bottom-up)
+        // For simplicity, we can do it in a separate pass or combine. 
+        // Bottom-up is better for bounds.
+        for (self.entities.items) |*entity| {
+            _ = self.updateBoundsRecursive(entity.id);
+        }
+    }
+
+    fn updateTransformRecursive(self: *World, id: EntityId, parent_world: components.Transform) void {
         const entity = self.getEntity(id) orelse return;
-        entity.local_transform = local_transform;
+        if (entity.dirty) {
+            const mat4 = @import("../math/mat4.zig");
+            const quat = @import("../math/quat.zig");
+
+            // Combine parent and local
+            const parent_mat = mat4.transformMatrix(parent_world);
+            const local_mat = mat4.transformMatrix(entity.local_transform);
+            const world_mat = mat4.mul(parent_mat, local_mat);
+
+            // For now, we store it back in TRS. 
+            // In a real engine, we'd store the matrix and decompose only if needed.
+            // But we'll follow the plan's TRS requirement.
+            entity.world_transform_cache.translation = .{ world_mat[12], world_mat[13], world_mat[14] };
+            
+            // Simplified decomposition for now - assuming no skew
+            entity.world_transform_cache.scale = .{
+                vec3.length(.{ world_mat[0], world_mat[4], world_mat[8] }),
+                vec3.length(.{ world_mat[1], world_mat[5], world_mat[9] }),
+                vec3.length(.{ world_mat[2], world_mat[6], world_mat[10] }),
+            };
+            
+            // Rotation is trickier to extract from matrix, but for now we'll just 
+            // accumulate quats (which is faster and more precise for hierarchies)
+            entity.world_transform_cache.rotation = quat.mul(parent_world.rotation, entity.local_transform.rotation);
+            
+            entity.dirty = false;
+        }
+
+        for (entity.children.items) |child_id| {
+            self.updateTransformRecursive(child_id, entity.world_transform_cache);
+        }
+    }
+
+    fn updateBoundsRecursive(self: *World, id: EntityId) AABB {
+        const entity = self.getEntity(id) orelse return AABB.empty();
+        
+        var bounds = AABB.empty();
+        
+        // Include own mesh bounds
+        if (entity.mesh) |mesh_comp| {
+            if (mesh_comp.handle) |handle| {
+                if (self.resources.mesh(handle)) |mesh_res| {
+                    bounds.expandAABB(mesh_res.local_bounds.transformed(entity.world_transform_cache));
+                }
+            }
+        }
+
+        // Include children bounds
+        for (entity.children.items) |child_id| {
+            const child_bounds = self.updateBoundsRecursive(child_id);
+            if (child_bounds.isValid()) {
+                bounds.expandAABB(child_bounds);
+            }
+        }
+
+        entity.world_bounds_cache = if (bounds.isValid()) bounds else null;
+        return bounds;
+    }
+
+    pub fn setEntityLocalTransform(self: *World, id: EntityId, transform: components.Transform) bool {
+        const entity = self.getEntity(id) orelse return false;
+        entity.local_transform = transform;
         self.markDirty(id);
+        return true;
     }
 
     pub fn localTransform(self: *const World, id: EntityId) components.Transform {
@@ -179,70 +258,27 @@ pub const World = struct {
         return entity.local_transform;
     }
 
-    pub fn updateTransforms(self: *World) void {
-        for (self.entities.items) |*entity| {
-            if (entity.parent == null and entity.dirty) {
-                self.updateTransformRecursive(entity.id, null);
-            }
-        }
-    }
-
-    fn updateTransformRecursive(self: *World, id: EntityId, parent_world: ?components.Transform) void {
-        const entity = self.getEntity(id) orelse return;
-
-        const new_world = if (parent_world) |pw| composeTransform(pw, entity.local_transform) else entity.local_transform;
-        entity.world_transform_cache = new_world;
-        entity.dirty = false;
-
-        for (entity.children.items) |child_id| {
-            self.updateTransformRecursive(child_id, new_world);
-        }
-    }
-
     pub fn worldTransform(self: *World, id: EntityId) ?components.Transform {
         const entity = self.getEntity(id) orelse return null;
-        if (!entity.dirty) {
-            return entity.world_transform_cache;
+        if (entity.dirty) {
+            self.updateHierarchy();
         }
-
-        const parent_world = if (entity.parent) |parent_id| self.worldTransform(parent_id) else null;
-        const new_world = if (parent_world) |pw| composeTransform(pw, entity.local_transform) else entity.local_transform;
-
-        // Re-fetch entity because worldTransform(parent_id) might have reallocated entities array
-        const entity_ref = self.getEntity(id).?;
-        entity_ref.world_transform_cache = new_world;
-        entity_ref.dirty = false;
-        return new_world;
+        return entity.world_transform_cache;
     }
 
     pub fn worldTransformConst(self: *const World, id: EntityId) ?components.Transform {
         const entity = self.getEntityConst(id) orelse return null;
-        if (!entity.dirty) {
-            return entity.world_transform_cache;
-        }
-        return self.worldTransformRecursive(id, 0);
+        // In const context we can't update, so we just return the cache
+        // If it's dirty, the caller should have called updateHierarchy before.
+        return entity.world_transform_cache;
     }
 
     pub fn worldBounds(self: *World, id: EntityId) ?AABB {
         const entity = self.getEntity(id) orelse return null;
-        if (!entity.dirty and entity.world_bounds_cache != null) {
-            return entity.world_bounds_cache.?;
+        if (entity.dirty) {
+            self.updateHierarchy();
         }
-
-        const world_transform_val = self.worldTransform(id) orelse return null;
-        var bounds: ?AABB = null;
-
-        const re_entity = self.getEntity(id).?;
-        if (re_entity.mesh) |mesh_component| {
-            if (mesh_component.handle) |handle| {
-                if (self.resources.mesh(handle)) |mesh| {
-                    bounds = mesh.local_bounds.transformed(world_transform_val);
-                }
-            }
-        }
-
-        re_entity.world_bounds_cache = bounds;
-        return bounds;
+        return entity.world_bounds_cache;
     }
 
     pub fn setEntityWorldTransform(self: *World, id: EntityId, world_transform: components.Transform) bool {
@@ -715,16 +751,8 @@ pub const World = struct {
     }
 
     fn worldTransformRecursive(self: *const World, id: EntityId, depth: usize) ?components.Transform {
-        if (depth > self.entities.items.len) {
-            return null;
-        }
-
-        const entity = self.getEntityConst(id) orelse return null;
-        if (entity.parent) |parent_id| {
-            const parent_world = self.worldTransformRecursive(parent_id, depth + 1) orelse return null;
-            return composeTransform(parent_world, entity.local_transform);
-        }
-        return entity.local_transform;
+        _ = depth;
+        return self.worldTransformConst(id);
     }
 
     fn isDescendantOf(self: *const World, candidate_id: EntityId, ancestor_id: EntityId) bool {
