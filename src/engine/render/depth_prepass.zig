@@ -42,7 +42,7 @@ pub const DepthPrepass = struct {
         }
 
         device.bindGraphicsPipeline(pass, &self.pipeline.?);
-        for (prepared_scene.items) |item| {
+        for (prepared_scene.opaque_meshes) |item| {
             var vertex_uniforms = mesh_pass_mod.VertexUniforms{
                 .view_projection = prepared_scene.view_projection,
                 .model = item.model,

@@ -117,7 +117,7 @@ pub const IdPass = struct {
         }
 
         device.bindGraphicsPipeline(pass, &self.pipeline.?);
-        for (prepared_scene.items) |item| {
+        for (prepared_scene.opaque_meshes) |item| {
             if (!item.pickable) {
                 continue;
             }

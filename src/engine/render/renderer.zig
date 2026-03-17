@@ -15,6 +15,7 @@ const imgui_mod = @import("../ui/imgui.zig");
 const window_mod = @import("../platform/window.zig");
 const graph_mod = @import("render_graph.zig");
 const mesh_pass_mod = @import("mesh_pass.zig");
+const scene_extraction = @import("scene_extraction.zig");
 const rhi_mod = @import("../rhi/device.zig");
 const rhi_types = @import("../rhi/types.zig");
 const components = @import("../scene/components.zig");
@@ -376,6 +377,8 @@ pub const Renderer = struct {
     graph: graph_mod.RenderGraph,
     scene_cache: mesh_pass_mod.MeshSceneCache,
     thumbnail_scene_cache: mesh_pass_mod.MeshSceneCache,
+    render_scene: scene_extraction.RenderScene,
+    thumbnail_render_scene: scene_extraction.RenderScene,
     id_pass: id_pass_mod.IdPass,
     depth_prepass: depth_prepass_mod.DepthPrepass,
     base_pass: base_pass_mod.BasePass,
@@ -415,6 +418,8 @@ pub const Renderer = struct {
             .graph = try graph_mod.RenderGraph.initDefault3D(allocator),
             .scene_cache = undefined,
             .thumbnail_scene_cache = undefined,
+            .render_scene = scene_extraction.RenderScene.init(allocator),
+            .thumbnail_render_scene = scene_extraction.RenderScene.init(allocator),
             .id_pass = undefined,
             .depth_prepass = undefined,
             .base_pass = undefined,
@@ -472,6 +477,8 @@ pub const Renderer = struct {
         self.depth_prepass.deinit(&self.rhi);
         self.id_pass.deinit(&self.rhi);
         self.scene_cache.deinit(&self.rhi);
+        self.thumbnail_render_scene.deinit();
+        self.render_scene.deinit();
         self.rhi.deinit();
         self.graph.deinit();
     }
@@ -633,7 +640,19 @@ pub const Renderer = struct {
             const render_width = if (viewport_active) self.scene_viewport.width else frame.width;
             const render_height = if (viewport_active) self.scene_viewport.height else frame.height;
 
-            var prepared_scene = try self.scene_cache.prepareScene(&self.rhi, scene, render_width, render_height);
+            try scene_extraction.extractScene(
+                scene,
+                &self.render_scene,
+                self.selection_history.primarySelection(),
+                self.selection_history.currentSelection(),
+            );
+
+            var prepared_scene = try self.scene_cache.prepareScene(
+                &self.rhi,
+                scene,
+                render_width,
+                render_height,
+            );
             defer prepared_scene.deinit();
 
             if (!self.selection_seeded) {

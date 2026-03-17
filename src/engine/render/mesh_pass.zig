@@ -5,10 +5,12 @@ const mesh_mod = @import("../assets/mesh_resource.zig");
 const texture_mod = @import("../assets/texture_resource.zig");
 const math = @import("../math/mat4.zig");
 const vec3 = @import("../math/vec3.zig");
+const quat = @import("../math/quat.zig");
 const rhi_mod = @import("../rhi/device.zig");
 const rhi_types = @import("../rhi/types.zig");
 const components = @import("../scene/components.zig");
 const scene_mod = @import("../scene/scene.zig");
+const scene_extraction = @import("scene_extraction.zig");
 
 pub const DrawStats = struct {
     draw_calls: usize = 0,
@@ -46,19 +48,50 @@ pub const DrawItem = struct {
     model: [16]f32,
 };
 
+pub const CameraBlock = struct {
+    transform: components.Transform,
+    camera: components.Camera,
+    is_primary: bool,
+};
+
+pub const DirectionalLightBlock = struct {
+    direction: [3]f32,
+    color: [3]f32,
+    intensity: f32,
+};
+
+pub const PointLightBlock = struct {
+    position: [3]f32,
+    color: [3]f32,
+    intensity: f32,
+    range: f32,
+};
+
+pub const LightBlock = struct {
+    directional_lights: []DirectionalLightBlock,
+    point_lights: []PointLightBlock,
+};
+
+pub const DebugBlock = struct {
+    show_grid: bool = false,
+    show_bones: bool = false,
+    show_collision: bool = false,
+};
+
 pub const PreparedScene = struct {
     allocator: std.mem.Allocator,
+    camera: CameraBlock,
     view_projection: [16]f32,
     camera_world_position: [4]f32,
-    light_direction: [4]f32,
-    light_color_intensity: [4]f32,
-    point_light_position_radius: [4]f32,
-    point_light_color_intensity: [4]f32,
+    lights: LightBlock,
     ambient_color: [4]f32,
-    items: []DrawItem,
+    opaque_meshes: []DrawItem,
+    transparent_meshes: []DrawItem,
+    debug: DebugBlock,
 
     pub fn deinit(self: *PreparedScene) void {
-        self.allocator.free(self.items);
+        self.allocator.free(self.opaque_meshes);
+        self.allocator.free(self.transparent_meshes);
         self.* = undefined;
     }
 };
@@ -175,83 +208,99 @@ pub const MeshSceneCache = struct {
         render_width: u32,
         render_height: u32,
     ) !PreparedScene {
-        const camera_state = chooseCamera(scene);
+        const camera_block = chooseCameraBlock(scene);
         const aspect_ratio = if (render_height == 0)
             1.0
         else
             @as(f32, @floatFromInt(render_width)) / @as(f32, @floatFromInt(render_height));
         const view_projection = math.mul(
-            math.projectionForCamera(camera_state.camera, aspect_ratio),
-            math.viewMatrix(camera_state.transform),
+            math.projectionForCamera(camera_block.camera, aspect_ratio),
+            math.viewMatrix(camera_block.transform),
         );
-        const main_light = chooseMainLight(scene);
-        const point_light = choosePointLight(scene);
 
-        var items = std.ArrayList(DrawItem).empty;
-        defer items.deinit(self.allocator);
+        var directional_lights = std.ArrayList(DirectionalLightBlock).empty;
+        defer directional_lights.deinit(self.allocator);
+        var point_lights = std.ArrayList(PointLightBlock).empty;
+        defer point_lights.deinit(self.allocator);
 
         for (scene.entities.items) |entity| {
-            if (!entity.visible) {
-                continue;
+            if (!entity.visible) continue;
+            const light_component = entity.light orelse continue;
+            const world_transform = scene.worldTransformConst(entity.id) orelse entity.local_transform;
+
+            switch (light_component.kind) {
+                .directional => {
+                    try directional_lights.append(self.allocator, .{
+                        .direction = quat.rotateVec3(world_transform.rotation, .{ 0.0, 0.0, -1.0 }),
+                        .color = light_component.color,
+                        .intensity = light_component.intensity,
+                    });
+                },
+                .point => {
+                    try point_lights.append(self.allocator, .{
+                        .position = world_transform.translation,
+                        .color = light_component.color,
+                        .intensity = light_component.intensity,
+                        .range = light_component.range,
+                    });
+                },
+                .spot => {},
             }
+        }
+
+        var opaque_meshes = std.ArrayList(DrawItem).empty;
+        defer opaque_meshes.deinit(self.allocator);
+        var transparent_meshes = std.ArrayList(DrawItem).empty;
+        defer transparent_meshes.deinit(self.allocator);
+
+        for (scene.entities.items) |entity| {
+            if (!entity.visible or entity.editor_only) continue;
             const mesh_component = entity.mesh orelse continue;
             const mesh_handle = mesh_component.handle orelse continue;
             const mesh = scene.resources.mesh(mesh_handle) orelse continue;
-            if (mesh.primitive_type != .triangle_list) {
-                continue;
-            }
+            if (mesh.primitive_type != .triangle_list) continue;
             const world_transform = scene.worldTransformConst(entity.id) orelse entity.local_transform;
 
             const gpu_mesh = try self.ensureMesh(device, mesh_handle, mesh);
             const material_state = try self.resolveMaterial(device, scene, entity.material);
 
-            try items.append(self.allocator, .{
+            const draw_item = DrawItem{
                 .entity_id = entity.id,
-                .pickable = !entity.editor_only,
+                .pickable = true,
                 .vertex_buffer = gpu_mesh.vertex_buffer,
                 .index_buffer = gpu_mesh.index_buffer,
                 .index_count = gpu_mesh.index_count,
                 .bind_group = material_state.bind_group,
                 .base_color_factor = material_state.base_color_factor,
                 .model = math.transformMatrix(world_transform),
-            });
+            };
+
+            const is_transparent = if (entity.material) |mat| mat.base_color_factor[3] < 1.0 else false;
+            if (is_transparent) {
+                try transparent_meshes.append(self.allocator, draw_item);
+            } else {
+                try opaque_meshes.append(self.allocator, draw_item);
+            }
         }
 
         return .{
             .allocator = self.allocator,
+            .camera = camera_block,
             .view_projection = view_projection,
             .camera_world_position = .{
-                camera_state.transform.translation[0],
-                camera_state.transform.translation[1],
-                camera_state.transform.translation[2],
+                camera_block.transform.translation[0],
+                camera_block.transform.translation[1],
+                camera_block.transform.translation[2],
                 1.0,
             },
-            .light_direction = .{
-                main_light.direction[0],
-                main_light.direction[1],
-                main_light.direction[2],
-                0.0,
-            },
-            .light_color_intensity = .{
-                main_light.color[0],
-                main_light.color[1],
-                main_light.color[2],
-                main_light.intensity,
-            },
-            .point_light_position_radius = .{
-                point_light.position[0],
-                point_light.position[1],
-                point_light.position[2],
-                point_light.range,
-            },
-            .point_light_color_intensity = .{
-                point_light.color[0],
-                point_light.color[1],
-                point_light.color[2],
-                point_light.intensity,
+            .lights = .{
+                .directional_lights = try directional_lights.toOwnedSlice(self.allocator),
+                .point_lights = try point_lights.toOwnedSlice(self.allocator),
             },
             .ambient_color = .{ 0.14, 0.15, 0.18, 1.0 },
-            .items = try items.toOwnedSlice(self.allocator),
+            .opaque_meshes = try opaque_meshes.toOwnedSlice(self.allocator),
+            .transparent_meshes = try transparent_meshes.toOwnedSlice(self.allocator),
+            .debug = .{},
         };
     }
 
@@ -435,81 +484,34 @@ pub const MeshSceneCache = struct {
     }
 };
 
-fn chooseCamera(scene: *const scene_mod.Scene) CameraState {
-    var fallback: ?CameraState = null;
+fn chooseCameraBlock(scene: *const scene_mod.Scene) CameraBlock {
+    for (scene.entities.items) |entity| {
+        const camera = entity.camera orelse continue;
+        if (camera.is_primary) {
+            const world_transform = scene.worldTransformConst(entity.id) orelse entity.local_transform;
+            return .{
+                .transform = world_transform,
+                .camera = camera,
+                .is_primary = true,
+            };
+        }
+    }
 
     for (scene.entities.items) |entity| {
         const camera = entity.camera orelse continue;
         const world_transform = scene.worldTransformConst(entity.id) orelse entity.local_transform;
-        const candidate: CameraState = .{
+        return .{
             .transform = world_transform,
             .camera = camera,
+            .is_primary = false,
         };
-
-        if (camera.is_primary) {
-            return candidate;
-        }
-        if (fallback == null) {
-            fallback = candidate;
-        }
     }
 
-    return fallback orelse .{
+    return .{
         .transform = .{
             .translation = .{ 0.0, 1.5, 5.0 },
         },
         .camera = .{ .is_primary = true },
-    };
-}
-
-fn chooseMainLight(scene: *const scene_mod.Scene) LightState {
-    for (scene.entities.items) |entity| {
-        if (!entity.visible) {
-            continue;
-        }
-        const light = entity.light orelse continue;
-        if (light.kind != .directional) {
-            continue;
-        }
-        const world_transform = scene.worldTransformConst(entity.id) orelse entity.local_transform;
-
-        return .{
-            .direction = @import("../math/quat.zig").rotateVec3(world_transform.rotation, .{ 0.0, 0.0, -1.0 }),
-            .color = light.color,
-            .intensity = light.intensity,
-        };
-    }
-
-    return .{
-        .direction = vec3.normalize(.{ 0.3, -0.9, -0.2 }),
-        .color = .{ 1.0, 0.98, 0.92 },
-        .intensity = 1.6,
-    };
-}
-
-fn choosePointLight(scene: *const scene_mod.Scene) PointLightState {
-    for (scene.entities.items) |entity| {
-        if (!entity.visible) {
-            continue;
-        }
-        const light = entity.light orelse continue;
-        if (light.kind != .point) {
-            continue;
-        }
-        const world_transform = scene.worldTransformConst(entity.id) orelse entity.local_transform;
-
-        return .{
-            .position = world_transform.translation,
-            .color = light.color,
-            .intensity = light.intensity,
-            .range = light.range,
-        };
-    }
-
-    return .{
-        .position = .{ 0.0, 0.0, 0.0 },
-        .color = .{ 1.0, 0.95, 0.9 },
-        .intensity = 0.0,
-        .range = 1.0,
+        .is_primary = true,
     };
 }

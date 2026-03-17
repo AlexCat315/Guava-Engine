@@ -4,6 +4,7 @@ const mesh_pass_mod = @import("mesh_pass.zig");
 const rhi_mod = @import("../rhi/device.zig");
 const shader_support = @import("shader_support.zig");
 const render_types = @import("types.zig");
+const vec3 = @import("../math/vec3.zig");
 
 pub const BasePass = struct {
     fill_pipeline: ?rhi_mod.GraphicsPipeline = null,
@@ -51,7 +52,18 @@ pub const BasePass = struct {
             .textured, .unlit => &self.fill_pipeline.?,
         };
         device.bindGraphicsPipeline(pass, pipeline);
-        for (prepared_scene.items) |item| {
+
+        const main_light = if (prepared_scene.lights.directional_lights.len > 0)
+            prepared_scene.lights.directional_lights[0]
+        else
+            mesh_pass_mod.DirectionalLightBlock{ .direction = vec3.normalize(.{ 0.3, -0.9, -0.2 }), .color = .{ 1.0, 0.98, 0.92 }, .intensity = 1.6 };
+
+        const point_light = if (prepared_scene.lights.point_lights.len > 0)
+            prepared_scene.lights.point_lights[0]
+        else
+            mesh_pass_mod.PointLightBlock{ .position = .{ 0.0, 0.0, 0.0 }, .color = .{ 1.0, 0.95, 0.9 }, .intensity = 0.0, .range = 1.0 };
+
+        for (prepared_scene.opaque_meshes) |item| {
             var vertex_uniforms = mesh_pass_mod.VertexUniforms{
                 .view_projection = prepared_scene.view_projection,
                 .model = item.model,
@@ -59,10 +71,10 @@ pub const BasePass = struct {
             var fragment_uniforms = mesh_pass_mod.BasePassUniforms{
                 .base_color_factor = item.base_color_factor,
                 .camera_world_position = prepared_scene.camera_world_position,
-                .light_direction = prepared_scene.light_direction,
-                .light_color_intensity = prepared_scene.light_color_intensity,
-                .point_light_position_radius = prepared_scene.point_light_position_radius,
-                .point_light_color_intensity = prepared_scene.point_light_color_intensity,
+                .light_direction = .{ main_light.direction[0], main_light.direction[1], main_light.direction[2], 0.0 },
+                .light_color_intensity = .{ main_light.color[0], main_light.color[1], main_light.color[2], main_light.intensity },
+                .point_light_position_radius = .{ point_light.position[0], point_light.position[1], point_light.position[2], point_light.range },
+                .point_light_color_intensity = .{ point_light.color[0], point_light.color[1], point_light.color[2], point_light.intensity },
                 .ambient_color = prepared_scene.ambient_color,
             };
             if (viewport_state.render_mode == .unlit) {

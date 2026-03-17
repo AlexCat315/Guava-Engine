@@ -15,22 +15,21 @@ pub const RenderLight = struct {
 };
 
 pub const RenderLightArray = struct {
-    directional: std.ArrayList(RenderLight),
-    point: std.ArrayList(RenderLight),
-    spot: std.ArrayList(RenderLight),
+    allocator: std.mem.Allocator,
+    directional: std.ArrayList(RenderLight) = .empty,
+    point: std.ArrayList(RenderLight) = .empty,
+    spot: std.ArrayList(RenderLight) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) RenderLightArray {
         return .{
-            .directional = std.ArrayList(RenderLight).init(allocator),
-            .point = std.ArrayList(RenderLight).init(allocator),
-            .spot = std.ArrayList(RenderLight).init(allocator),
+            .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *RenderLightArray) void {
-        self.directional.deinit();
-        self.point.deinit();
-        self.spot.deinit();
+        self.directional.deinit(self.allocator);
+        self.point.deinit(self.allocator);
+        self.spot.deinit(self.allocator);
     }
 
     pub fn clear(self: *RenderLightArray) void {
@@ -42,11 +41,11 @@ pub const RenderLightArray = struct {
     pub fn add(self: *RenderLightArray, render_light: RenderLight) !void {
         const kind = render_light.light.kind;
         if (kind == .directional) {
-            try self.directional.append(render_light);
+            try self.directional.append(self.allocator, render_light);
         } else if (kind == .point) {
-            try self.point.append(render_light);
+            try self.point.append(self.allocator, render_light);
         } else if (kind == .spot) {
-            try self.spot.append(render_light);
+            try self.spot.append(self.allocator, render_light);
         }
     }
 
@@ -55,19 +54,12 @@ pub const RenderLightArray = struct {
     }
 };
 
-pub const AlphaMode = enum {
-    opaque,
-    masked,
-    transparent,
-};
-
 pub const RenderMesh = struct {
     entity_id: scene_mod.EntityId,
     transform: components.Transform,
     mesh: components.Mesh,
     material: ?components.Material,
     selected: bool = false,
-    alpha_mode: AlphaMode = .opaque,
 };
 
 pub const RenderVfx = struct {
@@ -85,29 +77,25 @@ pub const RenderEntity = struct {
 
 pub const RenderScene = struct {
     allocator: std.mem.Allocator,
-    entities: std.ArrayList(RenderEntity),
-    cameras: std.ArrayList(RenderCamera),
+    entities: std.ArrayList(RenderEntity) = .empty,
+    cameras: std.ArrayList(RenderCamera) = .empty,
     lights: RenderLightArray,
-    meshes: std.ArrayList(RenderMesh),
-    vfxs: std.ArrayList(RenderVfx),
+    meshes: std.ArrayList(RenderMesh) = .empty,
+    vfxs: std.ArrayList(RenderVfx) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) RenderScene {
         return .{
             .allocator = allocator,
-            .entities = std.ArrayList(RenderEntity).init(allocator),
-            .cameras = std.ArrayList(RenderCamera).init(allocator),
             .lights = RenderLightArray.init(allocator),
-            .meshes = std.ArrayList(RenderMesh).init(allocator),
-            .vfxs = std.ArrayList(RenderVfx).init(allocator),
         };
     }
 
     pub fn deinit(self: *RenderScene) void {
-        self.entities.deinit();
-        self.cameras.deinit();
+        self.entities.deinit(self.allocator);
+        self.cameras.deinit(self.allocator);
         self.lights.deinit();
-        self.meshes.deinit();
-        self.vfxs.deinit();
+        self.meshes.deinit(self.allocator);
+        self.vfxs.deinit(self.allocator);
     }
 
     pub fn clear(self: *RenderScene) void {
@@ -130,7 +118,7 @@ pub fn extractScene(
     for (scene.entities.items) |entity| {
         const world_transform = scene.worldTransformConst(entity.id) orelse entity.local_transform;
 
-        try render_scene.entities.append(.{
+        try render_scene.entities.append(render_scene.allocator, .{
             .id = entity.id,
             .parent = entity.parent,
             .world_transform = world_transform,
@@ -143,7 +131,7 @@ pub fn extractScene(
         const is_selected = isEntitySelected(entity.id, primary_selection, selection_list);
 
         if (entity.camera) |camera| {
-            try render_scene.cameras.append(.{
+            try render_scene.cameras.append(render_scene.allocator, .{
                 .entity_id = entity.id,
                 .transform = world_transform,
                 .camera = camera,
@@ -159,19 +147,17 @@ pub fn extractScene(
         }
 
         if (entity.mesh) |mesh| {
-            const alpha_mode = determineAlphaMode(entity.material);
-            try render_scene.meshes.append(.{
+            try render_scene.meshes.append(render_scene.allocator, .{
                 .entity_id = entity.id,
                 .transform = world_transform,
                 .mesh = mesh,
                 .material = entity.material,
                 .selected = is_selected,
-                .alpha_mode = alpha_mode,
             });
         }
 
         if (entity.vfx) |vfx| {
-            try render_scene.vfxs.append(.{
+            try render_scene.vfxs.append(render_scene.allocator, .{
                 .entity_id = entity.id,
                 .transform = world_transform,
                 .vfx = vfx,
@@ -195,13 +181,4 @@ fn isEntitySelected(
         }
     }
     return false;
-}
-
-fn determineAlphaMode(material: ?components.Material) AlphaMode {
-    const material_value = material orelse return .opaque;
-    const factor = material_value.base_color_factor;
-    if (factor[3] < 1.0) {
-        return .transparent;
-    }
-    return .opaque;
 }
