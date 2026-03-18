@@ -28,6 +28,7 @@ pub const EditorViewportState = struct {
     color_grading_saturation: f32 = 1.0,
     color_grading_contrast: f32 = 1.0,
     color_grading_gamma: f32 = 1.0,
+    fxaa_enabled: bool = false,
 };
 
 pub const SceneSnapshot = struct {

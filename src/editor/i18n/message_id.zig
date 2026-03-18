@@ -233,6 +233,8 @@ pub const MessageId = enum {
     saturation,
     contrast,
     gamma,
+    fxaa,
+    enable_fxaa,
     translation_snap,
     rotation_snap,
     scale_snap,

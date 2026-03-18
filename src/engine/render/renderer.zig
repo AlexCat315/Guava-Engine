@@ -10,6 +10,7 @@ const base_pass_mod = @import("base_pass.zig");
 const shadow_pass_mod = @import("shadow_pass.zig");
 const skybox_pass_mod = @import("skybox_pass.zig");
 const bloom_pass_mod = @import("bloom_pass.zig");
+const fxaa_pass_mod = @import("fxaa_pass.zig");
 const tonemap_pass_mod = @import("tonemap_pass.zig");
 const depth_prepass_mod = @import("depth_prepass.zig");
 const id_pass_mod = @import("id_pass.zig");
@@ -87,6 +88,7 @@ const SceneViewportState = struct {
     height: u32 = 0,
     hdr_color_texture: ?rhi_mod.Texture = null,
     bloom_texture: ?rhi_mod.Texture = null,
+    fxaa_texture: ?rhi_mod.Texture = null,
     color_texture: ?rhi_mod.Texture = null,
     depth_texture: ?rhi_mod.Texture = null,
 
@@ -95,6 +97,9 @@ const SceneViewportState = struct {
             device.releaseTexture(texture);
         }
         if (self.bloom_texture) |*texture| {
+            device.releaseTexture(texture);
+        }
+        if (self.fxaa_texture) |*texture| {
             device.releaseTexture(texture);
         }
         if (self.color_texture) |*texture| {
@@ -113,7 +118,7 @@ const SceneViewportState = struct {
         }
 
         if (self.color_texture) |color_texture| {
-            if (self.depth_texture != null and self.hdr_color_texture != null and self.bloom_texture != null and color_texture.desc.width == width and color_texture.desc.height == height) {
+            if (self.depth_texture != null and self.hdr_color_texture != null and self.bloom_texture != null and self.fxaa_texture != null and color_texture.desc.width == width and color_texture.desc.height == height) {
                 self.width = width;
                 self.height = height;
                 return;
@@ -142,6 +147,17 @@ const SceneViewportState = struct {
         errdefer if (self.bloom_texture) |*texture| {
             device.releaseTexture(texture);
             self.bloom_texture = null;
+        };
+
+        self.fxaa_texture = try device.createTexture(.{
+            .width = width,
+            .height = height,
+            .format = .bgra8_unorm,
+            .usage = rhi_types.TextureUsage.color_target | rhi_types.TextureUsage.sampler,
+        });
+        errdefer if (self.fxaa_texture) |*texture| {
+            device.releaseTexture(texture);
+            self.fxaa_texture = null;
         };
 
         self.color_texture = try device.createTexture(.{
@@ -196,6 +212,13 @@ const SceneViewportState = struct {
 
     fn bloom(self: *SceneViewportState) ?*const rhi_mod.Texture {
         if (self.bloom_texture) |*texture| {
+            return texture;
+        }
+        return null;
+    }
+
+    fn fxaa(self: *SceneViewportState) ?*const rhi_mod.Texture {
+        if (self.fxaa_texture) |*texture| {
             return texture;
         }
         return null;
@@ -494,6 +517,7 @@ pub const Renderer = struct {
     base_pass: base_pass_mod.BasePass,
     skybox_pass: ?skybox_pass_mod.SkyboxPass = null,
     bloom_pass: bloom_pass_mod.BloomPass,
+    fxaa_pass: fxaa_pass_mod.FxaaPass,
     outline_pass: outline_pass_mod.OutlinePass,
     gizmo_pass: gizmo_pass_mod.GizmoPass,
     tonemap_pass: tonemap_pass_mod.TonemapPass,
@@ -540,6 +564,7 @@ pub const Renderer = struct {
             .base_pass = undefined,
             .skybox_pass = undefined,
             .bloom_pass = undefined,
+            .fxaa_pass = undefined,
             .outline_pass = undefined,
             .gizmo_pass = undefined,
             .tonemap_pass = undefined,
@@ -589,6 +614,9 @@ pub const Renderer = struct {
         renderer.bloom_pass = try bloom_pass_mod.BloomPass.init(&renderer.rhi);
         errdefer renderer.bloom_pass.deinit(&renderer.rhi);
 
+        renderer.fxaa_pass = try fxaa_pass_mod.FxaaPass.init(&renderer.rhi);
+        errdefer renderer.fxaa_pass.deinit(&renderer.rhi);
+
         renderer.outline_pass = try outline_pass_mod.OutlinePass.init(&renderer.rhi);
         errdefer renderer.outline_pass.deinit(&renderer.rhi);
 
@@ -613,6 +641,7 @@ pub const Renderer = struct {
             pass.deinit(&self.rhi);
         }
         self.bloom_pass.deinit(&self.rhi);
+        self.fxaa_pass.deinit(&self.rhi);
         self.gizmo_pass.deinit(&self.rhi);
         self.outline_pass.deinit(&self.rhi);
         self.base_pass.deinit(&self.rhi);
@@ -709,10 +738,11 @@ pub const Renderer = struct {
             g_logged_postfx_state.?.color_grading_enabled != state.color_grading_enabled or
             @abs(g_logged_postfx_state.?.color_grading_saturation - state.color_grading_saturation) > 0.0001 or
             @abs(g_logged_postfx_state.?.color_grading_contrast - state.color_grading_contrast) > 0.0001 or
-            @abs(g_logged_postfx_state.?.color_grading_gamma - state.color_grading_gamma) > 0.0001)
+            @abs(g_logged_postfx_state.?.color_grading_gamma - state.color_grading_gamma) > 0.0001 or
+            g_logged_postfx_state.?.fxaa_enabled != state.fxaa_enabled)
         {
             render_log.info(
-                "viewport postfx updated exposure_enabled={} exposure={d:.2} bloom_enabled={} bloom_threshold={d:.2} bloom_intensity={d:.2} color_grading_enabled={} saturation={d:.2} contrast={d:.2} gamma={d:.2}",
+                "viewport postfx updated exposure_enabled={} exposure={d:.2} bloom_enabled={} bloom_threshold={d:.2} bloom_intensity={d:.2} color_grading_enabled={} saturation={d:.2} contrast={d:.2} gamma={d:.2} fxaa_enabled={}",
                 .{
                     state.exposure_enabled,
                     state.exposure,
@@ -723,6 +753,7 @@ pub const Renderer = struct {
                     state.color_grading_saturation,
                     state.color_grading_contrast,
                     state.color_grading_gamma,
+                    state.fxaa_enabled,
                 },
             );
             g_logged_postfx_state = state;
@@ -960,6 +991,7 @@ pub const Renderer = struct {
 
                 if (viewport_active) {
                     const bloom_enabled = self.editor_viewport_state.bloom_enabled and self.bloom_pass.isReady() and self.scene_viewport.bloom() != null;
+                    const fxaa_enabled = self.editor_viewport_state.fxaa_enabled and self.fxaa_pass.isReady() and self.scene_viewport.fxaa() != null;
                     if (bloom_enabled) {
                         try self.bloom_pass.syncTexture(&self.rhi, self.scene_viewport.hdrColor().?);
                         const bloom_render_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
@@ -985,10 +1017,14 @@ pub const Renderer = struct {
 
                     if (self.tonemap_pass.isReady()) {
                         const bloom_input = if (bloom_enabled) self.scene_viewport.bloom().? else self.scene_viewport.hdrColor().?;
+                        const tonemap_target: rhi_mod.ColorTarget = if (fxaa_enabled)
+                            .{ .texture = self.scene_viewport.fxaa().? }
+                        else
+                            scene_color_target;
                         try self.tonemap_pass.syncTextures(&self.rhi, self.scene_viewport.hdrColor().?, bloom_input);
                         const tonemap_render_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
                             .color = .{
-                                .target = scene_color_target,
+                                .target = tonemap_target,
                                 .clear_color = .{ 0.0, 0.0, 0.0, 1.0 },
                                 .load_op = .clear,
                                 .store_op = .store,
@@ -1009,6 +1045,24 @@ pub const Renderer = struct {
                             self.editor_viewport_state.color_grading_gamma,
                         );
                         self.rhi.endRenderPass(tonemap_render_pass);
+                    }
+
+                    if (fxaa_enabled) {
+                        try self.fxaa_pass.syncTexture(&self.rhi, self.scene_viewport.fxaa().?);
+                        const fxaa_render_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
+                            .color = .{
+                                .target = scene_color_target,
+                                .clear_color = .{ 0.0, 0.0, 0.0, 1.0 },
+                                .load_op = .clear,
+                                .store_op = .store,
+                            },
+                            .depth = null,
+                        });
+                        const fxaa_start = std.time.nanoTimestamp();
+                        const fxaa_stats = self.fxaa_pass.draw(&self.rhi, fxaa_render_pass);
+                        self.graph.recordPassStat(pass_stats, .post_process, durationNs(fxaa_start, std.time.nanoTimestamp()), fxaa_stats.draw_calls, fxaa_stats.triangles_drawn);
+                        draw_stats.add(fxaa_stats);
+                        self.rhi.endRenderPass(fxaa_render_pass);
                     }
                 }
 

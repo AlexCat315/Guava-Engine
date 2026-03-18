@@ -104,6 +104,10 @@ pub fn drawRenderSettingsWindow(state: *EditorState, layer_context: *engine.core
     engine.ui.ImGui.labelText(state.text(.gamma), gamma_text);
 
     engine.ui.ImGui.separator();
+    engine.ui.ImGui.text(state.text(.fxaa));
+    _ = engine.ui.ImGui.checkbox(state.text(.enable_fxaa), &state.viewport_fxaa_enabled);
+
+    engine.ui.ImGui.separator();
     engine.ui.ImGui.text(state.text(.coordinate_space));
     switch (drawButtonRow2(state.text(.local_space), state.text(.world_space), 112.0)) {
         .first => state.transform_space = .local,
