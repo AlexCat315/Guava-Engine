@@ -101,6 +101,7 @@ bool guava_imgui_want_capture_mouse(void);
 bool guava_imgui_want_capture_keyboard(void);
 bool guava_imgui_want_text_input(void);
 
+void guava_imgui_get_mouse_pos(float *x, float *y);
 void guava_imgui_get_item_rect_min(float *x, float *y);
 void guava_imgui_get_item_rect_max(float *x, float *y);
 void guava_imgui_draw_list_add_line(float p1_x, float p1_y, float p2_x, float p2_y,

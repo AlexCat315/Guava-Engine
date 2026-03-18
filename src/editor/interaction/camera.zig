@@ -65,6 +65,7 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
 
     const camera_id = state.editor_camera orelse return;
     const camera = layer_context.world.getEntity(camera_id) orelse return;
+    var camera_transform_changed = false;
 
     if (state.camera_drag_active and selection_mode) {
         if (input.isMouseDown(.left)) {
@@ -81,6 +82,7 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
             const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
             camera.local_transform.rotation = quat.fromEuler(.{ state.pitch, state.yaw, 0.0 });
             camera.local_transform.translation = vec3.sub(state.focus_pivot, vec3.scale(forward, state.orbit_distance));
+            camera_transform_changed = true;
         }
 
         if (input.isMouseDown(.right)) {
@@ -94,6 +96,7 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
             );
             camera.local_transform.translation = vec3.add(camera.local_transform.translation, pan);
             state.focus_pivot = vec3.add(state.focus_pivot, pan);
+            camera_transform_changed = true;
         }
 
         if (input.isMouseDown(.middle)) {
@@ -107,6 +110,7 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
             );
             camera.local_transform.translation = vec3.add(camera.local_transform.translation, pan);
             state.focus_pivot = vec3.add(state.focus_pivot, pan);
+            camera_transform_changed = true;
         }
     }
 
@@ -118,6 +122,7 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
             const zoom_step = input.mouse_wheel[1] * state.wheel_speed * @max(state.orbit_distance * 0.2, 0.8);
             camera.local_transform.translation = vec3.add(camera.local_transform.translation, vec3.scale(forward, zoom_step));
             state.orbit_distance = utils.clampDistance(vec3.length(vec3.sub(state.focus_pivot, camera.local_transform.translation)));
+            camera_transform_changed = true;
 
             if (camera.camera) |camera_component| {
                 if (camera_component.projection == .orthographic) {
@@ -135,9 +140,13 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
             const pan = vec3.scale(right, pan_step);
             camera.local_transform.translation = vec3.add(camera.local_transform.translation, pan);
             state.focus_pivot = vec3.add(state.focus_pivot, pan);
+            camera_transform_changed = true;
         }
     }
     camera.local_transform.rotation = quat.fromEuler(.{ state.pitch, state.yaw, 0.0 });
+    if (camera_transform_changed) {
+        layer_context.world.markDirty(camera_id);
+    }
 }
 
 pub fn toggleCameraMode(state: *EditorState, layer_context: *engine.core.LayerContext) void {
@@ -204,6 +213,7 @@ pub fn focusSelection(state: *EditorState, layer_context: *engine.core.LayerCont
     const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
     state.orbit_distance = utils.clampDistance(state.orbit_distance);
     camera.local_transform.translation = vec3.sub(state.focus_pivot, vec3.scale(forward, state.orbit_distance));
+    layer_context.world.markDirty(camera_id);
 }
 
 pub fn createEditorCamera(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -250,6 +260,7 @@ pub fn orbitFromViewCubeDrag(state: *EditorState, layer_context: *engine.core.La
     }
 
     camera_entity.local_transform = editorCameraTransform(state);
+    layer_context.world.markDirty(camera_id);
     _ = layer_context.world.setPrimaryCamera(camera_id);
     state.editor_camera_active = true;
 }
@@ -365,6 +376,7 @@ fn applyEditorViewDirection(
     state.pitch = utils.clampPitch(std.math.asin(std.math.clamp(forward[1], -1.0, 1.0)));
     state.yaw = std.math.atan2(-forward[0], -forward[2]);
     camera_entity.local_transform = editorCameraTransform(state);
+    layer_context.world.markDirty(camera_id);
     if (camera_entity.camera) |camera_component| {
         var next_camera = camera_component;
         next_camera.projection = if (orthographic)
@@ -437,6 +449,7 @@ fn updateViewCubeTransition(state: *EditorState, layer_context: *engine.core.Lay
     state.pitch = state.view_cube_transition_start_pitch + (state.view_cube_transition_target_pitch - state.view_cube_transition_start_pitch) * smooth_t;
 
     camera_entity.local_transform = editorCameraTransform(state);
+    layer_context.world.markDirty(camera_id);
     if (camera_entity.camera) |camera_component| {
         var next_camera = camera_component;
         next_camera.projection = if (state.view_cube_transition_target_orthographic)
@@ -451,6 +464,7 @@ fn updateViewCubeTransition(state: *EditorState, layer_context: *engine.core.Lay
         state.yaw = state.view_cube_transition_target_yaw;
         state.pitch = state.view_cube_transition_target_pitch;
         camera_entity.local_transform = editorCameraTransform(state);
+        layer_context.world.markDirty(camera_id);
     }
 }
 

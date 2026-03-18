@@ -311,14 +311,10 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
     state.viewport_has_image = false;
     state.viewport_overlay_hovered = false;
 
-    // Check if mouse is within viewport bounds (more reliable than isWindowHovered after toolbar)
-    const mouse_pos = layer_context.input.mouse_position;
-    const mouse_in_bounds = mouse_pos[0] >= state.viewport_origin[0] and
-        mouse_pos[0] < state.viewport_origin[0] + state.viewport_extent[0] and
-        mouse_pos[1] >= state.viewport_origin[1] and
-        mouse_pos[1] < state.viewport_origin[1] + state.viewport_extent[1];
-    state.viewport_hovered = mouse_in_bounds;
-    logViewportStateChange(state);
+    // Use ImGui mouse coordinates so hover/mouse hit-testing stays in the same space
+    // as the docked viewport item on HiDPI platforms.
+    var mouse_pos = effectiveViewportMousePos(layer_context);
+    state.viewport_hovered = isPointInViewportRect(mouse_pos, state.viewport_origin, state.viewport_extent);
 
     const drawable_size = utils.viewportDrawableSize(layer_context.window, state.viewport_extent);
     try layer_context.renderer.setSceneViewportSize(drawable_size[0], drawable_size[1]);
@@ -329,8 +325,16 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
             @max(state.viewport_extent[1], 8.0),
         };
         engine.ui.ImGui.image(texture, image_size[0], image_size[1]);
+        const image_min = engine.ui.ImGui.getItemRectMin();
+        const image_max = engine.ui.ImGui.getItemRectMax();
+        state.viewport_origin = image_min;
+        state.viewport_extent = .{
+            @max(image_max[0] - image_min[0], 0.0),
+            @max(image_max[1] - image_min[1], 0.0),
+        };
+        mouse_pos = effectiveViewportMousePos(layer_context);
+        state.viewport_hovered = isPointInViewportRect(mouse_pos, state.viewport_origin, state.viewport_extent);
         state.viewport_has_image = true;
-        logViewportStateChange(state);
 
         // Draw overlays (positioned absolutely, won't affect layout)
         try handleViewportAssetDropTargets(state, layer_context);
@@ -339,8 +343,10 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
         try drawViewportFpsOverlayWindow(state, layer_context);
         try drawViewportDebugOverlayWindow(state, layer_context);
         drawViewportViewCube(state, layer_context);
+        logViewportStateChange(state, layer_context);
     } else {
         engine.ui.ImGui.text(state.text(.viewport_target_is_not_ready_yet));
+        logViewportStateChange(state, layer_context);
     }
 }
 
@@ -672,9 +678,9 @@ fn viewportPixelUnderMouse(state: *const EditorState, layer_context: *const engi
         return null;
     }
 
-    const input = layer_context.input;
-    const local_x = input.mouse_position[0] - state.viewport_origin[0];
-    const local_y = input.mouse_position[1] - state.viewport_origin[1];
+    const mouse_pos = effectiveViewportMousePos(layer_context);
+    const local_x = mouse_pos[0] - state.viewport_origin[0];
+    const local_y = mouse_pos[1] - state.viewport_origin[1];
     if (local_x < 0.0 or local_y < 0.0 or local_x > state.viewport_extent[0] or local_y > state.viewport_extent[1]) {
         return null;
     }
@@ -1100,7 +1106,7 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
     if (engine.ui.ImGui.isItemHovered() or (state.manipulation_started_from_ui and input.isMouseDown(.left))) state.viewport_overlay_hovered = true;
 }
 
-fn logViewportStateChange(state: *const EditorState) void {
+fn logViewportStateChange(state: *const EditorState, layer_context: *const engine.core.LayerContext) void {
     if (g_last_viewport_hovered == null or
         g_last_viewport_hovered.? != state.viewport_hovered or
         g_last_viewport_overlay_hovered == null or
@@ -1108,12 +1114,15 @@ fn logViewportStateChange(state: *const EditorState) void {
         g_last_viewport_has_image == null or
         g_last_viewport_has_image.? != state.viewport_has_image)
     {
+        const mouse_pos = effectiveViewportMousePos(layer_context);
         viewport_log.info(
-            "viewport state hovered={} overlay_hovered={} has_image={} origin=({d:.1},{d:.1}) extent=({d:.1},{d:.1})",
+            "viewport state hovered={} overlay_hovered={} has_image={} mouse=({d:.1},{d:.1}) origin=({d:.1},{d:.1}) extent=({d:.1},{d:.1})",
             .{
                 state.viewport_hovered,
                 state.viewport_overlay_hovered,
                 state.viewport_has_image,
+                mouse_pos[0],
+                mouse_pos[1],
                 state.viewport_origin[0],
                 state.viewport_origin[1],
                 state.viewport_extent[0],
@@ -1124,6 +1133,22 @@ fn logViewportStateChange(state: *const EditorState) void {
         g_last_viewport_overlay_hovered = state.viewport_overlay_hovered;
         g_last_viewport_has_image = state.viewport_has_image;
     }
+}
+
+fn effectiveViewportMousePos(layer_context: *const engine.core.LayerContext) [2]f32 {
+    const imgui_mouse_pos = engine.ui.ImGui.mousePos();
+    const invalid_imgui_mouse = !std.math.isFinite(imgui_mouse_pos[0]) or
+        !std.math.isFinite(imgui_mouse_pos[1]) or
+        imgui_mouse_pos[0] <= -std.math.floatMax(f32) * 0.5 or
+        imgui_mouse_pos[1] <= -std.math.floatMax(f32) * 0.5;
+    return if (invalid_imgui_mouse) layer_context.input.mouse_position else imgui_mouse_pos;
+}
+
+fn isPointInViewportRect(point: [2]f32, origin: [2]f32, extent: [2]f32) bool {
+    return point[0] >= origin[0] and
+        point[0] <= origin[0] + extent[0] and
+        point[1] >= origin[1] and
+        point[1] <= origin[1] + extent[1];
 }
 
 fn drawViewportFpsOverlayWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -1344,19 +1369,17 @@ fn copyDebugTextToClipboard(allocator: std.mem.Allocator, text: []const u8) !voi
 }
 
 fn drawViewportViewCube(state: *EditorState, layer_context: *engine.core.LayerContext) void {
-    const cube_size = std.math.clamp(@min(state.viewport_extent[0], state.viewport_extent[1]) * 0.16, 84.0, 118.0);
-    // Increased padding from 14 to 20 pixels to avoid collision with overlay controls
+    const cube_size = std.math.clamp(@min(state.viewport_extent[0], state.viewport_extent[1]) * 0.13, 72.0, 92.0);
     const cube_pos = .{
         state.viewport_origin[0] + state.viewport_extent[0] - cube_size - 20.0,
         state.viewport_origin[1] + viewportOverlayTopInset() + 6.0,
     };
     const view = camera.activeCameraViewMatrix(state, layer_context);
     const result = engine.ui.ImGui.drawViewCube(&view, cube_pos, cube_size);
-    if (result.hovered or result.active) {
+    const capture_view_cube_input = result.active or
+        (result.hovered and layer_context.input.isMouseDown(.left));
+    if (capture_view_cube_input) {
         state.viewport_overlay_hovered = true;
-    }
-    if (result.dragging) {
-        camera.orbitFromViewCubeDrag(state, layer_context, result.drag_delta);
     }
     switch (result.face) {
         .front => camera.lookAlongWorldAxis(state, layer_context, .{ 0.0, 0.0, -1.0 }),

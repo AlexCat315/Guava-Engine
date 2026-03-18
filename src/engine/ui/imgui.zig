@@ -204,6 +204,13 @@ pub fn wantsTextInput() bool {
     return c.guava_imgui_want_text_input();
 }
 
+pub fn mousePos() [2]f32 {
+    var x: f32 = 0;
+    var y: f32 = 0;
+    c.guava_imgui_get_mouse_pos(&x, &y);
+    return .{ x, y };
+}
+
 pub fn getItemRectMin() [2]f32 {
     var x: f32 = 0;
     var y: f32 = 0;

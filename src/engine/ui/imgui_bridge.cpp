@@ -760,6 +760,17 @@ extern "C" bool guava_imgui_want_text_input(void) {
   return ImGui::GetIO().WantTextInput;
 }
 
+extern "C" void guava_imgui_get_mouse_pos(float *x, float *y) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  const ImVec2 pos = ImGui::GetIO().MousePos;
+  if (x)
+    *x = pos.x;
+  if (y)
+    *y = pos.y;
+}
+
 extern "C" void guava_imgui_get_item_rect_min(float *x, float *y) {
   if (!g_imgui_initialized) {
     return;
@@ -1914,7 +1925,9 @@ extern "C" uint32_t guava_imgui_draw_view_cube(const float view[16], float x,
     storage->SetInt(pressed_target_key, static_cast<int>(hovered_face));
     storage->SetBool(dragged_key, false);
   }
-  if (dragging) {
+  const uint32_t pressed_target =
+      static_cast<uint32_t>(storage->GetInt(pressed_target_key, 0));
+  if (dragging && pressed_target != GUAVA_IMGUI_VIEW_CUBE_NONE) {
     storage->SetBool(dragged_key, true);
     if (out_drag_delta != nullptr) {
       out_drag_delta[0] = ImGui::GetIO().MouseDelta.x;
@@ -2037,19 +2050,17 @@ extern "C" uint32_t guava_imgui_draw_view_cube(const float view[16], float x,
                              IM_COL32(234, 238, 244, hovered ? 228 : 196), 18);
 
   uint32_t result = GUAVA_IMGUI_VIEW_CUBE_NONE;
-  if (hovered) {
+  if (hovered_face != GUAVA_IMGUI_VIEW_CUBE_NONE) {
     result |= GUAVA_IMGUI_VIEW_CUBE_HOVERED;
   }
-  if (active) {
+  if (active && pressed_target != GUAVA_IMGUI_VIEW_CUBE_NONE) {
     result |= GUAVA_IMGUI_VIEW_CUBE_ACTIVE;
   }
-  if (dragging) {
+  if (dragging && pressed_target != GUAVA_IMGUI_VIEW_CUBE_NONE) {
     result |= GUAVA_IMGUI_VIEW_CUBE_DRAGGING;
   }
 
   if (ImGui::IsItemDeactivated()) {
-    const uint32_t pressed_target =
-        static_cast<uint32_t>(storage->GetInt(pressed_target_key, 0));
     const bool was_dragged = storage->GetBool(dragged_key, false);
     if (!was_dragged && pressed_target != GUAVA_IMGUI_VIEW_CUBE_NONE &&
         hovered_face == pressed_target) {
