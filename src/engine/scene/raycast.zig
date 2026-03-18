@@ -1,6 +1,5 @@
 const std = @import("std");
 const components = @import("components.zig");
-const spatial_index_mod = @import("spatial_index.zig");
 const world_mod = @import("world.zig");
 const raycast_log = std.log.scoped(.raycast);
 
@@ -24,33 +23,40 @@ pub const SurfaceRaycastHit = struct {
 };
 
 pub fn raycastSurface(world: *world_mod.World, ray: Ray) ?SurfaceRaycastHit {
-    if (worldHasDirtyEntities(world)) {
-        world.updateHierarchy();
-    }
-
     const normalized_direction = normalize(ray.direction);
-    if (ensureRaycastBvh(world)) {
-        const candidate_ids = world.raycast_bvh.queryRayCandidates(
-            world.allocator,
-            ray.origin,
-            normalized_direction,
-            std.math.inf(f32),
-        ) catch |err| {
-            raycast_log.warn("raycast BVH query failed; fallback to brute force, error={}", .{err});
-            return raycastSurfaceBruteForce(world, ray.origin, normalized_direction);
-        };
-        defer world.allocator.free(candidate_ids);
+    const candidate_ids = world.queryRenderableRayCandidates(
+        world.allocator,
+        ray.origin,
+        normalized_direction,
+        std.math.inf(f32),
+    ) catch |err| {
+        raycast_log.warn("raycast broad phase query failed; fallback to brute force, error={}", .{err});
+        return raycastSurfaceBruteForce(world, ray.origin, normalized_direction);
+    };
+    defer world.allocator.free(candidate_ids);
 
-        var best_hit: ?SurfaceRaycastHit = null;
-        // broad phase 先筛 mesh bounds，triangle narrow phase 仍复用现有命中实现。
-        for (candidate_ids) |entity_id| {
-            const entity = world.getEntityConst(entity_id) orelse continue;
-            testEntitySurface(world, entity, ray.origin, normalized_direction, &best_hit);
-        }
-        return best_hit;
+    const snapshot = BvhLogSnapshot{
+        .items = world.renderable_spatial_index.itemCount(),
+        .nodes = world.renderable_spatial_index.nodeCount(),
+    };
+    if (g_logged_bvh_snapshot == null or
+        g_logged_bvh_snapshot.?.items != snapshot.items or
+        g_logged_bvh_snapshot.?.nodes != snapshot.nodes)
+    {
+        raycast_log.info("renderable broad phase rebuilt items={} nodes={}", .{
+            snapshot.items,
+            snapshot.nodes,
+        });
+        g_logged_bvh_snapshot = snapshot;
     }
 
-    return raycastSurfaceBruteForce(world, ray.origin, normalized_direction);
+    var best_hit: ?SurfaceRaycastHit = null;
+    // broad phase 先筛 renderable bounds，triangle narrow phase 仍复用现有命中实现。
+    for (candidate_ids) |entity_id| {
+        const entity = world.getEntityConst(entity_id) orelse continue;
+        testEntitySurface(world, entity, ray.origin, normalized_direction, &best_hit);
+    }
+    return best_hit;
 }
 
 const TriangleHit = struct {
@@ -106,59 +112,6 @@ fn transformPoint(transform: components.Transform, point: [3]f32) [3]f32 {
     );
 }
 
-fn ensureRaycastBvh(world: *world_mod.World) bool {
-    if (!world.raycast_bvh.dirty) {
-        return true;
-    }
-
-    var bounds_items = std.ArrayList(spatial_index_mod.BoundsItem).empty;
-    defer bounds_items.deinit(world.allocator);
-
-    for (world.entities.items) |entity| {
-        const mesh_component = entity.mesh orelse continue;
-        const mesh_handle = mesh_component.handle orelse continue;
-        const mesh = world.resources.mesh(mesh_handle) orelse continue;
-        if (mesh.primitive_type != .triangle_list or mesh.indices.len < 3) {
-            continue;
-        }
-
-        const world_transform = world.worldTransformConst(entity.id) orelse entity.local_transform;
-        const mesh_bounds = mesh.local_bounds.transformed(world_transform);
-        if (!mesh_bounds.isValid()) {
-            continue;
-        }
-
-        bounds_items.append(world.allocator, .{
-            .id = entity.id,
-            .bounds = mesh_bounds,
-        }) catch |err| {
-            raycast_log.warn("raycast BVH build staging failed; fallback to brute force, error={}", .{err});
-            return false;
-        };
-    }
-
-    world.raycast_bvh.rebuild(bounds_items.items) catch |err| {
-        raycast_log.warn("raycast BVH rebuild failed; fallback to brute force, error={}", .{err});
-        return false;
-    };
-
-    const snapshot = BvhLogSnapshot{
-        .items = world.raycast_bvh.itemCount(),
-        .nodes = world.raycast_bvh.nodeCount(),
-    };
-    if (g_logged_bvh_snapshot == null or
-        g_logged_bvh_snapshot.?.items != snapshot.items or
-        g_logged_bvh_snapshot.?.nodes != snapshot.nodes)
-    {
-        raycast_log.info("raycast broad phase rebuilt items={} nodes={}", .{
-            snapshot.items,
-            snapshot.nodes,
-        });
-        g_logged_bvh_snapshot = snapshot;
-    }
-    return true;
-}
-
 fn raycastSurfaceBruteForce(
     world: *const world_mod.World,
     ray_origin: [3]f32,
@@ -205,15 +158,6 @@ fn testEntitySurface(
             };
         }
     }
-}
-
-fn worldHasDirtyEntities(world: *const world_mod.World) bool {
-    for (world.entities.items) |entity| {
-        if (entity.dirty) {
-            return true;
-        }
-    }
-    return false;
 }
 
 fn rotateVec3Euler(rotation: [3]f32, vector: [3]f32) [3]f32 {

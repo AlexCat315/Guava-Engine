@@ -5,6 +5,7 @@ const scene_mod = @import("../scene/scene.zig");
 const frustum_mod = @import("../math/frustum.zig");
 
 pub const ExtractionStats = struct {
+    frustum_candidates: usize = 0,
     total_meshes: usize = 0,
     extracted_meshes: usize = 0,
     total_vfxs: usize = 0,
@@ -125,7 +126,7 @@ pub const RenderWorld = struct {
 };
 
 pub fn extractWorld(
-    world: *const scene_mod.World,
+    world: *scene_mod.World,
     render_world: *RenderWorld,
     primary_selection: ?scene_mod.EntityId,
     selection_list: []const scene_mod.EntityId,
@@ -133,6 +134,26 @@ pub fn extractWorld(
 ) !ExtractionStats {
     render_world.clear();
     var stats = ExtractionStats{};
+    var visible_renderables: ?std.AutoHashMap(scene_mod.EntityId, void) = null;
+    defer {
+        if (visible_renderables) |*set| {
+            set.deinit();
+        }
+    }
+
+    if (frustum) |resolved_frustum| {
+        const candidate_ids = try world.queryRenderableFrustumCandidates(render_world.allocator, resolved_frustum);
+        defer render_world.allocator.free(candidate_ids);
+
+        var candidate_set = std.AutoHashMap(scene_mod.EntityId, void).init(render_world.allocator);
+        errdefer candidate_set.deinit();
+        try candidate_set.ensureTotalCapacity(@intCast(candidate_ids.len));
+        for (candidate_ids) |candidate_id| {
+            candidate_set.putAssumeCapacity(candidate_id, {});
+        }
+        stats.frustum_candidates = candidate_ids.len;
+        visible_renderables = candidate_set;
+    }
 
     for (world.entities.items) |entity| {
         const world_transform = world.worldTransformConst(entity.id) orelse entity.local_transform;
@@ -148,8 +169,16 @@ pub fn extractWorld(
         }
 
         const is_selected = isEntitySelected(entity.id, primary_selection, selection_list);
-        // 在 extraction 阶段统一做 mesh/vfx 剔除，避免后续 pass 再重复扫一遍。
-        const entity_visible_in_frustum = if (frustum) |f|
+        // 在 extraction 阶段优先复用 renderable 空间索引，避免逐 mesh/vfx 线性做 frustum test。
+        const entity_visible_in_frustum = if (visible_renderables) |*candidate_set|
+            if (entity.mesh != null or entity.vfx != null)
+                if (world.worldBoundsConst(entity.id) != null)
+                    candidate_set.contains(entity.id)
+                else
+                    true
+            else
+                true
+        else if (frustum) |f|
             if (world.worldBoundsConst(entity.id)) |bounds|
                 f.intersectsAABB(bounds)
             else

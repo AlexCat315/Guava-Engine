@@ -890,8 +890,9 @@ pub const Renderer = struct {
                 );
                 if (extraction_frustum != null and !g_logged_scene_extraction_culling) {
                     render_log.info(
-                        "scene extraction culling active meshes={}/{} culled={} vfx={}/{} culled={}",
+                        "scene extraction culling active candidates={} meshes={}/{} culled={} vfx={}/{} culled={}",
                         .{
+                            extraction_stats.frustum_candidates,
                             extraction_stats.extracted_meshes,
                             extraction_stats.total_meshes,
                             extraction_stats.culledMeshes(),

@@ -7,6 +7,7 @@ const components = @import("components.zig");
 const vfx_runtime_mod = @import("vfx_runtime.zig");
 const vec3 = @import("../math/vec3.zig");
 const AABB = @import("../math/aabb.zig").AABB;
+const frustum_mod = @import("../math/frustum.zig");
 const job_system_mod = @import("../core/job_system.zig");
 
 const compose_epsilon = 0.0001;
@@ -68,7 +69,7 @@ pub const World = struct {
     next_id: EntityId = 1,
     job_system: ?*job_system_mod.JobSystem = null,
     vfx_runtime_emitters: std.ArrayList(vfx_runtime_mod.VfxRuntimeEmitter) = .empty,
-    raycast_bvh: spatial_index_mod.StaticBoundsBvh,
+    renderable_spatial_index: spatial_index_mod.StaticBoundsBvh,
 
     pub fn init(allocator: std.mem.Allocator, job_system: ?*job_system_mod.JobSystem) World {
         return .{
@@ -76,7 +77,7 @@ pub const World = struct {
             .resources = assets_lib.ResourceLibrary.init(allocator, job_system),
             .id_to_index = std.AutoHashMap(EntityId, usize).init(allocator),
             .job_system = job_system,
-            .raycast_bvh = spatial_index_mod.StaticBoundsBvh.init(allocator),
+            .renderable_spatial_index = spatial_index_mod.StaticBoundsBvh.init(allocator),
         };
     }
 
@@ -95,14 +96,14 @@ pub const World = struct {
         }
         self.entities.deinit(self.allocator);
         self.id_to_index.deinit();
-        self.raycast_bvh.deinit();
+        self.renderable_spatial_index.deinit();
         self.resources.deinit();
         if (reinitialize) {
             self.entities = .empty;
             self.id_to_index = std.AutoHashMap(EntityId, usize).init(self.allocator);
             self.resources = assets_lib.ResourceLibrary.init(self.allocator, self.job_system);
             self.vfx_runtime_emitters = .empty;
-            self.raycast_bvh = spatial_index_mod.StaticBoundsBvh.init(self.allocator);
+            self.renderable_spatial_index = spatial_index_mod.StaticBoundsBvh.init(self.allocator);
         }
     }
 
@@ -149,7 +150,7 @@ pub const World = struct {
                 try parent.children.append(self.allocator, id);
             }
         }
-        self.raycast_bvh.markDirty();
+        self.renderable_spatial_index.markDirty();
 
         if (id >= self.next_id) {
             self.next_id = id + 1;
@@ -179,7 +180,7 @@ pub const World = struct {
 
     pub fn markDirty(self: *World, id: EntityId) void {
         const entity = self.getEntity(id) orelse return;
-        self.raycast_bvh.markDirty();
+        self.renderable_spatial_index.markDirty();
         if (entity.dirty) return;
 
         entity.dirty = true;
@@ -816,6 +817,31 @@ pub const World = struct {
         return raycast_mod.raycastSurface(self, ray);
     }
 
+    pub fn queryRenderableRayCandidates(
+        self: *World,
+        allocator: std.mem.Allocator,
+        ray_origin: [3]f32,
+        ray_direction: [3]f32,
+        max_distance: f32,
+    ) ![]EntityId {
+        try self.ensureRenderableSpatialIndex();
+        return try self.renderable_spatial_index.queryRayCandidates(
+            allocator,
+            ray_origin,
+            ray_direction,
+            max_distance,
+        );
+    }
+
+    pub fn queryRenderableFrustumCandidates(
+        self: *World,
+        allocator: std.mem.Allocator,
+        frustum: frustum_mod.Frustum,
+    ) ![]EntityId {
+        try self.ensureRenderableSpatialIndex();
+        return try self.renderable_spatial_index.queryFrustumCandidates(allocator, frustum);
+    }
+
     pub fn assets(self: *World) *assets_lib.ResourceLibrary {
         return &self.resources;
     }
@@ -864,7 +890,7 @@ pub const World = struct {
     fn removeEntityById(self: *World, id: EntityId) void {
         const index = self.id_to_index.get(id) orelse return;
         const entity = &self.entities.items[index];
-        self.raycast_bvh.markDirty();
+        self.renderable_spatial_index.markDirty();
 
         // Remove from parent's children list
         if (entity.parent) |parent_id| {
@@ -931,6 +957,45 @@ pub const World = struct {
 
     fn nextAvailableName(self: *const World, base_name: []const u8) ![]u8 {
         return self.nextAvailableDerivedName(base_name, "");
+    }
+
+    fn ensureRenderableSpatialIndex(self: *World) !void {
+        if (!self.renderable_spatial_index.dirty) {
+            return;
+        }
+
+        if (self.hasDirtyEntities()) {
+            self.updateHierarchy();
+        }
+
+        var bounds_items = std.ArrayList(spatial_index_mod.BoundsItem).empty;
+        defer bounds_items.deinit(self.allocator);
+
+        for (self.entities.items) |entity| {
+            if (entity.mesh == null and entity.vfx == null) {
+                continue;
+            }
+            const bounds = self.worldBoundsConst(entity.id) orelse continue;
+            if (!bounds.isValid()) {
+                continue;
+            }
+            try bounds_items.append(self.allocator, .{
+                .id = entity.id,
+                .bounds = bounds,
+            });
+        }
+
+        // 统一维护 renderable 空间索引，供视锥剔除与 raycast broad phase 共享。
+        try self.renderable_spatial_index.rebuild(bounds_items.items);
+    }
+
+    fn hasDirtyEntities(self: *const World) bool {
+        for (self.entities.items) |entity| {
+            if (entity.dirty) {
+                return true;
+            }
+        }
+        return false;
     }
 
     fn nextAvailableDerivedName(self: *const World, base_name: []const u8, suffix: []const u8) ![]u8 {

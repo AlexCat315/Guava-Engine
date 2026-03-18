@@ -1,5 +1,6 @@
 const std = @import("std");
 const AABB = @import("../math/aabb.zig").AABB;
+const frustum_mod = @import("../math/frustum.zig");
 
 pub const ItemId = u64;
 
@@ -79,6 +80,22 @@ pub const StaticBoundsBvh = struct {
         }
 
         try self.collectRayCandidatesRecursive(allocator, 0, ray_origin, ray_direction, max_distance, &candidates);
+        return try candidates.toOwnedSlice(allocator);
+    }
+
+    pub fn queryFrustumCandidates(
+        self: *const StaticBoundsBvh,
+        allocator: std.mem.Allocator,
+        frustum: frustum_mod.Frustum,
+    ) ![]ItemId {
+        var candidates = std.ArrayList(ItemId).empty;
+        errdefer candidates.deinit(allocator);
+
+        if (self.nodes.items.len == 0) {
+            return try candidates.toOwnedSlice(allocator);
+        }
+
+        try self.collectFrustumCandidatesRecursive(allocator, 0, frustum, &candidates);
         return try candidates.toOwnedSlice(allocator);
     }
 
@@ -163,6 +180,33 @@ pub const StaticBoundsBvh = struct {
         if (right_hit != null) {
             try self.collectRayCandidatesRecursive(allocator, right_index, ray_origin, ray_direction, max_distance, candidates);
         }
+    }
+
+    fn collectFrustumCandidatesRecursive(
+        self: *const StaticBoundsBvh,
+        allocator: std.mem.Allocator,
+        node_index: u32,
+        frustum: frustum_mod.Frustum,
+        candidates: *std.ArrayList(ItemId),
+    ) !void {
+        const node = self.nodes.items[node_index];
+        if (!frustum.intersectsAABB(node.bounds)) {
+            return;
+        }
+
+        if (node.isLeaf()) {
+            const start: usize = node.start;
+            const end = start + node.count;
+            for (self.items.items[start..end]) |item| {
+                if (frustum.intersectsAABB(item.bounds)) {
+                    try candidates.append(allocator, item.id);
+                }
+            }
+            return;
+        }
+
+        try self.collectFrustumCandidatesRecursive(allocator, node.left.?, frustum, candidates);
+        try self.collectFrustumCandidatesRecursive(allocator, node.right.?, frustum, candidates);
     }
 };
 
