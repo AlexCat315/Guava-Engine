@@ -96,7 +96,7 @@ pub const GraphicsPipelineDesc = struct {
     fragment_shader: *const ShaderModule,
     vertex_buffer_layouts: []const VertexBufferLayoutDesc,
     vertex_attributes: []const VertexAttributeDesc,
-    color_format: types.TextureFormat,
+    color_format: ?types.TextureFormat = null,
     depth_format: ?types.TextureFormat = .d32_float,
     primitive_type: types.PrimitiveType = .triangle_list,
     fill_mode: types.FillMode = .fill,
@@ -117,6 +117,7 @@ pub const BindGroupDesc = struct {
     texture_sampler_bindings: []const TextureSamplerBinding = &.{},
     storage_buffers: []const *const Buffer = &.{},
     storage_textures: []const *const Texture = &.{},
+    slot_offset: u32 = 0,
 };
 
 pub const GraphicsPipeline = struct {
@@ -128,6 +129,7 @@ pub const BindGroup = struct {
     texture_sampler_bindings: []sdl.SDL_GPUTextureSamplerBinding,
     storage_buffers: []*sdl.SDL_GPUBuffer,
     storage_textures: []*sdl.SDL_GPUTexture,
+    slot_offset: u32 = 0,
 };
 
 pub const Frame = struct {
@@ -613,8 +615,6 @@ pub const RhiDevice = struct {
         }
 
         var color_target = std.mem.zeroes(sdl.SDL_GPUColorTargetDescription);
-        color_target.format = textureFormatToSdl(desc.color_format);
-
         var create_info = std.mem.zeroes(sdl.SDL_GPUGraphicsPipelineCreateInfo);
         create_info.vertex_shader = desc.vertex_shader.raw;
         create_info.fragment_shader = desc.fragment_shader.raw;
@@ -631,8 +631,15 @@ pub const RhiDevice = struct {
         create_info.depth_stencil_state.compare_op = compareOpToSdl(desc.depth_compare);
         create_info.depth_stencil_state.enable_depth_test = desc.depth_test;
         create_info.depth_stencil_state.enable_depth_write = desc.depth_write;
-        create_info.target_info.color_target_descriptions = &color_target;
-        create_info.target_info.num_color_targets = 1;
+
+        if (desc.color_format) |color_format| {
+            color_target.format = textureFormatToSdl(color_format);
+            create_info.target_info.color_target_descriptions = &color_target;
+            create_info.target_info.num_color_targets = 1;
+        } else {
+            create_info.target_info.color_target_descriptions = null;
+            create_info.target_info.num_color_targets = 0;
+        }
         if (desc.depth_format) |depth_format| {
             create_info.target_info.depth_stencil_format = textureFormatToSdl(depth_format);
             create_info.target_info.has_depth_stencil_target = depth_format != .unknown;
@@ -690,6 +697,7 @@ pub const RhiDevice = struct {
             .texture_sampler_bindings = texture_sampler_bindings,
             .storage_buffers = storage_buffers,
             .storage_textures = storage_textures,
+            .slot_offset = desc.slot_offset,
         };
     }
 
@@ -724,24 +732,24 @@ pub const RhiDevice = struct {
         switch (bind_group.stage) {
             .vertex => {
                 if (bind_group.texture_sampler_bindings.len > 0) {
-                    sdl.SDL_BindGPUVertexSamplers(pass.raw, 0, bind_group.texture_sampler_bindings.ptr, @intCast(bind_group.texture_sampler_bindings.len));
+                    sdl.SDL_BindGPUVertexSamplers(pass.raw, bind_group.slot_offset, bind_group.texture_sampler_bindings.ptr, @intCast(bind_group.texture_sampler_bindings.len));
                 }
                 if (bind_group.storage_textures.len > 0) {
-                    sdl.SDL_BindGPUVertexStorageTextures(pass.raw, 0, bind_group.storage_textures.ptr, @intCast(bind_group.storage_textures.len));
+                    sdl.SDL_BindGPUVertexStorageTextures(pass.raw, bind_group.slot_offset, bind_group.storage_textures.ptr, @intCast(bind_group.storage_textures.len));
                 }
                 if (bind_group.storage_buffers.len > 0) {
-                    sdl.SDL_BindGPUVertexStorageBuffers(pass.raw, 0, bind_group.storage_buffers.ptr, @intCast(bind_group.storage_buffers.len));
+                    sdl.SDL_BindGPUVertexStorageBuffers(pass.raw, bind_group.slot_offset, bind_group.storage_buffers.ptr, @intCast(bind_group.storage_buffers.len));
                 }
             },
             .fragment => {
                 if (bind_group.texture_sampler_bindings.len > 0) {
-                    sdl.SDL_BindGPUFragmentSamplers(pass.raw, 0, bind_group.texture_sampler_bindings.ptr, @intCast(bind_group.texture_sampler_bindings.len));
+                    sdl.SDL_BindGPUFragmentSamplers(pass.raw, bind_group.slot_offset, bind_group.texture_sampler_bindings.ptr, @intCast(bind_group.texture_sampler_bindings.len));
                 }
                 if (bind_group.storage_textures.len > 0) {
-                    sdl.SDL_BindGPUFragmentStorageTextures(pass.raw, 0, bind_group.storage_textures.ptr, @intCast(bind_group.storage_textures.len));
+                    sdl.SDL_BindGPUFragmentStorageTextures(pass.raw, bind_group.slot_offset, bind_group.storage_textures.ptr, @intCast(bind_group.storage_textures.len));
                 }
                 if (bind_group.storage_buffers.len > 0) {
-                    sdl.SDL_BindGPUFragmentStorageBuffers(pass.raw, 0, bind_group.storage_buffers.ptr, @intCast(bind_group.storage_buffers.len));
+                    sdl.SDL_BindGPUFragmentStorageBuffers(pass.raw, bind_group.slot_offset, bind_group.storage_buffers.ptr, @intCast(bind_group.storage_buffers.len));
                 }
             },
         }

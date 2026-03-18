@@ -29,7 +29,7 @@ fn drawToolbarIconButton(
 ) !bool {
     const accent_tint = [4]u8{ 34, 197, 94, 255 };
     const idle_tint = [4]u8{ 153, 153, 163, 255 };
-    return ui_icons.drawIconButton(
+    const clicked = try ui_icons.drawIconButton(
         state,
         layer_context,
         id,
@@ -38,6 +38,10 @@ fn drawToolbarIconButton(
         if (active) accent_tint else idle_tint,
         if (active) ui_icons.palettes.toolbar_accent else ui_icons.palettes.toolbar_idle,
     );
+    if (engine.ui.ImGui.isItemHovered()) {
+        state.viewport_overlay_hovered = true;
+    }
+    return clicked;
 }
 
 fn drawOverlayIconButton(
@@ -49,7 +53,7 @@ fn drawOverlayIconButton(
 ) !bool {
     const active_tint = [4]u8{ 34, 197, 94, 255 };
     const idle_tint = [4]u8{ 153, 153, 163, 255 };
-    return ui_icons.drawIconButton(
+    const clicked = try ui_icons.drawIconButton(
         state,
         layer_context,
         id,
@@ -58,6 +62,10 @@ fn drawOverlayIconButton(
         if (active) active_tint else idle_tint,
         if (active) ui_icons.palettes.toolbar_accent else ui_icons.palettes.toolbar_idle,
     );
+    if (engine.ui.ImGui.isItemHovered()) {
+        state.viewport_overlay_hovered = true;
+    }
+    return clicked;
 }
 
 fn setPlaybackState(state: *EditorState, layer_context: *engine.core.LayerContext, playback_state: PlaybackState) void {
@@ -234,17 +242,11 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
     );
     defer engine.ui.ImGui.endWindow();
 
-    _ = engine.ui.ImGui.beginChild("viewport_canvas", 0.0, 0.0, false);
-    defer engine.ui.ImGui.endChild();
-
     const content_size = engine.ui.ImGui.contentRegionAvail();
     state.viewport_origin = engine.ui.ImGui.cursorScreenPos();
-    state.viewport_extent = .{
-        @max(content_size[0], 0.0),
-        @max(content_size[1], 0.0),
-    };
-    state.viewport_hovered = false;
+    state.viewport_extent = .{ content_size[0], content_size[1] };
     state.viewport_focused = engine.ui.ImGui.isWindowFocused();
+    state.viewport_hovered = engine.ui.ImGui.isWindowHovered();
     state.viewport_has_image = false;
     state.viewport_overlay_hovered = false;
 
@@ -257,7 +259,6 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
             @max(state.viewport_extent[1], 8.0),
         };
         engine.ui.ImGui.image(texture, image_size[0], image_size[1]);
-        state.viewport_hovered = engine.ui.ImGui.isItemHovered();
         state.viewport_has_image = true;
         try handleViewportAssetDropTargets(state, layer_context);
         try drawViewportOverlayControlsWindow(state, layer_context);
@@ -922,7 +923,7 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
         engine.ui.ImGui.text("3x");
     }
 
-    if (engine.ui.ImGui.isWindowHovered() or view_popup_open or render_popup_open or overlay_popup_open) {
+    if (view_popup_open or render_popup_open or overlay_popup_open) {
         state.viewport_overlay_hovered = true;
     }
 }
@@ -955,6 +956,8 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
     )) {
         setPlaybackState(state, layer_context, .playing);
     }
+    if (engine.ui.ImGui.isItemHovered()) state.viewport_overlay_hovered = true;
+
     engine.ui.ImGui.sameLine();
     if (try drawPlaybackToolbarIconButton(
         state,
@@ -965,6 +968,8 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
     )) {
         setPlaybackState(state, layer_context, .paused);
     }
+    if (engine.ui.ImGui.isItemHovered()) state.viewport_overlay_hovered = true;
+
     engine.ui.ImGui.sameLine();
     if (try drawPlaybackToolbarIconButton(
         state,
@@ -975,10 +980,7 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
     )) {
         stepPlayback(state, layer_context);
     }
-
-    if (engine.ui.ImGui.isWindowHovered()) {
-        state.viewport_overlay_hovered = true;
-    }
+    if (engine.ui.ImGui.isItemHovered()) state.viewport_overlay_hovered = true;
 }
 
 fn drawViewportViewCube(state: *EditorState, layer_context: *engine.core.LayerContext) void {

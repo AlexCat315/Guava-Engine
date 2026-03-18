@@ -41,7 +41,7 @@ pub const BasePass = struct {
         pass: rhi_mod.RenderPass,
         prepared_scene: *const mesh_pass_mod.PreparedScene,
         viewport_state: render_types.EditorViewportState,
-    ) mesh_pass_mod.DrawStats {
+    ) !mesh_pass_mod.DrawStats {
         var stats = mesh_pass_mod.DrawStats{};
         if (!self.isReady()) {
             return stats;
@@ -76,9 +76,11 @@ pub const BasePass = struct {
                 .camera_world_position = prepared_scene.camera_world_position,
                 .light_direction = .{ main_light.direction[0], main_light.direction[1], main_light.direction[2], 0.0 },
                 .light_color_intensity = .{ main_light.color[0], main_light.color[1], main_light.color[2], main_light.intensity },
+                .light_space_matrix = prepared_scene.light_space_matrix,
                 .point_light_position_radius = .{ point_light.position[0], point_light.position[1], point_light.position[2], point_light.range },
                 .point_light_color_intensity = .{ point_light.color[0], point_light.color[1], point_light.color[2], point_light.intensity },
                 .ambient_color = prepared_scene.ambient_color,
+                .shadow_params = .{ 0.005, 0.0, 0.0, 0.0 }, // bias
             };
             if (viewport_state.render_mode == .unlit) {
                 fragment_uniforms.light_color_intensity = .{ 0.0, 0.0, 0.0, 0.0 };
@@ -89,6 +91,20 @@ pub const BasePass = struct {
             device.bindVertexBuffer(pass, 0, &item.vertex_buffer, 0);
             device.bindIndexBuffer(pass, &item.index_buffer, .u32, 0);
             device.bindGroup(pass, &item.bind_group);
+
+            if (prepared_scene.shadow_map) |sm| {
+                const shadow_bindings = [_]rhi_mod.TextureSamplerBinding{
+                    .{ .texture = sm, .sampler = prepared_scene.shadow_sampler.? },
+                };
+                var shadow_bg = try device.createBindGroup(.{
+                    .stage = .fragment,
+                    .texture_sampler_bindings = shadow_bindings[0..],
+                    .slot_offset = 5,
+                });
+                defer device.releaseBindGroup(&shadow_bg);
+                device.bindGroup(pass, &shadow_bg);
+            }
+
             device.pushVertexUniformData(frame, 0, std.mem.asBytes(&vertex_uniforms));
             device.pushFragmentUniformData(frame, 0, std.mem.asBytes(&fragment_uniforms));
             device.drawIndexedPrimitives(pass, item.index_count, 1, 0, 0, 0);

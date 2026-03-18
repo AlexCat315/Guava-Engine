@@ -35,9 +35,11 @@ pub const BasePassUniforms = extern struct {
     camera_world_position: [4]f32,
     light_direction: [4]f32,
     light_color_intensity: [4]f32,
+    light_space_matrix: [16]f32,
     point_light_position_radius: [4]f32,
     point_light_color_intensity: [4]f32,
     ambient_color: [4]f32,
+    shadow_params: [4]f32, // x: bias, y: unused, z: unused, w: unused
 };
 
 pub const DrawItem = struct {
@@ -90,6 +92,9 @@ pub const PreparedScene = struct {
     view_projection: [16]f32,
     camera_world_position: [4]f32,
     lights: LightBlock,
+    light_space_matrix: [16]f32,
+    shadow_map: ?*const rhi_mod.Texture = null,
+    shadow_sampler: ?*const rhi_mod.Sampler = null,
     ambient_color: [4]f32,
     opaque_meshes: []DrawItem,
     transparent_meshes: []DrawItem,
@@ -331,6 +336,9 @@ pub const MeshSceneCache = struct {
                 .directional_lights = try directional_lights.toOwnedSlice(self.allocator),
                 .point_lights = try point_lights.toOwnedSlice(self.allocator),
             },
+            .light_space_matrix = math.identity(),
+            .shadow_map = null,
+            .shadow_sampler = null,
             .ambient_color = .{ 0.14, 0.15, 0.18, 1.0 },
             .opaque_meshes = try opaque_meshes.toOwnedSlice(self.allocator),
             .transparent_meshes = try transparent_meshes.toOwnedSlice(self.allocator),

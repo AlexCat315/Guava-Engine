@@ -5,6 +5,7 @@ const material_resource_mod = @import("../assets/material_resource.zig");
 const registry_mod = @import("../assets/registry.zig");
 const texture_resource_mod = @import("../assets/texture_resource.zig");
 const base_pass_mod = @import("base_pass.zig");
+const shadow_pass_mod = @import("shadow_pass.zig");
 const depth_prepass_mod = @import("depth_prepass.zig");
 const id_pass_mod = @import("id_pass.zig");
 const gizmo_pass_mod = @import("gizmo_pass.zig");
@@ -142,6 +143,50 @@ const SceneViewportState = struct {
             return texture;
         }
         return null;
+    }
+};
+
+const ShadowMapState = struct {
+    size: u32 = 2048,
+    depth_texture: ?rhi_mod.Texture = null,
+    sampler: ?rhi_mod.Sampler = null,
+
+    fn init(device: *rhi_mod.RhiDevice) !ShadowMapState {
+        const size: u32 = 2048;
+        const depth_texture = try device.createTexture(.{
+            .width = size,
+            .height = size,
+            .format = .d32_float,
+            .usage = rhi_types.TextureUsage.depth_stencil_target | rhi_types.TextureUsage.sampler,
+            .label = "ShadowMap",
+        });
+
+        const sampler = try device.createSampler(.{
+            .min_filter = .linear,
+            .mag_filter = .linear,
+            .mipmap_mode = .nearest,
+            .address_mode_u = .clamp_to_edge,
+            .address_mode_v = .clamp_to_edge,
+            .address_mode_w = .clamp_to_edge,
+            .enable_compare = true,
+            .compare_op = .less,
+        });
+
+        return .{
+            .size = size,
+            .depth_texture = depth_texture,
+            .sampler = sampler,
+        };
+    }
+
+    fn deinit(self: *ShadowMapState, device: *rhi_mod.RhiDevice) void {
+        if (self.depth_texture) |*texture| {
+            device.releaseTexture(texture);
+        }
+        if (self.sampler) |*sampler| {
+            device.releaseSampler(sampler);
+        }
+        self.* = .{};
     }
 };
 
@@ -381,6 +426,7 @@ pub const Renderer = struct {
     thumbnail_render_world: scene_extraction.RenderWorld,
     id_pass: id_pass_mod.IdPass,
     depth_prepass: depth_prepass_mod.DepthPrepass,
+    shadow_pass: shadow_pass_mod.ShadowPass,
     base_pass: base_pass_mod.BasePass,
     outline_pass: outline_pass_mod.OutlinePass,
     gizmo_pass: gizmo_pass_mod.GizmoPass,
@@ -391,6 +437,7 @@ pub const Renderer = struct {
     pending_selection_readbacks: std.ArrayList(SelectionReadbackRequest) = .empty,
     in_flight_selection_batches: std.ArrayList(InFlightSelectionBatch) = .empty,
     scene_viewport: SceneViewportState = .{},
+    shadow_map: ShadowMapState = .{},
     material_thumbnail_preview: MaterialThumbnailPreview,
     material_thumbnail_cache: std.ArrayList(MaterialThumbnailCacheEntry) = .empty,
     material_thumbnail_requests: std.ArrayList([]u8) = .empty,
@@ -422,6 +469,7 @@ pub const Renderer = struct {
             .thumbnail_render_world = scene_extraction.RenderWorld.init(allocator),
             .id_pass = undefined,
             .depth_prepass = undefined,
+            .shadow_pass = undefined,
             .base_pass = undefined,
             .outline_pass = undefined,
             .gizmo_pass = undefined,
@@ -449,6 +497,12 @@ pub const Renderer = struct {
         renderer.depth_prepass = try depth_prepass_mod.DepthPrepass.init(&renderer.rhi);
         errdefer renderer.depth_prepass.deinit(&renderer.rhi);
 
+        renderer.shadow_pass = try shadow_pass_mod.ShadowPass.init(&renderer.rhi);
+        errdefer renderer.shadow_pass.deinit(&renderer.rhi);
+
+        renderer.shadow_map = try ShadowMapState.init(&renderer.rhi);
+        errdefer renderer.shadow_map.deinit(&renderer.rhi);
+
         renderer.base_pass = try base_pass_mod.BasePass.init(&renderer.rhi);
         errdefer renderer.base_pass.deinit(&renderer.rhi);
 
@@ -474,6 +528,8 @@ pub const Renderer = struct {
         self.gizmo_pass.deinit(&self.rhi);
         self.outline_pass.deinit(&self.rhi);
         self.base_pass.deinit(&self.rhi);
+        self.shadow_map.deinit(&self.rhi);
+        self.shadow_pass.deinit(&self.rhi);
         self.depth_prepass.deinit(&self.rhi);
         self.id_pass.deinit(&self.rhi);
         self.scene_cache.deinit(&self.rhi);
@@ -666,6 +722,23 @@ pub const Renderer = struct {
 
             try self.id_pass.ensureTargetSize(&self.rhi, render_width, render_height);
 
+            const light_space_matrix = blk_lsm: {
+                const main_light = if (prepared_scene.lights.directional_lights.len > 0)
+                    prepared_scene.lights.directional_lights[0]
+                else
+                    mesh_pass_mod.DirectionalLightBlock{ .direction = vec3.normalize(.{ 0.3, -0.9, -0.2 }), .color = .{ 1.0, 0.98, 0.92 }, .intensity = 1.6 };
+
+                const mat4 = @import("../math/mat4.zig");
+                // Position light "behind" the direction
+                const light_pos = vec3.scale(vec3.normalize(main_light.direction), -20.0);
+                const light_view = mat4.lookAt(light_pos, .{ 0.0, 0.0, 0.0 }, .{ 0.0, 1.0, 0.0 });
+                const light_proj = mat4.orthographic(40.0, 1.0, 0.1, 100.0);
+                break :blk_lsm mat4.mul(light_proj, light_view);
+            };
+            prepared_scene.light_space_matrix = light_space_matrix;
+            prepared_scene.shadow_map = &self.shadow_map.depth_texture.?;
+            prepared_scene.shadow_sampler = &self.shadow_map.sampler.?;
+
             const scene_color_target: rhi_mod.ColorTarget = if (viewport_active)
                 .{ .texture = self.scene_viewport.color().? }
             else
@@ -687,6 +760,23 @@ pub const Renderer = struct {
             };
 
             var draw_stats = mesh_pass_mod.DrawStats{};
+
+            if (self.shadow_pass.isReady()) {
+                const shadow_render_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
+                    .color = .{},
+                    .depth = .{
+                        .texture = &self.shadow_map.depth_texture.?,
+                        .clear_depth = 1.0,
+                        .load_op = .clear,
+                        .store_op = .store,
+                    },
+                });
+                const shadow_start = std.time.nanoTimestamp();
+                const shadow_stats = self.shadow_pass.draw(&self.rhi, frame, shadow_render_pass, &prepared_scene, light_space_matrix);
+                self.graph.recordPassStat(pass_stats, .shadow_map, durationNs(shadow_start, std.time.nanoTimestamp()), shadow_stats.draw_calls, shadow_stats.triangles_drawn);
+                draw_stats.add(shadow_stats);
+                self.rhi.endRenderPass(shadow_render_pass);
+            }
 
             if (self.id_pass.isReady()) {
                 const id_texture = self.id_pass.texture().?;
@@ -721,7 +811,7 @@ pub const Renderer = struct {
             draw_stats.add(depth_stats);
 
             const base_start = std.time.nanoTimestamp();
-            const base_stats = self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene, self.editor_viewport_state);
+            const base_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene, self.editor_viewport_state);
             self.graph.recordPassStat(pass_stats, .base_pass, durationNs(base_start, std.time.nanoTimestamp()), base_stats.draw_calls, base_stats.triangles_drawn);
             draw_stats.add(base_stats);
             self.rhi.endRenderPass(scene_pass);
@@ -984,7 +1074,7 @@ pub const Renderer = struct {
 
             const depth_stats = self.depth_prepass.draw(&self.rhi, frame, render_pass, &prepared_scene);
             stats.add(depth_stats);
-            const base_stats = self.base_pass.draw(&self.rhi, frame, render_pass, &prepared_scene, thumbnail_viewport_state);
+            const base_stats = try self.base_pass.draw(&self.rhi, frame, render_pass, &prepared_scene, thumbnail_viewport_state);
             stats.add(base_stats);
             self.rhi.endRenderPass(render_pass);
 

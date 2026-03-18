@@ -96,6 +96,28 @@ pub fn viewMatrix(transform: components.Transform) Mat4 {
     return mul(inverse_rotate, inverse_translate);
 }
 
+pub fn lookAt(eye: components.Vec3, target: components.Vec3, up: components.Vec3) Mat4 {
+    const vec3 = @import("vec3.zig");
+    const z = vec3.normalize(vec3.sub(eye, target));
+    const x = vec3.normalize(vec3.cross(up, z));
+    const y = vec3.cross(z, x);
+
+    var result = identity();
+    set(&result, 0, 0, x[0]);
+    set(&result, 0, 1, x[1]);
+    set(&result, 0, 2, x[2]);
+    set(&result, 0, 3, -vec3.dot(x, eye));
+    set(&result, 1, 0, y[0]);
+    set(&result, 1, 1, y[1]);
+    set(&result, 1, 2, y[2]);
+    set(&result, 1, 3, -vec3.dot(y, eye));
+    set(&result, 2, 0, z[0]);
+    set(&result, 2, 1, z[1]);
+    set(&result, 2, 2, z[2]);
+    set(&result, 2, 3, -vec3.dot(z, eye));
+    return result;
+}
+
 pub fn perspective(fov_y_radians: f32, aspect_ratio: f32, near_clip: f32, far_clip: f32) Mat4 {
     const f = 1.0 / std.math.tan(fov_y_radians * 0.5);
     var result: Mat4 = [_]f32{0.0} ** 16;
