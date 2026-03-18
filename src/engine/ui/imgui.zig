@@ -200,6 +200,10 @@ pub fn wantsCaptureKeyboard() bool {
     return c.guava_imgui_want_capture_keyboard();
 }
 
+pub fn wantsTextInput() bool {
+    return c.guava_imgui_want_text_input();
+}
+
 pub fn getItemRectMin() [2]f32 {
     var x: f32 = 0;
     var y: f32 = 0;

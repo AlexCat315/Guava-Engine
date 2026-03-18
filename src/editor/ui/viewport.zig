@@ -41,6 +41,9 @@ fn drawToolbarIconButton(
     );
     if (engine.ui.ImGui.isItemHovered()) {
         state.viewport_overlay_hovered = true;
+        if (layer_context.input.wasMousePressed(.left)) {
+            state.manipulation_started_from_ui = true;
+        }
     }
     return clicked;
 }
@@ -65,6 +68,9 @@ fn drawOverlayIconButton(
     );
     if (engine.ui.ImGui.isItemHovered()) {
         state.viewport_overlay_hovered = true;
+        if (layer_context.input.wasMousePressed(.left)) {
+            state.manipulation_started_from_ui = true;
+        }
     }
     return clicked;
 }
@@ -867,7 +873,6 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
             engine.ui.ImGui.WindowFlags.no_move |
             engine.ui.ImGui.WindowFlags.no_saved_settings |
             engine.ui.ImGui.WindowFlags.no_docking |
-            engine.ui.ImGui.WindowFlags.no_background |
             engine.ui.ImGui.WindowFlags.always_auto_resize,
     );
     defer engine.ui.ImGui.endWindow();
@@ -984,7 +989,6 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
             engine.ui.ImGui.WindowFlags.no_move |
             engine.ui.ImGui.WindowFlags.no_saved_settings |
             engine.ui.ImGui.WindowFlags.no_docking |
-            engine.ui.ImGui.WindowFlags.no_background |
             engine.ui.ImGui.WindowFlags.always_auto_resize,
     );
     defer engine.ui.ImGui.endWindow();
@@ -995,7 +999,7 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
     if (mouse_pressed_on_ui) {
         state.manipulation_started_from_ui = true;
     }
-    
+
     if (try drawPlaybackToolbarIconButton(
         state,
         layer_context,
@@ -1012,7 +1016,7 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
     if (mouse_pressed_on_ui2) {
         state.manipulation_started_from_ui = true;
     }
-    
+
     if (try drawPlaybackToolbarIconButton(
         state,
         layer_context,
@@ -1029,7 +1033,7 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
     if (mouse_pressed_on_ui3) {
         state.manipulation_started_from_ui = true;
     }
-    
+
     if (try drawPlaybackToolbarIconButton(
         state,
         layer_context,

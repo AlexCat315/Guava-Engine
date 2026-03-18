@@ -172,6 +172,7 @@ pub const EditorState = struct {
     hierarchy_rename_buffer: [256]u8 = [_]u8{0} ** 256,
     hierarchy_rename_focus_pending: bool = false,
     editor_camera_active: bool = true,
+    camera_drag_active: bool = false,
     focus_pivot: [3]f32 = .{ 0.0, 1.0, 0.0 },
     yaw: f32 = 0.0,
     pitch: f32 = -0.55, // ~-31 degrees - downward angle for better scene overview

@@ -15,7 +15,7 @@ const TransformSpace = state_mod.TransformSpace;
 pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const input = layer_context.input;
 
-    if (engine.ui.ImGui.wantsCaptureKeyboard()) {
+    if (engine.ui.ImGui.wantsTextInput()) {
         return;
     }
 
@@ -228,29 +228,70 @@ fn clearManipulationSnapshot(state: *EditorState) void {
 }
 
 pub fn applyManipulation(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+    const input = layer_context.input;
+
+    // 1. ALWAYS reset UI interaction lock on mouse release to prevent deadlocks
+    if (!input.isMouseDown(.left)) {
+        state.manipulation_started_from_ui = false;
+
+        if (state.manipulation_drag_active) {
+            if (state.manipulation_entity) |entity_id| {
+                if (state.manipulation_snapshot) |before| {
+                    state.manipulation_snapshot = null; // Prevent double free
+                    history.recordEntityMutation(state, layer_context, before, &.{entity_id}) catch |err| {
+                        std.log.err("Failed to commit manipulation history: {}", .{err});
+                    };
+
+                    clearManipulationSnapshot(state); // Now safe since snapshot is null
+                    if (history.captureEntitySnapshot(state, layer_context.world, entity_id)) |new_snapshot| {
+                        state.manipulation_snapshot = new_snapshot;
+                    } else |err| {
+                        std.log.err("Failed to capture snapshot: {}", .{err});
+                    }
+
+                    if (layer_context.world.worldTransform(entity_id)) |transform| {
+                        state.manipulation_origin = transform;
+                    }
+                }
+            }
+            state.manipulation_drag_active = false;
+            state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
+            state.manipulation_accumulated_delta = .{ 0.0, 0.0 };
+        }
+        return;
+    }
+
+    // 2. If the drag started on a UI element, ignore all movement
+    if (state.manipulation_started_from_ui) {
+        return;
+    }
+
     const entity_id = state.manipulation_entity orelse return;
     const current_transform = layer_context.world.worldTransform(entity_id) orelse {
         endManipulation(state);
         return;
     };
-    const input = layer_context.input;
-    if (!state.viewport_has_image or !state.viewport_hovered or state.viewport_overlay_hovered or input.modifiers.alt) {
-        return;
+
+    // 3. Prevent starting a drag if outside viewport or using alt (camera),
+    //    but allow continuing a drag even if mouse leaves viewport
+    if (!state.manipulation_drag_active) {
+        if (!state.viewport_has_image or !state.viewport_hovered or state.viewport_overlay_hovered or input.modifiers.alt) {
+            return;
+        }
     }
-    if (!input.isMouseDown(.left)) {
-        state.manipulation_drag_active = false;
-        state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
-        state.manipulation_started_from_ui = false; // 鼠标释放时重置UI标志
-        return;
-    }
+
+    // 4. Start or continue drag
     if (input.wasMousePressed(.left) or !state.manipulation_drag_active) {
         state.manipulation_origin = current_transform;
         state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
+        state.manipulation_accumulated_delta = .{ 0.0, 0.0 };
         state.manipulation_drag_active = true;
     }
+
     if (@abs(input.mouse_delta[0]) < 0.0001 and @abs(input.mouse_delta[1]) < 0.0001) {
         return;
     }
+
     state.manipulation_drag_accumulator[0] += input.mouse_delta[0];
     state.manipulation_drag_accumulator[1] += input.mouse_delta[1];
     state.manipulation_accumulated_delta[0] += input.mouse_delta[0];
@@ -278,7 +319,7 @@ pub fn applyTranslate(
     const right = vec3.rightFromYaw(camera_euler[1]);
     const forward = vec3.forwardFromAngles(camera_euler[1], camera_euler[0]);
     const up = vec3.normalize(vec3.cross(right, forward));
-    
+
     // 使用manipulation_origin锁定距离计算，防止操作过程中的速率抖动
     const distance = @max(vec3.length(vec3.sub(camera_transform.translation, state.manipulation_origin.translation)), 1.0);
     const move_scale = distance * state.translation_drag_sensitivity;
@@ -288,7 +329,7 @@ pub fn applyTranslate(
         .free => {
             const delta = vec3.add(
                 vec3.scale(right, state.manipulation_accumulated_delta[0] * move_scale),
-                vec3.scale(up, -state.manipulation_accumulated_delta[1] * move_scale),
+                vec3.scale(up, state.manipulation_accumulated_delta[1] * move_scale),
             );
             entity_transform.translation = vec3.add(state.manipulation_origin.translation, delta);
         },
@@ -306,7 +347,7 @@ pub fn applyTranslate(
         const delta_x = entity_transform.translation[0] - origin[0];
         const delta_y = entity_transform.translation[1] - origin[1];
         const delta_z = entity_transform.translation[2] - origin[2];
-        
+
         entity_transform.translation = .{
             origin[0] + @round(delta_x / snap) * snap,
             origin[1] + @round(delta_y / snap) * snap,
@@ -314,13 +355,12 @@ pub fn applyTranslate(
         };
     }
 }
-
 pub fn applyRotate(state: *EditorState, entity_transform: *engine.scene.Transform) void {
     // 基于累计偏移量计算旋转
     const scalar = combinedDrag(state.manipulation_accumulated_delta) * state.rotation_drag_sensitivity;
     const origin_euler = quat.toEuler(state.manipulation_origin.rotation);
     var euler = origin_euler;
-    
+
     switch (state.manipulation_axis) {
         .free => {
             euler[1] -= state.manipulation_accumulated_delta[0] * state.rotation_drag_sensitivity;
@@ -337,21 +377,21 @@ pub fn applyRotate(state: *EditorState, entity_transform: *engine.scene.Transfor
         const delta_x = euler[0] - origin_euler[0];
         const delta_y = euler[1] - origin_euler[1];
         const delta_z = euler[2] - origin_euler[2];
-        
+
         euler = .{
             origin_euler[0] + @round(delta_x / snap_radians) * snap_radians,
             origin_euler[1] + @round(delta_y / snap_radians) * snap_radians,
             origin_euler[2] + @round(delta_z / snap_radians) * snap_radians,
         };
     }
-    
+
     entity_transform.rotation = quat.fromEuler(euler);
 }
 
 pub fn applyScale(state: *EditorState, entity_transform: *engine.scene.Transform) void {
     // 使用累计偏移量计算标量
     const scalar = 1.0 + combinedDrag(state.manipulation_accumulated_delta) * state.scale_drag_sensitivity;
-    
+
     // 始终从原点计算，避免精度丢失
     var raw_scale = state.manipulation_origin.scale;
     switch (state.manipulation_axis) {
@@ -372,14 +412,14 @@ pub fn applyScale(state: *EditorState, entity_transform: *engine.scene.Transform
         const delta_x = raw_scale[0] - origin[0];
         const delta_y = raw_scale[1] - origin[1];
         const delta_z = raw_scale[2] - origin[2];
-        
+
         raw_scale = .{
             origin[0] + @round(delta_x / snap) * snap,
             origin[1] + @round(delta_y / snap) * snap,
             origin[2] + @round(delta_z / snap) * snap,
         };
     }
-    
+
     entity_transform.scale = .{
         utils.clampScale(raw_scale[0]),
         utils.clampScale(raw_scale[1]),
@@ -412,7 +452,7 @@ fn manipulationAxisVector(space: TransformSpace, axis: state_mod.AxisConstraint,
 }
 
 fn combinedDrag(drag: [2]f32) f32 {
-    return drag[0] - drag[1];
+    return drag[0] + drag[1];
 }
 
 fn snapVec3FromOrigin(origin: [3]f32, target: [3]f32, step: f32) [3]f32 {

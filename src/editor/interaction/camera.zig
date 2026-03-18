@@ -13,9 +13,9 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
     const input = layer_context.input;
     const tool_active = state.manipulation_mode != .none;
 
-    // Fix 1: Only cancel view cube transition when actually dragging camera
-    const is_dragging_camera = input.isMouseDown(.right) or input.isMouseDown(.middle) or (input.isMouseDown(.left) and input.modifiers.alt);
-    if (state.view_cube_transition_active and is_dragging_camera) {
+    const is_dragging_input = input.isMouseDown(.right) or input.isMouseDown(.middle) or (input.isMouseDown(.left) and input.modifiers.alt);
+
+    if (state.view_cube_transition_active and is_dragging_input) {
         state.view_cube_transition_active = false;
     }
     updateViewCubeTransition(state, layer_context);
@@ -24,93 +24,90 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
         return;
     }
 
-    // Fix 2: Only check if mouse is hovering viewport, not ImGui capture
     const is_hovering_viewport = state.viewport_hovered and !state.viewport_overlay_hovered;
-    if (!is_hovering_viewport and !is_dragging_camera) {
-        return;
-    }
 
-    // Exit if actively clicking on overlay (toolbar, gizmo, etc.)
-    const is_clicking_overlay = state.viewport_overlay_hovered and (input.isMouseDown(.left) or input.isMouseDown(.right) or input.isMouseDown(.middle));
-    if (is_clicking_overlay) {
-        return;
+    if (!is_dragging_input) {
+        state.camera_drag_active = false;
+    } else if (input.wasMousePressed(.right) or input.wasMousePressed(.middle) or (input.wasMousePressed(.left) and (!tool_active or input.modifiers.alt))) {
+        if (is_hovering_viewport) {
+            state.camera_drag_active = true;
+        }
     }
 
     const camera_id = state.editor_camera orelse return;
     const camera = layer_context.world.getEntity(camera_id) orelse return;
 
-    // Left-click or alt+left-click: orbit around focus point.
-    // When a transform tool is active, reserve plain left drag for object manipulation.
-    if (input.isMouseDown(.left) and (!tool_active or input.modifiers.alt)) {
-        state.yaw -= input.mouse_delta[0] * state.orbit_sensitivity;
-        state.pitch = utils.clampPitch(state.pitch - input.mouse_delta[1] * state.orbit_sensitivity);
-        if (@abs(input.mouse_delta[0]) > 0.0001 or @abs(input.mouse_delta[1]) > 0.0001) {
-            state.viewport_view_preset = .custom;
+    if (state.camera_drag_active) {
+        if (input.isMouseDown(.left) and (!tool_active or input.modifiers.alt)) {
+            state.yaw -= input.mouse_delta[0] * state.orbit_sensitivity;
+            state.pitch = utils.clampPitch(state.pitch - input.mouse_delta[1] * state.orbit_sensitivity);
+            if (@abs(input.mouse_delta[0]) > 0.0001 or @abs(input.mouse_delta[1]) > 0.0001) {
+                state.viewport_view_preset = .custom;
+            }
+            const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
+            camera.local_transform.rotation = quat.fromEuler(.{ state.pitch, state.yaw, 0.0 });
+            camera.local_transform.translation = vec3.sub(state.focus_pivot, vec3.scale(forward, state.orbit_distance));
         }
-        const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
+
+        if (input.isMouseDown(.right)) {
+            state.yaw -= input.mouse_delta[0] * state.look_sensitivity;
+            state.pitch = utils.clampPitch(state.pitch - input.mouse_delta[1] * state.look_sensitivity);
+            if (@abs(input.mouse_delta[0]) > 0.0001 or @abs(input.mouse_delta[1]) > 0.0001) {
+                state.viewport_view_preset = .custom;
+            }
+        }
+
         camera.local_transform.rotation = quat.fromEuler(.{ state.pitch, state.yaw, 0.0 });
-        camera.local_transform.translation = vec3.sub(state.focus_pivot, vec3.scale(forward, state.orbit_distance));
-    }
 
-    // Right-click: free look + WASD movement
-    if (input.isMouseDown(.right)) {
-        state.yaw -= input.mouse_delta[0] * state.look_sensitivity;
-        state.pitch = utils.clampPitch(state.pitch - input.mouse_delta[1] * state.look_sensitivity);
-        if (@abs(input.mouse_delta[0]) > 0.0001 or @abs(input.mouse_delta[1]) > 0.0001) {
-            state.viewport_view_preset = .custom;
+        if (input.isMouseDown(.right)) {
+            const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
+            const right = vec3.rightFromYaw(state.yaw);
+            const move_up = [3]f32{ 0.0, 1.0, 0.0 };
+            const boost: f32 = if (input.modifiers.shift) state.camera_boost_multiplier else 1.0;
+            const step = moveSpeed(state, layer_context.delta_seconds) * boost;
+            var movement = [3]f32{ 0.0, 0.0, 0.0 };
+
+            if (input.isKeyDown(.w)) movement = vec3.add(movement, vec3.scale(forward, step));
+            if (input.isKeyDown(.s)) movement = vec3.sub(movement, vec3.scale(forward, step));
+            if (input.isKeyDown(.d)) movement = vec3.add(movement, vec3.scale(right, step));
+            if (input.isKeyDown(.a)) movement = vec3.sub(movement, vec3.scale(right, step));
+            if (input.isKeyDown(.e)) movement = vec3.add(movement, vec3.scale(move_up, step));
+            if (input.isKeyDown(.q)) movement = vec3.sub(movement, vec3.scale(move_up, step));
+
+            camera.local_transform.translation = vec3.add(camera.local_transform.translation, movement);
+            state.focus_pivot = vec3.add(camera.local_transform.translation, vec3.scale(forward, state.orbit_distance));
+        }
+
+        if (input.isMouseDown(.middle)) {
+            const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
+            const right = vec3.rightFromYaw(state.yaw);
+            const up = vec3.normalize(vec3.cross(right, forward));
+            const pan_scale = @max(state.orbit_distance, 1.0) * state.pan_sensitivity * 0.05;
+            const pan = vec3.add(
+                vec3.scale(right, -input.mouse_delta[0] * pan_scale),
+                vec3.scale(up, input.mouse_delta[1] * pan_scale),
+            );
+            camera.local_transform.translation = vec3.add(camera.local_transform.translation, pan);
+            state.focus_pivot = vec3.add(state.focus_pivot, pan);
         }
     }
 
-    camera.local_transform.rotation = quat.fromEuler(.{ state.pitch, state.yaw, 0.0 });
+    // Always process zoom if hovering viewport (no need to click)
+    if (state.viewport_hovered and !state.viewport_overlay_hovered) {
+        if (@abs(input.mouse_wheel[1]) > 0.001) {
+            const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
+            const zoom_step = input.mouse_wheel[1] * state.wheel_speed * @max(state.orbit_distance * 0.2, 0.8);
+            camera.local_transform.translation = vec3.add(camera.local_transform.translation, vec3.scale(forward, zoom_step));
+            state.orbit_distance = utils.clampDistance(vec3.length(vec3.sub(state.focus_pivot, camera.local_transform.translation)));
+        }
 
-    // WASD movement when right mouse is held
-    if (input.isMouseDown(.right)) {
-        const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
-        const right = vec3.rightFromYaw(state.yaw);
-        const move_up = [3]f32{ 0.0, 1.0, 0.0 };
-        const boost: f32 = if (input.modifiers.shift) state.camera_boost_multiplier else 1.0;
-        const step = moveSpeed(state, layer_context.delta_seconds) * boost;
-        var movement = [3]f32{ 0.0, 0.0, 0.0 };
-
-        if (input.isKeyDown(.w)) movement = vec3.add(movement, vec3.scale(forward, step));
-        if (input.isKeyDown(.s)) movement = vec3.sub(movement, vec3.scale(forward, step));
-        if (input.isKeyDown(.d)) movement = vec3.add(movement, vec3.scale(right, step));
-        if (input.isKeyDown(.a)) movement = vec3.sub(movement, vec3.scale(right, step));
-        if (input.isKeyDown(.e)) movement = vec3.add(movement, vec3.scale(move_up, step));
-        if (input.isKeyDown(.q)) movement = vec3.sub(movement, vec3.scale(move_up, step));
-
-        camera.local_transform.translation = vec3.add(camera.local_transform.translation, movement);
-        state.focus_pivot = vec3.add(camera.local_transform.translation, vec3.scale(forward, state.orbit_distance));
-    }
-
-    // Middle-click: pan
-    if (input.isMouseDown(.middle)) {
-        const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
-        const right = vec3.rightFromYaw(state.yaw);
-        const up = vec3.normalize(vec3.cross(right, forward));
-        const pan_scale = @max(state.orbit_distance, 1.0) * state.pan_sensitivity * 0.05;
-        const pan = vec3.add(
-            vec3.scale(right, -input.mouse_delta[0] * pan_scale),
-            vec3.scale(up, input.mouse_delta[1] * pan_scale),
-        );
-        camera.local_transform.translation = vec3.add(camera.local_transform.translation, pan);
-        state.focus_pivot = vec3.add(state.focus_pivot, pan);
-    }
-
-    if (@abs(input.mouse_wheel[1]) > 0.001) {
-        const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
-        const zoom_step = input.mouse_wheel[1] * state.wheel_speed * @max(state.orbit_distance * 0.2, 0.8);
-        camera.local_transform.translation = vec3.add(camera.local_transform.translation, vec3.scale(forward, zoom_step));
-        state.orbit_distance = utils.clampDistance(vec3.length(vec3.sub(state.focus_pivot, camera.local_transform.translation)));
-    }
-
-    // Horizontal scroll with shift + wheel
-    if (@abs(input.mouse_wheel[0]) > 0.001) {
-        const right = vec3.rightFromYaw(state.yaw);
-        const pan_step = input.mouse_wheel[0] * state.wheel_speed * @max(state.orbit_distance * 0.3, 1.0);
-        const pan = vec3.scale(right, pan_step);
-        camera.local_transform.translation = vec3.add(camera.local_transform.translation, pan);
-        state.focus_pivot = vec3.add(state.focus_pivot, pan);
+        if (@abs(input.mouse_wheel[0]) > 0.001) {
+            const right = vec3.rightFromYaw(state.yaw);
+            const pan_step = input.mouse_wheel[0] * state.wheel_speed * @max(state.orbit_distance * 0.3, 1.0);
+            const pan = vec3.scale(right, pan_step);
+            camera.local_transform.translation = vec3.add(camera.local_transform.translation, pan);
+            state.focus_pivot = vec3.add(state.focus_pivot, pan);
+        }
     }
 
     camera.local_transform.rotation = quat.fromEuler(.{ state.pitch, state.yaw, 0.0 });

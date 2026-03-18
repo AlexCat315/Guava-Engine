@@ -753,6 +753,13 @@ extern "C" bool guava_imgui_want_capture_keyboard(void) {
   return ImGui::GetIO().WantCaptureKeyboard;
 }
 
+extern "C" bool guava_imgui_want_text_input(void) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  return ImGui::GetIO().WantTextInput;
+}
+
 extern "C" void guava_imgui_get_item_rect_min(float *x, float *y) {
   if (!g_imgui_initialized) {
     return;

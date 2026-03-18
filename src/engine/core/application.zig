@@ -191,7 +191,7 @@ pub const Application = struct {
     fn pumpEvents(self: *Application) !void {
         while (try self.window.pollEvent()) |event| {
             imgui_mod.processEvent(&event.raw);
-            const wants_keyboard = imgui_mod.wantsCaptureKeyboard();
+            const wants_text_input = imgui_mod.wantsTextInput();
             switch (event.kind) {
                 .resized, .pixel_size_changed, .metal_view_resized, .exposed => {
                     try self.renderer.handleResize(event.width, event.height);
@@ -227,7 +227,7 @@ pub const Application = struct {
                 },
                 .key_down => {
                     self.input.setModifiers(event.modifiers);
-                    if (!wants_keyboard) {
+                    if (!wants_text_input) {
                         if (event.key) |key| {
                             self.input.setKey(key, true);
                         }
@@ -236,7 +236,7 @@ pub const Application = struct {
                 .key_up => {
                     self.input.setModifiers(event.modifiers);
                     if (event.key) |key| {
-                        if (!wants_keyboard or self.input.isKeyDown(key)) {
+                        if (!wants_text_input or self.input.isKeyDown(key)) {
                             self.input.setKey(key, false);
                         }
                     }
