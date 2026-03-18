@@ -701,6 +701,7 @@ pub const Renderer = struct {
                 &self.render_world,
                 self.selection_history.primarySelection(),
                 self.selection_history.currentSelection(),
+                null, // No frustum culling at extraction level, handled in mesh_pass for now
             );
 
             var prepared_scene = try self.scene_cache.prepareScene(
@@ -1043,6 +1044,7 @@ pub const Renderer = struct {
                 &self.thumbnail_render_world,
                 null,
                 &.{},
+                null,
             );
 
             var prepared_scene = try self.thumbnail_scene_cache.prepareScene(

@@ -2,6 +2,8 @@ const std = @import("std");
 const components = @import("../scene/components.zig");
 const scene_mod = @import("../scene/scene.zig");
 
+const frustum_mod = @import("../math/frustum.zig");
+
 pub const RenderCamera = struct {
     entity_id: scene_mod.EntityId,
     transform: components.Transform,
@@ -112,6 +114,7 @@ pub fn extractWorld(
     render_world: *RenderWorld,
     primary_selection: ?scene_mod.EntityId,
     selection_list: []const scene_mod.EntityId,
+    frustum: ?frustum_mod.Frustum,
 ) !void {
     render_world.clear();
 
@@ -147,6 +150,15 @@ pub fn extractWorld(
         }
 
         if (entity.mesh) |mesh| {
+            // Frustum Culling for meshes
+            if (frustum) |f| {
+                if (world.worldBoundsConst(entity.id)) |bounds| {
+                    if (!f.intersectsAABB(bounds)) {
+                        continue;
+                    }
+                }
+            }
+
             try render_world.meshes.append(render_world.allocator, .{
                 .entity_id = entity.id,
                 .transform = world_transform,
@@ -157,6 +169,15 @@ pub fn extractWorld(
         }
 
         if (entity.vfx) |vfx| {
+            // Frustum Culling for VFX (using the same entity bounds)
+            if (frustum) |f| {
+                if (world.worldBoundsConst(entity.id)) |bounds| {
+                    if (!f.intersectsAABB(bounds)) {
+                        continue;
+                    }
+                }
+            }
+
             try render_world.vfxs.append(render_world.allocator, .{
                 .entity_id = entity.id,
                 .transform = world_transform,

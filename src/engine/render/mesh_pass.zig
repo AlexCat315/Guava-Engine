@@ -12,6 +12,8 @@ const components = @import("../scene/components.zig");
 const scene_mod = @import("../scene/scene.zig");
 const scene_extraction = @import("scene_extraction.zig");
 
+const frustum_mod = @import("../math/frustum.zig");
+
 pub const DrawStats = struct {
     draw_calls: usize = 0,
     triangles_drawn: usize = 0,
@@ -258,6 +260,7 @@ pub const MeshSceneCache = struct {
         };
 
         const view_projection = self.calculateViewProjection(camera_block, width, height);
+        const frustum = frustum_mod.Frustum.fromViewProjection(view_projection);
 
         var directional_lights = std.ArrayList(DirectionalLightBlock).empty;
         defer directional_lights.deinit(self.allocator);
@@ -278,6 +281,13 @@ pub const MeshSceneCache = struct {
         for (render_world.lights.point.items) |render_light| {
             const light = render_light.light;
             const world_transform = render_light.transform;
+            // Frustum Culling for point lights (using range as radius)
+            const light_bounds = @import("../math/aabb.zig").AABB{
+                .min = .{ world_transform.translation[0] - light.range, world_transform.translation[1] - light.range, world_transform.translation[2] - light.range },
+                .max = .{ world_transform.translation[0] + light.range, world_transform.translation[1] + light.range, world_transform.translation[2] + light.range },
+            };
+            if (!frustum.intersectsAABB(light_bounds)) continue;
+
             try point_lights.append(self.allocator, .{
                 .position = world_transform.translation,
                 .color = light.color,
@@ -296,6 +306,11 @@ pub const MeshSceneCache = struct {
             const mesh_handle = mesh_component.handle orelse continue;
             const mesh = world.resources.mesh(mesh_handle) orelse continue;
             if (mesh.primitive_type != .triangle_list) continue;
+
+            // Frustum Culling for meshes
+            if (world.worldBoundsConst(render_mesh.entity_id)) |bounds| {
+                if (!frustum.intersectsAABB(bounds)) continue;
+            }
 
             const gpu_mesh = try self.ensureMesh(device, mesh_handle, mesh);
             const material_state = try self.resolveMaterial(device, world, render_mesh.material);

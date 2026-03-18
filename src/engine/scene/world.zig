@@ -281,6 +281,11 @@ pub const World = struct {
         return entity.world_bounds_cache;
     }
 
+    pub fn worldBoundsConst(self: *const World, id: EntityId) ?AABB {
+        const entity = self.getEntityConst(id) orelse return null;
+        return entity.world_bounds_cache;
+    }
+
     pub fn setEntityWorldTransform(self: *World, id: EntityId, world_transform: components.Transform) bool {
         const entity = self.getEntity(id) orelse return false;
         if (entity.parent) |parent_id| {
