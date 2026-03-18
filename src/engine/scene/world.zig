@@ -70,6 +70,7 @@ pub const World = struct {
     job_system: ?*job_system_mod.JobSystem = null,
     vfx_runtime_emitters: std.ArrayList(vfx_runtime_mod.VfxRuntimeEmitter) = .empty,
     renderable_spatial_index: spatial_index_mod.StaticBoundsBvh,
+    dynamic_renderable_spatial_index: spatial_index_mod.StaticBoundsBvh,
     dynamic_renderables: std.AutoHashMap(EntityId, void),
 
     pub fn init(allocator: std.mem.Allocator, job_system: ?*job_system_mod.JobSystem) World {
@@ -79,6 +80,7 @@ pub const World = struct {
             .id_to_index = std.AutoHashMap(EntityId, usize).init(allocator),
             .job_system = job_system,
             .renderable_spatial_index = spatial_index_mod.StaticBoundsBvh.init(allocator),
+            .dynamic_renderable_spatial_index = spatial_index_mod.StaticBoundsBvh.init(allocator),
             .dynamic_renderables = std.AutoHashMap(EntityId, void).init(allocator),
         };
     }
@@ -99,6 +101,7 @@ pub const World = struct {
         self.entities.deinit(self.allocator);
         self.id_to_index.deinit();
         self.renderable_spatial_index.deinit();
+        self.dynamic_renderable_spatial_index.deinit();
         self.dynamic_renderables.deinit();
         self.resources.deinit();
         if (reinitialize) {
@@ -107,6 +110,7 @@ pub const World = struct {
             self.resources = assets_lib.ResourceLibrary.init(self.allocator, self.job_system);
             self.vfx_runtime_emitters = .empty;
             self.renderable_spatial_index = spatial_index_mod.StaticBoundsBvh.init(self.allocator);
+            self.dynamic_renderable_spatial_index = spatial_index_mod.StaticBoundsBvh.init(self.allocator);
             self.dynamic_renderables = std.AutoHashMap(EntityId, void).init(self.allocator);
         }
     }
@@ -186,6 +190,7 @@ pub const World = struct {
         const entity = self.getEntity(id) orelse return;
         if (self.promoteRenderableToDynamic(id)) {
             self.renderable_spatial_index.markDirty();
+            self.dynamic_renderable_spatial_index.markDirty();
         }
         if (entity.dirty) return;
 
@@ -844,13 +849,14 @@ pub const World = struct {
         defer allocator.free(static_candidates);
         try candidates.appendSlice(allocator, static_candidates);
 
-        var dynamic_iter = self.dynamic_renderables.keyIterator();
-        while (dynamic_iter.next()) |entity_id_ptr| {
-            const bounds = self.worldBoundsConst(entity_id_ptr.*) orelse continue;
-            if (bounds.rayIntersection(ray_origin, ray_direction, max_distance) != null) {
-                try candidates.append(allocator, entity_id_ptr.*);
-            }
-        }
+        const dynamic_candidates = try self.dynamic_renderable_spatial_index.queryRayCandidates(
+            allocator,
+            ray_origin,
+            ray_direction,
+            max_distance,
+        );
+        defer allocator.free(dynamic_candidates);
+        try candidates.appendSlice(allocator, dynamic_candidates);
 
         return try candidates.toOwnedSlice(allocator);
     }
@@ -869,13 +875,9 @@ pub const World = struct {
         defer allocator.free(static_candidates);
         try candidates.appendSlice(allocator, static_candidates);
 
-        var dynamic_iter = self.dynamic_renderables.keyIterator();
-        while (dynamic_iter.next()) |entity_id_ptr| {
-            const bounds = self.worldBoundsConst(entity_id_ptr.*) orelse continue;
-            if (frustum.intersectsAABB(bounds)) {
-                try candidates.append(allocator, entity_id_ptr.*);
-            }
-        }
+        const dynamic_candidates = try self.dynamic_renderable_spatial_index.queryFrustumCandidates(allocator, frustum);
+        defer allocator.free(dynamic_candidates);
+        try candidates.appendSlice(allocator, dynamic_candidates);
 
         return try candidates.toOwnedSlice(allocator);
     }
@@ -929,6 +931,7 @@ pub const World = struct {
         const index = self.id_to_index.get(id) orelse return;
         const entity = &self.entities.items[index];
         self.renderable_spatial_index.markDirty();
+        self.dynamic_renderable_spatial_index.markDirty();
         _ = self.dynamic_renderables.remove(id);
 
         // Remove from parent's children list
@@ -1003,32 +1006,43 @@ pub const World = struct {
             self.updateHierarchy();
         }
 
-        if (!self.renderable_spatial_index.dirty) {
+        if (!self.renderable_spatial_index.dirty and !self.dynamic_renderable_spatial_index.dirty) {
             return;
         }
 
-        var bounds_items = std.ArrayList(spatial_index_mod.BoundsItem).empty;
-        defer bounds_items.deinit(self.allocator);
+        var static_bounds_items = std.ArrayList(spatial_index_mod.BoundsItem).empty;
+        defer static_bounds_items.deinit(self.allocator);
+        var dynamic_bounds_items = std.ArrayList(spatial_index_mod.BoundsItem).empty;
+        defer dynamic_bounds_items.deinit(self.allocator);
 
         for (self.entities.items) |entity| {
             if (entity.mesh == null and entity.vfx == null) {
                 continue;
             }
             if (self.dynamic_renderables.contains(entity.id)) {
+                const bounds = self.worldBoundsConst(entity.id) orelse continue;
+                if (!bounds.isValid()) {
+                    continue;
+                }
+                try dynamic_bounds_items.append(self.allocator, .{
+                    .id = entity.id,
+                    .bounds = bounds,
+                });
                 continue;
             }
             const bounds = self.worldBoundsConst(entity.id) orelse continue;
             if (!bounds.isValid()) {
                 continue;
             }
-            try bounds_items.append(self.allocator, .{
+            try static_bounds_items.append(self.allocator, .{
                 .id = entity.id,
                 .bounds = bounds,
             });
         }
 
-        // 统一维护 renderable 空间索引，供视锥剔除与 raycast broad phase 共享。
-        try self.renderable_spatial_index.rebuild(bounds_items.items);
+        // 统一维护 renderable 空间索引，静态/动态各自重建，避免动态对象拖累整棵静态树。
+        try self.renderable_spatial_index.rebuild(static_bounds_items.items);
+        try self.dynamic_renderable_spatial_index.rebuild(dynamic_bounds_items.items);
     }
 
     fn promoteRenderableToDynamic(self: *World, id: EntityId) bool {
@@ -1382,6 +1396,7 @@ test "renderable spatial index moves dirty meshes into dynamic partition" {
     );
     defer std.testing.allocator.free(initial);
     try std.testing.expectEqual(@as(usize, 2), world.renderable_spatial_index.itemCount());
+    try std.testing.expectEqual(@as(usize, 0), world.dynamic_renderable_spatial_index.itemCount());
     try std.testing.expectEqual(@as(usize, 0), world.dynamic_renderables.count());
 
     try std.testing.expect(world.setEntityLocalTransform(a, .{
@@ -1397,6 +1412,7 @@ test "renderable spatial index moves dirty meshes into dynamic partition" {
     );
     defer std.testing.allocator.free(after_first_move);
     try std.testing.expectEqual(@as(usize, 1), world.renderable_spatial_index.itemCount());
+    try std.testing.expectEqual(@as(usize, 1), world.dynamic_renderable_spatial_index.itemCount());
     try std.testing.expectEqual(@as(usize, 1), world.dynamic_renderables.count());
 
     try std.testing.expect(world.setEntityLocalTransform(a, .{
@@ -1412,6 +1428,7 @@ test "renderable spatial index moves dirty meshes into dynamic partition" {
     );
     defer std.testing.allocator.free(after_second_move);
     try std.testing.expectEqual(@as(usize, 1), world.renderable_spatial_index.itemCount());
+    try std.testing.expectEqual(@as(usize, 1), world.dynamic_renderable_spatial_index.itemCount());
     try std.testing.expectEqual(@as(usize, 1), world.dynamic_renderables.count());
     try std.testing.expect(world.dynamic_renderables.contains(a));
     try std.testing.expect(!world.dynamic_renderables.contains(b));

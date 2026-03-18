@@ -4,8 +4,10 @@ const world_mod = @import("world.zig");
 const raycast_log = std.log.scoped(.raycast);
 
 const BvhLogSnapshot = struct {
-    items: usize,
-    nodes: usize,
+    static_items: usize,
+    static_nodes: usize,
+    dynamic_items: usize,
+    dynamic_nodes: usize,
 };
 
 var g_logged_bvh_snapshot: ?BvhLogSnapshot = null;
@@ -36,17 +38,22 @@ pub fn raycastSurface(world: *world_mod.World, ray: Ray) ?SurfaceRaycastHit {
     defer world.allocator.free(candidate_ids);
 
     const snapshot = BvhLogSnapshot{
-        .items = world.renderable_spatial_index.itemCount(),
-        .nodes = world.renderable_spatial_index.nodeCount(),
+        .static_items = world.renderable_spatial_index.itemCount(),
+        .static_nodes = world.renderable_spatial_index.nodeCount(),
+        .dynamic_items = world.dynamic_renderable_spatial_index.itemCount(),
+        .dynamic_nodes = world.dynamic_renderable_spatial_index.nodeCount(),
     };
     if (g_logged_bvh_snapshot == null or
-        g_logged_bvh_snapshot.?.items != snapshot.items or
-        g_logged_bvh_snapshot.?.nodes != snapshot.nodes)
+        g_logged_bvh_snapshot.?.static_items != snapshot.static_items or
+        g_logged_bvh_snapshot.?.static_nodes != snapshot.static_nodes or
+        g_logged_bvh_snapshot.?.dynamic_items != snapshot.dynamic_items or
+        g_logged_bvh_snapshot.?.dynamic_nodes != snapshot.dynamic_nodes)
     {
-        raycast_log.info("renderable broad phase rebuilt static_items={} nodes={} dynamic_items={}", .{
-            snapshot.items,
-            snapshot.nodes,
-            world.dynamic_renderables.count(),
+        raycast_log.info("renderable broad phase rebuilt static_items={} static_nodes={} dynamic_items={} dynamic_nodes={}", .{
+            snapshot.static_items,
+            snapshot.static_nodes,
+            snapshot.dynamic_items,
+            snapshot.dynamic_nodes,
         });
         g_logged_bvh_snapshot = snapshot;
     }
