@@ -11,6 +11,13 @@ pub const EditorViewportRenderMode = enum {
     unlit,
 };
 
+pub const EditorViewportLutPreset = enum {
+    neutral,
+    warm,
+    cool,
+    filmic,
+};
+
 pub const EditorViewportState = struct {
     render_mode: EditorViewportRenderMode = .textured,
     show_grid: bool = true,
@@ -29,6 +36,9 @@ pub const EditorViewportState = struct {
     color_grading_contrast: f32 = 1.0,
     color_grading_gamma: f32 = 1.0,
     fxaa_enabled: bool = false,
+    lut_enabled: bool = false,
+    lut_intensity: f32 = 1.0,
+    lut_preset: EditorViewportLutPreset = .neutral,
 };
 
 pub const SceneSnapshot = struct {

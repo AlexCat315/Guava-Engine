@@ -1,6 +1,7 @@
 const std = @import("std");
 const engine = @import("guava");
 const EditorState = @import("../../core/state.zig").EditorState;
+const ViewportLutPreset = @import("../../core/state.zig").ViewportLutPreset;
 const camera = @import("../../interaction/camera.zig");
 const layout = @import("../layout.zig");
 
@@ -108,6 +109,18 @@ pub fn drawRenderSettingsWindow(state: *EditorState, layer_context: *engine.core
     _ = engine.ui.ImGui.checkbox(state.text(.enable_fxaa), &state.viewport_fxaa_enabled);
 
     engine.ui.ImGui.separator();
+    engine.ui.ImGui.text(state.text(.lut));
+    _ = engine.ui.ImGui.checkbox(state.text(.enable_lut), &state.viewport_lut_enabled);
+    var lut_intensity = state.viewport_lut_intensity;
+    if (engine.ui.ImGui.dragFloat("##viewport_lut_intensity", &lut_intensity, 0.01, 0.0, 1.0)) {
+        state.viewport_lut_intensity = lut_intensity;
+    }
+    var lut_intensity_buffer: [32]u8 = undefined;
+    const lut_intensity_text = try std.fmt.bufPrint(&lut_intensity_buffer, "{d:.2}x", .{state.viewport_lut_intensity});
+    engine.ui.ImGui.labelText(state.text(.lut_intensity), lut_intensity_text);
+    drawLutPresetCombo(state);
+
+    engine.ui.ImGui.separator();
     engine.ui.ImGui.text(state.text(.coordinate_space));
     switch (drawButtonRow2(state.text(.local_space), state.text(.world_space), 112.0)) {
         .first => state.transform_space = .local,
@@ -158,4 +171,29 @@ fn drawButtonRow3(first: []const u8, second: []const u8, third: []const u8, min_
         return .third;
     }
     return .none;
+}
+
+fn drawLutPresetCombo(state: *EditorState) void {
+    const preview = lutPresetLabel(state, state.viewport_lut_preset);
+    if (!engine.ui.ImGui.beginCombo(state.text(.lut_preset), preview)) {
+        return;
+    }
+    defer engine.ui.ImGui.endCombo();
+
+    const presets = [_]ViewportLutPreset{ .neutral, .warm, .cool, .filmic };
+    for (presets) |preset| {
+        const selected = state.viewport_lut_preset == preset;
+        if (engine.ui.ImGui.selectable(lutPresetLabel(state, preset), selected, false, 0.0, 0.0)) {
+            state.viewport_lut_preset = preset;
+        }
+    }
+}
+
+fn lutPresetLabel(state: *const EditorState, preset: ViewportLutPreset) []const u8 {
+    return switch (preset) {
+        .neutral => state.text(.lut_neutral),
+        .warm => state.text(.lut_warm),
+        .cool => state.text(.lut_cool),
+        .filmic => state.text(.lut_filmic),
+    };
 }

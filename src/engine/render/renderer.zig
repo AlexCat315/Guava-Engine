@@ -739,10 +739,13 @@ pub const Renderer = struct {
             @abs(g_logged_postfx_state.?.color_grading_saturation - state.color_grading_saturation) > 0.0001 or
             @abs(g_logged_postfx_state.?.color_grading_contrast - state.color_grading_contrast) > 0.0001 or
             @abs(g_logged_postfx_state.?.color_grading_gamma - state.color_grading_gamma) > 0.0001 or
-            g_logged_postfx_state.?.fxaa_enabled != state.fxaa_enabled)
+            g_logged_postfx_state.?.fxaa_enabled != state.fxaa_enabled or
+            g_logged_postfx_state.?.lut_enabled != state.lut_enabled or
+            @abs(g_logged_postfx_state.?.lut_intensity - state.lut_intensity) > 0.0001 or
+            g_logged_postfx_state.?.lut_preset != state.lut_preset)
         {
             render_log.info(
-                "viewport postfx updated exposure_enabled={} exposure={d:.2} bloom_enabled={} bloom_threshold={d:.2} bloom_intensity={d:.2} color_grading_enabled={} saturation={d:.2} contrast={d:.2} gamma={d:.2} fxaa_enabled={}",
+                "viewport postfx updated exposure_enabled={} exposure={d:.2} bloom_enabled={} bloom_threshold={d:.2} bloom_intensity={d:.2} color_grading_enabled={} saturation={d:.2} contrast={d:.2} gamma={d:.2} fxaa_enabled={} lut_enabled={} lut_intensity={d:.2} lut_preset={s}",
                 .{
                     state.exposure_enabled,
                     state.exposure,
@@ -754,6 +757,9 @@ pub const Renderer = struct {
                     state.color_grading_contrast,
                     state.color_grading_gamma,
                     state.fxaa_enabled,
+                    state.lut_enabled,
+                    state.lut_intensity,
+                    @tagName(state.lut_preset),
                 },
             );
             g_logged_postfx_state = state;
@@ -1017,11 +1023,12 @@ pub const Renderer = struct {
 
                     if (self.tonemap_pass.isReady()) {
                         const bloom_input = if (bloom_enabled) self.scene_viewport.bloom().? else self.scene_viewport.hdrColor().?;
+                        const lut_texture = self.tonemap_pass.lutTexture(self.editor_viewport_state.lut_preset) orelse return error.TextureNotFound;
                         const tonemap_target: rhi_mod.ColorTarget = if (fxaa_enabled)
                             .{ .texture = self.scene_viewport.fxaa().? }
                         else
                             scene_color_target;
-                        try self.tonemap_pass.syncTextures(&self.rhi, self.scene_viewport.hdrColor().?, bloom_input);
+                        try self.tonemap_pass.syncTextures(&self.rhi, self.scene_viewport.hdrColor().?, bloom_input, lut_texture);
                         const tonemap_render_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
                             .color = .{
                                 .target = tonemap_target,
@@ -1043,6 +1050,8 @@ pub const Renderer = struct {
                             self.editor_viewport_state.color_grading_saturation,
                             self.editor_viewport_state.color_grading_contrast,
                             self.editor_viewport_state.color_grading_gamma,
+                            self.editor_viewport_state.lut_enabled,
+                            self.editor_viewport_state.lut_intensity,
                         );
                         self.rhi.endRenderPass(tonemap_render_pass);
                     }

@@ -726,6 +726,9 @@ fn syncViewportState(state: *EditorState, layer_context: *engine.core.LayerConte
         .color_grading_contrast = state.viewport_color_grading_contrast,
         .color_grading_gamma = state.viewport_color_grading_gamma,
         .fxaa_enabled = state.viewport_fxaa_enabled,
+        .lut_enabled = state.viewport_lut_enabled,
+        .lut_intensity = state.viewport_lut_intensity,
+        .lut_preset = state.viewport_lut_preset,
     });
 }
 
