@@ -77,6 +77,7 @@ pub const World = struct {
     renderable_spatial_index: spatial_index_mod.StaticBoundsBvh,
     dynamic_renderable_spatial_index: spatial_index_mod.StaticBoundsBvh,
     dynamic_renderables: std.AutoHashMap(EntityId, DynamicRenderableState),
+    dynamic_dirty_renderables: std.AutoHashMap(EntityId, void),
 
     pub fn init(allocator: std.mem.Allocator, job_system: ?*job_system_mod.JobSystem) World {
         return .{
@@ -87,6 +88,7 @@ pub const World = struct {
             .renderable_spatial_index = spatial_index_mod.StaticBoundsBvh.init(allocator),
             .dynamic_renderable_spatial_index = spatial_index_mod.StaticBoundsBvh.init(allocator),
             .dynamic_renderables = std.AutoHashMap(EntityId, DynamicRenderableState).init(allocator),
+            .dynamic_dirty_renderables = std.AutoHashMap(EntityId, void).init(allocator),
         };
     }
 
@@ -108,6 +110,7 @@ pub const World = struct {
         self.renderable_spatial_index.deinit();
         self.dynamic_renderable_spatial_index.deinit();
         self.dynamic_renderables.deinit();
+        self.dynamic_dirty_renderables.deinit();
         self.resources.deinit();
         if (reinitialize) {
             self.entities = .empty;
@@ -117,6 +120,7 @@ pub const World = struct {
             self.renderable_spatial_index = spatial_index_mod.StaticBoundsBvh.init(self.allocator);
             self.dynamic_renderable_spatial_index = spatial_index_mod.StaticBoundsBvh.init(self.allocator);
             self.dynamic_renderables = std.AutoHashMap(EntityId, DynamicRenderableState).init(self.allocator);
+            self.dynamic_dirty_renderables = std.AutoHashMap(EntityId, void).init(self.allocator);
         }
     }
 
@@ -196,10 +200,13 @@ pub const World = struct {
         if (entity.mesh != null or entity.vfx != null) {
             if (self.dynamic_renderables.getPtr(id)) |state| {
                 state.steady_query_count = 0;
-                self.dynamic_renderable_spatial_index.markDirty();
+                self.dynamic_dirty_renderables.put(id, {}) catch {
+                    self.dynamic_renderable_spatial_index.markDirty();
+                };
             } else if (self.promoteRenderableToDynamic(id)) {
                 self.renderable_spatial_index.markDirty();
                 self.dynamic_renderable_spatial_index.markDirty();
+                self.dynamic_dirty_renderables.put(id, {}) catch {};
             } else {
                 self.renderable_spatial_index.markDirty();
             }
@@ -945,6 +952,7 @@ pub const World = struct {
         self.renderable_spatial_index.markDirty();
         self.dynamic_renderable_spatial_index.markDirty();
         _ = self.dynamic_renderables.remove(id);
+        _ = self.dynamic_dirty_renderables.remove(id);
 
         // Remove from parent's children list
         if (entity.parent) |parent_id| {
@@ -1019,6 +1027,7 @@ pub const World = struct {
         }
 
         const reintegrated_dynamic = try self.reintegrateStableDynamicRenderables();
+        try self.refitDirtyDynamicRenderables();
 
         if (!self.renderable_spatial_index.dirty and !self.dynamic_renderable_spatial_index.dirty and !reintegrated_dynamic) {
             return;
@@ -1057,6 +1066,7 @@ pub const World = struct {
         // 统一维护 renderable 空间索引，静态/动态各自重建，避免动态对象拖累整棵静态树。
         try self.renderable_spatial_index.rebuild(static_bounds_items.items);
         try self.dynamic_renderable_spatial_index.rebuild(dynamic_bounds_items.items);
+        self.dynamic_dirty_renderables.clearRetainingCapacity();
     }
 
     fn promoteRenderableToDynamic(self: *World, id: EntityId) bool {
@@ -1108,10 +1118,41 @@ pub const World = struct {
 
         for (reintegrate_ids.items) |entity_id| {
             _ = self.dynamic_renderables.remove(entity_id);
+            _ = self.dynamic_dirty_renderables.remove(entity_id);
         }
         self.renderable_spatial_index.markDirty();
         self.dynamic_renderable_spatial_index.markDirty();
         return true;
+    }
+
+    fn refitDirtyDynamicRenderables(self: *World) !void {
+        if (self.dynamic_dirty_renderables.count() == 0 or self.dynamic_renderable_spatial_index.dirty) {
+            return;
+        }
+
+        var iter = self.dynamic_dirty_renderables.keyIterator();
+        while (iter.next()) |entity_id_ptr| {
+            const entity_id = entity_id_ptr.*;
+            if (!self.dynamic_renderables.contains(entity_id)) {
+                continue;
+            }
+            const bounds = self.worldBoundsConst(entity_id) orelse {
+                self.dynamic_renderable_spatial_index.markDirty();
+                break;
+            };
+            if (!bounds.isValid()) {
+                self.dynamic_renderable_spatial_index.markDirty();
+                break;
+            }
+            if (!self.dynamic_renderable_spatial_index.updateItemBounds(entity_id, bounds)) {
+                self.dynamic_renderable_spatial_index.markDirty();
+                break;
+            }
+        }
+
+        if (!self.dynamic_renderable_spatial_index.dirty) {
+            self.dynamic_dirty_renderables.clearRetainingCapacity();
+        }
     }
 
     fn hasDirtyEntities(self: *const World) bool {
@@ -1501,4 +1542,51 @@ test "renderable spatial index moves dirty meshes into dynamic partition" {
     try std.testing.expectEqual(@as(usize, 2), world.renderable_spatial_index.itemCount());
     try std.testing.expectEqual(@as(usize, 0), world.dynamic_renderable_spatial_index.itemCount());
     try std.testing.expectEqual(@as(usize, 0), world.dynamic_renderables.count());
+}
+
+test "dynamic renderable movement refits dynamic BVH without growing dynamic partition" {
+    var world = World.init(std.testing.allocator);
+    defer world.deinit();
+
+    const entity_id = try world.createPrimitiveEntity(.plane, .{
+        .translation = .{ 0.0, 0.0, 0.0 },
+        .rotation = @import("../math/quat.zig").fromEuler(.{ -std.math.pi * 0.5, 0.0, 0.0 }),
+    });
+
+    const initial_query = try world.queryRenderableRayCandidates(
+        std.testing.allocator,
+        .{ -5.0, 0.0, 0.0 },
+        .{ 1.0, 0.0, 0.0 },
+        16.0,
+    );
+    defer std.testing.allocator.free(initial_query);
+
+    try std.testing.expect(world.setEntityLocalTransform(entity_id, .{
+        .translation = .{ 4.0, 0.0, 0.0 },
+        .rotation = @import("../math/quat.zig").fromEuler(.{ -std.math.pi * 0.5, 0.0, 0.0 }),
+    }));
+    const after_first_move = try world.queryRenderableRayCandidates(
+        std.testing.allocator,
+        .{ -5.0, 0.0, 0.0 },
+        .{ 1.0, 0.0, 0.0 },
+        16.0,
+    );
+    defer std.testing.allocator.free(after_first_move);
+    try std.testing.expectEqual(@as(usize, 1), world.dynamic_renderable_spatial_index.itemCount());
+    const first_dynamic_nodes = world.dynamic_renderable_spatial_index.nodeCount();
+
+    try std.testing.expect(world.setEntityLocalTransform(entity_id, .{
+        .translation = .{ 6.0, 0.0, 0.0 },
+        .rotation = @import("../math/quat.zig").fromEuler(.{ -std.math.pi * 0.5, 0.0, 0.0 }),
+    }));
+    const after_second_move = try world.queryRenderableRayCandidates(
+        std.testing.allocator,
+        .{ -5.0, 0.0, 0.0 },
+        .{ 1.0, 0.0, 0.0 },
+        16.0,
+    );
+    defer std.testing.allocator.free(after_second_move);
+    try std.testing.expectEqual(@as(usize, 1), world.dynamic_renderable_spatial_index.itemCount());
+    try std.testing.expectEqual(first_dynamic_nodes, world.dynamic_renderable_spatial_index.nodeCount());
+    try std.testing.expectEqual(@as(usize, 1), world.dynamic_renderables.count());
 }
