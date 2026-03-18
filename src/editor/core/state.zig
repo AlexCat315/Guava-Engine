@@ -181,6 +181,10 @@ pub const EditorState = struct {
     pan_sensitivity: f32 = 0.01,
     wheel_speed: f32 = 1.2,
     move_speed: f32 = 6.0,
+    camera_boost_multiplier: f32 = 3.5,
+    translation_drag_sensitivity: f32 = 0.0025,
+    rotation_drag_sensitivity: f32 = 0.01,
+    scale_drag_sensitivity: f32 = 0.01,
     translation_snap_enabled: bool = false,
     translation_snap_step: f32 = 10.0,
     rotation_snap_enabled: bool = false,
@@ -191,6 +195,10 @@ pub const EditorState = struct {
     manipulation_axis: AxisConstraint = .free,
     manipulation_entity: ?engine.scene.EntityId = null,
     manipulation_origin: engine.scene.Transform = .{},
+    manipulation_drag_active: bool = false,
+    manipulation_started_from_ui: bool = false, // 记录拖拽是否从UI元素开始，防止事件穿透
+    manipulation_drag_accumulator: [2]f32 = .{ 0.0, 0.0 },
+    manipulation_accumulated_delta: [2]f32 = .{ 0.0, 0.0 }, // 用于记录单次操作中鼠标的累计X/Y偏移
     manipulation_snapshot: ?command_mod.EntitySnapshot = null,
     transform_component_clipboard: ?engine.scene.Transform = null,
     mesh_component_clipboard: ?MeshComponentClipboard = null,
@@ -482,6 +490,12 @@ test "viewport drop defaults and payload constants stay stable" {
     try std.testing.expectEqual(@as(f32, 15.0), state.rotation_snap_step_degrees);
     try std.testing.expect(!state.scale_snap_enabled);
     try std.testing.expectEqual(@as(f32, 0.1), state.scale_snap_step);
+    try std.testing.expectEqual(@as(f32, 3.5), state.camera_boost_multiplier);
+    try std.testing.expectEqual(@as(f32, 0.0025), state.translation_drag_sensitivity);
+    try std.testing.expectEqual(@as(f32, 0.01), state.rotation_drag_sensitivity);
+    try std.testing.expectEqual(@as(f32, 0.01), state.scale_drag_sensitivity);
+    try std.testing.expect(!state.manipulation_drag_active);
+    try std.testing.expectEqual([2]f32{ 0.0, 0.0 }, state.manipulation_drag_accumulator);
     try std.testing.expect(state.pending_viewport_drop == null);
 
     const pending = PendingViewportDrop{

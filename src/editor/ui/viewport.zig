@@ -989,6 +989,13 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
     );
     defer engine.ui.ImGui.endWindow();
 
+    // 检查鼠标是否在UI上按下，设置标志防止事件穿透
+    const input = layer_context.input;
+    const mouse_pressed_on_ui = engine.ui.ImGui.isItemHovered() and input.wasMousePressed(.left);
+    if (mouse_pressed_on_ui) {
+        state.manipulation_started_from_ui = true;
+    }
+    
     if (try drawPlaybackToolbarIconButton(
         state,
         layer_context,
@@ -998,9 +1005,14 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
     )) {
         setPlaybackState(state, layer_context, .playing);
     }
-    if (engine.ui.ImGui.isItemHovered()) state.viewport_overlay_hovered = true;
+    if (engine.ui.ImGui.isItemHovered() or state.manipulation_started_from_ui) state.viewport_overlay_hovered = true;
 
     engine.ui.ImGui.sameLine();
+    const mouse_pressed_on_ui2 = engine.ui.ImGui.isItemHovered() and input.wasMousePressed(.left);
+    if (mouse_pressed_on_ui2) {
+        state.manipulation_started_from_ui = true;
+    }
+    
     if (try drawPlaybackToolbarIconButton(
         state,
         layer_context,
@@ -1010,9 +1022,14 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
     )) {
         setPlaybackState(state, layer_context, .paused);
     }
-    if (engine.ui.ImGui.isItemHovered()) state.viewport_overlay_hovered = true;
+    if (engine.ui.ImGui.isItemHovered() or state.manipulation_started_from_ui) state.viewport_overlay_hovered = true;
 
     engine.ui.ImGui.sameLine();
+    const mouse_pressed_on_ui3 = engine.ui.ImGui.isItemHovered() and input.wasMousePressed(.left);
+    if (mouse_pressed_on_ui3) {
+        state.manipulation_started_from_ui = true;
+    }
+    
     if (try drawPlaybackToolbarIconButton(
         state,
         layer_context,
@@ -1022,7 +1039,7 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
     )) {
         stepPlayback(state, layer_context);
     }
-    if (engine.ui.ImGui.isItemHovered()) state.viewport_overlay_hovered = true;
+    if (engine.ui.ImGui.isItemHovered() or state.manipulation_started_from_ui) state.viewport_overlay_hovered = true;
 }
 
 fn drawViewportFpsOverlayWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {

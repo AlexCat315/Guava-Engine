@@ -68,7 +68,7 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
         const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
         const right = vec3.rightFromYaw(state.yaw);
         const move_up = [3]f32{ 0.0, 1.0, 0.0 };
-        const boost: f32 = if (input.modifiers.shift) 3.5 else 1.0;
+        const boost: f32 = if (input.modifiers.shift) state.camera_boost_multiplier else 1.0;
         const step = moveSpeed(state, layer_context.delta_seconds) * boost;
         var movement = [3]f32{ 0.0, 0.0, 0.0 };
 

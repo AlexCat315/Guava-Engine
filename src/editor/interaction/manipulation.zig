@@ -160,6 +160,9 @@ pub fn beginManipulation(
     state.manipulation_axis = .free;
     state.manipulation_entity = selected;
     state.manipulation_origin = layer_context.world.worldTransform(selected) orelse return;
+    state.manipulation_drag_active = false;
+    state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
+    state.manipulation_accumulated_delta = .{ 0.0, 0.0 }; // 重置累计偏移量
     clearManipulationSnapshot(state);
     state.manipulation_snapshot = try history.captureEntitySnapshot(state, layer_context.world, selected);
     syncGizmoState(state, layer_context);
@@ -177,6 +180,9 @@ pub fn endManipulation(state: *EditorState) void {
     state.manipulation_mode = .none;
     state.manipulation_axis = .free;
     state.manipulation_entity = null;
+    state.manipulation_drag_active = false;
+    state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
+    state.manipulation_accumulated_delta = .{ 0.0, 0.0 };
 }
 
 pub fn cancelManipulation(state: *EditorState, layer_context: *engine.core.LayerContext) void {
@@ -202,6 +208,10 @@ fn commitManipulation(state: *EditorState, layer_context: *engine.core.LayerCont
     state.manipulation_mode = .none;
     state.manipulation_axis = .free;
     state.manipulation_entity = null;
+    state.manipulation_drag_active = false;
+    state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
+    state.manipulation_accumulated_delta = .{ 0.0, 0.0 };
+    state.manipulation_started_from_ui = false;
     try history.recordEntityMutation(state, layer_context, before, &.{entity_id});
     syncGizmoState(state, layer_context);
 }
@@ -219,7 +229,7 @@ fn clearManipulationSnapshot(state: *EditorState) void {
 
 pub fn applyManipulation(state: *EditorState, layer_context: *engine.core.LayerContext) void {
     const entity_id = state.manipulation_entity orelse return;
-    var entity_transform = layer_context.world.worldTransform(entity_id) orelse {
+    const current_transform = layer_context.world.worldTransform(entity_id) orelse {
         endManipulation(state);
         return;
     };
@@ -228,58 +238,75 @@ pub fn applyManipulation(state: *EditorState, layer_context: *engine.core.LayerC
         return;
     }
     if (!input.isMouseDown(.left)) {
+        state.manipulation_drag_active = false;
+        state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
+        state.manipulation_started_from_ui = false; // 鼠标释放时重置UI标志
         return;
+    }
+    if (input.wasMousePressed(.left) or !state.manipulation_drag_active) {
+        state.manipulation_origin = current_transform;
+        state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
+        state.manipulation_drag_active = true;
     }
     if (@abs(input.mouse_delta[0]) < 0.0001 and @abs(input.mouse_delta[1]) < 0.0001) {
         return;
     }
+    state.manipulation_drag_accumulator[0] += input.mouse_delta[0];
+    state.manipulation_drag_accumulator[1] += input.mouse_delta[1];
+    state.manipulation_accumulated_delta[0] += input.mouse_delta[0];
+    state.manipulation_accumulated_delta[1] += input.mouse_delta[1];
+
+    var entity_transform = state.manipulation_origin;
 
     switch (state.manipulation_mode) {
         .none => {},
         .translate => applyTranslate(state, layer_context, &entity_transform),
-        .rotate => applyRotate(state, input, &entity_transform),
-        .scale => applyScale(state, input, &entity_transform),
+        .rotate => applyRotate(state, &entity_transform),
+        .scale => applyScale(state, &entity_transform),
     }
 
     _ = layer_context.world.setEntityWorldTransform(entity_id, entity_transform);
 }
 
 pub fn applyTranslate(
-    state: *const EditorState,
+    state: *EditorState,
     layer_context: *engine.core.LayerContext,
     entity_transform: *engine.scene.Transform,
 ) void {
-    const input = layer_context.input;
     const camera_transform = camera.activeCameraTransform(state, layer_context);
     const camera_euler = quat.toEuler(camera_transform.rotation);
     const right = vec3.rightFromYaw(camera_euler[1]);
     const forward = vec3.forwardFromAngles(camera_euler[1], camera_euler[0]);
     const up = vec3.normalize(vec3.cross(right, forward));
-    const distance = @max(vec3.length(vec3.sub(camera_transform.translation, entity_transform.translation)), 1.0);
-    const move_scale = distance * 0.0025;
+    
+    // 使用manipulation_origin锁定距离计算，防止操作过程中的速率抖动
+    const distance = @max(vec3.length(vec3.sub(camera_transform.translation, state.manipulation_origin.translation)), 1.0);
+    const move_scale = distance * state.translation_drag_sensitivity;
 
+    // 基于累计偏移量计算
     switch (state.manipulation_axis) {
         .free => {
             const delta = vec3.add(
-                vec3.scale(right, input.mouse_delta[0] * move_scale),
-                vec3.scale(up, -input.mouse_delta[1] * move_scale),
+                vec3.scale(right, state.manipulation_accumulated_delta[0] * move_scale),
+                vec3.scale(up, -state.manipulation_accumulated_delta[1] * move_scale),
             );
-            entity_transform.translation = vec3.add(entity_transform.translation, delta);
+            entity_transform.translation = vec3.add(state.manipulation_origin.translation, delta);
         },
         .x, .y, .z => {
-            const axis = manipulationAxisVector(state.transform_space, state.manipulation_axis, entity_transform.rotation);
-            const scalar = (input.mouse_delta[0] - input.mouse_delta[1]) * move_scale;
-            entity_transform.translation = vec3.add(entity_transform.translation, vec3.scale(axis, scalar));
+            const axis = manipulationAxisVector(state.transform_space, state.manipulation_axis, state.manipulation_origin.rotation);
+            const scalar = combinedDrag(state.manipulation_accumulated_delta) * move_scale;
+            entity_transform.translation = vec3.add(state.manipulation_origin.translation, vec3.scale(axis, scalar));
         },
     }
 
+    // 对计算出的绝对值进行Snap，不污染下一次计算
     if (state.translation_snap_enabled) {
-        // Snap relative to manipulation origin
         const origin = state.manipulation_origin.translation;
         const snap = state.translation_snap_step;
         const delta_x = entity_transform.translation[0] - origin[0];
         const delta_y = entity_transform.translation[1] - origin[1];
         const delta_z = entity_transform.translation[2] - origin[2];
+        
         entity_transform.translation = .{
             origin[0] + @round(delta_x / snap) * snap,
             origin[1] + @round(delta_y / snap) * snap,
@@ -288,63 +315,76 @@ pub fn applyTranslate(
     }
 }
 
-pub fn applyRotate(state: *const EditorState, input: *const engine.core.InputState, entity_transform: *engine.scene.Transform) void {
-    const scalar = (input.mouse_delta[0] - input.mouse_delta[1]) * 0.01;
-    var euler = quat.toEuler(entity_transform.rotation);
+pub fn applyRotate(state: *EditorState, entity_transform: *engine.scene.Transform) void {
+    // 基于累计偏移量计算旋转
+    const scalar = combinedDrag(state.manipulation_accumulated_delta) * state.rotation_drag_sensitivity;
+    const origin_euler = quat.toEuler(state.manipulation_origin.rotation);
+    var euler = origin_euler;
+    
     switch (state.manipulation_axis) {
         .free => {
-            euler[1] -= input.mouse_delta[0] * 0.01;
-            euler[0] -= input.mouse_delta[1] * 0.01;
+            euler[1] -= state.manipulation_accumulated_delta[0] * state.rotation_drag_sensitivity;
+            euler[0] -= state.manipulation_accumulated_delta[1] * state.rotation_drag_sensitivity;
         },
         .x => euler[0] += scalar,
         .y => euler[1] += scalar,
         .z => euler[2] += scalar,
     }
 
+    // 对计算出的绝对值进行Snap，不污染下一次计算
     if (state.rotation_snap_enabled) {
-        // Snap relative to manipulation origin
-        const origin_euler = quat.toEuler(state.manipulation_origin.rotation);
         const snap_radians = state.rotation_snap_step_degrees * std.math.pi / 180.0;
         const delta_x = euler[0] - origin_euler[0];
         const delta_y = euler[1] - origin_euler[1];
         const delta_z = euler[2] - origin_euler[2];
+        
         euler = .{
             origin_euler[0] + @round(delta_x / snap_radians) * snap_radians,
             origin_euler[1] + @round(delta_y / snap_radians) * snap_radians,
             origin_euler[2] + @round(delta_z / snap_radians) * snap_radians,
         };
     }
+    
     entity_transform.rotation = quat.fromEuler(euler);
 }
 
-pub fn applyScale(state: *const EditorState, input: *const engine.core.InputState, entity_transform: *engine.scene.Transform) void {
-    const scalar = 1.0 + (input.mouse_delta[0] - input.mouse_delta[1]) * 0.01;
+pub fn applyScale(state: *EditorState, entity_transform: *engine.scene.Transform) void {
+    // 使用累计偏移量计算标量
+    const scalar = 1.0 + combinedDrag(state.manipulation_accumulated_delta) * state.scale_drag_sensitivity;
+    
+    // 始终从原点计算，避免精度丢失
+    var raw_scale = state.manipulation_origin.scale;
     switch (state.manipulation_axis) {
         .free => {
-            entity_transform.scale = .{
-                utils.clampScale(entity_transform.scale[0] * scalar),
-                utils.clampScale(entity_transform.scale[1] * scalar),
-                utils.clampScale(entity_transform.scale[2] * scalar),
-            };
+            raw_scale[0] *= scalar;
+            raw_scale[1] *= scalar;
+            raw_scale[2] *= scalar;
         },
-        .x => entity_transform.scale[0] = utils.clampScale(entity_transform.scale[0] * scalar),
-        .y => entity_transform.scale[1] = utils.clampScale(entity_transform.scale[1] * scalar),
-        .z => entity_transform.scale[2] = utils.clampScale(entity_transform.scale[2] * scalar),
+        .x => raw_scale[0] *= scalar,
+        .y => raw_scale[1] *= scalar,
+        .z => raw_scale[2] *= scalar,
     }
 
+    // 对绝对值进行Snap，不污染下一次计算
     if (state.scale_snap_enabled) {
-        // Snap relative to manipulation origin
         const origin = state.manipulation_origin.scale;
         const snap = state.scale_snap_step;
-        const delta_x = entity_transform.scale[0] - origin[0];
-        const delta_y = entity_transform.scale[1] - origin[1];
-        const delta_z = entity_transform.scale[2] - origin[2];
-        entity_transform.scale = .{
-            utils.clampScale(origin[0] + @round(delta_x / snap) * snap),
-            utils.clampScale(origin[1] + @round(delta_y / snap) * snap),
-            utils.clampScale(origin[2] + @round(delta_z / snap) * snap),
+        const delta_x = raw_scale[0] - origin[0];
+        const delta_y = raw_scale[1] - origin[1];
+        const delta_z = raw_scale[2] - origin[2];
+        
+        raw_scale = .{
+            origin[0] + @round(delta_x / snap) * snap,
+            origin[1] + @round(delta_y / snap) * snap,
+            origin[2] + @round(delta_z / snap) * snap,
         };
     }
+    
+    entity_transform.scale = .{
+        utils.clampScale(raw_scale[0]),
+        utils.clampScale(raw_scale[1]),
+        utils.clampScale(raw_scale[2]),
+    };
 }
 
 pub fn syncGizmoState(state: *const EditorState, layer_context: *engine.core.LayerContext) void {
@@ -368,6 +408,26 @@ fn manipulationAxisVector(space: TransformSpace, axis: state_mod.AxisConstraint,
     return switch (space) {
         .world => base_axis,
         .local => engine.math.quat.rotateVec3(rotation, base_axis),
+    };
+}
+
+fn combinedDrag(drag: [2]f32) f32 {
+    return drag[0] - drag[1];
+}
+
+fn snapVec3FromOrigin(origin: [3]f32, target: [3]f32, step: f32) [3]f32 {
+    return .{
+        origin[0] + @round((target[0] - origin[0]) / step) * step,
+        origin[1] + @round((target[1] - origin[1]) / step) * step,
+        origin[2] + @round((target[2] - origin[2]) / step) * step,
+    };
+}
+
+fn snapScaleFromOrigin(origin: [3]f32, target: [3]f32, step: f32) [3]f32 {
+    return .{
+        utils.clampScale(origin[0] + @round((target[0] - origin[0]) / step) * step),
+        utils.clampScale(origin[1] + @round((target[1] - origin[1]) / step) * step),
+        utils.clampScale(origin[2] + @round((target[2] - origin[2]) / step) * step),
     };
 }
 
@@ -410,4 +470,80 @@ test "manipulationAxisVector rotates constrained local axes" {
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), axis[0], 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), axis[1], 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, -1.0), axis[2], 0.0001);
+}
+
+test "scale snap uses accumulated delta from manipulation origin" {
+    var state = EditorState{};
+    state.manipulation_axis = .free;
+    state.manipulation_origin.scale = .{ 1.0, 1.0, 1.0 };
+    state.scale_drag_sensitivity = 0.1;
+    state.scale_snap_enabled = true;
+    state.scale_snap_step = 0.1;
+
+    // 使用manipulation_accumulated_delta而不是manipulation_drag_accumulator
+    state.manipulation_accumulated_delta = .{ 0.4, 0.0 };
+    var transform = state.manipulation_origin;
+    applyScale(&state, &transform);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), transform.scale[0], 0.0001);
+
+    state.manipulation_accumulated_delta = .{ 0.6, 0.0 };
+    transform = state.manipulation_origin;
+    applyScale(&state, &transform);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.1), transform.scale[0], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.1), transform.scale[1], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.1), transform.scale[2], 0.0001);
+}
+
+test "rotation snap uses accumulated drag from manipulation origin" {
+    var state = EditorState{};
+    state.manipulation_axis = .y;
+    state.manipulation_origin.rotation = quat.fromEuler(.{ 0.0, 0.0, 0.0 });
+    state.rotation_drag_sensitivity = 1.0;
+    state.rotation_snap_enabled = true;
+    state.rotation_snap_step_degrees = 45.0;
+
+    state.manipulation_drag_accumulator = .{ 0.5, 0.0 };
+    var transform = state.manipulation_origin;
+    applyRotate(&state, &transform);
+    const euler = quat.toEuler(transform.rotation);
+    try std.testing.expectApproxEqAbs(@as(f32, std.math.pi / 4.0), euler[1], 0.0001);
+}
+
+test "translation snap uses accumulated drag from manipulation origin" {
+    var state = EditorState{};
+    state.manipulation_axis = .x;
+    state.transform_space = .world;
+    state.manipulation_origin = .{
+        .translation = .{ 0.0, 0.0, 0.0 },
+    };
+    state.translation_drag_sensitivity = 1.0;
+    state.translation_snap_enabled = true;
+    state.translation_snap_step = 1.0;
+
+    var world = engine.scene.World.init(std.testing.allocator, null);
+    defer world.deinit();
+    var renderer: engine.render.Renderer = undefined;
+    var input = engine.core.InputState{};
+    var playback = engine.core.PlaybackController{};
+    var layer_context = engine.core.LayerContext{
+        .world = &world,
+        .scene = &world,
+        .renderer = &renderer,
+        .input = &input,
+        .window = undefined,
+        .frame_index = 0,
+        .delta_seconds = 1.0 / 60.0,
+        .playback_controller = &playback,
+    };
+
+    // The helper only reads the active camera transform, so no world state is needed here.
+    state.manipulation_drag_accumulator = .{ 0.4, 0.0 };
+    var transform = state.manipulation_origin;
+    applyTranslate(&state, &layer_context, &transform);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), transform.translation[0], 0.0001);
+
+    state.manipulation_drag_accumulator = .{ 0.6, 0.0 };
+    transform = state.manipulation_origin;
+    applyTranslate(&state, &layer_context, &transform);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), transform.translation[0], 0.0001);
 }
