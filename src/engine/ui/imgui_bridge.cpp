@@ -81,6 +81,8 @@ ImGuiWindowFlags to_imgui_window_flags(uint32_t flags) {
     result |= ImGuiWindowFlags_NoDecoration;
   if ((flags & GUAVA_IMGUI_WINDOW_ALWAYS_AUTO_RESIZE) != 0)
     result |= ImGuiWindowFlags_AlwaysAutoResize;
+  if ((flags & GUAVA_IMGUI_WINDOW_NO_SCROLL_WITH_MOUSE) != 0)
+    result |= ImGuiWindowFlags_NoScrollWithMouse;
   return result;
 }
 

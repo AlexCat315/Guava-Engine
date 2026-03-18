@@ -95,3 +95,10 @@ pub fn rightFromYaw(yaw: f32) Vec3 {
 test "angleBetween orthogonal vectors is ninety degrees" {
     try std.testing.expectApproxEqAbs(@as(f32, std.math.pi * 0.5), angleBetween(.{ 1.0, 0.0, 0.0 }, .{ 0.0, 1.0, 0.0 }), 0.0001);
 }
+
+test "verify test logging appears in console" {
+    std.log.info("[TEST] This is a test info message that should appear in console", .{});
+    std.log.debug("[TEST] This is a test debug message that should appear in console", .{});
+    std.log.warn("[TEST] This is a test warning message that should appear in console", .{});
+    try std.testing.expect(true);
+}

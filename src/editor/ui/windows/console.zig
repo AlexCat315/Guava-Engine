@@ -245,6 +245,7 @@ fn appendEntry(level: std.log.Level, scope: []const u8, message: []const u8) voi
     const slot = if (g_entry_count < max_entries) blk: {
         const value = g_entry_count;
         g_entry_count += 1;
+        g_entry_write = (g_entry_write + 1) % max_entries;
         break :blk value;
     } else blk: {
         const value = g_entry_write;

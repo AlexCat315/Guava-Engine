@@ -1,3 +1,4 @@
+const std = @import("std");
 const engine = @import("guava");
 const EditorState = @import("state.zig").EditorState;
 const utils = @import("../common/utils.zig");
@@ -143,6 +144,7 @@ pub const EditorLayer = struct {
         utils.syncInspectorNameBuffer(&self.state, layer_context);
         engine.ui.ImGui.beginDockspace();
         if (!self.state.dock_layout_initialized) {
+            std.log.info("Editor: Initializing default dock layout", .{});
             engine.ui.ImGui.resetDefaultLayout();
             self.state.dock_layout_initialized = true;
         }

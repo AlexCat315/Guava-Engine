@@ -127,6 +127,8 @@ fn drawViewportToolbarOptions(
     space_width: f32, // Kept for signature compatibility
 ) !void {
     _ = space_width;
+    const is_manipulating = state.manipulation_mode != .none;
+
     if (try ui_icons.drawIconButton(
         state,
         layer_context,
@@ -141,9 +143,15 @@ fn drawViewportToolbarOptions(
     engine.ui.ImGui.sameLine();
     engine.ui.ImGui.setNextItemWidth(filter_width);
     _ = engine.ui.ImGui.inputTextWithHint("##viewport_hierarchy_filter", state.text(.hierarchy_filter), state.hierarchy_filter_buffer[0..]);
+    if (is_manipulating) {
+        engine.ui.ImGui.pushStyleVarFloat(.alpha, 0.5);
+    }
     engine.ui.ImGui.sameLine();
     if (engine.ui.ImGui.buttonEx(hierarchyCategoryLabel(state), category_width, 0.0)) {
         state.hierarchy_category = nextHierarchyCategory(state.hierarchy_category);
+    }
+    if (is_manipulating) {
+        engine.ui.ImGui.popStyleVar(1);
     }
     engine.ui.ImGui.sameLine();
     // Global/Local toggle - now uses icons instead of text
@@ -151,7 +159,8 @@ fn drawViewportToolbarOptions(
         .local => ui_icons.paths.toolbar.transform_local,
         .world => ui_icons.paths.toolbar.transform_global,
     };
-    if (try drawToolbarIconButton(state, layer_context, "toolbar_transform_space", transform_icon_path, state.transform_space == .world)) {
+    const is_world = state.transform_space == .world;
+    if (try drawToolbarIconButton(state, layer_context, "toolbar_transform_space", transform_icon_path, is_world)) {
         state.transform_space = switch (state.transform_space) {
             .local => .world,
             .world => .local,
@@ -160,6 +169,8 @@ fn drawViewportToolbarOptions(
 }
 
 fn drawViewportToolbarOptionsCompact(state: *EditorState, layer_context: *engine.core.LayerContext, width: f32) !void {
+    const is_manipulating = state.manipulation_mode != .none;
+
     if (width >= 260.0) {
         if (try ui_icons.drawIconButton(
             state,
@@ -195,8 +206,14 @@ fn drawViewportToolbarOptionsCompact(state: *EditorState, layer_context: *engine
     engine.ui.ImGui.dummy(0.0, 6.0);
     if (width >= 184.0) {
         const half_width = @max((width - 8.0) * 0.5, 88.0);
+        if (is_manipulating) {
+            engine.ui.ImGui.pushStyleVarFloat(.alpha, 0.5);
+        }
         if (engine.ui.ImGui.buttonEx(hierarchyCategoryLabel(state), half_width, 0.0)) {
             state.hierarchy_category = nextHierarchyCategory(state.hierarchy_category);
+        }
+        if (is_manipulating) {
+            engine.ui.ImGui.popStyleVar(1);
         }
         engine.ui.ImGui.sameLine();
         // Global/Local toggle - now uses icons instead of text
@@ -211,8 +228,14 @@ fn drawViewportToolbarOptionsCompact(state: *EditorState, layer_context: *engine
             };
         }
     } else {
+        if (is_manipulating) {
+            engine.ui.ImGui.pushStyleVarFloat(.alpha, 0.5);
+        }
         if (engine.ui.ImGui.buttonEx(hierarchyCategoryLabel(state), width, 0.0)) {
             state.hierarchy_category = nextHierarchyCategory(state.hierarchy_category);
+        }
+        if (is_manipulating) {
+            engine.ui.ImGui.popStyleVar(1);
         }
         engine.ui.ImGui.dummy(0.0, 6.0);
         // Global/Local toggle - now uses icons instead of text
@@ -238,17 +261,30 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
 
     _ = engine.ui.ImGui.beginWindowFlags(
         title,
-        engine.ui.ImGui.WindowFlags.no_collapse | engine.ui.ImGui.WindowFlags.no_scrollbar,
+        engine.ui.ImGui.WindowFlags.no_collapse |
+            engine.ui.ImGui.WindowFlags.no_scrollbar |
+            engine.ui.ImGui.WindowFlags.no_scroll_with_mouse,
     );
     defer engine.ui.ImGui.endWindow();
 
+    // Draw toolbar first (at top)
+    try drawViewportToolbarStrip(state, layer_context);
+
+    // Calculate remaining space for 3D viewport
     const content_size = engine.ui.ImGui.contentRegionAvail();
     state.viewport_origin = engine.ui.ImGui.cursorScreenPos();
     state.viewport_extent = .{ content_size[0], content_size[1] };
     state.viewport_focused = engine.ui.ImGui.isWindowFocused();
-    state.viewport_hovered = engine.ui.ImGui.isWindowHovered();
     state.viewport_has_image = false;
     state.viewport_overlay_hovered = false;
+
+    // Check if mouse is within viewport bounds (more reliable than isWindowHovered after toolbar)
+    const mouse_pos = layer_context.input.mouse_position;
+    const mouse_in_bounds = mouse_pos[0] >= state.viewport_origin[0] and
+        mouse_pos[0] < state.viewport_origin[0] + state.viewport_extent[0] and
+        mouse_pos[1] >= state.viewport_origin[1] and
+        mouse_pos[1] < state.viewport_origin[1] + state.viewport_extent[1];
+    state.viewport_hovered = mouse_in_bounds;
 
     const drawable_size = utils.viewportDrawableSize(layer_context.window, state.viewport_extent);
     try layer_context.renderer.setSceneViewportSize(drawable_size[0], drawable_size[1]);
@@ -261,12 +297,14 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
         engine.ui.ImGui.image(texture, image_size[0], image_size[1]);
         state.viewport_has_image = true;
 
-        // Draw toolbar above viewport (transform tools)
-        try drawViewportToolbarStrip(state, layer_context);
+        // Draw overlays (positioned absolutely, won't affect layout)
         try handleViewportAssetDropTargets(state, layer_context);
         try drawViewportOverlayControlsWindow(state, layer_context);
         try drawViewportPlaybackOverlayWindow(state, layer_context);
         drawViewportViewCube(state, layer_context);
+
+        // Handle selection after drawing
+        try handleViewportSelection(state, layer_context);
     } else {
         engine.ui.ImGui.text(state.text(.viewport_target_is_not_ready_yet));
     }
@@ -500,15 +538,27 @@ fn compactStatusPath(buffer: []u8, path: []const u8, max_chars: usize) []const u
 
 pub fn handleViewportSelection(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const input = layer_context.input;
-    if (!state.viewport_has_image or !state.viewport_hovered or state.viewport_overlay_hovered or !input.wasMousePressed(.left) or input.modifiers.alt) {
+    if (!state.viewport_has_image or !state.viewport_hovered or state.viewport_overlay_hovered or input.modifiers.alt) {
         return;
     }
+
+    // Only select on quick click, not during camera orbit/drag
+    const is_dragging = input.isMouseDown(.left) and (@abs(input.mouse_delta[0]) > 2.0 or @abs(input.mouse_delta[1]) > 2.0);
+    if (is_dragging or !input.wasMousePressed(.left)) {
+        return;
+    }
+
+    std.log.info("Viewport: User clicked at position ({d}, {d})", .{ input.mouse_position[0], input.mouse_position[1] });
+
     if (viewportPixelUnderMouse(state, layer_context)) |pixel| {
+        std.log.info("Viewport: Processing selection at pixel ({d}, {d})", .{ pixel[0], pixel[1] });
         try layer_context.renderer.requestSelectionReadback(
             pixel[0],
             pixel[1],
             if (input.modifiers.shift or input.modifiers.ctrl or input.modifiers.super) .toggle else .replace,
         );
+    } else {
+        std.log.warn("Viewport: No pixel under mouse cursor", .{});
     }
 }
 

@@ -123,6 +123,7 @@ pub const WindowFlags = struct {
     pub const no_resize: u32 = c.GUAVA_IMGUI_WINDOW_NO_RESIZE;
     pub const no_move: u32 = c.GUAVA_IMGUI_WINDOW_NO_MOVE;
     pub const no_scrollbar: u32 = c.GUAVA_IMGUI_WINDOW_NO_SCROLLBAR;
+    pub const no_scroll_with_mouse: u32 = c.GUAVA_IMGUI_WINDOW_NO_SCROLL_WITH_MOUSE;
     pub const no_saved_settings: u32 = c.GUAVA_IMGUI_WINDOW_NO_SAVED_SETTINGS;
     pub const no_docking: u32 = c.GUAVA_IMGUI_WINDOW_NO_DOCKING;
     pub const no_collapse: u32 = c.GUAVA_IMGUI_WINDOW_NO_COLLAPSE;

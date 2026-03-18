@@ -11,29 +11,40 @@ pub const ViewPreset = state_mod.ViewportViewPreset;
 
 pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.LayerContext) void {
     const input = layer_context.input;
-    if (state.view_cube_transition_active and (input.isMouseDown(.right) or input.isMouseDown(.middle) or (input.modifiers.alt and input.isMouseDown(.left)))) {
+
+    // Cancel view cube transition if any camera control is active
+    if (state.view_cube_transition_active and (input.isMouseDown(.right) or input.isMouseDown(.middle) or input.isMouseDown(.left))) {
         state.view_cube_transition_active = false;
     }
     updateViewCubeTransition(state, layer_context);
 
-    const viewport_interaction = state.viewport_hovered or input.isMouseDown(.right) or input.isMouseDown(.middle) or (input.modifiers.alt and input.isMouseDown(.left));
-    if (!state.editor_camera_active or state.manipulation_mode != .none or !viewport_interaction) {
+    // Exit if no viewport interaction or gizmo is active
+    if (!state.editor_camera_active or state.manipulation_mode != .none) {
         return;
     }
-    if (state.viewport_overlay_hovered and !input.isMouseDown(.right) and !input.isMouseDown(.middle) and !(input.modifiers.alt and input.isMouseDown(.left))) {
+
+    // Free camera control: when mouse is over viewport and ImGui doesn't need it
+    const mouse_in_viewport = state.viewport_hovered;
+    const imgui_capturing = engine.ui.ImGui.wantsCaptureMouse();
+    const can_control = mouse_in_viewport and !imgui_capturing;
+
+    // Exit if no valid camera control input
+    if (!can_control and !input.isMouseDown(.right) and !input.isMouseDown(.middle) and !input.isMouseDown(.left)) {
         return;
     }
-    if (engine.ui.ImGui.wantsCaptureMouse() and !state.viewport_hovered and !input.isMouseDown(.right) and !input.isMouseDown(.middle)) {
-        return;
-    }
-    if (engine.ui.ImGui.wantsCaptureKeyboard() and !state.viewport_focused and !input.isMouseDown(.right)) {
+
+    // Exit if actively clicking on overlay (toolbar, gizmo, etc.)
+    // Only block when mouse is DOWN on overlay, not just hovering
+    const is_clicking_overlay = state.viewport_overlay_hovered and (input.isMouseDown(.left) or input.isMouseDown(.right) or input.isMouseDown(.middle));
+    if (is_clicking_overlay) {
         return;
     }
 
     const camera_id = state.editor_camera orelse return;
     const camera = layer_context.world.getEntity(camera_id) orelse return;
 
-    if (input.modifiers.alt and input.isMouseDown(.left)) {
+    // Left-click: orbit around focus point
+    if (input.isMouseDown(.left)) {
         state.yaw -= input.mouse_delta[0] * state.orbit_sensitivity;
         state.pitch = utils.clampPitch(state.pitch - input.mouse_delta[1] * state.orbit_sensitivity);
         if (@abs(input.mouse_delta[0]) > 0.0001 or @abs(input.mouse_delta[1]) > 0.0001) {
@@ -42,37 +53,40 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
         const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
         camera.local_transform.rotation = quat.fromEuler(.{ state.pitch, state.yaw, 0.0 });
         camera.local_transform.translation = vec3.sub(state.focus_pivot, vec3.scale(forward, state.orbit_distance));
-    } else {
-        if (input.isMouseDown(.right)) {
-            state.yaw -= input.mouse_delta[0] * state.look_sensitivity;
-            state.pitch = utils.clampPitch(state.pitch - input.mouse_delta[1] * state.look_sensitivity);
-            if (@abs(input.mouse_delta[0]) > 0.0001 or @abs(input.mouse_delta[1]) > 0.0001) {
-                state.viewport_view_preset = .custom;
-            }
-        }
+    }
 
-        camera.local_transform.rotation = quat.fromEuler(.{ state.pitch, state.yaw, 0.0 });
-
-        if (input.isMouseDown(.right)) {
-            const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
-            const right = vec3.rightFromYaw(state.yaw);
-            const move_up = [3]f32{ 0.0, 1.0, 0.0 };
-            const boost: f32 = if (input.modifiers.shift) 3.5 else 1.0;
-            const step = moveSpeed(state, layer_context.delta_seconds) * boost;
-            var movement = [3]f32{ 0.0, 0.0, 0.0 };
-
-            if (input.isKeyDown(.w)) movement = vec3.add(movement, vec3.scale(forward, step));
-            if (input.isKeyDown(.s)) movement = vec3.sub(movement, vec3.scale(forward, step));
-            if (input.isKeyDown(.d)) movement = vec3.add(movement, vec3.scale(right, step));
-            if (input.isKeyDown(.a)) movement = vec3.sub(movement, vec3.scale(right, step));
-            if (input.isKeyDown(.e)) movement = vec3.add(movement, vec3.scale(move_up, step));
-            if (input.isKeyDown(.q)) movement = vec3.sub(movement, vec3.scale(move_up, step));
-
-            camera.local_transform.translation = vec3.add(camera.local_transform.translation, movement);
-            state.focus_pivot = vec3.add(camera.local_transform.translation, vec3.scale(forward, state.orbit_distance));
+    // Right-click: free look + WASD movement
+    if (input.isMouseDown(.right)) {
+        state.yaw -= input.mouse_delta[0] * state.look_sensitivity;
+        state.pitch = utils.clampPitch(state.pitch - input.mouse_delta[1] * state.look_sensitivity);
+        if (@abs(input.mouse_delta[0]) > 0.0001 or @abs(input.mouse_delta[1]) > 0.0001) {
+            state.viewport_view_preset = .custom;
         }
     }
 
+    camera.local_transform.rotation = quat.fromEuler(.{ state.pitch, state.yaw, 0.0 });
+
+    // WASD movement when right mouse is held
+    if (input.isMouseDown(.right)) {
+        const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
+        const right = vec3.rightFromYaw(state.yaw);
+        const move_up = [3]f32{ 0.0, 1.0, 0.0 };
+        const boost: f32 = if (input.modifiers.shift) 3.5 else 1.0;
+        const step = moveSpeed(state, layer_context.delta_seconds) * boost;
+        var movement = [3]f32{ 0.0, 0.0, 0.0 };
+
+        if (input.isKeyDown(.w)) movement = vec3.add(movement, vec3.scale(forward, step));
+        if (input.isKeyDown(.s)) movement = vec3.sub(movement, vec3.scale(forward, step));
+        if (input.isKeyDown(.d)) movement = vec3.add(movement, vec3.scale(right, step));
+        if (input.isKeyDown(.a)) movement = vec3.sub(movement, vec3.scale(right, step));
+        if (input.isKeyDown(.e)) movement = vec3.add(movement, vec3.scale(move_up, step));
+        if (input.isKeyDown(.q)) movement = vec3.sub(movement, vec3.scale(move_up, step));
+
+        camera.local_transform.translation = vec3.add(camera.local_transform.translation, movement);
+        state.focus_pivot = vec3.add(camera.local_transform.translation, vec3.scale(forward, state.orbit_distance));
+    }
+
+    // Middle-click: pan
     if (input.isMouseDown(.middle)) {
         const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
         const right = vec3.rightFromYaw(state.yaw);
