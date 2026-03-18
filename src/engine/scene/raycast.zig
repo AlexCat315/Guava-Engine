@@ -43,9 +43,10 @@ pub fn raycastSurface(world: *world_mod.World, ray: Ray) ?SurfaceRaycastHit {
         g_logged_bvh_snapshot.?.items != snapshot.items or
         g_logged_bvh_snapshot.?.nodes != snapshot.nodes)
     {
-        raycast_log.info("renderable broad phase rebuilt items={} nodes={}", .{
+        raycast_log.info("renderable broad phase rebuilt static_items={} nodes={} dynamic_items={}", .{
             snapshot.items,
             snapshot.nodes,
+            world.dynamic_renderables.count(),
         });
         g_logged_bvh_snapshot = snapshot;
     }
