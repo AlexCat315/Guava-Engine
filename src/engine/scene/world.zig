@@ -11,6 +11,11 @@ const frustum_mod = @import("../math/frustum.zig");
 const job_system_mod = @import("../core/job_system.zig");
 
 const compose_epsilon = 0.0001;
+const dynamic_reintegration_query_threshold: u8 = 3;
+
+const DynamicRenderableState = struct {
+    steady_query_count: u8 = 0,
+};
 
 pub const EntityId = u64;
 
@@ -71,7 +76,7 @@ pub const World = struct {
     vfx_runtime_emitters: std.ArrayList(vfx_runtime_mod.VfxRuntimeEmitter) = .empty,
     renderable_spatial_index: spatial_index_mod.StaticBoundsBvh,
     dynamic_renderable_spatial_index: spatial_index_mod.StaticBoundsBvh,
-    dynamic_renderables: std.AutoHashMap(EntityId, void),
+    dynamic_renderables: std.AutoHashMap(EntityId, DynamicRenderableState),
 
     pub fn init(allocator: std.mem.Allocator, job_system: ?*job_system_mod.JobSystem) World {
         return .{
@@ -81,7 +86,7 @@ pub const World = struct {
             .job_system = job_system,
             .renderable_spatial_index = spatial_index_mod.StaticBoundsBvh.init(allocator),
             .dynamic_renderable_spatial_index = spatial_index_mod.StaticBoundsBvh.init(allocator),
-            .dynamic_renderables = std.AutoHashMap(EntityId, void).init(allocator),
+            .dynamic_renderables = std.AutoHashMap(EntityId, DynamicRenderableState).init(allocator),
         };
     }
 
@@ -111,7 +116,7 @@ pub const World = struct {
             self.vfx_runtime_emitters = .empty;
             self.renderable_spatial_index = spatial_index_mod.StaticBoundsBvh.init(self.allocator);
             self.dynamic_renderable_spatial_index = spatial_index_mod.StaticBoundsBvh.init(self.allocator);
-            self.dynamic_renderables = std.AutoHashMap(EntityId, void).init(self.allocator);
+            self.dynamic_renderables = std.AutoHashMap(EntityId, DynamicRenderableState).init(self.allocator);
         }
     }
 
@@ -188,9 +193,16 @@ pub const World = struct {
 
     pub fn markDirty(self: *World, id: EntityId) void {
         const entity = self.getEntity(id) orelse return;
-        if (self.promoteRenderableToDynamic(id)) {
-            self.renderable_spatial_index.markDirty();
-            self.dynamic_renderable_spatial_index.markDirty();
+        if (entity.mesh != null or entity.vfx != null) {
+            if (self.dynamic_renderables.getPtr(id)) |state| {
+                state.steady_query_count = 0;
+                self.dynamic_renderable_spatial_index.markDirty();
+            } else if (self.promoteRenderableToDynamic(id)) {
+                self.renderable_spatial_index.markDirty();
+                self.dynamic_renderable_spatial_index.markDirty();
+            } else {
+                self.renderable_spatial_index.markDirty();
+            }
         }
         if (entity.dirty) return;
 
@@ -1006,7 +1018,9 @@ pub const World = struct {
             self.updateHierarchy();
         }
 
-        if (!self.renderable_spatial_index.dirty and !self.dynamic_renderable_spatial_index.dirty) {
+        const reintegrated_dynamic = try self.reintegrateStableDynamicRenderables();
+
+        if (!self.renderable_spatial_index.dirty and !self.dynamic_renderable_spatial_index.dirty and !reintegrated_dynamic) {
             return;
         }
 
@@ -1053,10 +1067,50 @@ pub const World = struct {
         if (self.dynamic_renderables.contains(id)) {
             return false;
         }
-        self.dynamic_renderables.put(id, {}) catch {
+        self.dynamic_renderables.put(id, .{}) catch {
             // OOM 时退回静态 BVH 全量重建路径，保证正确性优先。
             return false;
         };
+        return true;
+    }
+
+    fn reintegrateStableDynamicRenderables(self: *World) !bool {
+        if (self.dynamic_renderables.count() == 0) {
+            return false;
+        }
+
+        var reintegrate_ids = std.ArrayList(EntityId).empty;
+        defer reintegrate_ids.deinit(self.allocator);
+
+        var iter = self.dynamic_renderables.iterator();
+        while (iter.next()) |entry| {
+            const entity_id = entry.key_ptr.*;
+            const entity = self.getEntityConst(entity_id) orelse {
+                try reintegrate_ids.append(self.allocator, entity_id);
+                continue;
+            };
+            if (entity.mesh == null and entity.vfx == null) {
+                try reintegrate_ids.append(self.allocator, entity_id);
+                continue;
+            }
+
+            if (entry.value_ptr.steady_query_count < dynamic_reintegration_query_threshold) {
+                entry.value_ptr.steady_query_count += 1;
+            }
+            if (entry.value_ptr.steady_query_count >= dynamic_reintegration_query_threshold) {
+                try reintegrate_ids.append(self.allocator, entity_id);
+            }
+        }
+
+        if (reintegrate_ids.items.len == 0) {
+            return false;
+        }
+
+        for (reintegrate_ids.items) |entity_id| {
+            _ = self.dynamic_renderables.remove(entity_id);
+        }
+        self.renderable_spatial_index.markDirty();
+        self.dynamic_renderable_spatial_index.markDirty();
         return true;
     }
 
@@ -1432,4 +1486,19 @@ test "renderable spatial index moves dirty meshes into dynamic partition" {
     try std.testing.expectEqual(@as(usize, 1), world.dynamic_renderables.count());
     try std.testing.expect(world.dynamic_renderables.contains(a));
     try std.testing.expect(!world.dynamic_renderables.contains(b));
+
+    var reintegration_step: u8 = 0;
+    while (reintegration_step < dynamic_reintegration_query_threshold) : (reintegration_step += 1) {
+        const steady_query = try world.queryRenderableRayCandidates(
+            std.testing.allocator,
+            .{ -5.0, 0.0, 0.0 },
+            .{ 1.0, 0.0, 0.0 },
+            16.0,
+        );
+        defer std.testing.allocator.free(steady_query);
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), world.renderable_spatial_index.itemCount());
+    try std.testing.expectEqual(@as(usize, 0), world.dynamic_renderable_spatial_index.itemCount());
+    try std.testing.expectEqual(@as(usize, 0), world.dynamic_renderables.count());
 }
