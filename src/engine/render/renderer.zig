@@ -31,6 +31,7 @@ const render_log = std.log.scoped(.viewport_render);
 
 var g_logged_viewport_backend: bool = false;
 var g_logged_environment_status: bool = false;
+var g_logged_exposure_state: ?types.EditorViewportState = null;
 
 pub const GraphicsAPI = rhi_types.GraphicsAPI;
 pub const RuntimeInfo = rhi_types.RuntimeInfo;
@@ -670,6 +671,16 @@ pub const Renderer = struct {
     }
 
     pub fn setEditorViewportState(self: *Renderer, state: EditorViewportState) void {
+        if (g_logged_exposure_state == null or
+            g_logged_exposure_state.?.exposure_enabled != state.exposure_enabled or
+            @abs(g_logged_exposure_state.?.exposure - state.exposure) > 0.0001)
+        {
+            render_log.info(
+                "viewport exposure updated enabled={} value={d:.2}",
+                .{ state.exposure_enabled, state.exposure },
+            );
+            g_logged_exposure_state = state;
+        }
         self.editor_viewport_state = state;
     }
 
@@ -913,7 +924,13 @@ pub const Renderer = struct {
                             },
                             .depth = null,
                         });
-                        self.tonemap_pass.draw(&self.rhi, tonemap_render_pass);
+                        self.tonemap_pass.draw(
+                            &self.rhi,
+                            frame,
+                            tonemap_render_pass,
+                            self.editor_viewport_state.exposure_enabled,
+                            self.editor_viewport_state.exposure,
+                        );
                         self.rhi.endRenderPass(tonemap_render_pass);
                     }
                 }

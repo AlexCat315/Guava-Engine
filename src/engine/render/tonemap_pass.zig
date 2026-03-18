@@ -13,6 +13,11 @@ const fullscreen_triangle = [_]FullscreenVertex{
     .{ .position = .{ -1.0, 3.0 } },
 };
 
+pub const TonemapUniforms = extern struct {
+    // x: enable_manual_exposure, y: exposure, z/w: reserved
+    exposure_params: [4]f32 = .{ 0.0, 1.0, 0.0, 0.0 },
+};
+
 pub const TonemapPass = struct {
     fullscreen_vertex_buffer: ?rhi_mod.Buffer = null,
     sampler: ?rhi_mod.Sampler = null,
@@ -80,15 +85,28 @@ pub const TonemapPass = struct {
     pub fn draw(
         self: *TonemapPass,
         device: *rhi_mod.RhiDevice,
+        frame: rhi_mod.Frame,
         pass: rhi_mod.RenderPass,
+        exposure_enabled: bool,
+        exposure: f32,
     ) void {
         if (!self.isReady() or self.bind_group == null) {
             return;
         }
 
+        var uniforms = TonemapUniforms{
+            .exposure_params = .{
+                if (exposure_enabled) 1.0 else 0.0,
+                @max(exposure, 0.0),
+                0.0,
+                0.0,
+            },
+        };
+
         device.bindGraphicsPipeline(pass, &self.pipeline.?);
         device.bindVertexBuffer(pass, 0, &self.fullscreen_vertex_buffer.?, 0);
         device.bindGroup(pass, &self.bind_group.?);
+        device.pushFragmentUniformData(frame, 0, std.mem.asBytes(&uniforms));
         device.drawPrimitives(pass, fullscreen_triangle.len, 1, 0, 0);
     }
 

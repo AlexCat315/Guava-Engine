@@ -252,6 +252,9 @@ pub const EditorState = struct {
     viewport_show_grid: bool = true,
     viewport_show_bones: bool = false,
     viewport_show_collision: bool = false,
+    // 曝光作为编辑器视口后处理参数，默认关闭以保持现有观感不变。
+    viewport_exposure_enabled: bool = false,
+    viewport_exposure: f32 = 1.0,
     viewport_hovered: bool = false,
     viewport_focused: bool = false,
     viewport_has_image: bool = false,

@@ -222,6 +222,8 @@ pub const MessageId = enum {
     view_presets,
     render_modes,
     overlay_options,
+    exposure,
+    manual_exposure,
     translation_snap,
     rotation_snap,
     scale_snap,

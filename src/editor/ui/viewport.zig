@@ -716,6 +716,8 @@ fn syncViewportState(state: *EditorState, layer_context: *engine.core.LayerConte
         .show_grid = state.viewport_show_grid,
         .show_bones = state.viewport_show_bones,
         .show_collision = state.viewport_show_collision,
+        .exposure_enabled = state.viewport_exposure_enabled,
+        .exposure = state.viewport_exposure,
     });
 }
 

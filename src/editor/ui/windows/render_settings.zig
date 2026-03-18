@@ -50,6 +50,17 @@ pub fn drawRenderSettingsWindow(state: *EditorState, layer_context: *engine.core
     _ = engine.ui.ImGui.checkbox(state.text(.show_collision), &state.viewport_show_collision);
 
     engine.ui.ImGui.separator();
+    engine.ui.ImGui.text(state.text(.exposure));
+    _ = engine.ui.ImGui.checkbox(state.text(.manual_exposure), &state.viewport_exposure_enabled);
+    var exposure_value = state.viewport_exposure;
+    if (engine.ui.ImGui.dragFloat("##viewport_exposure", &exposure_value, 0.01, 0.1, 8.0)) {
+        state.viewport_exposure = exposure_value;
+    }
+    var exposure_buffer: [32]u8 = undefined;
+    const exposure_text = try std.fmt.bufPrint(&exposure_buffer, "{d:.2}x", .{state.viewport_exposure});
+    engine.ui.ImGui.labelText(state.text(.exposure), exposure_text);
+
+    engine.ui.ImGui.separator();
     engine.ui.ImGui.text(state.text(.coordinate_space));
     switch (drawButtonRow2(state.text(.local_space), state.text(.world_space), 112.0)) {
         .first => state.transform_space = .local,
