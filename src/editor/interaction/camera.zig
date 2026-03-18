@@ -43,6 +43,11 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
             state.pitch = utils.clampPitch(state.pitch - input.mouse_delta[1] * state.orbit_sensitivity);
             if (@abs(input.mouse_delta[0]) > 0.0001 or @abs(input.mouse_delta[1]) > 0.0001) {
                 state.viewport_view_preset = .custom;
+                if (camera.camera) |camera_component| {
+                    var next_camera = camera_component;
+                    next_camera.projection = .{ .perspective = .{} };
+                    camera.camera = next_camera;
+                }
             }
             const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
             camera.local_transform.rotation = quat.fromEuler(.{ state.pitch, state.yaw, 0.0 });
@@ -54,6 +59,11 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
             state.pitch = utils.clampPitch(state.pitch - input.mouse_delta[1] * state.look_sensitivity);
             if (@abs(input.mouse_delta[0]) > 0.0001 or @abs(input.mouse_delta[1]) > 0.0001) {
                 state.viewport_view_preset = .custom;
+                if (camera.camera) |camera_component| {
+                    var next_camera = camera_component;
+                    next_camera.projection = .{ .perspective = .{} };
+                    camera.camera = next_camera;
+                }
             }
         }
 
@@ -99,6 +109,14 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
             const zoom_step = input.mouse_wheel[1] * state.wheel_speed * @max(state.orbit_distance * 0.2, 0.8);
             camera.local_transform.translation = vec3.add(camera.local_transform.translation, vec3.scale(forward, zoom_step));
             state.orbit_distance = utils.clampDistance(vec3.length(vec3.sub(state.focus_pivot, camera.local_transform.translation)));
+
+            if (camera.camera) |camera_component| {
+                if (camera_component.projection == .orthographic) {
+                    var next_camera = camera_component;
+                    next_camera.projection.orthographic.size = @max(state.orbit_distance * 1.1, 2.0);
+                    camera.camera = next_camera;
+                }
+            }
         }
 
         if (@abs(input.mouse_wheel[0]) > 0.001) {
@@ -187,6 +205,12 @@ pub fn orbitFromViewCubeDrag(state: *EditorState, layer_context: *engine.core.La
     state.yaw -= drag_delta[0] * state.orbit_sensitivity;
     state.pitch = utils.clampPitch(state.pitch - drag_delta[1] * state.orbit_sensitivity);
     state.viewport_view_preset = .custom;
+
+    if (camera_entity.camera) |camera_component| {
+        var next_camera = camera_component;
+        next_camera.projection = .{ .perspective = .{} };
+        camera_entity.camera = next_camera;
+    }
 
     camera_entity.local_transform = editorCameraTransform(state);
     _ = layer_context.world.setPrimaryCamera(camera_id);
