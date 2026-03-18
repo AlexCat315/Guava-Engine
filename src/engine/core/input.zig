@@ -52,6 +52,9 @@ pub const InputState = struct {
     mouse_position: [2]f32 = .{ 0.0, 0.0 },
     mouse_delta: [2]f32 = .{ 0.0, 0.0 },
     mouse_wheel: [2]f32 = .{ 0.0, 0.0 },
+    last_mouse_wheel: [2]f32 = .{ 0.0, 0.0 },
+    last_mouse_wheel_position: [2]f32 = .{ 0.0, 0.0 },
+    mouse_wheel_event_count: u64 = 0,
     key_down: [key_count]bool = [_]bool{false} ** key_count,
     key_pressed: [key_count]bool = [_]bool{false} ** key_count,
     key_released: [key_count]bool = [_]bool{false} ** key_count,
@@ -116,6 +119,9 @@ pub const InputState = struct {
     pub fn addMouseWheel(self: *InputState, wheel_x: f32, wheel_y: f32) void {
         self.mouse_wheel[0] += wheel_x;
         self.mouse_wheel[1] += wheel_y;
+        self.last_mouse_wheel = .{ wheel_x, wheel_y };
+        self.last_mouse_wheel_position = self.mouse_position;
+        self.mouse_wheel_event_count += 1;
     }
 
     pub fn isKeyDown(self: *const InputState, key: Key) bool {

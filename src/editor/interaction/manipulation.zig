@@ -224,6 +224,12 @@ pub fn applyManipulation(state: *EditorState, layer_context: *engine.core.LayerC
         return;
     };
     const input = layer_context.input;
+    if (!state.viewport_has_image or !state.viewport_hovered or state.viewport_overlay_hovered or input.modifiers.alt) {
+        return;
+    }
+    if (!input.isMouseDown(.left)) {
+        return;
+    }
     if (@abs(input.mouse_delta[0]) < 0.0001 and @abs(input.mouse_delta[1]) < 0.0001) {
         return;
     }

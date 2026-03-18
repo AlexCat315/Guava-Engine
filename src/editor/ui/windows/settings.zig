@@ -75,6 +75,9 @@ pub fn drawSettingsWindow(state: *EditorState, layer_context: *engine.core.Layer
     }
 
     engine.ui.ImGui.dummy(0.0, 6.0);
+    _ = engine.ui.ImGui.checkbox(state.text(.viewport_debug_overlay), &state.viewport_debug_overlay);
+
+    engine.ui.ImGui.dummy(0.0, 6.0);
     if (engine.ui.ImGui.buttonEx(state.text(.reset_dock_layout), engine.ui.ImGui.contentRegionAvail()[0], 0.0)) {
         layout.resetDockLayout(state);
     }

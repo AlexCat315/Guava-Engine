@@ -1,5 +1,6 @@
 const std = @import("std");
 const engine = @import("guava");
+const sdl = engine.platform.sdl.c;
 const vec3 = engine.math.vec3;
 const EditorState = @import("../core/state.zig").EditorState;
 const state_mod = @import("../core/state.zig");
@@ -320,6 +321,7 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
         try drawViewportOverlayControlsWindow(state, layer_context);
         try drawViewportPlaybackOverlayWindow(state, layer_context);
         try drawViewportFpsOverlayWindow(state, layer_context);
+        try drawViewportDebugOverlayWindow(state, layer_context);
         drawViewportViewCube(state, layer_context);
     } else {
         engine.ui.ImGui.text(state.text(.viewport_target_is_not_ready_yet));
@@ -557,6 +559,9 @@ fn compactStatusPath(buffer: []u8, path: []const u8, max_chars: usize) []const u
 pub fn handleViewportSelection(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const input = layer_context.input;
     if (!state.viewport_has_image or !state.viewport_hovered or state.viewport_overlay_hovered or input.modifiers.alt) {
+        return;
+    }
+    if (state.manipulation_mode != .none) {
         return;
     }
 
@@ -1053,6 +1058,188 @@ fn drawViewportFpsOverlayWindow(state: *EditorState, layer_context: *engine.core
     defer engine.ui.ImGui.endWindow();
 
     engine.ui.ImGui.text(fps_text);
+}
+
+fn drawViewportDebugOverlayWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    if (!state.viewport_debug_overlay) {
+        return;
+    }
+
+    const allocator = state.allocator orelse layer_context.world.allocator;
+    const overlay_size = [2]f32{ 332.0, 184.0 };
+    var debug_text_buffer: [512]u8 = undefined;
+    const debug_text = try buildViewportDebugText(&debug_text_buffer, state, layer_context);
+
+    engine.ui.ImGui.pushStyleVarVec2(.window_padding, .{ 10.0, 8.0 });
+    defer engine.ui.ImGui.popStyleVar(1);
+    engine.ui.ImGui.setNextWindowPos(.{
+        state.viewport_origin[0] + @max(state.viewport_extent[0] - overlay_size[0] - 16.0, 16.0),
+        state.viewport_origin[1] + @max(state.viewport_extent[1] - overlay_size[1] - 16.0, viewportOverlayTopInset() + 56.0),
+    });
+    engine.ui.ImGui.setNextWindowSize(overlay_size);
+    engine.ui.ImGui.setNextWindowBgAlpha(0.80);
+    _ = engine.ui.ImGui.beginWindowFlags(
+        "##viewport_debug_overlay",
+        engine.ui.ImGui.WindowFlags.no_title_bar |
+            engine.ui.ImGui.WindowFlags.no_resize |
+            engine.ui.ImGui.WindowFlags.no_move |
+            engine.ui.ImGui.WindowFlags.no_saved_settings |
+            engine.ui.ImGui.WindowFlags.no_docking,
+    );
+    defer engine.ui.ImGui.endWindow();
+
+    if (engine.ui.ImGui.isWindowHovered()) {
+        state.viewport_overlay_hovered = true;
+    }
+
+    engine.ui.ImGui.text(state.text(.viewport_debug_overlay));
+    engine.ui.ImGui.sameLineEx(220.0, 10.0);
+    if (engine.ui.ImGui.buttonEx(state.text(.copy), 92.0, 0.0)) {
+        copyDebugTextToClipboard(allocator, debug_text) catch {
+            std.log.err("failed to copy viewport debug text to clipboard", .{});
+        };
+    }
+    if (engine.ui.ImGui.isItemHovered()) {
+        state.viewport_overlay_hovered = true;
+    }
+    engine.ui.ImGui.separator();
+
+    const input = layer_context.input;
+    const tool_text = switch (state.manipulation_mode) {
+        .none => state.text(.select),
+        .translate => state.text(.move),
+        .rotate => state.text(.rotate),
+        .scale => state.text(.scale),
+    };
+    const camera_text = if (state.editor_camera_active) state.text(.editor_camera_mode) else state.text(.scene_camera_mode);
+
+    var flags_buffer: [96]u8 = undefined;
+    const flags_text = try std.fmt.bufPrint(
+        &flags_buffer,
+        "hover={s} overlay={s} focus={s} image={s}",
+        .{
+            boolText(state.viewport_hovered),
+            boolText(state.viewport_overlay_hovered),
+            boolText(state.viewport_focused),
+            boolText(state.viewport_has_image),
+        },
+    );
+    engine.ui.ImGui.labelText("Flags", flags_text);
+
+    var mouse_buffer: [96]u8 = undefined;
+    const mouse_text = try std.fmt.bufPrint(
+        &mouse_buffer,
+        "pos=({d:.1}, {d:.1}) delta=({d:.1}, {d:.1})",
+        .{
+            input.mouse_position[0],
+            input.mouse_position[1],
+            input.mouse_delta[0],
+            input.mouse_delta[1],
+        },
+    );
+    engine.ui.ImGui.labelText("Mouse", mouse_text);
+
+    var wheel_buffer: [64]u8 = undefined;
+    const wheel_text = try std.fmt.bufPrint(
+        &wheel_buffer,
+        "now=({d:.2}, {d:.2}) last=({d:.2}, {d:.2}) n={d}",
+        .{
+            input.mouse_wheel[0],
+            input.mouse_wheel[1],
+            input.last_mouse_wheel[0],
+            input.last_mouse_wheel[1],
+            input.mouse_wheel_event_count,
+        },
+    );
+    engine.ui.ImGui.labelText("Wheel", wheel_text);
+    engine.ui.ImGui.labelText("Camera", camera_text);
+    engine.ui.ImGui.labelText("Tool", tool_text);
+
+    var selection_buffer: [96]u8 = undefined;
+    const selection_text = try std.fmt.bufPrint(
+        &selection_buffer,
+        "count={d} selected={s}",
+        .{
+            layer_context.renderer.selectedEntities().len,
+            debugSelectedEntityText(state, layer_context),
+        },
+    );
+    engine.ui.ImGui.labelText("Selection", selection_text);
+
+    engine.ui.ImGui.labelText("Manip", debugManipulationEntityText(state));
+}
+
+fn boolText(value: bool) []const u8 {
+    return if (value) "yes" else "no";
+}
+
+fn debugSelectedEntityText(state: *const EditorState, layer_context: *const engine.core.LayerContext) []const u8 {
+    _ = state;
+    return if (layer_context.renderer.selectedEntity()) |entity_id|
+        std.fmt.bufPrint(&debug_selected_entity_buffer, "{d}", .{entity_id}) catch "-"
+    else
+        "-";
+}
+
+fn debugManipulationEntityText(state: *const EditorState) []const u8 {
+    return if (state.manipulation_entity) |entity_id|
+        std.fmt.bufPrint(&debug_manipulation_entity_buffer, "{d}", .{entity_id}) catch "-"
+    else
+        "-";
+}
+
+var debug_selected_entity_buffer: [32]u8 = undefined;
+var debug_manipulation_entity_buffer: [32]u8 = undefined;
+
+fn buildViewportDebugText(buffer: []u8, state: *const EditorState, layer_context: *const engine.core.LayerContext) ![]const u8 {
+    const input = layer_context.input;
+    const tool_text = switch (state.manipulation_mode) {
+        .none => state.text(.select),
+        .translate => state.text(.move),
+        .rotate => state.text(.rotate),
+        .scale => state.text(.scale),
+    };
+    const camera_text = if (state.editor_camera_active) state.text(.editor_camera_mode) else state.text(.scene_camera_mode);
+    const selected_text = if (layer_context.renderer.selectedEntity()) |entity_id|
+        try std.fmt.bufPrint(&debug_selected_entity_buffer, "{d}", .{entity_id})
+    else
+        "-";
+    const manipulation_text = if (state.manipulation_entity) |entity_id|
+        try std.fmt.bufPrint(&debug_manipulation_entity_buffer, "{d}", .{entity_id})
+    else
+        "-";
+    return std.fmt.bufPrint(
+        buffer,
+        "flags: hover={s} overlay={s} focus={s} image={s}\nmouse: pos=({d:.1}, {d:.1}) delta=({d:.1}, {d:.1})\nwheel: now=({d:.2}, {d:.2}) last=({d:.2}, {d:.2}) n={d}\ncamera: {s}\ntool: {s}\nselection: count={d} selected={s}\nmanip: {s}",
+        .{
+            boolText(state.viewport_hovered),
+            boolText(state.viewport_overlay_hovered),
+            boolText(state.viewport_focused),
+            boolText(state.viewport_has_image),
+            input.mouse_position[0],
+            input.mouse_position[1],
+            input.mouse_delta[0],
+            input.mouse_delta[1],
+            input.mouse_wheel[0],
+            input.mouse_wheel[1],
+            input.last_mouse_wheel[0],
+            input.last_mouse_wheel[1],
+            input.mouse_wheel_event_count,
+            camera_text,
+            tool_text,
+            layer_context.renderer.selectedEntities().len,
+            selected_text,
+            manipulation_text,
+        },
+    );
+}
+
+fn copyDebugTextToClipboard(allocator: std.mem.Allocator, text: []const u8) !void {
+    const text_z = try allocator.dupeZ(u8, text);
+    defer allocator.free(text_z);
+    if (!sdl.SDL_SetClipboardText(text_z.ptr)) {
+        return error.ClipboardUnavailable;
+    }
 }
 
 fn drawViewportViewCube(state: *EditorState, layer_context: *engine.core.LayerContext) void {

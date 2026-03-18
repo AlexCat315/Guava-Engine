@@ -11,6 +11,7 @@ pub const ViewPreset = state_mod.ViewportViewPreset;
 
 pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.LayerContext) void {
     const input = layer_context.input;
+    const tool_active = state.manipulation_mode != .none;
 
     // Fix 1: Only cancel view cube transition when actually dragging camera
     const is_dragging_camera = input.isMouseDown(.right) or input.isMouseDown(.middle) or (input.isMouseDown(.left) and input.modifiers.alt);
@@ -19,8 +20,7 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
     }
     updateViewCubeTransition(state, layer_context);
 
-    // Exit if in object manipulation mode
-    if (!state.editor_camera_active or state.manipulation_mode != .none) {
+    if (!state.editor_camera_active) {
         return;
     }
 
@@ -39,8 +39,9 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
     const camera_id = state.editor_camera orelse return;
     const camera = layer_context.world.getEntity(camera_id) orelse return;
 
-    // Left-click: orbit around focus point
-    if (input.isMouseDown(.left)) {
+    // Left-click or alt+left-click: orbit around focus point.
+    // When a transform tool is active, reserve plain left drag for object manipulation.
+    if (input.isMouseDown(.left) and (!tool_active or input.modifiers.alt)) {
         state.yaw -= input.mouse_delta[0] * state.orbit_sensitivity;
         state.pitch = utils.clampPitch(state.pitch - input.mouse_delta[1] * state.orbit_sensitivity);
         if (@abs(input.mouse_delta[0]) > 0.0001 or @abs(input.mouse_delta[1]) > 0.0001) {

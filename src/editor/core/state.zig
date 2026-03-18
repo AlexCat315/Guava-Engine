@@ -239,6 +239,7 @@ pub const EditorState = struct {
     layout_templates_loaded: bool = false,
     viewport_render_mode: ViewportRenderMode = .textured,
     viewport_view_preset: ViewportViewPreset = .perspective,
+    viewport_debug_overlay: bool = false,
     viewport_show_grid: bool = true,
     viewport_show_bones: bool = false,
     viewport_show_collision: bool = false,
@@ -474,6 +475,7 @@ test "viewport drop defaults and payload constants stay stable" {
     try std.testing.expectEqual(ViewportViewPreset.perspective, state.viewport_view_preset);
     try std.testing.expectEqual(PlaceActorCategory.basics, state.place_actor_category);
     try std.testing.expectEqual(FpsDisplayMode.viewport, state.fps_display_mode);
+    try std.testing.expect(!state.viewport_debug_overlay);
     try std.testing.expect(!state.translation_snap_enabled);
     try std.testing.expectEqual(@as(f32, 10.0), state.translation_snap_step);
     try std.testing.expect(!state.rotation_snap_enabled);

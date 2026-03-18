@@ -222,6 +222,7 @@ pub const Application = struct {
                 },
                 .mouse_wheel => {
                     self.input.setModifiers(event.modifiers);
+                    self.input.updateMousePosition(event.x, event.y);
                     self.input.addMouseWheel(event.delta_x, event.delta_y);
                 },
                 .key_down => {

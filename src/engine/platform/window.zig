@@ -249,11 +249,22 @@ pub const Window = struct {
                     };
                 },
                 sdl.SDL_EVENT_MOUSE_WHEEL => {
+                    const direction_sign: f32 = if (raw_event.wheel.direction == sdl.SDL_MOUSEWHEEL_FLIPPED) -1.0 else 1.0;
+                    const wheel_x = if (@abs(raw_event.wheel.x) > 0.0001)
+                        raw_event.wheel.x
+                    else
+                        @as(f32, @floatFromInt(raw_event.wheel.integer_x));
+                    const wheel_y = if (@abs(raw_event.wheel.y) > 0.0001)
+                        raw_event.wheel.y
+                    else
+                        @as(f32, @floatFromInt(raw_event.wheel.integer_y));
                     return .{
                         .kind = .mouse_wheel,
                         .raw = raw_event,
-                        .delta_x = raw_event.wheel.x,
-                        .delta_y = raw_event.wheel.y,
+                        .x = raw_event.wheel.mouse_x,
+                        .y = raw_event.wheel.mouse_y,
+                        .delta_x = wheel_x * direction_sign,
+                        .delta_y = wheel_y * direction_sign,
                         .modifiers = currentModifiers(),
                     };
                 },

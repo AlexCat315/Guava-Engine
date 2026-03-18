@@ -222,6 +222,7 @@ pub const locale = types.LocaleInfo{
         .pause = "暂停",
         .step = "步进",
         .render_settings = "渲染设置",
+        .viewport_debug_overlay = "视口调试浮层",
         .coordinate_space = "坐标系",
         .local_space = "局部",
         .world_space = "世界",

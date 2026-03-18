@@ -222,6 +222,7 @@ pub const locale = types.LocaleInfo{
         .pause = "Pause",
         .step = "Step",
         .render_settings = "Render Settings",
+        .viewport_debug_overlay = "Viewport Debug Overlay",
         .coordinate_space = "Space",
         .local_space = "Local",
         .world_space = "World",
