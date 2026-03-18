@@ -883,7 +883,9 @@ fn rebuildAssetDirectories(state: *EditorState) !void {
 
     std.sort.heap([]u8, state.asset_directories.items, {}, lessThanDirectory);
     if (state.asset_directories.items.len == 0) {
-        try state.asset_directories.append(allocator, try allocator.dupe(u8, "assets"));
+        const root_directory = try allocator.dupe(u8, "assets");
+        errdefer allocator.free(root_directory);
+        try state.asset_directories.append(allocator, root_directory);
     }
     ensureSelectedAssetDirectory(state);
 }
@@ -902,7 +904,9 @@ fn addDirectoryPath(state: *EditorState, path: []const u8) !void {
     }
     try appendDirectoryIfMissing(state, path);
     if (state.asset_directories.items.len == 0) {
-        try state.asset_directories.append(allocator, try allocator.dupe(u8, "assets"));
+        const root_directory = try allocator.dupe(u8, "assets");
+        errdefer allocator.free(root_directory);
+        try state.asset_directories.append(allocator, root_directory);
     }
 }
 
@@ -913,7 +917,9 @@ fn appendDirectoryIfMissing(state: *EditorState, path: []const u8) !void {
             return;
         }
     }
-    try state.asset_directories.append(allocator, try allocator.dupe(u8, path));
+    const owned_path = try allocator.dupe(u8, path);
+    errdefer allocator.free(owned_path);
+    try state.asset_directories.append(allocator, owned_path);
 }
 
 fn lessThanDirectory(_: void, lhs: []u8, rhs: []u8) bool {
@@ -987,7 +993,9 @@ fn queueMaterialThumbnailRequest(state: *EditorState, asset_id: []const u8) !voi
             return;
         }
     }
-    try state.material_thumbnail_queue.append(allocator, try allocator.dupe(u8, asset_id));
+    const queued_asset_id = try allocator.dupe(u8, asset_id);
+    errdefer allocator.free(queued_asset_id);
+    try state.material_thumbnail_queue.append(allocator, queued_asset_id);
 }
 
 pub fn flushMaterialThumbnailRequests(state: *EditorState, layer_context: *engine.core.LayerContext) !void {

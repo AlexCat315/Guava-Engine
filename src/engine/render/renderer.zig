@@ -56,17 +56,16 @@ const SelectionReadbackRequest = struct {
 
 const InFlightSelectionReadback = struct {
     request: SelectionReadbackRequest,
-    transfer_buffer: rhi_mod.TransferBuffer,
+    offset: u32,
 };
 
 const InFlightSelectionBatch = struct {
     fence: rhi_mod.Fence,
+    transfer_buffer: rhi_mod.TransferBuffer,
     readbacks: []InFlightSelectionReadback,
 
     fn deinit(self: *InFlightSelectionBatch, allocator: std.mem.Allocator, device: *rhi_mod.RhiDevice) void {
-        for (self.readbacks) |*readback| {
-            device.releaseTransferBuffer(&readback.transfer_buffer);
-        }
+        device.releaseTransferBuffer(&self.transfer_buffer);
         allocator.free(self.readbacks);
         device.releaseFence(&self.fence);
         self.* = undefined;
@@ -193,6 +192,7 @@ const ShadowMapState = struct {
 const material_thumbnail_dimension: u32 = 128;
 const material_thumbnail_jobs_per_frame: usize = 2;
 const material_thumbnail_cache_limit: usize = 48;
+const selection_readback_bytes: u32 = 4;
 const material_thumbnail_clear_color = [4]f32{ 0.075, 0.08, 0.09, 1.0 };
 const thumbnail_viewport_state = EditorViewportState{
     .render_mode = .textured,
@@ -731,9 +731,9 @@ pub const Renderer = struct {
                     mesh_pass_mod.DirectionalLightBlock{ .direction = vec3.normalize(.{ 0.3, -0.9, -0.2 }), .color = .{ 1.0, 0.98, 0.92 }, .intensity = 1.6 };
 
                 const mat4 = @import("../math/mat4.zig");
-                // Position light "behind" the direction
-                const light_pos = vec3.scale(vec3.normalize(main_light.direction), -20.0);
-                const light_view = mat4.lookAt(light_pos, .{ 0.0, 0.0, 0.0 }, .{ 0.0, 1.0, 0.0 });
+                const light_dir = vec3.normalize(main_light.direction);
+                const light_pos = vec3.scale(light_dir, -20.0);
+                const light_view = mat4.lookAt(light_pos, .{ 0.0, 0.0, 0.0 }, shadowViewUpVector(light_dir));
                 const light_proj = mat4.orthographic(40.0, 1.0, 0.1, 100.0);
                 break :blk_lsm mat4.mul(light_proj, light_view);
             };
@@ -977,7 +977,7 @@ pub const Renderer = struct {
         var fbs = std.io.fixedBufferStream(ppm_data);
         const writer = fbs.writer();
         try writer.print("P6\n{d} {d}\n255\n", .{ width, height });
-        
+
         // Batch convert RGBA to RGB and write all at once
         const rgb_data = try allocator.alloc(u8, pixel_count * 3);
         defer allocator.free(rgb_data);
@@ -1108,6 +1108,9 @@ pub const Renderer = struct {
             self.evictMaterialThumbnailEntry(asset_id);
         }
 
+        const owned_asset_id = try self.allocator.dupe(u8, asset_id);
+        errdefer self.allocator.free(owned_asset_id);
+
         const target = try ThumbnailRenderTarget.init(&self.rhi);
         errdefer {
             var owned = target;
@@ -1115,15 +1118,18 @@ pub const Renderer = struct {
         }
 
         const entry = MaterialThumbnailCacheEntry{
-            .asset_id = try self.allocator.dupe(u8, asset_id),
+            .asset_id = owned_asset_id,
             .target = target,
         };
-        try self.material_thumbnail_cache.put(asset_id, entry);
-        return self.material_thumbnail_cache.getPtr(asset_id).?;
+        try self.material_thumbnail_cache.put(owned_asset_id, entry);
+        return self.material_thumbnail_cache.getPtr(owned_asset_id).?;
     }
 
     fn enqueueMaterialThumbnailRequest(self: *Renderer, entry: *MaterialThumbnailCacheEntry) !void {
-        try self.material_thumbnail_requests.append(self.allocator, try self.allocator.dupe(u8, entry.asset_id));
+        const queued_asset_id = try self.allocator.dupe(u8, entry.asset_id);
+        errdefer self.allocator.free(queued_asset_id);
+
+        try self.material_thumbnail_requests.append(self.allocator, queued_asset_id);
         entry.queued = true;
     }
 
@@ -1157,7 +1163,6 @@ pub const Renderer = struct {
             if (self.material_thumbnail_cache.fetchRemove(key)) |kv| {
                 var value = kv.value;
                 value.deinit(self.allocator, &self.rhi);
-                self.allocator.free(kv.key);
             }
         }
     }
@@ -1166,7 +1171,6 @@ pub const Renderer = struct {
         if (self.material_thumbnail_cache.fetchRemove(asset_id)) |kv| {
             var value = kv.value;
             value.deinit(self.allocator, &self.rhi);
-            self.allocator.free(kv.key);
         }
     }
 
@@ -1347,36 +1351,36 @@ pub const Renderer = struct {
 
     fn enqueueSelectionReadbacks(self: *Renderer, frame: rhi_mod.Frame, id_texture: *const rhi_mod.Texture) !void {
         const pending = self.pending_selection_readbacks.items;
-        var readbacks = try self.allocator.alloc(InFlightSelectionReadback, pending.len);
-        
-        var created_count: usize = 0;
-        errdefer {
-            // 1. 释放内部创建的 GPU Buffer
-            var index: usize = 0;
-            while (index < created_count) : (index += 1) {
-                self.rhi.releaseTransferBuffer(&readbacks[index].transfer_buffer);
-            }
-            // 2. 【关键修复】释放 readbacks 数组切片本身的内存！
-            self.allocator.free(readbacks);
+        const total_buffer_size = std.math.cast(u32, pending.len * @as(usize, selection_readback_bytes)) orelse return error.OutOfMemory;
+
+        if (id_texture.desc.width == 0 or id_texture.desc.height == 0) {
+            try self.rhi.submitFrame(frame);
+            try self.applyPendingSelectionMisses();
+            return;
         }
+
+        var readbacks = try self.allocator.alloc(InFlightSelectionReadback, pending.len);
+        errdefer self.allocator.free(readbacks);
+
+        var transfer_buffer = try self.rhi.createTransferBuffer(.{
+            .size = total_buffer_size,
+            .upload = false,
+        });
+        errdefer self.rhi.releaseTransferBuffer(&transfer_buffer);
 
         for (pending, 0..) |request, index| {
             readbacks[index] = .{
                 .request = request,
-                .transfer_buffer = try self.rhi.createTransferBuffer(.{
-                    .size = 4,
-                    .upload = false,
-                }),
+                .offset = std.math.cast(u32, index * @as(usize, selection_readback_bytes)) orelse return error.OutOfMemory,
             };
-            created_count += 1;
         }
 
         const copy_pass = try self.rhi.beginCopyPass(frame);
 
-        for (readbacks) |*readback| {
+        for (readbacks) |readback| {
             const pixel_x = @min(readback.request.pixel_x, id_texture.desc.width - 1);
             const pixel_y = @min(readback.request.pixel_y, id_texture.desc.height - 1);
-            self.rhi.downloadTexturePixel(copy_pass, id_texture, &readback.transfer_buffer, pixel_x, pixel_y);
+            self.rhi.downloadTexturePixelToOffset(copy_pass, id_texture, &transfer_buffer, readback.offset, pixel_x, pixel_y);
         }
 
         self.rhi.endCopyPass(copy_pass);
@@ -1386,6 +1390,7 @@ pub const Renderer = struct {
 
         try self.in_flight_selection_batches.append(self.allocator, .{
             .fence = fence,
+            .transfer_buffer = transfer_buffer,
             .readbacks = readbacks,
         });
         self.pending_selection_readbacks.clearRetainingCapacity();
@@ -1400,9 +1405,9 @@ pub const Renderer = struct {
             var batch = self.in_flight_selection_batches.orderedRemove(0);
             defer batch.deinit(self.allocator, &self.rhi);
 
-            for (batch.readbacks) |*readback| {
+            for (batch.readbacks) |readback| {
                 var pixel: [4]u8 = undefined;
-                try self.rhi.readTransferBufferBytes(&readback.transfer_buffer, pixel[0..]);
+                try self.rhi.readTransferBufferBytesAt(&batch.transfer_buffer, readback.offset, pixel[0..]);
                 const entity = id_pass_mod.decodeEntityIdBgra(pixel);
                 _ = try self.selection_history.applyPick(entity, readback.request.mode);
             }
@@ -1423,6 +1428,14 @@ pub const Renderer = struct {
         self.in_flight_selection_batches.deinit(self.allocator);
     }
 };
+
+fn shadowViewUpVector(light_dir: [3]f32) [3]f32 {
+    const default_up = [3]f32{ 0.0, 1.0, 0.0 };
+    if (@abs(vec3.dot(light_dir, default_up)) > 0.99) {
+        return .{ 0.0, 0.0, 1.0 };
+    }
+    return default_up;
+}
 
 fn resolveMaterialThumbnailSource(
     resources: *const assets_lib.ResourceLibrary,

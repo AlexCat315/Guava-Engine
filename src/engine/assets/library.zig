@@ -90,21 +90,33 @@ pub const ResourceLibrary = struct {
         if (!handles.isValid(handle)) {
             return null;
         }
-        return &self.meshes.items[handles.indexOf(handle)];
+        const index = handles.indexOf(handle);
+        if (index >= self.meshes.items.len) {
+            return null;
+        }
+        return &self.meshes.items[index];
     }
 
     pub fn material(self: *const ResourceLibrary, handle: handles.MaterialHandle) ?*const material_mod.MaterialResource {
         if (!handles.isValid(handle)) {
             return null;
         }
-        return &self.materials.items[handles.indexOf(handle)];
+        const index = handles.indexOf(handle);
+        if (index >= self.materials.items.len) {
+            return null;
+        }
+        return &self.materials.items[index];
     }
 
     pub fn texture(self: *const ResourceLibrary, handle: handles.TextureHandle) ?*const texture_mod.TextureResource {
         if (!handles.isValid(handle)) {
             return null;
         }
-        return &self.textures.items[handles.indexOf(handle)];
+        const index = handles.indexOf(handle);
+        if (index >= self.textures.items.len) {
+            return null;
+        }
+        return &self.textures.items[index];
     }
 
     pub fn assetRecordById(self: *const ResourceLibrary, asset_id: []const u8) ?*const registry_mod.AssetRecord {
@@ -336,7 +348,7 @@ fn builtinRecord(
     source_path: []const u8,
     display_name: []const u8,
 ) !registry_mod.AssetRecord {
-    const asset_id = try registry_mod.makeDerivedAssetIdAlloc(library.allocator, "guava.builtin.v1", &.{ source_path });
+    const asset_id = try registry_mod.makeDerivedAssetIdAlloc(library.allocator, "guava.builtin.v1", &.{source_path});
     errdefer library.allocator.free(asset_id);
 
     const source_hash = try registry_mod.hashStringAlloc(library.allocator, source_path);

@@ -94,7 +94,6 @@ pub const World = struct {
             self.entities = .empty;
             self.id_to_index = std.AutoHashMap(EntityId, usize).init(self.allocator);
             self.resources = assets_lib.ResourceLibrary.init(self.allocator, self.job_system);
-            self.next_id = 1;
         }
     }
 
@@ -127,7 +126,6 @@ pub const World = struct {
             .dirty = true,
             .children = .empty,
         });
-
 
         try self.id_to_index.put(id, index);
 
@@ -178,7 +176,7 @@ pub const World = struct {
         }
 
         // Second pass: update bounds (bottom-up)
-        // For simplicity, we can do it in a separate pass or combine. 
+        // For simplicity, we can do it in a separate pass or combine.
         // Bottom-up is better for bounds.
         for (self.entities.items) |*entity| {
             _ = self.updateBoundsRecursive(entity.id);
@@ -196,22 +194,22 @@ pub const World = struct {
             const local_mat = mat4.transformMatrix(entity.local_transform);
             const world_mat = mat4.mul(parent_mat, local_mat);
 
-            // For now, we store it back in TRS. 
+            // For now, we store it back in TRS.
             // In a real engine, we'd store the matrix and decompose only if needed.
             // But we'll follow the plan's TRS requirement.
             entity.world_transform_cache.translation = .{ world_mat[12], world_mat[13], world_mat[14] };
-            
+
             // Simplified decomposition for now - assuming no skew
             entity.world_transform_cache.scale = .{
                 vec3.length(.{ world_mat[0], world_mat[4], world_mat[8] }),
                 vec3.length(.{ world_mat[1], world_mat[5], world_mat[9] }),
                 vec3.length(.{ world_mat[2], world_mat[6], world_mat[10] }),
             };
-            
-            // Rotation is trickier to extract from matrix, but for now we'll just 
+
+            // Rotation is trickier to extract from matrix, but for now we'll just
             // accumulate quats (which is faster and more precise for hierarchies)
             entity.world_transform_cache.rotation = quat.mul(parent_world.rotation, entity.local_transform.rotation);
-            
+
             entity.dirty = false;
         }
 
@@ -222,9 +220,9 @@ pub const World = struct {
 
     fn updateBoundsRecursive(self: *World, id: EntityId) AABB {
         const entity = self.getEntity(id) orelse return AABB.empty();
-        
+
         var bounds = AABB.empty();
-        
+
         // Include own mesh bounds
         if (entity.mesh) |mesh_comp| {
             if (mesh_comp.handle) |handle| {

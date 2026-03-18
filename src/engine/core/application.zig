@@ -148,14 +148,15 @@ pub const Application = struct {
                 if (index < self.layers.overlay_start and !should_advance_simulation) {
                     continue;
                 }
-                try layer.update(&layer_context);
+                layer.update(&layer_context) catch |err| {
+                    std.log.err("layer '{s}' update failed: {s}", .{ layer.name, @errorName(err) });
+                };
             }
             if (should_advance_simulation) {
                 self.playback_controller.consumeAdvance();
             }
 
             last_frame = try self.renderer.drawFrame(&self.world);
-            
         }
 
         const summary = self.world.summary();
@@ -190,6 +191,8 @@ pub const Application = struct {
     fn pumpEvents(self: *Application) !void {
         while (try self.window.pollEvent()) |event| {
             imgui_mod.processEvent(&event.raw);
+            const wants_mouse = imgui_mod.wantsCaptureMouse();
+            const wants_keyboard = imgui_mod.wantsCaptureKeyboard();
             switch (event.kind) {
                 .resized, .pixel_size_changed, .metal_view_resized, .exposed => {
                     try self.renderer.handleResize(event.width, event.height);
@@ -200,35 +203,49 @@ pub const Application = struct {
                 .mouse_button_down => {
                     self.input.setModifiers(event.modifiers);
                     self.input.updateMousePosition(event.x, event.y);
-                    if (event.button) |button| {
-                        self.input.setMouseButton(button, true, event.clicks);
+                    if (!wants_mouse) {
+                        if (event.button) |button| {
+                            self.input.setMouseButton(button, true, event.clicks);
+                        }
                     }
                 },
                 .mouse_button_up => {
                     self.input.setModifiers(event.modifiers);
                     self.input.updateMousePosition(event.x, event.y);
                     if (event.button) |button| {
-                        self.input.setMouseButton(button, false, event.clicks);
+                        if (!wants_mouse or self.input.isMouseDown(button)) {
+                            self.input.setMouseButton(button, false, event.clicks);
+                        }
                     }
                 },
                 .mouse_moved => {
                     self.input.setModifiers(event.modifiers);
-                    self.input.addMouseDelta(event.x, event.y, event.delta_x, event.delta_y);
+                    if (wants_mouse) {
+                        self.input.updateMousePosition(event.x, event.y);
+                    } else {
+                        self.input.addMouseDelta(event.x, event.y, event.delta_x, event.delta_y);
+                    }
                 },
                 .mouse_wheel => {
                     self.input.setModifiers(event.modifiers);
-                    self.input.addMouseWheel(event.delta_x, event.delta_y);
+                    if (!wants_mouse) {
+                        self.input.addMouseWheel(event.delta_x, event.delta_y);
+                    }
                 },
                 .key_down => {
                     self.input.setModifiers(event.modifiers);
-                    if (event.key) |key| {
-                        self.input.setKey(key, true);
+                    if (!wants_keyboard) {
+                        if (event.key) |key| {
+                            self.input.setKey(key, true);
+                        }
                     }
                 },
                 .key_up => {
                     self.input.setModifiers(event.modifiers);
                     if (event.key) |key| {
-                        self.input.setKey(key, false);
+                        if (!wants_keyboard or self.input.isKeyDown(key)) {
+                            self.input.setKey(key, false);
+                        }
                     }
                 },
             }

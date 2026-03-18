@@ -1103,6 +1103,18 @@ pub const RhiDevice = struct {
         x: u32,
         y: u32,
     ) void {
+        downloadTexturePixelToOffset(undefined, pass, texture, transfer_buffer, 0, x, y);
+    }
+
+    pub fn downloadTexturePixelToOffset(
+        _: *RhiDevice,
+        pass: CopyPass,
+        texture: *const Texture,
+        transfer_buffer: *const TransferBuffer,
+        offset: u32,
+        x: u32,
+        y: u32,
+    ) void {
         var source = sdl.SDL_GPUTextureRegion{
             .texture = texture.raw,
             .mip_level = 0,
@@ -1116,7 +1128,7 @@ pub const RhiDevice = struct {
         };
         var destination = sdl.SDL_GPUTextureTransferInfo{
             .transfer_buffer = transfer_buffer.raw,
-            .offset = 0,
+            .offset = offset,
             .pixels_per_row = 1,
             .rows_per_layer = 1,
         };
@@ -1128,7 +1140,18 @@ pub const RhiDevice = struct {
         transfer_buffer: *const TransferBuffer,
         destination: []u8,
     ) Error!void {
-        std.debug.assert(destination.len <= transfer_buffer.desc.size);
+        return self.readTransferBufferBytesAt(transfer_buffer, 0, destination);
+    }
+
+    pub fn readTransferBufferBytesAt(
+        self: *RhiDevice,
+        transfer_buffer: *const TransferBuffer,
+        offset: u32,
+        destination: []u8,
+    ) Error!void {
+        const start: usize = offset;
+        const end = start + destination.len;
+        std.debug.assert(end <= transfer_buffer.desc.size);
 
         const mapped = sdl.SDL_MapGPUTransferBuffer(self.raw, transfer_buffer.raw, false) orelse {
             std.log.err("SDL_MapGPUTransferBuffer failed: {s}", .{window_mod.lastError()});
@@ -1137,7 +1160,7 @@ pub const RhiDevice = struct {
         defer sdl.SDL_UnmapGPUTransferBuffer(self.raw, transfer_buffer.raw);
 
         const bytes: [*]u8 = @ptrCast(mapped);
-        @memcpy(destination, bytes[0..destination.len]);
+        @memcpy(destination, bytes[start..end]);
     }
 
     pub fn readTexturePixel(self: *RhiDevice, texture: *const Texture, x: u32, y: u32) Error![4]u8 {
@@ -1634,7 +1657,8 @@ pub const ResourcePool = struct {
         // Try to find a matching cached buffer
         for (self.buffer_pool.items) |*pooled| {
             if (pooled.buffer.desc.size == desc.size and
-                pooled.buffer.desc.usage == desc.usage) {
+                pooled.buffer.desc.usage == desc.usage)
+            {
                 pooled.last_frame_used = self.frame_counter;
                 self.stats.cache_hits += 1;
                 return pooled.buffer;
@@ -1674,7 +1698,8 @@ pub const ResourcePool = struct {
             if (pooled.texture.desc.width == desc.width and
                 pooled.texture.desc.height == desc.height and
                 pooled.texture.desc.format == desc.format and
-                pooled.texture.desc.usage == desc.usage) {
+                pooled.texture.desc.usage == desc.usage)
+            {
                 pooled.last_frame_used = self.frame_counter;
                 self.stats.cache_hits += 1;
                 return pooled.texture;
@@ -1774,7 +1799,8 @@ pub const ResourcePool = struct {
         var i: usize = 0;
         while (i < self.buffer_pool.items.len) {
             if (frame - self.buffer_pool.items[i].last_frame_used > max_age and
-                self.buffer_pool.items.len > self.buffer_config.initial_capacity) {
+                self.buffer_pool.items.len > self.buffer_config.initial_capacity)
+            {
                 const removed = self.buffer_pool.orderedRemove(i);
                 self.device.releaseBuffer(@constCast(&removed.buffer));
             } else {
@@ -1786,7 +1812,8 @@ pub const ResourcePool = struct {
         i = 0;
         while (i < self.texture_pool.items.len) {
             if (frame - self.texture_pool.items[i].last_frame_used > max_age and
-                self.texture_pool.items.len > self.texture_config.initial_capacity) {
+                self.texture_pool.items.len > self.texture_config.initial_capacity)
+            {
                 const removed = self.texture_pool.orderedRemove(i);
                 self.device.releaseTexture(@constCast(&removed.texture));
             } else {
@@ -1798,7 +1825,8 @@ pub const ResourcePool = struct {
         i = 0;
         while (i < self.sampler_pool.items.len) {
             if (frame - self.sampler_pool.items[i].last_frame_used > max_age and
-                self.sampler_pool.items.len > self.sampler_config.initial_capacity) {
+                self.sampler_pool.items.len > self.sampler_config.initial_capacity)
+            {
                 const removed = self.sampler_pool.orderedRemove(i);
                 self.device.releaseSampler(@constCast(&removed.sampler));
             } else {
@@ -1810,7 +1838,8 @@ pub const ResourcePool = struct {
         i = 0;
         while (i < self.pipeline_pool.items.len) {
             if (frame - self.pipeline_pool.items[i].last_frame_used > max_age and
-                self.pipeline_pool.items.len > self.pipeline_config.initial_capacity) {
+                self.pipeline_pool.items.len > self.pipeline_config.initial_capacity)
+            {
                 const removed = self.pipeline_pool.orderedRemove(i);
                 self.device.releaseGraphicsPipeline(@constCast(&removed.pipeline));
             } else {
