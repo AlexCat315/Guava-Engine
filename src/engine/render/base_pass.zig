@@ -6,6 +6,9 @@ const rhi_types = @import("../rhi/types.zig");
 const shader_support = @import("shader_support.zig");
 const render_types = @import("types.zig");
 const vec3 = @import("../math/vec3.zig");
+const render_log = std.log.scoped(.viewport_render);
+
+var g_logged_metal_binding_mode: bool = false;
 
 pub const BasePass = struct {
     fill_pipeline: ?rhi_mod.GraphicsPipeline = null,
@@ -47,6 +50,11 @@ pub const BasePass = struct {
         if (!self.isReady()) {
             return stats;
         }
+        const use_metal_combined_bindings = device.api == .metal;
+        if (use_metal_combined_bindings and !g_logged_metal_binding_mode) {
+            render_log.info("base pass using Metal combined sampler binding path", .{});
+            g_logged_metal_binding_mode = true;
+        }
 
         const pipeline = switch (viewport_state.render_mode) {
             .wireframe => &self.wireframe_pipeline.?,
@@ -63,6 +71,48 @@ pub const BasePass = struct {
             prepared_scene.lights.point_lights[0]
         else
             mesh_pass_mod.PointLightBlock{ .position = .{ 0.0, 0.0, 0.0 }, .color = .{ 1.0, 0.95, 0.9 }, .intensity = 0.0, .range = 1.0 };
+
+        var shadow_bg: ?rhi_mod.BindGroup = null;
+        defer if (shadow_bg) |*bind_group| {
+            device.releaseBindGroup(bind_group);
+        };
+        var ibl_bg: ?rhi_mod.BindGroup = null;
+        defer if (ibl_bg) |*bind_group| {
+            device.releaseBindGroup(bind_group);
+        };
+        if (!use_metal_combined_bindings) {
+            if (prepared_scene.shadow_map) |sm| {
+                const shadow_bindings = [_]rhi_mod.TextureSamplerBinding{
+                    .{ .texture = sm, .sampler = prepared_scene.shadow_sampler.? },
+                };
+                shadow_bg = try device.createBindGroup(.{
+                    .stage = .fragment,
+                    .texture_sampler_bindings = shadow_bindings[0..],
+                    .slot_offset = 5,
+                });
+                device.bindGroup(pass, &shadow_bg.?);
+            }
+
+            if (prepared_scene.irradiance_map != null and
+                prepared_scene.prefiltered_env_map != null and
+                prepared_scene.brdf_lut != null and
+                prepared_scene.environment_map != null and
+                prepared_scene.texture_sampler != null)
+            {
+                const ibl_bindings = [_]rhi_mod.TextureSamplerBinding{
+                    .{ .texture = prepared_scene.irradiance_map.?, .sampler = prepared_scene.texture_sampler.? },
+                    .{ .texture = prepared_scene.prefiltered_env_map.?, .sampler = prepared_scene.texture_sampler.? },
+                    .{ .texture = prepared_scene.brdf_lut.?, .sampler = prepared_scene.texture_sampler.? },
+                    .{ .texture = prepared_scene.environment_map.?, .sampler = prepared_scene.texture_sampler.? },
+                };
+                ibl_bg = try device.createBindGroup(.{
+                    .stage = .fragment,
+                    .texture_sampler_bindings = ibl_bindings[0..],
+                    .slot_offset = 6,
+                });
+                device.bindGroup(pass, &ibl_bg.?);
+            }
+        }
 
         for (prepared_scene.opaque_meshes) |item| {
             var vertex_uniforms = mesh_pass_mod.VertexUniforms{
@@ -82,28 +132,46 @@ pub const BasePass = struct {
                 .point_light_color_intensity = .{ point_light.color[0], point_light.color[1], point_light.color[2], point_light.intensity },
                 .ambient_color = prepared_scene.ambient_color,
                 .shadow_params = .{ 0.005, 0.0, 0.0, 0.0 }, // bias
+                .ibl_params = item.ibl_params,
             };
             if (viewport_state.render_mode == .unlit) {
                 fragment_uniforms.light_color_intensity = .{ 0.0, 0.0, 0.0, 0.0 };
                 fragment_uniforms.point_light_color_intensity = .{ 0.0, 0.0, 0.0, 0.0 };
                 fragment_uniforms.ambient_color = .{ 1.0, 1.0, 1.0, 1.0 };
+                fragment_uniforms.ibl_params = .{ 0.0, 0.0, 0.0, 0.0 };
             }
 
             device.bindVertexBuffer(pass, 0, &item.vertex_buffer, 0);
             device.bindIndexBuffer(pass, &item.index_buffer, .u32, 0);
-            device.bindGroup(pass, &item.bind_group);
+            if (use_metal_combined_bindings) {
+                const shadow_texture = prepared_scene.shadow_map orelse return error.TextureNotFound;
+                const shadow_sampler = prepared_scene.shadow_sampler orelse return error.SamplerCreateFailed;
+                const texture_sampler = prepared_scene.texture_sampler orelse return error.SamplerCreateFailed;
+                const irradiance_map = prepared_scene.irradiance_map orelse return error.TextureNotFound;
+                const prefiltered_env_map = prepared_scene.prefiltered_env_map orelse return error.TextureNotFound;
+                const brdf_lut = prepared_scene.brdf_lut orelse return error.TextureNotFound;
+                const environment_map = prepared_scene.environment_map orelse return error.TextureNotFound;
 
-            if (prepared_scene.shadow_map) |sm| {
-                const shadow_bindings = [_]rhi_mod.TextureSamplerBinding{
-                    .{ .texture = sm, .sampler = prepared_scene.shadow_sampler.? },
+                const combined_bindings = [_]rhi_mod.TextureSamplerBinding{
+                    .{ .texture = item.material_textures[0], .sampler = texture_sampler },
+                    .{ .texture = item.material_textures[1], .sampler = texture_sampler },
+                    .{ .texture = item.material_textures[2], .sampler = texture_sampler },
+                    .{ .texture = shadow_texture, .sampler = shadow_sampler },
+                    .{ .texture = item.material_textures[3], .sampler = texture_sampler },
+                    .{ .texture = irradiance_map, .sampler = texture_sampler },
+                    .{ .texture = prefiltered_env_map, .sampler = texture_sampler },
+                    .{ .texture = brdf_lut, .sampler = texture_sampler },
+                    .{ .texture = item.material_textures[0], .sampler = texture_sampler },
+                    .{ .texture = environment_map, .sampler = texture_sampler },
                 };
-                var shadow_bg = try device.createBindGroup(.{
+                var combined_bg = try device.createBindGroup(.{
                     .stage = .fragment,
-                    .texture_sampler_bindings = shadow_bindings[0..],
-                    .slot_offset = 5,
+                    .texture_sampler_bindings = combined_bindings[0..],
                 });
-                defer device.releaseBindGroup(&shadow_bg);
-                device.bindGroup(pass, &shadow_bg);
+                defer device.releaseBindGroup(&combined_bg);
+                device.bindGroup(pass, &combined_bg);
+            } else {
+                device.bindGroup(pass, &item.bind_group);
             }
 
             device.pushVertexUniformData(frame, 0, std.mem.asBytes(&vertex_uniforms));

@@ -1,7 +1,6 @@
 const std = @import("std");
 const handles = @import("handles.zig");
 const ibl_precompute = @import("../render/ibl_precompute.zig");
-const registry_mod = @import("registry.zig");
 
 pub const EnvironmentMapResource = struct {
     name: []u8,
@@ -11,7 +10,8 @@ pub const EnvironmentMapResource = struct {
     source_height: u32,
     source_pixels: []f32,
     
-    // Precomputed IBL data
+    // Runtime texture handles for the source environment and its derived IBL maps.
+    environment_map_handle: ?handles.TextureHandle = null,
     irradiance_map_handle: ?handles.TextureHandle = null,
     prefiltered_map_handle: ?handles.TextureHandle = null,
     brdf_lut_handle: ?handles.TextureHandle = null,
@@ -111,7 +111,7 @@ pub const IBLCache = struct {
         _ = self;
     }
 
-    pub fn ensureBRDFLUT(self: *IBLCache, device: anytype) !handles.TextureHandle {
+    pub fn ensureBRDFLUT(self: *IBLCache, _: anytype) !handles.TextureHandle {
         if (self.brdf_lut_handle) |handle| {
             return handle;
         }

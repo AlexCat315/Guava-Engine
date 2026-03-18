@@ -2,6 +2,8 @@ pub const GraphicsAPI = @import("../rhi/types.zig").GraphicsAPI;
 pub const BackendSelectionPolicy = @import("../rhi/types.zig").BackendSelectionPolicy;
 pub const RuntimeInfo = @import("../rhi/types.zig").RuntimeInfo;
 pub const graphicsApiName = @import("../rhi/types.zig").graphicsApiName;
+pub const defaultPreferredBackends = @import("../rhi/types.zig").defaultPreferredBackends;
+pub const defaultBackendOrder = @import("../rhi/types.zig").defaultBackendOrder;
 
 pub const EditorViewportRenderMode = enum {
     textured,

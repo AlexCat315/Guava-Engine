@@ -1,19 +1,10 @@
 const std = @import("std");
 const rhi_mod = @import("../rhi/device.zig");
-const rhi_types = @import("../rhi/types.zig");
 const shader_support = @import("shader_support.zig");
 const math = @import("../math/mat4.zig");
 const mesh_pass_mod = @import("mesh_pass.zig");
 
-const FullscreenVertex = extern struct {
-    position: [2]f32,
-};
-
-const fullscreen_triangle = [_]FullscreenVertex{
-    .{ .position = .{ -1.0, -1.0 } },
-    .{ .position = .{ 3.0, -1.0 } },
-    .{ .position = .{ -1.0, 3.0 } },
-};
+const fullscreen_triangle_vertex_count: u32 = 3;
 
 pub const SkyboxUniforms = extern struct {
     projection: [16]f32,
@@ -23,7 +14,6 @@ pub const SkyboxUniforms = extern struct {
 };
 
 pub const SkyboxPass = struct {
-    fullscreen_vertex_buffer: ?rhi_mod.Buffer = null,
     sampler: ?rhi_mod.Sampler = null,
     pipeline: ?rhi_mod.GraphicsPipeline = null,
     stages: ?shader_support.ProgramStages = null,
@@ -38,9 +28,6 @@ pub const SkyboxPass = struct {
         if (self.sampler) |*sampler| {
             device.releaseSampler(sampler);
         }
-        if (self.fullscreen_vertex_buffer) |*buffer| {
-            device.releaseBuffer(buffer);
-        }
         if (self.pipeline) |*pipeline| {
             device.releaseGraphicsPipeline(pipeline);
         }
@@ -51,7 +38,7 @@ pub const SkyboxPass = struct {
     }
 
     pub fn isReady(self: *const SkyboxPass) bool {
-        return self.pipeline != null and self.fullscreen_vertex_buffer != null and self.sampler != null;
+        return self.pipeline != null and self.sampler != null;
     }
 
     fn mat4Inverse(m: [16]f32) [16]f32 {
@@ -110,7 +97,6 @@ pub const SkyboxPass = struct {
         }
 
         device.bindGraphicsPipeline(pass, &self.pipeline.?);
-        device.bindVertexBuffer(pass, 0, &self.fullscreen_vertex_buffer.?, 0);
 
         // Extract view rotation only (remove translation)
         var view_rot_only = prepared_scene.view_matrix;
@@ -149,19 +135,10 @@ pub const SkyboxPass = struct {
         defer device.releaseBindGroup(&bind_group);
 
         device.bindGroup(pass, &bind_group);
-        device.drawPrimitives(pass, fullscreen_triangle.len, 1, 0, 0);
+        device.drawPrimitives(pass, fullscreen_triangle_vertex_count, 1, 0, 0);
     }
 
     fn createResources(self: *SkyboxPass, device: *rhi_mod.RhiDevice) !void {
-        self.fullscreen_vertex_buffer = try device.createBuffer(.{
-            .size = @sizeOf(FullscreenVertex) * fullscreen_triangle.len,
-            .usage = rhi_types.BufferUsage.vertex,
-        });
-        errdefer if (self.fullscreen_vertex_buffer) |*buffer| {
-            device.releaseBuffer(buffer);
-        };
-        try device.uploadBufferData(&self.fullscreen_vertex_buffer.?, std.mem.sliceAsBytes(fullscreen_triangle[0..]));
-
         self.sampler = try device.createSampler(.{
             .min_filter = .linear,
             .mag_filter = .linear,
@@ -179,21 +156,8 @@ pub const SkyboxPass = struct {
             stages.deinit(device);
         };
 
-        const vertex_layouts = [_]rhi_mod.VertexBufferLayoutDesc{
-            .{
-                .slot = 0,
-                .stride = @sizeOf(FullscreenVertex),
-                .input_rate = .per_vertex,
-            },
-        };
-        const vertex_attributes = [_]rhi_mod.VertexAttributeDesc{
-            .{
-                .location = 0,
-                .buffer_slot = 0,
-                .format = .float2,
-                .offset = @offsetOf(FullscreenVertex, "position"),
-            },
-        };
+        const vertex_layouts = [_]rhi_mod.VertexBufferLayoutDesc{};
+        const vertex_attributes = [_]rhi_mod.VertexAttributeDesc{};
 
         self.pipeline = try device.createGraphicsPipeline(.{
             .vertex_shader = &self.stages.?.vertex,

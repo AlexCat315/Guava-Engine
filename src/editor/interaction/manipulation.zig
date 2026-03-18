@@ -51,7 +51,7 @@ pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.L
         if (input.wasKeyPressed(.g)) {
             try beginManipulation(state, layer_context, .translate);
         }
-        if (input.wasKeyPressed(.w)) {
+        if (input.wasKeyPressed(.w) and !input.isMouseDown(.right)) {
             try beginManipulation(state, layer_context, .translate);
         }
         if (input.wasKeyPressed(.r)) {
@@ -117,7 +117,7 @@ pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.L
     if (input.wasKeyPressed(.q)) {
         try selectTool(state, layer_context);
     }
-    if (input.wasKeyPressed(.w)) {
+    if (input.wasKeyPressed(.w) and !input.isMouseDown(.right)) {
         try beginManipulation(state, layer_context, .translate);
     }
     if (input.wasKeyPressed(.e)) {

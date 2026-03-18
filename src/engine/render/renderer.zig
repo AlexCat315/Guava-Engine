@@ -1,9 +1,11 @@
 const std = @import("std");
 const assets_lib = @import("../assets/library.zig");
 const handles = @import("../assets/handles.zig");
+const environment_map_import_mod = @import("../assets/environment_map_import.zig");
 const material_resource_mod = @import("../assets/material_resource.zig");
 const registry_mod = @import("../assets/registry.zig");
 const texture_resource_mod = @import("../assets/texture_resource.zig");
+const texture_import_mod = @import("../assets/texture_import.zig");
 const base_pass_mod = @import("base_pass.zig");
 const shadow_pass_mod = @import("shadow_pass.zig");
 const skybox_pass_mod = @import("skybox_pass.zig");
@@ -25,6 +27,10 @@ const components = @import("../scene/components.zig");
 const scene_mod = @import("../scene/scene.zig");
 const types = @import("types.zig");
 const vec3 = @import("../math/vec3.zig");
+const render_log = std.log.scoped(.viewport_render);
+
+var g_logged_viewport_backend: bool = false;
+var g_logged_environment_status: bool = false;
 
 pub const GraphicsAPI = rhi_types.GraphicsAPI;
 pub const RuntimeInfo = rhi_types.RuntimeInfo;
@@ -141,6 +147,16 @@ const SceneViewportState = struct {
 
         self.width = width;
         self.height = height;
+        render_log.info(
+            "viewport textures ready size={d}x{d} hdr_format={s} color_format={s} depth_format={s}",
+            .{
+                width,
+                height,
+                @tagName(self.hdr_color_texture.?.desc.format),
+                @tagName(self.color_texture.?.desc.format),
+                @tagName(self.depth_texture.?.desc.format),
+            },
+        );
     }
 
     fn active(self: *const SceneViewportState) bool {
@@ -452,7 +468,7 @@ pub const Renderer = struct {
     depth_prepass: depth_prepass_mod.DepthPrepass,
     shadow_pass: shadow_pass_mod.ShadowPass,
     base_pass: base_pass_mod.BasePass,
-    skybox_pass: ?skybox_pass_mod.SkyboxPass = null, // Optional due to shader issues
+    skybox_pass: ?skybox_pass_mod.SkyboxPass = null,
     outline_pass: outline_pass_mod.OutlinePass,
     gizmo_pass: gizmo_pass_mod.GizmoPass,
     tonemap_pass: tonemap_pass_mod.TonemapPass,
@@ -536,9 +552,13 @@ pub const Renderer = struct {
         renderer.base_pass = try base_pass_mod.BasePass.init(&renderer.rhi);
         errdefer renderer.base_pass.deinit(&renderer.rhi);
 
-        // TODO: Skybox pass disabled due to shader compilation issues
-        // renderer.skybox_pass = try skybox_pass_mod.SkyboxPass.init(&renderer.rhi);
-        // errdefer renderer.skybox_pass.deinit(&renderer.rhi);
+        renderer.tonemap_pass = try tonemap_pass_mod.TonemapPass.init(&renderer.rhi);
+        errdefer renderer.tonemap_pass.deinit(&renderer.rhi);
+
+        renderer.skybox_pass = try skybox_pass_mod.SkyboxPass.init(&renderer.rhi);
+        errdefer if (renderer.skybox_pass) |*pass| {
+            pass.deinit(&renderer.rhi);
+        };
 
         renderer.outline_pass = try outline_pass_mod.OutlinePass.init(&renderer.rhi);
         errdefer renderer.outline_pass.deinit(&renderer.rhi);
@@ -560,7 +580,9 @@ pub const Renderer = struct {
         self.material_thumbnail_preview.deinit();
         self.thumbnail_scene_cache.deinit(&self.rhi);
         self.tonemap_pass.deinit(&self.rhi);
-        // self.skybox_pass.deinit(&self.rhi); // Skybox disabled
+        if (self.skybox_pass) |*pass| {
+            pass.deinit(&self.rhi);
+        }
         self.gizmo_pass.deinit(&self.rhi);
         self.outline_pass.deinit(&self.rhi);
         self.base_pass.deinit(&self.rhi);
@@ -695,7 +717,7 @@ pub const Renderer = struct {
         return &entry.target.color_texture;
     }
 
-    pub fn drawFrame(self: *Renderer, scene: *const scene_mod.Scene) !FrameReport {
+    pub fn drawFrame(self: *Renderer, scene: *scene_mod.Scene) !FrameReport {
         try self.resolveSelectionReadbacks();
 
         const pass_stats = try self.graph.allocatePassStats(self.allocator);
@@ -729,6 +751,19 @@ pub const Renderer = struct {
             var draw_stats = mesh_pass_mod.DrawStats{};
 
             if (can_render_scene) {
+                if (!g_logged_viewport_backend) {
+                    render_log.info(
+                        "draw frame backend={s} viewport_active={} swapchain={} tonemap_ready={} skybox_ready={}",
+                        .{
+                            @tagName(self.rhi.api),
+                            viewport_active,
+                            has_swapchain,
+                            self.tonemap_pass.isReady(),
+                            if (self.skybox_pass) |*pass| pass.isReady() else false,
+                        },
+                    );
+                    g_logged_viewport_backend = true;
+                }
                 try scene_extraction.extractWorld(
                     scene,
                     &self.render_world,
@@ -772,7 +807,7 @@ pub const Renderer = struct {
                 prepared_scene.light_space_matrix = light_space_matrix;
                 prepared_scene.shadow_map = &self.shadow_map.depth_texture.?;
                 prepared_scene.shadow_sampler = &self.shadow_map.sampler.?;
-                prepared_scene.environment_map = &self.scene_cache.fallback_texture.?; // Use fallback texture as a placeholder environment map for now
+                try resolveEnvironmentTextures(self, scene, &prepared_scene);
 
                 const scene_color_target: rhi_mod.ColorTarget = if (viewport_active)
                     .{ .texture = self.scene_viewport.color().? }
@@ -854,14 +889,15 @@ pub const Renderer = struct {
                 self.graph.recordPassStat(pass_stats, .base_pass, durationNs(base_start, std.time.nanoTimestamp()), base_stats.draw_calls, base_stats.triangles_drawn);
                 draw_stats.add(base_stats);
 
-                // TODO: Skybox disabled due to shader compilation issues
-                // if (self.skybox_pass.isReady() and prepared_scene.environment_map != null) {
-                //     const skybox_start = std.time.nanoTimestamp();
-                //     self.skybox_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene, prepared_scene.environment_map.?);
-                //     self.graph.recordPassStat(pass_stats, .skybox_pass, durationNs(skybox_start, std.time.nanoTimestamp()), 1, 1);
-                //     draw_stats.draw_calls += 1;
-                //     draw_stats.triangles_drawn += 1;
-                // }
+                if (self.skybox_pass) |*skybox_pass| {
+                    if (skybox_pass.isReady() and prepared_scene.environment_map != null) {
+                        const skybox_start = std.time.nanoTimestamp();
+                        skybox_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene, prepared_scene.environment_map.?);
+                        self.graph.recordPassStat(pass_stats, .skybox_pass, durationNs(skybox_start, std.time.nanoTimestamp()), 1, 1);
+                        draw_stats.draw_calls += 1;
+                        draw_stats.triangles_drawn += 1;
+                    }
+                }
 
                 self.rhi.endRenderPass(scene_pass);
 
@@ -1503,6 +1539,97 @@ fn shadowViewUpVector(light_dir: [3]f32) [3]f32 {
         return .{ 0.0, 0.0, 1.0 };
     }
     return default_up;
+}
+
+fn resolveEnvironmentTextures(
+    self: *Renderer,
+    scene: *scene_mod.Scene,
+    prepared_scene: *mesh_pass_mod.PreparedScene,
+) !void {
+    prepared_scene.environment_map = &self.scene_cache.fallback_texture.?;
+    prepared_scene.irradiance_map = &self.scene_cache.fallback_texture.?;
+    prepared_scene.prefiltered_env_map = &self.scene_cache.fallback_texture.?;
+    prepared_scene.brdf_lut = self.scene_cache.fallbackBrdfLut();
+
+    const environment_asset_id = findSceneEnvironmentAssetId(&scene.resources) orelse {
+        if (!g_logged_environment_status) {
+            render_log.warn("no HDR environment asset found; using fallback environment textures", .{});
+            g_logged_environment_status = true;
+        }
+        return;
+    };
+    if (!g_logged_environment_status) {
+        render_log.info("environment asset selected: {s}", .{environment_asset_id});
+        g_logged_environment_status = true;
+    }
+    _ = texture_import_mod.loadTextureAsset(
+        self.allocator,
+        &scene.resources,
+        &scene.resources.asset_registry,
+        environment_asset_id,
+    ) catch return;
+
+    var environment = environment_map_import_mod.loadIBLData(
+        self.allocator,
+        &scene.resources,
+        &scene.resources.asset_registry,
+        environment_asset_id,
+    ) catch return;
+    defer environment.deinit(self.allocator);
+
+    if (environment.environment_map_handle) |handle| {
+        prepared_scene.environment_map = try self.scene_cache.ensureTextureHandle(&self.rhi, scene, handle);
+    }
+    if (environment.irradiance_map_handle) |handle| {
+        prepared_scene.irradiance_map = try self.scene_cache.ensureTextureHandle(&self.rhi, scene, handle);
+    }
+    if (environment.prefiltered_map_handle) |handle| {
+        prepared_scene.prefiltered_env_map = try self.scene_cache.ensureTextureHandle(&self.rhi, scene, handle);
+    }
+    if (environment.brdf_lut_handle) |handle| {
+        prepared_scene.brdf_lut = try self.scene_cache.ensureTextureHandle(&self.rhi, scene, handle);
+    }
+}
+
+fn findSceneEnvironmentAssetId(resources: *const assets_lib.ResourceLibrary) ?[]const u8 {
+    var fallback: ?[]const u8 = null;
+    for (resources.asset_registry.records.items) |record| {
+        if (record.type != .texture or !std.mem.endsWith(u8, record.source_path, ".hdr")) {
+            continue;
+        }
+        fallback = fallback orelse record.id;
+        if (isLikelyEnvironmentPath(record.source_path)) {
+            return record.id;
+        }
+    }
+    return fallback;
+}
+
+fn isLikelyEnvironmentPath(path: []const u8) bool {
+    return containsIgnoreCase(path, "sky") or
+        containsIgnoreCase(path, "env") or
+        containsIgnoreCase(path, "ibl");
+}
+
+fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0 or needle.len > haystack.len) {
+        return false;
+    }
+
+    var start: usize = 0;
+    while (start + needle.len <= haystack.len) : (start += 1) {
+        var matched = true;
+        for (needle, 0..) |needle_char, offset| {
+            if (std.ascii.toLower(haystack[start + offset]) != std.ascii.toLower(needle_char)) {
+                matched = false;
+                break;
+            }
+        }
+        if (matched) {
+            return true;
+        }
+    }
+    return false;
 }
 
 fn resolveMaterialThumbnailSource(

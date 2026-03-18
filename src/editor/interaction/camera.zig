@@ -6,16 +6,21 @@ const quat = engine.math.quat;
 const state_mod = @import("../core/state.zig");
 const EditorState = state_mod.EditorState;
 const utils = @import("../common/utils.zig");
+const viewport_log = std.log.scoped(.viewport_input);
 
 pub const ViewPreset = state_mod.ViewportViewPreset;
 
 pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.LayerContext) void {
     const input = layer_context.input;
-    const tool_active = state.manipulation_mode != .none;
+    const selection_mode = state.manipulation_mode == .none;
+    const is_hovering_viewport = state.viewport_hovered and !state.viewport_overlay_hovered;
 
-    const is_dragging_input = input.isMouseDown(.right) or input.isMouseDown(.middle) or (input.isMouseDown(.left) and input.modifiers.alt);
+    // In selection mode, use DCC-style orbit/pan gestures.
+    const is_camera_drag_input = input.isMouseDown(.right) or
+        input.isMouseDown(.middle) or
+        (input.isMouseDown(.left) and selection_mode);
 
-    if (state.view_cube_transition_active and is_dragging_input) {
+    if (state.view_cube_transition_active and is_camera_drag_input) {
         state.view_cube_transition_active = false;
     }
     updateViewCubeTransition(state, layer_context);
@@ -24,21 +29,45 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
         return;
     }
 
-    const is_hovering_viewport = state.viewport_hovered and !state.viewport_overlay_hovered;
-
-    if (!is_dragging_input) {
+    const mouse_pressed = input.wasMousePressed(.right) or input.wasMousePressed(.middle) or (input.wasMousePressed(.left) and selection_mode);
+    if (mouse_pressed) {
+        viewport_log.info(
+            "camera press selection_mode={} hovered={} overlay_hovered={} has_image={} ui_lock={} l={} r={} m={}",
+            .{
+                selection_mode,
+                state.viewport_hovered,
+                state.viewport_overlay_hovered,
+                state.viewport_has_image,
+                state.manipulation_started_from_ui,
+                input.wasMousePressed(.left),
+                input.wasMousePressed(.right),
+                input.wasMousePressed(.middle),
+            },
+        );
+    }
+    if (mouse_pressed and selection_mode and is_hovering_viewport) {
+        state.camera_drag_active = true;
+        viewport_log.info("camera drag activated", .{});
+    } else if (mouse_pressed and (!selection_mode or !is_hovering_viewport)) {
+        viewport_log.warn(
+            "camera drag blocked selection_mode={} hovered={} overlay_hovered={} manipulation_mode={s}",
+            .{
+                selection_mode,
+                state.viewport_hovered,
+                state.viewport_overlay_hovered,
+                @tagName(state.manipulation_mode),
+            },
+        );
+    }
+    if (!is_camera_drag_input) {
         state.camera_drag_active = false;
-    } else if (input.wasMousePressed(.right) or input.wasMousePressed(.middle) or (input.wasMousePressed(.left) and (!tool_active or input.modifiers.alt))) {
-        if (is_hovering_viewport) {
-            state.camera_drag_active = true;
-        }
     }
 
     const camera_id = state.editor_camera orelse return;
     const camera = layer_context.world.getEntity(camera_id) orelse return;
 
-    if (state.camera_drag_active) {
-        if (input.isMouseDown(.left) and (!tool_active or input.modifiers.alt)) {
+    if (state.camera_drag_active and selection_mode) {
+        if (input.isMouseDown(.left)) {
             state.yaw -= input.mouse_delta[0] * state.orbit_sensitivity;
             state.pitch = utils.clampPitch(state.pitch - input.mouse_delta[1] * state.orbit_sensitivity);
             if (@abs(input.mouse_delta[0]) > 0.0001 or @abs(input.mouse_delta[1]) > 0.0001) {
@@ -55,37 +84,16 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
         }
 
         if (input.isMouseDown(.right)) {
-            state.yaw -= input.mouse_delta[0] * state.look_sensitivity;
-            state.pitch = utils.clampPitch(state.pitch - input.mouse_delta[1] * state.look_sensitivity);
-            if (@abs(input.mouse_delta[0]) > 0.0001 or @abs(input.mouse_delta[1]) > 0.0001) {
-                state.viewport_view_preset = .custom;
-                if (camera.camera) |camera_component| {
-                    var next_camera = camera_component;
-                    next_camera.projection = .{ .perspective = .{} };
-                    camera.camera = next_camera;
-                }
-            }
-        }
-
-        camera.local_transform.rotation = quat.fromEuler(.{ state.pitch, state.yaw, 0.0 });
-
-        if (input.isMouseDown(.right)) {
-            const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
             const right = vec3.rightFromYaw(state.yaw);
-            const move_up = [3]f32{ 0.0, 1.0, 0.0 };
-            const boost: f32 = if (input.modifiers.shift) state.camera_boost_multiplier else 1.0;
-            const step = moveSpeed(state, layer_context.delta_seconds) * boost;
-            var movement = [3]f32{ 0.0, 0.0, 0.0 };
-
-            if (input.isKeyDown(.w)) movement = vec3.add(movement, vec3.scale(forward, step));
-            if (input.isKeyDown(.s)) movement = vec3.sub(movement, vec3.scale(forward, step));
-            if (input.isKeyDown(.d)) movement = vec3.add(movement, vec3.scale(right, step));
-            if (input.isKeyDown(.a)) movement = vec3.sub(movement, vec3.scale(right, step));
-            if (input.isKeyDown(.e)) movement = vec3.add(movement, vec3.scale(move_up, step));
-            if (input.isKeyDown(.q)) movement = vec3.sub(movement, vec3.scale(move_up, step));
-
-            camera.local_transform.translation = vec3.add(camera.local_transform.translation, movement);
-            state.focus_pivot = vec3.add(camera.local_transform.translation, vec3.scale(forward, state.orbit_distance));
+            const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
+            const up = vec3.normalize(vec3.cross(right, forward));
+            const pan_scale = @max(state.orbit_distance, 1.0) * state.pan_sensitivity * 0.05;
+            const pan = vec3.add(
+                vec3.scale(right, -input.mouse_delta[0] * pan_scale),
+                vec3.scale(up, input.mouse_delta[1] * pan_scale),
+            );
+            camera.local_transform.translation = vec3.add(camera.local_transform.translation, pan);
+            state.focus_pivot = vec3.add(state.focus_pivot, pan);
         }
 
         if (input.isMouseDown(.middle)) {
@@ -105,6 +113,7 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
     // Always process zoom if hovering viewport (no need to click)
     if (state.viewport_hovered and !state.viewport_overlay_hovered) {
         if (@abs(input.mouse_wheel[1]) > 0.001) {
+            viewport_log.info("viewport wheel zoom delta_y={d:.3} orbit_distance={d:.3}", .{ input.mouse_wheel[1], state.orbit_distance });
             const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
             const zoom_step = input.mouse_wheel[1] * state.wheel_speed * @max(state.orbit_distance * 0.2, 0.8);
             camera.local_transform.translation = vec3.add(camera.local_transform.translation, vec3.scale(forward, zoom_step));
@@ -120,6 +129,7 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
         }
 
         if (@abs(input.mouse_wheel[0]) > 0.001) {
+            viewport_log.info("viewport wheel pan delta_x={d:.3}", .{input.mouse_wheel[0]});
             const right = vec3.rightFromYaw(state.yaw);
             const pan_step = input.mouse_wheel[0] * state.wheel_speed * @max(state.orbit_distance * 0.3, 1.0);
             const pan = vec3.scale(right, pan_step);
@@ -127,7 +137,6 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
             state.focus_pivot = vec3.add(state.focus_pivot, pan);
         }
     }
-
     camera.local_transform.rotation = quat.fromEuler(.{ state.pitch, state.yaw, 0.0 });
 }
 
@@ -158,10 +167,38 @@ pub fn focusSelection(state: *EditorState, layer_context: *engine.core.LayerCont
     const camera_id = state.editor_camera orelse return;
     const camera = layer_context.world.getEntity(camera_id) orelse return;
     const entity_transform = layer_context.world.worldTransform(selected) orelse return;
+    const camera_component = camera.camera orelse return;
 
-    state.focus_pivot = entity_transform.translation;
+    const focus_radius = selectionFocusRadius(layer_context, selected);
+    state.focus_pivot = selectionFocusPivot(layer_context, selected, entity_transform.translation);
     if (!state.editor_camera_active) {
         return;
+    }
+
+    const viewport_size = layer_context.renderer.sceneViewportSize();
+    const viewport_aspect = if (viewport_size[0] > 0 and viewport_size[1] > 0)
+        @as(f32, @floatFromInt(viewport_size[0])) / @as(f32, @floatFromInt(viewport_size[1]))
+    else
+        1.0;
+
+    switch (camera_component.projection) {
+        .perspective => |projection| {
+            state.orbit_distance = focusDistanceForPerspective(focus_radius, projection.fov_y_radians, viewport_aspect, projection.near_clip);
+        },
+        .orthographic => |projection| {
+            const next_distance = utils.clampDistance(@max(focus_radius * 2.5, 2.0));
+            state.orbit_distance = next_distance;
+            camera.camera = .{
+                .projection = .{
+                    .orthographic = .{
+                        .size = focusOrthoSize(focus_radius),
+                        .near_clip = projection.near_clip,
+                        .far_clip = projection.far_clip,
+                    },
+                },
+                .is_primary = camera_component.is_primary,
+            };
+        },
     }
 
     const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
@@ -428,6 +465,46 @@ fn shortestAngleDelta(from: f32, to: f32) f32 {
     return delta;
 }
 
+fn selectionFocusPivot(
+    layer_context: *engine.core.LayerContext,
+    entity_id: engine.scene.EntityId,
+    fallback: [3]f32,
+) [3]f32 {
+    const bounds = layer_context.world.worldBounds(entity_id) orelse return fallback;
+    if (!bounds.isValid()) {
+        return fallback;
+    }
+    return .{
+        (bounds.min[0] + bounds.max[0]) * 0.5,
+        (bounds.min[1] + bounds.max[1]) * 0.5,
+        (bounds.min[2] + bounds.max[2]) * 0.5,
+    };
+}
+
+fn selectionFocusRadius(layer_context: *engine.core.LayerContext, entity_id: engine.scene.EntityId) f32 {
+    const bounds = layer_context.world.worldBounds(entity_id) orelse return 0.75;
+    if (!bounds.isValid()) {
+        return 0.75;
+    }
+
+    const extent = vec3.sub(bounds.max, bounds.min);
+    const radius = vec3.length(extent) * 0.5;
+    return @max(radius, 0.75);
+}
+
+fn focusDistanceForPerspective(radius: f32, vertical_fov_radians: f32, aspect: f32, near_clip: f32) f32 {
+    const padded_radius = @max(radius, 0.01) * 1.25;
+    const half_vertical_fov = @max(vertical_fov_radians * 0.5, 0.001);
+    const half_horizontal_fov = @max(std.math.atan(std.math.tan(half_vertical_fov) * @max(aspect, 0.1)), 0.001);
+    const limiting_half_fov = @min(half_vertical_fov, half_horizontal_fov);
+    const distance = padded_radius / @max(std.math.tan(limiting_half_fov), 0.001);
+    return utils.clampDistance(@max(distance, near_clip + padded_radius));
+}
+
+fn focusOrthoSize(radius: f32) f32 {
+    return @max(radius * 2.5, 2.0);
+}
+
 fn normalize(vector: [3]f32) [3]f32 {
     const len = vec3.length(vector);
     if (len <= 0.0001) {
@@ -438,4 +515,16 @@ fn normalize(vector: [3]f32) [3]f32 {
         vector[1] / len,
         vector[2] / len,
     };
+}
+
+test "focus distance grows with bounding radius" {
+    const small = focusDistanceForPerspective(1.0, 1.0471976, 16.0 / 9.0, 0.1);
+    const large = focusDistanceForPerspective(4.0, 1.0471976, 16.0 / 9.0, 0.1);
+
+    try std.testing.expect(large > small);
+}
+
+test "orthographic focus size keeps a sensible minimum" {
+    try std.testing.expectApproxEqAbs(@as(f32, 2.0), focusOrthoSize(0.1), 0.0001);
+    try std.testing.expect(focusOrthoSize(2.0) > 2.0);
 }

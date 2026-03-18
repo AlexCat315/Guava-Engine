@@ -11,6 +11,7 @@ const rhi_types = @import("../rhi/types.zig");
 const components = @import("../scene/components.zig");
 const scene_mod = @import("../scene/scene.zig");
 const scene_extraction = @import("scene_extraction.zig");
+const ibl_precompute = @import("ibl_precompute.zig");
 
 const frustum_mod = @import("../math/frustum.zig");
 
@@ -33,7 +34,7 @@ pub const BasePassUniforms = extern struct {
     base_color_factor: [4]f32,
     emissive_factor: [4]f32, // w is intensity
     pbr_factors: [4]f32, // x: metallic, y: roughness, z: alpha_cutoff, w: unused
-    has_textures: [4]u32, // x: base_color, y: metallic_roughness, z: normal, w: occlusion (emissive is next?)
+    has_textures: [4]u32, // x: base_color, y: metallic_roughness, z: normal, w: occlusion
     camera_world_position: [4]f32,
     light_direction: [4]f32,
     light_color_intensity: [4]f32,
@@ -42,6 +43,7 @@ pub const BasePassUniforms = extern struct {
     point_light_color_intensity: [4]f32,
     ambient_color: [4]f32,
     shadow_params: [4]f32, // x: bias, y: unused, z: unused, w: unused
+    ibl_params: [4]f32, // x: use_ibl (0/1), y: ibl_intensity, z: unused, w: unused
 };
 
 pub const DrawItem = struct {
@@ -51,10 +53,12 @@ pub const DrawItem = struct {
     index_buffer: rhi_mod.Buffer,
     index_count: u32,
     bind_group: rhi_mod.BindGroup,
+    material_textures: [4]*const rhi_mod.Texture,
     base_color_factor: [4]f32,
     emissive_factor: [4]f32,
     pbr_factors: [4]f32,
     has_textures: [4]u32,
+    ibl_params: [4]f32,
     model: [16]f32,
 };
 
@@ -99,7 +103,11 @@ pub const PreparedScene = struct {
     light_space_matrix: [16]f32,
     shadow_map: ?*const rhi_mod.Texture,
     shadow_sampler: ?*const rhi_mod.Sampler,
+    texture_sampler: ?*const rhi_mod.Sampler,
     environment_map: ?*const rhi_mod.Texture = null,
+    irradiance_map: ?*const rhi_mod.Texture = null,
+    prefiltered_env_map: ?*const rhi_mod.Texture = null,
+    brdf_lut: ?*const rhi_mod.Texture = null,
     ambient_color: [4]f32,
     opaque_meshes: []DrawItem,
     transparent_meshes: []DrawItem,
@@ -152,10 +160,12 @@ const CachedMaterial = struct {
 
 const MaterialState = struct {
     bind_group: rhi_mod.BindGroup,
+    material_textures: [4]*const rhi_mod.Texture,
     base_color_factor: [4]f32,
     emissive_factor: [4]f32,
     pbr_factors: [4]f32,
     has_textures: [4]u32,
+    ibl_params: [4]f32,
 };
 
 const fallback_white_bgra = [_]u8{
@@ -168,6 +178,7 @@ pub const MeshSceneCache = struct {
     textures: std.ArrayList(CachedTexture) = .empty,
     materials: std.ArrayList(CachedMaterial) = .empty,
     fallback_texture: ?rhi_mod.Texture = null,
+    fallback_brdf_lut: ?rhi_mod.Texture = null,
     sampler: ?rhi_mod.Sampler = null,
     fallback_bind_group: ?rhi_mod.BindGroup = null,
 
@@ -201,6 +212,9 @@ pub const MeshSceneCache = struct {
         }
         if (self.sampler) |*sampler| {
             device.releaseSampler(sampler);
+        }
+        if (self.fallback_brdf_lut) |*texture| {
+            device.releaseTexture(texture);
         }
         if (self.fallback_texture) |*texture| {
             device.releaseTexture(texture);
@@ -338,10 +352,12 @@ pub const MeshSceneCache = struct {
                 .index_buffer = gpu_mesh.index_buffer,
                 .index_count = gpu_mesh.index_count,
                 .bind_group = material_state.bind_group,
+                .material_textures = material_state.material_textures,
                 .base_color_factor = material_state.base_color_factor,
                 .emissive_factor = material_state.emissive_factor,
                 .pbr_factors = material_state.pbr_factors,
                 .has_textures = material_state.has_textures,
+                .ibl_params = material_state.ibl_params,
                 .model = render_mesh.transform.toMatrix(),
             };
 
@@ -372,6 +388,7 @@ pub const MeshSceneCache = struct {
             .light_space_matrix = math.identity(),
             .shadow_map = null,
             .shadow_sampler = null,
+            .texture_sampler = &self.sampler.?,
             .ambient_color = .{ 0.14, 0.15, 0.18, 1.0 },
             .opaque_meshes = try opaque_meshes.toOwnedSlice(self.allocator),
             .transparent_meshes = try transparent_meshes.toOwnedSlice(self.allocator),
@@ -395,6 +412,23 @@ pub const MeshSceneCache = struct {
         return null;
     }
 
+    pub fn fallbackBrdfLut(self: *const MeshSceneCache) ?*const rhi_mod.Texture {
+        if (self.fallback_brdf_lut) |*texture| {
+            return texture;
+        }
+        return null;
+    }
+
+    pub fn ensureTextureHandle(
+        self: *MeshSceneCache,
+        device: *rhi_mod.RhiDevice,
+        world: *const scene_mod.World,
+        handle: handles.TextureHandle,
+    ) !*rhi_mod.Texture {
+        const texture = world.resources.texture(handle) orelse return error.TextureNotFound;
+        return self.ensureTexture(device, handle, texture);
+    }
+
     fn createFallbackResources(self: *MeshSceneCache, device: *rhi_mod.RhiDevice) !void {
         self.fallback_texture = try device.createTexture(.{
             .width = 1,
@@ -403,6 +437,20 @@ pub const MeshSceneCache = struct {
             .usage = rhi_types.TextureUsage.sampler,
         });
         try device.uploadTextureData(&self.fallback_texture.?, fallback_white_bgra[0..], 1, 1);
+
+        const brdf_lut_bytes = try fallbackBrdfLutBytes(self.allocator, 128);
+        defer self.allocator.free(brdf_lut_bytes);
+
+        self.fallback_brdf_lut = try device.createTexture(.{
+            .width = 128,
+            .height = 128,
+            .format = .rgba32_float,
+            .usage = rhi_types.TextureUsage.sampler,
+        });
+        errdefer if (self.fallback_brdf_lut) |*texture| {
+            device.releaseTexture(texture);
+        };
+        try device.uploadTextureData(&self.fallback_brdf_lut.?, brdf_lut_bytes, 128, 128);
 
         self.sampler = try device.createSampler(.{
             .min_filter = .linear,
@@ -546,10 +594,17 @@ pub const MeshSceneCache = struct {
     ) !MaterialState {
         var state = MaterialState{
             .bind_group = self.fallback_bind_group.?,
+            .material_textures = .{
+                &self.fallback_texture.?,
+                &self.fallback_texture.?,
+                &self.fallback_texture.?,
+                &self.fallback_texture.?,
+            },
             .base_color_factor = [4]f32{ 1.0, 1.0, 1.0, 1.0 },
             .emissive_factor = .{ 0.0, 0.0, 0.0, 0.0 },
             .pbr_factors = .{ 1.0, 1.0, 0.5, 0.0 },
             .has_textures = .{ 0, 0, 0, 0 },
+            .ibl_params = .{ 1.0, 1.0, 0.0, 0.0 },
         };
 
         const material_value = material_component orelse return state;
@@ -567,6 +622,18 @@ pub const MeshSceneCache = struct {
             if (material.normal_texture != null) 1 else 0,
             if (material.occlusion_texture != null) 1 else 0,
         };
+        state.ibl_params = .{
+            if (material.use_ibl) 1.0 else 0.0,
+            material.ibl_intensity,
+            0.0,
+            0.0,
+        };
+        state.material_textures = .{
+            if (material.base_color_texture) |h| try self.ensureTexture(device, h, scene.resources.texture(h).?) else &self.fallback_texture.?,
+            if (material.metallic_roughness_texture) |h| try self.ensureTexture(device, h, scene.resources.texture(h).?) else &self.fallback_texture.?,
+            if (material.normal_texture) |h| try self.ensureTexture(device, h, scene.resources.texture(h).?) else &self.fallback_texture.?,
+            if (material.occlusion_texture) |h| try self.ensureTexture(device, h, scene.resources.texture(h).?) else &self.fallback_texture.?,
+        };
 
         if (try self.ensureMaterial(device, material_handle, material, scene)) |bind_group| {
             state.bind_group = bind_group;
@@ -574,3 +641,27 @@ pub const MeshSceneCache = struct {
         return state;
     }
 };
+
+fn fallbackBrdfLutBytes(allocator: std.mem.Allocator, size: u32) ![]u8 {
+    const lut = try ibl_precompute.generateBRDFLUT(allocator, size);
+    defer allocator.free(lut);
+
+    const pixel_count = size * size;
+    var rgba = try allocator.alloc(f32, pixel_count * 4);
+    errdefer allocator.free(rgba);
+
+    var index: usize = 0;
+    while (index < pixel_count) : (index += 1) {
+        const src = index * 2;
+        const dst = index * 4;
+        rgba[dst] = lut[src];
+        rgba[dst + 1] = lut[src + 1];
+        rgba[dst + 2] = 0.0;
+        rgba[dst + 3] = 1.0;
+    }
+
+    const bytes = try allocator.alloc(u8, rgba.len * @sizeOf(f32));
+    @memcpy(bytes, std.mem.sliceAsBytes(rgba));
+    allocator.free(rgba);
+    return bytes;
+}

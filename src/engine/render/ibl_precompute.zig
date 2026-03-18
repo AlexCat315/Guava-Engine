@@ -69,7 +69,6 @@ pub const SH9 = struct {
         // Scale by reconstruction coefficients for irradiance
         // These approximate the cosine lobe convolution
         const band0_scale = 3.141593; // π
-        const band1_scale = 2.094395; // 2π/3
 
         result[0] *= band0_scale;
         result[1] *= band0_scale;
@@ -163,7 +162,10 @@ pub fn generatePrefilteredMap(
     errdefer allocator.free(result);
 
     // For each roughness level (approximated with a simple blur)
-    const roughness = 0.5; // Placeholder
+    const roughness = if (max_mip_level > 0)
+        @min(@as(f32, @floatFromInt(max_mip_level)) / 10.0, 1.0)
+    else
+        0.5;
     const filter_size = @max(1, @as(u32, @intFromFloat(roughness * 10.0)));
 
     var i: u32 = 0;
@@ -239,12 +241,12 @@ pub fn generateBRDFLUT(allocator: std.mem.Allocator, size: u32) ![]f32 {
 fn integrateBRDF(roughness: f32, n_dot_v: f32) [2]f32 {
     // Use GGX distribution
     const alpha = roughness * roughness;
-    const alpha2 = alpha * alpha;
 
     // Simplified BRDF integration
     // In a real implementation, use importance sampling with many samples
-    const scale = 1.0 - alpha * 0.5;
-    const bias = alpha * 0.5;
+    const view_weight = 0.75 + n_dot_v * 0.25;
+    const scale = 1.0 - alpha * 0.5 * view_weight;
+    const bias = alpha * 0.5 * (1.0 - n_dot_v * 0.5);
 
     return .{ scale, bias };
 }

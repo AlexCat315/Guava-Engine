@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const std = @import("std");
 
 pub const GraphicsAPI = enum {
@@ -5,6 +6,18 @@ pub const GraphicsAPI = enum {
     metal,
     dx12,
 };
+
+pub const default_backend_order: [3]GraphicsAPI = switch (builtin.target.os.tag) {
+    .windows => .{ .dx12, .vulkan, .metal },
+    .macos, .ios => .{ .metal, .vulkan, .dx12 },
+    else => .{ .vulkan, .dx12, .metal },
+};
+
+pub const defaultPreferredBackends: []const GraphicsAPI = default_backend_order[0..];
+
+pub fn defaultBackendOrder() [3]GraphicsAPI {
+    return default_backend_order;
+}
 
 pub const ShaderFormat = enum {
     spirv,
@@ -90,7 +103,7 @@ pub const BackendSelectionPolicy = enum {
 };
 
 pub const DeviceConfig = struct {
-    preferred_backends: []const GraphicsAPI = &.{ .vulkan, .dx12, .metal },
+    preferred_backends: []const GraphicsAPI = defaultPreferredBackends,
     selection_policy: BackendSelectionPolicy = .explicit_order,
     enable_validation: bool = true,
     frames_in_flight: u32 = 2,

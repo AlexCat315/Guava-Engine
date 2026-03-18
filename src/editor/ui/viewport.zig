@@ -20,6 +20,11 @@ const ui_icons = @import("icons.zig");
 const layout = @import("layout.zig");
 const PlaybackState = @import("../core/state.zig").PlaybackState;
 const HierarchyCategory = @import("../core/state.zig").HierarchyCategory;
+const viewport_log = std.log.scoped(.viewport_input);
+
+var g_last_viewport_hovered: ?bool = null;
+var g_last_viewport_overlay_hovered: ?bool = null;
+var g_last_viewport_has_image: ?bool = null;
 
 fn drawToolbarIconButton(
     state: *EditorState,
@@ -300,6 +305,9 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
     state.viewport_origin = engine.ui.ImGui.cursorScreenPos();
     state.viewport_extent = .{ content_size[0], content_size[1] };
     state.viewport_focused = engine.ui.ImGui.isWindowFocused();
+    if (!layer_context.input.isMouseDown(.left)) {
+        state.manipulation_started_from_ui = false;
+    }
     state.viewport_has_image = false;
     state.viewport_overlay_hovered = false;
 
@@ -310,6 +318,7 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
         mouse_pos[1] >= state.viewport_origin[1] and
         mouse_pos[1] < state.viewport_origin[1] + state.viewport_extent[1];
     state.viewport_hovered = mouse_in_bounds;
+    logViewportStateChange(state);
 
     const drawable_size = utils.viewportDrawableSize(layer_context.window, state.viewport_extent);
     try layer_context.renderer.setSceneViewportSize(drawable_size[0], drawable_size[1]);
@@ -321,6 +330,7 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
         };
         engine.ui.ImGui.image(texture, image_size[0], image_size[1]);
         state.viewport_has_image = true;
+        logViewportStateChange(state);
 
         // Draw overlays (positioned absolutely, won't affect layout)
         try handleViewportAssetDropTargets(state, layer_context);
@@ -564,31 +574,75 @@ fn compactStatusPath(buffer: []u8, path: []const u8, max_chars: usize) []const u
 
 pub fn handleViewportSelection(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const input = layer_context.input;
-    if (!state.viewport_has_image or !state.viewport_hovered or state.viewport_overlay_hovered or input.modifiers.alt) {
+    if (input.wasMousePressed(.left)) {
+        state.viewport_selection_press_active = canBeginViewportSelection(state, input);
+        if (state.viewport_selection_press_active) {
+            state.viewport_selection_press_mouse = input.mouse_position;
+            viewport_log.info("selection press candidate mouse=({d:.1},{d:.1})", .{ input.mouse_position[0], input.mouse_position[1] });
+        } else {
+            viewport_log.warn(
+                "selection press blocked hovered={} overlay_hovered={} has_image={} alt={} manipulation_mode={s}",
+                .{
+                    state.viewport_hovered,
+                    state.viewport_overlay_hovered,
+                    state.viewport_has_image,
+                    input.modifiers.alt,
+                    @tagName(state.manipulation_mode),
+                },
+            );
+        }
+    }
+
+    if (!state.viewport_selection_press_active or !input.wasMouseReleased(.left)) {
         return;
     }
-    if (state.manipulation_mode != .none) {
+    defer state.viewport_selection_press_active = false;
+
+    if (!canBeginViewportSelection(state, input)) {
         return;
     }
 
-    // Only select on quick click, not during camera orbit/drag
-    const is_dragging = input.isMouseDown(.left) and (@abs(input.mouse_delta[0]) > 2.0 or @abs(input.mouse_delta[1]) > 2.0);
-    if (is_dragging or !input.wasMousePressed(.left)) {
+    const click_delta = .{
+        input.mouse_position[0] - state.viewport_selection_press_mouse[0],
+        input.mouse_position[1] - state.viewport_selection_press_mouse[1],
+    };
+    const click_distance_sq = click_delta[0] * click_delta[0] + click_delta[1] * click_delta[1];
+    if (click_distance_sq > 16.0) {
+        viewport_log.info("selection cancelled as drag distance_sq={d:.3}", .{click_distance_sq});
         return;
     }
-
-    std.log.info("Viewport: User clicked at position ({d}, {d})", .{ input.mouse_position[0], input.mouse_position[1] });
 
     if (viewportPixelUnderMouse(state, layer_context)) |pixel| {
-        std.log.info("Viewport: Processing selection at pixel ({d}, {d})", .{ pixel[0], pixel[1] });
-        try layer_context.renderer.requestSelectionReadback(
-            pixel[0],
-            pixel[1],
-            if (input.modifiers.shift or input.modifiers.ctrl or input.modifiers.super) .toggle else .replace,
-        );
-    } else {
-        std.log.warn("Viewport: No pixel under mouse cursor", .{});
+        const viewport_size = layer_context.renderer.sceneViewportSize();
+        if (camera.activeCameraRayFromViewportPixel(state, layer_context, pixel, viewport_size)) |ray| {
+            const mode = selectionUpdateModeForInput(input);
+            if (layer_context.world.raycastSurface(ray)) |hit| {
+                viewport_log.info("selection hit entity={d} mode={s}", .{ hit.entity_id, @tagName(mode) });
+                switch (mode) {
+                    .replace => try layer_context.renderer.replaceSelection(hit.entity_id),
+                    .toggle => try layer_context.renderer.toggleSelection(hit.entity_id),
+                }
+            } else if (mode == .replace) {
+                viewport_log.info("selection miss clear", .{});
+                try layer_context.renderer.replaceSelection(null);
+            }
+        }
     }
+}
+
+fn canBeginViewportSelection(state: *const EditorState, input: *const engine.core.InputState) bool {
+    return state.viewport_has_image and
+        state.viewport_hovered and
+        !state.viewport_overlay_hovered and
+        !input.modifiers.alt and
+        state.manipulation_mode == .none;
+}
+
+fn selectionUpdateModeForInput(input: *const engine.core.InputState) engine.render.SelectionUpdateMode {
+    return if (input.modifiers.shift or input.modifiers.ctrl or input.modifiers.super)
+        .toggle
+    else
+        .replace;
 }
 
 pub fn drawEditorUi(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -1009,7 +1063,7 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
     )) {
         setPlaybackState(state, layer_context, .playing);
     }
-    if (engine.ui.ImGui.isItemHovered() or state.manipulation_started_from_ui) state.viewport_overlay_hovered = true;
+    if (engine.ui.ImGui.isItemHovered() or (state.manipulation_started_from_ui and input.isMouseDown(.left))) state.viewport_overlay_hovered = true;
 
     engine.ui.ImGui.sameLine();
     const mouse_pressed_on_ui2 = engine.ui.ImGui.isItemHovered() and input.wasMousePressed(.left);
@@ -1026,7 +1080,7 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
     )) {
         setPlaybackState(state, layer_context, .paused);
     }
-    if (engine.ui.ImGui.isItemHovered() or state.manipulation_started_from_ui) state.viewport_overlay_hovered = true;
+    if (engine.ui.ImGui.isItemHovered() or (state.manipulation_started_from_ui and input.isMouseDown(.left))) state.viewport_overlay_hovered = true;
 
     engine.ui.ImGui.sameLine();
     const mouse_pressed_on_ui3 = engine.ui.ImGui.isItemHovered() and input.wasMousePressed(.left);
@@ -1043,7 +1097,33 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
     )) {
         stepPlayback(state, layer_context);
     }
-    if (engine.ui.ImGui.isItemHovered() or state.manipulation_started_from_ui) state.viewport_overlay_hovered = true;
+    if (engine.ui.ImGui.isItemHovered() or (state.manipulation_started_from_ui and input.isMouseDown(.left))) state.viewport_overlay_hovered = true;
+}
+
+fn logViewportStateChange(state: *const EditorState) void {
+    if (g_last_viewport_hovered == null or
+        g_last_viewport_hovered.? != state.viewport_hovered or
+        g_last_viewport_overlay_hovered == null or
+        g_last_viewport_overlay_hovered.? != state.viewport_overlay_hovered or
+        g_last_viewport_has_image == null or
+        g_last_viewport_has_image.? != state.viewport_has_image)
+    {
+        viewport_log.info(
+            "viewport state hovered={} overlay_hovered={} has_image={} origin=({d:.1},{d:.1}) extent=({d:.1},{d:.1})",
+            .{
+                state.viewport_hovered,
+                state.viewport_overlay_hovered,
+                state.viewport_has_image,
+                state.viewport_origin[0],
+                state.viewport_origin[1],
+                state.viewport_extent[0],
+                state.viewport_extent[1],
+            },
+        );
+        g_last_viewport_hovered = state.viewport_hovered;
+        g_last_viewport_overlay_hovered = state.viewport_overlay_hovered;
+        g_last_viewport_has_image = state.viewport_has_image;
+    }
 }
 
 fn drawViewportFpsOverlayWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {

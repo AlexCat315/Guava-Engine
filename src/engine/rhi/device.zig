@@ -1320,7 +1320,7 @@ fn candidateOrder(
 
     return switch (platform) {
         .windows => &.{ .dx12, .vulkan, .metal },
-        .macos, .ios => &.{ .vulkan, .metal, .dx12 },
+        .macos, .ios => &.{ .metal, .vulkan, .dx12 },
         .linux, .android => &.{ .vulkan, .dx12, .metal },
         .unknown => if (preferred.len > 0) preferred else &.{ .vulkan, .dx12, .metal },
     };

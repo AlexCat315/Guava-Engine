@@ -1,4 +1,5 @@
 const std = @import("std");
+const image_decoder = @import("image_decoder.zig");
 const registry_mod = @import("registry.zig");
 const library_mod = @import("library.zig");
 const ibl_precompute = @import("../render/ibl_precompute.zig");
@@ -6,7 +7,9 @@ const environment_map_resource = @import("environment_map_resource.zig");
 const handles = @import("handles.zig");
 const rhi_types = @import("../rhi/types.zig");
 
-pub const current_environment_map_cache_version: u32 = registry_mod.AssetType.texture.importVersion() + 1; // Different version for IBL
+pub const current_environment_map_cache_version: u32 = registry_mod.AssetType.texture.importVersion() + 2;
+
+const derived_importer_name = "ibl-derived-v1";
 
 const CookedIBLData = struct {
     version: u32 = current_environment_map_cache_version,
@@ -14,47 +17,53 @@ const CookedIBLData = struct {
     source_path: []const u8,
     source_hash: []const u8,
     import_settings_hash: []const u8,
-    irradiance_size: u32,
-    prefiltered_size: u32,
+    import_version: u32,
+    irradiance_width: u32,
+    irradiance_height: u32,
+    prefiltered_width: u32,
+    prefiltered_height: u32,
     prefiltered_mip_levels: u32,
+    brdf_lut_size: u32,
     irradiance_pixels_hex: []const u8,
     prefiltered_pixels_hex: []const u8,
-    brdf_lut_handle: ?handles.TextureHandle,
 };
 
-// Generate IBL data for an environment map during import
+pub fn cookedIBLPathAlloc(allocator: std.mem.Allocator, cooked_texture_path: []const u8) ![]u8 {
+    const base_dir = std.fs.path.dirname(cooked_texture_path) orelse ".";
+    const filename = std.fs.path.basename(cooked_texture_path);
+    const name_without_ext = if (std.mem.lastIndexOfScalar(u8, filename, '.')) |idx| filename[0..idx] else filename;
+    return std.fmt.allocPrint(allocator, "{s}/{s}_ibl.json", .{ base_dir, name_without_ext });
+}
+
 pub fn generateIBLDataForHDR(
     allocator: std.mem.Allocator,
     asset_id: []const u8,
     source_path: []const u8,
     source_hash: []const u8,
     import_settings_hash: []const u8,
+    import_version: u32,
     width: u32,
     height: u32,
     hdr_pixels: []const f32,
 ) ![]u8 {
-    
-    // Generate irradiance map using spherical harmonics
     const irradiance_pixels = try ibl_precompute.generateIrradianceMap(
         allocator,
         width,
         height,
         hdr_pixels,
-        64, // Target irradiance map size
+        64,
     );
     defer allocator.free(irradiance_pixels);
 
-    // Generate prefiltered environment map
     const prefiltered_pixels = try ibl_precompute.generatePrefilteredMap(
         allocator,
         width,
         height,
         hdr_pixels,
-        5, // 5 mip levels for roughness from 0 to 1
+        5,
     );
     defer allocator.free(prefiltered_pixels);
 
-    // Encode pixels to hex for storage
     const irradiance_pixels_hex = try encodeHexAlloc(allocator, std.mem.sliceAsBytes(irradiance_pixels));
     defer allocator.free(irradiance_pixels_hex);
 
@@ -66,75 +75,62 @@ pub fn generateIBLDataForHDR(
         .source_path = source_path,
         .source_hash = source_hash,
         .import_settings_hash = import_settings_hash,
-        .irradiance_size = 64,
-        .prefiltered_size = 256,
+        .import_version = import_version,
+        .irradiance_width = 64,
+        .irradiance_height = 64,
+        .prefiltered_width = width,
+        .prefiltered_height = height,
         .prefiltered_mip_levels = 5,
+        .brdf_lut_size = 256,
         .irradiance_pixels_hex = irradiance_pixels_hex,
         .prefiltered_pixels_hex = prefiltered_pixels_hex,
-        .brdf_lut_handle = null, // Will be set by the asset library
     };
 
-    return try stringifyAlloc(allocator, cooked);
+    return stringifyAlloc(allocator, cooked);
 }
 
-// Check if cooked IBL data is current
-fn cookedIBLDataIsCurrent(allocator: std.mem.Allocator, record: *const registry_mod.AssetRecord, cooked_path: []const u8) !bool {
-    std.fs.cwd().access(cooked_path, .{}) catch |err| switch (err) {
-        error.FileNotFound => return false,
-        else => return err,
+pub fn ensureCookedIBLData(
+    allocator: std.mem.Allocator,
+    registry: *const registry_mod.AssetRegistry,
+    asset_id: []const u8,
+) ![]u8 {
+    const record = registry.recordById(asset_id) orelse return error.AssetNotFound;
+    if (record.type != .texture or !std.mem.endsWith(u8, record.source_path, ".hdr")) {
+        return error.AssetTypeMismatch;
+    }
+    if (record.outputs.len == 0) {
+        return error.MissingCookedOutput;
+    }
+
+    const cooked_ibl_path = try cookedIBLPathAlloc(allocator, record.outputs[0].path);
+    const should_recook = recook: {
+        std.fs.cwd().access(cooked_ibl_path, .{}) catch |err| switch (err) {
+            error.FileNotFound => break :recook true,
+            else => return err,
+        };
+        break :recook !(try cookedIBLDataIsCurrent(allocator, record, cooked_ibl_path));
     };
-
-    const encoded = try std.fs.cwd().readFileAlloc(allocator, cooked_path, 128 * 1024 * 1024);
-    defer allocator.free(encoded);
-
-    var parsed = std.json.parseFromSlice(CookedIBLData, allocator, encoded, .{
-        .ignore_unknown_fields = true,
-    }) catch return false;
-    defer parsed.deinit();
-
-    const cooked = parsed.value;
-    if (cooked.version != current_environment_map_cache_version) {
-        return false;
+    if (should_recook) {
+        try cookIBLDataRecord(allocator, record, cooked_ibl_path);
     }
-
-    if (!std.mem.eql(u8, cooked.source_hash, record.source_hash)) {
-        return false;
-    }
-
-    if (!std.mem.eql(u8, cooked.import_settings_hash, record.import_settings_hash)) {
-        return false;
-    }
-
-    return true;
+    return cooked_ibl_path;
 }
 
-// Load cooked IBL data and upload to GPU
 pub fn loadIBLData(
     allocator: std.mem.Allocator,
     library: *library_mod.ResourceLibrary,
     registry: *const registry_mod.AssetRegistry,
     asset_id: []const u8,
-    device: anytype, // RHI device
 ) !environment_map_resource.EnvironmentMapResource {
-    
     const record = registry.recordById(asset_id) orelse return error.AssetNotFound;
-    
-    // Find cooked IBL data path
-    const cooked_ibl_path = cookedIBLPath: {
-        const base_dir = std.fs.path.dirname(record.outputs[0].path) orelse break :cookedIBLPath record.outputs[0].path;
-        const filename = std.fs.path.basename(record.outputs[0].path);
-        const name_without_ext = if (std.mem.lastIndexOfScalar(u8, filename, '.')) |idx| filename[0..idx] else filename;
-        break :cookedIBLPath try std.fmt.allocPrint(allocator, "{s}/{s}_ibl.json", .{ base_dir, name_without_ext });
-    };
-    defer allocator.free(cooked_ibl_path);
-
-    // Ensure IBL data is cooked
-    if (!(try cookedIBLDataIsCurrent(allocator, record, cooked_ibl_path))) {
-        // Generate IBL data - this should have been done during asset import
-        return error.IBLDataNotCooked;
+    if (record.type != .texture or !std.mem.endsWith(u8, record.source_path, ".hdr")) {
+        return error.AssetTypeMismatch;
     }
 
-    // Load cooked IBL data
+    const environment_map_handle = library.textureHandleByAssetId(asset_id) orelse return error.EnvironmentMapTextureNotLoaded;
+    const cooked_ibl_path = try ensureCookedIBLData(allocator, registry, asset_id);
+    defer allocator.free(cooked_ibl_path);
+
     const encoded = try std.fs.cwd().readFileAlloc(allocator, cooked_ibl_path, 128 * 1024 * 1024);
     defer allocator.free(encoded);
 
@@ -145,53 +141,287 @@ pub fn loadIBLData(
 
     const cooked = parsed.value;
 
-    // Decode irradiance map pixels
-    const irradiance_pixels = try decodeHexAlloc(allocator, cooked.irradiance_pixels_hex);
-    defer allocator.free(irradiance_pixels);
+    const irradiance_bytes = try decodeRgb32fHexToRgbaBytes(allocator, cooked.irradiance_pixels_hex);
+    defer allocator.free(irradiance_bytes);
 
-    // Decode prefiltered map pixels
-    const prefiltered_pixels = try decodeHexAlloc(allocator, cooked.prefiltered_pixels_hex);
-    defer allocator.free(prefiltered_pixels);
+    const prefiltered_bytes = try decodeRgb32fHexToRgbaBytes(allocator, cooked.prefiltered_pixels_hex);
+    defer allocator.free(prefiltered_bytes);
 
-    // Create environment map resource
-    var resource = environment_map_resource.EnvironmentMapResource{
+    const irradiance_handle = try ensureDerivedTexture(
+        allocator,
+        library,
+        record,
+        asset_id,
+        "ibl/irradiance",
+        "IBL Irradiance",
+        cooked.irradiance_width,
+        cooked.irradiance_height,
+        .rgba32_float,
+        irradiance_bytes,
+    );
+    const prefiltered_handle = try ensureDerivedTexture(
+        allocator,
+        library,
+        record,
+        asset_id,
+        "ibl/prefiltered",
+        "IBL Prefiltered",
+        cooked.prefiltered_width,
+        cooked.prefiltered_height,
+        .rgba32_float,
+        prefiltered_bytes,
+    );
+    const brdf_lut_handle = try ensureBRDFLUT(allocator, library, cooked.brdf_lut_size);
+
+    return .{
         .name = try allocator.dupe(u8, record.id),
-        .source_width = cooked.irradiance_size,
-        .source_height = cooked.irradiance_size,
-        .source_pixels = try allocator.dupe(f32, std.mem.bytesAsSlice(f32, irradiance_pixels)),
-        .irradiance_size = cooked.irradiance_size,
-        .prefiltered_size = cooked.prefiltered_size,
+        .source_width = 0,
+        .source_height = 0,
+        .source_pixels = try allocator.alloc(f32, 0),
+        .environment_map_handle = environment_map_handle,
+        .irradiance_map_handle = irradiance_handle,
+        .prefiltered_map_handle = prefiltered_handle,
+        .brdf_lut_handle = brdf_lut_handle,
+        .irradiance_size = cooked.irradiance_width,
+        .prefiltered_size = cooked.prefiltered_width,
         .prefiltered_mip_levels = cooked.prefiltered_mip_levels,
     };
-
-    // TODO: Upload to GPU and create texture handles
-    // resource.irradiance_map_handle = try device.createTexture(...);
-    // resource.prefiltered_map_handle = try device.createTexture(...);
-    // resource.brdf_lut_handle = cooked.brdf_lut_handle;
-
-    return resource;
 }
 
-// Generate BRDF LUT if not exists (should be done once globally)
-pub fn ensureBRDFLUT(allocator: std.mem.Allocator, library: *library_mod.ResourceLibrary, device: anytype) !handles.TextureHandle {
-    const brdf_lut_asset_id = "internal/brdf_lut";
-    
-    if (library.textureHandleByAssetId(brdf_lut_asset_id)) |handle| {
+pub fn ensureBRDFLUT(
+    allocator: std.mem.Allocator,
+    library: *library_mod.ResourceLibrary,
+    size: u32,
+) !handles.TextureHandle {
+    const asset_id = try std.fmt.allocPrint(allocator, "builtin://ibl/brdf_lut/{d}", .{size});
+    defer allocator.free(asset_id);
+
+    if (library.textureHandleByAssetId(asset_id)) |handle| {
         return handle;
     }
 
-    const size = 512;
-    const lut_pixels = try ibl_precompute.generateBRDFLUT(allocator, size);
-    defer allocator.free(lut_pixels);
+    const lut = try ibl_precompute.generateBRDFLUT(allocator, size);
+    defer allocator.free(lut);
 
-    // TODO: Create GPU texture
-    // const texture_handle = try device.createTexture(...);
-    // try library.mapTextureAssetId(brdf_lut_asset_id, texture_handle);
-    
-    return .{};
+    const lut_bytes = try expandRg32fToRgbaBytes(allocator, lut);
+    defer allocator.free(lut_bytes);
+
+    const handle = try library.createTexture(.{
+        .name = "IBL BRDF LUT",
+        .width = size,
+        .height = size,
+        .format = .rgba32_float,
+        .pixels = lut_bytes,
+    });
+    _ = try library.bindTextureAssetRecord(
+        handle,
+        try makeSyntheticTextureRecord(
+            allocator,
+            asset_id,
+            "internal://ibl/brdf_lut",
+            "IBL BRDF LUT",
+            "ibl-brdf-lut",
+            derived_importer_name,
+            &.{},
+        ),
+    );
+    return handle;
 }
 
-// Helper functions
+fn cookedIBLDataIsCurrent(
+    allocator: std.mem.Allocator,
+    record: *const registry_mod.AssetRecord,
+    cooked_path: []const u8,
+) !bool {
+    const encoded = try std.fs.cwd().readFileAlloc(allocator, cooked_path, 128 * 1024 * 1024);
+    defer allocator.free(encoded);
+
+    var parsed = std.json.parseFromSlice(CookedIBLData, allocator, encoded, .{
+        .ignore_unknown_fields = true,
+    }) catch return false;
+    defer parsed.deinit();
+
+    const cooked = parsed.value;
+    return cooked.version == current_environment_map_cache_version and
+        std.mem.eql(u8, cooked.asset_id, record.id) and
+        std.mem.eql(u8, cooked.source_path, record.source_path) and
+        std.mem.eql(u8, cooked.source_hash, record.source_hash) and
+        std.mem.eql(u8, cooked.import_settings_hash, record.import_settings_hash) and
+        cooked.import_version == record.resolvedImportVersion();
+}
+
+fn cookIBLDataRecord(
+    allocator: std.mem.Allocator,
+    record: *const registry_mod.AssetRecord,
+    cooked_ibl_path: []const u8,
+) !void {
+    const encoded = try std.fs.cwd().readFileAlloc(allocator, record.source_path, 128 * 1024 * 1024);
+    defer allocator.free(encoded);
+
+    var decoded = try image_decoder.decodeRgba32f(allocator, encoded);
+    defer decoded.deinit();
+
+    const cooked_ibl = try generateIBLDataForHDR(
+        allocator,
+        record.id,
+        record.source_path,
+        record.source_hash,
+        record.import_settings_hash,
+        record.resolvedImportVersion(),
+        decoded.width,
+        decoded.height,
+        decoded.pixels,
+    );
+    defer allocator.free(cooked_ibl);
+
+    if (std.fs.path.dirname(cooked_ibl_path)) |directory| {
+        try std.fs.cwd().makePath(directory);
+    }
+    try std.fs.cwd().writeFile(.{
+        .sub_path = cooked_ibl_path,
+        .data = cooked_ibl,
+    });
+}
+
+fn ensureDerivedTexture(
+    allocator: std.mem.Allocator,
+    library: *library_mod.ResourceLibrary,
+    source_record: *const registry_mod.AssetRecord,
+    asset_id: []const u8,
+    suffix: []const u8,
+    display_name: []const u8,
+    width: u32,
+    height: u32,
+    format: rhi_types.TextureFormat,
+    pixels: []const u8,
+) !handles.TextureHandle {
+    const derived_asset_id = try std.fmt.allocPrint(allocator, "{s}#{s}", .{ asset_id, suffix });
+    defer allocator.free(derived_asset_id);
+
+    if (library.textureHandleByAssetId(derived_asset_id)) |handle| {
+        return handle;
+    }
+
+    const source_path = try std.fmt.allocPrint(allocator, "{s}#{s}", .{ source_record.source_path, suffix });
+    defer allocator.free(source_path);
+
+    const handle = try library.createTexture(.{
+        .name = display_name,
+        .width = width,
+        .height = height,
+        .format = format,
+        .pixels = pixels,
+    });
+    _ = try library.bindTextureAssetRecord(
+        handle,
+        try makeSyntheticTextureRecord(
+            allocator,
+            derived_asset_id,
+            source_path,
+            display_name,
+            source_record.source_hash,
+            source_record.import_settings_hash,
+            &.{source_record.id},
+        ),
+    );
+    return handle;
+}
+
+fn makeSyntheticTextureRecord(
+    allocator: std.mem.Allocator,
+    id: []const u8,
+    source_path: []const u8,
+    display_name: []const u8,
+    source_hash: []const u8,
+    import_settings_hash: []const u8,
+    dependencies: []const []const u8,
+) !registry_mod.AssetRecord {
+    const dependency_ids = try allocator.alloc([]u8, dependencies.len);
+    var dependency_count: usize = 0;
+    errdefer {
+        var index: usize = 0;
+        while (index < dependency_count) : (index += 1) {
+            allocator.free(dependency_ids[index]);
+        }
+        allocator.free(dependency_ids);
+    }
+    for (dependencies, 0..) |dependency, index| {
+        dependency_ids[index] = try allocator.dupe(u8, dependency);
+        dependency_count = index + 1;
+    }
+
+    return .{
+        .id = try allocator.dupe(u8, id),
+        .type = .texture,
+        .source_path = try allocator.dupe(u8, source_path),
+        .source_hash = try allocator.dupe(u8, source_hash),
+        .import_settings_hash = try allocator.dupe(u8, import_settings_hash),
+        .import_version = current_environment_map_cache_version,
+        .dependency_ids = dependency_ids,
+        .outputs = try allocator.alloc(registry_mod.AssetOutput, 0),
+        .metadata = .{
+            .display_name = try allocator.dupe(u8, display_name),
+            .importer = try allocator.dupe(u8, derived_importer_name),
+            .source_extension = try allocator.dupe(u8, ".hdr"),
+        },
+    };
+}
+
+fn decodeRgb32fHexToRgbaBytes(allocator: std.mem.Allocator, hex: []const u8) ![]u8 {
+    const rgb_bytes = try decodeHexAlloc(allocator, hex);
+    defer allocator.free(rgb_bytes);
+
+    const rgb_aligned: []align(@alignOf(f32)) const u8 = @alignCast(rgb_bytes);
+    const rgb = std.mem.bytesAsSlice(f32, rgb_aligned);
+    if (rgb.len % 3 != 0) {
+        return error.InvalidIBLPixelPayload;
+    }
+
+    const pixel_count = rgb.len / 3;
+    var rgba = try allocator.alloc(f32, pixel_count * 4);
+    errdefer allocator.free(rgba);
+
+    var index: usize = 0;
+    while (index < pixel_count) : (index += 1) {
+        const src = index * 3;
+        const dst = index * 4;
+        rgba[dst] = rgb[src];
+        rgba[dst + 1] = rgb[src + 1];
+        rgba[dst + 2] = rgb[src + 2];
+        rgba[dst + 3] = 1.0;
+    }
+
+    const bytes = try allocator.alloc(u8, rgba.len * @sizeOf(f32));
+    @memcpy(bytes, std.mem.sliceAsBytes(rgba));
+    allocator.free(rgba);
+    return bytes;
+}
+
+fn expandRg32fToRgbaBytes(allocator: std.mem.Allocator, rg: []const f32) ![]u8 {
+    if (rg.len % 2 != 0) {
+        return error.InvalidBRDFPayload;
+    }
+
+    const pixel_count = rg.len / 2;
+    var rgba = try allocator.alloc(f32, pixel_count * 4);
+    errdefer allocator.free(rgba);
+
+    var index: usize = 0;
+    while (index < pixel_count) : (index += 1) {
+        const src = index * 2;
+        const dst = index * 4;
+        rgba[dst] = rg[src];
+        rgba[dst + 1] = rg[src + 1];
+        rgba[dst + 2] = 0.0;
+        rgba[dst + 3] = 1.0;
+    }
+
+    const bytes = try allocator.alloc(u8, rgba.len * @sizeOf(f32));
+    @memcpy(bytes, std.mem.sliceAsBytes(rgba));
+    allocator.free(rgba);
+    return bytes;
+}
+
 fn encodeHexAlloc(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
     var result = try allocator.alloc(u8, bytes.len * 2);
     errdefer allocator.free(result);

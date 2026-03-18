@@ -16,6 +16,8 @@ pub const MaterialResource = struct {
     roughness_factor: f32 = 1.0,
     alpha_cutoff: f32 = 0.5,
     double_sided: bool = false,
+    use_ibl: bool = true, // Enable IBL by default
+    ibl_intensity: f32 = 1.0, // IBL intensity multiplier
 
     pub fn deinit(self: *MaterialResource, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
@@ -37,6 +39,8 @@ pub const MaterialResourceDesc = struct {
     roughness_factor: f32 = 1.0,
     alpha_cutoff: f32 = 0.5,
     double_sided: bool = false,
+    use_ibl: bool = true,
+    ibl_intensity: f32 = 1.0,
 };
 
 pub fn clone(allocator: std.mem.Allocator, desc: MaterialResourceDesc) !MaterialResource {
@@ -54,5 +58,7 @@ pub fn clone(allocator: std.mem.Allocator, desc: MaterialResourceDesc) !Material
         .roughness_factor = desc.roughness_factor,
         .alpha_cutoff = desc.alpha_cutoff,
         .double_sided = desc.double_sided,
+        .use_ibl = desc.use_ibl,
+        .ibl_intensity = desc.ibl_intensity,
     };
 }

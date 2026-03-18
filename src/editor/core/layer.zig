@@ -150,10 +150,10 @@ pub const EditorLayer = struct {
         }
         try viewport.drawEditorUi(&self.state, layer_context);
         try content_browser.flushMaterialThumbnailRequests(&self.state, layer_context);
-        try viewport.handleViewportSelection(&self.state, layer_context);
         try manipulation.handleEditingShortcuts(&self.state, layer_context);
         manipulation.applyManipulation(&self.state, layer_context);
         camera.handleCameraControls(&self.state, layer_context);
+        try viewport.handleViewportSelection(&self.state, layer_context);
         manipulation.syncGizmoState(&self.state, layer_context);
     }
 };

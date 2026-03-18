@@ -1,4 +1,5 @@
 const std = @import("std");
+const environment_map_import = @import("environment_map_import.zig");
 const image_decoder = @import("image_decoder.zig");
 const registry_mod = @import("registry.zig");
 const svg_decoder = @import("svg_decoder.zig");
@@ -137,6 +138,30 @@ fn cookTextureRecord(allocator: std.mem.Allocator, record: *const registry_mod.A
         height = decoded.height;
         format = .rgba32_float;
         pixels_hex = try encodeHexAlloc(allocator, std.mem.sliceAsBytes(decoded.pixels));
+
+        const cooked_ibl_path = try environment_map_import.cookedIBLPathAlloc(allocator, cooked_path);
+        defer allocator.free(cooked_ibl_path);
+
+        const cooked_ibl = try environment_map_import.generateIBLDataForHDR(
+            allocator,
+            record.id,
+            record.source_path,
+            record.source_hash,
+            record.import_settings_hash,
+            record.resolvedImportVersion(),
+            decoded.width,
+            decoded.height,
+            decoded.pixels,
+        );
+        defer allocator.free(cooked_ibl);
+
+        if (std.fs.path.dirname(cooked_ibl_path)) |directory| {
+            try std.fs.cwd().makePath(directory);
+        }
+        try std.fs.cwd().writeFile(.{
+            .sub_path = cooked_ibl_path,
+            .data = cooked_ibl,
+        });
     } else {
         const encoded = try std.fs.cwd().readFileAlloc(allocator, record.source_path, 128 * 1024 * 1024);
         defer allocator.free(encoded);
