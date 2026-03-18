@@ -342,11 +342,6 @@ pub const MeshSceneCache = struct {
             const mesh = world.resources.mesh(mesh_handle) orelse continue;
             if (mesh.primitive_type != .triangle_list) continue;
 
-            // Frustum Culling for meshes
-            if (world.worldBoundsConst(render_mesh.entity_id)) |bounds| {
-                if (!frustum.intersectsAABB(bounds)) continue;
-            }
-
             const gpu_mesh = try self.ensureMesh(device, mesh_handle, mesh);
             const material_state = try self.resolveMaterial(device, world, render_mesh.material);
 

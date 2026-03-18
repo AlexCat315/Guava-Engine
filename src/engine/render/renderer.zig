@@ -28,12 +28,14 @@ const rhi_types = @import("../rhi/types.zig");
 const components = @import("../scene/components.zig");
 const scene_mod = @import("../scene/scene.zig");
 const types = @import("types.zig");
+const frustum_mod = @import("../math/frustum.zig");
 const vec3 = @import("../math/vec3.zig");
 const render_log = std.log.scoped(.viewport_render);
 
 var g_logged_viewport_backend: bool = false;
 var g_logged_environment_status: bool = false;
 var g_logged_postfx_state: ?types.EditorViewportState = null;
+var g_logged_scene_extraction_culling: bool = false;
 
 pub const GraphicsAPI = rhi_types.GraphicsAPI;
 pub const RuntimeInfo = rhi_types.RuntimeInfo;
@@ -82,6 +84,26 @@ const InFlightSelectionBatch = struct {
         self.* = undefined;
     }
 };
+
+fn buildSceneExtractionFrustum(
+    scene_cache: *mesh_pass_mod.MeshSceneCache,
+    world: *const scene_mod.World,
+    width: u32,
+    height: u32,
+) ?frustum_mod.Frustum {
+    const camera_id = world.primaryCameraEntity() orelse return null;
+    const camera_entity = world.getEntityConst(camera_id) orelse return null;
+    const camera_component = camera_entity.camera orelse return null;
+    const world_transform = world.worldTransformConst(camera_id) orelse camera_entity.local_transform;
+    const camera_block = mesh_pass_mod.CameraBlock{
+        .transform = world_transform,
+        .camera = camera_component,
+        .is_primary = camera_component.is_primary,
+    };
+    // 主场景现在在 extraction 阶段就拿到主相机视锥，避免 mesh pass 重复扫 mesh。
+    const view_projection = scene_cache.calculateViewProjection(camera_block, width, height);
+    return frustum_mod.Frustum.fromViewProjection(view_projection);
+}
 
 const SceneViewportState = struct {
     width: u32 = 0,
@@ -858,13 +880,28 @@ pub const Renderer = struct {
                     );
                     g_logged_viewport_backend = true;
                 }
-                try scene_extraction.extractWorld(
+                const extraction_frustum = buildSceneExtractionFrustum(&self.scene_cache, scene, render_width, render_height);
+                const extraction_stats = try scene_extraction.extractWorld(
                     scene,
                     &self.render_world,
                     self.selection_history.primarySelection(),
                     self.selection_history.currentSelection(),
-                    null, // No frustum culling at extraction level, handled in mesh_pass for now
+                    extraction_frustum,
                 );
+                if (extraction_frustum != null and !g_logged_scene_extraction_culling) {
+                    render_log.info(
+                        "scene extraction culling active meshes={}/{} culled={} vfx={}/{} culled={}",
+                        .{
+                            extraction_stats.extracted_meshes,
+                            extraction_stats.total_meshes,
+                            extraction_stats.culledMeshes(),
+                            extraction_stats.extracted_vfxs,
+                            extraction_stats.total_vfxs,
+                            extraction_stats.culledVfxs(),
+                        },
+                    );
+                    g_logged_scene_extraction_culling = true;
+                }
 
                 var prepared_scene = try self.scene_cache.prepareScene(
                     &self.rhi,
@@ -1307,7 +1344,7 @@ pub const Renderer = struct {
             try self.material_thumbnail_preview.syncFromSource(source);
             self.thumbnail_scene_cache.invalidateMaterialResources(&self.rhi);
 
-            try scene_extraction.extractWorld(
+            _ = try scene_extraction.extractWorld(
                 &self.material_thumbnail_preview.world,
                 &self.thumbnail_render_world,
                 null,

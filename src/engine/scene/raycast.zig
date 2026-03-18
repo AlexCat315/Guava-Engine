@@ -1,6 +1,15 @@
 const std = @import("std");
 const components = @import("components.zig");
+const spatial_index_mod = @import("spatial_index.zig");
 const world_mod = @import("world.zig");
+const raycast_log = std.log.scoped(.raycast);
+
+const BvhLogSnapshot = struct {
+    items: usize,
+    nodes: usize,
+};
+
+var g_logged_bvh_snapshot: ?BvhLogSnapshot = null;
 
 pub const Ray = struct {
     origin: [3]f32,
@@ -14,41 +23,34 @@ pub const SurfaceRaycastHit = struct {
     normal: [3]f32,
 };
 
-pub fn raycastSurface(world: *const world_mod.World, ray: Ray) ?SurfaceRaycastHit {
-    const normalized_direction = normalize(ray.direction);
-    var best_hit: ?SurfaceRaycastHit = null;
-
-    for (world.entities.items) |entity| {
-        if (!entity.visible or entity.editor_only) {
-            continue;
-        }
-        const mesh_component = entity.mesh orelse continue;
-        const mesh_handle = mesh_component.handle orelse continue;
-        const mesh = world.resources.mesh(mesh_handle) orelse continue;
-        if (mesh.primitive_type != .triangle_list or mesh.indices.len < 3) {
-            continue;
-        }
-
-        const world_transform = world.worldTransformConst(entity.id) orelse entity.local_transform;
-        var triangle_index: usize = 0;
-        while (triangle_index + 2 < mesh.indices.len) : (triangle_index += 3) {
-            const v0 = transformPoint(world_transform, mesh.vertices[mesh.indices[triangle_index]].position);
-            const v1 = transformPoint(world_transform, mesh.vertices[mesh.indices[triangle_index + 1]].position);
-            const v2 = transformPoint(world_transform, mesh.vertices[mesh.indices[triangle_index + 2]].position);
-            const hit = rayTriangleIntersection(ray.origin, normalized_direction, v0, v1, v2) orelse continue;
-
-            if (best_hit == null or hit.distance < best_hit.?.distance) {
-                best_hit = .{
-                    .entity_id = entity.id,
-                    .distance = hit.distance,
-                    .position = hit.position,
-                    .normal = faceCamera(normalize(cross(sub(v1, v0), sub(v2, v0))), normalized_direction),
-                };
-            }
-        }
+pub fn raycastSurface(world: *world_mod.World, ray: Ray) ?SurfaceRaycastHit {
+    if (worldHasDirtyEntities(world)) {
+        world.updateHierarchy();
     }
 
-    return best_hit;
+    const normalized_direction = normalize(ray.direction);
+    if (ensureRaycastBvh(world)) {
+        const candidate_ids = world.raycast_bvh.queryRayCandidates(
+            world.allocator,
+            ray.origin,
+            normalized_direction,
+            std.math.inf(f32),
+        ) catch |err| {
+            raycast_log.warn("raycast BVH query failed; fallback to brute force, error={}", .{err});
+            return raycastSurfaceBruteForce(world, ray.origin, normalized_direction);
+        };
+        defer world.allocator.free(candidate_ids);
+
+        var best_hit: ?SurfaceRaycastHit = null;
+        // broad phase 先筛 mesh bounds，triangle narrow phase 仍复用现有命中实现。
+        for (candidate_ids) |entity_id| {
+            const entity = world.getEntityConst(entity_id) orelse continue;
+            testEntitySurface(world, entity, ray.origin, normalized_direction, &best_hit);
+        }
+        return best_hit;
+    }
+
+    return raycastSurfaceBruteForce(world, ray.origin, normalized_direction);
 }
 
 const TriangleHit = struct {
@@ -102,6 +104,116 @@ fn transformPoint(transform: components.Transform, point: [3]f32) [3]f32 {
         transform.translation,
         @import("../math/quat.zig").rotateVec3(transform.rotation, mul(transform.scale, point)),
     );
+}
+
+fn ensureRaycastBvh(world: *world_mod.World) bool {
+    if (!world.raycast_bvh.dirty) {
+        return true;
+    }
+
+    var bounds_items = std.ArrayList(spatial_index_mod.BoundsItem).empty;
+    defer bounds_items.deinit(world.allocator);
+
+    for (world.entities.items) |entity| {
+        const mesh_component = entity.mesh orelse continue;
+        const mesh_handle = mesh_component.handle orelse continue;
+        const mesh = world.resources.mesh(mesh_handle) orelse continue;
+        if (mesh.primitive_type != .triangle_list or mesh.indices.len < 3) {
+            continue;
+        }
+
+        const world_transform = world.worldTransformConst(entity.id) orelse entity.local_transform;
+        const mesh_bounds = mesh.local_bounds.transformed(world_transform);
+        if (!mesh_bounds.isValid()) {
+            continue;
+        }
+
+        bounds_items.append(world.allocator, .{
+            .id = entity.id,
+            .bounds = mesh_bounds,
+        }) catch |err| {
+            raycast_log.warn("raycast BVH build staging failed; fallback to brute force, error={}", .{err});
+            return false;
+        };
+    }
+
+    world.raycast_bvh.rebuild(bounds_items.items) catch |err| {
+        raycast_log.warn("raycast BVH rebuild failed; fallback to brute force, error={}", .{err});
+        return false;
+    };
+
+    const snapshot = BvhLogSnapshot{
+        .items = world.raycast_bvh.itemCount(),
+        .nodes = world.raycast_bvh.nodeCount(),
+    };
+    if (g_logged_bvh_snapshot == null or
+        g_logged_bvh_snapshot.?.items != snapshot.items or
+        g_logged_bvh_snapshot.?.nodes != snapshot.nodes)
+    {
+        raycast_log.info("raycast broad phase rebuilt items={} nodes={}", .{
+            snapshot.items,
+            snapshot.nodes,
+        });
+        g_logged_bvh_snapshot = snapshot;
+    }
+    return true;
+}
+
+fn raycastSurfaceBruteForce(
+    world: *const world_mod.World,
+    ray_origin: [3]f32,
+    normalized_direction: [3]f32,
+) ?SurfaceRaycastHit {
+    var best_hit: ?SurfaceRaycastHit = null;
+    for (world.entities.items) |*entity| {
+        testEntitySurface(world, entity, ray_origin, normalized_direction, &best_hit);
+    }
+    return best_hit;
+}
+
+fn testEntitySurface(
+    world: *const world_mod.World,
+    entity: *const world_mod.Entity,
+    ray_origin: [3]f32,
+    normalized_direction: [3]f32,
+    best_hit: *?SurfaceRaycastHit,
+) void {
+    if (!entity.visible or entity.editor_only) {
+        return;
+    }
+    const mesh_component = entity.mesh orelse return;
+    const mesh_handle = mesh_component.handle orelse return;
+    const mesh = world.resources.mesh(mesh_handle) orelse return;
+    if (mesh.primitive_type != .triangle_list or mesh.indices.len < 3) {
+        return;
+    }
+
+    const world_transform = world.worldTransformConst(entity.id) orelse entity.local_transform;
+    var triangle_index: usize = 0;
+    while (triangle_index + 2 < mesh.indices.len) : (triangle_index += 3) {
+        const v0 = transformPoint(world_transform, mesh.vertices[mesh.indices[triangle_index]].position);
+        const v1 = transformPoint(world_transform, mesh.vertices[mesh.indices[triangle_index + 1]].position);
+        const v2 = transformPoint(world_transform, mesh.vertices[mesh.indices[triangle_index + 2]].position);
+        const hit = rayTriangleIntersection(ray_origin, normalized_direction, v0, v1, v2) orelse continue;
+
+        if (best_hit.* == null or hit.distance < best_hit.*.?.distance) {
+            best_hit.* = .{
+                .entity_id = entity.id,
+                .distance = hit.distance,
+                .position = hit.position,
+                .normal = faceCamera(normalize(cross(sub(v1, v0), sub(v2, v0))), normalized_direction),
+            };
+        }
+    }
+}
+
+fn worldHasDirtyEntities(world: *const world_mod.World) bool {
+    for (world.entities.items) |entity| {
+        if (entity.dirty) {
+            return true;
+        }
+    }
+    return false;
 }
 
 fn rotateVec3Euler(rotation: [3]f32, vector: [3]f32) [3]f32 {
@@ -233,4 +345,31 @@ test "raycastSurface ignores editor only meshes" {
         .origin = .{ 0.0, 2.0, 0.0 },
         .direction = .{ 0.0, -1.0, 0.0 },
     }) == null);
+}
+
+test "raycastSurface rebuilds broad phase after transform changes" {
+    var world = world_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+
+    const plane = try world.createPrimitiveEntity(.plane, .{
+        .translation = .{ 0.0, 4.0, 0.0 },
+        .rotation = @import("../math/quat.zig").fromEuler(.{ -std.math.pi * 0.5, 0.0, 0.0 }),
+    });
+
+    try std.testing.expect(raycastSurface(&world, .{
+        .origin = .{ 0.0, 2.0, 0.0 },
+        .direction = .{ 0.0, -1.0, 0.0 },
+    }) == null);
+
+    try std.testing.expect(world.setEntityLocalTransform(plane, .{
+        .translation = .{ 0.0, 0.0, 0.0 },
+        .rotation = @import("../math/quat.zig").fromEuler(.{ -std.math.pi * 0.5, 0.0, 0.0 }),
+    }));
+
+    const hit = raycastSurface(&world, .{
+        .origin = .{ 0.0, 2.0, 0.0 },
+        .direction = .{ 0.0, -1.0, 0.0 },
+    }).?;
+
+    try std.testing.expectEqual(plane, hit.entity_id);
 }

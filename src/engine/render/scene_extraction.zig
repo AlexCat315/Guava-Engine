@@ -4,6 +4,21 @@ const scene_mod = @import("../scene/scene.zig");
 
 const frustum_mod = @import("../math/frustum.zig");
 
+pub const ExtractionStats = struct {
+    total_meshes: usize = 0,
+    extracted_meshes: usize = 0,
+    total_vfxs: usize = 0,
+    extracted_vfxs: usize = 0,
+
+    pub fn culledMeshes(self: *const ExtractionStats) usize {
+        return self.total_meshes - self.extracted_meshes;
+    }
+
+    pub fn culledVfxs(self: *const ExtractionStats) usize {
+        return self.total_vfxs - self.extracted_vfxs;
+    }
+};
+
 pub const RenderCamera = struct {
     entity_id: scene_mod.EntityId,
     transform: components.Transform,
@@ -115,8 +130,9 @@ pub fn extractWorld(
     primary_selection: ?scene_mod.EntityId,
     selection_list: []const scene_mod.EntityId,
     frustum: ?frustum_mod.Frustum,
-) !void {
+) !ExtractionStats {
     render_world.clear();
+    var stats = ExtractionStats{};
 
     for (world.entities.items) |entity| {
         const world_transform = world.worldTransformConst(entity.id) orelse entity.local_transform;
@@ -132,6 +148,14 @@ pub fn extractWorld(
         }
 
         const is_selected = isEntitySelected(entity.id, primary_selection, selection_list);
+        // 在 extraction 阶段统一做 mesh/vfx 剔除，避免后续 pass 再重复扫一遍。
+        const entity_visible_in_frustum = if (frustum) |f|
+            if (world.worldBoundsConst(entity.id)) |bounds|
+                f.intersectsAABB(bounds)
+            else
+                true
+        else
+            true;
 
         if (entity.camera) |camera| {
             try render_world.cameras.append(render_world.allocator, .{
@@ -150,13 +174,9 @@ pub fn extractWorld(
         }
 
         if (entity.mesh) |mesh| {
-            // Frustum Culling for meshes
-            if (frustum) |f| {
-                if (world.worldBoundsConst(entity.id)) |bounds| {
-                    if (!f.intersectsAABB(bounds)) {
-                        continue;
-                    }
-                }
+            stats.total_meshes += 1;
+            if (!entity_visible_in_frustum) {
+                continue;
             }
 
             try render_world.meshes.append(render_world.allocator, .{
@@ -166,16 +186,13 @@ pub fn extractWorld(
                 .material = entity.material,
                 .selected = is_selected,
             });
+            stats.extracted_meshes += 1;
         }
 
         if (entity.vfx) |vfx| {
-            // Frustum Culling for VFX (using the same entity bounds)
-            if (frustum) |f| {
-                if (world.worldBoundsConst(entity.id)) |bounds| {
-                    if (!f.intersectsAABB(bounds)) {
-                        continue;
-                    }
-                }
+            stats.total_vfxs += 1;
+            if (!entity_visible_in_frustum) {
+                continue;
             }
 
             try render_world.vfxs.append(render_world.allocator, .{
@@ -184,8 +201,11 @@ pub fn extractWorld(
                 .vfx = vfx,
                 .selected = is_selected,
             });
+            stats.extracted_vfxs += 1;
         }
     }
+
+    return stats;
 }
 
 fn isEntitySelected(

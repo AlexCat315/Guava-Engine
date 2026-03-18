@@ -2,6 +2,7 @@ const std = @import("std");
 const assets_lib = @import("../assets/library.zig");
 const gltf_import = @import("../assets/gltf_import.zig");
 const raycast_mod = @import("raycast.zig");
+const spatial_index_mod = @import("spatial_index.zig");
 const components = @import("components.zig");
 const vfx_runtime_mod = @import("vfx_runtime.zig");
 const vec3 = @import("../math/vec3.zig");
@@ -67,6 +68,7 @@ pub const World = struct {
     next_id: EntityId = 1,
     job_system: ?*job_system_mod.JobSystem = null,
     vfx_runtime_emitters: std.ArrayList(vfx_runtime_mod.VfxRuntimeEmitter) = .empty,
+    raycast_bvh: spatial_index_mod.StaticBoundsBvh,
 
     pub fn init(allocator: std.mem.Allocator, job_system: ?*job_system_mod.JobSystem) World {
         return .{
@@ -74,6 +76,7 @@ pub const World = struct {
             .resources = assets_lib.ResourceLibrary.init(allocator, job_system),
             .id_to_index = std.AutoHashMap(EntityId, usize).init(allocator),
             .job_system = job_system,
+            .raycast_bvh = spatial_index_mod.StaticBoundsBvh.init(allocator),
         };
     }
 
@@ -92,12 +95,14 @@ pub const World = struct {
         }
         self.entities.deinit(self.allocator);
         self.id_to_index.deinit();
+        self.raycast_bvh.deinit();
         self.resources.deinit();
         if (reinitialize) {
             self.entities = .empty;
             self.id_to_index = std.AutoHashMap(EntityId, usize).init(self.allocator);
             self.resources = assets_lib.ResourceLibrary.init(self.allocator, self.job_system);
             self.vfx_runtime_emitters = .empty;
+            self.raycast_bvh = spatial_index_mod.StaticBoundsBvh.init(self.allocator);
         }
     }
 
@@ -144,6 +149,7 @@ pub const World = struct {
                 try parent.children.append(self.allocator, id);
             }
         }
+        self.raycast_bvh.markDirty();
 
         if (id >= self.next_id) {
             self.next_id = id + 1;
@@ -173,6 +179,7 @@ pub const World = struct {
 
     pub fn markDirty(self: *World, id: EntityId) void {
         const entity = self.getEntity(id) orelse return;
+        self.raycast_bvh.markDirty();
         if (entity.dirty) return;
 
         entity.dirty = true;
@@ -805,7 +812,7 @@ pub const World = struct {
         return gltf_import.importStaticModelInstance(self, path, root_transform);
     }
 
-    pub fn raycastSurface(self: *const World, ray: raycast_mod.Ray) ?raycast_mod.SurfaceRaycastHit {
+    pub fn raycastSurface(self: *World, ray: raycast_mod.Ray) ?raycast_mod.SurfaceRaycastHit {
         return raycast_mod.raycastSurface(self, ray);
     }
 
@@ -857,6 +864,7 @@ pub const World = struct {
     fn removeEntityById(self: *World, id: EntityId) void {
         const index = self.id_to_index.get(id) orelse return;
         const entity = &self.entities.items[index];
+        self.raycast_bvh.markDirty();
 
         // Remove from parent's children list
         if (entity.parent) |parent_id| {
