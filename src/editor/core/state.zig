@@ -9,6 +9,17 @@ pub const asset_material_drag_payload = "guava.asset.material";
 pub const asset_texture_drag_payload = "guava.asset.texture";
 pub const place_actor_drag_payload = "guava.editor.place_actor";
 
+// 缓冲区大小常量，避免硬编码
+pub const inspector_name_buffer_size = 256;
+pub const inspector_filter_buffer_size = 128;
+pub const hierarchy_rename_buffer_size = 256;
+pub const scene_filter_buffer_size = 128;
+pub const hierarchy_filter_buffer_size = 128;
+pub const place_actor_filter_buffer_size = 128;
+pub const asset_filter_buffer_size = 128;
+pub const asset_directory_buffer_size = 256;
+pub const layout_template_name_buffer_size = 128;
+
 pub const AssetKind = enum {
     scene,
     model,
@@ -147,8 +158,8 @@ pub const EditorState = struct {
     editor_camera: ?engine.scene.EntityId = null,
     scene_camera: ?engine.scene.EntityId = null,
     inspector_name_entity: ?engine.scene.EntityId = null,
-    inspector_name_buffer: [256]u8 = [_]u8{0} ** 256,
-    inspector_filter_buffer: [128]u8 = [_]u8{0} ** 128,
+    inspector_name_buffer: [inspector_name_buffer_size]u8 = [_]u8{0} ** inspector_name_buffer_size,
+    inspector_filter_buffer: [inspector_filter_buffer_size]u8 = [_]u8{0} ** inspector_filter_buffer_size,
     hierarchy_rename_entity: ?engine.scene.EntityId = null,
     hierarchy_rename_buffer: [256]u8 = [_]u8{0} ** 256,
     hierarchy_rename_focus_pending: bool = false,
@@ -262,6 +273,74 @@ pub const EditorState = struct {
 
     pub fn languageInfo(self: *const EditorState) *const i18n.LocaleInfo {
         return i18n.locale(self.language);
+    }
+
+    pub fn deinit(self: *EditorState) void {
+        const allocator = self.allocator orelse return;
+        
+        // 释放 snapshot_history 中的每个快照字符串
+        for (self.snapshot_history.items) |snapshot| {
+            allocator.free(snapshot);
+        }
+        self.snapshot_history.deinit();
+        
+        // 释放 asset_entries 中的每个条目
+        for (self.asset_entries.items) |entry| {
+            allocator.free(entry.id);
+            allocator.free(entry.path);
+            allocator.free(entry.name);
+        }
+        self.asset_entries.deinit();
+        
+        // 释放 asset_directories 中的每个目录路径
+        for (self.asset_directories.items) |dir| {
+            allocator.free(dir);
+        }
+        self.asset_directories.deinit();
+        
+        // 释放 material_thumbnail_queue 中的每个资产 ID
+        for (self.material_thumbnail_queue.items) |asset_id| {
+            allocator.free(asset_id);
+        }
+        self.material_thumbnail_queue.deinit();
+        
+        // 释放 vfx_runtime_emitters 中的每个发射器及其粒子数组
+        for (self.vfx_runtime_emitters.items) |*emitter| {
+            emitter.particles.deinit();
+        }
+        self.vfx_runtime_emitters.deinit();
+        
+        // 释放 layout_templates 中的每个模板条目
+        for (self.layout_templates.items) |entry| {
+            allocator.free(entry.name);
+            allocator.free(entry.path);
+        }
+        self.layout_templates.deinit();
+        
+        // 释放 icon_textures 中的每个条目（纹理由 RHI 管理，只释放路径）
+        for (self.icon_textures.items) |entry| {
+            allocator.free(entry.path);
+        }
+        self.icon_textures.deinit();
+        
+        // 释放 frozen_entities 和 selection_locked_entities（只是 EntityId 数组，无需释放内部）
+        self.frozen_entities.deinit();
+        self.selection_locked_entities.deinit();
+        
+        // 释放 preview_texture_key
+        if (self.preview_texture_key) |key| {
+            allocator.free(key);
+            self.preview_texture_key = null;
+        }
+        
+        // 释放 asset_registry（如果存在）
+        if (self.asset_registry) |*registry| {
+            registry.deinit();
+            self.asset_registry = null;
+        }
+        
+        // 注意：preview_device 和 icon_device 是外部指针，不在此释放
+        // preview_texture 由 RHI 管理，不在此释放
     }
 };
 

@@ -46,6 +46,7 @@ pub const Application = struct {
     input: input_mod.InputState = .{},
     playback_controller: layer_mod.PlaybackController = .{},
     initialized: bool = false,
+    timer: std.time.Timer,
 
     pub fn init(allocator: std.mem.Allocator, config: ApplicationConfig) !Application {
         const platform = platform_mod.detect();
@@ -73,6 +74,8 @@ pub const Application = struct {
             .frames_in_flight = config.frames_in_flight,
         });
 
+        const timer = try std.time.Timer.start();
+
         return .{
             .allocator = allocator,
             .config = config,
@@ -83,6 +86,7 @@ pub const Application = struct {
             .job_system = job_system,
             .layers = layer_stack_mod.LayerStack.init(allocator),
             .input = .{},
+            .timer = timer,
         };
     }
 
@@ -135,7 +139,9 @@ pub const Application = struct {
             // P1: Update hierarchy transforms and bounds once per frame
             self.world.updateHierarchy();
 
-            const delta_seconds = @as(f32, @floatFromInt(self.config.frame_delay_ms)) / 1000.0;
+            const elapsed_ns = self.timer.lap();
+            var delta_seconds = @as(f32, @floatFromInt(elapsed_ns)) / @as(f32, @floatFromInt(std.time.ns_per_s));
+            delta_seconds = @min(delta_seconds, 0.1); // 最大帧间隔锁定为 0.1 秒
             var layer_context = self.makeLayerContext(frames_rendered, delta_seconds);
             const should_advance_simulation = self.playback_controller.shouldAdvance();
             for (self.layers.layers.items, 0..) |layer, index| {
@@ -149,7 +155,7 @@ pub const Application = struct {
             }
 
             last_frame = try self.renderer.drawFrame(&self.world);
-            self.window.delay(self.config.frame_delay_ms);
+            
         }
 
         const summary = self.world.summary();

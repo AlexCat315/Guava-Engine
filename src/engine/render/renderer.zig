@@ -439,7 +439,7 @@ pub const Renderer = struct {
     scene_viewport: SceneViewportState = .{},
     shadow_map: ShadowMapState = .{},
     material_thumbnail_preview: MaterialThumbnailPreview,
-    material_thumbnail_cache: std.ArrayList(MaterialThumbnailCacheEntry) = .empty,
+    material_thumbnail_cache: std.StringHashMap(MaterialThumbnailCacheEntry) = undefined,
     material_thumbnail_requests: std.ArrayList([]u8) = .empty,
 
     pub fn init(
@@ -474,8 +474,10 @@ pub const Renderer = struct {
             .outline_pass = undefined,
             .gizmo_pass = undefined,
             .selection_history = SelectionHistory.init(allocator, 64),
+            .material_thumbnail_cache = std.StringHashMap(MaterialThumbnailCacheEntry).init(allocator),
             .material_thumbnail_preview = undefined,
         };
+        errdefer renderer.material_thumbnail_cache.deinit();
         errdefer renderer.in_flight_selection_batches.deinit(allocator);
         errdefer renderer.pending_selection_readbacks.deinit(allocator);
         errdefer renderer.selection_history.deinit();
@@ -652,8 +654,7 @@ pub const Renderer = struct {
     }
 
     pub fn materialThumbnailTexture(self: *const Renderer, asset_id: []const u8) ?*const rhi_mod.Texture {
-        const index = self.findMaterialThumbnailCacheIndex(asset_id) orelse return null;
-        const entry = &self.material_thumbnail_cache.items[index];
+        const entry = self.findMaterialThumbnailCacheIndex(asset_id) orelse return null;
         if (!entry.ready) {
             return null;
         }
@@ -976,12 +977,19 @@ pub const Renderer = struct {
         var fbs = std.io.fixedBufferStream(ppm_data);
         const writer = fbs.writer();
         try writer.print("P6\n{d} {d}\n255\n", .{ width, height });
-        var i: usize = 0;
-        while (i < pixel_count) : (i += 1) {
-            try writer.writeByte(rgba_data[i * 4 + 0]);
-            try writer.writeByte(rgba_data[i * 4 + 1]);
-            try writer.writeByte(rgba_data[i * 4 + 2]);
+        
+        // Batch convert RGBA to RGB and write all at once
+        const rgb_data = try allocator.alloc(u8, pixel_count * 3);
+        defer allocator.free(rgb_data);
+        var rgb_index: usize = 0;
+        var rgba_index: usize = 0;
+        while (rgba_index < rgba_data.len) : (rgba_index += 4) {
+            rgb_data[rgb_index] = rgba_data[rgba_index];
+            rgb_data[rgb_index + 1] = rgba_data[rgba_index + 1];
+            rgb_data[rgb_index + 2] = rgba_data[rgba_index + 2];
+            rgb_index += 3;
         }
+        try writer.writeAll(rgb_data);
         return try allocator.dupe(u8, ppm_data[0..fbs.pos]);
     }
 
@@ -1027,9 +1035,8 @@ pub const Renderer = struct {
             const asset_id = self.material_thumbnail_requests.orderedRemove(0);
             defer self.allocator.free(asset_id);
 
-            const cache_index = self.findMaterialThumbnailCacheIndex(asset_id) orelse continue;
-            const entry = &self.material_thumbnail_cache.items[cache_index];
-            entry.queued = false;
+            const entry_ptr = self.findMaterialThumbnailCacheIndex(asset_id) orelse continue;
+            entry_ptr.queued = false;
 
             const source = resolveMaterialThumbnailSource(&scene.resources, asset_id) orelse {
                 self.removeMaterialThumbnail(asset_id);
@@ -1058,13 +1065,13 @@ pub const Renderer = struct {
 
             const render_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
                 .color = .{
-                    .target = .{ .texture = &entry.target.color_texture },
+                    .target = .{ .texture = &entry_ptr.target.color_texture },
                     .clear_color = material_thumbnail_clear_color,
                     .load_op = .clear,
                     .store_op = .store,
                 },
                 .depth = .{
-                    .texture = &entry.target.depth_texture,
+                    .texture = &entry_ptr.target.depth_texture,
                     .clear_depth = 1.0,
                     .clear_stencil = 0,
                     .load_op = .clear,
@@ -1080,29 +1087,24 @@ pub const Renderer = struct {
             stats.add(base_stats);
             self.rhi.endRenderPass(render_pass);
 
-            entry.signature = source.signature;
-            entry.dirty = false;
-            entry.ready = true;
+            entry_ptr.signature = source.signature;
+            entry_ptr.dirty = false;
+            entry_ptr.ready = true;
         }
 
         return stats;
     }
 
-    fn findMaterialThumbnailCacheIndex(self: *const Renderer, asset_id: []const u8) ?usize {
-        for (self.material_thumbnail_cache.items, 0..) |entry, index| {
-            if (std.mem.eql(u8, entry.asset_id, asset_id)) {
-                return index;
-            }
-        }
-        return null;
+    fn findMaterialThumbnailCacheIndex(self: *const Renderer, asset_id: []const u8) ?*MaterialThumbnailCacheEntry {
+        return self.material_thumbnail_cache.getPtr(asset_id);
     }
 
     fn ensureMaterialThumbnailEntry(self: *Renderer, asset_id: []const u8) !*MaterialThumbnailCacheEntry {
-        if (self.findMaterialThumbnailCacheIndex(asset_id)) |index| {
-            return &self.material_thumbnail_cache.items[index];
+        if (self.material_thumbnail_cache.getPtr(asset_id)) |entry| {
+            return entry;
         }
 
-        if (self.material_thumbnail_cache.items.len >= material_thumbnail_cache_limit) {
+        if (self.material_thumbnail_cache.count() >= material_thumbnail_cache_limit) {
             self.evictMaterialThumbnailEntry(asset_id);
         }
 
@@ -1112,11 +1114,12 @@ pub const Renderer = struct {
             owned.deinit(&self.rhi);
         }
 
-        try self.material_thumbnail_cache.append(self.allocator, .{
+        const entry = MaterialThumbnailCacheEntry{
             .asset_id = try self.allocator.dupe(u8, asset_id),
             .target = target,
-        });
-        return &self.material_thumbnail_cache.items[self.material_thumbnail_cache.items.len - 1];
+        };
+        try self.material_thumbnail_cache.put(asset_id, entry);
+        return self.material_thumbnail_cache.getPtr(asset_id).?;
     }
 
     fn enqueueMaterialThumbnailRequest(self: *Renderer, entry: *MaterialThumbnailCacheEntry) !void {
@@ -1125,52 +1128,55 @@ pub const Renderer = struct {
     }
 
     fn evictMaterialThumbnailEntry(self: *Renderer, keep_asset_id: []const u8) void {
-        var candidate_index: ?usize = null;
-        var candidate_frame: usize = 0;
+        var oldest_unqueued_key: ?[]const u8 = null;
+        var oldest_any_key: ?[]const u8 = null;
+        var min_frame_unqueued: u64 = std.math.maxInt(u64);
+        var min_frame_any: u64 = std.math.maxInt(u64);
 
-        for (self.material_thumbnail_cache.items, 0..) |entry, index| {
-            if (std.mem.eql(u8, entry.asset_id, keep_asset_id)) {
+        var it = self.material_thumbnail_cache.iterator();
+        while (it.next()) |entry| {
+            const key = entry.key_ptr.*;
+            const value = entry.value_ptr;
+            if (std.mem.eql(u8, key, keep_asset_id)) {
                 continue;
             }
-            if (entry.queued) {
-                continue;
+            // 记录全局最老的
+            if (value.last_requested_frame < min_frame_any) {
+                min_frame_any = value.last_requested_frame;
+                oldest_any_key = key;
             }
-            if (candidate_index == null or entry.last_requested_frame < candidate_frame) {
-                candidate_index = index;
-                candidate_frame = entry.last_requested_frame;
+            // 记录非排队中最老的
+            if (!value.queued and value.last_requested_frame < min_frame_unqueued) {
+                min_frame_unqueued = value.last_requested_frame;
+                oldest_unqueued_key = key;
             }
         }
 
-        if (candidate_index == null) {
-            for (self.material_thumbnail_cache.items, 0..) |entry, index| {
-                if (std.mem.eql(u8, entry.asset_id, keep_asset_id)) {
-                    continue;
-                }
-                if (candidate_index == null or entry.last_requested_frame < candidate_frame) {
-                    candidate_index = index;
-                    candidate_frame = entry.last_requested_frame;
-                }
+        const key_to_remove = oldest_unqueued_key orelse oldest_any_key;
+        if (key_to_remove) |key| {
+            if (self.material_thumbnail_cache.fetchRemove(key)) |kv| {
+                var value = kv.value;
+                value.deinit(self.allocator, &self.rhi);
+                self.allocator.free(kv.key);
             }
-        }
-
-        if (candidate_index) |index| {
-            var entry = self.material_thumbnail_cache.orderedRemove(index);
-            entry.deinit(self.allocator, &self.rhi);
         }
     }
 
     fn removeMaterialThumbnail(self: *Renderer, asset_id: []const u8) void {
-        const index = self.findMaterialThumbnailCacheIndex(asset_id) orelse return;
-        var entry = self.material_thumbnail_cache.orderedRemove(index);
-        entry.deinit(self.allocator, &self.rhi);
+        if (self.material_thumbnail_cache.fetchRemove(asset_id)) |kv| {
+            var value = kv.value;
+            value.deinit(self.allocator, &self.rhi);
+            self.allocator.free(kv.key);
+        }
     }
 
     fn releaseMaterialThumbnailCache(self: *Renderer) void {
-        for (self.material_thumbnail_cache.items) |*entry| {
-            entry.deinit(self.allocator, &self.rhi);
+        var it = self.material_thumbnail_cache.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.deinit(self.allocator, &self.rhi);
         }
-        self.material_thumbnail_cache.deinit(self.allocator);
-        self.material_thumbnail_cache = .empty;
+        self.material_thumbnail_cache.deinit();
+        self.material_thumbnail_cache = undefined;
     }
 
     fn releaseMaterialThumbnailRequests(self: *Renderer) void {
