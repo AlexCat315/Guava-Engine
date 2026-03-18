@@ -671,19 +671,14 @@ pub const Renderer = struct {
         const result = blk: {
             const frame = try self.rhi.beginFrame();
             const clear = clearAndDepthForScene(snapshot, self.passCount());
-            if (frame.swapchain_texture == null) {
-                try self.rhi.cancelFrame(frame);
-                break :blk FrameReport{
-                    .backend = self.rhi.api,
-                    .passes_executed = self.passCount(),
-                    .graph_resources = self.graph.resourceCount(),
-                    .scene = snapshot,
-                    .runtime = self.runtimeInfo(),
-                };
-            }
+            const has_swapchain = frame.swapchain_texture != null;
 
             if (!self.depth_prepass.isReady() or !self.base_pass.isReady()) {
-                try self.rhi.clearAndPresent(frame, clear);
+                if (has_swapchain) {
+                    try self.rhi.clearAndPresent(frame, clear);
+                } else {
+                    try self.rhi.submitFrame(frame);
+                }
                 break :blk FrameReport{
                     .backend = self.rhi.api,
                     .passes_executed = self.passCount(),
@@ -694,201 +689,206 @@ pub const Renderer = struct {
             }
 
             const viewport_active = self.scene_viewport.active();
+            const can_render_scene = viewport_active or has_swapchain;
             const render_width = if (viewport_active) self.scene_viewport.width else frame.width;
             const render_height = if (viewport_active) self.scene_viewport.height else frame.height;
-
-            try scene_extraction.extractWorld(
-                scene,
-                &self.render_world,
-                self.selection_history.primarySelection(),
-                self.selection_history.currentSelection(),
-                null, // No frustum culling at extraction level, handled in mesh_pass for now
-            );
-
-            var prepared_scene = try self.scene_cache.prepareScene(
-                &self.rhi,
-                scene,
-                &self.render_world,
-                render_width,
-                render_height,
-            );
-            defer prepared_scene.deinit();
-
-            if (!self.selection_seeded) {
-                _ = try self.selection_history.applyPick(
-                    self.scene_cache.defaultSelectionEntity(scene),
-                    .replace,
-                );
-                self.selection_seeded = true;
-            }
-
-            try self.id_pass.ensureTargetSize(&self.rhi, render_width, render_height);
-
-            const light_space_matrix = blk_lsm: {
-                const main_light = if (prepared_scene.lights.directional_lights.len > 0)
-                    prepared_scene.lights.directional_lights[0]
-                else
-                    mesh_pass_mod.DirectionalLightBlock{ .direction = vec3.normalize(.{ 0.3, -0.9, -0.2 }), .color = .{ 1.0, 0.98, 0.92 }, .intensity = 1.6 };
-
-                const mat4 = @import("../math/mat4.zig");
-                const light_dir = vec3.normalize(main_light.direction);
-                const light_pos = vec3.scale(light_dir, -20.0);
-                const light_view = mat4.lookAt(light_pos, .{ 0.0, 0.0, 0.0 }, shadowViewUpVector(light_dir));
-                const light_proj = mat4.orthographic(40.0, 1.0, 0.1, 100.0);
-                break :blk_lsm mat4.mul(light_proj, light_view);
-            };
-            prepared_scene.light_space_matrix = light_space_matrix;
-            prepared_scene.shadow_map = &self.shadow_map.depth_texture.?;
-            prepared_scene.shadow_sampler = &self.shadow_map.sampler.?;
-
-            const scene_color_target: rhi_mod.ColorTarget = if (viewport_active)
-                .{ .texture = self.scene_viewport.color().? }
-            else
-                .swapchain;
-            const scene_depth_target: ?rhi_mod.DepthAttachmentDesc = blk_depth: {
-                const depth_texture = if (viewport_active)
-                    self.scene_viewport.depth().?
-                else
-                    self.rhi.depthTexture() orelse break :blk_depth null;
-                break :blk_depth .{
-                    .texture = depth_texture,
-                    .clear_depth = 1.0,
-                    .clear_stencil = 0,
-                    .load_op = .clear,
-                    .store_op = .dont_care,
-                    .stencil_load_op = .dont_care,
-                    .stencil_store_op = .dont_care,
-                };
-            };
-
             var draw_stats = mesh_pass_mod.DrawStats{};
 
-            if (self.shadow_pass.isReady()) {
-                const shadow_render_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
-                    .color = .{},
-                    .depth = .{
-                        .texture = &self.shadow_map.depth_texture.?,
-                        .clear_depth = 1.0,
-                        .load_op = .clear,
-                        .store_op = .store,
-                    },
-                });
-                const shadow_start = std.time.nanoTimestamp();
-                const shadow_stats = self.shadow_pass.draw(&self.rhi, frame, shadow_render_pass, &prepared_scene, light_space_matrix);
-                self.graph.recordPassStat(pass_stats, .shadow_map, durationNs(shadow_start, std.time.nanoTimestamp()), shadow_stats.draw_calls, shadow_stats.triangles_drawn);
-                draw_stats.add(shadow_stats);
-                self.rhi.endRenderPass(shadow_render_pass);
-            }
+            if (can_render_scene) {
+                try scene_extraction.extractWorld(
+                    scene,
+                    &self.render_world,
+                    self.selection_history.primarySelection(),
+                    self.selection_history.currentSelection(),
+                    null, // No frustum culling at extraction level, handled in mesh_pass for now
+                );
 
-            if (self.id_pass.isReady()) {
-                const id_texture = self.id_pass.texture().?;
-                const id_render_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
+                var prepared_scene = try self.scene_cache.prepareScene(
+                    &self.rhi,
+                    scene,
+                    &self.render_world,
+                    render_width,
+                    render_height,
+                );
+                defer prepared_scene.deinit();
+
+                if (!self.selection_seeded) {
+                    _ = try self.selection_history.applyPick(
+                        self.scene_cache.defaultSelectionEntity(scene),
+                        .replace,
+                    );
+                    self.selection_seeded = true;
+                }
+
+                try self.id_pass.ensureTargetSize(&self.rhi, render_width, render_height);
+
+                const light_space_matrix = blk_lsm: {
+                    const main_light = if (prepared_scene.lights.directional_lights.len > 0)
+                        prepared_scene.lights.directional_lights[0]
+                    else
+                        mesh_pass_mod.DirectionalLightBlock{ .direction = vec3.normalize(.{ 0.3, -0.9, -0.2 }), .color = .{ 1.0, 0.98, 0.92 }, .intensity = 1.6 };
+
+                    const mat4 = @import("../math/mat4.zig");
+                    const light_dir = vec3.normalize(main_light.direction);
+                    const light_pos = vec3.scale(light_dir, -20.0);
+                    const light_view = mat4.lookAt(light_pos, .{ 0.0, 0.0, 0.0 }, shadowViewUpVector(light_dir));
+                    const light_proj = mat4.orthographic(40.0, 1.0, 0.1, 100.0);
+                    break :blk_lsm mat4.mul(light_proj, light_view);
+                };
+                prepared_scene.light_space_matrix = light_space_matrix;
+                prepared_scene.shadow_map = &self.shadow_map.depth_texture.?;
+                prepared_scene.shadow_sampler = &self.shadow_map.sampler.?;
+
+                const scene_color_target: rhi_mod.ColorTarget = if (viewport_active)
+                    .{ .texture = self.scene_viewport.color().? }
+                else
+                    .swapchain;
+                const scene_depth_target: ?rhi_mod.DepthAttachmentDesc = blk_depth: {
+                    const depth_texture = if (viewport_active)
+                        self.scene_viewport.depth().?
+                    else
+                        self.rhi.depthTexture() orelse break :blk_depth null;
+                    break :blk_depth .{
+                        .texture = depth_texture,
+                        .clear_depth = 1.0,
+                        .clear_stencil = 0,
+                        .load_op = .clear,
+                        .store_op = .dont_care,
+                        .stencil_load_op = .dont_care,
+                        .stencil_store_op = .dont_care,
+                    };
+                };
+
+                if (self.shadow_pass.isReady()) {
+                    const shadow_render_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
+                        .color = .{},
+                        .depth = .{
+                            .texture = &self.shadow_map.depth_texture.?,
+                            .clear_depth = 1.0,
+                            .load_op = .clear,
+                            .store_op = .store,
+                        },
+                    });
+                    const shadow_start = std.time.nanoTimestamp();
+                    const shadow_stats = self.shadow_pass.draw(&self.rhi, frame, shadow_render_pass, &prepared_scene, light_space_matrix);
+                    self.graph.recordPassStat(pass_stats, .shadow_map, durationNs(shadow_start, std.time.nanoTimestamp()), shadow_stats.draw_calls, shadow_stats.triangles_drawn);
+                    draw_stats.add(shadow_stats);
+                    self.rhi.endRenderPass(shadow_render_pass);
+                }
+
+                if (self.id_pass.isReady()) {
+                    const id_texture = self.id_pass.texture().?;
+                    const id_render_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
+                        .color = .{
+                            .target = .{ .texture = id_texture },
+                            .clear_color = .{ 0.0, 0.0, 0.0, 0.0 },
+                            .load_op = .clear,
+                            .store_op = .store,
+                        },
+                        .depth = scene_depth_target,
+                    });
+                    const start = std.time.nanoTimestamp();
+                    const id_stats = self.id_pass.draw(&self.rhi, frame, id_render_pass, &prepared_scene);
+                    self.graph.recordPassStat(pass_stats, .id_pass, durationNs(start, std.time.nanoTimestamp()), id_stats.draw_calls, id_stats.triangles_drawn);
+                    draw_stats.add(id_stats);
+                    self.rhi.endRenderPass(id_render_pass);
+                }
+
+                const scene_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
                     .color = .{
-                        .target = .{ .texture = id_texture },
-                        .clear_color = .{ 0.0, 0.0, 0.0, 0.0 },
+                        .target = scene_color_target,
+                        .clear_color = clear.color,
                         .load_op = .clear,
                         .store_op = .store,
                     },
                     .depth = scene_depth_target,
                 });
-                const start = std.time.nanoTimestamp();
-                const id_stats = self.id_pass.draw(&self.rhi, frame, id_render_pass, &prepared_scene);
-                self.graph.recordPassStat(pass_stats, .id_pass, durationNs(start, std.time.nanoTimestamp()), id_stats.draw_calls, id_stats.triangles_drawn);
-                draw_stats.add(id_stats);
-                self.rhi.endRenderPass(id_render_pass);
-            }
+                const depth_start = std.time.nanoTimestamp();
+                const depth_stats = self.depth_prepass.draw(&self.rhi, frame, scene_pass, &prepared_scene);
+                self.graph.recordPassStat(pass_stats, .depth_prepass, durationNs(depth_start, std.time.nanoTimestamp()), depth_stats.draw_calls, depth_stats.triangles_drawn);
+                draw_stats.add(depth_stats);
 
-            const scene_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
-                .color = .{
-                    .target = scene_color_target,
-                    .clear_color = clear.color,
-                    .load_op = .clear,
-                    .store_op = .store,
-                },
-                .depth = scene_depth_target,
-            });
-            const depth_start = std.time.nanoTimestamp();
-            const depth_stats = self.depth_prepass.draw(&self.rhi, frame, scene_pass, &prepared_scene);
-            self.graph.recordPassStat(pass_stats, .depth_prepass, durationNs(depth_start, std.time.nanoTimestamp()), depth_stats.draw_calls, depth_stats.triangles_drawn);
-            draw_stats.add(depth_stats);
+                const base_start = std.time.nanoTimestamp();
+                const base_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene, self.editor_viewport_state);
+                self.graph.recordPassStat(pass_stats, .base_pass, durationNs(base_start, std.time.nanoTimestamp()), base_stats.draw_calls, base_stats.triangles_drawn);
+                draw_stats.add(base_stats);
+                self.rhi.endRenderPass(scene_pass);
 
-            const base_start = std.time.nanoTimestamp();
-            const base_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene, self.editor_viewport_state);
-            self.graph.recordPassStat(pass_stats, .base_pass, durationNs(base_start, std.time.nanoTimestamp()), base_stats.draw_calls, base_stats.triangles_drawn);
-            draw_stats.add(base_stats);
-            self.rhi.endRenderPass(scene_pass);
-
-            const selected_entities = self.selection_history.currentSelection();
-            if (self.outline_pass.isReady() and self.id_pass.texture() != null and selected_entities.len > 0) {
-                try self.outline_pass.syncTexture(&self.rhi, self.id_pass.texture().?);
-                const outline_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
-                    .color = .{
-                        .target = scene_color_target,
-                        .load_op = .load,
-                        .store_op = .store,
-                    },
-                    .depth = null,
-                });
-                const outline_start = std.time.nanoTimestamp();
-                const outline_stats = self.outline_pass.draw(&self.rhi, frame, outline_pass, selected_entities);
-                self.graph.recordPassStat(pass_stats, .outline_pass, durationNs(outline_start, std.time.nanoTimestamp()), outline_stats.draw_calls, outline_stats.triangles_drawn);
-                draw_stats.add(outline_stats);
-                self.rhi.endRenderPass(outline_pass);
-            }
-
-            if (self.gizmoPassRequired(scene)) {
-                const gizmo_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
-                    .color = .{
-                        .target = scene_color_target,
-                        .load_op = .load,
-                        .store_op = .store,
-                    },
-                    .depth = null,
-                });
-                const gizmo_start = std.time.nanoTimestamp();
-                var gizmo_overlay_stats = mesh_pass_mod.DrawStats{};
-                if (self.selection_history.primarySelection()) |selected_entity_id| {
-                    if (scene.worldTransformConst(selected_entity_id)) |selected_transform| {
-                        const gizmo_stats = self.gizmo_pass.draw(
-                            &self.rhi,
-                            frame,
-                            gizmo_pass,
-                            &prepared_scene,
-                            selected_transform,
-                            self.editor_gizmo_state,
-                        );
-                        gizmo_overlay_stats.add(gizmo_stats);
-                        draw_stats.add(gizmo_stats);
-                    }
+                const selected_entities = self.selection_history.currentSelection();
+                if (self.outline_pass.isReady() and self.id_pass.texture() != null and selected_entities.len > 0) {
+                    try self.outline_pass.syncTexture(&self.rhi, self.id_pass.texture().?);
+                    const outline_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
+                        .color = .{
+                            .target = scene_color_target,
+                            .load_op = .load,
+                            .store_op = .store,
+                        },
+                        .depth = null,
+                    });
+                    const outline_start = std.time.nanoTimestamp();
+                    const outline_stats = self.outline_pass.draw(&self.rhi, frame, outline_pass, selected_entities);
+                    self.graph.recordPassStat(pass_stats, .outline_pass, durationNs(outline_start, std.time.nanoTimestamp()), outline_stats.draw_calls, outline_stats.triangles_drawn);
+                    draw_stats.add(outline_stats);
+                    self.rhi.endRenderPass(outline_pass);
                 }
 
-                const debug_stats = try self.drawViewportDebugOverlays(frame, gizmo_pass, scene, &prepared_scene);
-                gizmo_overlay_stats.add(debug_stats);
-                draw_stats.add(debug_stats);
-                self.graph.recordPassStat(pass_stats, .gizmo_overlay, durationNs(gizmo_start, std.time.nanoTimestamp()), gizmo_overlay_stats.draw_calls, gizmo_overlay_stats.triangles_drawn);
-                self.rhi.endRenderPass(gizmo_pass);
+                if (self.gizmoPassRequired(scene)) {
+                    const gizmo_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
+                        .color = .{
+                            .target = scene_color_target,
+                            .load_op = .load,
+                            .store_op = .store,
+                        },
+                        .depth = null,
+                    });
+                    const gizmo_start = std.time.nanoTimestamp();
+                    var gizmo_overlay_stats = mesh_pass_mod.DrawStats{};
+                    if (self.selection_history.primarySelection()) |selected_entity_id| {
+                        if (scene.worldTransformConst(selected_entity_id)) |selected_transform| {
+                            const gizmo_stats = self.gizmo_pass.draw(
+                                &self.rhi,
+                                frame,
+                                gizmo_pass,
+                                &prepared_scene,
+                                selected_transform,
+                                self.editor_gizmo_state,
+                            );
+                            gizmo_overlay_stats.add(gizmo_stats);
+                            draw_stats.add(gizmo_stats);
+                        }
+                    }
+
+                    const debug_stats = try self.drawViewportDebugOverlays(frame, gizmo_pass, scene, &prepared_scene);
+                    gizmo_overlay_stats.add(debug_stats);
+                    draw_stats.add(debug_stats);
+                    self.graph.recordPassStat(pass_stats, .gizmo_overlay, durationNs(gizmo_start, std.time.nanoTimestamp()), gizmo_overlay_stats.draw_calls, gizmo_overlay_stats.triangles_drawn);
+                    self.rhi.endRenderPass(gizmo_pass);
+                }
             }
 
             const thumbnail_stats = try self.processMaterialThumbnailRequests(frame, scene);
             draw_stats.add(thumbnail_stats);
 
-            imgui_mod.prepare(frame.command_buffer);
-            const ui_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
-                .color = .{
-                    .target = .swapchain,
-                    .clear_color = clear.color,
-                    .load_op = if (viewport_active) .clear else .load,
-                    .store_op = .store,
-                },
-                .depth = null,
-            });
-            const ui_start = std.time.nanoTimestamp();
-            imgui_mod.render(frame.command_buffer, ui_pass.raw);
-            self.graph.recordPassStat(pass_stats, .ui_overlay, durationNs(ui_start, std.time.nanoTimestamp()), 0, 0);
-            self.rhi.endRenderPass(ui_pass);
+            if (has_swapchain) {
+                imgui_mod.prepare(frame.command_buffer);
+                const ui_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
+                    .color = .{
+                        .target = .swapchain,
+                        .clear_color = clear.color,
+                        .load_op = if (viewport_active) .clear else .load,
+                        .store_op = .store,
+                    },
+                    .depth = null,
+                });
+                const ui_start = std.time.nanoTimestamp();
+                imgui_mod.render(frame.command_buffer, ui_pass.raw);
+                self.graph.recordPassStat(pass_stats, .ui_overlay, durationNs(ui_start, std.time.nanoTimestamp()), 0, 0);
+                self.rhi.endRenderPass(ui_pass);
+            }
 
             if (self.pending_selection_readbacks.items.len > 0) {
-                if (self.id_pass.texture()) |id_texture| {
+                if (can_render_scene and self.id_pass.texture() != null) {
+                    const id_texture = self.id_pass.texture().?;
                     try self.enqueueSelectionReadbacks(frame, id_texture);
                 } else {
                     try self.rhi.submitFrame(frame);

@@ -3,6 +3,7 @@ const assets_lib = @import("../assets/library.zig");
 const gltf_import = @import("../assets/gltf_import.zig");
 const raycast_mod = @import("raycast.zig");
 const components = @import("components.zig");
+const vfx_runtime_mod = @import("vfx_runtime.zig");
 const vec3 = @import("../math/vec3.zig");
 const AABB = @import("../math/aabb.zig").AABB;
 const job_system_mod = @import("../core/job_system.zig");
@@ -65,6 +66,7 @@ pub const World = struct {
     id_to_index: std.AutoHashMap(EntityId, usize),
     next_id: EntityId = 1,
     job_system: ?*job_system_mod.JobSystem = null,
+    vfx_runtime_emitters: std.ArrayList(vfx_runtime_mod.VfxRuntimeEmitter) = .empty,
 
     pub fn init(allocator: std.mem.Allocator, job_system: ?*job_system_mod.JobSystem) World {
         return .{
@@ -84,6 +86,7 @@ pub const World = struct {
     }
 
     fn clearStorage(self: *World, reinitialize: bool) void {
+        self.releaseVfxRuntime(false);
         for (self.entities.items) |*entity| {
             entity.deinit(self.allocator);
         }
@@ -94,18 +97,25 @@ pub const World = struct {
             self.entities = .empty;
             self.id_to_index = std.AutoHashMap(EntityId, usize).init(self.allocator);
             self.resources = assets_lib.ResourceLibrary.init(self.allocator, self.job_system);
+            self.vfx_runtime_emitters = .empty;
         }
     }
 
     pub fn createEntity(self: *World, desc: EntityDesc) !EntityId {
+        const id = self.next_id;
+        self.next_id += 1;
+        return self.createEntityWithId(id, desc);
+    }
+
+    pub fn createEntityWithId(self: *World, id: EntityId, desc: EntityDesc) !EntityId {
         if (desc.parent) |parent_id| {
             if (!self.hasEntity(parent_id)) {
                 return error.ParentNotFound;
             }
         }
-
-        const id = self.next_id;
-        self.next_id += 1;
+        if (self.hasEntity(id)) {
+            return error.EntityIdConflict;
+        }
 
         const index = self.entities.items.len;
         try self.entities.append(self.allocator, .{
@@ -133,6 +143,10 @@ pub const World = struct {
             if (self.getEntity(parent_id)) |parent| {
                 try parent.children.append(self.allocator, id);
             }
+        }
+
+        if (id >= self.next_id) {
+            self.next_id = id + 1;
         }
 
         return id;
@@ -442,12 +456,58 @@ pub const World = struct {
             return false;
         }
 
+        self.removeVfxEmittersForEntities(subtree.items);
+
         var index = subtree.items.len;
         while (index > 0) {
             index -= 1;
             self.removeEntityById(subtree.items[index]);
         }
         return true;
+    }
+
+    pub fn pruneVfxRuntimeEmitters(self: *World) void {
+        var index: usize = 0;
+        while (index < self.vfx_runtime_emitters.items.len) {
+            const emitter_id = self.vfx_runtime_emitters.items[index].entity_id;
+            const emitter_entity = self.getEntityConst(emitter_id);
+            if (emitter_entity == null or emitter_entity.?.vfx == null) {
+                self.clearVfxEmitterAtIndex(index, true);
+                continue;
+            }
+            index += 1;
+        }
+    }
+
+    pub fn clearVfxRuntime(self: *World) void {
+        self.releaseVfxRuntime(true);
+    }
+
+    pub fn clearVfxEmitterRuntime(self: *World, entity_id: EntityId) void {
+        for (self.vfx_runtime_emitters.items, 0..) |emitter, index| {
+            if (emitter.entity_id == entity_id) {
+                self.clearVfxEmitterAtIndex(index, true);
+                return;
+            }
+        }
+    }
+
+    pub fn ensureVfxRuntimeEmitter(self: *World, entity_id: EntityId, vfx: components.Vfx) !*vfx_runtime_mod.VfxRuntimeEmitter {
+        for (self.vfx_runtime_emitters.items) |*emitter| {
+            if (emitter.entity_id == entity_id) {
+                if (!vfx.looping and emitter.particles.len == 0 and emitter.elapsed <= 0.0001 and emitter.one_shot_remaining == 0) {
+                    emitter.one_shot_remaining = vfx.max_particles;
+                }
+                return emitter;
+            }
+        }
+
+        try self.vfx_runtime_emitters.append(self.allocator, .{
+            .entity_id = entity_id,
+            .seed = @truncate(entity_id *% 747796405 +% 2891336453),
+            .one_shot_remaining = if (vfx.looping) 0 else vfx.max_particles,
+        });
+        return &self.vfx_runtime_emitters.items[self.vfx_runtime_emitters.items.len - 1];
     }
 
     pub fn duplicateEntity(self: *World, id: EntityId) !EntityId {
@@ -890,7 +950,46 @@ pub const World = struct {
         }
         return false;
     }
+
+    fn releaseVfxRuntime(self: *World, destroy_particles: bool) void {
+        while (self.vfx_runtime_emitters.items.len > 0) {
+            self.clearVfxEmitterAtIndex(self.vfx_runtime_emitters.items.len - 1, destroy_particles);
+        }
+        self.vfx_runtime_emitters.deinit(self.allocator);
+        self.vfx_runtime_emitters = .empty;
+    }
+
+    fn clearVfxEmitterAtIndex(self: *World, index: usize, destroy_particles: bool) void {
+        var emitter = self.vfx_runtime_emitters.orderedRemove(index);
+        if (destroy_particles) {
+            const particle_ids = emitter.particles.items(.entity_id);
+            for (particle_ids) |particle_id| {
+                _ = self.destroyEntity(particle_id);
+            }
+        }
+        emitter.deinit(self.allocator);
+    }
+
+    fn removeVfxEmittersForEntities(self: *World, entity_ids: []const EntityId) void {
+        var index: usize = 0;
+        while (index < self.vfx_runtime_emitters.items.len) {
+            if (sliceContainsEntityId(entity_ids, self.vfx_runtime_emitters.items[index].entity_id)) {
+                self.clearVfxEmitterAtIndex(index, false);
+                continue;
+            }
+            index += 1;
+        }
+    }
 };
+
+fn sliceContainsEntityId(entity_ids: []const EntityId, entity_id: EntityId) bool {
+    for (entity_ids) |candidate| {
+        if (candidate == entity_id) {
+            return true;
+        }
+    }
+    return false;
+}
 
 fn composeTransform(parent: components.Transform, local: components.Transform) components.Transform {
     const quat = @import("../math/quat.zig");

@@ -14,18 +14,18 @@ const layout = @import("../ui/layout.zig");
 
 fn initEditorStyle() void {
     // 采用更沉稳、现代的深灰色调，精简强调色应用以减少视觉疲劳
-    const accent_primary = .{ 0.20, 0.60, 0.45, 1.0 };     // 调暗的翡翠绿，更专业
-    const accent_hover = .{ 0.25, 0.70, 0.55, 1.0 };       
-    const accent_active = .{ 0.15, 0.50, 0.35, 1.0 };      
-    const accent_dimmed = .{ 0.20, 0.60, 0.45, 0.25 };     // 更淡的背景高亮
+    const accent_primary = .{ 0.20, 0.60, 0.45, 1.0 }; // 调暗的翡翠绿，更专业
+    const accent_hover = .{ 0.25, 0.70, 0.55, 1.0 };
+    const accent_active = .{ 0.15, 0.50, 0.35, 1.0 };
+    const accent_dimmed = .{ 0.20, 0.60, 0.45, 0.25 }; // 更淡的背景高亮
 
     // 中性灰阶体系 - 提升纵深感，减少绿色冲击
-    const bg_mid = .{ 0.11, 0.12, 0.13, 1.0 };             // 主背景
-    const bg_light = .{ 0.15, 0.16, 0.17, 1.0 };           // 浮窗背景
-    const bg_frame = .{ 0.08, 0.09, 0.10, 1.0 };           // 控件背景
-    
-    const text_main = .{ 0.85, 0.87, 0.90, 1.0 };          
-    const text_dim = .{ 0.55, 0.58, 0.62, 1.0 };           
+    const bg_mid = .{ 0.11, 0.12, 0.13, 1.0 }; // 主背景
+    const bg_light = .{ 0.15, 0.16, 0.17, 1.0 }; // 浮窗背景
+    const bg_frame = .{ 0.08, 0.09, 0.10, 1.0 }; // 控件背景
+
+    const text_main = .{ 0.85, 0.87, 0.90, 1.0 };
+    const text_dim = .{ 0.55, 0.58, 0.62, 1.0 };
 
     // 强调色精简应用
     engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.header), accent_dimmed);
@@ -61,7 +61,7 @@ fn initEditorStyle() void {
     engine.ui.ImGui.setStyleVarFloat(100, 0.0); // WindowBorderSize
     engine.ui.ImGui.setStyleVarFloat(101, 1.0); // FrameBorderSize
     engine.ui.ImGui.setStyleVarFloat(102, 3.0); // FrameRounding
-    
+
     // 分割线颜色调暗
     engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.separator), .{ 0.15, 0.16, 0.18, 1.0 });
     engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.separator_hovered), accent_hover);
@@ -121,9 +121,9 @@ pub const EditorLayer = struct {
             self.state.selection_locked_entities.deinit(allocator);
             self.state.selection_locked_entities = .empty;
         }
-        vfx_runtime.releaseState(&self.state);
         layout.releaseLayoutTemplates(&self.state);
         content_browser.clearAssetBrowser(&self.state);
+        self.state.clearOwnedClipboards();
         if (self.state.asset_registry) |*registry| {
             registry.deinit();
             self.state.asset_registry = null;
@@ -135,7 +135,7 @@ pub const EditorLayer = struct {
     fn onUpdate(context: *anyopaque, layer_context: *engine.core.LayerContext) !void {
         const self: *EditorLayer = @ptrCast(@alignCast(context));
 
-        try vfx_runtime.update(&self.state, layer_context);
+        try vfx_runtime.update(layer_context);
         try history.pruneMissingSelection(&self.state, layer_context);
         utils.pruneFrozenEntities(&self.state, layer_context.world);
         utils.pruneSelectionLockEntities(&self.state, layer_context.world);

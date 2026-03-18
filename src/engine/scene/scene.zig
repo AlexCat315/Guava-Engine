@@ -10,6 +10,8 @@ pub const Ray = @import("raycast.zig").Ray;
 pub const SurfaceRaycastHit = @import("raycast.zig").SurfaceRaycastHit;
 pub const Vfx = @import("components.zig").Vfx;
 pub const VfxKind = @import("components.zig").VfxKind;
+pub const VfxRuntimeParticle = @import("vfx_runtime.zig").VfxRuntimeParticle;
+pub const VfxRuntimeEmitter = @import("vfx_runtime.zig").VfxRuntimeEmitter;
 pub const serializeWorldAlloc = @import("scene_io.zig").serializeWorldAlloc;
 pub const deserializeWorldFromSlice = @import("scene_io.zig").deserializeWorldFromSlice;
 pub const saveWorldToPath = @import("scene_io.zig").saveWorldToPath;
@@ -19,4 +21,5 @@ test {
     _ = @import("world.zig");
     _ = @import("raycast.zig");
     _ = @import("scene_io.zig");
+    _ = @import("vfx_runtime.zig");
 }

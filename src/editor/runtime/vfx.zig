@@ -1,23 +1,21 @@
 const std = @import("std");
 const engine = @import("guava");
 const vec3 = engine.math.vec3;
-const EditorState = @import("../core/state.zig").EditorState;
-const state_mod = @import("../core/state.zig");
 
 const gravity_y: f32 = 3.8;
 
-pub fn update(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
-    try pruneMissingEmitters(state, layer_context);
+pub fn update(layer_context: *engine.core.LayerContext) !void {
+    layer_context.world.pruneVfxRuntimeEmitters();
 
     if (layer_context.playback_controller.state == .stopped) {
-        clearAll(state, layer_context);
+        clearAll(layer_context);
         return;
     }
     if (!layer_context.playback_controller.shouldAdvance()) {
         return;
     }
 
-    const allocator = state.allocator orelse layer_context.world.allocator;
+    const allocator = layer_context.world.allocator;
     var emitter_ids = std.ArrayList(engine.scene.EntityId).empty;
     defer emitter_ids.deinit(allocator);
 
@@ -29,59 +27,28 @@ pub fn update(state: *EditorState, layer_context: *engine.core.LayerContext) !vo
     }
 
     for (emitter_ids.items) |entity_id| {
-        try updateEmitter(state, layer_context, entity_id);
+        try updateEmitter(layer_context, entity_id);
     }
 }
 
-pub fn clearAll(state: *EditorState, layer_context: *engine.core.LayerContext) void {
-    var index = state.vfx_runtime_emitters.items.len;
-    while (index > 0) {
-        index -= 1;
-        clearEmitterAtIndex(state, layer_context, index);
-    }
+pub fn clearAll(layer_context: *engine.core.LayerContext) void {
+    layer_context.world.clearVfxRuntime();
 }
 
-pub fn clearEmitterRuntime(state: *EditorState, layer_context: *engine.core.LayerContext, entity_id: engine.scene.EntityId) void {
-    for (state.vfx_runtime_emitters.items, 0..) |emitter, index| {
-        if (emitter.entity_id == entity_id) {
-            clearEmitterAtIndex(state, layer_context, index);
-            return;
-        }
-    }
+pub fn clearEmitterRuntime(layer_context: *engine.core.LayerContext, entity_id: engine.scene.EntityId) void {
+    layer_context.world.clearVfxEmitterRuntime(entity_id);
 }
 
-pub fn releaseState(state: *EditorState) void {
-    const allocator = state.allocator orelse return;
-    for (state.vfx_runtime_emitters.items) |*emitter| {
-        emitter.particles.deinit(allocator);
-    }
-    state.vfx_runtime_emitters.deinit(allocator);
-    state.vfx_runtime_emitters = .empty;
-}
-
-fn pruneMissingEmitters(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
-    var index: usize = 0;
-    while (index < state.vfx_runtime_emitters.items.len) {
-        const emitter_id = state.vfx_runtime_emitters.items[index].entity_id;
-        const emitter_entity = layer_context.world.getEntityConst(emitter_id);
-        if (emitter_entity == null or emitter_entity.?.vfx == null) {
-            clearEmitterAtIndex(state, layer_context, index);
-            continue;
-        }
-        index += 1;
-    }
-}
-
-fn updateEmitter(state: *EditorState, layer_context: *engine.core.LayerContext, entity_id: engine.scene.EntityId) !void {
+fn updateEmitter(layer_context: *engine.core.LayerContext, entity_id: engine.scene.EntityId) !void {
     const entity = layer_context.world.getEntityConst(entity_id) orelse return;
     const vfx = entity.vfx orelse return;
-    const emitter = try ensureEmitterState(state, layer_context, entity_id, vfx);
+    const emitter = try layer_context.world.ensureVfxRuntimeEmitter(entity_id, vfx);
     const delta = layer_context.delta_seconds;
 
     emitter.elapsed += delta;
     emitter.emission_accumulator += vfx.emission_rate * delta;
 
-    while (emitter.emission_accumulator >= 1.0 and emitter.particles.items.len < vfx.max_particles) {
+    while (emitter.emission_accumulator >= 1.0 and emitter.particles.len < vfx.max_particles) {
         if (!vfx.looping and emitter.one_shot_remaining == 0) {
             break;
         }
@@ -89,25 +56,25 @@ fn updateEmitter(state: *EditorState, layer_context: *engine.core.LayerContext, 
         try spawnParticle(layer_context, emitter, entity_id, vfx);
     }
 
-    if (emitter.particles.items.len > vfx.max_particles) {
-        while (emitter.particles.items.len > vfx.max_particles) {
-            destroyParticle(layer_context.world, emitter.particles.pop().?.entity_id);
+    while (emitter.particles.len > vfx.max_particles) {
+        if (emitter.particles.pop()) |particle| {
+            destroyParticle(layer_context.world, particle.entity_id);
         }
     }
 
     var particle_index: usize = 0;
-    while (particle_index < emitter.particles.items.len) {
-        var particle = &emitter.particles.items[particle_index];
+    while (particle_index < emitter.particles.len) {
+        var particle = emitter.particles.get(particle_index);
         particle.age += delta;
         if (particle.age >= particle.lifetime) {
             destroyParticle(layer_context.world, particle.entity_id);
-            _ = emitter.particles.orderedRemove(particle_index);
+            emitter.particles.orderedRemove(particle_index);
             continue;
         }
 
         switch (vfx.kind) {
-            .fountain => updateFountainParticle(particle, delta),
-            .orbit => updateOrbitParticle(particle, delta, vfx),
+            .fountain => updateFountainParticle(&particle, delta),
+            .orbit => updateOrbitParticle(&particle, delta, vfx),
         }
 
         if (layer_context.world.getEntity(particle.entity_id)) |particle_entity| {
@@ -126,41 +93,18 @@ fn updateEmitter(state: *EditorState, layer_context: *engine.core.LayerContext, 
                 };
             }
         } else {
-            _ = emitter.particles.orderedRemove(particle_index);
+            emitter.particles.orderedRemove(particle_index);
             continue;
         }
 
+        emitter.particles.set(particle_index, particle);
         particle_index += 1;
     }
 }
 
-fn ensureEmitterState(
-    state: *EditorState,
-    layer_context: *engine.core.LayerContext,
-    entity_id: engine.scene.EntityId,
-    vfx: engine.scene.Vfx,
-) !*state_mod.VfxRuntimeEmitter {
-    for (state.vfx_runtime_emitters.items) |*emitter| {
-        if (emitter.entity_id == entity_id) {
-            if (!vfx.looping and emitter.particles.items.len == 0 and emitter.elapsed <= 0.0001 and emitter.one_shot_remaining == 0) {
-                emitter.one_shot_remaining = vfx.max_particles;
-            }
-            return emitter;
-        }
-    }
-
-    const allocator = state.allocator orelse layer_context.world.allocator;
-    try state.vfx_runtime_emitters.append(allocator, .{
-        .entity_id = entity_id,
-        .seed = @truncate(entity_id *% 747796405 +% 2891336453),
-        .one_shot_remaining = if (vfx.looping) 0 else vfx.max_particles,
-    });
-    return &state.vfx_runtime_emitters.items[state.vfx_runtime_emitters.items.len - 1];
-}
-
 fn spawnParticle(
     layer_context: *engine.core.LayerContext,
-    emitter: *state_mod.VfxRuntimeEmitter,
+    emitter: *engine.scene.VfxRuntimeEmitter,
     emitter_id: engine.scene.EntityId,
     vfx: engine.scene.Vfx,
 ) !void {
@@ -192,7 +136,7 @@ fn spawnParticle(
     }
 }
 
-fn makeFountainParticle(seed: *u32, entity_id: engine.scene.EntityId, vfx: engine.scene.Vfx) state_mod.VfxRuntimeParticle {
+fn makeFountainParticle(seed: *u32, entity_id: engine.scene.EntityId, vfx: engine.scene.Vfx) engine.scene.VfxRuntimeParticle {
     const azimuth = nextRandom01(seed) * std.math.tau;
     const radial = nextRandom01(seed) * vfx.spread;
     const start_radius = nextRandom01(seed) * vfx.radius * 0.18;
@@ -215,7 +159,7 @@ fn makeFountainParticle(seed: *u32, entity_id: engine.scene.EntityId, vfx: engin
     };
 }
 
-fn makeOrbitParticle(seed: *u32, entity_id: engine.scene.EntityId, vfx: engine.scene.Vfx) state_mod.VfxRuntimeParticle {
+fn makeOrbitParticle(seed: *u32, entity_id: engine.scene.EntityId, vfx: engine.scene.Vfx) engine.scene.VfxRuntimeParticle {
     const orbit_radius = vfx.radius * (0.72 + nextRandom01(seed) * 0.55);
     const angle = nextRandom01(seed) * std.math.tau;
     const direction_sign: f32 = if (nextRandom01(seed) > 0.5) 1.0 else -1.0;
@@ -242,13 +186,13 @@ fn makeOrbitParticle(seed: *u32, entity_id: engine.scene.EntityId, vfx: engine.s
     };
 }
 
-fn updateFountainParticle(particle: *state_mod.VfxRuntimeParticle, delta: f32) void {
+fn updateFountainParticle(particle: *engine.scene.VfxRuntimeParticle, delta: f32) void {
     particle.velocity[1] -= gravity_y * delta;
     particle.position = vec3.add(particle.position, vec3.scale(particle.velocity, delta));
     particle.velocity = vec3.scale(particle.velocity, std.math.clamp(1.0 - delta * 0.12, 0.82, 1.0));
 }
 
-fn updateOrbitParticle(particle: *state_mod.VfxRuntimeParticle, delta: f32, vfx: engine.scene.Vfx) void {
+fn updateOrbitParticle(particle: *engine.scene.VfxRuntimeParticle, delta: f32, vfx: engine.scene.Vfx) void {
     particle.angular_position += particle.angular_velocity * delta * @max(vfx.speed, 0.1);
     particle.vertical_offset += particle.vertical_velocity * delta;
     const bob = std.math.sin((particle.age / particle.lifetime) * std.math.tau + particle.phase) * (0.08 + vfx.spread * 0.3);
@@ -257,14 +201,6 @@ fn updateOrbitParticle(particle: *state_mod.VfxRuntimeParticle, delta: f32, vfx:
         0.2 + particle.vertical_offset + bob,
         std.math.sin(particle.angular_position) * particle.orbit_radius,
     };
-}
-
-fn clearEmitterAtIndex(state: *EditorState, layer_context: *engine.core.LayerContext, index: usize) void {
-    var emitter = state.vfx_runtime_emitters.orderedRemove(index);
-    for (emitter.particles.items) |particle| {
-        destroyParticle(layer_context.world, particle.entity_id);
-    }
-    emitter.particles.deinit(layer_context.world.allocator);
 }
 
 fn destroyParticle(world: *engine.scene.World, particle_id: engine.scene.EntityId) void {
@@ -277,7 +213,7 @@ fn nextRandom01(seed: *u32) f32 {
 }
 
 test "orbit particle update keeps particle on a ring" {
-    var particle = state_mod.VfxRuntimeParticle{
+    var particle = engine.scene.VfxRuntimeParticle{
         .entity_id = 1,
         .age = 0.2,
         .lifetime = 1.5,

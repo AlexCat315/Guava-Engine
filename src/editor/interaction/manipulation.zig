@@ -43,8 +43,7 @@ pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.L
             state.manipulation_axis = .z;
         }
         if (input.wasKeyPressed(.space)) {
-            endManipulation(state);
-            try history.captureSnapshot(state, layer_context);
+            try commitManipulation(state, layer_context);
         }
         if (input.wasKeyPressed(.escape)) {
             cancelManipulation(state, layer_context);
@@ -161,6 +160,8 @@ pub fn beginManipulation(
     state.manipulation_axis = .free;
     state.manipulation_entity = selected;
     state.manipulation_origin = layer_context.world.worldTransform(selected) orelse return;
+    clearManipulationSnapshot(state);
+    state.manipulation_snapshot = try history.captureEntitySnapshot(state, layer_context.world, selected);
     syncGizmoState(state, layer_context);
     try history.refreshWindowTitle(state, layer_context);
 }
@@ -172,6 +173,7 @@ pub fn selectTool(state: *EditorState, layer_context: *engine.core.LayerContext)
 }
 
 pub fn endManipulation(state: *EditorState) void {
+    clearManipulationSnapshot(state);
     state.manipulation_mode = .none;
     state.manipulation_axis = .free;
     state.manipulation_entity = null;
@@ -185,6 +187,34 @@ pub fn cancelManipulation(state: *EditorState, layer_context: *engine.core.Layer
     _ = layer_context.world.setEntityWorldTransform(entity_id, state.manipulation_origin);
     endManipulation(state);
     syncGizmoState(state, layer_context);
+}
+
+fn commitManipulation(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const entity_id = state.manipulation_entity orelse {
+        endManipulation(state);
+        return;
+    };
+    const before = state.manipulation_snapshot orelse {
+        endManipulation(state);
+        return;
+    };
+    state.manipulation_snapshot = null;
+    state.manipulation_mode = .none;
+    state.manipulation_axis = .free;
+    state.manipulation_entity = null;
+    try history.recordEntityMutation(state, layer_context, before, &.{entity_id});
+    syncGizmoState(state, layer_context);
+}
+
+fn clearManipulationSnapshot(state: *EditorState) void {
+    const allocator = state.allocator orelse {
+        state.manipulation_snapshot = null;
+        return;
+    };
+    if (state.manipulation_snapshot) |*snapshot| {
+        snapshot.deinit(allocator);
+        state.manipulation_snapshot = null;
+    }
 }
 
 pub fn applyManipulation(state: *EditorState, layer_context: *engine.core.LayerContext) void {

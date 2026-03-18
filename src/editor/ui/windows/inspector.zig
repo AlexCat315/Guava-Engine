@@ -669,7 +669,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                                 .size = vfx_component.size,
                                 .color = vfx_component.color,
                             };
-                            vfx_runtime.clearEmitterRuntime(state, layer_context, selected);
+                            vfx_runtime.clearEmitterRuntime(layer_context, selected);
                             try history.captureSnapshot(state, layer_context);
                         }
                         if (engine.ui.ImGui.menuItem(state.text(.orbit), null, vfx_component.kind == .orbit, true)) {
@@ -685,7 +685,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                                 .size = vfx_component.size,
                                 .color = vfx_component.color,
                             };
-                            vfx_runtime.clearEmitterRuntime(state, layer_context, selected);
+                            vfx_runtime.clearEmitterRuntime(layer_context, selected);
                             try history.captureSnapshot(state, layer_context);
                         }
                     }
@@ -693,7 +693,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                     var looping = vfx_component.looping;
                     if (drawInspectorCheckboxRow(state.text(.looping), "##vfx_looping", &looping)) {
                         vfx_component.looping = looping;
-                        vfx_runtime.clearEmitterRuntime(state, layer_context, selected);
+                        vfx_runtime.clearEmitterRuntime(layer_context, selected);
                         try history.captureSnapshot(state, layer_context);
                     }
 
@@ -701,7 +701,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                     if (drawInspectorFloatRow(state.text(.emission_rate), "##vfx_emission_rate", &emission_rate, 0.25, 0.0, 200.0)) {
                         vfx_component.emission_rate = std.math.clamp(emission_rate, 0.0, 200.0);
                         if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
-                            vfx_runtime.clearEmitterRuntime(state, layer_context, selected);
+                            vfx_runtime.clearEmitterRuntime(layer_context, selected);
                             try history.captureSnapshot(state, layer_context);
                         }
                     }
@@ -710,7 +710,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                     if (drawInspectorFloatRow(state.text(.particle_lifetime), "##vfx_particle_lifetime", &lifetime, 0.01, 0.1, 10.0)) {
                         vfx_component.particle_lifetime = std.math.clamp(lifetime, 0.1, 10.0);
                         if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
-                            vfx_runtime.clearEmitterRuntime(state, layer_context, selected);
+                            vfx_runtime.clearEmitterRuntime(layer_context, selected);
                             try history.captureSnapshot(state, layer_context);
                         }
                     }
@@ -719,7 +719,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                     if (drawInspectorFloatRow(state.text(.speed), "##vfx_speed", &speed, 0.05, 0.05, 20.0)) {
                         vfx_component.speed = std.math.clamp(speed, 0.05, 20.0);
                         if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
-                            vfx_runtime.clearEmitterRuntime(state, layer_context, selected);
+                            vfx_runtime.clearEmitterRuntime(layer_context, selected);
                             try history.captureSnapshot(state, layer_context);
                         }
                     }
@@ -728,7 +728,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                     if (drawInspectorFloatRow(state.text(.max_particles), "##vfx_max_particles", &max_particles, 1.0, 1.0, 128.0)) {
                         vfx_component.max_particles = @intFromFloat(std.math.clamp(@round(max_particles), 1.0, 128.0));
                         if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
-                            vfx_runtime.clearEmitterRuntime(state, layer_context, selected);
+                            vfx_runtime.clearEmitterRuntime(layer_context, selected);
                             try history.captureSnapshot(state, layer_context);
                         }
                     }
@@ -737,7 +737,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                     if (drawInspectorFloatRow(state.text(.radius), "##vfx_radius", &radius, 0.01, 0.01, 8.0)) {
                         vfx_component.radius = std.math.clamp(radius, 0.01, 8.0);
                         if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
-                            vfx_runtime.clearEmitterRuntime(state, layer_context, selected);
+                            vfx_runtime.clearEmitterRuntime(layer_context, selected);
                             try history.captureSnapshot(state, layer_context);
                         }
                     }
@@ -746,7 +746,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                     if (drawInspectorFloatRow(state.text(.spread), "##vfx_spread", &spread, 0.01, 0.0, 2.5)) {
                         vfx_component.spread = std.math.clamp(spread, 0.0, 2.5);
                         if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
-                            vfx_runtime.clearEmitterRuntime(state, layer_context, selected);
+                            vfx_runtime.clearEmitterRuntime(layer_context, selected);
                             try history.captureSnapshot(state, layer_context);
                         }
                     }
@@ -755,7 +755,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                     if (drawInspectorFloatRow(state.text(.size), "##vfx_size", &size, 0.005, 0.02, 1.0)) {
                         vfx_component.size = std.math.clamp(size, 0.02, 1.0);
                         if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
-                            vfx_runtime.clearEmitterRuntime(state, layer_context, selected);
+                            vfx_runtime.clearEmitterRuntime(layer_context, selected);
                             try history.captureSnapshot(state, layer_context);
                         }
                     }
@@ -928,10 +928,10 @@ fn drawMeshHeaderContextMenu(
     defer engine.ui.ImGui.endPopup();
 
     if (engine.ui.ImGui.menuItem(state.text(.copy), null, false, true)) {
-        state.mesh_component_clipboard = mesh_component;
+        try state.setMeshComponentClipboard(layer_context.world, mesh_component);
     }
     if (engine.ui.ImGui.menuItem(state.text(.paste), null, false, state.mesh_component_clipboard != null)) {
-        if (state.mesh_component_clipboard) |clipboard| {
+        if (try state.resolveMeshComponentClipboard(layer_context.world)) |clipboard| {
             entity.mesh = clipboard;
             if (entity.material == null) {
                 const material_handle = try layer_context.world.assets().ensureDefaultMaterial();
@@ -939,6 +939,8 @@ fn drawMeshHeaderContextMenu(
             }
             try history.captureSnapshot(state, layer_context);
             return true;
+        } else {
+            std.log.warn("mesh clipboard could not be resolved in the current asset library", .{});
         }
     }
     if (engine.ui.ImGui.menuItem(state.text(.remove_mesh_component), null, false, true)) {
@@ -960,13 +962,15 @@ fn drawMaterialHeaderContextMenu(
     defer engine.ui.ImGui.endPopup();
 
     if (engine.ui.ImGui.menuItem(state.text(.copy), null, false, true)) {
-        state.material_component_clipboard = material_component;
+        try state.setMaterialComponentClipboard(layer_context.world, material_component);
     }
     if (engine.ui.ImGui.menuItem(state.text(.paste), null, false, state.material_component_clipboard != null)) {
-        if (state.material_component_clipboard) |clipboard| {
+        if (state.resolveMaterialComponentClipboard(layer_context.world)) |clipboard| {
             entity.material = clipboard;
             try history.captureSnapshot(state, layer_context);
             return true;
+        } else {
+            std.log.warn("material clipboard could not be resolved in the current asset library", .{});
         }
     }
     if (engine.ui.ImGui.menuItem(state.text(.remove_material_component), null, false, true)) {
@@ -1061,7 +1065,7 @@ fn drawVfxHeaderContextMenu(
                 material.shading = .unlit;
                 material.base_color_factor = .{ clipboard.color[0], clipboard.color[1], clipboard.color[2], 1.0 };
             }
-            vfx_runtime.clearEmitterRuntime(state, layer_context, selected);
+            vfx_runtime.clearEmitterRuntime(layer_context, selected);
             try history.captureSnapshot(state, layer_context);
             return true;
         }
@@ -1377,7 +1381,7 @@ pub fn setVfxComponent(
         material.shading = .unlit;
         material.base_color_factor = .{ vfx.color[0], vfx.color[1], vfx.color[2], 1.0 };
     }
-    vfx_runtime.clearEmitterRuntime(state, layer_context, selected);
+    vfx_runtime.clearEmitterRuntime(layer_context, selected);
     try history.captureSnapshot(state, layer_context);
 }
 
@@ -1391,7 +1395,7 @@ pub fn removeVfxComponent(
         return;
     }
     entity.vfx = null;
-    vfx_runtime.clearEmitterRuntime(state, layer_context, selected);
+    vfx_runtime.clearEmitterRuntime(layer_context, selected);
     try history.captureSnapshot(state, layer_context);
 }
 

@@ -3,6 +3,7 @@ const engine = @import("guava");
 const vec3 = engine.math.vec3;
 const EditorState = @import("../core/state.zig").EditorState;
 const state_mod = @import("../core/state.zig");
+const command_mod = @import("command.zig");
 const utils = @import("../common/utils.zig");
 const camera = @import("../interaction/camera.zig");
 const manipulation = @import("../interaction/manipulation.zig");
@@ -12,96 +13,82 @@ const autosave_path = state_mod.autosave_path;
 
 pub fn captureSnapshot(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const allocator = state.allocator orelse return;
-    const snapshot = try engine.scene.serializeWorldAlloc(allocator, layer_context.world);
-    errdefer allocator.free(snapshot);
+    const before = state.history_world_snapshot orelse {
+        try refreshCurrentHistorySnapshot(state, layer_context.world);
+        return;
+    };
+    const after = try engine.scene.serializeWorldAlloc(allocator, layer_context.world);
+    errdefer allocator.free(after);
 
-    if (state.snapshot_history.items.len > 0) {
-        const current = state.snapshot_history.items[state.snapshot_cursor];
-        if (std.mem.eql(u8, current, snapshot)) {
-            allocator.free(snapshot);
-            return;
-        }
+    if (std.mem.eql(u8, before, after)) {
+        allocator.free(after);
+        return;
     }
 
-    while (state.snapshot_history.items.len > state.snapshot_cursor + 1) {
-        const removed = state.snapshot_history.pop().?;
-        allocator.free(removed);
-        if (state.saved_snapshot_cursor) |saved_snapshot_cursor| {
-            if (saved_snapshot_cursor >= state.snapshot_history.items.len) {
-                state.saved_snapshot_cursor = null;
-            }
-        }
-    }
+    var selection_after = try command_mod.SelectionSnapshot.fromSlice(allocator, layer_context.renderer.selectedEntities());
+    errdefer selection_after.deinit(allocator);
+    var selection_before = try selection_after.clone(allocator);
+    errdefer selection_before.deinit(allocator);
 
-    try state.snapshot_history.append(allocator, snapshot);
-    state.snapshot_cursor = state.snapshot_history.items.len - 1;
+    var command: command_mod.EditorCommand = .{
+        .scene_snapshot = .{
+            .before = try allocator.dupe(u8, before),
+            .after = after,
+            .selection_before = selection_before,
+            .selection_after = selection_after,
+        },
+    };
+    errdefer command.deinit(allocator);
 
-    while (state.snapshot_history.items.len > state.max_snapshots) {
-        const removed = state.snapshot_history.orderedRemove(0);
-        allocator.free(removed);
-        if (state.saved_snapshot_cursor) |saved_snapshot_cursor| {
-            state.saved_snapshot_cursor = if (saved_snapshot_cursor == 0) null else saved_snapshot_cursor - 1;
-        }
-        if (state.snapshot_cursor > 0) {
-            state.snapshot_cursor -= 1;
-        }
-    }
+    try pushCommand(state, command);
+    try replaceHistoryWorldSnapshot(state, after);
 }
 
 pub fn resetSnapshotHistory(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     clearSnapshotHistory(state);
-    try captureSnapshot(state, layer_context);
-    state.saved_snapshot_cursor = if (state.snapshot_history.items.len > 0) state.snapshot_cursor else null;
+    try refreshCurrentHistorySnapshot(state, layer_context.world);
+    state.saved_command_cursor = 0;
 }
 
 pub fn clearSnapshotHistory(state: *EditorState) void {
     const allocator = state.allocator orelse return;
-    for (state.snapshot_history.items) |snapshot| {
+    clearCommandStack(allocator, &state.undo_stack);
+    clearCommandStack(allocator, &state.redo_stack);
+    if (state.history_world_snapshot) |snapshot| {
         allocator.free(snapshot);
+        state.history_world_snapshot = null;
     }
-    state.snapshot_history.deinit(allocator);
-    state.snapshot_history = .empty;
-    state.snapshot_cursor = 0;
-    state.saved_snapshot_cursor = null;
+    state.saved_command_cursor = null;
 }
 
 pub fn undo(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
-    if (state.snapshot_history.items.len == 0 or state.snapshot_cursor == 0) {
+    const allocator = state.allocator orelse return;
+    if (state.undo_stack.items.len == 0) {
         return;
     }
-    state.snapshot_cursor -= 1;
-    try restoreSnapshot(state, layer_context, state.snapshot_cursor);
+
+    try state.redo_stack.ensureUnusedCapacity(allocator, 1);
+    var command = state.undo_stack.pop().?;
+    errdefer command.deinit(allocator);
+
+    try applyCommand(state, layer_context, &command, .undo);
+    state.redo_stack.appendAssumeCapacity(command);
+    try refreshCurrentHistorySnapshot(state, layer_context.world);
 }
 
 pub fn redo(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
-    if (state.snapshot_history.items.len == 0 or state.snapshot_cursor + 1 >= state.snapshot_history.items.len) {
-        return;
-    }
-    state.snapshot_cursor += 1;
-    try restoreSnapshot(state, layer_context, state.snapshot_cursor);
-}
-
-pub fn restoreSnapshot(state: *EditorState, layer_context: *engine.core.LayerContext, index: usize) !void {
-    if (index >= state.snapshot_history.items.len) {
+    const allocator = state.allocator orelse return;
+    if (state.redo_stack.items.len == 0) {
         return;
     }
 
-    manipulation.endManipulation(state);
-    const snapshot = state.snapshot_history.items[index];
-    vfx_runtime.clearAll(state, layer_context);
-    try engine.scene.deserializeWorldFromSlice(layer_context.world.allocator, layer_context.world, snapshot);
-    try layer_context.renderer.resetSceneState();
-    state.scene_camera = layer_context.world.primaryCameraEntity();
-    state.editor_camera = null;
-    try camera.createEditorCamera(state, layer_context);
-    if (!state.editor_camera_active) {
-        if (state.scene_camera) |scene_camera_id| {
-            _ = layer_context.world.setPrimaryCamera(scene_camera_id);
-        }
-    }
-    try layer_context.renderer.replaceSelection(null);
-    utils.syncInspectorNameBuffer(state, layer_context);
-    try refreshWindowTitle(state, layer_context);
+    try state.undo_stack.ensureUnusedCapacity(allocator, 1);
+    var command = state.redo_stack.pop().?;
+    errdefer command.deinit(allocator);
+
+    try applyCommand(state, layer_context, &command, .redo);
+    state.undo_stack.appendAssumeCapacity(command);
+    try refreshCurrentHistorySnapshot(state, layer_context.world);
 }
 
 pub fn pruneMissingSelection(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -130,6 +117,11 @@ pub fn deleteEntities(
         return;
     }
 
+    var before = try captureEntitySnapshots(state, layer_context.world, roots.items);
+    var before_owned = true;
+    defer if (before_owned) deinitEntitySnapshots(state, &before);
+    const selection_before = layer_context.renderer.selectedEntities();
+
     manipulation.endManipulation(state);
     var changed = false;
     for (roots.items) |entity_id| {
@@ -137,7 +129,8 @@ pub fn deleteEntities(
     }
     if (changed) {
         try layer_context.renderer.replaceSelection(null);
-        try captureSnapshot(state, layer_context);
+        try recordDeletedEntities(state, layer_context, &before, selection_before);
+        before_owned = false;
     }
 }
 
@@ -151,6 +144,7 @@ pub fn duplicateEntities(
     entity_ids: []const engine.scene.EntityId,
 ) !void {
     const allocator = state.allocator orelse return;
+    const selection_before = layer_context.renderer.selectedEntities();
     var roots = std.ArrayList(engine.scene.EntityId).empty;
     defer roots.deinit(allocator);
     try collectSelectionRoots(allocator, layer_context.world, entity_ids, state.editor_camera, &roots);
@@ -176,101 +170,113 @@ pub fn duplicateEntities(
     try layer_context.renderer.replaceSelectionMany(duplicates.items);
     utils.syncInspectorNameBuffer(state, layer_context);
     camera.focusSelection(state, layer_context);
-    try captureSnapshot(state, layer_context);
+    try recordCreatedEntities(state, layer_context, duplicates.items, selection_before);
 }
 
 pub fn spawnEmptyEntity(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const selection_before = layer_context.renderer.selectedEntities();
     const entity_id = try layer_context.world.createEmptyEntity(spawnTransform(state, layer_context));
     try layer_context.renderer.replaceSelection(entity_id);
     utils.syncInspectorNameBuffer(state, layer_context);
     camera.focusSelection(state, layer_context);
-    try captureSnapshot(state, layer_context);
+    try recordCreatedEntities(state, layer_context, &.{entity_id}, selection_before);
 }
 
 pub fn spawnCameraEntity(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const selection_before = layer_context.renderer.selectedEntities();
     const entity_id = try layer_context.world.createCameraEntity(camera.activeCameraTransform(state, layer_context));
     try layer_context.renderer.replaceSelection(entity_id);
     state.scene_camera = entity_id;
     utils.syncInspectorNameBuffer(state, layer_context);
     camera.focusSelection(state, layer_context);
-    try captureSnapshot(state, layer_context);
+    try recordCreatedEntities(state, layer_context, &.{entity_id}, selection_before);
 }
 
 pub fn spawnPrimitive(state: *EditorState, layer_context: *engine.core.LayerContext, primitive: engine.scene.Primitive) !void {
+    const selection_before = layer_context.renderer.selectedEntities();
     const spawn_transform = spawnTransform(state, layer_context);
     const entity_id = try layer_context.world.createPrimitiveEntity(primitive, spawn_transform);
     try layer_context.renderer.replaceSelection(entity_id);
     utils.syncInspectorNameBuffer(state, layer_context);
     camera.focusSelection(state, layer_context);
-    try captureSnapshot(state, layer_context);
+    try recordCreatedEntities(state, layer_context, &.{entity_id}, selection_before);
 }
 
 pub fn spawnPointLight(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const selection_before = layer_context.renderer.selectedEntities();
     var transform = spawnTransform(state, layer_context);
     transform.translation[1] += 1.0;
     const entity_id = try layer_context.world.createLightEntity(.point, transform, 24.0);
     try layer_context.renderer.replaceSelection(entity_id);
     utils.syncInspectorNameBuffer(state, layer_context);
     camera.focusSelection(state, layer_context);
-    try captureSnapshot(state, layer_context);
+    try recordCreatedEntities(state, layer_context, &.{entity_id}, selection_before);
 }
 
 pub fn spawnVfxEntity(state: *EditorState, layer_context: *engine.core.LayerContext, kind: engine.scene.VfxKind) !void {
+    const selection_before = layer_context.renderer.selectedEntities();
     const entity_id = try layer_context.world.createVfxEntity(kind, spawnTransform(state, layer_context));
     try layer_context.renderer.replaceSelection(entity_id);
     utils.syncInspectorNameBuffer(state, layer_context);
     camera.focusSelection(state, layer_context);
-    try captureSnapshot(state, layer_context);
+    try recordCreatedEntities(state, layer_context, &.{entity_id}, selection_before);
 }
 
 pub fn spawnEmptyEntityAt(state: *EditorState, layer_context: *engine.core.LayerContext, transform: engine.scene.Transform) !void {
+    const selection_before = layer_context.renderer.selectedEntities();
     const entity_id = try layer_context.world.createEmptyEntity(transform);
     try layer_context.renderer.replaceSelection(entity_id);
     utils.syncInspectorNameBuffer(state, layer_context);
-    try captureSnapshot(state, layer_context);
+    try recordCreatedEntities(state, layer_context, &.{entity_id}, selection_before);
 }
 
 pub fn spawnCameraEntityAt(state: *EditorState, layer_context: *engine.core.LayerContext, transform: engine.scene.Transform) !void {
+    const selection_before = layer_context.renderer.selectedEntities();
     const entity_id = try layer_context.world.createCameraEntity(transform);
     try layer_context.renderer.replaceSelection(entity_id);
     state.scene_camera = entity_id;
     utils.syncInspectorNameBuffer(state, layer_context);
-    try captureSnapshot(state, layer_context);
+    try recordCreatedEntities(state, layer_context, &.{entity_id}, selection_before);
 }
 
 pub fn spawnPrimitiveAt(state: *EditorState, layer_context: *engine.core.LayerContext, primitive: engine.scene.Primitive, transform: engine.scene.Transform) !void {
+    const selection_before = layer_context.renderer.selectedEntities();
     const entity_id = try layer_context.world.createPrimitiveEntity(primitive, transform);
     try layer_context.renderer.replaceSelection(entity_id);
     utils.syncInspectorNameBuffer(state, layer_context);
-    try captureSnapshot(state, layer_context);
+    try recordCreatedEntities(state, layer_context, &.{entity_id}, selection_before);
 }
 
 pub fn spawnPointLightAt(state: *EditorState, layer_context: *engine.core.LayerContext, transform: engine.scene.Transform) !void {
+    const selection_before = layer_context.renderer.selectedEntities();
     const entity_id = try layer_context.world.createLightEntity(.point, transform, 24.0);
     try layer_context.renderer.replaceSelection(entity_id);
     utils.syncInspectorNameBuffer(state, layer_context);
-    try captureSnapshot(state, layer_context);
+    try recordCreatedEntities(state, layer_context, &.{entity_id}, selection_before);
 }
 
 pub fn spawnSpotLightAt(state: *EditorState, layer_context: *engine.core.LayerContext, transform: engine.scene.Transform) !void {
+    const selection_before = layer_context.renderer.selectedEntities();
     const entity_id = try layer_context.world.createLightEntity(.spot, transform, 24.0);
     try layer_context.renderer.replaceSelection(entity_id);
     utils.syncInspectorNameBuffer(state, layer_context);
-    try captureSnapshot(state, layer_context);
+    try recordCreatedEntities(state, layer_context, &.{entity_id}, selection_before);
 }
 
 pub fn spawnDirectionalLightAt(state: *EditorState, layer_context: *engine.core.LayerContext, transform: engine.scene.Transform) !void {
+    const selection_before = layer_context.renderer.selectedEntities();
     const entity_id = try layer_context.world.createLightEntity(.directional, transform, 1.0);
     try layer_context.renderer.replaceSelection(entity_id);
     utils.syncInspectorNameBuffer(state, layer_context);
-    try captureSnapshot(state, layer_context);
+    try recordCreatedEntities(state, layer_context, &.{entity_id}, selection_before);
 }
 
 pub fn spawnVfxEntityAt(state: *EditorState, layer_context: *engine.core.LayerContext, kind: engine.scene.VfxKind, transform: engine.scene.Transform) !void {
+    const selection_before = layer_context.renderer.selectedEntities();
     const entity_id = try layer_context.world.createVfxEntity(kind, transform);
     try layer_context.renderer.replaceSelection(entity_id);
     utils.syncInspectorNameBuffer(state, layer_context);
-    try captureSnapshot(state, layer_context);
+    try recordCreatedEntities(state, layer_context, &.{entity_id}, selection_before);
 }
 
 pub fn spawnTransform(state: *EditorState, layer_context: *engine.core.LayerContext) engine.scene.Transform {
@@ -292,7 +298,7 @@ pub fn saveScenePath(state: *EditorState, layer_context: *engine.core.LayerConte
         std.log.err("failed to save scene to {s}: {}", .{ path, err });
         return;
     };
-    state.saved_snapshot_cursor = if (state.snapshot_history.items.len > 0) state.snapshot_cursor else null;
+    state.saved_command_cursor = state.undo_stack.items.len;
     content_browser.refreshAssetBrowser(state, layer_context) catch |err| {
         std.log.warn("failed to refresh asset browser after save: {}", .{err});
     };
@@ -304,7 +310,7 @@ pub fn loadScene(state: *EditorState, layer_context: *engine.core.LayerContext) 
 
 pub fn newScene(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     manipulation.endManipulation(state);
-    vfx_runtime.clearAll(state, layer_context);
+    vfx_runtime.clearAll(layer_context);
     layer_context.world.clear();
     try layer_context.renderer.resetSceneState();
     state.scene_camera = null;
@@ -323,7 +329,7 @@ pub fn newScene(state: *EditorState, layer_context: *engine.core.LayerContext) !
 
 pub fn loadScenePath(state: *EditorState, layer_context: *engine.core.LayerContext, path: []const u8) !void {
     manipulation.endManipulation(state);
-    vfx_runtime.clearAll(state, layer_context);
+    vfx_runtime.clearAll(layer_context);
     engine.scene.loadWorldFromPath(layer_context.world.allocator, layer_context.world, path) catch |err| {
         std.log.err("failed to load scene from {s}: {}", .{ path, err });
         return;
@@ -376,11 +382,468 @@ pub fn refreshWindowTitle(state: *EditorState, layer_context: *engine.core.Layer
 }
 
 pub fn hasUnsavedChanges(state: *const EditorState) bool {
-    if (state.snapshot_history.items.len == 0) {
+    const saved_command_cursor = state.saved_command_cursor orelse return state.undo_stack.items.len != 0;
+    return saved_command_cursor != state.undo_stack.items.len;
+}
+
+pub fn captureEntitySnapshot(
+    state: *EditorState,
+    world: *const engine.scene.World,
+    entity_id: engine.scene.EntityId,
+) !?command_mod.EntitySnapshot {
+    const allocator = state.allocator orelse world.allocator;
+    return captureEntitySnapshotAlloc(allocator, world, entity_id);
+}
+
+pub fn captureEntitySnapshots(
+    state: *EditorState,
+    world: *const engine.scene.World,
+    entity_ids: []const engine.scene.EntityId,
+) !std.ArrayList(command_mod.EntitySnapshot) {
+    const allocator = state.allocator orelse world.allocator;
+    var snapshots = std.ArrayList(command_mod.EntitySnapshot).empty;
+    errdefer deinitSnapshotList(allocator, &snapshots);
+
+    for (entity_ids) |entity_id| {
+        if (selectionContainsAncestor(world, entity_ids, entity_id)) {
+            continue;
+        }
+        if (try captureEntitySnapshot(state, world, entity_id)) |snapshot| {
+            try snapshots.append(allocator, snapshot);
+        }
+    }
+    return snapshots;
+}
+
+pub fn deinitEntitySnapshots(state: *EditorState, snapshots: *std.ArrayList(command_mod.EntitySnapshot)) void {
+    const allocator = state.allocator orelse return;
+    deinitSnapshotList(allocator, snapshots);
+}
+
+pub fn recordEntityMutation(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    before: command_mod.EntitySnapshot,
+    selection_before: []const engine.scene.EntityId,
+) !void {
+    const allocator = state.allocator orelse layer_context.world.allocator;
+    var deltas = std.ArrayList(command_mod.SubtreeDelta).empty;
+    errdefer deinitDeltaList(allocator, &deltas);
+
+    var after = try captureEntitySnapshot(state, layer_context.world, before.id) orelse {
+        var owned_before = before;
+        owned_before.deinit(allocator);
+        return;
+    };
+    if (entitySnapshotsEqual(&before, &after)) {
+        var owned_before = before;
+        owned_before.deinit(allocator);
+        after.deinit(allocator);
+        return;
+    }
+
+    try deltas.append(allocator, .{
+        .before = before,
+        .after = after,
+    });
+    try pushSubtreeDeltaCommand(state, layer_context, &deltas, selection_before);
+}
+
+pub fn recordEntityBatchMutation(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    before_snapshots: *std.ArrayList(command_mod.EntitySnapshot),
+    selection_before: []const engine.scene.EntityId,
+) !void {
+    const allocator = state.allocator orelse layer_context.world.allocator;
+    var deltas = std.ArrayList(command_mod.SubtreeDelta).empty;
+    errdefer deinitDeltaList(allocator, &deltas);
+
+    for (before_snapshots.items) |before| {
+        var after = try captureEntitySnapshot(state, layer_context.world, before.id) orelse {
+            var owned_before = before;
+            owned_before.deinit(allocator);
+            continue;
+        };
+        if (entitySnapshotsEqual(&before, &after)) {
+            var owned_before = before;
+            owned_before.deinit(allocator);
+            after.deinit(allocator);
+            continue;
+        }
+        try deltas.append(allocator, .{
+            .before = before,
+            .after = after,
+        });
+    }
+
+    before_snapshots.deinit(allocator);
+    before_snapshots.* = .empty;
+
+    if (deltas.items.len == 0) {
+        return;
+    }
+    try pushSubtreeDeltaCommand(state, layer_context, &deltas, selection_before);
+}
+
+pub fn recordCreatedEntities(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity_ids: []const engine.scene.EntityId,
+    selection_before: []const engine.scene.EntityId,
+) !void {
+    const allocator = state.allocator orelse layer_context.world.allocator;
+    var deltas = std.ArrayList(command_mod.SubtreeDelta).empty;
+    errdefer deinitDeltaList(allocator, &deltas);
+
+    for (entity_ids) |entity_id| {
+        if (try captureEntitySnapshot(state, layer_context.world, entity_id)) |snapshot| {
+            try deltas.append(allocator, .{ .after = snapshot });
+        }
+    }
+
+    if (deltas.items.len == 0) {
+        return;
+    }
+    try pushSubtreeDeltaCommand(state, layer_context, &deltas, selection_before);
+}
+
+pub fn recordDeletedEntities(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    before_snapshots: *std.ArrayList(command_mod.EntitySnapshot),
+    selection_before: []const engine.scene.EntityId,
+) !void {
+    const allocator = state.allocator orelse layer_context.world.allocator;
+    var deltas = std.ArrayList(command_mod.SubtreeDelta).empty;
+    errdefer deinitDeltaList(allocator, &deltas);
+
+    for (before_snapshots.items) |snapshot| {
+        try deltas.append(allocator, .{ .before = snapshot });
+    }
+    before_snapshots.deinit(allocator);
+    before_snapshots.* = .empty;
+
+    if (deltas.items.len == 0) {
+        return;
+    }
+    try pushSubtreeDeltaCommand(state, layer_context, &deltas, selection_before);
+}
+
+const ApplyDirection = enum {
+    undo,
+    redo,
+};
+
+fn clearCommandStack(allocator: std.mem.Allocator, stack: *std.ArrayList(command_mod.EditorCommand)) void {
+    for (stack.items) |*command| {
+        command.deinit(allocator);
+    }
+    stack.deinit(allocator);
+    stack.* = .empty;
+}
+
+fn pushCommand(state: *EditorState, command: command_mod.EditorCommand) !void {
+    const allocator = state.allocator orelse return;
+    clearCommandStack(allocator, &state.redo_stack);
+    if (state.saved_command_cursor) |saved_command_cursor| {
+        if (saved_command_cursor > state.undo_stack.items.len) {
+            state.saved_command_cursor = null;
+        }
+    }
+
+    try state.undo_stack.append(allocator, command);
+
+    while (state.undo_stack.items.len > state.max_history_commands) {
+        var removed = state.undo_stack.orderedRemove(0);
+        removed.deinit(allocator);
+        if (state.saved_command_cursor) |saved_command_cursor| {
+            state.saved_command_cursor = if (saved_command_cursor == 0) null else saved_command_cursor - 1;
+        }
+    }
+}
+
+fn pushSubtreeDeltaCommand(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    deltas: *std.ArrayList(command_mod.SubtreeDelta),
+    selection_before: []const engine.scene.EntityId,
+) !void {
+    const allocator = state.allocator orelse layer_context.world.allocator;
+    var command: command_mod.EditorCommand = .{
+        .subtree_delta = .{
+            .deltas = deltas.*,
+            .selection_before = try command_mod.SelectionSnapshot.fromSlice(allocator, selection_before),
+            .selection_after = try command_mod.SelectionSnapshot.fromSlice(allocator, layer_context.renderer.selectedEntities()),
+        },
+    };
+    deltas.* = .empty;
+    errdefer command.deinit(allocator);
+
+    try pushCommand(state, command);
+    try refreshCurrentHistorySnapshot(state, layer_context.world);
+}
+
+fn applyCommand(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    command: *command_mod.EditorCommand,
+    direction: ApplyDirection,
+) !void {
+    switch (command.*) {
+        .scene_snapshot => |*scene_snapshot| {
+            try applySceneSnapshot(
+                state,
+                layer_context,
+                if (direction == .undo) scene_snapshot.before else scene_snapshot.after,
+                if (direction == .undo) &scene_snapshot.selection_before else &scene_snapshot.selection_after,
+            );
+        },
+        .subtree_delta => |*subtree_delta| {
+            try applySubtreeDeltaCommand(
+                state,
+                layer_context,
+                subtree_delta,
+                if (direction == .undo) &subtree_delta.selection_before else &subtree_delta.selection_after,
+                direction,
+            );
+        },
+    }
+}
+
+fn applySceneSnapshot(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    snapshot: []const u8,
+    selection: *const command_mod.SelectionSnapshot,
+) !void {
+    manipulation.endManipulation(state);
+    vfx_runtime.clearAll(layer_context);
+    try engine.scene.deserializeWorldFromSlice(layer_context.world.allocator, layer_context.world, snapshot);
+    try layer_context.renderer.resetSceneState();
+    state.scene_camera = layer_context.world.primaryCameraEntity();
+    state.editor_camera = null;
+    try camera.createEditorCamera(state, layer_context);
+    if (!state.editor_camera_active) {
+        if (state.scene_camera) |scene_camera_id| {
+            _ = layer_context.world.setPrimaryCamera(scene_camera_id);
+        }
+    }
+    try restoreSelection(state, layer_context, selection);
+    try refreshWindowTitle(state, layer_context);
+}
+
+fn applySubtreeDeltaCommand(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    command: *const command_mod.SubtreeDeltaCommand,
+    selection: *const command_mod.SelectionSnapshot,
+    direction: ApplyDirection,
+) !void {
+    manipulation.endManipulation(state);
+    vfx_runtime.clearAll(layer_context);
+
+    for (command.deltas.items) |*delta| {
+        const target = if (direction == .undo) delta.before else delta.after;
+        const opposite = if (direction == .undo) delta.after else delta.before;
+
+        if (target) |*snapshot| {
+            try restoreEntitySnapshot(layer_context.world, snapshot);
+        } else if (opposite) |*snapshot| {
+            _ = layer_context.world.destroyEntity(snapshot.id);
+        }
+    }
+
+    try layer_context.renderer.resetSceneState();
+    state.scene_camera = layer_context.world.primaryCameraEntity();
+    try restoreSelection(state, layer_context, selection);
+    try refreshWindowTitle(state, layer_context);
+}
+
+fn refreshCurrentHistorySnapshot(state: *EditorState, world: *engine.scene.World) !void {
+    const allocator = state.allocator orelse world.allocator;
+    const snapshot = try engine.scene.serializeWorldAlloc(allocator, world);
+    errdefer allocator.free(snapshot);
+    try replaceHistoryWorldSnapshot(state, snapshot);
+    allocator.free(snapshot);
+}
+
+fn replaceHistoryWorldSnapshot(state: *EditorState, snapshot: []const u8) !void {
+    const allocator = state.allocator orelse return;
+    const snapshot_copy = try allocator.dupe(u8, snapshot);
+    errdefer allocator.free(snapshot_copy);
+    if (state.history_world_snapshot) |current| {
+        allocator.free(current);
+    }
+    state.history_world_snapshot = snapshot_copy;
+}
+
+fn restoreSelection(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    selection: *const command_mod.SelectionSnapshot,
+) !void {
+    const allocator = state.allocator orelse layer_context.world.allocator;
+    var valid_selection = std.ArrayList(engine.scene.EntityId).empty;
+    defer valid_selection.deinit(allocator);
+
+    for (selection.entity_ids.items) |entity_id| {
+        if (layer_context.world.hasEntity(entity_id)) {
+            try valid_selection.append(allocator, entity_id);
+        }
+    }
+
+    switch (valid_selection.items.len) {
+        0 => try layer_context.renderer.replaceSelection(null),
+        1 => try layer_context.renderer.replaceSelection(valid_selection.items[0]),
+        else => try layer_context.renderer.replaceSelectionMany(valid_selection.items),
+    }
+    utils.syncInspectorNameBuffer(state, layer_context);
+}
+
+fn restoreEntitySnapshot(world: *engine.scene.World, snapshot: *const command_mod.EntitySnapshot) !void {
+    if (world.getEntity(snapshot.id)) |entity| {
+        if (entity.parent != snapshot.parent) {
+            _ = try world.setParentLocal(snapshot.id, snapshot.parent);
+        }
+        if (!std.mem.eql(u8, entity.name, snapshot.name)) {
+            _ = try world.renameEntity(snapshot.id, snapshot.name);
+        }
+        entity.local_transform = snapshot.local_transform;
+        entity.camera = snapshot.camera;
+        entity.mesh = snapshot.mesh;
+        entity.material = snapshot.material;
+        entity.light = snapshot.light;
+        entity.vfx = snapshot.vfx;
+        entity.visible = snapshot.visible;
+        entity.editor_only = snapshot.editor_only;
+        entity.is_folder = snapshot.is_folder;
+        world.markDirty(snapshot.id);
+    } else {
+        _ = try world.createEntityWithId(snapshot.id, .{
+            .name = snapshot.name,
+            .parent = snapshot.parent,
+            .local_transform = snapshot.local_transform,
+            .camera = snapshot.camera,
+            .mesh = snapshot.mesh,
+            .material = snapshot.material,
+            .light = snapshot.light,
+            .vfx = snapshot.vfx,
+            .visible = snapshot.visible,
+            .editor_only = snapshot.editor_only,
+            .is_folder = snapshot.is_folder,
+        });
+    }
+
+    var keep_ids = std.ArrayList(engine.scene.EntityId).empty;
+    defer keep_ids.deinit(world.allocator);
+
+    for (snapshot.children.items) |*child| {
+        try restoreEntitySnapshot(world, child);
+        try keep_ids.append(world.allocator, child.id);
+    }
+
+    var removed_children = std.ArrayList(engine.scene.EntityId).empty;
+    defer removed_children.deinit(world.allocator);
+
+    for (world.entities.items) |entity| {
+        if (entity.parent == snapshot.id and !entity.editor_only and !containsEntityId(keep_ids.items, entity.id)) {
+            try removed_children.append(world.allocator, entity.id);
+        }
+    }
+
+    for (removed_children.items) |entity_id| {
+        _ = world.destroyEntity(entity_id);
+    }
+}
+
+fn captureEntitySnapshotAlloc(
+    allocator: std.mem.Allocator,
+    world: *const engine.scene.World,
+    entity_id: engine.scene.EntityId,
+) !?command_mod.EntitySnapshot {
+    const entity = world.getEntityConst(entity_id) orelse return null;
+    if (entity.editor_only) {
+        return null;
+    }
+
+    var snapshot = command_mod.EntitySnapshot{
+        .id = entity.id,
+        .name = try allocator.dupe(u8, entity.name),
+        .parent = entity.parent,
+        .local_transform = entity.local_transform,
+        .camera = entity.camera,
+        .mesh = entity.mesh,
+        .material = entity.material,
+        .light = entity.light,
+        .vfx = entity.vfx,
+        .visible = entity.visible,
+        .editor_only = entity.editor_only,
+        .is_folder = entity.is_folder,
+    };
+    errdefer snapshot.deinit(allocator);
+
+    for (world.entities.items) |child| {
+        if (child.parent != entity_id or child.editor_only) {
+            continue;
+        }
+        if (try captureEntitySnapshotAlloc(allocator, world, child.id)) |child_snapshot| {
+            try snapshot.children.append(allocator, child_snapshot);
+        }
+    }
+
+    return snapshot;
+}
+
+fn deinitSnapshotList(allocator: std.mem.Allocator, snapshots: *std.ArrayList(command_mod.EntitySnapshot)) void {
+    for (snapshots.items) |*snapshot| {
+        snapshot.deinit(allocator);
+    }
+    snapshots.deinit(allocator);
+    snapshots.* = .empty;
+}
+
+fn deinitDeltaList(allocator: std.mem.Allocator, deltas: *std.ArrayList(command_mod.SubtreeDelta)) void {
+    for (deltas.items) |*delta| {
+        delta.deinit(allocator);
+    }
+    deltas.deinit(allocator);
+    deltas.* = .empty;
+}
+
+fn entitySnapshotsEqual(a: *const command_mod.EntitySnapshot, b: *const command_mod.EntitySnapshot) bool {
+    if (a.id != b.id or
+        !std.mem.eql(u8, a.name, b.name) or
+        a.parent != b.parent or
+        !std.meta.eql(a.local_transform, b.local_transform) or
+        !std.meta.eql(a.camera, b.camera) or
+        !std.meta.eql(a.mesh, b.mesh) or
+        !std.meta.eql(a.material, b.material) or
+        !std.meta.eql(a.light, b.light) or
+        !std.meta.eql(a.vfx, b.vfx) or
+        a.visible != b.visible or
+        a.editor_only != b.editor_only or
+        a.is_folder != b.is_folder or
+        a.children.items.len != b.children.items.len)
+    {
         return false;
     }
-    const saved_snapshot_cursor = state.saved_snapshot_cursor orelse return true;
-    return saved_snapshot_cursor != state.snapshot_cursor;
+
+    for (a.children.items, b.children.items) |*left, *right| {
+        if (!entitySnapshotsEqual(left, right)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn containsEntityId(entity_ids: []const engine.scene.EntityId, entity_id: engine.scene.EntityId) bool {
+    for (entity_ids) |candidate| {
+        if (candidate == entity_id) {
+            return true;
+        }
+    }
+    return false;
 }
 
 fn collectSelectionRoots(

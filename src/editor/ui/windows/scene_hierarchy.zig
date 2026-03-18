@@ -64,7 +64,7 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
     layout.beginSectionBody();
     var selection_count_buffer: [32]u8 = undefined;
     const selection_count_text = try std.fmt.bufPrint(&selection_count_buffer, "{d}", .{layer_context.renderer.selectedEntities().len});
-    
+
     // 采用更精致、低调的筛选区域布局
     const controls_width = engine.ui.ImGui.contentRegionAvail()[0];
     const show_full_ui = controls_width >= 280.0;
@@ -73,7 +73,7 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
         engine.ui.ImGui.setNextItemWidth(controls_width * 0.45);
         _ = engine.ui.ImGui.inputTextWithHint("##scene_filter", state.text(.scene_filter), state.scene_filter_buffer[0..]);
         engine.ui.ImGui.sameLineEx(0.0, 8.0);
-        
+
         engine.ui.ImGui.pushStyleColor(.text, .{ 0.55, 0.58, 0.62, 1.0 });
         engine.ui.ImGui.text(selection_count_text);
         engine.ui.ImGui.popStyleColor(1);
@@ -86,7 +86,7 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
             try unparentSelection(state, layer_context);
         }
         if (engine.ui.ImGui.isItemHovered()) engine.ui.ImGui.setTooltip(state.text(.scene_root));
-        
+
         engine.ui.ImGui.sameLineEx(controls_width - 34.0, 4.0);
         if (engine.ui.ImGui.buttonEx(state.text(.rename), 34.0, 0.0)) {
             try beginSelectedHierarchyRename(state, layer_context);
@@ -96,7 +96,7 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
         engine.ui.ImGui.setNextItemWidth(-1.0);
         _ = engine.ui.ImGui.inputTextWithHint("##scene_filter", state.text(.scene_filter), state.scene_filter_buffer[0..]);
     }
-    
+
     engine.ui.ImGui.dummy(0.0, 4.0);
     layout.endSectionBody();
     var dropped_root: u64 = 0;
@@ -336,6 +336,11 @@ pub fn parentSelection(state: *EditorState, layer_context: *engine.core.LayerCon
         return;
     }
 
+    var before = try history.captureEntitySnapshots(state, layer_context.world, selection);
+    var before_owned = true;
+    defer if (before_owned) history.deinitEntitySnapshots(state, &before);
+    const selection_before = selection;
+
     var changed = false;
     for (selection) |entity_id| {
         if (entity_id == parent_id) {
@@ -348,7 +353,8 @@ pub fn parentSelection(state: *EditorState, layer_context: *engine.core.LayerCon
     }
 
     if (changed) {
-        try history.captureSnapshot(state, layer_context);
+        try history.recordEntityBatchMutation(state, layer_context, &before, selection_before);
+        before_owned = false;
     }
 }
 
@@ -406,6 +412,10 @@ fn reparentEntities(
     }
 
     const allocator = state.allocator orelse layer_context.world.allocator;
+    var before = try history.captureEntitySnapshots(state, layer_context.world, entity_ids);
+    var before_owned = true;
+    defer if (before_owned) history.deinitEntitySnapshots(state, &before);
+    const selection_before = layer_context.renderer.selectedEntities();
     var moved = std.ArrayList(engine.scene.EntityId).empty;
     defer moved.deinit(allocator);
 
@@ -441,7 +451,8 @@ fn reparentEntities(
         try layer_context.renderer.replaceSelection(moved.items[0]);
     }
     utils.syncInspectorNameBuffer(state, layer_context);
-    try history.captureSnapshot(state, layer_context);
+    try history.recordEntityBatchMutation(state, layer_context, &before, selection_before);
+    before_owned = false;
     return true;
 }
 
@@ -574,9 +585,14 @@ fn commitHierarchyRename(
     if (next_name.len == 0) {
         return;
     }
+    var before = try history.captureEntitySnapshot(state, layer_context.world, entity_id) orelse return;
+    const allocator = state.allocator orelse layer_context.world.allocator;
+    var before_owned = true;
+    defer if (before_owned) before.deinit(allocator);
     if (try layer_context.world.renameEntity(entity_id, next_name)) {
         utils.syncInspectorNameBuffer(state, layer_context);
-        try history.captureSnapshot(state, layer_context);
+        try history.recordEntityMutation(state, layer_context, before, &.{entity_id});
+        before_owned = false;
         try history.refreshWindowTitle(state, layer_context);
     }
 }
@@ -689,6 +705,10 @@ fn unparentEntities(
         return;
     }
 
+    var before = try history.captureEntitySnapshots(state, layer_context.world, entity_ids);
+    var before_owned = true;
+    defer if (before_owned) history.deinitEntitySnapshots(state, &before);
+    const selection_before = layer_context.renderer.selectedEntities();
     var changed = false;
     for (entity_ids) |entity_id| {
         if (state.editor_camera != null and entity_id == state.editor_camera.?) {
@@ -698,7 +718,8 @@ fn unparentEntities(
     }
 
     if (changed) {
-        try history.captureSnapshot(state, layer_context);
+        try history.recordEntityBatchMutation(state, layer_context, &before, selection_before);
+        before_owned = false;
     }
 }
 
@@ -806,11 +827,12 @@ fn drawHierarchyStatusIconButton(
 }
 
 fn createFolderEntity(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const selection_before = layer_context.renderer.selectedEntities();
     const transform = history.spawnTransform(state, layer_context);
     const entity_id = try layer_context.world.createFolderEntity(transform);
     try layer_context.renderer.replaceSelection(entity_id);
     utils.syncInspectorNameBuffer(state, layer_context);
-    try history.captureSnapshot(state, layer_context);
+    try history.recordCreatedEntities(state, layer_context, &.{entity_id}, selection_before);
 }
 
 test "collectDraggedEntityRoots keeps only selection roots during multi-drag" {

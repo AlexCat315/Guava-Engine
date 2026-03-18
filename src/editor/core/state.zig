@@ -1,6 +1,7 @@
 const std = @import("std");
 const engine = @import("guava");
 const i18n = @import("../i18n/mod.zig");
+const command_mod = @import("../actions/command.zig");
 
 pub const autosave_path = "assets/scenes/editor_autosave.guava_scene";
 pub const entity_drag_payload = "guava.scene.entity";
@@ -86,29 +87,6 @@ pub const PlaceActorKind = enum {
     vfx_orbit,
 };
 
-pub const VfxRuntimeParticle = struct {
-    entity_id: engine.scene.EntityId,
-    age: f32,
-    lifetime: f32,
-    position: [3]f32,
-    velocity: [3]f32,
-    orbit_radius: f32 = 0.0,
-    angular_position: f32 = 0.0,
-    angular_velocity: f32 = 0.0,
-    vertical_offset: f32 = 0.0,
-    vertical_velocity: f32 = 0.0,
-    phase: f32 = 0.0,
-};
-
-pub const VfxRuntimeEmitter = struct {
-    entity_id: engine.scene.EntityId,
-    seed: u32 = 0,
-    elapsed: f32 = 0.0,
-    emission_accumulator: f32 = 0.0,
-    one_shot_remaining: u16 = 0,
-    particles: std.ArrayList(VfxRuntimeParticle) = .empty,
-};
-
 pub const LayoutTemplateEntry = struct {
     name: []u8,
     path: []u8,
@@ -153,6 +131,30 @@ pub const PendingViewportDrop = struct {
     world_position: ?[3]f32 = null,
 };
 
+pub const MeshComponentClipboard = struct {
+    component: engine.scene.Mesh,
+    asset_id: ?[]u8 = null,
+
+    fn deinit(self: *MeshComponentClipboard, allocator: std.mem.Allocator) void {
+        if (self.asset_id) |asset_id| {
+            allocator.free(asset_id);
+        }
+        self.* = undefined;
+    }
+};
+
+pub const MaterialComponentClipboard = struct {
+    component: engine.scene.Material,
+    asset_id: ?[]u8 = null,
+
+    fn deinit(self: *MaterialComponentClipboard, allocator: std.mem.Allocator) void {
+        if (self.asset_id) |asset_id| {
+            allocator.free(asset_id);
+        }
+        self.* = undefined;
+    }
+};
+
 pub const EditorState = struct {
     allocator: ?std.mem.Allocator = null,
     editor_camera: ?engine.scene.EntityId = null,
@@ -183,18 +185,20 @@ pub const EditorState = struct {
     manipulation_axis: AxisConstraint = .free,
     manipulation_entity: ?engine.scene.EntityId = null,
     manipulation_origin: engine.scene.Transform = .{},
+    manipulation_snapshot: ?command_mod.EntitySnapshot = null,
     transform_component_clipboard: ?engine.scene.Transform = null,
-    mesh_component_clipboard: ?engine.scene.Mesh = null,
-    material_component_clipboard: ?engine.scene.Material = null,
+    mesh_component_clipboard: ?MeshComponentClipboard = null,
+    material_component_clipboard: ?MaterialComponentClipboard = null,
     camera_component_clipboard: ?engine.scene.Camera = null,
     light_component_clipboard: ?engine.scene.Light = null,
     vfx_component_clipboard: ?engine.scene.Vfx = null,
     playback_state: PlaybackState = .stopped,
     transform_space: TransformSpace = .local,
-    snapshot_history: std.ArrayList([]u8) = .empty,
-    snapshot_cursor: usize = 0,
-    max_snapshots: usize = 64,
-    saved_snapshot_cursor: ?usize = null,
+    undo_stack: std.ArrayList(command_mod.EditorCommand) = .empty,
+    redo_stack: std.ArrayList(command_mod.EditorCommand) = .empty,
+    max_history_commands: usize = 64,
+    saved_command_cursor: ?usize = null,
+    history_world_snapshot: ?[]u8 = null,
     asset_registry: ?engine.assets.AssetRegistry = null,
     asset_entries: std.ArrayList(AssetEntry) = .empty,
     asset_directories: std.ArrayList([]u8) = .empty,
@@ -211,7 +215,6 @@ pub const EditorState = struct {
 
     // Material thumbnail render queue (asset IDs pending render)
     material_thumbnail_queue: std.ArrayList([]const u8) = .empty,
-    vfx_runtime_emitters: std.ArrayList(VfxRuntimeEmitter) = .empty,
 
     bottom_panel_tab: BottomPanelTab = .project,
     console_show_errors: bool = true,
@@ -275,70 +278,180 @@ pub const EditorState = struct {
         return i18n.locale(self.language);
     }
 
+    pub fn setMeshComponentClipboard(self: *EditorState, world: *engine.scene.World, component: engine.scene.Mesh) !void {
+        const allocator = self.allocator orelse world.allocator;
+        self.clearMeshComponentClipboard();
+
+        var asset_id_copy: ?[]u8 = null;
+        errdefer if (asset_id_copy) |asset_id| allocator.free(asset_id);
+
+        if (component.handle) |handle| {
+            if (world.assets().meshAssetId(handle)) |asset_id| {
+                asset_id_copy = try allocator.dupe(u8, asset_id);
+            }
+        }
+
+        self.mesh_component_clipboard = .{
+            .component = component,
+            .asset_id = asset_id_copy,
+        };
+    }
+
+    pub fn resolveMeshComponentClipboard(self: *const EditorState, world: *engine.scene.World) !?engine.scene.Mesh {
+        const clipboard = self.mesh_component_clipboard orelse return null;
+        var component = clipboard.component;
+
+        if (component.handle != null) {
+            if (clipboard.asset_id) |asset_id| {
+                if (world.assets().meshHandleByAssetId(asset_id)) |handle| {
+                    component.handle = handle;
+                } else if (component.primitive != .custom) {
+                    component.handle = try world.assets().ensurePrimitiveMesh(component.primitive);
+                } else {
+                    return null;
+                }
+            } else if (component.primitive != .custom) {
+                component.handle = try world.assets().ensurePrimitiveMesh(component.primitive);
+            } else {
+                return null;
+            }
+        }
+
+        return component;
+    }
+
+    pub fn setMaterialComponentClipboard(self: *EditorState, world: *engine.scene.World, component: engine.scene.Material) !void {
+        const allocator = self.allocator orelse world.allocator;
+        self.clearMaterialComponentClipboard();
+
+        var asset_id_copy: ?[]u8 = null;
+        errdefer if (asset_id_copy) |asset_id| allocator.free(asset_id);
+
+        if (component.handle) |handle| {
+            if (world.assets().materialAssetId(handle)) |asset_id| {
+                asset_id_copy = try allocator.dupe(u8, asset_id);
+            }
+        }
+
+        self.material_component_clipboard = .{
+            .component = component,
+            .asset_id = asset_id_copy,
+        };
+    }
+
+    pub fn resolveMaterialComponentClipboard(self: *const EditorState, world: *engine.scene.World) ?engine.scene.Material {
+        const clipboard = self.material_component_clipboard orelse return null;
+        var component = clipboard.component;
+
+        if (component.handle != null) {
+            component.handle = if (clipboard.asset_id) |asset_id|
+                world.assets().materialHandleByAssetId(asset_id)
+            else
+                null;
+        }
+
+        return component;
+    }
+
+    pub fn clearOwnedClipboards(self: *EditorState) void {
+        self.clearMeshComponentClipboard();
+        self.clearMaterialComponentClipboard();
+    }
+
+    fn clearMeshComponentClipboard(self: *EditorState) void {
+        const allocator = self.allocator orelse {
+            self.mesh_component_clipboard = null;
+            return;
+        };
+        if (self.mesh_component_clipboard) |*clipboard| {
+            clipboard.deinit(allocator);
+            self.mesh_component_clipboard = null;
+        }
+    }
+
+    fn clearMaterialComponentClipboard(self: *EditorState) void {
+        const allocator = self.allocator orelse {
+            self.material_component_clipboard = null;
+            return;
+        };
+        if (self.material_component_clipboard) |*clipboard| {
+            clipboard.deinit(allocator);
+            self.material_component_clipboard = null;
+        }
+    }
+
     pub fn deinit(self: *EditorState) void {
         const allocator = self.allocator orelse return;
-        
-        // 释放 snapshot_history 中的每个快照字符串
-        for (self.snapshot_history.items) |snapshot| {
-            allocator.free(snapshot);
+        self.clearOwnedClipboards();
+        if (self.manipulation_snapshot) |*snapshot| {
+            snapshot.deinit(allocator);
+            self.manipulation_snapshot = null;
         }
-        self.snapshot_history.deinit();
-        
+
+        for (self.undo_stack.items) |*command| {
+            command.deinit(allocator);
+        }
+        self.undo_stack.deinit(allocator);
+
+        for (self.redo_stack.items) |*command| {
+            command.deinit(allocator);
+        }
+        self.redo_stack.deinit(allocator);
+
+        if (self.history_world_snapshot) |snapshot| {
+            allocator.free(snapshot);
+            self.history_world_snapshot = null;
+        }
+
         // 释放 asset_entries 中的每个条目
         for (self.asset_entries.items) |entry| {
             allocator.free(entry.id);
             allocator.free(entry.path);
             allocator.free(entry.name);
         }
-        self.asset_entries.deinit();
-        
+        self.asset_entries.deinit(allocator);
+
         // 释放 asset_directories 中的每个目录路径
         for (self.asset_directories.items) |dir| {
             allocator.free(dir);
         }
-        self.asset_directories.deinit();
-        
+        self.asset_directories.deinit(allocator);
+
         // 释放 material_thumbnail_queue 中的每个资产 ID
         for (self.material_thumbnail_queue.items) |asset_id| {
             allocator.free(asset_id);
         }
-        self.material_thumbnail_queue.deinit();
-        
-        // 释放 vfx_runtime_emitters 中的每个发射器及其粒子数组
-        for (self.vfx_runtime_emitters.items) |*emitter| {
-            emitter.particles.deinit();
-        }
-        self.vfx_runtime_emitters.deinit();
-        
+        self.material_thumbnail_queue.deinit(allocator);
+
         // 释放 layout_templates 中的每个模板条目
         for (self.layout_templates.items) |entry| {
             allocator.free(entry.name);
             allocator.free(entry.path);
         }
-        self.layout_templates.deinit();
-        
+        self.layout_templates.deinit(allocator);
+
         // 释放 icon_textures 中的每个条目（纹理由 RHI 管理，只释放路径）
         for (self.icon_textures.items) |entry| {
             allocator.free(entry.path);
         }
-        self.icon_textures.deinit();
-        
+        self.icon_textures.deinit(allocator);
+
         // 释放 frozen_entities 和 selection_locked_entities（只是 EntityId 数组，无需释放内部）
-        self.frozen_entities.deinit();
-        self.selection_locked_entities.deinit();
-        
+        self.frozen_entities.deinit(allocator);
+        self.selection_locked_entities.deinit(allocator);
+
         // 释放 preview_texture_key
         if (self.preview_texture_key) |key| {
             allocator.free(key);
             self.preview_texture_key = null;
         }
-        
+
         // 释放 asset_registry（如果存在）
         if (self.asset_registry) |*registry| {
             registry.deinit();
             self.asset_registry = null;
         }
-        
+
         // 注意：preview_device 和 icon_device 是外部指针，不在此释放
         // preview_texture 由 RHI 管理，不在此释放
     }
