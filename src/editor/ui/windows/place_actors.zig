@@ -17,7 +17,7 @@ const PlaceActorEntry = struct {
 };
 
 const category_button_height: f32 = 28.0;
-const place_actor_row_height: f32 = 32.0; 
+const place_actor_row_height: f32 = 32.0;
 const place_actor_card_rounding: f32 = 3.0;
 const place_actor_list_icon_size: f32 = 18.0;
 const place_actor_card_icon_tint = [4]u8{ 210, 215, 220, 255 };
@@ -149,22 +149,22 @@ fn categoryTabWidth(available_width: f32, category_count: usize) f32 {
 fn drawCategoryButton(state: *EditorState, category: state_mod.PlaceActorCategory, label: []const u8, width: f32) bool {
     const active = state.place_actor_category == category;
     const palette = if (active) ui_icons.palettes.toolbar_active else ui_icons.palettes.toolbar_idle;
-    
+
     engine.ui.ImGui.pushStyleColor(.button, palette.button);
     engine.ui.ImGui.pushStyleColor(.button_hovered, palette.hovered);
     engine.ui.ImGui.pushStyleColor(.button_active, palette.active);
     engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, ui_icons.regular_icon_button_rounding);
-    
+
     if (active) {
         engine.ui.ImGui.pushStyleColor(.text, .{ 0.20, 0.60, 0.45, 1.0 });
     }
-    
+
     const clicked = engine.ui.ImGui.buttonEx(label, width, category_button_height);
-    
+
     if (active) {
         engine.ui.ImGui.popStyleColor(1);
     }
-    
+
     engine.ui.ImGui.popStyleVar(1);
     engine.ui.ImGui.popStyleColor(3);
     return clicked;
@@ -269,8 +269,8 @@ fn drawPlaceActorEntry(
 
     // Skip if filter is active and doesn't match
     if (filter_active) {
-        const label_matches = std.mem.startsWith(u8, label, filter_text);
-        const desc_matches = std.mem.startsWith(u8, description, filter_text);
+        const label_matches = utils.startsWith(label, filter_text);
+        const desc_matches = utils.startsWith(description, filter_text);
         if (!label_matches and !desc_matches) {
             return;
         }

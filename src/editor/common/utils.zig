@@ -54,6 +54,16 @@ pub fn containsAsciiInsensitive(haystack: []const u8, needle: []const u8) bool {
     return false;
 }
 
+pub fn startsWith(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) {
+        return true;
+    }
+    if (needle.len > haystack.len) {
+        return false;
+    }
+    return std.mem.eql(u8, haystack[0..needle.len], needle);
+}
+
 pub fn zeroTerminatedSlice(buffer: []const u8) []const u8 {
     const end = std.mem.indexOfScalar(u8, buffer, 0) orelse buffer.len;
     return buffer[0..end];

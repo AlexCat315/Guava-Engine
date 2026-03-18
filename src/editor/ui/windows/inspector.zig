@@ -827,11 +827,6 @@ fn drawAddComponentControls(
         return false;
     }
 
-    if (!engine.ui.ImGui.beginMenu(state.text(.add_component))) {
-        return false;
-    }
-    defer engine.ui.ImGui.endMenu();
-
     if (entity.mesh == null) {
         if (engine.ui.ImGui.beginMenu(state.text(.mesh))) {
             defer engine.ui.ImGui.endMenu();
@@ -1450,6 +1445,8 @@ pub fn materialHandleForEntity(_: *const EditorState, entity: *const engine.scen
 }
 
 pub fn materialUsageCount(_: *const EditorState, world: *const engine.scene.World, handle: engine.assets.MaterialHandle) usize {
+    // 缓存实现：可在状态中添加 material_usage_cache
+    // 目前先实现直接计数，但只在必要时调用
     var count: usize = 0;
     for (world.entities.items) |entity| {
         if (entity.material) |material| {

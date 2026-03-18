@@ -86,29 +86,29 @@ fn drawAssetDragSource(state: *EditorState, entry: AssetEntry, index: usize, pre
 fn drawTabButton(state: *EditorState, tab: BottomPanelTab, label: []const u8, width: f32) bool {
     const active = state.bottom_panel_tab == tab;
     const palette = if (active) ui_icons.palettes.toolbar_active else ui_icons.palettes.toolbar_idle;
-    
+
     engine.ui.ImGui.pushStyleColor(.button, palette.button);
     engine.ui.ImGui.pushStyleColor(.button_hovered, palette.hovered);
     engine.ui.ImGui.pushStyleColor(.button_active, palette.active);
-    
+
     // 如果是激活状态，文字颜色也使用强调色，增加区分度
     if (active) {
         engine.ui.ImGui.pushStyleColor(.text, .{ 0.20, 0.60, 0.45, 1.0 });
     }
-    
+
     const clicked = engine.ui.ImGui.buttonEx(label, width, 0.0);
-    
+
     if (active) {
         engine.ui.ImGui.popStyleColor(1);
-        
+
         // 绘制底部的指示条 (Indicator)
         const pos_min = engine.ui.ImGui.getItemRectMin();
         const pos_max = engine.ui.ImGui.getItemRectMax();
         const draw_list = engine.ui.ImGui.getWindowDrawList();
-        
+
         const indicator_y = pos_max[1] - 2.0;
         const indicator_color = engine.ui.ImGui.getColorU32Slot(.text);
-        
+
         draw_list.addLine(
             .{ pos_min[0] + 4.0, indicator_y },
             .{ pos_max[0] - 4.0, indicator_y },
@@ -116,7 +116,7 @@ fn drawTabButton(state: *EditorState, tab: BottomPanelTab, label: []const u8, wi
             2.0,
         );
     }
-    
+
     engine.ui.ImGui.popStyleColor(3);
     return clicked;
 }
@@ -140,24 +140,24 @@ fn drawThumbnailPresetButton(state: *EditorState, label: []const u8, size: f32) 
 
 fn drawBreadcrumbButton(label: []const u8, active: bool, width: f32) bool {
     const palette = if (active) ui_icons.palettes.toolbar_active else ui_icons.palettes.toolbar_idle;
-    
+
     engine.ui.ImGui.pushStyleColor(.button, palette.button);
     engine.ui.ImGui.pushStyleColor(.button_hovered, palette.hovered);
     engine.ui.ImGui.pushStyleColor(.button_active, palette.active);
-    
+
     if (active) {
         engine.ui.ImGui.pushStyleColor(.text, .{ 0.20, 0.60, 0.45, 1.0 });
     }
-    
+
     engine.ui.ImGui.pushStyleVarVec2(.frame_padding, ui_icons.compact_icon_button_padding);
     engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, ui_icons.compact_icon_button_rounding);
-    
+
     const clicked = engine.ui.ImGui.buttonEx(label, width, 0.0);
-    
+
     if (active) {
         engine.ui.ImGui.popStyleColor(1);
     }
-    
+
     engine.ui.ImGui.popStyleVar(2);
     engine.ui.ImGui.popStyleColor(3);
     return clicked;
@@ -239,6 +239,19 @@ fn drawAssetGridView(state: *EditorState, layer_context: *engine.core.LayerConte
         shown += 1;
         engine.ui.ImGui.tableNextColumn();
         try drawAssetCard(state, layer_context, entry, index, tile_size);
+    }
+
+    // Show empty state message if no assets
+    if (shown == 0) {
+        engine.ui.ImGui.tableNextColumn();
+        engine.ui.ImGui.pushStyleColor(.text, .{ 0.61, 0.64, 0.68, 1.0 });
+        const selected_dir = selectedDirectory(state);
+        if (std.mem.eql(u8, selected_dir, "/")) {
+            engine.ui.ImGui.text("No assets in project. Add files to the assets folder.");
+        } else {
+            engine.ui.ImGui.text("Drop assets here or use Import to add files");
+        }
+        engine.ui.ImGui.popStyleColor(1);
     }
 }
 
@@ -397,14 +410,17 @@ fn drawProjectPanelHeader(state: *EditorState, layer_context: *engine.core.Layer
 
     // Left: Breadcrumb path (clickable)
     const breadcrumb_width = std.math.clamp(width * 0.35, 120.0, 280.0);
-    if (engine.ui.ImGui.buttonEx(state.text(.assets_menu), breadcrumb_width, 26.0)) {
+    const current = selectedDirectory(state);
+    const is_at_root = std.mem.eql(u8, current, "/");
+    const root_label = if (is_at_root) "/" else state.text(.assets_menu);
+    if (engine.ui.ImGui.buttonEx(root_label, breadcrumb_width, 26.0)) {
         setSelectedAssetDirectory(state, "/");
     }
 
     // Show sub-path buttons if there's more content
-    const current = selectedDirectory(state);
     var path_buffer: [256]u8 = undefined;
-    var path_pos: usize = 1; // Start after root "/"
+    // Skip leading slash if present
+    var path_pos: usize = if (current.len > 0 and current[0] == '/') 1 else 0;
     while (path_pos < current.len) {
         engine.ui.ImGui.sameLine();
         const next_slash = std.mem.indexOfScalarPos(u8, current, path_pos, '/') orelse current.len;
@@ -544,7 +560,10 @@ fn drawBreadcrumbs(state: *EditorState) !void {
     while (start <= current.len) {
         const next_slash = std.mem.indexOfScalarPos(u8, current, start, '/') orelse current.len;
         const crumb_path = current[0..next_slash];
-        const crumb_label = if (crumb_index == 0) state.text(.assets_menu) else directoryName(crumb_path);
+        const crumb_label = if (crumb_index == 0)
+            (if (std.mem.eql(u8, current, "/")) "/" else state.text(.assets_menu))
+        else
+            directoryName(crumb_path);
         const is_current = next_slash == current.len;
         var stacked_label_buffer: [160]u8 = undefined;
         const button_label = if (stacked and crumb_index > 0)
@@ -630,6 +649,9 @@ fn setSelectedAssetDirectory(state: *EditorState, path: []const u8) void {
 
 fn assetVisibleInDirectory(state: *const EditorState, entry: AssetEntry) bool {
     const selected_dir = selectedDirectory(state);
+    if (std.mem.eql(u8, selected_dir, "/")) {
+        return true;
+    }
     const directory = directoryPath(entry.path);
     return std.mem.eql(u8, selected_dir, directory);
 }

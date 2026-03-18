@@ -25,7 +25,8 @@ pub const Entry = struct {
 var g_mutex: std.Thread.Mutex = .{};
 var g_entries: [max_entries]Entry = undefined;
 var g_entry_count: usize = 0;
-var g_entry_cursor: usize = 0;
+var g_entry_write: usize = 0; // Write head for ring buffer
+var g_entry_read: usize = 0; // Read head for ring buffer
 
 pub fn logFn(
     comptime message_level: std.log.Level,
@@ -52,24 +53,29 @@ pub fn clear() void {
     g_mutex.lock();
     defer g_mutex.unlock();
     g_entry_count = 0;
-    g_entry_cursor = 0;
+    g_entry_write = 0;
+    g_entry_read = 0;
 }
 
 pub fn snapshot(buffer: []Entry) usize {
     g_mutex.lock();
     defer g_mutex.unlock();
 
-    const count = @min(buffer.len, g_entry_count);
-    if (count == 0) {
+    if (g_entry_count == 0) {
         return 0;
     }
 
-    const start = if (g_entry_count < max_entries) 0 else g_entry_cursor;
     var index: usize = 0;
-    while (index < count) : (index += 1) {
-        buffer[index] = g_entries[(start + index) % max_entries];
+    var cursor = g_entry_read;
+    const end = g_entry_write;
+
+    while (index < buffer.len and cursor != end) : (index += 1) {
+        buffer[index] = g_entries[cursor];
+        cursor = (cursor + 1) % max_entries;
     }
-    return count;
+
+    g_entry_read = cursor;
+    return index;
 }
 
 pub fn drawConsolePanel(state: *EditorState) !void {
@@ -147,13 +153,17 @@ fn appendEntry(level: std.log.Level, scope: []const u8, message: []const u8) voi
     g_mutex.lock();
     defer g_mutex.unlock();
 
+    // 分离的写入逻辑：防止读取时游标移动
     const slot = if (g_entry_count < max_entries) blk: {
         const value = g_entry_count;
         g_entry_count += 1;
         break :blk value;
     } else blk: {
-        const value = g_entry_cursor;
-        g_entry_cursor = (g_entry_cursor + 1) % max_entries;
+        const value = g_entry_write;
+        g_entry_write = (g_entry_write + 1) % max_entries;
+        if (g_entry_read == g_entry_write) {
+            g_entry_read = (g_entry_read + 1) % max_entries;
+        }
         break :blk value;
     };
 

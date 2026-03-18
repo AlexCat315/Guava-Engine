@@ -260,6 +260,9 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
         };
         engine.ui.ImGui.image(texture, image_size[0], image_size[1]);
         state.viewport_has_image = true;
+
+        // Draw toolbar above viewport (transform tools)
+        try drawViewportToolbarStrip(state, layer_context);
         try handleViewportAssetDropTargets(state, layer_context);
         try drawViewportOverlayControlsWindow(state, layer_context);
         try drawViewportPlaybackOverlayWindow(state, layer_context);
@@ -850,51 +853,8 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
     }
     engine.ui.ImGui.sameLine();
 
-    // Transform tools (use overlay style with tooltip)
-    if (try drawOverlayIconButton(state, layer_context, "toolbar_select", ui_icons.paths.toolbar.select, state.manipulation_mode == .none)) {
-        try manipulation.selectTool(state, layer_context);
-    }
-    if (engine.ui.ImGui.isItemHovered()) {
-        engine.ui.ImGui.setTooltip(state.text(.select_tool));
-    }
-    engine.ui.ImGui.sameLine();
-    if (try drawOverlayIconButton(state, layer_context, "toolbar_move", ui_icons.paths.toolbar.move, state.manipulation_mode == .translate)) {
-        try manipulation.beginManipulation(state, layer_context, .translate);
-    }
-    if (engine.ui.ImGui.isItemHovered()) {
-        engine.ui.ImGui.setTooltip(state.text(.move_tool));
-    }
-    engine.ui.ImGui.sameLine();
-    if (try drawOverlayIconButton(state, layer_context, "toolbar_rotate", ui_icons.paths.toolbar.rotate, state.manipulation_mode == .rotate)) {
-        try manipulation.beginManipulation(state, layer_context, .rotate);
-    }
-    if (engine.ui.ImGui.isItemHovered()) {
-        engine.ui.ImGui.setTooltip(state.text(.rotate_tool));
-    }
-    engine.ui.ImGui.sameLine();
-    if (try drawOverlayIconButton(state, layer_context, "toolbar_scale", ui_icons.paths.toolbar.scale, state.manipulation_mode == .scale)) {
-        try manipulation.beginManipulation(state, layer_context, .scale);
-    }
-    if (engine.ui.ImGui.isItemHovered()) {
-        engine.ui.ImGui.setTooltip(state.text(.scale_tool));
-    }
-    engine.ui.ImGui.sameLine();
-
-    // Transform space (global/local)
-    const transform_icon_path = switch (state.transform_space) {
-        .local => ui_icons.paths.toolbar.transform_local,
-        .world => ui_icons.paths.toolbar.transform_global,
-    };
-    if (try drawOverlayIconButton(state, layer_context, "toolbar_transform_space", transform_icon_path, state.transform_space == .world)) {
-        state.transform_space = switch (state.transform_space) {
-            .local => .world,
-            .world => .local,
-        };
-    }
-    if (engine.ui.ImGui.isItemHovered()) {
-        engine.ui.ImGui.setTooltip(if (state.transform_space == .world) state.text(.global) else state.text(.local));
-    }
-    engine.ui.ImGui.sameLine();
+    // Note: Transform tools and transform space are now in the toolbar strip above the viewport
+    // Only snap buttons remain in overlay
 
     if (try drawOverlayIconButton(state, layer_context, "viewport_snap_translate", ui_icons.paths.toolbar.snap_translate, state.translation_snap_enabled)) {
         state.translation_snap_enabled = !state.translation_snap_enabled;
