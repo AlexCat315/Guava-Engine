@@ -91,12 +91,15 @@ pub const DebugBlock = struct {
 pub const PreparedScene = struct {
     allocator: std.mem.Allocator,
     camera: CameraBlock,
+    view_matrix: [16]f32,
+    projection_matrix: [16]f32,
     view_projection: [16]f32,
     camera_world_position: [4]f32,
     lights: LightBlock,
     light_space_matrix: [16]f32,
-    shadow_map: ?*const rhi_mod.Texture = null,
-    shadow_sampler: ?*const rhi_mod.Sampler = null,
+    shadow_map: ?*const rhi_mod.Texture,
+    shadow_sampler: ?*const rhi_mod.Sampler,
+    environment_map: ?*const rhi_mod.Texture = null,
     ambient_color: [4]f32,
     opaque_meshes: []DrawItem,
     transparent_meshes: []DrawItem,
@@ -241,11 +244,20 @@ pub const MeshSceneCache = struct {
         return null;
     }
 
-    pub fn calculateViewProjection(self: *MeshSceneCache, camera: CameraBlock, width: u32, height: u32) [16]f32 {
+    pub fn calculateViewMatrix(self: *MeshSceneCache, camera: CameraBlock) [16]f32 {
+        _ = self;
+        return math.viewMatrix(camera.transform);
+    }
+
+    pub fn calculateProjectionMatrix(self: *MeshSceneCache, camera: CameraBlock, width: u32, height: u32) [16]f32 {
         _ = self;
         const aspect = if (height == 0) 1.0 else @as(f32, @floatFromInt(width)) / @as(f32, @floatFromInt(height));
-        const view = math.viewMatrix(camera.transform);
-        const projection = math.projectionForCamera(camera.camera, aspect);
+        return math.projectionForCamera(camera.camera, aspect);
+    }
+
+    pub fn calculateViewProjection(self: *MeshSceneCache, camera: CameraBlock, width: u32, height: u32) [16]f32 {
+        const view = self.calculateViewMatrix(camera);
+        const projection = self.calculateProjectionMatrix(camera, width, height);
         return math.mul(projection, view);
     }
 
@@ -261,7 +273,9 @@ pub const MeshSceneCache = struct {
             return error.NoPrimaryCamera;
         };
 
-        const view_projection = self.calculateViewProjection(camera_block, width, height);
+        const view_matrix = self.calculateViewMatrix(camera_block);
+        const projection_matrix = self.calculateProjectionMatrix(camera_block, width, height);
+        const view_projection = math.mul(projection_matrix, view_matrix);
         const frustum = frustum_mod.Frustum.fromViewProjection(view_projection);
 
         var directional_lights = std.ArrayList(DirectionalLightBlock).empty;
@@ -342,6 +356,8 @@ pub const MeshSceneCache = struct {
         return .{
             .allocator = self.allocator,
             .camera = camera_block,
+            .view_matrix = view_matrix,
+            .projection_matrix = projection_matrix,
             .view_projection = view_projection,
             .camera_world_position = .{
                 camera_block.transform.translation[0],

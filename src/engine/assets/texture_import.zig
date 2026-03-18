@@ -118,6 +118,7 @@ fn cookTextureRecord(allocator: std.mem.Allocator, record: *const registry_mod.A
     var width: u32 = 0;
     var height: u32 = 0;
     var pixels_hex: []u8 = undefined;
+    var format: rhi_types.TextureFormat = .bgra8_unorm;
     defer allocator.free(pixels_hex);
 
     if (std.mem.endsWith(u8, record.source_path, ".svg")) {
@@ -126,6 +127,16 @@ fn cookTextureRecord(allocator: std.mem.Allocator, record: *const registry_mod.A
         width = rasterized.width;
         height = rasterized.height;
         pixels_hex = try encodeHexAlloc(allocator, rasterized.pixels);
+    } else if (std.mem.endsWith(u8, record.source_path, ".hdr")) {
+        const encoded = try std.fs.cwd().readFileAlloc(allocator, record.source_path, 128 * 1024 * 1024);
+        defer allocator.free(encoded);
+
+        var decoded = try image_decoder.decodeRgba32f(allocator, encoded);
+        defer decoded.deinit();
+        width = decoded.width;
+        height = decoded.height;
+        format = .rgba32_float;
+        pixels_hex = try encodeHexAlloc(allocator, std.mem.sliceAsBytes(decoded.pixels));
     } else {
         const encoded = try std.fs.cwd().readFileAlloc(allocator, record.source_path, 128 * 1024 * 1024);
         defer allocator.free(encoded);
@@ -146,6 +157,7 @@ fn cookTextureRecord(allocator: std.mem.Allocator, record: *const registry_mod.A
         .import_version = record.resolvedImportVersion(),
         .width = width,
         .height = height,
+        .format = format,
         .pixels_hex = pixels_hex,
     };
 

@@ -6,6 +6,8 @@ const registry_mod = @import("../assets/registry.zig");
 const texture_resource_mod = @import("../assets/texture_resource.zig");
 const base_pass_mod = @import("base_pass.zig");
 const shadow_pass_mod = @import("shadow_pass.zig");
+const skybox_pass_mod = @import("skybox_pass.zig");
+const tonemap_pass_mod = @import("tonemap_pass.zig");
 const depth_prepass_mod = @import("depth_prepass.zig");
 const id_pass_mod = @import("id_pass.zig");
 const gizmo_pass_mod = @import("gizmo_pass.zig");
@@ -75,10 +77,14 @@ const InFlightSelectionBatch = struct {
 const SceneViewportState = struct {
     width: u32 = 0,
     height: u32 = 0,
+    hdr_color_texture: ?rhi_mod.Texture = null,
     color_texture: ?rhi_mod.Texture = null,
     depth_texture: ?rhi_mod.Texture = null,
 
     fn deinit(self: *SceneViewportState, device: *rhi_mod.RhiDevice) void {
+        if (self.hdr_color_texture) |*texture| {
+            device.releaseTexture(texture);
+        }
         if (self.color_texture) |*texture| {
             device.releaseTexture(texture);
         }
@@ -95,7 +101,7 @@ const SceneViewportState = struct {
         }
 
         if (self.color_texture) |color_texture| {
-            if (self.depth_texture != null and color_texture.desc.width == width and color_texture.desc.height == height) {
+            if (self.depth_texture != null and self.hdr_color_texture != null and color_texture.desc.width == width and color_texture.desc.height == height) {
                 self.width = width;
                 self.height = height;
                 return;
@@ -103,6 +109,17 @@ const SceneViewportState = struct {
         }
 
         self.deinit(device);
+
+        self.hdr_color_texture = try device.createTexture(.{
+            .width = width,
+            .height = height,
+            .format = .rgba16_float,
+            .usage = rhi_types.TextureUsage.color_target | rhi_types.TextureUsage.sampler,
+        });
+        errdefer if (self.hdr_color_texture) |*texture| {
+            device.releaseTexture(texture);
+            self.hdr_color_texture = null;
+        };
 
         self.color_texture = try device.createTexture(.{
             .width = width,
@@ -127,7 +144,14 @@ const SceneViewportState = struct {
     }
 
     fn active(self: *const SceneViewportState) bool {
-        return self.width > 0 and self.height > 0 and self.color_texture != null and self.depth_texture != null;
+        return self.width > 0 and self.height > 0 and self.hdr_color_texture != null and self.color_texture != null and self.depth_texture != null;
+    }
+
+    fn hdrColor(self: *SceneViewportState) ?*const rhi_mod.Texture {
+        if (self.hdr_color_texture) |*texture| {
+            return texture;
+        }
+        return null;
     }
 
     fn color(self: *SceneViewportState) ?*const rhi_mod.Texture {
@@ -428,8 +452,10 @@ pub const Renderer = struct {
     depth_prepass: depth_prepass_mod.DepthPrepass,
     shadow_pass: shadow_pass_mod.ShadowPass,
     base_pass: base_pass_mod.BasePass,
+    skybox_pass: ?skybox_pass_mod.SkyboxPass = null, // Optional due to shader issues
     outline_pass: outline_pass_mod.OutlinePass,
     gizmo_pass: gizmo_pass_mod.GizmoPass,
+    tonemap_pass: tonemap_pass_mod.TonemapPass,
     selection_history: SelectionHistory,
     selection_seeded: bool = false,
     editor_gizmo_state: EditorGizmoState = .{},
@@ -471,8 +497,10 @@ pub const Renderer = struct {
             .depth_prepass = undefined,
             .shadow_pass = undefined,
             .base_pass = undefined,
+            .skybox_pass = undefined,
             .outline_pass = undefined,
             .gizmo_pass = undefined,
+            .tonemap_pass = undefined,
             .selection_history = SelectionHistory.init(allocator, 64),
             .material_thumbnail_cache = std.StringHashMap(MaterialThumbnailCacheEntry).init(allocator),
             .material_thumbnail_preview = undefined,
@@ -508,6 +536,10 @@ pub const Renderer = struct {
         renderer.base_pass = try base_pass_mod.BasePass.init(&renderer.rhi);
         errdefer renderer.base_pass.deinit(&renderer.rhi);
 
+        // TODO: Skybox pass disabled due to shader compilation issues
+        // renderer.skybox_pass = try skybox_pass_mod.SkyboxPass.init(&renderer.rhi);
+        // errdefer renderer.skybox_pass.deinit(&renderer.rhi);
+
         renderer.outline_pass = try outline_pass_mod.OutlinePass.init(&renderer.rhi);
         errdefer renderer.outline_pass.deinit(&renderer.rhi);
 
@@ -527,6 +559,8 @@ pub const Renderer = struct {
         self.releaseMaterialThumbnailCache();
         self.material_thumbnail_preview.deinit();
         self.thumbnail_scene_cache.deinit(&self.rhi);
+        self.tonemap_pass.deinit(&self.rhi);
+        // self.skybox_pass.deinit(&self.rhi); // Skybox disabled
         self.gizmo_pass.deinit(&self.rhi);
         self.outline_pass.deinit(&self.rhi);
         self.base_pass.deinit(&self.rhi);
@@ -738,9 +772,14 @@ pub const Renderer = struct {
                 prepared_scene.light_space_matrix = light_space_matrix;
                 prepared_scene.shadow_map = &self.shadow_map.depth_texture.?;
                 prepared_scene.shadow_sampler = &self.shadow_map.sampler.?;
+                prepared_scene.environment_map = &self.scene_cache.fallback_texture.?; // Use fallback texture as a placeholder environment map for now
 
                 const scene_color_target: rhi_mod.ColorTarget = if (viewport_active)
                     .{ .texture = self.scene_viewport.color().? }
+                else
+                    .swapchain;
+                const scene_hdr_color_target: rhi_mod.ColorTarget = if (viewport_active)
+                    .{ .texture = self.scene_viewport.hdrColor().? }
                 else
                     .swapchain;
                 const scene_depth_target: ?rhi_mod.DepthAttachmentDesc = blk_depth: {
@@ -794,9 +833,11 @@ pub const Renderer = struct {
                     self.rhi.endRenderPass(id_render_pass);
                 }
 
+                const base_pass_target = if (viewport_active) scene_hdr_color_target else scene_color_target;
+
                 const scene_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
                     .color = .{
-                        .target = scene_color_target,
+                        .target = base_pass_target,
                         .clear_color = clear.color,
                         .load_op = .clear,
                         .store_op = .store,
@@ -812,7 +853,34 @@ pub const Renderer = struct {
                 const base_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene, self.editor_viewport_state);
                 self.graph.recordPassStat(pass_stats, .base_pass, durationNs(base_start, std.time.nanoTimestamp()), base_stats.draw_calls, base_stats.triangles_drawn);
                 draw_stats.add(base_stats);
+
+                // TODO: Skybox disabled due to shader compilation issues
+                // if (self.skybox_pass.isReady() and prepared_scene.environment_map != null) {
+                //     const skybox_start = std.time.nanoTimestamp();
+                //     self.skybox_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene, prepared_scene.environment_map.?);
+                //     self.graph.recordPassStat(pass_stats, .skybox_pass, durationNs(skybox_start, std.time.nanoTimestamp()), 1, 1);
+                //     draw_stats.draw_calls += 1;
+                //     draw_stats.triangles_drawn += 1;
+                // }
+
                 self.rhi.endRenderPass(scene_pass);
+
+                if (viewport_active) {
+                    if (self.tonemap_pass.isReady()) {
+                        try self.tonemap_pass.syncTexture(&self.rhi, self.scene_viewport.hdrColor().?);
+                        const tonemap_render_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
+                            .color = .{
+                                .target = scene_color_target,
+                                .clear_color = .{ 0.0, 0.0, 0.0, 1.0 },
+                                .load_op = .clear,
+                                .store_op = .store,
+                            },
+                            .depth = null,
+                        });
+                        self.tonemap_pass.draw(&self.rhi, tonemap_render_pass);
+                        self.rhi.endRenderPass(tonemap_render_pass);
+                    }
+                }
 
                 const selected_entities = self.selection_history.currentSelection();
                 if (self.outline_pass.isReady() and self.id_pass.texture() != null and selected_entities.len > 0) {

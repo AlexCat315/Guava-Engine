@@ -2,6 +2,7 @@ const std = @import("std");
 const mesh_resource = @import("../assets/mesh_resource.zig");
 const mesh_pass_mod = @import("mesh_pass.zig");
 const rhi_mod = @import("../rhi/device.zig");
+const rhi_types = @import("../rhi/types.zig");
 const shader_support = @import("shader_support.zig");
 const render_types = @import("types.zig");
 const vec3 = @import("../math/vec3.zig");
@@ -13,7 +14,7 @@ pub const BasePass = struct {
 
     pub fn init(device: *rhi_mod.RhiDevice) !BasePass {
         var pass = BasePass{};
-        try pass.createResources(device);
+        try pass.createResources(device, .rgba16_float);
         return pass;
     }
 
@@ -116,7 +117,7 @@ pub const BasePass = struct {
         return stats;
     }
 
-    fn createResources(self: *BasePass, device: *rhi_mod.RhiDevice) !void {
+    fn createResources(self: *BasePass, device: *rhi_mod.RhiDevice, color_format: rhi_types.TextureFormat) !void {
         self.stages = try shader_support.loadProgramStages(device, "mesh");
         errdefer if (self.stages) |*stages| {
             stages.deinit(device);
@@ -161,7 +162,7 @@ pub const BasePass = struct {
             .fragment_shader = &self.stages.?.fragment,
             .vertex_buffer_layouts = vertex_layouts[0..],
             .vertex_attributes = vertex_attributes[0..],
-            .color_format = device.runtimeInfo().swapchain_format,
+            .color_format = color_format,
             .depth_format = .d32_float,
             .primitive_type = .triangle_list,
             .fill_mode = .fill,
@@ -180,7 +181,7 @@ pub const BasePass = struct {
             .fragment_shader = &self.stages.?.fragment,
             .vertex_buffer_layouts = vertex_layouts[0..],
             .vertex_attributes = vertex_attributes[0..],
-            .color_format = device.runtimeInfo().swapchain_format,
+            .color_format = color_format,
             .depth_format = .d32_float,
             .primitive_type = .triangle_list,
             .fill_mode = .line,

@@ -1414,6 +1414,8 @@ fn textureFormatToSdl(format: types.TextureFormat) sdl.SDL_GPUTextureFormat {
     return switch (format) {
         .bgra8_unorm => sdl.SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
         .bgra8_unorm_srgb => sdl.SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB,
+        .rgba16_float => sdl.SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT,
+        .rgba32_float => sdl.SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT,
         .d24_unorm => sdl.SDL_GPU_TEXTUREFORMAT_D24_UNORM,
         .d24_unorm_s8_uint => sdl.SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT,
         .d32_float => sdl.SDL_GPU_TEXTUREFORMAT_D32_FLOAT,

@@ -101,6 +101,8 @@ pub const TextureFormat = enum {
     unknown,
     bgra8_unorm,
     bgra8_unorm_srgb,
+    rgba16_float,
+    rgba32_float,
     d24_unorm,
     d24_unorm_s8_uint,
     d32_float,
