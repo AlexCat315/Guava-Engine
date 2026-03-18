@@ -91,8 +91,19 @@ pub fn swizzleRgbaToBgra(bytes: []u8) void {
     }
 }
 
+pub fn normalizeAngle(angle: f32) f32 {
+    var normalized = angle;
+    while (normalized > std.math.pi) {
+        normalized -= std.math.tau;
+    }
+    while (normalized < -std.math.pi) {
+        normalized += std.math.tau;
+    }
+    return normalized;
+}
+
 pub fn clampPitch(pitch: f32) f32 {
-    return std.math.clamp(pitch, -1.55, 1.55);
+    return normalizeAngle(pitch);
 }
 
 pub fn clampDistance(distance: f32) f32 {

@@ -52,6 +52,8 @@ pub const DrawItem = struct {
     vertex_buffer: rhi_mod.Buffer,
     index_buffer: rhi_mod.Buffer,
     index_count: u32,
+    wireframe_index_buffer: rhi_mod.Buffer,
+    wireframe_index_count: u32,
     bind_group: rhi_mod.BindGroup,
     material_textures: [4]*const rhi_mod.Texture,
     base_color_factor: [4]f32,
@@ -145,6 +147,8 @@ const CachedMesh = struct {
     vertex_buffer: rhi_mod.Buffer,
     index_buffer: rhi_mod.Buffer,
     index_count: u32,
+    wireframe_index_buffer: rhi_mod.Buffer,
+    wireframe_index_count: u32,
     primitive_type: rhi_types.PrimitiveType,
 };
 
@@ -202,6 +206,7 @@ pub const MeshSceneCache = struct {
         self.textures.deinit(self.allocator);
 
         for (self.meshes.items) |*mesh| {
+            device.releaseBuffer(&mesh.wireframe_index_buffer);
             device.releaseBuffer(&mesh.index_buffer);
             device.releaseBuffer(&mesh.vertex_buffer);
         }
@@ -351,6 +356,8 @@ pub const MeshSceneCache = struct {
                 .vertex_buffer = gpu_mesh.vertex_buffer,
                 .index_buffer = gpu_mesh.index_buffer,
                 .index_count = gpu_mesh.index_count,
+                .wireframe_index_buffer = gpu_mesh.wireframe_index_buffer,
+                .wireframe_index_count = gpu_mesh.wireframe_index_count,
                 .bind_group = material_state.bind_group,
                 .material_textures = material_state.material_textures,
                 .base_color_factor = material_state.base_color_factor,
@@ -506,15 +513,66 @@ pub const MeshSceneCache = struct {
         }
         try device.uploadBufferData(&index_buffer, std.mem.sliceAsBytes(mesh.indices));
 
+        const wireframe_indices = try buildWireframeIndices(self.allocator, mesh.indices);
+        defer self.allocator.free(wireframe_indices);
+        const wireframe_index_buffer = try device.createBuffer(.{
+            .size = @intCast(@sizeOf(u32) * wireframe_indices.len),
+            .usage = rhi_types.BufferUsage.index,
+        });
+        errdefer {
+            var copy = wireframe_index_buffer;
+            device.releaseBuffer(&copy);
+        }
+        try device.uploadBufferData(&wireframe_index_buffer, std.mem.sliceAsBytes(wireframe_indices));
+
         const cached = CachedMesh{
             .handle = handle,
             .vertex_buffer = vertex_buffer,
             .index_buffer = index_buffer,
             .index_count = @intCast(mesh.indices.len),
+            .wireframe_index_buffer = wireframe_index_buffer,
+            .wireframe_index_count = @intCast(wireframe_indices.len),
             .primitive_type = mesh.primitive_type,
         };
         try self.meshes.append(self.allocator, cached);
         return cached;
+    }
+
+    fn buildWireframeIndices(allocator: std.mem.Allocator, triangle_indices: []const u32) ![]u32 {
+        var edges = std.ArrayList(u32).empty;
+        defer edges.deinit(allocator);
+        var seen = std.AutoHashMap(u64, void).init(allocator);
+        defer seen.deinit();
+
+        var triangle_index: usize = 0;
+        while (triangle_index + 2 < triangle_indices.len) : (triangle_index += 3) {
+            const a = triangle_indices[triangle_index];
+            const b = triangle_indices[triangle_index + 1];
+            const c = triangle_indices[triangle_index + 2];
+            try appendWireframeEdge(allocator, &edges, &seen, a, b);
+            try appendWireframeEdge(allocator, &edges, &seen, b, c);
+            try appendWireframeEdge(allocator, &edges, &seen, c, a);
+        }
+
+        return edges.toOwnedSlice(allocator);
+    }
+
+    fn appendWireframeEdge(
+        allocator: std.mem.Allocator,
+        edges: *std.ArrayList(u32),
+        seen: *std.AutoHashMap(u64, void),
+        first: u32,
+        second: u32,
+    ) !void {
+        const edge_min = @min(first, second);
+        const edge_max = @max(first, second);
+        const key = (@as(u64, edge_min) << 32) | @as(u64, edge_max);
+        const entry = try seen.getOrPut(key);
+        if (entry.found_existing) {
+            return;
+        }
+        try edges.append(allocator, first);
+        try edges.append(allocator, second);
     }
 
     fn ensureTexture(

@@ -60,6 +60,7 @@ pub const BasePass = struct {
             .wireframe => &self.wireframe_pipeline.?,
             .textured, .unlit => &self.fill_pipeline.?,
         };
+        const is_wireframe = viewport_state.render_mode == .wireframe;
         device.bindGraphicsPipeline(pass, pipeline);
 
         const main_light = if (prepared_scene.lights.directional_lights.len > 0)
@@ -139,10 +140,20 @@ pub const BasePass = struct {
                 fragment_uniforms.point_light_color_intensity = .{ 0.0, 0.0, 0.0, 0.0 };
                 fragment_uniforms.ambient_color = .{ 1.0, 1.0, 1.0, 1.0 };
                 fragment_uniforms.ibl_params = .{ 0.0, 0.0, 0.0, 0.0 };
+            } else if (is_wireframe) {
+                fragment_uniforms.base_color_factor = .{ 0.08, 0.08, 0.08, 1.0 };
+                fragment_uniforms.emissive_factor = .{ 0.0, 0.0, 0.0, 0.0 };
+                fragment_uniforms.has_textures = .{ 0, 0, 0, 0 };
+                fragment_uniforms.light_color_intensity = .{ 0.0, 0.0, 0.0, 0.0 };
+                fragment_uniforms.point_light_color_intensity = .{ 0.0, 0.0, 0.0, 0.0 };
+                fragment_uniforms.ambient_color = .{ 1.0, 1.0, 1.0, 1.0 };
+                fragment_uniforms.ibl_params = .{ 0.0, 0.0, 0.0, 0.0 };
             }
 
             device.bindVertexBuffer(pass, 0, &item.vertex_buffer, 0);
-            device.bindIndexBuffer(pass, &item.index_buffer, .u32, 0);
+            const draw_index_buffer = if (is_wireframe) &item.wireframe_index_buffer else &item.index_buffer;
+            const draw_index_count = if (is_wireframe) item.wireframe_index_count else item.index_count;
+            device.bindIndexBuffer(pass, draw_index_buffer, .u32, 0);
             if (use_metal_combined_bindings) {
                 const shadow_texture = prepared_scene.shadow_map orelse return error.TextureNotFound;
                 const shadow_sampler = prepared_scene.shadow_sampler orelse return error.SamplerCreateFailed;
@@ -176,7 +187,7 @@ pub const BasePass = struct {
 
             device.pushVertexUniformData(frame, 0, std.mem.asBytes(&vertex_uniforms));
             device.pushFragmentUniformData(frame, 0, std.mem.asBytes(&fragment_uniforms));
-            device.drawIndexedPrimitives(pass, item.index_count, 1, 0, 0, 0);
+            device.drawIndexedPrimitives(pass, draw_index_count, 1, 0, 0, 0);
 
             stats.draw_calls += 1;
             stats.triangles_drawn += item.index_count / 3;
@@ -251,8 +262,8 @@ pub const BasePass = struct {
             .vertex_attributes = vertex_attributes[0..],
             .color_format = color_format,
             .depth_format = .d32_float,
-            .primitive_type = .triangle_list,
-            .fill_mode = .line,
+            .primitive_type = .line_list,
+            .fill_mode = .fill,
             .cull_mode = .none,
             .front_face = .counter_clockwise,
             .depth_compare = .less_or_equal,

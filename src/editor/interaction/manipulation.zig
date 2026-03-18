@@ -148,23 +148,14 @@ pub fn beginManipulation(
     layer_context: *engine.core.LayerContext,
     mode: ManipulationMode,
 ) !void {
-    const selected = layer_context.renderer.selectedEntity() orelse return;
-    if (state.editor_camera != null and selected == state.editor_camera.?) {
-        return;
-    }
-    if (utils.isEntitySelectionLocked(state, selected)) {
-        return;
-    }
-
     state.manipulation_mode = mode;
     state.manipulation_axis = .free;
-    state.manipulation_entity = selected;
-    state.manipulation_origin = layer_context.world.worldTransform(selected) orelse return;
+    state.manipulation_entity = null;
     state.manipulation_drag_active = false;
     state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
     state.manipulation_accumulated_delta = .{ 0.0, 0.0 }; // 重置累计偏移量
     clearManipulationSnapshot(state);
-    state.manipulation_snapshot = try history.captureEntitySnapshot(state, layer_context.world, selected);
+    try syncManipulationTarget(state, layer_context);
     syncGizmoState(state, layer_context);
     try history.refreshWindowTitle(state, layer_context);
 }
@@ -427,7 +418,10 @@ pub fn applyScale(state: *EditorState, entity_transform: *engine.scene.Transform
     };
 }
 
-pub fn syncGizmoState(state: *const EditorState, layer_context: *engine.core.LayerContext) void {
+pub fn syncGizmoState(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+    syncManipulationTarget(state, layer_context) catch |err| {
+        std.log.err("failed to sync manipulation target: {}", .{err});
+    };
     layer_context.renderer.setEditorGizmoState(.{
         .mode = switch (state.manipulation_mode) {
             .none => .idle,
@@ -441,6 +435,43 @@ pub fn syncGizmoState(state: *const EditorState, layer_context: *engine.core.Lay
             .world => .world,
         },
     });
+}
+
+fn syncManipulationTarget(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    if (state.manipulation_mode == .none or state.manipulation_drag_active) {
+        if (state.manipulation_mode == .none) {
+            clearManipulationSnapshot(state);
+            state.manipulation_entity = null;
+        }
+        return;
+    }
+
+    const selected = layer_context.renderer.selectedEntity();
+    const next_entity = blk: {
+        const entity_id = selected orelse break :blk null;
+        if (state.editor_camera != null and entity_id == state.editor_camera.?) {
+            break :blk null;
+        }
+        if (utils.isEntitySelectionLocked(state, entity_id)) {
+            break :blk null;
+        }
+        break :blk entity_id;
+    };
+
+    if (next_entity == state.manipulation_entity) {
+        return;
+    }
+
+    clearManipulationSnapshot(state);
+    state.manipulation_entity = next_entity;
+    state.manipulation_drag_active = false;
+    state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
+    state.manipulation_accumulated_delta = .{ 0.0, 0.0 };
+
+    if (next_entity) |entity_id| {
+        state.manipulation_origin = layer_context.world.worldTransform(entity_id) orelse return;
+        state.manipulation_snapshot = try history.captureEntitySnapshot(state, layer_context.world, entity_id);
+    }
 }
 
 fn manipulationAxisVector(space: TransformSpace, axis: state_mod.AxisConstraint, rotation: [4]f32) [3]f32 {
