@@ -1348,14 +1348,16 @@ pub const Renderer = struct {
     fn enqueueSelectionReadbacks(self: *Renderer, frame: rhi_mod.Frame, id_texture: *const rhi_mod.Texture) !void {
         const pending = self.pending_selection_readbacks.items;
         var readbacks = try self.allocator.alloc(InFlightSelectionReadback, pending.len);
-        errdefer self.allocator.free(readbacks);
-
+        
         var created_count: usize = 0;
         errdefer {
+            // 1. 释放内部创建的 GPU Buffer
             var index: usize = 0;
             while (index < created_count) : (index += 1) {
                 self.rhi.releaseTransferBuffer(&readbacks[index].transfer_buffer);
             }
+            // 2. 【关键修复】释放 readbacks 数组切片本身的内存！
+            self.allocator.free(readbacks);
         }
 
         for (pending, 0..) |request, index| {

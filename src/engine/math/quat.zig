@@ -8,6 +8,20 @@ pub fn identity() Quat {
     return .{ 0.0, 0.0, 0.0, 1.0 };
 }
 
+// Create a quaternion from axis-angle representation
+pub fn fromAxisAngle(axis: components.Vec3, angle: f32) Quat {
+    const half_angle = angle * 0.5;
+    const s = std.math.sin(half_angle);
+    const c = std.math.cos(half_angle);
+    const normalized_axis = vec3.normalize(axis);
+    return .{
+        normalized_axis[0] * s,
+        normalized_axis[1] * s,
+        normalized_axis[2] * s,
+        c,
+    };
+}
+
 pub fn mul(a: Quat, b: Quat) Quat {
     return .{
         a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
