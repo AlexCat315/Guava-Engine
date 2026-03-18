@@ -1,6 +1,7 @@
 const std = @import("std");
 const engine = @import("guava");
 const EditorState = @import("../../core/state.zig").EditorState;
+const FpsDisplayMode = @import("../../core/state.zig").FpsDisplayMode;
 const i18n = @import("../../i18n/mod.zig");
 const icon_cache = @import("../icon_cache.zig");
 const ui_icons = @import("../icons.zig");
@@ -8,6 +9,14 @@ const layout = @import("../layout.zig");
 
 const debug_icon_path = ui_icons.paths.hierarchy.mesh;
 const debug_icon_tint = [4]u8{ 196, 224, 255, 255 };
+
+fn drawSettingsChoiceButton(label: []const u8, active: bool, width: f32) bool {
+    engine.ui.ImGui.pushStyleColor(.button, if (active) .{ 0.13, 0.45, 0.28, 0.82 } else .{ 0.16, 0.17, 0.19, 0.54 });
+    engine.ui.ImGui.pushStyleColor(.button_hovered, if (active) .{ 0.18, 0.55, 0.35, 0.92 } else .{ 0.21, 0.23, 0.27, 0.74 });
+    engine.ui.ImGui.pushStyleColor(.button_active, if (active) .{ 0.10, 0.35, 0.22, 0.96 } else .{ 0.18, 0.20, 0.24, 0.86 });
+    defer engine.ui.ImGui.popStyleColor(3);
+    return engine.ui.ImGui.buttonEx(label, width, 0.0);
+}
 
 pub fn drawSettingsWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     var title_buffer: [80]u8 = undefined;
@@ -39,6 +48,29 @@ pub fn drawSettingsWindow(state: *EditorState, layer_context: *engine.core.Layer
         }
         if (engine.ui.ImGui.buttonEx(locale_info.native_name, language_button_width, 0.0)) {
             state.language = language;
+        }
+    }
+
+    engine.ui.ImGui.dummy(0.0, 6.0);
+    engine.ui.ImGui.separator();
+    engine.ui.ImGui.dummy(0.0, 6.0);
+    engine.ui.ImGui.text(state.text(.fps));
+    const fps_options = [_]struct {
+        label: []const u8,
+        mode: FpsDisplayMode,
+    }{
+        .{ .label = state.text(.viewport), .mode = .viewport },
+        .{ .label = state.text(.status_bar), .mode = .status_bar },
+        .{ .label = state.text(.none), .mode = .none },
+    };
+    const fps_columns = layout.responsiveButtonColumns(fps_options.len, 92.0);
+    const fps_button_width = layout.responsiveButtonWidth(fps_columns);
+    for (fps_options, 0..) |option, index| {
+        if (index > 0) {
+            layout.advanceResponsiveRow(index, fps_columns);
+        }
+        if (drawSettingsChoiceButton(option.label, state.fps_display_mode == option.mode, fps_button_width)) {
+            state.fps_display_mode = option.mode;
         }
     }
 

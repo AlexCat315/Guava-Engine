@@ -191,7 +191,6 @@ pub const Application = struct {
     fn pumpEvents(self: *Application) !void {
         while (try self.window.pollEvent()) |event| {
             imgui_mod.processEvent(&event.raw);
-            const wants_mouse = imgui_mod.wantsCaptureMouse();
             const wants_keyboard = imgui_mod.wantsCaptureKeyboard();
             switch (event.kind) {
                 .resized, .pixel_size_changed, .metal_view_resized, .exposed => {
@@ -203,34 +202,27 @@ pub const Application = struct {
                 .mouse_button_down => {
                     self.input.setModifiers(event.modifiers);
                     self.input.updateMousePosition(event.x, event.y);
-                    if (!wants_mouse) {
-                        if (event.button) |button| {
-                            self.input.setMouseButton(button, true, event.clicks);
-                        }
+                    if (event.button) |button| {
+                        self.input.setMouseButton(button, true, event.clicks);
                     }
                 },
                 .mouse_button_up => {
                     self.input.setModifiers(event.modifiers);
                     self.input.updateMousePosition(event.x, event.y);
                     if (event.button) |button| {
-                        if (!wants_mouse or self.input.isMouseDown(button)) {
-                            self.input.setMouseButton(button, false, event.clicks);
-                        }
+                        self.input.setMouseButton(button, false, event.clicks);
                     }
                 },
                 .mouse_moved => {
                     self.input.setModifiers(event.modifiers);
-                    if (wants_mouse) {
-                        self.input.updateMousePosition(event.x, event.y);
-                    } else {
-                        self.input.addMouseDelta(event.x, event.y, event.delta_x, event.delta_y);
-                    }
+                    // Editor viewport interactions decide their own hover/capture rules.
+                    // Always forwarding raw mouse motion keeps orbit, gizmo drag, selection,
+                    // and view-cube interactions responsive even inside ImGui windows.
+                    self.input.addMouseDelta(event.x, event.y, event.delta_x, event.delta_y);
                 },
                 .mouse_wheel => {
                     self.input.setModifiers(event.modifiers);
-                    if (!wants_mouse) {
-                        self.input.addMouseWheel(event.delta_x, event.delta_y);
-                    }
+                    self.input.addMouseWheel(event.delta_x, event.delta_y);
                 },
                 .key_down => {
                     self.input.setModifiers(event.modifiers);

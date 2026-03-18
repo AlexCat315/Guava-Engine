@@ -97,6 +97,12 @@ pub const BottomPanelTab = enum {
     console,
 };
 
+pub const FpsDisplayMode = enum {
+    viewport,
+    status_bar,
+    none,
+};
+
 pub const BrowserViewMode = enum {
     grid,
     list,
@@ -217,6 +223,7 @@ pub const EditorState = struct {
     material_thumbnail_queue: std.ArrayList([]const u8) = .empty,
 
     bottom_panel_tab: BottomPanelTab = .project,
+    fps_display_mode: FpsDisplayMode = .viewport,
     console_show_errors: bool = true,
     console_show_warnings: bool = true,
     console_show_info: bool = true,
@@ -466,6 +473,7 @@ test "viewport drop defaults and payload constants stay stable" {
     const state = EditorState{};
     try std.testing.expectEqual(ViewportViewPreset.perspective, state.viewport_view_preset);
     try std.testing.expectEqual(PlaceActorCategory.basics, state.place_actor_category);
+    try std.testing.expectEqual(FpsDisplayMode.viewport, state.fps_display_mode);
     try std.testing.expect(!state.translation_snap_enabled);
     try std.testing.expectEqual(@as(f32, 10.0), state.translation_snap_step);
     try std.testing.expect(!state.rotation_snap_enabled);

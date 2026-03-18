@@ -319,10 +319,8 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
         try handleViewportAssetDropTargets(state, layer_context);
         try drawViewportOverlayControlsWindow(state, layer_context);
         try drawViewportPlaybackOverlayWindow(state, layer_context);
+        try drawViewportFpsOverlayWindow(state, layer_context);
         drawViewportViewCube(state, layer_context);
-
-        // Handle selection after drawing
-        try handleViewportSelection(state, layer_context);
     } else {
         engine.ui.ImGui.text(state.text(.viewport_target_is_not_ready_yet));
     }
@@ -493,9 +491,11 @@ fn buildStatusMetricsText(
     const selection_text = try std.fmt.bufPrint(&selection_buffer, "{d}", .{selection_count});
     try appendStatusSegment(writer, &first, state.text(.selection_count), selection_text);
 
-    var fps_buffer: [32]u8 = undefined;
-    const fps_text = try std.fmt.bufPrint(&fps_buffer, "{d:.1}", .{fps});
-    try appendStatusSegment(writer, &first, state.text(.fps), fps_text);
+    if (state.fps_display_mode == .status_bar) {
+        var fps_buffer: [32]u8 = undefined;
+        const fps_text = try std.fmt.bufPrint(&fps_buffer, "{d:.1}", .{fps});
+        try appendStatusSegment(writer, &first, state.text(.fps), fps_text);
+    }
 
     try appendStatusSegment(writer, &first, state.text(.save_status), save_status);
     if (window_width >= 980.0) {
@@ -1018,6 +1018,41 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
         stepPlayback(state, layer_context);
     }
     if (engine.ui.ImGui.isItemHovered()) state.viewport_overlay_hovered = true;
+}
+
+fn drawViewportFpsOverlayWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    if (state.fps_display_mode != .viewport) {
+        return;
+    }
+
+    const fps = if (layer_context.delta_seconds > 0.0001) 1.0 / layer_context.delta_seconds else 0.0;
+    var fps_buffer: [64]u8 = undefined;
+    const fps_text = try std.fmt.bufPrint(&fps_buffer, "{s}: {d:.1}", .{ state.text(.fps), fps });
+    const overlay_margin = 14.0;
+    const overlay_y = state.viewport_origin[1] + @max(
+        state.viewport_extent[1] - engine.ui.ImGui.frameHeight() - 22.0,
+        viewportOverlayTopInset() + 56.0,
+    );
+
+    engine.ui.ImGui.pushStyleVarVec2(.window_padding, .{ 10.0, 6.0 });
+    defer engine.ui.ImGui.popStyleVar(1);
+    engine.ui.ImGui.setNextWindowPos(.{
+        state.viewport_origin[0] + overlay_margin,
+        overlay_y,
+    });
+    engine.ui.ImGui.setNextWindowBgAlpha(0.72);
+    _ = engine.ui.ImGui.beginWindowFlags(
+        "##viewport_fps_overlay",
+        engine.ui.ImGui.WindowFlags.no_title_bar |
+            engine.ui.ImGui.WindowFlags.no_resize |
+            engine.ui.ImGui.WindowFlags.no_move |
+            engine.ui.ImGui.WindowFlags.no_saved_settings |
+            engine.ui.ImGui.WindowFlags.no_docking |
+            engine.ui.ImGui.WindowFlags.always_auto_resize,
+    );
+    defer engine.ui.ImGui.endWindow();
+
+    engine.ui.ImGui.text(fps_text);
 }
 
 fn drawViewportViewCube(state: *EditorState, layer_context: *engine.core.LayerContext) void {
