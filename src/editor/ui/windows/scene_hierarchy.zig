@@ -269,12 +269,18 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
         entity.visible = !entity.visible;
         try history.captureSnapshot(state, layer_context);
     }
+    if (engine.ui.ImGui.isItemHovered()) {
+        engine.ui.ImGui.setTooltip(if (entity.visible) "Visible - Click to hide" else "Hidden - Click to show");
+    }
 
     engine.ui.ImGui.tableNextColumn();
     var freeze_button_id_buffer: [40]u8 = undefined;
     const freeze_button_id = try std.fmt.bufPrint(&freeze_button_id_buffer, "{d}_freeze", .{entity_id});
     if (try drawFreezeToggleButton(freeze_button_id, is_frozen)) {
         try setFrozenForEntities(state, layer_context, &.{entity_id}, !is_frozen);
+    }
+    if (engine.ui.ImGui.isItemHovered()) {
+        engine.ui.ImGui.setTooltip(if (is_frozen) "Frozen - Click to unfreeze" else "Unfrozen - Click to freeze");
     }
 
     engine.ui.ImGui.tableNextColumn();
@@ -290,6 +296,9 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
         if (is_locked) ui_icons.palettes.status_on else ui_icons.palettes.status_off,
     )) {
         try setLockedForEntities(state, layer_context, &.{entity_id}, !is_locked);
+    }
+    if (engine.ui.ImGui.isItemHovered()) {
+        engine.ui.ImGui.setTooltip(if (is_locked) "Locked - Click to unlock" else "Unlocked - Click to lock");
     }
 
     if (rename_active and tree_result.rename_finished) {

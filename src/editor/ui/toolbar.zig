@@ -62,6 +62,9 @@ pub fn drawToolbarWindow(state: *EditorState, layer_context: *engine.core.LayerC
     if (try drawPlaybackButton(state, layer_context, "toolbar_play", ui_icons.paths.toolbar.play, play_palette)) {
         setPlaybackState(state, layer_context, .playing);
     }
+    if (engine.ui.ImGui.isItemHovered()) {
+        engine.ui.ImGui.setTooltip(state.text(.run));
+    }
     engine.ui.ImGui.sameLine();
 
     // Pause button
@@ -70,10 +73,16 @@ pub fn drawToolbarWindow(state: *EditorState, layer_context: *engine.core.LayerC
     if (try drawPlaybackButton(state, layer_context, "toolbar_pause", ui_icons.paths.toolbar.pause, pause_palette)) {
         setPlaybackState(state, layer_context, .paused);
     }
+    if (engine.ui.ImGui.isItemHovered()) {
+        engine.ui.ImGui.setTooltip(state.text(.pause));
+    }
     engine.ui.ImGui.sameLine();
 
     // Step button
     if (try drawPlaybackButton(state, layer_context, "toolbar_step", ui_icons.paths.toolbar.step, ui_icons.palettes.toolbar_idle)) {
         stepPlayback(state, layer_context);
+    }
+    if (engine.ui.ImGui.isItemHovered()) {
+        engine.ui.ImGui.setTooltip(state.text(.step));
     }
 }

@@ -90,17 +90,29 @@ fn drawViewportToolbarStrip(state: *EditorState, layer_context: *engine.core.Lay
     if (try drawToolbarIconButton(state, layer_context, "toolbar_select", ui_icons.paths.toolbar.select, state.manipulation_mode == .none)) {
         try manipulation.selectTool(state, layer_context);
     }
+    if (engine.ui.ImGui.isItemHovered()) {
+        engine.ui.ImGui.setTooltip(state.text(.select_tool));
+    }
     engine.ui.ImGui.sameLine();
     if (try drawToolbarIconButton(state, layer_context, "toolbar_move", ui_icons.paths.toolbar.move, state.manipulation_mode == .translate)) {
         try manipulation.beginManipulation(state, layer_context, .translate);
+    }
+    if (engine.ui.ImGui.isItemHovered()) {
+        engine.ui.ImGui.setTooltip(state.text(.move_tool));
     }
     engine.ui.ImGui.sameLine();
     if (try drawToolbarIconButton(state, layer_context, "toolbar_rotate", ui_icons.paths.toolbar.rotate, state.manipulation_mode == .rotate)) {
         try manipulation.beginManipulation(state, layer_context, .rotate);
     }
+    if (engine.ui.ImGui.isItemHovered()) {
+        engine.ui.ImGui.setTooltip(state.text(.rotate_tool));
+    }
     engine.ui.ImGui.sameLine();
     if (try drawToolbarIconButton(state, layer_context, "toolbar_scale", ui_icons.paths.toolbar.scale, state.manipulation_mode == .scale)) {
         try manipulation.beginManipulation(state, layer_context, .scale);
+    }
+    if (engine.ui.ImGui.isItemHovered()) {
+        engine.ui.ImGui.setTooltip(state.text(.scale_tool));
     }
 
     if (width >= 860.0) {
@@ -140,6 +152,9 @@ fn drawViewportToolbarOptions(
     )) {
         state.render_settings_open = !state.render_settings_open;
     }
+    if (engine.ui.ImGui.isItemHovered()) {
+        engine.ui.ImGui.setTooltip(state.text(.render_settings));
+    }
     engine.ui.ImGui.sameLine();
     engine.ui.ImGui.setNextItemWidth(filter_width);
     _ = engine.ui.ImGui.inputTextWithHint("##viewport_hierarchy_filter", state.text(.hierarchy_filter), state.hierarchy_filter_buffer[0..]);
@@ -165,6 +180,9 @@ fn drawViewportToolbarOptions(
             .local => .world,
             .world => .local,
         };
+    }
+    if (engine.ui.ImGui.isItemHovered()) {
+        engine.ui.ImGui.setTooltip(if (is_world) state.text(.world_space) else state.text(.local_space));
     }
 }
 
@@ -855,6 +873,9 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
     if (try drawOverlayIconButton(state, layer_context, "viewport_overlay_view", currentViewPresetIcon(state), view_popup_open)) {
         engine.ui.ImGui.openPopup(view_popup_id);
     }
+    if (engine.ui.ImGui.isItemHovered()) {
+        engine.ui.ImGui.setTooltip(state.text(.view_presets));
+    }
     if (engine.ui.ImGui.beginPopup(view_popup_id)) {
         defer engine.ui.ImGui.endPopup();
         if (engine.ui.ImGui.menuItem(state.text(.perspective_view), null, state.viewport_view_preset == .perspective, true)) {
@@ -872,6 +893,9 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
     if (try drawOverlayIconButton(state, layer_context, "viewport_overlay_render", currentRenderModeIcon(state), render_popup_open)) {
         engine.ui.ImGui.openPopup(render_popup_id);
     }
+    if (engine.ui.ImGui.isItemHovered()) {
+        engine.ui.ImGui.setTooltip(state.text(.render_modes));
+    }
     if (engine.ui.ImGui.beginPopup(render_popup_id)) {
         defer engine.ui.ImGui.endPopup();
         if (engine.ui.ImGui.menuItem(state.text(.textured), null, state.viewport_render_mode == .textured, true)) {
@@ -888,6 +912,9 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
 
     if (try drawOverlayIconButton(state, layer_context, "viewport_overlay_options", ui_icons.paths.toolbar.overlay, overlay_popup_open)) {
         engine.ui.ImGui.openPopup(overlay_popup_id);
+    }
+    if (engine.ui.ImGui.isItemHovered()) {
+        engine.ui.ImGui.setTooltip(state.text(.overlay_options));
     }
     if (engine.ui.ImGui.beginPopup(overlay_popup_id)) {
         defer engine.ui.ImGui.endPopup();

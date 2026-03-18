@@ -344,6 +344,9 @@ fn drawAssetCard(
     )) {
         state.selected_asset_index = index;
     }
+    if (engine.ui.ImGui.isItemHovered()) {
+        engine.ui.ImGui.setTooltip(entry.name);
+    }
     drawAssetDragSource(state, entry, index, card_texture);
 
     const label_y = icon_size + 18.0;

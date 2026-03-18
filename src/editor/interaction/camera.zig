@@ -12,29 +12,25 @@ pub const ViewPreset = state_mod.ViewportViewPreset;
 pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.LayerContext) void {
     const input = layer_context.input;
 
-    // Cancel view cube transition if any camera control is active
-    if (state.view_cube_transition_active and (input.isMouseDown(.right) or input.isMouseDown(.middle) or input.isMouseDown(.left))) {
+    // Fix 1: Only cancel view cube transition when actually dragging camera
+    const is_dragging_camera = input.isMouseDown(.right) or input.isMouseDown(.middle) or (input.isMouseDown(.left) and input.modifiers.alt);
+    if (state.view_cube_transition_active and is_dragging_camera) {
         state.view_cube_transition_active = false;
     }
     updateViewCubeTransition(state, layer_context);
 
-    // Exit if no viewport interaction or gizmo is active
+    // Exit if in object manipulation mode
     if (!state.editor_camera_active or state.manipulation_mode != .none) {
         return;
     }
 
-    // Free camera control: when mouse is over viewport and ImGui doesn't need it
-    const mouse_in_viewport = state.viewport_hovered;
-    const imgui_capturing = engine.ui.ImGui.wantsCaptureMouse();
-    const can_control = mouse_in_viewport and !imgui_capturing;
-
-    // Exit if no valid camera control input
-    if (!can_control and !input.isMouseDown(.right) and !input.isMouseDown(.middle) and !input.isMouseDown(.left)) {
+    // Fix 2: Only check if mouse is hovering viewport, not ImGui capture
+    const is_hovering_viewport = state.viewport_hovered and !state.viewport_overlay_hovered;
+    if (!is_hovering_viewport and !is_dragging_camera) {
         return;
     }
 
     // Exit if actively clicking on overlay (toolbar, gizmo, etc.)
-    // Only block when mouse is DOWN on overlay, not just hovering
     const is_clicking_overlay = state.viewport_overlay_hovered and (input.isMouseDown(.left) or input.isMouseDown(.right) or input.isMouseDown(.middle));
     if (is_clicking_overlay) {
         return;
