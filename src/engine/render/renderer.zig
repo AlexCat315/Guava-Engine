@@ -1300,16 +1300,9 @@ pub const Renderer = struct {
             }
             const world_transform = scene.worldTransformConst(entity.id) orelse entity.local_transform;
 
-            var local_min = mesh.vertices[0].position;
-            var local_max = mesh.vertices[0].position;
-            for (mesh.vertices[1..]) |vertex| {
-                local_min[0] = @min(local_min[0], vertex.position[0]);
-                local_min[1] = @min(local_min[1], vertex.position[1]);
-                local_min[2] = @min(local_min[2], vertex.position[2]);
-                local_max[0] = @max(local_max[0], vertex.position[0]);
-                local_max[1] = @max(local_max[1], vertex.position[1]);
-                local_max[2] = @max(local_max[2], vertex.position[2]);
-            }
+            // 直接使用预计算的包围盒，避免每帧遍历顶点
+            const local_min = mesh.local_bounds.min;
+            const local_max = mesh.local_bounds.max;
 
             const corners = [_][3]f32{
                 transformPoint(world_transform, .{ local_min[0], local_min[1], local_min[2] }),
@@ -1350,40 +1343,6 @@ pub const Renderer = struct {
             transform.translation,
             @import("../math/quat.zig").rotateVec3(transform.rotation, vec3.mul(transform.scale, point)),
         );
-    }
-
-    fn rotateVec3Euler(rotation: [3]f32, vector: [3]f32) [3]f32 {
-        return rotateZ(rotation[2], rotateY(rotation[1], rotateX(rotation[0], vector)));
-    }
-
-    fn rotateX(radians: f32, vector: [3]f32) [3]f32 {
-        const c = std.math.cos(radians);
-        const s = std.math.sin(radians);
-        return .{
-            vector[0],
-            vector[1] * c - vector[2] * s,
-            vector[1] * s + vector[2] * c,
-        };
-    }
-
-    fn rotateY(radians: f32, vector: [3]f32) [3]f32 {
-        const c = std.math.cos(radians);
-        const s = std.math.sin(radians);
-        return .{
-            vector[0] * c + vector[2] * s,
-            vector[1],
-            -vector[0] * s + vector[2] * c,
-        };
-    }
-
-    fn rotateZ(radians: f32, vector: [3]f32) [3]f32 {
-        const c = std.math.cos(radians);
-        const s = std.math.sin(radians);
-        return .{
-            vector[0] * c - vector[1] * s,
-            vector[0] * s + vector[1] * c,
-            vector[2],
-        };
     }
 
     fn enqueueSelectionReadbacks(self: *Renderer, frame: rhi_mod.Frame, id_texture: *const rhi_mod.Texture) !void {
