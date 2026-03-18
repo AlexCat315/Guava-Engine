@@ -196,15 +196,6 @@ pub const Application = struct {
                     self.input.updateMousePosition(event.x, event.y);
                     if (event.button) |button| {
                         self.input.setMouseButton(button, true, event.clicks);
-                        if (button == .left and !event.modifiers.alt and !imgui_mod.wantsCaptureMouse()) {
-                            if (drawablePickPosition(&self.window, event.x, event.y)) |position| {
-                                try self.renderer.requestSelectionReadback(
-                                    position.x,
-                                    position.y,
-                                    if (event.modifiers.shift or event.modifiers.ctrl or event.modifiers.super) .toggle else .replace,
-                                );
-                            }
-                        }
                     }
                 },
                 .mouse_button_up => {
@@ -251,20 +242,3 @@ pub const Application = struct {
         };
     }
 };
-
-fn drawablePickPosition(window: *const window_mod.Window, x: f32, y: f32) ?struct { x: u32, y: u32 } {
-    if (window.logical_width == 0 or window.logical_height == 0 or window.drawable_width == 0 or window.drawable_height == 0) {
-        return null;
-    }
-
-    const scale_x = @as(f32, @floatFromInt(window.drawable_width)) / @as(f32, @floatFromInt(window.logical_width));
-    const scale_y = @as(f32, @floatFromInt(window.drawable_height)) / @as(f32, @floatFromInt(window.logical_height));
-
-    const clamped_x = std.math.clamp(x * scale_x, 0.0, @as(f32, @floatFromInt(window.drawable_width - 1)));
-    const clamped_y = std.math.clamp(y * scale_y, 0.0, @as(f32, @floatFromInt(window.drawable_height - 1)));
-
-    return .{
-        .x = @intFromFloat(clamped_x),
-        .y = @intFromFloat(clamped_y),
-    };
-}

@@ -103,6 +103,8 @@ pub const PreparedScene = struct {
     debug: DebugBlock,
 
     pub fn deinit(self: *PreparedScene) void {
+        self.allocator.free(self.lights.directional_lights);
+        self.allocator.free(self.lights.point_lights);
         self.allocator.free(self.opaque_meshes);
         self.allocator.free(self.transparent_meshes);
         self.* = undefined;

@@ -28,19 +28,94 @@ var g_entry_count: usize = 0;
 var g_entry_write: usize = 0; // Write head for ring buffer
 var g_entry_read: usize = 0; // Read head for ring buffer
 
+var g_log_file: ?std.fs.File = null;
+var g_log_file_mutex: std.Thread.Mutex = .{};
+
+pub fn initLogFile() !void {
+    var log_dir = try std.fs.cwd().makeOpenPath("logs", .{});
+    defer log_dir.close();
+
+    const timestamp = std.time.timestamp();
+    var time_buffer: [64]u8 = undefined;
+    const time_str = std.fmt.bufPrint(&time_buffer, "{d}", .{timestamp}) catch "unknown";
+
+    var filename_buffer: [128]u8 = undefined;
+    const filename = std.fmt.bufPrint(&filename_buffer, "guava_{s}.log", .{time_str}) catch "guava.log";
+
+    g_log_file = try log_dir.createFile(filename, .{});
+
+    const header = "=== Guava Engine Log Started ===\n";
+    try g_log_file.?.writeAll(header);
+}
+
+pub fn deinitLogFile() void {
+    g_log_file_mutex.lock();
+    defer g_log_file_mutex.unlock();
+
+    if (g_log_file) |*file| {
+        file.writeAll("=== Guava Engine Log Ended ===\n") catch {};
+        file.sync() catch {};
+        file.close();
+        g_log_file = null;
+    }
+}
+
+fn writeToLogFile(level: std.log.Level, scope: []const u8, message: []const u8) void {
+    g_log_file_mutex.lock();
+    defer g_log_file_mutex.unlock();
+
+    if (g_log_file) |file| {
+        const level_str = levelLabel(level);
+        
+        // 使用简单的 writeAll 而不是 writer
+        file.writeAll("[") catch {};
+        file.writeAll(level_str) catch {};
+        file.writeAll("] ") catch {};
+        file.writeAll(scope) catch {};
+        file.writeAll(": ") catch {};
+        file.writeAll(message) catch {};
+        file.writeAll("\n") catch {};
+        
+        // 刷新文件缓冲区
+        file.sync() catch {};
+    }
+}
+
 pub fn logFn(
     comptime message_level: std.log.Level,
     comptime scope: @Type(.enum_literal),
     comptime format: []const u8,
     args: anytype,
 ) void {
+    // 对于 GPA 的错误,直接输出到 stderr 以避免格式化问题
+    if (comptime std.mem.eql(u8, @tagName(scope), "gpa")) {
+        var stderr_buffer: [2048]u8 = undefined;
+        var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+        const stderr = &stderr_writer.interface;
+        stderr.print("[{s}] {s}: ", .{ levelLabel(message_level), @tagName(scope) }) catch {};
+        stderr.print(format, args) catch |err| {
+            stderr.writeAll("GPA log formatting failed: ") catch {};
+            stderr.print("{}", .{err}) catch {};
+        };
+        stderr.writeAll("\n") catch {};
+        stderr.flush() catch {};
+        return;
+    }
+
     var scope_buffer: [max_scope_len]u8 = undefined;
     const scope_text = std.fmt.bufPrint(&scope_buffer, "{s}", .{@tagName(scope)}) catch "default";
 
     var message_buffer: [max_message_len]u8 = undefined;
-    const message_text = std.fmt.bufPrint(&message_buffer, format, args) catch "log formatting failed";
+    const message_text = std.fmt.bufPrint(&message_buffer, format, args) catch blk: {
+        // 格式化失败时的简单回退
+        const fallback = "log formatting failed (buffer too small or invalid format)";
+        const len = @min(fallback.len, message_buffer.len);
+        @memcpy(message_buffer[0..len], fallback[0..len]);
+        break :blk message_buffer[0..len];
+    };
 
     appendEntry(message_level, scope_text, message_text);
+    writeToLogFile(message_level, scope_text, message_text);
 
     var stderr_buffer: [512]u8 = undefined;
     var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
@@ -74,7 +149,8 @@ pub fn snapshot(buffer: []Entry) usize {
         cursor = (cursor + 1) % max_entries;
     }
 
-    g_entry_read = cursor;
+    // 注意：不要更新 g_entry_read，这样日志会一直保留在缓冲区中
+    // 直到被新的日志覆盖（环形缓冲区的特性）
     return index;
 }
 
@@ -114,23 +190,35 @@ pub fn drawConsolePanel(state: *EditorState) !void {
     _ = engine.ui.ImGui.beginChild("console_messages", 0.0, 0.0, true);
     defer engine.ui.ImGui.endChild();
 
-    var snapshot_entries: [max_entries]Entry = undefined;
-    const count = snapshot(snapshot_entries[0..]);
-    for (snapshot_entries[0..count]) |entry| {
-        if (!shouldDisplayEntry(state, entry.level)) {
-            continue;
+    // 直接读取环形缓冲区，而不是使用 snapshot
+    g_mutex.lock();
+    defer g_mutex.unlock();
+
+    if (g_entry_count > 0) {
+        var cursor = g_entry_read;
+        const end = g_entry_write;
+        var displayed_count: usize = 0;
+
+        while (displayed_count < max_entries and cursor != end) {
+            const entry = g_entries[cursor];
+            
+            if (shouldDisplayEntry(state, entry.level)) {
+                engine.ui.ImGui.pushStyleColor(.text, levelColor(entry.level));
+                defer engine.ui.ImGui.popStyleColor(1);
+
+                var line_buffer: [512]u8 = undefined;
+                const line = std.fmt.bufPrint(
+                    &line_buffer,
+                    "[{s}] {s}: {s}",
+                    .{ levelLabel(entry.level), entry.scopeText(), entry.messageText() },
+                ) catch continue;
+                
+                engine.ui.ImGui.textWrapped(line);
+                displayed_count += 1;
+            }
+            
+            cursor = (cursor + 1) % max_entries;
         }
-
-        engine.ui.ImGui.pushStyleColor(.text, levelColor(entry.level));
-        defer engine.ui.ImGui.popStyleColor(1);
-
-        var line_buffer: [512]u8 = undefined;
-        const line = try std.fmt.bufPrint(
-            &line_buffer,
-            "[{s}] {s}: {s}",
-            .{ levelLabel(entry.level), entry.scopeText(), entry.messageText() },
-        );
-        engine.ui.ImGui.textWrapped(line);
     }
 
     if (state.console_auto_scroll) {
