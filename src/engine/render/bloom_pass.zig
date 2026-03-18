@@ -1,4 +1,5 @@
 const std = @import("std");
+const mesh_pass_mod = @import("mesh_pass.zig");
 const rhi_mod = @import("../rhi/device.zig");
 const rhi_types = @import("../rhi/types.zig");
 const shader_support = @import("shader_support.zig");
@@ -13,29 +14,26 @@ const fullscreen_triangle = [_]FullscreenVertex{
     .{ .position = .{ -1.0, 3.0 } },
 };
 
-pub const TonemapUniforms = extern struct {
-    // x: enable_manual_exposure, y: exposure, z/w: reserved
-    exposure_params: [4]f32 = .{ 0.0, 1.0, 0.0, 0.0 },
-    // x: enable_bloom, y: bloom_intensity, z/w: reserved
-    bloom_params: [4]f32 = .{ 0.0, 0.35, 0.0, 0.0 },
+pub const BloomUniforms = extern struct {
+    // x: threshold, y/z/w: reserved
+    threshold_params: [4]f32 = .{ 1.0, 0.0, 0.0, 0.0 },
 };
 
-pub const TonemapPass = struct {
+pub const BloomPass = struct {
     fullscreen_vertex_buffer: ?rhi_mod.Buffer = null,
     sampler: ?rhi_mod.Sampler = null,
     bind_group: ?rhi_mod.BindGroup = null,
-    bound_hdr_texture_handle: usize = 0,
-    bound_bloom_texture_handle: usize = 0,
+    bound_texture_handle: usize = 0,
     pipeline: ?rhi_mod.GraphicsPipeline = null,
     stages: ?shader_support.ProgramStages = null,
 
-    pub fn init(device: *rhi_mod.RhiDevice) !TonemapPass {
-        var pass = TonemapPass{};
+    pub fn init(device: *rhi_mod.RhiDevice) !BloomPass {
+        var pass = BloomPass{};
         try pass.createResources(device);
         return pass;
     }
 
-    pub fn deinit(self: *TonemapPass, device: *rhi_mod.RhiDevice) void {
+    pub fn deinit(self: *BloomPass, device: *rhi_mod.RhiDevice) void {
         if (self.bind_group) |*bind_group| {
             device.releaseBindGroup(bind_group);
         }
@@ -54,22 +52,17 @@ pub const TonemapPass = struct {
         self.* = undefined;
     }
 
-    pub fn isReady(self: *const TonemapPass) bool {
+    pub fn isReady(self: *const BloomPass) bool {
         return self.pipeline != null and self.fullscreen_vertex_buffer != null and self.sampler != null;
     }
 
-    pub fn syncTextures(
-        self: *TonemapPass,
+    pub fn syncTexture(
+        self: *BloomPass,
         device: *rhi_mod.RhiDevice,
         hdr_texture: *const rhi_mod.Texture,
-        bloom_texture: *const rhi_mod.Texture,
     ) !void {
-        const hdr_texture_handle = @intFromPtr(hdr_texture.raw);
-        const bloom_texture_handle = @intFromPtr(bloom_texture.raw);
-        if (self.bind_group != null and
-            self.bound_hdr_texture_handle == hdr_texture_handle and
-            self.bound_bloom_texture_handle == bloom_texture_handle)
-        {
+        const texture_handle = @intFromPtr(hdr_texture.raw);
+        if (self.bind_group != null and self.bound_texture_handle == texture_handle) {
             return;
         }
 
@@ -82,46 +75,28 @@ pub const TonemapPass = struct {
                 .texture = hdr_texture,
                 .sampler = &self.sampler.?,
             },
-            .{
-                .texture = bloom_texture,
-                .sampler = &self.sampler.?,
-            },
         };
         self.bind_group = try device.createBindGroup(.{
             .stage = .fragment,
             .texture_sampler_bindings = bindings[0..],
         });
-        self.bound_hdr_texture_handle = hdr_texture_handle;
-        self.bound_bloom_texture_handle = bloom_texture_handle;
+        self.bound_texture_handle = texture_handle;
     }
 
     pub fn draw(
-        self: *TonemapPass,
+        self: *BloomPass,
         device: *rhi_mod.RhiDevice,
         frame: rhi_mod.Frame,
         pass: rhi_mod.RenderPass,
-        exposure_enabled: bool,
-        exposure: f32,
-        bloom_enabled: bool,
-        bloom_intensity: f32,
-    ) void {
+        threshold: f32,
+    ) mesh_pass_mod.DrawStats {
+        var stats = mesh_pass_mod.DrawStats{};
         if (!self.isReady() or self.bind_group == null) {
-            return;
+            return stats;
         }
 
-        var uniforms = TonemapUniforms{
-            .exposure_params = .{
-                if (exposure_enabled) 1.0 else 0.0,
-                @max(exposure, 0.0),
-                0.0,
-                0.0,
-            },
-            .bloom_params = .{
-                if (bloom_enabled) 1.0 else 0.0,
-                @max(bloom_intensity, 0.0),
-                0.0,
-                0.0,
-            },
+        var uniforms = BloomUniforms{
+            .threshold_params = .{ @max(threshold, 0.0), 0.0, 0.0, 0.0 },
         };
 
         device.bindGraphicsPipeline(pass, &self.pipeline.?);
@@ -129,9 +104,13 @@ pub const TonemapPass = struct {
         device.bindGroup(pass, &self.bind_group.?);
         device.pushFragmentUniformData(frame, 0, std.mem.asBytes(&uniforms));
         device.drawPrimitives(pass, fullscreen_triangle.len, 1, 0, 0);
+
+        stats.draw_calls = 1;
+        stats.triangles_drawn = 1;
+        return stats;
     }
 
-    fn createResources(self: *TonemapPass, device: *rhi_mod.RhiDevice) !void {
+    fn createResources(self: *BloomPass, device: *rhi_mod.RhiDevice) !void {
         self.fullscreen_vertex_buffer = try device.createBuffer(.{
             .size = @sizeOf(FullscreenVertex) * fullscreen_triangle.len,
             .usage = rhi_types.BufferUsage.vertex,
@@ -153,7 +132,7 @@ pub const TonemapPass = struct {
             device.releaseSampler(sampler);
         };
 
-        self.stages = try shader_support.loadProgramStages(device, "tonemap");
+        self.stages = try shader_support.loadProgramStages(device, "bloom");
         errdefer if (self.stages) |*stages| {
             stages.deinit(device);
         };
@@ -179,7 +158,7 @@ pub const TonemapPass = struct {
             .fragment_shader = &self.stages.?.fragment,
             .vertex_buffer_layouts = vertex_layouts[0..],
             .vertex_attributes = vertex_attributes[0..],
-            .color_format = .bgra8_unorm,
+            .color_format = .rgba16_float,
             .depth_format = null,
             .primitive_type = .triangle_list,
             .fill_mode = .fill,

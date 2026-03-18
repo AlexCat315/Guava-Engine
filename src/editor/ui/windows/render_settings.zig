@@ -61,6 +61,24 @@ pub fn drawRenderSettingsWindow(state: *EditorState, layer_context: *engine.core
     engine.ui.ImGui.labelText(state.text(.exposure), exposure_text);
 
     engine.ui.ImGui.separator();
+    engine.ui.ImGui.text(state.text(.bloom));
+    _ = engine.ui.ImGui.checkbox(state.text(.enable_bloom), &state.viewport_bloom_enabled);
+    var bloom_threshold = state.viewport_bloom_threshold;
+    if (engine.ui.ImGui.dragFloat("##viewport_bloom_threshold", &bloom_threshold, 0.01, 0.1, 8.0)) {
+        state.viewport_bloom_threshold = bloom_threshold;
+    }
+    var bloom_threshold_buffer: [32]u8 = undefined;
+    const bloom_threshold_text = try std.fmt.bufPrint(&bloom_threshold_buffer, "{d:.2}", .{state.viewport_bloom_threshold});
+    engine.ui.ImGui.labelText(state.text(.bloom_threshold), bloom_threshold_text);
+    var bloom_intensity = state.viewport_bloom_intensity;
+    if (engine.ui.ImGui.dragFloat("##viewport_bloom_intensity", &bloom_intensity, 0.01, 0.0, 4.0)) {
+        state.viewport_bloom_intensity = bloom_intensity;
+    }
+    var bloom_intensity_buffer: [32]u8 = undefined;
+    const bloom_intensity_text = try std.fmt.bufPrint(&bloom_intensity_buffer, "{d:.2}x", .{state.viewport_bloom_intensity});
+    engine.ui.ImGui.labelText(state.text(.bloom_intensity), bloom_intensity_text);
+
+    engine.ui.ImGui.separator();
     engine.ui.ImGui.text(state.text(.coordinate_space));
     switch (drawButtonRow2(state.text(.local_space), state.text(.world_space), 112.0)) {
         .first => state.transform_space = .local,

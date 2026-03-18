@@ -718,6 +718,9 @@ fn syncViewportState(state: *EditorState, layer_context: *engine.core.LayerConte
         .show_collision = state.viewport_show_collision,
         .exposure_enabled = state.viewport_exposure_enabled,
         .exposure = state.viewport_exposure,
+        .bloom_enabled = state.viewport_bloom_enabled,
+        .bloom_threshold = state.viewport_bloom_threshold,
+        .bloom_intensity = state.viewport_bloom_intensity,
     });
 }
 

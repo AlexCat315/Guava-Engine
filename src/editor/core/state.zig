@@ -255,6 +255,10 @@ pub const EditorState = struct {
     // 曝光作为编辑器视口后处理参数，默认关闭以保持现有观感不变。
     viewport_exposure_enabled: bool = false,
     viewport_exposure: f32 = 1.0,
+    // Bloom 作为 HDR 预览后处理参数，默认关闭，避免改变现有项目观感。
+    viewport_bloom_enabled: bool = false,
+    viewport_bloom_threshold: f32 = 1.0,
+    viewport_bloom_intensity: f32 = 0.35,
     viewport_hovered: bool = false,
     viewport_focused: bool = false,
     viewport_has_image: bool = false,

@@ -9,6 +9,7 @@ const texture_import_mod = @import("../assets/texture_import.zig");
 const base_pass_mod = @import("base_pass.zig");
 const shadow_pass_mod = @import("shadow_pass.zig");
 const skybox_pass_mod = @import("skybox_pass.zig");
+const bloom_pass_mod = @import("bloom_pass.zig");
 const tonemap_pass_mod = @import("tonemap_pass.zig");
 const depth_prepass_mod = @import("depth_prepass.zig");
 const id_pass_mod = @import("id_pass.zig");
@@ -31,7 +32,7 @@ const render_log = std.log.scoped(.viewport_render);
 
 var g_logged_viewport_backend: bool = false;
 var g_logged_environment_status: bool = false;
-var g_logged_exposure_state: ?types.EditorViewportState = null;
+var g_logged_postfx_state: ?types.EditorViewportState = null;
 
 pub const GraphicsAPI = rhi_types.GraphicsAPI;
 pub const RuntimeInfo = rhi_types.RuntimeInfo;
@@ -85,11 +86,15 @@ const SceneViewportState = struct {
     width: u32 = 0,
     height: u32 = 0,
     hdr_color_texture: ?rhi_mod.Texture = null,
+    bloom_texture: ?rhi_mod.Texture = null,
     color_texture: ?rhi_mod.Texture = null,
     depth_texture: ?rhi_mod.Texture = null,
 
     fn deinit(self: *SceneViewportState, device: *rhi_mod.RhiDevice) void {
         if (self.hdr_color_texture) |*texture| {
+            device.releaseTexture(texture);
+        }
+        if (self.bloom_texture) |*texture| {
             device.releaseTexture(texture);
         }
         if (self.color_texture) |*texture| {
@@ -108,7 +113,7 @@ const SceneViewportState = struct {
         }
 
         if (self.color_texture) |color_texture| {
-            if (self.depth_texture != null and self.hdr_color_texture != null and color_texture.desc.width == width and color_texture.desc.height == height) {
+            if (self.depth_texture != null and self.hdr_color_texture != null and self.bloom_texture != null and color_texture.desc.width == width and color_texture.desc.height == height) {
                 self.width = width;
                 self.height = height;
                 return;
@@ -126,6 +131,17 @@ const SceneViewportState = struct {
         errdefer if (self.hdr_color_texture) |*texture| {
             device.releaseTexture(texture);
             self.hdr_color_texture = null;
+        };
+
+        self.bloom_texture = try device.createTexture(.{
+            .width = width,
+            .height = height,
+            .format = .rgba16_float,
+            .usage = rhi_types.TextureUsage.color_target | rhi_types.TextureUsage.sampler,
+        });
+        errdefer if (self.bloom_texture) |*texture| {
+            device.releaseTexture(texture);
+            self.bloom_texture = null;
         };
 
         self.color_texture = try device.createTexture(.{
@@ -173,6 +189,13 @@ const SceneViewportState = struct {
 
     fn color(self: *SceneViewportState) ?*const rhi_mod.Texture {
         if (self.color_texture) |*texture| {
+            return texture;
+        }
+        return null;
+    }
+
+    fn bloom(self: *SceneViewportState) ?*const rhi_mod.Texture {
+        if (self.bloom_texture) |*texture| {
             return texture;
         }
         return null;
@@ -470,6 +493,7 @@ pub const Renderer = struct {
     shadow_pass: shadow_pass_mod.ShadowPass,
     base_pass: base_pass_mod.BasePass,
     skybox_pass: ?skybox_pass_mod.SkyboxPass = null,
+    bloom_pass: bloom_pass_mod.BloomPass,
     outline_pass: outline_pass_mod.OutlinePass,
     gizmo_pass: gizmo_pass_mod.GizmoPass,
     tonemap_pass: tonemap_pass_mod.TonemapPass,
@@ -515,6 +539,7 @@ pub const Renderer = struct {
             .shadow_pass = undefined,
             .base_pass = undefined,
             .skybox_pass = undefined,
+            .bloom_pass = undefined,
             .outline_pass = undefined,
             .gizmo_pass = undefined,
             .tonemap_pass = undefined,
@@ -561,6 +586,9 @@ pub const Renderer = struct {
             pass.deinit(&renderer.rhi);
         };
 
+        renderer.bloom_pass = try bloom_pass_mod.BloomPass.init(&renderer.rhi);
+        errdefer renderer.bloom_pass.deinit(&renderer.rhi);
+
         renderer.outline_pass = try outline_pass_mod.OutlinePass.init(&renderer.rhi);
         errdefer renderer.outline_pass.deinit(&renderer.rhi);
 
@@ -584,6 +612,7 @@ pub const Renderer = struct {
         if (self.skybox_pass) |*pass| {
             pass.deinit(&self.rhi);
         }
+        self.bloom_pass.deinit(&self.rhi);
         self.gizmo_pass.deinit(&self.rhi);
         self.outline_pass.deinit(&self.rhi);
         self.base_pass.deinit(&self.rhi);
@@ -671,15 +700,24 @@ pub const Renderer = struct {
     }
 
     pub fn setEditorViewportState(self: *Renderer, state: EditorViewportState) void {
-        if (g_logged_exposure_state == null or
-            g_logged_exposure_state.?.exposure_enabled != state.exposure_enabled or
-            @abs(g_logged_exposure_state.?.exposure - state.exposure) > 0.0001)
+        if (g_logged_postfx_state == null or
+            g_logged_postfx_state.?.exposure_enabled != state.exposure_enabled or
+            @abs(g_logged_postfx_state.?.exposure - state.exposure) > 0.0001 or
+            g_logged_postfx_state.?.bloom_enabled != state.bloom_enabled or
+            @abs(g_logged_postfx_state.?.bloom_threshold - state.bloom_threshold) > 0.0001 or
+            @abs(g_logged_postfx_state.?.bloom_intensity - state.bloom_intensity) > 0.0001)
         {
             render_log.info(
-                "viewport exposure updated enabled={} value={d:.2}",
-                .{ state.exposure_enabled, state.exposure },
+                "viewport postfx updated exposure_enabled={} exposure={d:.2} bloom_enabled={} bloom_threshold={d:.2} bloom_intensity={d:.2}",
+                .{
+                    state.exposure_enabled,
+                    state.exposure,
+                    state.bloom_enabled,
+                    state.bloom_threshold,
+                    state.bloom_intensity,
+                },
             );
-            g_logged_exposure_state = state;
+            g_logged_postfx_state = state;
         }
         self.editor_viewport_state = state;
     }
@@ -913,8 +951,33 @@ pub const Renderer = struct {
                 self.rhi.endRenderPass(scene_pass);
 
                 if (viewport_active) {
+                    const bloom_enabled = self.editor_viewport_state.bloom_enabled and self.bloom_pass.isReady() and self.scene_viewport.bloom() != null;
+                    if (bloom_enabled) {
+                        try self.bloom_pass.syncTexture(&self.rhi, self.scene_viewport.hdrColor().?);
+                        const bloom_render_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
+                            .color = .{
+                                .target = .{ .texture = self.scene_viewport.bloom().? },
+                                .clear_color = .{ 0.0, 0.0, 0.0, 1.0 },
+                                .load_op = .clear,
+                                .store_op = .store,
+                            },
+                            .depth = null,
+                        });
+                        const bloom_start = std.time.nanoTimestamp();
+                        const bloom_stats = self.bloom_pass.draw(
+                            &self.rhi,
+                            frame,
+                            bloom_render_pass,
+                            self.editor_viewport_state.bloom_threshold,
+                        );
+                        self.graph.recordPassStat(pass_stats, .post_process, durationNs(bloom_start, std.time.nanoTimestamp()), bloom_stats.draw_calls, bloom_stats.triangles_drawn);
+                        draw_stats.add(bloom_stats);
+                        self.rhi.endRenderPass(bloom_render_pass);
+                    }
+
                     if (self.tonemap_pass.isReady()) {
-                        try self.tonemap_pass.syncTexture(&self.rhi, self.scene_viewport.hdrColor().?);
+                        const bloom_input = if (bloom_enabled) self.scene_viewport.bloom().? else self.scene_viewport.hdrColor().?;
+                        try self.tonemap_pass.syncTextures(&self.rhi, self.scene_viewport.hdrColor().?, bloom_input);
                         const tonemap_render_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
                             .color = .{
                                 .target = scene_color_target,
@@ -930,6 +993,8 @@ pub const Renderer = struct {
                             tonemap_render_pass,
                             self.editor_viewport_state.exposure_enabled,
                             self.editor_viewport_state.exposure,
+                            bloom_enabled,
+                            self.editor_viewport_state.bloom_intensity,
                         );
                         self.rhi.endRenderPass(tonemap_render_pass);
                     }

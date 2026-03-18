@@ -19,6 +19,10 @@ pub const EditorViewportState = struct {
     // 视口级曝光只影响编辑器预览，不写回场景相机资源。
     exposure_enabled: bool = false,
     exposure: f32 = 1.0,
+    // Bloom 先作为视口级后处理 MVP，避免和场景相机资源耦合。
+    bloom_enabled: bool = false,
+    bloom_threshold: f32 = 1.0,
+    bloom_intensity: f32 = 0.35,
 };
 
 pub const SceneSnapshot = struct {
