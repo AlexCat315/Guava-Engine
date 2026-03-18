@@ -186,3 +186,96 @@ pub fn graphicsApiName(api: GraphicsAPI) []const u8 {
         .dx12 => "DirectX 12",
     };
 }
+
+// Resource pool configuration
+pub const PoolConfig = struct {
+    initial_capacity: usize = 8,
+    max_capacity: usize = 64,
+    auto_shrink: bool = true,
+    shrink_threshold: f32 = 0.25, // Shrink when utilization drops below this
+};
+
+pub const PoolStats = struct {
+    total_allocated: usize = 0,
+    in_use: usize = 0,
+    available: usize = 0,
+    peak_usage: usize = 0,
+    allocs: usize = 0,
+    releases: usize = 0,
+    cache_hits: usize = 0,
+    cache_misses: usize = 0,
+};
+
+// Extended performance statistics
+pub const PerformanceStats = struct {
+    // Frame timing
+    frame_count: u64 = 0,
+    frame_time_ns: u64 = 0,
+    avg_frame_time_ns: u64 = 0,
+    min_frame_time_ns: u64 = std.math.maxInt(u64),
+    max_frame_time_ns: u64 = 0,
+
+    // Draw call statistics
+    draw_calls: u64 = 0,
+    triangles_drawn: u64 = 0,
+    vertices_drawn: u64 = 0,
+    instanced_draws: u64 = 0,
+
+    // Pipeline statistics
+    pipeline_binds: u64 = 0,
+    bind_group_binds: u64 = 0,
+    vertex_buffer_binds: u64 = 0,
+    index_buffer_binds: u64 = 0,
+    sampler_binds: u64 = 0,
+
+    // Memory statistics
+    buffer_count: u32 = 0,
+    texture_count: u32 = 0,
+    sampler_count: u32 = 0,
+    pipeline_count: u32 = 0,
+    total_buffer_memory_bytes: u64 = 0,
+    total_texture_memory_bytes: u64 = 0,
+
+    // Transfer statistics
+    texture_uploads: u64 = 0,
+    buffer_uploads: u64 = 0,
+    bytes_uploaded: u64 = 0,
+
+    // Cached bindings avoided
+    redundant_pipeline_binds_avoided: u64 = 0,
+    redundant_bind_group_binds_avoided: u64 = 0,
+    redundant_vertex_buffer_binds_avoided: u64 = 0,
+    redundant_index_buffer_binds_avoided: u64 = 0,
+
+    pub fn reset(self: *PerformanceStats) void {
+        self.* = PerformanceStats{};
+    }
+
+    pub fn recordFrame(self: *PerformanceStats, frame_time_ns: u64) void {
+        self.frame_count += 1;
+        self.frame_time_ns = frame_time_ns;
+
+        // Update rolling average (exponential moving average)
+        if (self.frame_count == 1) {
+            self.avg_frame_time_ns = frame_time_ns;
+        } else {
+            self.avg_frame_time_ns = (self.avg_frame_time_ns * 7 + frame_time_ns) / 8;
+        }
+
+        self.min_frame_time_ns = @min(self.min_frame_time_ns, frame_time_ns);
+        self.max_frame_time_ns = @max(self.max_frame_time_ns, frame_time_ns);
+    }
+
+    pub fn frameTimeMs(self: *const PerformanceStats) f64 {
+        return @as(f64, @floatFromInt(self.frame_time_ns)) / 1_000_000.0;
+    }
+
+    pub fn avgFrameTimeMs(self: *const PerformanceStats) f64 {
+        return @as(f64, @floatFromInt(self.avg_frame_time_ns)) / 1_000_000.0;
+    }
+
+    pub fn fps(self: *const PerformanceStats) f64 {
+        if (self.avg_frame_time_ns == 0) return 0;
+        return 1_000_000_000.0 / @as(f64, @floatFromInt(self.avg_frame_time_ns));
+    }
+};

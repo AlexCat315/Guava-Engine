@@ -202,6 +202,15 @@ pub const RhiDevice = struct {
     api: types.GraphicsAPI,
     runtime_info: types.RuntimeInfo = .{},
     depth_texture: ?Texture = null,
+    depth_textures: [3]?Texture = .{ null, null, null },
+    current_depth_index: u32 = 0,
+    frames_in_flight: u32 = 2,
+
+    // Performance statistics
+    perf_stats: types.PerformanceStats = .{},
+
+    // Tracking for redundant binding optimization
+    bind_state: BindGroupState = .{},
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -229,6 +238,7 @@ pub const RhiDevice = struct {
             .window = window.handle,
             .api = selection.api,
             .runtime_info = .{ .backend = selection.api },
+            .frames_in_flight = config.frames_in_flight,
         };
         device.refreshRuntimeInfo(window.drawable_width, window.drawable_height);
         try device.resize(window.drawable_width, window.drawable_height);
@@ -236,9 +246,7 @@ pub const RhiDevice = struct {
     }
 
     pub fn deinit(self: *RhiDevice) void {
-        if (self.depth_texture != null) {
-            self.releaseDepthTexture();
-        }
+        self.releaseAllDepthTextures();
 
         _ = sdl.SDL_WaitForGPUIdle(self.raw);
         sdl.SDL_ReleaseWindowFromGPUDevice(self.raw, self.window);
@@ -247,6 +255,76 @@ pub const RhiDevice = struct {
 
     pub fn runtimeInfo(self: *const RhiDevice) types.RuntimeInfo {
         return self.runtime_info;
+    }
+
+    /// Get current performance statistics
+    pub fn performanceStats(self: *const RhiDevice) types.PerformanceStats {
+        return self.perf_stats;
+    }
+
+    /// Record a frame with its execution time
+    pub fn recordFrame(self: *RhiDevice, frame_time_ns: u64) void {
+        self.perf_stats.recordFrame(frame_time_ns);
+    }
+
+    /// Record draw call statistics
+    pub fn recordDrawCalls(self: *RhiDevice, draw_calls: u64, triangles: u64, vertices: u64, instanced: u64) void {
+        self.perf_stats.draw_calls += draw_calls;
+        self.perf_stats.triangles_drawn += triangles;
+        self.perf_stats.vertices_drawn += vertices;
+        self.perf_stats.instanced_draws += instanced;
+    }
+
+    /// Record pipeline and binding statistics
+    pub fn recordBindings(
+        self: *RhiDevice,
+        pipelines: u64,
+        bind_groups: u64,
+        vertex_buffers: u64,
+        index_buffers: u64,
+        samplers: u64,
+    ) void {
+        self.perf_stats.pipeline_binds += pipelines;
+        self.perf_stats.bind_group_binds += bind_groups;
+        self.perf_stats.vertex_buffer_binds += vertex_buffers;
+        self.perf_stats.index_buffer_binds += index_buffers;
+        self.perf_stats.sampler_binds += samplers;
+    }
+
+    /// Record transfer statistics
+    pub fn recordTransfer(self: *RhiDevice, texture_uploads: u64, buffer_uploads: u64, bytes: u64) void {
+        self.perf_stats.texture_uploads += texture_uploads;
+        self.perf_stats.buffer_uploads += buffer_uploads;
+        self.perf_stats.bytes_uploaded += bytes;
+    }
+
+    /// Record redundant binding avoidance
+    pub fn recordRedundantBindsAvoided(
+        self: *RhiDevice,
+        pipelines: u64,
+        bind_groups: u64,
+        vertex_buffers: u64,
+        index_buffers: u64,
+    ) void {
+        self.perf_stats.redundant_pipeline_binds_avoided += pipelines;
+        self.perf_stats.redundant_bind_group_binds_avoided += bind_groups;
+        self.perf_stats.redundant_vertex_buffer_binds_avoided += vertex_buffers;
+        self.perf_stats.redundant_index_buffer_binds_avoided += index_buffers;
+    }
+
+    /// Reset performance statistics
+    pub fn resetPerformanceStats(self: *RhiDevice) void {
+        self.perf_stats.reset();
+    }
+
+    /// Get the binding state tracker
+    pub fn bindingState(self: *RhiDevice) *BindGroupState {
+        return &self.bind_state;
+    }
+
+    /// Reset binding state for new frame
+    pub fn resetBindingState(self: *RhiDevice) void {
+        self.bind_state.reset();
     }
 
     pub fn depthTexture(self: *RhiDevice) ?*const Texture {
@@ -308,11 +386,15 @@ pub const RhiDevice = struct {
         }
     }
 
-    pub fn submitFrame(_: *RhiDevice, frame: Frame) Error!void {
+    pub fn submitFrame(self: *RhiDevice, frame: Frame) Error!void {
         if (!sdl.SDL_SubmitGPUCommandBuffer(frame.command_buffer)) {
             std.log.err("SDL_SubmitGPUCommandBuffer failed: {s}", .{window_mod.lastError()});
             return error.CommandBufferSubmitFailed;
         }
+        // Advance frame index for multi-buffering
+        self.advanceFrame();
+        // Update depth texture to use the new frame's depth buffer
+        self.depth_texture = self.depth_textures[self.current_depth_index];
     }
 
     pub fn submitFrameAndAcquireFence(_: *RhiDevice, frame: Frame) Error!Fence {
@@ -415,30 +497,44 @@ pub const RhiDevice = struct {
         self.runtime_info.drawable_height = height;
 
         if (width == 0 or height == 0) {
-            if (self.depth_texture != null) {
-                self.releaseDepthTexture();
-            }
+            self.releaseAllDepthTextures();
             self.runtime_info.has_depth = false;
             return;
         }
 
-        if (self.depth_texture) |depth_texture| {
-            if (depth_texture.desc.width == width and depth_texture.desc.height == height) {
-                self.runtime_info.has_depth = true;
-                return;
+        // Check if existing textures match required size
+        var all_match = true;
+        for (0..self.frames_in_flight) |i| {
+            if (self.depth_textures[i]) |depth_texture| {
+                if (depth_texture.desc.width != width or depth_texture.desc.height != height) {
+                    all_match = false;
+                    break;
+                }
+            } else {
+                all_match = false;
+                break;
             }
         }
 
-        if (self.depth_texture != null) {
-            self.releaseDepthTexture();
+        if (all_match) {
+            self.depth_texture = self.depth_textures[self.current_depth_index];
+            self.runtime_info.has_depth = true;
+            return;
         }
 
-        self.depth_texture = try self.createTexture(.{
-            .width = width,
-            .height = height,
-            .format = .d32_float,
-            .usage = types.TextureUsage.depth_stencil_target,
-        });
+        // Release all and recreate with multi-buffering
+        self.releaseAllDepthTextures();
+
+        for (0..self.frames_in_flight) |i| {
+            self.depth_textures[i] = try self.createTexture(.{
+                .width = width,
+                .height = height,
+                .format = .d32_float,
+                .usage = types.TextureUsage.depth_stencil_target,
+            });
+        }
+
+        self.depth_texture = self.depth_textures[self.current_depth_index];
         self.runtime_info.has_depth = true;
     }
 
@@ -755,6 +851,128 @@ pub const RhiDevice = struct {
         }
     }
 
+    /// Bind group binding state tracker for avoiding redundant bindings
+    pub const BindGroupState = struct {
+        last_bound_group: ?[*]const u8 = null,
+        last_bound_pipeline: ?[*]const u8 = null,
+        bound_vertex_buffers: [8]?*sdl.SDL_GPUBuffer = .{null} ** 8,
+        bound_index_buffer: ?*sdl.SDL_GPUBuffer = null,
+
+        pub fn reset(self: *BindGroupState) void {
+            self.last_bound_group = null;
+            self.last_bound_pipeline = null;
+            self.bound_vertex_buffers = .{null} ** 8;
+            self.bound_index_buffer = null;
+        }
+    };
+
+    /// Optimized bind that tracks state to avoid redundant API calls
+    /// Note: The caller must ensure unique pointer values for comparison
+    pub fn bindGroupOptimized(
+        _: *RhiDevice,
+        pass: RenderPass,
+        bind_group: *const BindGroup,
+        state: *BindGroupState,
+    ) void {
+        // Only bind if different from current
+        const group_ptr: [*]const u8 = @ptrCast(bind_group);
+        if (state.last_bound_group) |last| {
+            if (last == group_ptr) {
+                // Already bound, skip
+                return;
+            }
+        }
+        state.last_bound_group = group_ptr;
+
+        // Perform binding
+        switch (bind_group.stage) {
+            .vertex => {
+                if (bind_group.texture_sampler_bindings.len > 0) {
+                    sdl.SDL_BindGPUVertexSamplers(pass.raw, bind_group.slot_offset, bind_group.texture_sampler_bindings.ptr, @intCast(bind_group.texture_sampler_bindings.len));
+                }
+                if (bind_group.storage_textures.len > 0) {
+                    sdl.SDL_BindGPUVertexStorageTextures(pass.raw, bind_group.slot_offset, bind_group.storage_textures.ptr, @intCast(bind_group.storage_textures.len));
+                }
+                if (bind_group.storage_buffers.len > 0) {
+                    sdl.SDL_BindGPUVertexStorageBuffers(pass.raw, bind_group.slot_offset, bind_group.storage_buffers.ptr, @intCast(bind_group.storage_buffers.len));
+                }
+            },
+            .fragment => {
+                if (bind_group.texture_sampler_bindings.len > 0) {
+                    sdl.SDL_BindGPUFragmentSamplers(pass.raw, bind_group.slot_offset, bind_group.texture_sampler_bindings.ptr, @intCast(bind_group.texture_sampler_bindings.len));
+                }
+                if (bind_group.storage_textures.len > 0) {
+                    sdl.SDL_BindGPUFragmentStorageTextures(pass.raw, bind_group.slot_offset, bind_group.storage_textures.ptr, @intCast(bind_group.storage_textures.len));
+                }
+                if (bind_group.storage_buffers.len > 0) {
+                    sdl.SDL_BindGPUFragmentStorageBuffers(pass.raw, bind_group.slot_offset, bind_group.storage_buffers.ptr, @intCast(bind_group.storage_buffers.len));
+                }
+            },
+        }
+    }
+
+    /// Optimized pipeline bind that tracks state
+    pub fn bindGraphicsPipelineOptimized(
+        _: *RhiDevice,
+        pass: RenderPass,
+        pipeline: *const GraphicsPipeline,
+        state: *BindGroupState,
+    ) void {
+        const pipeline_ptr: [*]const u8 = @ptrCast(pipeline);
+        if (state.last_bound_pipeline) |last| {
+            if (last == pipeline_ptr) {
+                return;
+            }
+        }
+        state.last_bound_pipeline = pipeline_ptr;
+        sdl.SDL_BindGPUGraphicsPipeline(pass.raw, pipeline.raw);
+    }
+
+    /// Optimized vertex buffer bind with tracking
+    pub fn bindVertexBufferOptimized(
+        _: *RhiDevice,
+        pass: RenderPass,
+        slot: u32,
+        buffer: *const Buffer,
+        offset: u32,
+        state: *BindGroupState,
+    ) void {
+        if (slot < 8 and state.bound_vertex_buffers[slot] == buffer.raw) {
+            return; // Already bound
+        }
+
+        var binding = sdl.SDL_GPUBufferBinding{
+            .buffer = buffer.raw,
+            .offset = offset,
+        };
+        sdl.SDL_BindGPUVertexBuffers(pass.raw, slot, &binding, 1);
+
+        if (slot < 8) {
+            state.bound_vertex_buffers[slot] = buffer.raw;
+        }
+    }
+
+    /// Optimized index buffer bind with tracking
+    pub fn bindIndexBufferOptimized(
+        _: *RhiDevice,
+        pass: RenderPass,
+        buffer: *const Buffer,
+        index_size: types.IndexElementSize,
+        offset: u32,
+        state: *BindGroupState,
+    ) void {
+        if (state.bound_index_buffer == buffer.raw) {
+            return; // Already bound
+        }
+
+        var binding = sdl.SDL_GPUBufferBinding{
+            .buffer = buffer.raw,
+            .offset = offset,
+        };
+        sdl.SDL_BindGPUIndexBuffer(pass.raw, &binding, indexElementSizeToSdl(index_size));
+        state.bound_index_buffer = buffer.raw;
+    }
+
     pub fn pushVertexUniformData(_: *RhiDevice, frame: Frame, slot: u32, data: []const u8) void {
         sdl.SDL_PushGPUVertexUniformData(frame.command_buffer, slot, data.ptr, @intCast(data.len));
     }
@@ -962,6 +1180,37 @@ pub const RhiDevice = struct {
             self.releaseTexture(&copy);
         }
         self.depth_texture = null;
+    }
+
+    fn releaseAllDepthTextures(self: *RhiDevice) void {
+        for (0..self.depth_textures.len) |i| {
+            if (self.depth_textures[i]) |*depth_texture| {
+                self.releaseTexture(depth_texture);
+                self.depth_textures[i] = null;
+            }
+        }
+        self.depth_texture = null;
+    }
+
+    pub fn depthTextureForFrame(self: *RhiDevice) ?*const Texture {
+        const idx = self.current_depth_index;
+        if (self.depth_textures[idx]) |*texture| {
+            return texture;
+        }
+        return null;
+    }
+
+    pub fn advanceFrame(self: *RhiDevice) void {
+        self.current_depth_index = (self.current_depth_index + 1) % self.frames_in_flight;
+    }
+
+    pub fn frameIndex(self: *const RhiDevice) u32 {
+        return self.current_depth_index;
+    }
+
+    pub fn setFramesInFlight(self: *RhiDevice, frames: u32) void {
+        self.frames_in_flight = @min(frames, 3);
+        if (self.frames_in_flight < 2) self.frames_in_flight = 2;
     }
 
     fn refreshRuntimeInfo(self: *RhiDevice, drawable_width: u32, drawable_height: u32) void {
@@ -1284,3 +1533,551 @@ fn copyCString(buffer: []u8, source: ?[*:0]const u8) void {
     const len = @min(buffer.len - 1, slice.len);
     @memcpy(buffer[0..len], slice[0..len]);
 }
+
+// ============================================================================
+// Resource Pool Implementation
+// ============================================================================
+
+const PooledBuffer = struct {
+    buffer: Buffer,
+    last_frame_used: u64 = 0,
+};
+
+const PooledTexture = struct {
+    texture: Texture,
+    last_frame_used: u64 = 0,
+};
+
+const PooledSampler = struct {
+    sampler: Sampler,
+    last_frame_used: u64 = 0,
+};
+
+const PooledPipeline = struct {
+    pipeline: GraphicsPipeline,
+    last_frame_used: u64 = 0,
+};
+
+pub const ResourcePool = struct {
+    allocator: std.mem.Allocator,
+    device: *RhiDevice,
+
+    // Buffer pool
+    buffer_pool: std.ArrayList(PooledBuffer),
+    buffer_config: types.PoolConfig = .{},
+
+    // Texture pool
+    texture_pool: std.ArrayList(PooledTexture),
+    texture_config: types.PoolConfig = .{},
+
+    // Sampler pool
+    sampler_pool: std.ArrayList(PooledSampler),
+    sampler_config: types.PoolConfig = .{},
+
+    // Pipeline pool (for frequently recreated pipelines)
+    pipeline_pool: std.ArrayList(PooledPipeline),
+    pipeline_config: types.PoolConfig = .{},
+
+    // Statistics
+    stats: types.PoolStats = .{},
+    frame_counter: u64 = 0,
+
+    pub fn init(allocator: std.mem.Allocator, device: *RhiDevice) !ResourcePool {
+        return ResourcePool{
+            .allocator = allocator,
+            .device = device,
+            .buffer_pool = std.ArrayList(PooledBuffer).init(allocator),
+            .texture_pool = std.ArrayList(PooledTexture).init(allocator),
+            .sampler_pool = std.ArrayList(PooledSampler).init(allocator),
+            .pipeline_pool = std.ArrayList(PooledPipeline).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *ResourcePool) void {
+        // Release all pooled resources
+        for (self.buffer_pool.items) |pooled| {
+            self.device.releaseBuffer(@constCast(&pooled.buffer));
+        }
+        self.buffer_pool.deinit();
+
+        for (self.texture_pool.items) |pooled| {
+            self.device.releaseTexture(@constCast(&pooled.texture));
+        }
+        self.texture_pool.deinit();
+
+        for (self.sampler_pool.items) |pooled| {
+            self.device.releaseSampler(@constCast(&pooled.sampler));
+        }
+        self.sampler_pool.deinit();
+
+        for (self.pipeline_pool.items) |pooled| {
+            self.device.releaseGraphicsPipeline(@constCast(&pooled.pipeline));
+        }
+        self.pipeline_pool.deinit();
+    }
+
+    pub fn advanceFrame(self: *ResourcePool) void {
+        self.frame_counter += 1;
+    }
+
+    pub fn getStats(self: *const ResourcePool) types.PoolStats {
+        var s = self.stats;
+        s.total_allocated = self.buffer_pool.items.len + self.texture_pool.items.len +
+            self.sampler_pool.items.len + self.pipeline_pool.items.len;
+        return s;
+    }
+
+    // Buffer pool operations
+    pub fn acquireBuffer(self: *ResourcePool, desc: types.BufferDesc) !Buffer {
+        self.stats.allocs += 1;
+
+        // Try to find a matching cached buffer
+        for (self.buffer_pool.items) |*pooled| {
+            if (pooled.buffer.desc.size == desc.size and
+                pooled.buffer.desc.usage == desc.usage) {
+                pooled.last_frame_used = self.frame_counter;
+                self.stats.cache_hits += 1;
+                return pooled.buffer;
+            }
+        }
+
+        self.stats.cache_misses += 1;
+        return try self.device.createBuffer(desc);
+    }
+
+    pub fn releaseBuffer(self: *ResourcePool, buffer: *Buffer) void {
+        self.stats.releases += 1;
+
+        if (self.buffer_pool.items.len >= self.buffer_config.max_capacity) {
+            // Pool is full, actually release the buffer
+            self.device.releaseBuffer(buffer);
+            return;
+        }
+
+        // Add to pool for reuse
+        if (self.buffer_pool.append(.{
+            .buffer = buffer.*,
+            .last_frame_used = self.frame_counter,
+        })) {
+            // Append succeeded
+        } else {
+            // If append fails, release the buffer
+            self.device.releaseBuffer(buffer);
+        }
+    }
+
+    // Texture pool operations
+    pub fn acquireTexture(self: *ResourcePool, desc: types.TextureDesc) !Texture {
+        self.stats.allocs += 1;
+
+        for (self.texture_pool.items) |*pooled| {
+            if (pooled.texture.desc.width == desc.width and
+                pooled.texture.desc.height == desc.height and
+                pooled.texture.desc.format == desc.format and
+                pooled.texture.desc.usage == desc.usage) {
+                pooled.last_frame_used = self.frame_counter;
+                self.stats.cache_hits += 1;
+                return pooled.texture;
+            }
+        }
+
+        self.stats.cache_misses += 1;
+        return try self.device.createTexture(desc);
+    }
+
+    pub fn releaseTexture(self: *ResourcePool, texture: *Texture) void {
+        self.stats.releases += 1;
+
+        if (self.texture_pool.items.len >= self.texture_config.max_capacity) {
+            self.device.releaseTexture(texture);
+            return;
+        }
+
+        if (self.texture_pool.append(.{
+            .texture = texture.*,
+            .last_frame_used = self.frame_counter,
+        })) {
+            // Append succeeded
+        } else {
+            self.device.releaseTexture(texture);
+        }
+    }
+
+    // Sampler pool operations
+    pub fn acquireSampler(self: *ResourcePool, desc: SamplerDesc) !Sampler {
+        self.stats.allocs += 1;
+
+        for (self.sampler_pool.items) |*pooled| {
+            if (std.meta.eql(pooled.sampler.desc, desc)) {
+                pooled.last_frame_used = self.frame_counter;
+                self.stats.cache_hits += 1;
+                return pooled.sampler;
+            }
+        }
+
+        self.stats.cache_misses += 1;
+        return try self.device.createSampler(desc);
+    }
+
+    pub fn releaseSampler(self: *ResourcePool, sampler: *Sampler) void {
+        self.stats.releases += 1;
+
+        if (self.sampler_pool.items.len >= self.sampler_config.max_capacity) {
+            self.device.releaseSampler(sampler);
+            return;
+        }
+
+        if (self.sampler_pool.append(.{
+            .sampler = sampler.*,
+            .last_frame_used = self.frame_counter,
+        })) {
+            // Append succeeded
+        } else {
+            self.device.releaseSampler(sampler);
+        }
+    }
+
+    // Pipeline pool operations
+    pub fn acquirePipeline(self: *ResourcePool, desc: GraphicsPipelineDesc) !GraphicsPipeline {
+        self.stats.allocs += 1;
+
+        // Pipelines are harder to cache by descriptor alone
+        // For now, just create new ones
+        self.stats.cache_misses += 1;
+        return try self.device.createGraphicsPipeline(desc);
+    }
+
+    pub fn releasePipeline(self: *ResourcePool, pipeline: *GraphicsPipeline) void {
+        self.stats.releases += 1;
+
+        if (self.pipeline_pool.items.len >= self.pipeline_config.max_capacity) {
+            self.device.releaseGraphicsPipeline(pipeline);
+            return;
+        }
+
+        if (self.pipeline_pool.append(.{
+            .pipeline = pipeline.*,
+            .last_frame_used = self.frame_counter,
+        })) {
+            // Append succeeded
+        } else {
+            self.device.releaseGraphicsPipeline(pipeline);
+        }
+    }
+
+    // Cleanup unused resources
+    pub fn trim(self: *ResourcePool) void {
+        const frame = self.frame_counter;
+        const max_age = 60; // Frames before unused resources are released
+
+        // Trim buffer pool
+        var i: usize = 0;
+        while (i < self.buffer_pool.items.len) {
+            if (frame - self.buffer_pool.items[i].last_frame_used > max_age and
+                self.buffer_pool.items.len > self.buffer_config.initial_capacity) {
+                const removed = self.buffer_pool.orderedRemove(i);
+                self.device.releaseBuffer(@constCast(&removed.buffer));
+            } else {
+                i += 1;
+            }
+        }
+
+        // Trim texture pool
+        i = 0;
+        while (i < self.texture_pool.items.len) {
+            if (frame - self.texture_pool.items[i].last_frame_used > max_age and
+                self.texture_pool.items.len > self.texture_config.initial_capacity) {
+                const removed = self.texture_pool.orderedRemove(i);
+                self.device.releaseTexture(@constCast(&removed.texture));
+            } else {
+                i += 1;
+            }
+        }
+
+        // Trim sampler pool
+        i = 0;
+        while (i < self.sampler_pool.items.len) {
+            if (frame - self.sampler_pool.items[i].last_frame_used > max_age and
+                self.sampler_pool.items.len > self.sampler_config.initial_capacity) {
+                const removed = self.sampler_pool.orderedRemove(i);
+                self.device.releaseSampler(@constCast(&removed.sampler));
+            } else {
+                i += 1;
+            }
+        }
+
+        // Trim pipeline pool
+        i = 0;
+        while (i < self.pipeline_pool.items.len) {
+            if (frame - self.pipeline_pool.items[i].last_frame_used > max_age and
+                self.pipeline_pool.items.len > self.pipeline_config.initial_capacity) {
+                const removed = self.pipeline_pool.orderedRemove(i);
+                self.device.releaseGraphicsPipeline(@constCast(&removed.pipeline));
+            } else {
+                i += 1;
+            }
+        }
+    }
+};
+
+// ============================================================================
+// Async Transfer Manager - For non-blocking texture/buffer uploads
+// ============================================================================
+
+const TransferRequest = struct {
+    texture: ?*Texture = null,
+    buffer: ?*Buffer = null,
+    data: []u8,
+    pixels_per_row: u32 = 0,
+    rows_per_layer: u32 = 0,
+    offset: u32 = 0,
+    size: u32 = 0,
+    completion_callback: ?fn (void) void = null,
+    fence: ?Fence = null,
+};
+
+const PendingTransfer = struct {
+    request: TransferRequest,
+    transfer_buffer: TransferBuffer,
+    command_buffer: *sdl.SDL_GPUCommandBuffer,
+    fence: Fence,
+};
+
+pub const AsyncTransferManager = struct {
+    allocator: std.mem.Allocator,
+    device: *RhiDevice,
+    pending_transfers: std.ArrayList(PendingTransfer),
+    completed_transfers: std.ArrayList(PendingTransfer),
+    max_pending: usize = 4,
+    enabled: bool = true,
+
+    pub fn init(allocator: std.mem.Allocator, device: *RhiDevice) !AsyncTransferManager {
+        return AsyncTransferManager{
+            .allocator = allocator,
+            .device = device,
+            .pending_transfers = std.ArrayList(PendingTransfer).init(allocator),
+            .completed_transfers = std.ArrayList(PendingTransfer).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *AsyncTransferManager) void {
+        // Wait for all pending transfers to complete
+        self.waitAll();
+
+        for (self.pending_transfers.items) |*transfer| {
+            self.device.releaseTransferBuffer(&transfer.transfer_buffer);
+            _ = sdl.SDL_CancelGPUCommandBuffer(transfer.command_buffer);
+        }
+        self.pending_transfers.deinit();
+
+        for (self.completed_transfers.items) |*transfer| {
+            self.device.releaseTransferBuffer(&transfer.transfer_buffer);
+        }
+        self.completed_transfers.deinit();
+    }
+
+    pub fn isEnabled(self: *const AsyncTransferManager) bool {
+        return self.enabled;
+    }
+
+    pub fn setEnabled(self: *AsyncTransferManager, enabled: bool) void {
+        self.enabled = enabled;
+    }
+
+    /// Queue an async texture upload. Returns immediately.
+    /// The caller must call processCompleted() to retrieve finished transfers.
+    pub fn queueTextureUpload(
+        self: *AsyncTransferManager,
+        texture: *Texture,
+        data: []u8,
+        pixels_per_row: u32,
+        rows_per_layer: u32,
+    ) !void {
+        if (!self.enabled) return;
+
+        // Wait if too many pending transfers
+        if (self.pending_transfers.items.len >= self.max_pending) {
+            self.processCompleted(1);
+        }
+
+        var transfer_buffer = try self.device.createTransferBuffer(.{
+            .size = @intCast(data.len),
+            .upload = true,
+        });
+
+        // Copy data to transfer buffer
+        const mapped = sdl.SDL_MapGPUTransferBuffer(self.device.raw, transfer_buffer.raw, false) orelse {
+            self.device.releaseTransferBuffer(&transfer_buffer);
+            return error.TransferBufferMapFailed;
+        };
+        const bytes: [*]u8 = @ptrCast(mapped);
+        @memcpy(bytes[0..data.len], data);
+        sdl.SDL_UnmapGPUTransferBuffer(self.device.raw, transfer_buffer.raw);
+
+        const command_buffer = sdl.SDL_AcquireGPUCommandBuffer(self.device.raw) orelse {
+            self.device.releaseTransferBuffer(&transfer_buffer);
+            return error.CommandBufferAcquireFailed;
+        };
+
+        const copy_pass = sdl.SDL_BeginGPUCopyPass(command_buffer) orelse {
+            self.device.releaseTransferBuffer(&transfer_buffer);
+            _ = sdl.SDL_CancelGPUCommandBuffer(command_buffer);
+            return error.CopyPassBeginFailed;
+        };
+
+        var source = sdl.SDL_GPUTextureTransferInfo{
+            .transfer_buffer = transfer_buffer.raw,
+            .offset = 0,
+            .pixels_per_row = pixels_per_row,
+            .rows_per_layer = rows_per_layer,
+        };
+        var destination = sdl.SDL_GPUTextureRegion{
+            .texture = texture.raw,
+            .mip_level = 0,
+            .layer = 0,
+            .x = 0,
+            .y = 0,
+            .z = 0,
+            .w = texture.desc.width,
+            .h = texture.desc.height,
+            .d = 1,
+        };
+        sdl.SDL_UploadToGPUTexture(copy_pass, &source, &destination, false);
+        sdl.SDL_EndGPUCopyPass(copy_pass);
+
+        const fence = sdl.SDL_SubmitGPUCommandBufferAndAcquireFence(command_buffer) orelse {
+            self.device.releaseTransferBuffer(&transfer_buffer);
+            _ = sdl.SDL_CancelGPUCommandBuffer(command_buffer);
+            return error.FenceAcquireFailed;
+        };
+
+        try self.pending_transfers.append(.{
+            .request = .{
+                .texture = texture,
+                .data = data,
+                .pixels_per_row = pixels_per_row,
+                .rows_per_layer = rows_per_layer,
+            },
+            .transfer_buffer = transfer_buffer,
+            .command_buffer = command_buffer,
+            .fence = .{ .raw = fence },
+        });
+    }
+
+    /// Queue an async buffer upload. Returns immediately.
+    pub fn queueBufferUpload(
+        self: *AsyncTransferManager,
+        buffer: *Buffer,
+        data: []u8,
+        offset: u32,
+    ) !void {
+        if (!self.enabled) return;
+
+        if (self.pending_transfers.items.len >= self.max_pending) {
+            self.processCompleted(1);
+        }
+
+        var transfer_buffer = try self.device.createTransferBuffer(.{
+            .size = @intCast(data.len),
+            .upload = true,
+        });
+
+        const mapped = sdl.SDL_MapGPUTransferBuffer(self.device.raw, transfer_buffer.raw, false) orelse {
+            self.device.releaseTransferBuffer(&transfer_buffer);
+            return error.TransferBufferMapFailed;
+        };
+        const bytes: [*]u8 = @ptrCast(mapped);
+        @memcpy(bytes[0..data.len], data);
+        sdl.SDL_UnmapGPUTransferBuffer(self.device.raw, transfer_buffer.raw);
+
+        const command_buffer = sdl.SDL_AcquireGPUCommandBuffer(self.device.raw) orelse {
+            self.device.releaseTransferBuffer(&transfer_buffer);
+            return error.CommandBufferAcquireFailed;
+        };
+
+        const copy_pass = sdl.SDL_BeginGPUCopyPass(command_buffer) orelse {
+            self.device.releaseTransferBuffer(&transfer_buffer);
+            _ = sdl.SDL_CancelGPUCommandBuffer(command_buffer);
+            return error.CopyPassBeginFailed;
+        };
+
+        var source = sdl.SDL_GPUTransferBufferLocation{
+            .transfer_buffer = transfer_buffer.raw,
+            .offset = 0,
+        };
+        var destination = sdl.SDL_GPUBufferRegion{
+            .buffer = buffer.raw,
+            .offset = offset,
+            .size = @intCast(data.len),
+        };
+        sdl.SDL_UploadToGPUBuffer(copy_pass, &source, &destination, false);
+        sdl.SDL_EndGPUCopyPass(copy_pass);
+
+        const fence = sdl.SDL_SubmitGPUCommandBufferAndAcquireFence(command_buffer) orelse {
+            self.device.releaseTransferBuffer(&transfer_buffer);
+            _ = sdl.SDL_CancelGPUCommandBuffer(command_buffer);
+            return error.FenceAcquireFailed;
+        };
+
+        try self.pending_transfers.append(.{
+            .request = .{
+                .buffer = buffer,
+                .data = data,
+                .offset = offset,
+                .size = @intCast(data.len),
+            },
+            .transfer_buffer = transfer_buffer,
+            .command_buffer = command_buffer,
+            .fence = .{ .raw = fence },
+        });
+    }
+
+    /// Process completed transfers. Call this each frame.
+    /// Returns number of transfers processed.
+    pub fn processCompleted(self: *AsyncTransferManager, max_process: usize) usize {
+        var processed: usize = 0;
+
+        for (self.pending_transfers.items) |*transfer| {
+            if (processed >= max_process) break;
+
+            if (self.device.isFenceSignaled(&transfer.fence)) {
+                self.device.releaseTransferBuffer(&transfer.transfer_buffer);
+                self.completed_transfers.append(transfer.*) catch {};
+                processed += 1;
+            }
+        }
+
+        // Remove processed transfers
+        var i: usize = 0;
+        while (i < self.pending_transfers.items.len) {
+            if (self.device.isFenceSignaled(&self.pending_transfers.items[i].fence)) {
+                _ = self.pending_transfers.orderedRemove(i);
+            } else {
+                i += 1;
+            }
+        }
+
+        return processed;
+    }
+
+    /// Wait for all pending transfers to complete
+    pub fn waitAll(self: *AsyncTransferManager) void {
+        for (self.pending_transfers.items) |*transfer| {
+            while (!self.device.isFenceSignaled(&transfer.fence)) {
+                // Spin wait - in production would use proper synchronization
+            }
+            self.device.releaseTransferBuffer(&transfer.transfer_buffer);
+        }
+        self.pending_transfers.clearRetainingCapacity();
+    }
+
+    /// Get pending transfer count
+    pub fn pendingCount(self: *const AsyncTransferManager) usize {
+        return self.pending_transfers.items.len;
+    }
+
+    /// Check if there are pending transfers
+    pub fn hasPending(self: *const AsyncTransferManager) bool {
+        return self.pending_transfers.items.len > 0;
+    }
+};
