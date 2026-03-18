@@ -18,6 +18,8 @@ pub const TonemapUniforms = extern struct {
     exposure_params: [4]f32 = .{ 0.0, 1.0, 0.0, 0.0 },
     // x: enable_bloom, y: bloom_intensity, z/w: reserved
     bloom_params: [4]f32 = .{ 0.0, 0.35, 0.0, 0.0 },
+    // x: enable_color_grading, y: saturation, z: contrast, w: gamma
+    color_grading_params: [4]f32 = .{ 0.0, 1.0, 1.0, 1.0 },
 };
 
 pub const TonemapPass = struct {
@@ -104,6 +106,10 @@ pub const TonemapPass = struct {
         exposure: f32,
         bloom_enabled: bool,
         bloom_intensity: f32,
+        color_grading_enabled: bool,
+        color_grading_saturation: f32,
+        color_grading_contrast: f32,
+        color_grading_gamma: f32,
     ) void {
         if (!self.isReady() or self.bind_group == null) {
             return;
@@ -121,6 +127,12 @@ pub const TonemapPass = struct {
                 @max(bloom_intensity, 0.0),
                 0.0,
                 0.0,
+            },
+            .color_grading_params = .{
+                if (color_grading_enabled) 1.0 else 0.0,
+                @max(color_grading_saturation, 0.0),
+                @max(color_grading_contrast, 0.0),
+                @max(color_grading_gamma, 0.001),
             },
         };
 

@@ -79,6 +79,31 @@ pub fn drawRenderSettingsWindow(state: *EditorState, layer_context: *engine.core
     engine.ui.ImGui.labelText(state.text(.bloom_intensity), bloom_intensity_text);
 
     engine.ui.ImGui.separator();
+    engine.ui.ImGui.text(state.text(.color_grading));
+    _ = engine.ui.ImGui.checkbox(state.text(.enable_color_grading), &state.viewport_color_grading_enabled);
+    var color_grading_saturation = state.viewport_color_grading_saturation;
+    if (engine.ui.ImGui.dragFloat("##viewport_color_grading_saturation", &color_grading_saturation, 0.01, 0.0, 2.0)) {
+        state.viewport_color_grading_saturation = color_grading_saturation;
+    }
+    var saturation_buffer: [32]u8 = undefined;
+    const saturation_text = try std.fmt.bufPrint(&saturation_buffer, "{d:.2}x", .{state.viewport_color_grading_saturation});
+    engine.ui.ImGui.labelText(state.text(.saturation), saturation_text);
+    var color_grading_contrast = state.viewport_color_grading_contrast;
+    if (engine.ui.ImGui.dragFloat("##viewport_color_grading_contrast", &color_grading_contrast, 0.01, 0.5, 2.0)) {
+        state.viewport_color_grading_contrast = color_grading_contrast;
+    }
+    var contrast_buffer: [32]u8 = undefined;
+    const contrast_text = try std.fmt.bufPrint(&contrast_buffer, "{d:.2}x", .{state.viewport_color_grading_contrast});
+    engine.ui.ImGui.labelText(state.text(.contrast), contrast_text);
+    var color_grading_gamma = state.viewport_color_grading_gamma;
+    if (engine.ui.ImGui.dragFloat("##viewport_color_grading_gamma", &color_grading_gamma, 0.01, 0.5, 2.0)) {
+        state.viewport_color_grading_gamma = color_grading_gamma;
+    }
+    var gamma_buffer: [32]u8 = undefined;
+    const gamma_text = try std.fmt.bufPrint(&gamma_buffer, "{d:.2}x", .{state.viewport_color_grading_gamma});
+    engine.ui.ImGui.labelText(state.text(.gamma), gamma_text);
+
+    engine.ui.ImGui.separator();
     engine.ui.ImGui.text(state.text(.coordinate_space));
     switch (drawButtonRow2(state.text(.local_space), state.text(.world_space), 112.0)) {
         .first => state.transform_space = .local,

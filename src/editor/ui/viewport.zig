@@ -721,6 +721,10 @@ fn syncViewportState(state: *EditorState, layer_context: *engine.core.LayerConte
         .bloom_enabled = state.viewport_bloom_enabled,
         .bloom_threshold = state.viewport_bloom_threshold,
         .bloom_intensity = state.viewport_bloom_intensity,
+        .color_grading_enabled = state.viewport_color_grading_enabled,
+        .color_grading_saturation = state.viewport_color_grading_saturation,
+        .color_grading_contrast = state.viewport_color_grading_contrast,
+        .color_grading_gamma = state.viewport_color_grading_gamma,
     });
 }
 

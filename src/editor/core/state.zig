@@ -259,6 +259,11 @@ pub const EditorState = struct {
     viewport_bloom_enabled: bool = false,
     viewport_bloom_threshold: f32 = 1.0,
     viewport_bloom_intensity: f32 = 0.35,
+    // Color Grading 作为视口预览参数，不写回场景资源。
+    viewport_color_grading_enabled: bool = false,
+    viewport_color_grading_saturation: f32 = 1.0,
+    viewport_color_grading_contrast: f32 = 1.0,
+    viewport_color_grading_gamma: f32 = 1.0,
     viewport_hovered: bool = false,
     viewport_focused: bool = false,
     viewport_has_image: bool = false,

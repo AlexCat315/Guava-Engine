@@ -705,16 +705,24 @@ pub const Renderer = struct {
             @abs(g_logged_postfx_state.?.exposure - state.exposure) > 0.0001 or
             g_logged_postfx_state.?.bloom_enabled != state.bloom_enabled or
             @abs(g_logged_postfx_state.?.bloom_threshold - state.bloom_threshold) > 0.0001 or
-            @abs(g_logged_postfx_state.?.bloom_intensity - state.bloom_intensity) > 0.0001)
+            @abs(g_logged_postfx_state.?.bloom_intensity - state.bloom_intensity) > 0.0001 or
+            g_logged_postfx_state.?.color_grading_enabled != state.color_grading_enabled or
+            @abs(g_logged_postfx_state.?.color_grading_saturation - state.color_grading_saturation) > 0.0001 or
+            @abs(g_logged_postfx_state.?.color_grading_contrast - state.color_grading_contrast) > 0.0001 or
+            @abs(g_logged_postfx_state.?.color_grading_gamma - state.color_grading_gamma) > 0.0001)
         {
             render_log.info(
-                "viewport postfx updated exposure_enabled={} exposure={d:.2} bloom_enabled={} bloom_threshold={d:.2} bloom_intensity={d:.2}",
+                "viewport postfx updated exposure_enabled={} exposure={d:.2} bloom_enabled={} bloom_threshold={d:.2} bloom_intensity={d:.2} color_grading_enabled={} saturation={d:.2} contrast={d:.2} gamma={d:.2}",
                 .{
                     state.exposure_enabled,
                     state.exposure,
                     state.bloom_enabled,
                     state.bloom_threshold,
                     state.bloom_intensity,
+                    state.color_grading_enabled,
+                    state.color_grading_saturation,
+                    state.color_grading_contrast,
+                    state.color_grading_gamma,
                 },
             );
             g_logged_postfx_state = state;
@@ -995,6 +1003,10 @@ pub const Renderer = struct {
                             self.editor_viewport_state.exposure,
                             bloom_enabled,
                             self.editor_viewport_state.bloom_intensity,
+                            self.editor_viewport_state.color_grading_enabled,
+                            self.editor_viewport_state.color_grading_saturation,
+                            self.editor_viewport_state.color_grading_contrast,
+                            self.editor_viewport_state.color_grading_gamma,
                         );
                         self.rhi.endRenderPass(tonemap_render_pass);
                     }
