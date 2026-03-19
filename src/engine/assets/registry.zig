@@ -11,6 +11,9 @@ pub const AssetType = enum {
     shader,
     mesh,
     material,
+    skeleton,
+    skin,
+    animation_clip,
 
     pub fn fromPath(path: []const u8) ?AssetType {
         if (std.mem.endsWith(u8, path, ".guava_scene")) {
@@ -36,17 +39,23 @@ pub const AssetType = enum {
             .shader => "shader-source-v1",
             .mesh => "embedded-mesh-v1",
             .material => "embedded-material-v1",
+            .skeleton => "embedded-skeleton-v1",
+            .skin => "embedded-skin-v1",
+            .animation_clip => "embedded-animation-clip-v1",
         };
     }
 
     pub fn importVersion(self: AssetType) u32 {
         return switch (self) {
             .scene => 3,
-            .model => 2,
+            .model => 3,
             .texture => 2,
             .shader => 1,
             .mesh => 1,
             .material => 1,
+            .skeleton => 1,
+            .skin => 1,
+            .animation_clip => 1,
         };
     }
 };

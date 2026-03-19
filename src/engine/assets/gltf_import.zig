@@ -1,8 +1,11 @@
 const std = @import("std");
+const animation_clip_mod = @import("animation_clip_resource.zig");
 const handles = @import("handles.zig");
 const image_decoder = @import("image_decoder.zig");
 const mesh_mod = @import("mesh_resource.zig");
 const registry_mod = @import("registry.zig");
+const skeleton_mod = @import("skeleton_resource.zig");
+const skin_mod = @import("skin_resource.zig");
 const texture_import_mod = @import("texture_import.zig");
 const components = @import("../scene/components.zig");
 const math = @import("../math/mat4.zig");
@@ -12,6 +15,9 @@ pub const ImportReport = struct {
     mesh_count: usize = 0,
     material_count: usize = 0,
     texture_count: usize = 0,
+    skeleton_count: usize = 0,
+    skin_count: usize = 0,
+    animation_clip_count: usize = 0,
     root_entity: ?u64 = null,
 };
 
@@ -25,6 +31,8 @@ const GltfDocument = struct {
     materials: ?[]Material = null,
     meshes: ?[]Mesh = null,
     nodes: ?[]Node = null,
+    skins: ?[]Skin = null,
+    animations: ?[]Animation = null,
     scenes: ?[]SceneDef = null,
     scene: ?u32 = null,
 };
@@ -107,11 +115,41 @@ const Mesh = struct {
 const Node = struct {
     name: ?[]const u8 = null,
     mesh: ?u32 = null,
+    skin: ?u32 = null,
     children: ?[]u32 = null,
     translation: ?[3]f32 = null,
     rotation: ?[4]f32 = null,
     scale: ?[3]f32 = null,
     matrix: ?[16]f32 = null,
+};
+
+const Skin = struct {
+    inverseBindMatrices: ?u32 = null,
+    skeleton: ?u32 = null,
+    joints: []u32,
+    name: ?[]const u8 = null,
+};
+
+const AnimationSampler = struct {
+    input: u32,
+    interpolation: ?[]const u8 = null,
+    output: u32,
+};
+
+const AnimationTarget = struct {
+    node: ?u32 = null,
+    path: []const u8,
+};
+
+const AnimationChannel = struct {
+    sampler: u32,
+    target: AnimationTarget,
+};
+
+const Animation = struct {
+    name: ?[]const u8 = null,
+    samplers: []AnimationSampler,
+    channels: []AnimationChannel,
 };
 
 const SceneDef = struct {
@@ -166,10 +204,57 @@ const CookedMaterialRecord = struct {
     double_sided: bool = false,
 };
 
+const CookedSkeletonJointRecord = struct {
+    name: []const u8,
+    node_entity_index: u32,
+    parent_joint_index: ?u32 = null,
+    rest_local_transform: components.Transform = .{},
+};
+
+const CookedSkeletonRecord = struct {
+    asset_id: []const u8,
+    name: []const u8,
+    joints: []CookedSkeletonJointRecord,
+};
+
+const CookedSkinRecord = struct {
+    asset_id: []const u8,
+    name: []const u8,
+    skeleton_asset_id: []const u8,
+    joint_entity_indices: []const u32,
+    inverse_bind_matrices: []const [16]f32,
+};
+
+const CookedVec3TrackRecord = struct {
+    target_entity_index: u32,
+    interpolation: animation_clip_mod.Interpolation = .linear,
+    times: []const f32,
+    values: []const [3]f32,
+};
+
+const CookedQuatTrackRecord = struct {
+    target_entity_index: u32,
+    interpolation: animation_clip_mod.Interpolation = .linear,
+    times: []const f32,
+    values: []const [4]f32,
+};
+
+const CookedAnimationClipRecord = struct {
+    asset_id: []const u8,
+    name: []const u8,
+    duration: f32,
+    translation_tracks: []CookedVec3TrackRecord,
+    rotation_tracks: []CookedQuatTrackRecord,
+    scale_tracks: []CookedVec3TrackRecord,
+};
+
 const CookedEntityRecord = struct {
     name: []const u8,
     mesh_asset_id: ?[]const u8 = null,
     material_asset_id: ?[]const u8 = null,
+    skeleton_asset_id: ?[]const u8 = null,
+    skin_asset_id: ?[]const u8 = null,
+    animator_clip_asset_id: ?[]const u8 = null,
     local_transform: components.Transform = .{},
     parent_index: ?usize = null,
 };
@@ -184,6 +269,9 @@ const CookedModelFile = struct {
     asset_records: []registry_mod.AssetRecord,
     meshes: []CookedMeshRecord,
     materials: []CookedMaterialRecord,
+    skeletons: []CookedSkeletonRecord,
+    skins: []CookedSkinRecord,
+    animation_clips: []CookedAnimationClipRecord,
     entities: []CookedEntityRecord,
 };
 
@@ -200,6 +288,21 @@ const CookedMeshHandle = struct {
 const CookedMaterialHandle = struct {
     asset_id: []const u8,
     handle: handles.MaterialHandle,
+};
+
+const CookedSkeletonHandle = struct {
+    asset_id: []const u8,
+    handle: handles.SkeletonHandle,
+};
+
+const CookedSkinHandle = struct {
+    asset_id: []const u8,
+    handle: handles.SkinHandle,
+};
+
+const CookedAnimationClipHandle = struct {
+    asset_id: []const u8,
+    handle: handles.AnimationClipHandle,
 };
 
 pub fn importStaticModelAsset(
@@ -321,6 +424,15 @@ pub fn validateCookedModelAsset(
         }
     }
 
+    for (cooked.skins) |skin| {
+        if (findCookedSkeletonRecord(cooked.skeletons, skin.skeleton_asset_id) == null) {
+            return error.SkeletonAssetNotFound;
+        }
+        if (skin.joint_entity_indices.len != skin.inverse_bind_matrices.len) {
+            return error.SkinJointCountMismatch;
+        }
+    }
+
     for (cooked.entities) |entity| {
         if (entity.mesh_asset_id) |mesh_asset_id| {
             if (findCookedMeshRecord(cooked.meshes, mesh_asset_id) == null) {
@@ -332,6 +444,21 @@ pub fn validateCookedModelAsset(
                 !std.mem.eql(u8, material_asset_id, default_material_asset_id))
             {
                 return error.MaterialAssetNotFound;
+            }
+        }
+        if (entity.skeleton_asset_id) |skeleton_asset_id| {
+            if (findCookedSkeletonRecord(cooked.skeletons, skeleton_asset_id) == null) {
+                return error.SkeletonAssetNotFound;
+            }
+        }
+        if (entity.skin_asset_id) |skin_asset_id| {
+            if (findCookedSkinRecord(cooked.skins, skin_asset_id) == null) {
+                return error.SkinAssetNotFound;
+            }
+        }
+        if (entity.animator_clip_asset_id) |clip_asset_id| {
+            if (findCookedAnimationClipRecord(cooked.animation_clips, clip_asset_id) == null) {
+                return error.AnimationClipAssetNotFound;
             }
         }
     }
@@ -393,10 +520,36 @@ fn cookModelRecord(
     defer allocator.free(texture_asset_ids);
     @memset(texture_asset_ids, null);
 
+    const document_nodes = document.nodes orelse return error.MissingNodes;
+    const node_entity_indices = try allocator.alloc(?u32, document_nodes.len);
+    defer allocator.free(node_entity_indices);
+    @memset(node_entity_indices, null);
+    const node_parent_indices = try buildNodeParentIndices(allocator, document_nodes);
+    defer allocator.free(node_parent_indices);
+
+    const document_skins = document.skins orelse &.{};
+    const skeleton_asset_ids = try allocator.alloc(?[]const u8, document_skins.len);
+    defer allocator.free(skeleton_asset_ids);
+    @memset(skeleton_asset_ids, null);
+    const skin_asset_ids = try allocator.alloc(?[]const u8, document_skins.len);
+    defer allocator.free(skin_asset_ids);
+    @memset(skin_asset_ids, null);
+
+    const document_animations = document.animations orelse &.{};
+    const animation_clip_asset_ids = try allocator.alloc(?[]const u8, document_animations.len);
+    defer allocator.free(animation_clip_asset_ids);
+    @memset(animation_clip_asset_ids, null);
+
     var cooked_meshes = std.ArrayList(CookedMeshRecord).empty;
     defer cooked_meshes.deinit(allocator);
     var cooked_materials = std.ArrayList(CookedMaterialRecord).empty;
     defer cooked_materials.deinit(allocator);
+    var cooked_skeletons = std.ArrayList(CookedSkeletonRecord).empty;
+    defer cooked_skeletons.deinit(allocator);
+    var cooked_skins = std.ArrayList(CookedSkinRecord).empty;
+    defer cooked_skins.deinit(allocator);
+    var cooked_animation_clips = std.ArrayList(CookedAnimationClipRecord).empty;
+    defer cooked_animation_clips.deinit(allocator);
     var cooked_entities = std.ArrayList(CookedEntityRecord).empty;
     defer cooked_entities.deinit(allocator);
     var cooked_asset_records = std.ArrayList(registry_mod.AssetRecord).empty;
@@ -419,6 +572,7 @@ fn cookModelRecord(
             material_asset_ids,
             texture_asset_ids,
             default_material_asset_id,
+            node_entity_indices,
             node_index,
             null,
             base_dir,
@@ -430,6 +584,34 @@ fn cookModelRecord(
         );
     }
 
+    try cookSkinsAndSkeletons(
+        allocator,
+        record,
+        document,
+        loaded_buffers,
+        source_stem,
+        node_entity_indices,
+        node_parent_indices,
+        skeleton_asset_ids,
+        skin_asset_ids,
+        &cooked_skeletons,
+        &cooked_skins,
+        &cooked_entities,
+        &cooked_asset_records,
+    );
+    try cookAnimationClips(
+        allocator,
+        record,
+        document,
+        loaded_buffers,
+        source_stem,
+        node_entity_indices,
+        animation_clip_asset_ids,
+        &cooked_animation_clips,
+        &cooked_entities,
+        &cooked_asset_records,
+    );
+
     var cooked = CookedModelFile{
         .model_asset_id = record.id,
         .source_path = record.source_path,
@@ -439,6 +621,9 @@ fn cookModelRecord(
         .asset_records = try cooked_asset_records.toOwnedSlice(allocator),
         .meshes = try cooked_meshes.toOwnedSlice(allocator),
         .materials = try cooked_materials.toOwnedSlice(allocator),
+        .skeletons = try cooked_skeletons.toOwnedSlice(allocator),
+        .skins = try cooked_skins.toOwnedSlice(allocator),
+        .animation_clips = try cooked_animation_clips.toOwnedSlice(allocator),
         .entities = try cooked_entities.toOwnedSlice(allocator),
     };
     defer freeCookedModelOwned(allocator, &cooked);
@@ -453,6 +638,293 @@ fn cookModelRecord(
         .sub_path = cooked_path,
         .data = encoded,
     });
+}
+
+fn buildNodeParentIndices(allocator: std.mem.Allocator, nodes: []const Node) ![]?u32 {
+    const parents = try allocator.alloc(?u32, nodes.len);
+    @memset(parents, null);
+
+    for (nodes, 0..) |node, node_index| {
+        const children = node.children orelse continue;
+        for (children) |child_index| {
+            if (child_index >= nodes.len) {
+                return error.NodeIndexOutOfBounds;
+            }
+            parents[child_index] = @intCast(node_index);
+        }
+    }
+
+    return parents;
+}
+
+fn cookSkinsAndSkeletons(
+    allocator: std.mem.Allocator,
+    model_record: *const registry_mod.AssetRecord,
+    document: GltfDocument,
+    loaded_buffers: []const []u8,
+    source_stem: []const u8,
+    node_entity_indices: []const ?u32,
+    node_parent_indices: []const ?u32,
+    skeleton_asset_ids: []?[]const u8,
+    skin_asset_ids: []?[]const u8,
+    cooked_skeletons: *std.ArrayList(CookedSkeletonRecord),
+    cooked_skins: *std.ArrayList(CookedSkinRecord),
+    cooked_entities: *std.ArrayList(CookedEntityRecord),
+    cooked_asset_records: *std.ArrayList(registry_mod.AssetRecord),
+) !void {
+    const document_skins = document.skins orelse return;
+    const document_nodes = document.nodes orelse return error.MissingNodes;
+
+    for (document_skins, 0..) |skin, skin_index| {
+        if (skin.joints.len == 0) {
+            return error.SkinMissingJoints;
+        }
+        const resolved_skin_index: u32 = @intCast(skin_index);
+
+        var index_buffer: [16]u8 = undefined;
+        const index_text = try std.fmt.bufPrint(&index_buffer, "{d}", .{skin_index});
+        const skeleton_asset_id = try registry_mod.makeDerivedAssetIdAlloc(allocator, "guava.gltf.skeleton.v1", &.{
+            model_record.id,
+            index_text,
+        });
+        const skin_asset_id = try registry_mod.makeDerivedAssetIdAlloc(allocator, "guava.gltf.skin.v1", &.{
+            model_record.id,
+            index_text,
+        });
+        skeleton_asset_ids[skin_index] = skeleton_asset_id;
+        skin_asset_ids[skin_index] = skin_asset_id;
+
+        const skeleton_name = if (skin.name) |name|
+            try std.fmt.allocPrint(allocator, "{s}_Skeleton", .{name})
+        else
+            try std.fmt.allocPrint(allocator, "{s}_skeleton_{d}", .{ source_stem, skin_index });
+        const skin_name = if (skin.name) |name|
+            try allocator.dupe(u8, name)
+        else
+            try std.fmt.allocPrint(allocator, "{s}_skin_{d}", .{ source_stem, skin_index });
+
+        var joint_lookup = std.AutoHashMap(u32, u32).init(allocator);
+        defer joint_lookup.deinit();
+        try joint_lookup.ensureTotalCapacity(@intCast(skin.joints.len));
+
+        const joint_entity_indices = try allocator.alloc(u32, skin.joints.len);
+        const joints = try allocator.alloc(CookedSkeletonJointRecord, skin.joints.len);
+        for (skin.joints, 0..) |joint_node_index, joint_index| {
+            if (joint_node_index >= document_nodes.len) {
+                return error.NodeIndexOutOfBounds;
+            }
+            joint_lookup.putAssumeCapacity(joint_node_index, @intCast(joint_index));
+            joint_entity_indices[joint_index] = node_entity_indices[joint_node_index] orelse return error.SkinJointNodeMissingEntity;
+        }
+
+        for (skin.joints, 0..) |joint_node_index, joint_index| {
+            const joint_node = document_nodes[joint_node_index];
+            const joint_name = if (joint_node.name) |name|
+                try allocator.dupe(u8, name)
+            else
+                try std.fmt.allocPrint(allocator, "{s}_Joint_{d}", .{ source_stem, joint_node_index });
+            joints[joint_index] = .{
+                .name = joint_name,
+                .node_entity_index = joint_entity_indices[joint_index],
+                .parent_joint_index = if (node_parent_indices[joint_node_index]) |parent_node_index|
+                    joint_lookup.get(parent_node_index)
+                else
+                    null,
+                .rest_local_transform = nodeTransform(joint_node),
+            };
+        }
+
+        const inverse_bind_matrices = try readInverseBindMatrices(
+            allocator,
+            document,
+            loaded_buffers,
+            skin.inverseBindMatrices,
+            skin.joints.len,
+        );
+
+        try cooked_skeletons.append(allocator, .{
+            .asset_id = skeleton_asset_id,
+            .name = skeleton_name,
+            .joints = joints,
+        });
+        try appendCookedAssetRecord(
+            cooked_asset_records,
+            allocator,
+            try fallbackCookedAssetRecord(allocator, skeleton_asset_id, .skeleton, skeleton_name),
+        );
+
+        try cooked_skins.append(allocator, .{
+            .asset_id = skin_asset_id,
+            .name = skin_name,
+            .skeleton_asset_id = try allocator.dupe(u8, skeleton_asset_id),
+            .joint_entity_indices = joint_entity_indices,
+            .inverse_bind_matrices = inverse_bind_matrices,
+        });
+        try appendCookedAssetRecord(
+            cooked_asset_records,
+            allocator,
+            try fallbackCookedAssetRecord(allocator, skin_asset_id, .skin, skin_name),
+        );
+
+        for (document_nodes, 0..) |node, node_index| {
+            if (node.skin == null or node.skin.? != resolved_skin_index) {
+                continue;
+            }
+            const entity_index = node_entity_indices[node_index] orelse continue;
+            try setCookedEntityAssetId(allocator, &cooked_entities.items[entity_index].skeleton_asset_id, skeleton_asset_id);
+            try setCookedEntityAssetId(allocator, &cooked_entities.items[entity_index].skin_asset_id, skin_asset_id);
+        }
+    }
+}
+
+fn cookAnimationClips(
+    allocator: std.mem.Allocator,
+    model_record: *const registry_mod.AssetRecord,
+    document: GltfDocument,
+    loaded_buffers: []const []u8,
+    source_stem: []const u8,
+    node_entity_indices: []const ?u32,
+    animation_clip_asset_ids: []?[]const u8,
+    cooked_animation_clips: *std.ArrayList(CookedAnimationClipRecord),
+    cooked_entities: *std.ArrayList(CookedEntityRecord),
+    cooked_asset_records: *std.ArrayList(registry_mod.AssetRecord),
+) !void {
+    const document_animations = document.animations orelse return;
+
+    for (document_animations, 0..) |animation, animation_index| {
+        var translation_tracks = std.ArrayList(CookedVec3TrackRecord).empty;
+        defer translation_tracks.deinit(allocator);
+        var rotation_tracks = std.ArrayList(CookedQuatTrackRecord).empty;
+        defer rotation_tracks.deinit(allocator);
+        var scale_tracks = std.ArrayList(CookedVec3TrackRecord).empty;
+        defer scale_tracks.deinit(allocator);
+        var duration: f32 = 0.0;
+
+        for (animation.channels) |channel| {
+            if (channel.sampler >= animation.samplers.len) {
+                return error.AnimationSamplerIndexOutOfBounds;
+            }
+            const target_node = channel.target.node orelse continue;
+            if (target_node >= node_entity_indices.len) {
+                return error.NodeIndexOutOfBounds;
+            }
+            const target_entity_index = node_entity_indices[target_node] orelse return error.AnimationTargetNodeMissingEntity;
+            const sampler = animation.samplers[channel.sampler];
+            const interpolation = animation_clip_mod.Interpolation.fromGltf(sampler.interpolation orelse "LINEAR");
+            const times = try readAnimationTimes(allocator, document, loaded_buffers, sampler.input);
+            if (times.len == 0) {
+                allocator.free(times);
+                continue;
+            }
+            duration = @max(duration, times[times.len - 1]);
+
+            if (std.mem.eql(u8, channel.target.path, "translation")) {
+                const values = try readAnimationVec3Values(
+                    allocator,
+                    document,
+                    loaded_buffers,
+                    sampler.output,
+                    times.len,
+                    interpolation,
+                );
+                try translation_tracks.append(allocator, .{
+                    .target_entity_index = target_entity_index,
+                    .interpolation = interpolation,
+                    .times = times,
+                    .values = values,
+                });
+            } else if (std.mem.eql(u8, channel.target.path, "rotation")) {
+                const values = try readAnimationQuatValues(
+                    allocator,
+                    document,
+                    loaded_buffers,
+                    sampler.output,
+                    times.len,
+                    interpolation,
+                );
+                try rotation_tracks.append(allocator, .{
+                    .target_entity_index = target_entity_index,
+                    .interpolation = interpolation,
+                    .times = times,
+                    .values = values,
+                });
+            } else if (std.mem.eql(u8, channel.target.path, "scale")) {
+                const values = try readAnimationVec3Values(
+                    allocator,
+                    document,
+                    loaded_buffers,
+                    sampler.output,
+                    times.len,
+                    interpolation,
+                );
+                try scale_tracks.append(allocator, .{
+                    .target_entity_index = target_entity_index,
+                    .interpolation = interpolation,
+                    .times = times,
+                    .values = values,
+                });
+            } else {
+                allocator.free(times);
+            }
+        }
+
+        if (translation_tracks.items.len == 0 and rotation_tracks.items.len == 0 and scale_tracks.items.len == 0) {
+            continue;
+        }
+
+        var index_buffer: [16]u8 = undefined;
+        const index_text = try std.fmt.bufPrint(&index_buffer, "{d}", .{animation_index});
+        const asset_id = try registry_mod.makeDerivedAssetIdAlloc(allocator, "guava.gltf.animation-clip.v1", &.{
+            model_record.id,
+            index_text,
+        });
+        animation_clip_asset_ids[animation_index] = asset_id;
+
+        const clip_name = if (animation.name) |name|
+            try allocator.dupe(u8, name)
+        else
+            try std.fmt.allocPrint(allocator, "{s}_animation_{d}", .{ source_stem, animation_index });
+
+        try cooked_animation_clips.append(allocator, .{
+            .asset_id = asset_id,
+            .name = clip_name,
+            .duration = duration,
+            .translation_tracks = try translation_tracks.toOwnedSlice(allocator),
+            .rotation_tracks = try rotation_tracks.toOwnedSlice(allocator),
+            .scale_tracks = try scale_tracks.toOwnedSlice(allocator),
+        });
+        try appendCookedAssetRecord(
+            cooked_asset_records,
+            allocator,
+            try fallbackCookedAssetRecord(allocator, asset_id, .animation_clip, clip_name),
+        );
+    }
+
+    if (cooked_animation_clips.items.len == 0) {
+        return;
+    }
+
+    const default_clip_asset_id = cooked_animation_clips.items[0].asset_id;
+    for (cooked_entities.items) |*entity| {
+        if (entity.skin_asset_id == null) {
+            continue;
+        }
+        if (entity.animator_clip_asset_id != null) {
+            continue;
+        }
+        try setCookedEntityAssetId(allocator, &entity.animator_clip_asset_id, default_clip_asset_id);
+    }
+}
+
+fn setCookedEntityAssetId(
+    allocator: std.mem.Allocator,
+    target: *?[]const u8,
+    asset_id: []const u8,
+) !void {
+    if (target.*) |existing| {
+        allocator.free(existing);
+    }
+    target.* = try allocator.dupe(u8, asset_id);
 }
 
 fn composeTransform(parent: components.Transform, local: components.Transform) components.Transform {
@@ -555,6 +1027,85 @@ fn instantiateCookedModel(
         try material_handles.append(world.allocator, .{ .asset_id = material.asset_id, .handle = handle });
     }
 
+    var skeleton_handles = std.ArrayList(CookedSkeletonHandle).empty;
+    defer skeleton_handles.deinit(world.allocator);
+    for (cooked.skeletons) |skeleton| {
+        const handle = if (world.resources.skeletonHandleByAssetId(skeleton.asset_id)) |existing|
+            existing
+        else blk: {
+            const joint_descs = try makeSkeletonJointDescs(world.allocator, skeleton.joints);
+            defer world.allocator.free(joint_descs);
+
+            const created = try world.resources.createSkeleton(.{
+                .name = skeleton.name,
+                .joints = joint_descs,
+            });
+            const record = if (findCookedAssetRecord(cooked.asset_records, skeleton.asset_id)) |asset_record|
+                try asset_record.clone(world.allocator)
+            else
+                try fallbackCookedAssetRecord(world.allocator, skeleton.asset_id, .skeleton, skeleton.name);
+            _ = try world.resources.bindSkeletonAssetRecord(created, record);
+            report.skeleton_count += 1;
+            break :blk created;
+        };
+        try skeleton_handles.append(world.allocator, .{ .asset_id = skeleton.asset_id, .handle = handle });
+    }
+
+    var skin_handles = std.ArrayList(CookedSkinHandle).empty;
+    defer skin_handles.deinit(world.allocator);
+    for (cooked.skins) |skin| {
+        const handle = if (world.resources.skinHandleByAssetId(skin.asset_id)) |existing|
+            existing
+        else blk: {
+            const skeleton_handle = findSkeletonHandle(skeleton_handles.items, skin.skeleton_asset_id) orelse return error.SkeletonAssetNotFound;
+            const created = try world.resources.createSkin(.{
+                .name = skin.name,
+                .skeleton = skeleton_handle,
+                .joint_entity_indices = skin.joint_entity_indices,
+                .inverse_bind_matrices = skin.inverse_bind_matrices,
+            });
+            const record = if (findCookedAssetRecord(cooked.asset_records, skin.asset_id)) |asset_record|
+                try asset_record.clone(world.allocator)
+            else
+                try fallbackCookedAssetRecord(world.allocator, skin.asset_id, .skin, skin.name);
+            _ = try world.resources.bindSkinAssetRecord(created, record);
+            report.skin_count += 1;
+            break :blk created;
+        };
+        try skin_handles.append(world.allocator, .{ .asset_id = skin.asset_id, .handle = handle });
+    }
+
+    var animation_clip_handles = std.ArrayList(CookedAnimationClipHandle).empty;
+    defer animation_clip_handles.deinit(world.allocator);
+    for (cooked.animation_clips) |clip| {
+        const handle = if (world.resources.animationClipHandleByAssetId(clip.asset_id)) |existing|
+            existing
+        else blk: {
+            const translation_descs = try makeVec3TrackDescs(world.allocator, clip.translation_tracks);
+            defer world.allocator.free(translation_descs);
+            const rotation_descs = try makeQuatTrackDescs(world.allocator, clip.rotation_tracks);
+            defer world.allocator.free(rotation_descs);
+            const scale_descs = try makeVec3TrackDescs(world.allocator, clip.scale_tracks);
+            defer world.allocator.free(scale_descs);
+
+            const created = try world.resources.createAnimationClip(.{
+                .name = clip.name,
+                .duration = clip.duration,
+                .translation_tracks = translation_descs,
+                .rotation_tracks = rotation_descs,
+                .scale_tracks = scale_descs,
+            });
+            const record = if (findCookedAssetRecord(cooked.asset_records, clip.asset_id)) |asset_record|
+                try asset_record.clone(world.allocator)
+            else
+                try fallbackCookedAssetRecord(world.allocator, clip.asset_id, .animation_clip, clip.name);
+            _ = try world.resources.bindAnimationClipAssetRecord(created, record);
+            report.animation_clip_count += 1;
+            break :blk created;
+        };
+        try animation_clip_handles.append(world.allocator, .{ .asset_id = clip.asset_id, .handle = handle });
+    }
+
     const import_parent = if (create_root_instance)
         try createImportRoot(world, cooked.source_path, root_transform, &report)
     else
@@ -576,6 +1127,18 @@ fn instantiateCookedModel(
                 findMaterialHandle(material_handles.items, asset_id) orelse return error.MaterialAssetNotFound
         else
             null;
+        const skeleton_handle = if (entity.skeleton_asset_id) |asset_id|
+            findSkeletonHandle(skeleton_handles.items, asset_id) orelse return error.SkeletonAssetNotFound
+        else
+            null;
+        const skin_handle = if (entity.skin_asset_id) |asset_id|
+            findSkinHandle(skin_handles.items, asset_id) orelse return error.SkinAssetNotFound
+        else
+            null;
+        const animation_clip_handle = if (entity.animator_clip_asset_id) |asset_id|
+            findAnimationClipHandle(animation_clip_handles.items, asset_id) orelse return error.AnimationClipAssetNotFound
+        else
+            null;
 
         const parent_id = if (entity.parent_index) |p_idx| entity_ids[p_idx] else import_parent;
 
@@ -583,6 +1146,16 @@ fn instantiateCookedModel(
             .name = entity.name,
             .parent = parent_id,
             .mesh = if (mesh_handle) |h| .{ .handle = h, .primitive = .custom } else null,
+            .skinned_mesh = if (mesh_handle != null and skin_handle != null) .{
+                .mesh_handle = mesh_handle,
+                .primitive = .custom,
+                .skeleton_handle = skeleton_handle,
+                .skin_handle = skin_handle,
+            } else null,
+            .animator = if (skeleton_handle != null or animation_clip_handle != null) .{
+                .skeleton_handle = skeleton_handle,
+                .default_clip_handle = animation_clip_handle,
+            } else null,
             .material = if (material_handle) |h| .{ .handle = h } else null,
             .local_transform = if (entity.parent_index != null) entity.local_transform else if (import_parent != null) entity.local_transform else composeTransform(root_transform, entity.local_transform),
         });
@@ -602,6 +1175,7 @@ fn cookNodeRecursive(
     material_asset_ids: []?[]const u8,
     texture_asset_ids: []?[]const u8,
     default_material_asset_id: []const u8,
+    node_entity_indices: []?u32,
     node_index: u32,
     parent_entity_index: ?usize,
     base_dir: []const u8,
@@ -619,6 +1193,7 @@ fn cookNodeRecursive(
     const node = document_nodes[node_index];
     const node_transform = nodeTransform(node);
     const entity_index = cooked_entities.items.len;
+    node_entity_indices[node_index] = @intCast(entity_index);
 
     const node_name = if (node.name) |n|
         try std.fmt.allocPrint(allocator, "{s}_{s}", .{ source_stem, n })
@@ -664,6 +1239,7 @@ fn cookNodeRecursive(
                 material_asset_ids,
                 texture_asset_ids,
                 default_material_asset_id,
+                node_entity_indices,
                 child_index,
                 entity_index,
                 base_dir,
@@ -738,8 +1314,8 @@ fn cookNodeMesh(
         );
 
         if (primitive_index == 0) {
-            cooked_entities.items[entity_index].mesh_asset_id = cooked_mesh.record.asset_id;
-            cooked_entities.items[entity_index].material_asset_id = material.asset_id;
+            cooked_entities.items[entity_index].mesh_asset_id = try allocator.dupe(u8, cooked_mesh.record.asset_id);
+            cooked_entities.items[entity_index].material_asset_id = try allocator.dupe(u8, material.asset_id);
         } else {
             const entity_name = try entityNameForPrimitive(
                 allocator,
@@ -749,8 +1325,8 @@ fn cookNodeMesh(
             );
             try cooked_entities.append(allocator, .{
                 .name = entity_name,
-                .mesh_asset_id = cooked_mesh.record.asset_id,
-                .material_asset_id = material.asset_id,
+                .mesh_asset_id = try allocator.dupe(u8, cooked_mesh.record.asset_id),
+                .material_asset_id = try allocator.dupe(u8, material.asset_id),
                 .parent_index = entity_index,
                 .local_transform = .{},
             });
@@ -873,11 +1449,11 @@ fn resolveCookedMaterial(
         .asset_id = asset_id,
         .name = material_name,
         .base_color_factor = base_color_factor,
-        .base_color_texture_asset_id = base_color_texture_asset_id,
-        .metallic_roughness_texture_asset_id = metallic_roughness_texture_asset_id,
-        .normal_texture_asset_id = normal_texture_asset_id,
-        .occlusion_texture_asset_id = occlusion_texture_asset_id,
-        .emissive_texture_asset_id = emissive_texture_asset_id,
+        .base_color_texture_asset_id = if (base_color_texture_asset_id) |id| try allocator.dupe(u8, id) else null,
+        .metallic_roughness_texture_asset_id = if (metallic_roughness_texture_asset_id) |id| try allocator.dupe(u8, id) else null,
+        .normal_texture_asset_id = if (normal_texture_asset_id) |id| try allocator.dupe(u8, id) else null,
+        .occlusion_texture_asset_id = if (occlusion_texture_asset_id) |id| try allocator.dupe(u8, id) else null,
+        .emissive_texture_asset_id = if (emissive_texture_asset_id) |id| try allocator.dupe(u8, id) else null,
         .emissive_factor = emissive_factor,
         .metallic_factor = metallic_factor,
         .roughness_factor = roughness_factor,
@@ -946,16 +1522,17 @@ fn resolveTextureAssetIdForCook(
     return dependency_record.id;
 }
 
-fn createCookedMeshForPrimitive(
+const PrimitiveGeometry = struct {
+    vertices: []mesh_mod.Vertex,
+    indices: []u32,
+};
+
+fn extractPrimitiveGeometry(
     allocator: std.mem.Allocator,
-    model_record: *const registry_mod.AssetRecord,
     document: GltfDocument,
     loaded_buffers: []const []u8,
     primitive: Primitive,
-    mesh_index: u32,
-    mesh_name: ?[]const u8,
-    primitive_index: usize,
-) !struct { record: CookedMeshRecord, asset_record: registry_mod.AssetRecord } {
+) !PrimitiveGeometry {
     const position_accessor_index = attributeIndex(primitive.attributes, "POSITION") orelse return error.MissingPositions;
     const position_view = try accessorView(document, loaded_buffers, position_accessor_index);
     try requireAccessorFormat(position_view, "VEC3", 5126, error.UnsupportedPositionFormat);
@@ -980,13 +1557,27 @@ fn createCookedMeshForPrimitive(
         try accessorView(document, loaded_buffers, index)
     else
         null;
+    const joints_view = if (attributeIndex(primitive.attributes, "JOINTS_0")) |index| blk: {
+        const view = try accessorView(document, loaded_buffers, index);
+        try requireJointsFormat(view);
+        break :blk view;
+    } else null;
+    const weights_view = if (attributeIndex(primitive.attributes, "WEIGHTS_0")) |index| blk: {
+        const view = try accessorView(document, loaded_buffers, index);
+        try requireWeightsFormat(view);
+        break :blk view;
+    } else null;
 
     try requireMatchingCount(normal_view, position_view.count);
     try requireMatchingCount(tangent_view, position_view.count);
     try requireMatchingCount(color_view, position_view.count);
     try requireMatchingCount(uv_view, position_view.count);
+    try requireMatchingCount(joints_view, position_view.count);
+    try requireMatchingCount(weights_view, position_view.count);
 
     const vertices = try allocator.alloc(mesh_mod.Vertex, position_view.count);
+    errdefer allocator.free(vertices);
+
     for (vertices, 0..) |*vertex, index| {
         vertex.position = try readVec3(position_view, index);
         vertex.normal = if (normal_view) |view|
@@ -999,12 +1590,35 @@ fn createCookedMeshForPrimitive(
             defaultTangent(vertex.normal);
         vertex.color = if (color_view) |view| try readColor(view, index) else .{ 1.0, 1.0, 1.0, 1.0 };
         vertex.uv = if (uv_view) |view| try readVec2(view, index) else .{ 0.0, 0.0 };
+        vertex.joints = if (joints_view) |view| try readJoints4(view, index) else .{ 0, 0, 0, 0 };
+        vertex.weights = if (weights_view) |view| try readWeights4(view, index) else .{ 1.0, 0.0, 0.0, 0.0 };
     }
 
     const indices = if (primitive.indices) |accessor_index|
         try readIndices(allocator, try accessorView(document, loaded_buffers, accessor_index))
     else
         try sequentialIndices(allocator, vertices.len);
+    errdefer allocator.free(indices);
+
+    return .{
+        .vertices = vertices,
+        .indices = indices,
+    };
+}
+
+fn createCookedMeshForPrimitive(
+    allocator: std.mem.Allocator,
+    model_record: *const registry_mod.AssetRecord,
+    document: GltfDocument,
+    loaded_buffers: []const []u8,
+    primitive: Primitive,
+    mesh_index: u32,
+    mesh_name: ?[]const u8,
+    primitive_index: usize,
+) !struct { record: CookedMeshRecord, asset_record: registry_mod.AssetRecord } {
+    const geometry = try extractPrimitiveGeometry(allocator, document, loaded_buffers, primitive);
+    errdefer allocator.free(geometry.vertices);
+    errdefer allocator.free(geometry.indices);
 
     const generated_name = try std.fmt.allocPrint(allocator, "{s}_mesh_{d}", .{
         mesh_name orelse "Mesh",
@@ -1025,16 +1639,16 @@ fn createCookedMeshForPrimitive(
         .record = .{
             .asset_id = asset_id,
             .name = generated_name,
-            .vertices = vertices,
-            .indices = indices,
+            .vertices = geometry.vertices,
+            .indices = geometry.indices,
         },
         .asset_record = try makeCookedMeshAssetRecord(
             allocator,
             model_record,
             asset_id,
             generated_name,
-            vertices,
-            indices,
+            geometry.vertices,
+            geometry.indices,
         ),
     };
 }
@@ -1185,6 +1799,46 @@ fn freeCookedModelOwned(allocator: std.mem.Allocator, cooked: *CookedModelFile) 
     }
     allocator.free(cooked.materials);
 
+    for (cooked.skeletons) |skeleton| {
+        allocator.free(skeleton.asset_id);
+        allocator.free(skeleton.name);
+        for (skeleton.joints) |joint| {
+            allocator.free(joint.name);
+        }
+        allocator.free(skeleton.joints);
+    }
+    allocator.free(cooked.skeletons);
+
+    for (cooked.skins) |skin| {
+        allocator.free(skin.asset_id);
+        allocator.free(skin.name);
+        allocator.free(skin.skeleton_asset_id);
+        allocator.free(skin.joint_entity_indices);
+        allocator.free(skin.inverse_bind_matrices);
+    }
+    allocator.free(cooked.skins);
+
+    for (cooked.animation_clips) |clip| {
+        allocator.free(clip.asset_id);
+        allocator.free(clip.name);
+        for (clip.translation_tracks) |track| {
+            allocator.free(track.times);
+            allocator.free(track.values);
+        }
+        allocator.free(clip.translation_tracks);
+        for (clip.rotation_tracks) |track| {
+            allocator.free(track.times);
+            allocator.free(track.values);
+        }
+        allocator.free(clip.rotation_tracks);
+        for (clip.scale_tracks) |track| {
+            allocator.free(track.times);
+            allocator.free(track.values);
+        }
+        allocator.free(clip.scale_tracks);
+    }
+    allocator.free(cooked.animation_clips);
+
     for (cooked.entities) |entity| {
         allocator.free(entity.name);
         if (entity.mesh_asset_id) |mesh_asset_id| {
@@ -1192,6 +1846,15 @@ fn freeCookedModelOwned(allocator: std.mem.Allocator, cooked: *CookedModelFile) 
         }
         if (entity.material_asset_id) |material_asset_id| {
             allocator.free(material_asset_id);
+        }
+        if (entity.skeleton_asset_id) |skeleton_asset_id| {
+            allocator.free(skeleton_asset_id);
+        }
+        if (entity.skin_asset_id) |skin_asset_id| {
+            allocator.free(skin_asset_id);
+        }
+        if (entity.animator_clip_asset_id) |clip_asset_id| {
+            allocator.free(clip_asset_id);
         }
     }
     allocator.free(cooked.entities);
@@ -1220,6 +1883,33 @@ fn findCookedAssetRecord(records: []const registry_mod.AssetRecord, asset_id: []
 }
 
 fn findCookedMeshRecord(records: []const CookedMeshRecord, asset_id: []const u8) ?*const CookedMeshRecord {
+    for (records) |*record| {
+        if (std.mem.eql(u8, record.asset_id, asset_id)) {
+            return record;
+        }
+    }
+    return null;
+}
+
+fn findCookedSkeletonRecord(records: []const CookedSkeletonRecord, asset_id: []const u8) ?*const CookedSkeletonRecord {
+    for (records) |*record| {
+        if (std.mem.eql(u8, record.asset_id, asset_id)) {
+            return record;
+        }
+    }
+    return null;
+}
+
+fn findCookedSkinRecord(records: []const CookedSkinRecord, asset_id: []const u8) ?*const CookedSkinRecord {
+    for (records) |*record| {
+        if (std.mem.eql(u8, record.asset_id, asset_id)) {
+            return record;
+        }
+    }
+    return null;
+}
+
+fn findCookedAnimationClipRecord(records: []const CookedAnimationClipRecord, asset_id: []const u8) ?*const CookedAnimationClipRecord {
     for (records) |*record| {
         if (std.mem.eql(u8, record.asset_id, asset_id)) {
             return record;
@@ -1297,6 +1987,93 @@ fn findMaterialHandle(
     return null;
 }
 
+fn findSkeletonHandle(
+    items: []const CookedSkeletonHandle,
+    asset_id: []const u8,
+) ?handles.SkeletonHandle {
+    for (items) |item| {
+        if (std.mem.eql(u8, item.asset_id, asset_id)) {
+            return item.handle;
+        }
+    }
+    return null;
+}
+
+fn findSkinHandle(
+    items: []const CookedSkinHandle,
+    asset_id: []const u8,
+) ?handles.SkinHandle {
+    for (items) |item| {
+        if (std.mem.eql(u8, item.asset_id, asset_id)) {
+            return item.handle;
+        }
+    }
+    return null;
+}
+
+fn findAnimationClipHandle(
+    items: []const CookedAnimationClipHandle,
+    asset_id: []const u8,
+) ?handles.AnimationClipHandle {
+    for (items) |item| {
+        if (std.mem.eql(u8, item.asset_id, asset_id)) {
+            return item.handle;
+        }
+    }
+    return null;
+}
+
+fn makeSkeletonJointDescs(
+    allocator: std.mem.Allocator,
+    joints: []const CookedSkeletonJointRecord,
+) ![]skeleton_mod.JointDesc {
+    const descs = try allocator.alloc(skeleton_mod.JointDesc, joints.len);
+    errdefer allocator.free(descs);
+    for (joints, 0..) |joint, index| {
+        descs[index] = .{
+            .name = joint.name,
+            .node_entity_index = joint.node_entity_index,
+            .parent_joint_index = joint.parent_joint_index,
+            .rest_local_transform = joint.rest_local_transform,
+        };
+    }
+    return descs;
+}
+
+fn makeVec3TrackDescs(
+    allocator: std.mem.Allocator,
+    tracks: []const CookedVec3TrackRecord,
+) ![]animation_clip_mod.Vec3TrackDesc {
+    const descs = try allocator.alloc(animation_clip_mod.Vec3TrackDesc, tracks.len);
+    errdefer allocator.free(descs);
+    for (tracks, 0..) |track, index| {
+        descs[index] = .{
+            .target_entity_index = track.target_entity_index,
+            .interpolation = track.interpolation,
+            .times = track.times,
+            .values = track.values,
+        };
+    }
+    return descs;
+}
+
+fn makeQuatTrackDescs(
+    allocator: std.mem.Allocator,
+    tracks: []const CookedQuatTrackRecord,
+) ![]animation_clip_mod.QuatTrackDesc {
+    const descs = try allocator.alloc(animation_clip_mod.QuatTrackDesc, tracks.len);
+    errdefer allocator.free(descs);
+    for (tracks, 0..) |track, index| {
+        descs[index] = .{
+            .target_entity_index = track.target_entity_index,
+            .interpolation = track.interpolation,
+            .times = track.times,
+            .values = track.values,
+        };
+    }
+    return descs;
+}
+
 test "gltf cooked output is deterministic for identical source graph" {
     var temp_dir = std.testing.tmpDir(.{});
     defer temp_dir.cleanup();
@@ -1346,6 +2123,34 @@ test "gltf cooked output is deterministic for identical source graph" {
     try std.testing.expectEqualStrings(first_path, second_path);
     try std.testing.expectEqualStrings(first_bytes, second_bytes);
     try validateCookedModelAsset(std.testing.allocator, &registry, record.id);
+}
+
+test "gltf skin vertex helpers read JOINTS_0 and normalize WEIGHTS_0" {
+    const joint_values = [_]u16{ 1, 2, 3, 4 };
+    const weight_values = [_]f32{ 2.0, 2.0, 0.0, 0.0 };
+
+    const joints = try readJoints4(.{
+        .bytes = std.mem.sliceAsBytes(joint_values[0..]),
+        .stride = @sizeOf([4]u16),
+        .count = 1,
+        .component_type = 5123,
+        .normalized = false,
+        .type = "VEC4",
+    }, 0);
+    const weights = try readWeights4(.{
+        .bytes = std.mem.sliceAsBytes(weight_values[0..]),
+        .stride = @sizeOf([4]f32),
+        .count = 1,
+        .component_type = 5126,
+        .normalized = false,
+        .type = "VEC4",
+    }, 0);
+
+    try std.testing.expectEqualDeep([4]u16{ 1, 2, 3, 4 }, joints);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), weights[0], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), weights[1], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), weights[2], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), weights[3], 0.0001);
 }
 
 fn importStaticModelInternal(
@@ -1596,61 +2401,9 @@ fn createMeshForPrimitive(
     mesh_name: ?[]const u8,
     primitive_index: usize,
 ) !handles.MeshHandle {
-    const position_accessor_index = attributeIndex(primitive.attributes, "POSITION") orelse return error.MissingPositions;
-    const position_view = try accessorView(document, loaded_buffers, position_accessor_index);
-    try requireAccessorFormat(position_view, "VEC3", 5126, error.UnsupportedPositionFormat);
-
-    const normal_view = if (attributeIndex(primitive.attributes, "NORMAL")) |index| blk: {
-        const view = try accessorView(document, loaded_buffers, index);
-        try requireAccessorFormat(view, "VEC3", 5126, error.UnsupportedNormalFormat);
-        break :blk view;
-    } else null;
-
-    const tangent_view = if (attributeIndex(primitive.attributes, "TANGENT")) |index| blk: {
-        const view = try accessorView(document, loaded_buffers, index);
-        try requireAccessorFormat(view, "VEC4", 5126, error.UnsupportedTangentFormat);
-        break :blk view;
-    } else null;
-
-    const color_view = if (attributeIndex(primitive.attributes, "COLOR_0")) |index|
-        try accessorView(document, loaded_buffers, index)
-    else
-        null;
-    const uv_view = if (attributeIndex(primitive.attributes, "TEXCOORD_0")) |index|
-        try accessorView(document, loaded_buffers, index)
-    else
-        null;
-
-    try requireMatchingCount(normal_view, position_view.count);
-    try requireMatchingCount(tangent_view, position_view.count);
-    try requireMatchingCount(color_view, position_view.count);
-    try requireMatchingCount(uv_view, position_view.count);
-
-    const vertices = try world.allocator.alloc(mesh_mod.Vertex, position_view.count);
-    defer world.allocator.free(vertices);
-
-    for (vertices, 0..) |*vertex, index| {
-        vertex.position = try readVec3(position_view, index);
-
-        vertex.normal = if (normal_view) |view|
-            normalize3(try readVec3(view, index))
-        else
-            .{ 0.0, 1.0, 0.0 };
-
-        vertex.tangent = if (tangent_view) |view|
-            try readVec4(view, index)
-        else
-            defaultTangent(vertex.normal);
-
-        vertex.color = if (color_view) |view| try readColor(view, index) else .{ 1.0, 1.0, 1.0, 1.0 };
-        vertex.uv = if (uv_view) |view| try readVec2(view, index) else .{ 0.0, 0.0 };
-    }
-
-    const indices = if (primitive.indices) |accessor_index|
-        try readIndices(world.allocator, try accessorView(document, loaded_buffers, accessor_index))
-    else
-        try sequentialIndices(world.allocator, vertices.len);
-    defer world.allocator.free(indices);
+    const geometry = try extractPrimitiveGeometry(world.allocator, document, loaded_buffers, primitive);
+    defer world.allocator.free(geometry.vertices);
+    defer world.allocator.free(geometry.indices);
 
     const generated_name = try std.fmt.allocPrint(world.allocator, "{s}_mesh_{d}", .{
         mesh_name orelse "Mesh",
@@ -1660,8 +2413,8 @@ fn createMeshForPrimitive(
 
     return world.resources.createMesh(.{
         .name = generated_name,
-        .vertices = vertices,
-        .indices = indices,
+        .vertices = geometry.vertices,
+        .indices = geometry.indices,
     });
 }
 
@@ -1957,6 +2710,24 @@ fn requireAccessorFormat(view: AccessorView, expected_type: []const u8, expected
     }
 }
 
+fn requireJointsFormat(view: AccessorView) !void {
+    if (!std.mem.eql(u8, view.type, "VEC4")) {
+        return error.UnsupportedJointFormat;
+    }
+    if (view.component_type != 5121 and view.component_type != 5123) {
+        return error.UnsupportedJointFormat;
+    }
+}
+
+fn requireWeightsFormat(view: AccessorView) !void {
+    if (!std.mem.eql(u8, view.type, "VEC4")) {
+        return error.UnsupportedWeightFormat;
+    }
+    if (view.component_type != 5126 and view.component_type != 5121 and view.component_type != 5123) {
+        return error.UnsupportedWeightFormat;
+    }
+}
+
 fn requireMatchingCount(view: ?AccessorView, expected: usize) !void {
     if (view) |value| {
         if (value.count != expected) {
@@ -1998,6 +2769,75 @@ fn readVec4(view: AccessorView, index: usize) ![4]f32 {
         try componentAsF32(view, index, 1),
         try componentAsF32(view, index, 2),
         try componentAsF32(view, index, 3),
+    };
+}
+
+fn readMat4(view: AccessorView, index: usize) ![16]f32 {
+    if (!std.mem.eql(u8, view.type, "MAT4")) {
+        return error.InvalidAccessorType;
+    }
+
+    return .{
+        try componentAsF32(view, index, 0),
+        try componentAsF32(view, index, 1),
+        try componentAsF32(view, index, 2),
+        try componentAsF32(view, index, 3),
+        try componentAsF32(view, index, 4),
+        try componentAsF32(view, index, 5),
+        try componentAsF32(view, index, 6),
+        try componentAsF32(view, index, 7),
+        try componentAsF32(view, index, 8),
+        try componentAsF32(view, index, 9),
+        try componentAsF32(view, index, 10),
+        try componentAsF32(view, index, 11),
+        try componentAsF32(view, index, 12),
+        try componentAsF32(view, index, 13),
+        try componentAsF32(view, index, 14),
+        try componentAsF32(view, index, 15),
+    };
+}
+
+fn readJoints4(view: AccessorView, index: usize) ![4]u16 {
+    try requireJointsFormat(view);
+
+    return switch (view.component_type) {
+        5121 => .{
+            @intCast(componentAsUnsigned(u8, view, index, 0)),
+            @intCast(componentAsUnsigned(u8, view, index, 1)),
+            @intCast(componentAsUnsigned(u8, view, index, 2)),
+            @intCast(componentAsUnsigned(u8, view, index, 3)),
+        },
+        5123 => .{
+            @intCast(componentAsUnsigned(u16, view, index, 0)),
+            @intCast(componentAsUnsigned(u16, view, index, 1)),
+            @intCast(componentAsUnsigned(u16, view, index, 2)),
+            @intCast(componentAsUnsigned(u16, view, index, 3)),
+        },
+        else => error.UnsupportedJointFormat,
+    };
+}
+
+fn readWeights4(view: AccessorView, index: usize) ![4]f32 {
+    try requireWeightsFormat(view);
+    return normalizeWeights4(.{
+        try componentAsF32(view, index, 0),
+        try componentAsF32(view, index, 1),
+        try componentAsF32(view, index, 2),
+        try componentAsF32(view, index, 3),
+    });
+}
+
+fn normalizeWeights4(value: [4]f32) [4]f32 {
+    const sum = value[0] + value[1] + value[2] + value[3];
+    if (sum <= std.math.floatEps(f32)) {
+        return .{ 1.0, 0.0, 0.0, 0.0 };
+    }
+    const inverse = 1.0 / sum;
+    return .{
+        value[0] * inverse,
+        value[1] * inverse,
+        value[2] * inverse,
+        value[3] * inverse,
     };
 }
 
@@ -2044,6 +2884,112 @@ fn sequentialIndices(allocator: std.mem.Allocator, count: usize) ![]u32 {
         index_value.* = @intCast(index);
     }
     return indices;
+}
+
+fn readInverseBindMatrices(
+    allocator: std.mem.Allocator,
+    document: GltfDocument,
+    loaded_buffers: []const []u8,
+    accessor_index: ?u32,
+    expected_count: usize,
+) ![][16]f32 {
+    const matrices = try allocator.alloc([16]f32, expected_count);
+    errdefer allocator.free(matrices);
+
+    if (accessor_index == null) {
+        for (matrices) |*matrix_value| {
+            matrix_value.* = math.identity();
+        }
+        return matrices;
+    }
+
+    const view = try accessorView(document, loaded_buffers, accessor_index.?);
+    try requireAccessorFormat(view, "MAT4", 5126, error.UnsupportedInverseBindMatrixFormat);
+    if (view.count != expected_count) {
+        return error.InverseBindMatrixCountMismatch;
+    }
+
+    for (matrices, 0..) |*matrix_value, index| {
+        matrix_value.* = try readMat4(view, index);
+    }
+    return matrices;
+}
+
+fn readAnimationTimes(
+    allocator: std.mem.Allocator,
+    document: GltfDocument,
+    loaded_buffers: []const []u8,
+    accessor_index: u32,
+) ![]f32 {
+    const view = try accessorView(document, loaded_buffers, accessor_index);
+    try requireAccessorFormat(view, "SCALAR", 5126, error.UnsupportedAnimationTimeFormat);
+
+    const times = try allocator.alloc(f32, view.count);
+    errdefer allocator.free(times);
+    for (times, 0..) |*time_value, index| {
+        time_value.* = try componentAsF32(view, index, 0);
+    }
+    return times;
+}
+
+fn readAnimationVec3Values(
+    allocator: std.mem.Allocator,
+    document: GltfDocument,
+    loaded_buffers: []const []u8,
+    accessor_index: u32,
+    keyframe_count: usize,
+    interpolation: animation_clip_mod.Interpolation,
+) ![][3]f32 {
+    const view = try accessorView(document, loaded_buffers, accessor_index);
+    try requireAccessorFormat(view, "VEC3", 5126, error.UnsupportedAnimationVec3Format);
+    const expected_samples = animationOutputSampleCount(keyframe_count, interpolation);
+    if (view.count != expected_samples) {
+        return error.AnimationOutputCountMismatch;
+    }
+
+    const values = try allocator.alloc([3]f32, keyframe_count);
+    errdefer allocator.free(values);
+    for (values, 0..) |*value, key_index| {
+        value.* = try readVec3(view, animationOutputSampleIndex(key_index, interpolation));
+    }
+    return values;
+}
+
+fn readAnimationQuatValues(
+    allocator: std.mem.Allocator,
+    document: GltfDocument,
+    loaded_buffers: []const []u8,
+    accessor_index: u32,
+    keyframe_count: usize,
+    interpolation: animation_clip_mod.Interpolation,
+) ![][4]f32 {
+    const view = try accessorView(document, loaded_buffers, accessor_index);
+    try requireAccessorFormat(view, "VEC4", 5126, error.UnsupportedAnimationQuatFormat);
+    const expected_samples = animationOutputSampleCount(keyframe_count, interpolation);
+    if (view.count != expected_samples) {
+        return error.AnimationOutputCountMismatch;
+    }
+
+    const values = try allocator.alloc([4]f32, keyframe_count);
+    errdefer allocator.free(values);
+    for (values, 0..) |*value, key_index| {
+        value.* = normalizeQuat4(try readVec4(view, animationOutputSampleIndex(key_index, interpolation)));
+    }
+    return values;
+}
+
+fn animationOutputSampleCount(keyframe_count: usize, interpolation: animation_clip_mod.Interpolation) usize {
+    return switch (interpolation) {
+        .cubic_spline => keyframe_count * 3,
+        else => keyframe_count,
+    };
+}
+
+fn animationOutputSampleIndex(keyframe_index: usize, interpolation: animation_clip_mod.Interpolation) usize {
+    return switch (interpolation) {
+        .cubic_spline => keyframe_index * 3 + 1,
+        else => keyframe_index,
+    };
 }
 
 fn componentAsF32(view: AccessorView, index: usize, component_index: usize) !f32 {
@@ -2096,6 +3042,7 @@ fn componentCount(type_name: []const u8) ?usize {
     if (std.mem.eql(u8, type_name, "VEC2")) return 2;
     if (std.mem.eql(u8, type_name, "VEC3")) return 3;
     if (std.mem.eql(u8, type_name, "VEC4")) return 4;
+    if (std.mem.eql(u8, type_name, "MAT4")) return 16;
     return null;
 }
 
@@ -2113,8 +3060,8 @@ fn nodeTransform(node: Node) components.Transform {
         // Extraction of rotation (normalized matrix)
         const quat = @import("../math/quat.zig");
         const r_m = [_]f32{
-            m[0] / s_x, m[1] / s_x, m[2] / s_x, 0.0,
-            m[4] / s_y, m[5] / s_y, m[6] / s_y, 0.0,
+            m[0] / s_x, m[1] / s_x, m[2] / s_x,  0.0,
+            m[4] / s_y, m[5] / s_y, m[6] / s_y,  0.0,
             m[8] / s_z, m[9] / s_z, m[10] / s_z, 0.0,
             0.0,        0.0,        0.0,         1.0,
         };
@@ -2203,6 +3150,20 @@ fn normalize3(value: [3]f32) [3]f32 {
         value[0] * inverse,
         value[1] * inverse,
         value[2] * inverse,
+    };
+}
+
+fn normalizeQuat4(value: [4]f32) [4]f32 {
+    const length = std.math.sqrt(value[0] * value[0] + value[1] * value[1] + value[2] * value[2] + value[3] * value[3]);
+    if (length <= std.math.floatEps(f32)) {
+        return .{ 0.0, 0.0, 0.0, 1.0 };
+    }
+    const inverse = 1.0 / length;
+    return .{
+        value[0] * inverse,
+        value[1] * inverse,
+        value[2] * inverse,
+        value[3] * inverse,
     };
 }
 

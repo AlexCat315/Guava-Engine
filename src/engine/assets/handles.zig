@@ -13,6 +13,21 @@ pub const TextureHandle = enum(u32) {
     _,
 };
 
+pub const SkeletonHandle = enum(u32) {
+    invalid = 0,
+    _,
+};
+
+pub const SkinHandle = enum(u32) {
+    invalid = 0,
+    _,
+};
+
+pub const AnimationClipHandle = enum(u32) {
+    invalid = 0,
+    _,
+};
+
 pub fn isValid(handle: anytype) bool {
     return @intFromEnum(handle) != 0;
 }
@@ -30,5 +45,17 @@ pub fn materialHandle(index: usize) MaterialHandle {
 }
 
 pub fn textureHandle(index: usize) TextureHandle {
+    return @enumFromInt(index + 1);
+}
+
+pub fn skeletonHandle(index: usize) SkeletonHandle {
+    return @enumFromInt(index + 1);
+}
+
+pub fn skinHandle(index: usize) SkinHandle {
+    return @enumFromInt(index + 1);
+}
+
+pub fn animationClipHandle(index: usize) AnimationClipHandle {
     return @enumFromInt(index + 1);
 }

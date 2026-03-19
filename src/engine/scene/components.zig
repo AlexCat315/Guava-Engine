@@ -53,6 +53,22 @@ pub const Mesh = struct {
     primitive: Primitive = .custom,
 };
 
+pub const SkinnedMesh = struct {
+    mesh_handle: ?handles.MeshHandle = null,
+    primitive: Primitive = .custom,
+    skeleton_handle: ?handles.SkeletonHandle = null,
+    skin_handle: ?handles.SkinHandle = null,
+};
+
+pub const Animator = struct {
+    skeleton_handle: ?handles.SkeletonHandle = null,
+    default_clip_handle: ?handles.AnimationClipHandle = null,
+    time_seconds: f32 = 0.0,
+    speed: f32 = 1.0,
+    playing: bool = true,
+    looping: bool = true,
+};
+
 pub const ShadingModel = enum {
     unlit,
     lambert,

@@ -1,8 +1,11 @@
 const std = @import("std");
+const animation_clip_mod = @import("animation_clip_resource.zig");
 const handles = @import("handles.zig");
 const material_mod = @import("material_resource.zig");
 const mesh_mod = @import("mesh_resource.zig");
 const registry_mod = @import("registry.zig");
+const skeleton_mod = @import("skeleton_resource.zig");
+const skin_mod = @import("skin_resource.zig");
 const texture_mod = @import("texture_resource.zig");
 const components = @import("../scene/components.zig");
 const job_system_mod = @import("../core/job_system.zig");
@@ -13,13 +16,22 @@ pub const ResourceLibrary = struct {
     meshes: std.ArrayList(mesh_mod.MeshResource) = .empty,
     materials: std.ArrayList(material_mod.MaterialResource) = .empty,
     textures: std.ArrayList(texture_mod.TextureResource) = .empty,
+    skeletons: std.ArrayList(skeleton_mod.SkeletonResource) = .empty,
+    skins: std.ArrayList(skin_mod.SkinResource) = .empty,
+    animation_clips: std.ArrayList(animation_clip_mod.AnimationClipResource) = .empty,
     asset_registry: registry_mod.AssetRegistry,
     mesh_records: std.AutoHashMap(handles.MeshHandle, usize),
     material_records: std.AutoHashMap(handles.MaterialHandle, usize),
     texture_records: std.AutoHashMap(handles.TextureHandle, usize),
+    skeleton_records: std.AutoHashMap(handles.SkeletonHandle, usize),
+    skin_records: std.AutoHashMap(handles.SkinHandle, usize),
+    animation_clip_records: std.AutoHashMap(handles.AnimationClipHandle, usize),
     mesh_handles_by_asset_id: std.StringHashMap(handles.MeshHandle),
     material_handles_by_asset_id: std.StringHashMap(handles.MaterialHandle),
     texture_handles_by_asset_id: std.StringHashMap(handles.TextureHandle),
+    skeleton_handles_by_asset_id: std.StringHashMap(handles.SkeletonHandle),
+    skin_handles_by_asset_id: std.StringHashMap(handles.SkinHandle),
+    animation_clip_handles_by_asset_id: std.StringHashMap(handles.AnimationClipHandle),
     cube_mesh: ?handles.MeshHandle = null,
     sphere_mesh: ?handles.MeshHandle = null,
     plane_mesh: ?handles.MeshHandle = null,
@@ -34,19 +46,34 @@ pub const ResourceLibrary = struct {
             .mesh_records = std.AutoHashMap(handles.MeshHandle, usize).init(allocator),
             .material_records = std.AutoHashMap(handles.MaterialHandle, usize).init(allocator),
             .texture_records = std.AutoHashMap(handles.TextureHandle, usize).init(allocator),
+            .skeleton_records = std.AutoHashMap(handles.SkeletonHandle, usize).init(allocator),
+            .skin_records = std.AutoHashMap(handles.SkinHandle, usize).init(allocator),
+            .animation_clip_records = std.AutoHashMap(handles.AnimationClipHandle, usize).init(allocator),
             .mesh_handles_by_asset_id = std.StringHashMap(handles.MeshHandle).init(allocator),
             .material_handles_by_asset_id = std.StringHashMap(handles.MaterialHandle).init(allocator),
             .texture_handles_by_asset_id = std.StringHashMap(handles.TextureHandle).init(allocator),
+            .skeleton_handles_by_asset_id = std.StringHashMap(handles.SkeletonHandle).init(allocator),
+            .skin_handles_by_asset_id = std.StringHashMap(handles.SkinHandle).init(allocator),
+            .animation_clip_handles_by_asset_id = std.StringHashMap(handles.AnimationClipHandle).init(allocator),
         };
     }
 
     pub fn deinit(self: *ResourceLibrary) void {
+        freeHandleKeys(self.allocator, handles.AnimationClipHandle, &self.animation_clip_handles_by_asset_id);
+        self.animation_clip_handles_by_asset_id.deinit();
+        freeHandleKeys(self.allocator, handles.SkinHandle, &self.skin_handles_by_asset_id);
+        self.skin_handles_by_asset_id.deinit();
+        freeHandleKeys(self.allocator, handles.SkeletonHandle, &self.skeleton_handles_by_asset_id);
+        self.skeleton_handles_by_asset_id.deinit();
         freeHandleKeys(self.allocator, handles.TextureHandle, &self.texture_handles_by_asset_id);
         self.texture_handles_by_asset_id.deinit();
         freeHandleKeys(self.allocator, handles.MaterialHandle, &self.material_handles_by_asset_id);
         self.material_handles_by_asset_id.deinit();
         freeHandleKeys(self.allocator, handles.MeshHandle, &self.mesh_handles_by_asset_id);
         self.mesh_handles_by_asset_id.deinit();
+        self.animation_clip_records.deinit();
+        self.skin_records.deinit();
+        self.skeleton_records.deinit();
         self.texture_records.deinit();
         self.material_records.deinit();
         self.mesh_records.deinit();
@@ -66,6 +93,21 @@ pub const ResourceLibrary = struct {
             texture_resource.deinit(self.allocator);
         }
         self.textures.deinit(self.allocator);
+
+        for (self.skeletons.items) |*skeleton_resource| {
+            skeleton_resource.deinit(self.allocator);
+        }
+        self.skeletons.deinit(self.allocator);
+
+        for (self.skins.items) |*skin_resource| {
+            skin_resource.deinit(self.allocator);
+        }
+        self.skins.deinit(self.allocator);
+
+        for (self.animation_clips.items) |*clip_resource| {
+            clip_resource.deinit(self.allocator);
+        }
+        self.animation_clips.deinit(self.allocator);
     }
 
     pub fn createMesh(self: *ResourceLibrary, desc: mesh_mod.MeshResourceDesc) !handles.MeshHandle {
@@ -84,6 +126,24 @@ pub const ResourceLibrary = struct {
         const resource = try texture_mod.clone(self.allocator, desc);
         try self.textures.append(self.allocator, resource);
         return handles.textureHandle(self.textures.items.len - 1);
+    }
+
+    pub fn createSkeleton(self: *ResourceLibrary, desc: skeleton_mod.SkeletonResourceDesc) !handles.SkeletonHandle {
+        const resource = try skeleton_mod.clone(self.allocator, desc);
+        try self.skeletons.append(self.allocator, resource);
+        return handles.skeletonHandle(self.skeletons.items.len - 1);
+    }
+
+    pub fn createSkin(self: *ResourceLibrary, desc: skin_mod.SkinResourceDesc) !handles.SkinHandle {
+        const resource = try skin_mod.clone(self.allocator, desc);
+        try self.skins.append(self.allocator, resource);
+        return handles.skinHandle(self.skins.items.len - 1);
+    }
+
+    pub fn createAnimationClip(self: *ResourceLibrary, desc: animation_clip_mod.AnimationClipResourceDesc) !handles.AnimationClipHandle {
+        const resource = try animation_clip_mod.clone(self.allocator, desc);
+        try self.animation_clips.append(self.allocator, resource);
+        return handles.animationClipHandle(self.animation_clips.items.len - 1);
     }
 
     pub fn mesh(self: *const ResourceLibrary, handle: handles.MeshHandle) ?*const mesh_mod.MeshResource {
@@ -119,6 +179,39 @@ pub const ResourceLibrary = struct {
         return &self.textures.items[index];
     }
 
+    pub fn skeleton(self: *const ResourceLibrary, handle: handles.SkeletonHandle) ?*const skeleton_mod.SkeletonResource {
+        if (!handles.isValid(handle)) {
+            return null;
+        }
+        const index = handles.indexOf(handle);
+        if (index >= self.skeletons.items.len) {
+            return null;
+        }
+        return &self.skeletons.items[index];
+    }
+
+    pub fn skin(self: *const ResourceLibrary, handle: handles.SkinHandle) ?*const skin_mod.SkinResource {
+        if (!handles.isValid(handle)) {
+            return null;
+        }
+        const index = handles.indexOf(handle);
+        if (index >= self.skins.items.len) {
+            return null;
+        }
+        return &self.skins.items[index];
+    }
+
+    pub fn animationClip(self: *const ResourceLibrary, handle: handles.AnimationClipHandle) ?*const animation_clip_mod.AnimationClipResource {
+        if (!handles.isValid(handle)) {
+            return null;
+        }
+        const index = handles.indexOf(handle);
+        if (index >= self.animation_clips.items.len) {
+            return null;
+        }
+        return &self.animation_clips.items[index];
+    }
+
     pub fn assetRecordById(self: *const ResourceLibrary, asset_id: []const u8) ?*const registry_mod.AssetRecord {
         return self.asset_registry.recordById(asset_id);
     }
@@ -138,6 +231,21 @@ pub const ResourceLibrary = struct {
         return self.asset_registry.records.items[record_index].id;
     }
 
+    pub fn skeletonAssetId(self: *const ResourceLibrary, handle: handles.SkeletonHandle) ?[]const u8 {
+        const record_index = self.skeleton_records.get(handle) orelse return null;
+        return self.asset_registry.records.items[record_index].id;
+    }
+
+    pub fn skinAssetId(self: *const ResourceLibrary, handle: handles.SkinHandle) ?[]const u8 {
+        const record_index = self.skin_records.get(handle) orelse return null;
+        return self.asset_registry.records.items[record_index].id;
+    }
+
+    pub fn animationClipAssetId(self: *const ResourceLibrary, handle: handles.AnimationClipHandle) ?[]const u8 {
+        const record_index = self.animation_clip_records.get(handle) orelse return null;
+        return self.asset_registry.records.items[record_index].id;
+    }
+
     pub fn meshHandleByAssetId(self: *const ResourceLibrary, asset_id: []const u8) ?handles.MeshHandle {
         return self.mesh_handles_by_asset_id.get(asset_id);
     }
@@ -148,6 +256,18 @@ pub const ResourceLibrary = struct {
 
     pub fn textureHandleByAssetId(self: *const ResourceLibrary, asset_id: []const u8) ?handles.TextureHandle {
         return self.texture_handles_by_asset_id.get(asset_id);
+    }
+
+    pub fn skeletonHandleByAssetId(self: *const ResourceLibrary, asset_id: []const u8) ?handles.SkeletonHandle {
+        return self.skeleton_handles_by_asset_id.get(asset_id);
+    }
+
+    pub fn skinHandleByAssetId(self: *const ResourceLibrary, asset_id: []const u8) ?handles.SkinHandle {
+        return self.skin_handles_by_asset_id.get(asset_id);
+    }
+
+    pub fn animationClipHandleByAssetId(self: *const ResourceLibrary, asset_id: []const u8) ?handles.AnimationClipHandle {
+        return self.animation_clip_handles_by_asset_id.get(asset_id);
     }
 
     pub fn bindMeshAssetRecord(self: *ResourceLibrary, handle: handles.MeshHandle, record: registry_mod.AssetRecord) ![]const u8 {
@@ -174,6 +294,33 @@ pub const ResourceLibrary = struct {
         const resolved = try self.asset_registry.upsertOwned(record);
         try self.texture_records.put(handle, indexForRecord(self, resolved.id).?);
         try bindHandleByAssetId(self.allocator, handles.TextureHandle, &self.texture_handles_by_asset_id, handle, resolved.id, previous_id);
+        return resolved.id;
+    }
+
+    pub fn bindSkeletonAssetRecord(self: *ResourceLibrary, handle: handles.SkeletonHandle, record: registry_mod.AssetRecord) ![]const u8 {
+        const previous_id = if (self.skeletonAssetId(handle)) |value| try self.allocator.dupe(u8, value) else null;
+        defer if (previous_id) |value| self.allocator.free(value);
+        const resolved = try self.asset_registry.upsertOwned(record);
+        try self.skeleton_records.put(handle, indexForRecord(self, resolved.id).?);
+        try bindHandleByAssetId(self.allocator, handles.SkeletonHandle, &self.skeleton_handles_by_asset_id, handle, resolved.id, previous_id);
+        return resolved.id;
+    }
+
+    pub fn bindSkinAssetRecord(self: *ResourceLibrary, handle: handles.SkinHandle, record: registry_mod.AssetRecord) ![]const u8 {
+        const previous_id = if (self.skinAssetId(handle)) |value| try self.allocator.dupe(u8, value) else null;
+        defer if (previous_id) |value| self.allocator.free(value);
+        const resolved = try self.asset_registry.upsertOwned(record);
+        try self.skin_records.put(handle, indexForRecord(self, resolved.id).?);
+        try bindHandleByAssetId(self.allocator, handles.SkinHandle, &self.skin_handles_by_asset_id, handle, resolved.id, previous_id);
+        return resolved.id;
+    }
+
+    pub fn bindAnimationClipAssetRecord(self: *ResourceLibrary, handle: handles.AnimationClipHandle, record: registry_mod.AssetRecord) ![]const u8 {
+        const previous_id = if (self.animationClipAssetId(handle)) |value| try self.allocator.dupe(u8, value) else null;
+        defer if (previous_id) |value| self.allocator.free(value);
+        const resolved = try self.asset_registry.upsertOwned(record);
+        try self.animation_clip_records.put(handle, indexForRecord(self, resolved.id).?);
+        try bindHandleByAssetId(self.allocator, handles.AnimationClipHandle, &self.animation_clip_handles_by_asset_id, handle, resolved.id, previous_id);
         return resolved.id;
     }
 
@@ -433,6 +580,59 @@ test "resource library resolves handles by stable asset id" {
 
     try std.testing.expectEqual(mesh_handle, library.meshHandleByAssetId(asset_id).?);
     try std.testing.expectEqualStrings(asset_id, library.meshAssetId(mesh_handle).?);
+}
+
+test "resource library resolves animation resource handles by stable asset id" {
+    var library = ResourceLibrary.init(std.testing.allocator);
+    defer library.deinit();
+
+    const skeleton_handle = try library.createSkeleton(.{
+        .name = "Rig",
+        .joints = &.{
+            .{
+                .name = "Root",
+                .node_entity_index = 0,
+            },
+        },
+    });
+    const skeleton_asset_id = try library.bindSkeletonAssetRecord(
+        skeleton_handle,
+        try builtinRecord(&library, .skeleton, "builtin://skeleton/rig", "Rig"),
+    );
+
+    const skin_handle = try library.createSkin(.{
+        .name = "RigSkin",
+        .skeleton = skeleton_handle,
+        .joint_entity_indices = &.{0},
+        .inverse_bind_matrices = &.{.{ 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0 }},
+    });
+    const skin_asset_id = try library.bindSkinAssetRecord(
+        skin_handle,
+        try builtinRecord(&library, .skin, "builtin://skin/rig", "RigSkin"),
+    );
+
+    const clip_handle = try library.createAnimationClip(.{
+        .name = "Idle",
+        .duration = 1.0,
+        .translation_tracks = &.{
+            .{
+                .target_entity_index = 0,
+                .times = &.{ 0.0, 1.0 },
+                .values = &.{ .{ 0.0, 0.0, 0.0 }, .{ 0.0, 0.1, 0.0 } },
+            },
+        },
+    });
+    const clip_asset_id = try library.bindAnimationClipAssetRecord(
+        clip_handle,
+        try builtinRecord(&library, .animation_clip, "builtin://animation/idle", "Idle"),
+    );
+
+    try std.testing.expectEqual(skeleton_handle, library.skeletonHandleByAssetId(skeleton_asset_id).?);
+    try std.testing.expectEqual(skin_handle, library.skinHandleByAssetId(skin_asset_id).?);
+    try std.testing.expectEqual(clip_handle, library.animationClipHandleByAssetId(clip_asset_id).?);
+    try std.testing.expectEqualStrings(skeleton_asset_id, library.skeletonAssetId(skeleton_handle).?);
+    try std.testing.expectEqualStrings(skin_asset_id, library.skinAssetId(skin_handle).?);
+    try std.testing.expectEqualStrings(clip_asset_id, library.animationClipAssetId(clip_handle).?);
 }
 
 const cube_vertices = [_]mesh_mod.Vertex{

@@ -37,6 +37,8 @@ pub const Entity = struct {
     dirty: bool = true,
     camera: ?components.Camera = null,
     mesh: ?components.Mesh = null,
+    skinned_mesh: ?components.SkinnedMesh = null,
+    animator: ?components.Animator = null,
     material: ?components.Material = null,
     light: ?components.Light = null,
     vfx: ?components.Vfx = null,
@@ -63,6 +65,8 @@ pub const EntityDesc = struct {
     local_transform: components.Transform = .{},
     camera: ?components.Camera = null,
     mesh: ?components.Mesh = null,
+    skinned_mesh: ?components.SkinnedMesh = null,
+    animator: ?components.Animator = null,
     material: ?components.Material = null,
     light: ?components.Light = null,
     vfx: ?components.Vfx = null,
@@ -182,6 +186,8 @@ pub const World = struct {
             .local_transform = desc.local_transform,
             .camera = desc.camera,
             .mesh = desc.mesh,
+            .skinned_mesh = desc.skinned_mesh,
+            .animator = desc.animator,
             .material = desc.material,
             .light = desc.light,
             .vfx = desc.vfx,
@@ -201,7 +207,7 @@ pub const World = struct {
                 try parent.children.append(self.allocator, id);
             }
         }
-        if (desc.mesh != null or desc.vfx != null) {
+        if (desc.mesh != null or desc.skinned_mesh != null or desc.vfx != null) {
             self.queueRenderableSync(id);
         }
 
@@ -233,7 +239,7 @@ pub const World = struct {
 
     pub fn markDirty(self: *World, id: EntityId) void {
         const entity = self.getEntity(id) orelse return;
-        if (entity.mesh != null or entity.vfx != null) {
+        if (entity.mesh != null or entity.skinned_mesh != null or entity.vfx != null) {
             self.queueRenderableSync(id);
             if (self.dynamic_renderables.getPtr(id)) |state| {
                 state.steady_query_count = 0;
@@ -313,6 +319,12 @@ pub const World = struct {
         // Include own mesh bounds
         if (entity.mesh) |mesh_comp| {
             if (mesh_comp.handle) |handle| {
+                if (self.resources.mesh(handle)) |mesh_res| {
+                    bounds.expandAABB(mesh_res.local_bounds.transformed(entity.world_transform_cache));
+                }
+            }
+        } else if (entity.skinned_mesh) |skinned_mesh_comp| {
+            if (skinned_mesh_comp.mesh_handle) |handle| {
                 if (self.resources.mesh(handle)) |mesh_res| {
                     bounds.expandAABB(mesh_res.local_bounds.transformed(entity.world_transform_cache));
                 }
@@ -754,7 +766,7 @@ pub const World = struct {
             if (entity.camera != null) {
                 result.camera_count += 1;
             }
-            if (entity.mesh != null) {
+            if (entity.mesh != null or entity.skinned_mesh != null) {
                 result.mesh_count += 1;
             }
             if (entity.material != null) {
@@ -1091,6 +1103,8 @@ pub const World = struct {
             .local_transform = source.local_transform,
             .camera = duplicate_camera,
             .mesh = source.mesh,
+            .skinned_mesh = source.skinned_mesh,
+            .animator = source.animator,
             .material = source.material,
             .light = source.light,
             .vfx = source.vfx,
@@ -1144,7 +1158,7 @@ pub const World = struct {
 
     fn promoteRenderableToDynamic(self: *World, id: EntityId) bool {
         const entity = self.getEntityConst(id) orelse return false;
-        if (entity.mesh == null and entity.vfx == null) {
+        if (entity.mesh == null and entity.skinned_mesh == null and entity.vfx == null) {
             return false;
         }
         if (self.dynamic_renderables.contains(id)) {
@@ -1173,7 +1187,7 @@ pub const World = struct {
                 try reintegrate_ids.append(self.allocator, entity_id);
                 continue;
             };
-            if (entity.mesh == null and entity.vfx == null) {
+            if (entity.mesh == null and entity.skinned_mesh == null and entity.vfx == null) {
                 try reintegrate_ids.append(self.allocator, entity_id);
                 continue;
             }
@@ -1251,7 +1265,7 @@ pub const World = struct {
 
     fn syncRenderableSpatialItem(self: *World, entity_id: EntityId) !void {
         const entity = self.getEntityConst(entity_id);
-        const is_renderable = entity != null and (entity.?.mesh != null or entity.?.vfx != null);
+        const is_renderable = entity != null and (entity.?.mesh != null or entity.?.skinned_mesh != null or entity.?.vfx != null);
         const desired_bounds = if (is_renderable) self.worldBoundsConst(entity_id) else null;
         const desired_partition: enum { none, static, dynamic } = blk: {
             if (desired_bounds == null or !desired_bounds.?.isValid()) {
@@ -1321,7 +1335,7 @@ pub const World = struct {
         self.dynamic_renderable_item_indices.clearRetainingCapacity();
 
         for (self.entities.items) |entity| {
-            if (entity.mesh == null and entity.vfx == null) {
+            if (entity.mesh == null and entity.skinned_mesh == null and entity.vfx == null) {
                 continue;
             }
             const bounds = self.worldBoundsConst(entity.id) orelse continue;

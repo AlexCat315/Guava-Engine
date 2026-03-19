@@ -8,6 +8,8 @@ pub const Vertex = extern struct {
     tangent: [4]f32,
     color: [4]f32,
     uv: [2]f32,
+    joints: [4]u16 = .{ 0, 0, 0, 0 },
+    weights: [4]f32 = .{ 1.0, 0.0, 0.0, 0.0 },
 };
 
 pub const MeshResource = struct {

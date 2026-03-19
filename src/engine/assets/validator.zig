@@ -189,7 +189,7 @@ fn validateRecord(
                 try appendIssue(allocator, issues, record.id, record.source_path, "场景文件为空");
             }
         },
-        .mesh, .material => {
+        .mesh, .material, .skeleton, .skin, .animation_clip => {
             if (record.metadata.display_name.len == 0) {
                 try appendIssue(allocator, issues, record.id, record.source_path, "嵌入资产缺少显示名称");
             }

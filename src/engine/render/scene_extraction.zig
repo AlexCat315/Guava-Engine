@@ -171,7 +171,7 @@ pub fn extractWorld(
         const is_selected = isEntitySelected(entity.id, primary_selection, selection_list);
         // 在 extraction 阶段优先复用 renderable 空间索引，避免逐 mesh/vfx 线性做 frustum test。
         const entity_visible_in_frustum = if (visible_renderables) |*candidate_set|
-            if (entity.mesh != null or entity.vfx != null)
+            if (entity.mesh != null or entity.skinned_mesh != null or entity.vfx != null)
                 if (world.worldBoundsConst(entity.id) != null)
                     candidate_set.contains(entity.id)
                 else
@@ -202,16 +202,23 @@ pub fn extractWorld(
             });
         }
 
-        if (entity.mesh) |mesh| {
+        if (entity.mesh != null or entity.skinned_mesh != null) {
             stats.total_meshes += 1;
             if (!entity_visible_in_frustum) {
                 continue;
             }
 
+            const extracted_mesh = if (entity.mesh) |mesh|
+                mesh
+            else
+                components.Mesh{
+                    .handle = entity.skinned_mesh.?.mesh_handle,
+                    .primitive = entity.skinned_mesh.?.primitive,
+                };
             try render_world.meshes.append(render_world.allocator, .{
                 .entity_id = entity.id,
                 .transform = world_transform,
-                .mesh = mesh,
+                .mesh = extracted_mesh,
                 .material = entity.material,
                 .selected = is_selected,
             });
