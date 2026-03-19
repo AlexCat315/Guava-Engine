@@ -28,6 +28,7 @@ const rhi_types = @import("../rhi/types.zig");
 const components = @import("../scene/components.zig");
 const scene_mod = @import("../scene/scene.zig");
 const types = @import("types.zig");
+const AABB = @import("../math/aabb.zig").AABB;
 const frustum_mod = @import("../math/frustum.zig");
 const vec3 = @import("../math/vec3.zig");
 const render_log = std.log.scoped(.viewport_render);
@@ -36,6 +37,7 @@ var g_logged_viewport_backend: bool = false;
 var g_logged_environment_status: bool = false;
 var g_logged_postfx_state: ?types.EditorViewportState = null;
 var g_logged_scene_extraction_culling: bool = false;
+var g_logged_collision_overlay_boxes: ?usize = null;
 
 pub const GraphicsAPI = rhi_types.GraphicsAPI;
 pub const RuntimeInfo = rhi_types.RuntimeInfo;
@@ -1508,7 +1510,7 @@ pub const Renderer = struct {
         self: *Renderer,
         frame: rhi_mod.Frame,
         pass: rhi_mod.RenderPass,
-        scene: *const scene_mod.Scene,
+        scene: *scene_mod.Scene,
         prepared_scene: *const mesh_pass_mod.PreparedScene,
     ) !mesh_pass_mod.DrawStats {
         var stats = mesh_pass_mod.DrawStats{};
@@ -1547,7 +1549,7 @@ pub const Renderer = struct {
         if (self.editor_viewport_state.show_collision) {
             var collision_lines = std.ArrayList(gizmo_pass_mod.WorldLineVertex).empty;
             defer collision_lines.deinit(self.allocator);
-            try appendCollisionLines(self.allocator, scene, &collision_lines);
+            try appendCollisionLines(self.allocator, scene, prepared_scene, &collision_lines);
             const collision_stats = try self.gizmo_pass.drawWorldLines(
                 &self.rhi,
                 frame,
@@ -1591,34 +1593,38 @@ pub const Renderer = struct {
 
     fn appendCollisionLines(
         allocator: std.mem.Allocator,
-        scene: *const scene_mod.Scene,
+        scene: *scene_mod.Scene,
+        prepared_scene: *const mesh_pass_mod.PreparedScene,
         lines: *std.ArrayList(gizmo_pass_mod.WorldLineVertex),
     ) !void {
-        for (scene.entities.items) |entity| {
-            const mesh_component = entity.mesh orelse continue;
-            const mesh_handle = mesh_component.handle orelse continue;
-            const mesh = scene.resources.mesh(mesh_handle) orelse continue;
-            if (mesh.vertices.len == 0) {
-                continue;
-            }
-            const world_transform = scene.worldTransformConst(entity.id) orelse entity.local_transform;
+        const collision_frustum = frustum_mod.Frustum.fromViewProjection(prepared_scene.view_projection);
+        const bounds_items = try scene.queryRenderableBoundsInFrustum(allocator, collision_frustum);
+        defer allocator.free(bounds_items);
 
-            // 直接使用预计算的包围盒，避免每帧遍历顶点
-            const local_min = mesh.local_bounds.min;
-            const local_max = mesh.local_bounds.max;
-
-            const corners = [_][3]f32{
-                transformPoint(world_transform, .{ local_min[0], local_min[1], local_min[2] }),
-                transformPoint(world_transform, .{ local_max[0], local_min[1], local_min[2] }),
-                transformPoint(world_transform, .{ local_max[0], local_max[1], local_min[2] }),
-                transformPoint(world_transform, .{ local_min[0], local_max[1], local_min[2] }),
-                transformPoint(world_transform, .{ local_min[0], local_min[1], local_max[2] }),
-                transformPoint(world_transform, .{ local_max[0], local_min[1], local_max[2] }),
-                transformPoint(world_transform, .{ local_max[0], local_max[1], local_max[2] }),
-                transformPoint(world_transform, .{ local_min[0], local_max[1], local_max[2] }),
-            };
-            try appendBoxEdges(allocator, lines, corners);
+        if (g_logged_collision_overlay_boxes == null or g_logged_collision_overlay_boxes.? != bounds_items.len) {
+            render_log.info("collision overlay reusing renderable BVH bounds boxes={}", .{bounds_items.len});
+            g_logged_collision_overlay_boxes = bounds_items.len;
         }
+
+        // 碰撞可视化直接吃 world bounds cache + BVH 视锥候选，后续 selection debug 可以复用同一路。
+        for (bounds_items) |item| {
+            try appendBoxEdges(allocator, lines, cornersForAabb(item.bounds));
+        }
+    }
+
+    fn cornersForAabb(bounds: AABB) [8][3]f32 {
+        const min = bounds.min;
+        const max = bounds.max;
+        return .{
+            .{ min[0], min[1], min[2] },
+            .{ max[0], min[1], min[2] },
+            .{ max[0], max[1], min[2] },
+            .{ min[0], max[1], min[2] },
+            .{ min[0], min[1], max[2] },
+            .{ max[0], min[1], max[2] },
+            .{ max[0], max[1], max[2] },
+            .{ min[0], max[1], max[2] },
+        };
     }
 
     fn appendBoxEdges(allocator: std.mem.Allocator, lines: *std.ArrayList(gizmo_pass_mod.WorldLineVertex), corners: [8][3]f32) !void {
@@ -1639,13 +1645,6 @@ pub const Renderer = struct {
     fn appendLine(allocator: std.mem.Allocator, lines: *std.ArrayList(gizmo_pass_mod.WorldLineVertex), a: [3]f32, b: [3]f32) !void {
         try lines.append(allocator, .{ .position = a });
         try lines.append(allocator, .{ .position = b });
-    }
-
-    fn transformPoint(transform: components.Transform, point: [3]f32) [3]f32 {
-        return vec3.add(
-            transform.translation,
-            @import("../math/quat.zig").rotateVec3(transform.rotation, vec3.mul(transform.scale, point)),
-        );
     }
 
     fn enqueueSelectionReadbacks(self: *Renderer, frame: rhi_mod.Frame, id_texture: *const rhi_mod.Texture) !void {

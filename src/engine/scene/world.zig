@@ -901,6 +901,33 @@ pub const World = struct {
         return try candidates.toOwnedSlice(allocator);
     }
 
+    pub fn queryRenderableBoundsInFrustum(
+        self: *World,
+        allocator: std.mem.Allocator,
+        frustum: frustum_mod.Frustum,
+    ) ![]spatial_index_mod.BoundsItem {
+        const candidate_ids = try self.queryRenderableFrustumCandidates(allocator, frustum);
+        defer allocator.free(candidate_ids);
+
+        var bounds_items = std.ArrayList(spatial_index_mod.BoundsItem).empty;
+        errdefer bounds_items.deinit(allocator);
+        try bounds_items.ensureTotalCapacity(allocator, @intCast(candidate_ids.len));
+
+        // 调试可视化直接复用 BVH 候选与 world bounds cache，避免再走一遍 mesh local bounds 现场换算。
+        for (candidate_ids) |entity_id| {
+            const bounds = self.worldBoundsConst(entity_id) orelse continue;
+            if (!bounds.isValid()) {
+                continue;
+            }
+            bounds_items.appendAssumeCapacity(.{
+                .id = entity_id,
+                .bounds = bounds,
+            });
+        }
+
+        return try bounds_items.toOwnedSlice(allocator);
+    }
+
     pub fn assets(self: *World) *assets_lib.ResourceLibrary {
         return &self.resources;
     }
@@ -1589,4 +1616,34 @@ test "dynamic renderable movement refits dynamic BVH without growing dynamic par
     try std.testing.expectEqual(@as(usize, 1), world.dynamic_renderable_spatial_index.itemCount());
     try std.testing.expectEqual(first_dynamic_nodes, world.dynamic_renderable_spatial_index.nodeCount());
     try std.testing.expectEqual(@as(usize, 1), world.dynamic_renderables.count());
+}
+
+test "renderable bounds frustum query reuses cached bounds for visible BVH candidates" {
+    var world = World.init(std.testing.allocator);
+    defer world.deinit();
+
+    const near_cube = try world.createPrimitiveEntity(.cube, .{
+        .translation = .{ 0.0, 0.0, 0.0 },
+    });
+    _ = try world.createPrimitiveEntity(.cube, .{
+        .translation = .{ 8.0, 0.0, 0.0 },
+    });
+
+    const query_frustum = frustum_mod.Frustum{
+        .planes = .{
+            .{ .normal = .{ 1.0, 0.0, 0.0 }, .distance = -2.5 },
+            .{ .normal = .{ -1.0, 0.0, 0.0 }, .distance = -2.5 },
+            .{ .normal = .{ 0.0, 1.0, 0.0 }, .distance = -2.5 },
+            .{ .normal = .{ 0.0, -1.0, 0.0 }, .distance = -2.5 },
+            .{ .normal = .{ 0.0, 0.0, 1.0 }, .distance = -2.5 },
+            .{ .normal = .{ 0.0, 0.0, -1.0 }, .distance = -2.5 },
+        },
+    };
+
+    const bounds_items = try world.queryRenderableBoundsInFrustum(std.testing.allocator, query_frustum);
+    defer std.testing.allocator.free(bounds_items);
+
+    try std.testing.expectEqual(@as(usize, 1), bounds_items.len);
+    try std.testing.expectEqual(near_cube, bounds_items[0].id);
+    try std.testing.expectEqualDeep(world.worldBoundsConst(near_cube).?, bounds_items[0].bounds);
 }
