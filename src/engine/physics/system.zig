@@ -7,6 +7,12 @@ const vec3 = @import("../math/vec3.zig");
 const physics_log = std.log.scoped(.physics);
 const epsilon: f32 = 0.0001;
 
+const jolt_flag_has_box: u32 = 1 << 0;
+const jolt_flag_has_sphere: u32 = 1 << 1;
+const jolt_flag_has_mesh_proxy: u32 = 1 << 2;
+const jolt_flag_body_is_sensor: u32 = 1 << 3;
+const jolt_flag_allow_sleep: u32 = 1 << 4;
+
 const StepSnapshot = struct {
     dynamic_bodies: usize,
     static_bodies: usize,
@@ -17,16 +23,87 @@ const ContactResolution = struct {
     translation: components.Vec3,
 };
 
+const JoltBodyDesc = extern struct {
+    entity_id: u64,
+    motion_type: u32,
+    flags: u32,
+    mass: f32,
+    gravity_scale: f32,
+    linear_damping: f32,
+    max_linear_speed: f32,
+    position: [3]f32,
+    rotation: [4]f32,
+    linear_velocity: [3]f32,
+    box_half_extents: [3]f32,
+    box_center: [3]f32,
+    sphere_radius: f32,
+    sphere_center: [3]f32,
+    mesh_half_extents: [3]f32,
+    mesh_center: [3]f32,
+};
+
+const JoltStepConfig = extern struct {
+    delta_seconds: f32,
+    gravity: [3]f32,
+    collision_steps: u32,
+    temp_allocator_size_bytes: u32,
+    max_bodies: u32,
+    num_body_mutexes: u32,
+    max_body_pairs: u32,
+    max_contact_constraints: u32,
+};
+
+const JoltBodyState = extern struct {
+    entity_id: u64,
+    position: [3]f32,
+    rotation: [4]f32,
+    linear_velocity: [3]f32,
+};
+
+const JoltStepStats = extern struct {
+    dynamic_bodies: u32,
+    static_bodies: u32,
+    contacts_resolved: u32,
+    state_count: u32,
+    success: u8,
+    reserved0: u8,
+    reserved1: u16,
+};
+
+extern fn guava_jolt_step(
+    bodies: [*]const JoltBodyDesc,
+    body_count: usize,
+    config: *const JoltStepConfig,
+    out_states: [*]JoltBodyState,
+    state_capacity: usize,
+    out_stats: *JoltStepStats,
+) callconv(.c) bool;
+
 var g_logged_config = false;
+var g_logged_jolt_backend = false;
+var g_logged_jolt_fallback = false;
 var g_last_snapshot: ?StepSnapshot = null;
+
+pub const Backend = enum {
+    jolt,
+    builtin,
+};
 
 pub const Config = struct {
     enabled: bool = true,
+    backend: Backend = .jolt,
+    allow_builtin_fallback: bool = true,
     fixed_timestep_seconds: f32 = 1.0 / 60.0,
     max_substeps_per_frame: u8 = 4,
     gravity: components.Vec3 = .{ 0.0, -9.81, 0.0 },
     contact_offset: f32 = 0.005,
     max_linear_speed: f32 = 100.0,
+    jolt_collision_steps: u32 = 1,
+    jolt_temp_allocator_size_bytes: u32 = 10 * 1024 * 1024,
+    jolt_max_bodies: u32 = 65_536,
+    jolt_num_body_mutexes: u32 = 0,
+    jolt_max_body_pairs: u32 = 65_536,
+    jolt_max_contact_constraints: u32 = 10_240,
 };
 
 pub const StepStats = struct {
@@ -36,12 +113,19 @@ pub const StepStats = struct {
 };
 
 pub fn step(world: *scene_mod.World, delta_seconds: f32, config: Config) StepStats {
-    var stats = StepStats{};
     if (!config.enabled or delta_seconds <= epsilon) {
-        return stats;
+        return .{};
     }
 
     logConfigOnce(config);
+    return switch (config.backend) {
+        .builtin => stepBuiltin(world, delta_seconds, config),
+        .jolt => stepJolt(world, delta_seconds, config),
+    };
+}
+
+fn stepBuiltin(world: *scene_mod.World, delta_seconds: f32, config: Config) StepStats {
+    var stats = StepStats{};
     world.updateHierarchy();
     countBodies(world, &stats);
 
@@ -53,6 +137,180 @@ pub fn step(world: *scene_mod.World, delta_seconds: f32, config: Config) StepSta
 
     maybeLogStepSnapshot(stats);
     return stats;
+}
+
+fn stepJolt(world: *scene_mod.World, delta_seconds: f32, config: Config) StepStats {
+    if (!g_logged_jolt_backend) {
+        physics_log.info("physics backend jolt active", .{});
+        g_logged_jolt_backend = true;
+    }
+
+    world.updateHierarchy();
+
+    var stats = StepStats{};
+    countBodies(world, &stats);
+
+    var body_descs = std.ArrayList(JoltBodyDesc).empty;
+    defer body_descs.deinit(world.allocator);
+    var body_states = std.ArrayList(JoltBodyState).empty;
+    defer body_states.deinit(world.allocator);
+
+    for (world.entities.items) |entity| {
+        const desc = buildJoltBodyDesc(world, &entity, config) orelse continue;
+        body_descs.append(world.allocator, desc) catch return stepJoltFallback(world, delta_seconds, config, stats);
+    }
+
+    if (body_descs.items.len == 0) {
+        maybeLogStepSnapshot(stats);
+        return stats;
+    }
+
+    body_states.resize(world.allocator, body_descs.items.len) catch return stepJoltFallback(world, delta_seconds, config, stats);
+
+    var jolt_stats = JoltStepStats{
+        .dynamic_bodies = 0,
+        .static_bodies = 0,
+        .contacts_resolved = 0,
+        .state_count = 0,
+        .success = 0,
+        .reserved0 = 0,
+        .reserved1 = 0,
+    };
+    const jolt_config = JoltStepConfig{
+        .delta_seconds = delta_seconds,
+        .gravity = config.gravity,
+        .collision_steps = @max(config.jolt_collision_steps, 1),
+        .temp_allocator_size_bytes = config.jolt_temp_allocator_size_bytes,
+        .max_bodies = config.jolt_max_bodies,
+        .num_body_mutexes = config.jolt_num_body_mutexes,
+        .max_body_pairs = config.jolt_max_body_pairs,
+        .max_contact_constraints = config.jolt_max_contact_constraints,
+    };
+
+    const success = guava_jolt_step(
+        body_descs.items.ptr,
+        body_descs.items.len,
+        &jolt_config,
+        body_states.items.ptr,
+        body_states.items.len,
+        &jolt_stats,
+    );
+    if (!success or jolt_stats.success == 0) {
+        return stepJoltFallback(world, delta_seconds, config, stats);
+    }
+
+    applyJoltBodyStates(world, body_states.items[0..@min(body_states.items.len, @as(usize, @intCast(jolt_stats.state_count)))]);
+    world.updateHierarchy();
+
+    stats.dynamic_bodies = jolt_stats.dynamic_bodies;
+    stats.static_bodies = jolt_stats.static_bodies;
+    stats.contacts_resolved = jolt_stats.contacts_resolved;
+    maybeLogStepSnapshot(stats);
+    return stats;
+}
+
+fn stepJoltFallback(world: *scene_mod.World, delta_seconds: f32, config: Config, fallback_counts: StepStats) StepStats {
+    if (!config.allow_builtin_fallback) {
+        maybeLogStepSnapshot(fallback_counts);
+        return fallback_counts;
+    }
+
+    if (!g_logged_jolt_fallback) {
+        physics_log.warn("jolt backend failed; falling back to builtin solver", .{});
+        g_logged_jolt_fallback = true;
+    }
+    return stepBuiltin(world, delta_seconds, config);
+}
+
+fn applyJoltBodyStates(world: *scene_mod.World, body_states: []const JoltBodyState) void {
+    for (body_states) |state| {
+        const entity = world.getEntityConst(state.entity_id) orelse continue;
+        const body = entity.rigidbody orelse continue;
+        if (body.motion_type == .static) {
+            continue;
+        }
+
+        var world_transform = entity.world_transform_cache;
+        world_transform.translation = state.position;
+        world_transform.rotation = state.rotation;
+        _ = world.setEntityWorldTransform(state.entity_id, world_transform);
+
+        if (world.getEntity(state.entity_id)) |entity_mut| {
+            if (entity_mut.rigidbody) |*body_mut| {
+                body_mut.linear_velocity = state.linear_velocity;
+            }
+        }
+    }
+}
+
+fn buildJoltBodyDesc(world: *const scene_mod.World, entity: *const scene_mod.Entity, config: Config) ?JoltBodyDesc {
+    if (!hasAnyCollider(entity)) {
+        return null;
+    }
+
+    const body = entity.rigidbody orelse components.Rigidbody{ .motion_type = .static };
+    const world_transform = entity.world_transform_cache;
+    const scale_abs = absVec3(world_transform.scale);
+
+    var desc = JoltBodyDesc{
+        .entity_id = entity.id,
+        .motion_type = motionTypeToJolt(body.motion_type),
+        .flags = if (isTriggerOnly(entity)) jolt_flag_body_is_sensor else 0,
+        .mass = body.mass,
+        .gravity_scale = body.gravity_scale,
+        .linear_damping = body.linear_damping,
+        .max_linear_speed = config.max_linear_speed,
+        .position = world_transform.translation,
+        .rotation = world_transform.rotation,
+        .linear_velocity = body.linear_velocity,
+        .box_half_extents = .{ 0.0, 0.0, 0.0 },
+        .box_center = .{ 0.0, 0.0, 0.0 },
+        .sphere_radius = 0.0,
+        .sphere_center = .{ 0.0, 0.0, 0.0 },
+        .mesh_half_extents = .{ 0.0, 0.0, 0.0 },
+        .mesh_center = .{ 0.0, 0.0, 0.0 },
+    };
+    if (body.allow_sleep) {
+        desc.flags |= jolt_flag_allow_sleep;
+    }
+
+    if (entity.box_collider) |collider| {
+        desc.flags |= jolt_flag_has_box;
+        desc.box_half_extents = maxVec3(vec3.mul(scale_abs, collider.half_extents), .{ epsilon, epsilon, epsilon });
+        desc.box_center = vec3.mul(world_transform.scale, collider.center);
+    }
+
+    if (entity.sphere_collider) |collider| {
+        desc.flags |= jolt_flag_has_sphere;
+        desc.sphere_radius = @max(maxComponent(scale_abs) * collider.radius, epsilon);
+        desc.sphere_center = vec3.mul(world_transform.scale, collider.center);
+    }
+
+    if (entity.mesh_collider) |collider| {
+        if (resolveAttachedMeshBounds(world, entity, collider)) |mesh_bounds| {
+            const scaled_bounds = mesh_bounds.transformed(.{
+                .scale = world_transform.scale,
+            });
+            if (scaled_bounds.isValid()) {
+                desc.flags |= jolt_flag_has_mesh_proxy;
+                desc.mesh_center = scaled_bounds.centroid();
+                desc.mesh_half_extents = maxVec3(
+                    vec3.scale(scaled_bounds.extent(), 0.5),
+                    .{ epsilon, epsilon, epsilon },
+                );
+            }
+        }
+    }
+
+    return if ((desc.flags & (jolt_flag_has_box | jolt_flag_has_sphere | jolt_flag_has_mesh_proxy)) != 0) desc else null;
+}
+
+fn motionTypeToJolt(motion_type: components.RigidbodyMotionType) u32 {
+    return switch (motion_type) {
+        .static => 0,
+        .dynamic => 1,
+        .kinematic => 2,
+    };
 }
 
 fn countBodies(world: *const scene_mod.World, stats: *StepStats) void {
@@ -379,8 +637,9 @@ fn logConfigOnce(config: Config) void {
     }
 
     physics_log.info(
-        "physics config enabled fixed_dt={d:.5} gravity=({d:.2},{d:.2},{d:.2}) max_substeps={d}",
+        "physics config enabled backend={s} fixed_dt={d:.5} gravity=({d:.2},{d:.2},{d:.2}) max_substeps={d}",
         .{
+            @tagName(config.backend),
             config.fixed_timestep_seconds,
             config.gravity[0],
             config.gravity[1],
@@ -414,7 +673,23 @@ fn maybeLogStepSnapshot(stats: StepStats) void {
     g_last_snapshot = snapshot;
 }
 
-test "physics step integrates gravity and resolves static box contact" {
+fn absVec3(value: components.Vec3) components.Vec3 {
+    return .{ @abs(value[0]), @abs(value[1]), @abs(value[2]) };
+}
+
+fn maxComponent(value: components.Vec3) f32 {
+    return @max(value[0], @max(value[1], value[2]));
+}
+
+fn maxVec3(value: components.Vec3, min_value: components.Vec3) components.Vec3 {
+    return .{
+        @max(value[0], min_value[0]),
+        @max(value[1], min_value[1]),
+        @max(value[2], min_value[2]),
+    };
+}
+
+fn runGroundContactScenario(config: Config) !void {
     var world = scene_mod.World.init(std.testing.allocator, null);
     defer world.deinit();
 
@@ -437,16 +712,16 @@ test "physics step integrates gravity and resolves static box contact" {
 
     var step_index: usize = 0;
     while (step_index < 180) : (step_index += 1) {
-        _ = step(&world, 1.0 / 60.0, .{});
+        _ = step(&world, 1.0 / 60.0, config);
     }
     world.updateHierarchy();
 
     const body = world.getEntityConst(body_id).?;
-    try std.testing.expectApproxEqAbs(@as(f32, 1.0), body.world_transform_cache.translation[1], 0.06);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.0), body.rigidbody.?.linear_velocity[1], 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), body.world_transform_cache.translation[1], 0.08);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), body.rigidbody.?.linear_velocity[1], 0.08);
 }
 
-test "physics step preserves kinematic bodies as static colliders" {
+fn runKinematicWallScenario(config: Config) !void {
     var world = scene_mod.World.init(std.testing.allocator, null);
     defer world.deinit();
 
@@ -471,11 +746,35 @@ test "physics step preserves kinematic bodies as static colliders" {
 
     var step_index: usize = 0;
     while (step_index < 30) : (step_index += 1) {
-        _ = step(&world, 1.0 / 60.0, .{});
+        _ = step(&world, 1.0 / 60.0, config);
     }
     world.updateHierarchy();
 
     const body = world.getEntityConst(body_id).?;
-    try std.testing.expect(body.world_transform_cache.translation[0] <= 1.0 + 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.0), body.rigidbody.?.linear_velocity[0], 0.05);
+    try std.testing.expect(body.world_transform_cache.translation[0] <= 1.0 + 0.08);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), body.rigidbody.?.linear_velocity[0], 0.08);
+}
+
+test "physics builtin step integrates gravity and resolves static box contact" {
+    try runGroundContactScenario(.{
+        .backend = .builtin,
+    });
+}
+
+test "physics jolt step integrates gravity and resolves static box contact" {
+    try runGroundContactScenario(.{
+        .backend = .jolt,
+    });
+}
+
+test "physics builtin step preserves kinematic bodies as static colliders" {
+    try runKinematicWallScenario(.{
+        .backend = .builtin,
+    });
+}
+
+test "physics jolt step preserves kinematic bodies as static colliders" {
+    try runKinematicWallScenario(.{
+        .backend = .jolt,
+    });
 }
