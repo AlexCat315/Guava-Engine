@@ -11,21 +11,21 @@ pub const ScriptVM = struct {
 
     pub const VTable = struct {
         /// 加载脚本
-        load: fn (vm: *ScriptVM, source: []const u8, language: types.ScriptLanguage) types.ScriptError!void,
+        load: *const fn (vm: *ScriptVM, source: []const u8, language: types.ScriptLanguage) types.ScriptError!void,
         /// 卸载脚本
-        unload: fn (vm: *ScriptVM) void,
+        unload: *const fn (vm: *ScriptVM) void,
         /// 创建实例
-        createInstance: fn (vm: *ScriptVM, ctx: *context.ScriptContext) types.ScriptError!*types.ScriptInstance,
+        createInstance: *const fn (vm: *ScriptVM, ctx: *context.ScriptContext) types.ScriptError!*types.ScriptInstance,
         /// 销毁实例
-        destroyInstance: fn (vm: *ScriptVM, instance: *types.ScriptInstance) void,
+        destroyInstance: *const fn (vm: *ScriptVM, instance: *types.ScriptInstance) void,
         /// 调用初始化
-        callInit: fn (vm: *ScriptVM, instance: *types.ScriptInstance, ctx: *context.ScriptContext) types.ScriptError!void,
+        callInit: *const fn (vm: *ScriptVM, instance: *types.ScriptInstance, ctx: *context.ScriptContext) types.ScriptError!void,
         /// 调用更新
-        callUpdate: fn (vm: *ScriptVM, instance: *types.ScriptInstance, ctx: *context.ScriptContext, dt: f32) types.ScriptError!void,
+        callUpdate: *const fn (vm: *ScriptVM, instance: *types.ScriptInstance, ctx: *context.ScriptContext, dt: f32) types.ScriptError!void,
         /// 调用销毁
-        callDestroy: fn (vm: *ScriptVM, instance: *types.ScriptInstance, ctx: *context.ScriptContext) types.ScriptError!void,
+        callDestroy: *const fn (vm: *ScriptVM, instance: *types.ScriptInstance, ctx: *context.ScriptContext) types.ScriptError!void,
         /// 获取错误信息
-        getError: fn (vm: *ScriptVM) []const u8,
+        getError: *const fn (vm: *ScriptVM) []const u8,
     };
 
     /// 加载脚本
@@ -99,6 +99,7 @@ pub const ZigVM = struct {
         vm.source = &.{};
         if (vm.compiled_module) |module| {
             // TODO: 释放编译的模块
+            _ = module;
             vm.compiled_module = null;
         }
     }
@@ -124,18 +125,21 @@ pub const ZigVM = struct {
     }
 
     pub fn callInit(vm: *ZigVM, instance: *types.ScriptInstance, ctx: *context.ScriptContext) types.ScriptError!void {
+        _ = vm;
         if (instance.vtable.onInit) |fn_ptr| {
             fn_ptr(ctx);
         }
     }
 
     pub fn callUpdate(vm: *ZigVM, instance: *types.ScriptInstance, ctx: *context.ScriptContext, dt: f32) types.ScriptError!void {
+        _ = vm;
         if (instance.vtable.onUpdate) |fn_ptr| {
             fn_ptr(ctx, dt);
         }
     }
 
     pub fn callDestroy(vm: *ZigVM, instance: *types.ScriptInstance, ctx: *context.ScriptContext) types.ScriptError!void {
+        _ = vm;
         if (instance.vtable.onDestroy) |fn_ptr| {
             fn_ptr(ctx);
         }
@@ -170,6 +174,8 @@ pub const CSharpVM = struct {
     }
 
     pub fn load(vm: *CSharpVM, source: []const u8, language: types.ScriptLanguage) types.ScriptError!void {
+        _ = vm;
+        _ = source;
         if (language != .csharp) {
             return types.ScriptError.InvalidLanguage;
         }
@@ -214,6 +220,8 @@ pub const LuaVM = struct {
     }
 
     pub fn load(vm: *LuaVM, source: []const u8, language: types.ScriptLanguage) types.ScriptError!void {
+        _ = vm;
+        _ = source;
         if (language != .lua) {
             return types.ScriptError.InvalidLanguage;
         }
@@ -255,8 +263,9 @@ pub fn createVM(language: types.ScriptLanguage, allocator: std.mem.Allocator) ty
             const vm = try allocator.create(ZigVM);
             vm.* = ZigVM.init(allocator);
             const script_vm = try allocator.create(ScriptVM);
+            // vtable 是静态方法，直接调用
             script_vm.* = .{
-                .vtable = &vm.vtable(),
+                .vtable = &ZigVM.vtable(),
             };
             return script_vm;
         },

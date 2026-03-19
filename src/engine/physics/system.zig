@@ -4,6 +4,9 @@ const components = @import("../scene/components.zig");
 const scene_mod = @import("../scene/scene.zig");
 const vec3 = @import("../math/vec3.zig");
 
+// 从 scene 模块导入 EntityId
+const EntityId = scene_mod.EntityId;
+
 const physics_log = std.log.scoped(.physics);
 const epsilon: f32 = 0.0001;
 const jolt_state_allocator = std.heap.page_allocator;

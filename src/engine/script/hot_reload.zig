@@ -1,6 +1,7 @@
 const std = @import("std");
 const types = @import("./types.zig");
-const runtime = @import("./runtime.zig");
+const runtime_mod = @import("./runtime.zig");
+const handles = @import("../assets/handles.zig");
 
 const log = std.log.scoped(.hot_reload);
 
@@ -11,15 +12,15 @@ pub const HotReloadManager = struct {
     /// 待重载的脚本列表
     pending_reload: std.ArrayList(handles.ScriptHandle),
     /// 运行时引用
-    runtime: *runtime.ScriptRuntime,
+    runtime: *runtime_mod.ScriptRuntime,
     /// 分配器
     allocator: std.mem.Allocator,
 
-    pub fn init(allocator: std.mem.Allocator, runtime: *runtime.ScriptRuntime) HotReloadManager {
+    pub fn init(allocator: std.mem.Allocator, rt: *runtime_mod.ScriptRuntime) HotReloadManager {
         return .{
             .file_mtimes = std.AutoHashMap([]const u8, i128).init(allocator),
             .pending_reload = std.ArrayList(handles.ScriptHandle).init(allocator),
-            .runtime = runtime,
+            .runtime = rt,
             .allocator = allocator,
         };
     }
@@ -30,7 +31,7 @@ pub const HotReloadManager = struct {
             self.allocator.free(key.*);
         }
         self.file_mtimes.deinit();
-        self.pending_reload.deinit();
+        self.pending_reload.deinit(self.allocator);
     }
 
     /// 注册脚本文件
@@ -63,6 +64,7 @@ pub const HotReloadManager = struct {
 
     /// 处理待重载的脚本
     pub fn processPendingReload(self: *HotReloadManager) void {
+        _ = self;
         // TODO: 实现具体的重载逻辑
     }
 

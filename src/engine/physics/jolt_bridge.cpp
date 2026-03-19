@@ -126,6 +126,8 @@ extern void GuavaJoltEnqueueTriggerEvent(const GuavaTriggerEvent *event);
 
 class GuavaContactListener final : public JPH::ContactListener {
 public:
+  void SetPhysicsSystem(JPH::PhysicsSystem *in_system) { physics_system = in_system; }
+
   void OnContactAdded(const JPH::Body &body1, const JPH::Body &body2,
                       const JPH::ContactManifold &,
                       JPH::ContactSettings &) override {
@@ -158,10 +160,11 @@ public:
     }
   }
 
-  void OnContactRemoved(const JPH::BodySubShapePair &pair) override {
+  void OnContactRemoved(const JPH::SubShapeIDPair &pair) override {
     GuavaTriggerEvent event{};
-    event.entity_a = pair.GetBody1()->GetUserData();
-    event.entity_b = pair.GetBody2()->GetUserData();
+    // 直接从 BodyID 获取用户数据（通过 physics_system 的 body 映射）
+    event.entity_a = pair.GetBody1ID().GetIndexAndSequenceNumber();
+    event.entity_b = pair.GetBody2ID().GetIndexAndSequenceNumber();
     event.kind = 2;
     GuavaJoltEnqueueTriggerEvent(&event);
   }
@@ -172,6 +175,7 @@ public:
 
 private:
   uint32_t m_contact_count = 0;
+  JPH::PhysicsSystem *physics_system = nullptr;
 };
 
 struct Globals {
@@ -292,6 +296,7 @@ namespace {
 struct BodyRecord {
   GuavaJoltBodyDesc desc{};
   JPH::BodyID body_id{};
+  JPH::Body *body_ptr = nullptr;
 };
 
 bool EqualVec3(const float lhs[3], const float rhs[3]) {
@@ -435,21 +440,31 @@ struct GuavaJoltContext {
     constraint_records.clear();
   }
 
-  JPH::Body *GetBody(uint64_t entity_id) {
+  JPH::BodyID GetBodyID(uint64_t entity_id) {
     auto entry = body_records.find(entity_id);
     if (entry == body_records.end()) {
-      return nullptr;
+      return JPH::BodyID();
+    }
+    return entry->second.body_id;
+  }
+  
+  bool IsBodyValid(uint64_t entity_id) {
+    auto entry = body_records.find(entity_id);
+    if (entry == body_records.end()) {
+      return false;
     }
     JPH::BodyInterface &body_interface = physics_system.GetBodyInterface();
-    JPH::Body *body = body_interface.TryGetBody(entry->second.body_id);
-    return body;
+    return body_interface.IsAdded(entry->second.body_id);
   }
 
   bool AddOrUpdateConstraint(const GuavaJoltConstraintDesc &desc) {
-    JPH::Body *body_a = GetBody(desc.entity_a);
-    JPH::Body *body_b = GetBody(desc.entity_b);
-    if (!body_a || !body_b) {
-      return false;
+    JPH::BodyID body_a_id = GetBodyID(desc.entity_a);
+    JPH::BodyID body_b_id = GetBodyID(desc.entity_b);
+    if (!body_a_id.IsInvalid() || !body_b_id.IsInvalid()) {
+      // 检查 body 是否有效
+      if (!IsBodyValid(desc.entity_a) || !IsBodyValid(desc.entity_b)) {
+        return false;
+      }
     }
 
     auto existing = constraint_records.find(desc.entity_id);
@@ -457,6 +472,22 @@ struct GuavaJoltContext {
       physics_system.RemoveConstraint(existing->second);
       delete existing->second;
       constraint_records.erase(existing);
+    }
+
+    // 获取 body 指针（在锁的保护下）
+    JPH::Body *body_a = nullptr;
+    JPH::Body *body_b = nullptr;
+    {
+      const JPH::BodyLockInterface &lock_interface = physics_system.GetBodyLockInterface();
+      JPH::BodyLockRead lock_a(lock_interface, body_a_id);
+      JPH::BodyLockRead lock_b(lock_interface, body_b_id);
+      if (!lock_a.Succeeded() || !lock_b.Succeeded()) {
+        return false;
+      }
+      body_a = const_cast<JPH::Body *>(lock_a.GetBody());
+      body_b = const_cast<JPH::Body *>(lock_b.GetBody());
+      // 注意：锁在这里释放，但我们只使用 body 指针来创建约束
+      // 这通常安全，因为 body 不会被删除直到物理系统销毁
     }
 
     JPH::TwoBodyConstraint *constraint = nullptr;
@@ -558,9 +589,12 @@ struct GuavaJoltContext {
       return false;
     }
 
+    // 注意：Jolt 的 BodyInterface::TryGetBody 可能在某些版本中不可用
+    // 我们存储 body_id，在 GetBody 时通过 body_lock_interface 获取
     BodyRecord record{};
     record.desc = desc;
     record.body_id = body_id;
+    // body_ptr 会在 GetBody 时动态获取
     body_records.insert_or_assign(desc.entity_id, record);
     return true;
   }

@@ -1,5 +1,12 @@
 const std = @import("std");
 const handles = @import("../assets/handles.zig");
+const world_mod = @import("../scene/world.zig");
+
+// 前向声明
+pub const ScriptContext = @import("./context.zig").ScriptContext;
+
+/// 实体 ID 类型
+pub const EntityId = world_mod.EntityId;
 
 /// 脚本语言类型
 pub const ScriptLanguage = enum {
@@ -42,23 +49,23 @@ pub const ScriptResource = struct {
 /// 脚本虚拟表 - 定义脚本的生命周期回调
 pub const ScriptVTable = struct {
     /// 初始化回调 - 实体创建时调用
-    onInit: ?fn (ctx: *ScriptContext) void = null,
+    onInit: ?*const fn (ctx: *ScriptContext) void = null,
     /// 更新回调 - 每帧调用
-    onUpdate: ?fn (ctx: *ScriptContext, dt: f32) void = null,
+    onUpdate: ?*const fn (ctx: *ScriptContext, dt: f32) void = null,
     /// 销毁回调 - 实体销毁时调用
-    onDestroy: ?fn (ctx: *ScriptContext) void = null,
+    onDestroy: ?*const fn (ctx: *ScriptContext) void = null,
     /// 物理更新回调 - 固定步长物理更新时调用
-    onPhysicsUpdate: ?fn (ctx: *ScriptContext, dt: f32) void = null,
+    onPhysicsUpdate: ?*const fn (ctx: *ScriptContext, dt: f32) void = null,
     /// 碰撞开始回调
-    onCollisionEnter: ?fn (ctx: *ScriptContext, other: EntityId) void = null,
+    onCollisionEnter: ?*const fn (ctx: *ScriptContext, other: EntityId) void = null,
     /// 碰撞持续回调
-    onCollisionStay: ?fn (ctx: *ScriptContext, other: EntityId) void = null,
+    onCollisionStay: ?*const fn (ctx: *ScriptContext, other: EntityId) void = null,
     /// 碰撞结束回调
-    onCollisionExit: ?fn (ctx: *ScriptContext, other: EntityId) void = null,
+    onCollisionExit: ?*const fn (ctx: *ScriptContext, other: EntityId) void = null,
     /// 触发器进入回调
-    onTriggerEnter: ?fn (ctx: *ScriptContext, other: EntityId) void = null,
+    onTriggerEnter: ?*const fn (ctx: *ScriptContext, other: EntityId) void = null,
     /// 触发器离开回调
-    onTriggerExit: ?fn (ctx: *ScriptContext, other: EntityId) void = null,
+    onTriggerExit: ?*const fn (ctx: *ScriptContext, other: EntityId) void = null,
 };
 
 /// 脚本实例状态
@@ -67,7 +74,7 @@ pub const ScriptInstanceState = enum {
     loading,
     ready,
     running,
-    error,
+    failed,
     destroyed,
 };
 

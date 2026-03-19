@@ -1665,7 +1665,7 @@ pub const Renderer = struct {
 
         // 碰撞可视化直接吃 world bounds cache + BVH 视锥候选，后续 selection debug 可以复用同一路。
         for (bounds_items) |item| {
-            try appendBoxEdges(allocator, lines, cornersForAabb(item.bounds));
+            try appendBoxEdges(allocator, solid_lines, cornersForAabb(item.bounds));
         }
     }
 

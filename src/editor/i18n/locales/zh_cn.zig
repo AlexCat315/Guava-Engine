@@ -308,5 +308,20 @@ pub const locale = types.LocaleInfo{
         .scale_tool = "缩放 (R)",
         .global = "全局",
         .local = "局部",
+        
+        // Prefab 相关
+        .prefab = "预制体",
+        .prefab_browser = "预制体浏览器",
+        .prefab_instance = "预制体实例",
+        .update_prefab_instance = "更新实例",
+        .break_prefab_connection = "断开连接",
+        .select_prefab_asset = "选择预制体资源",
+        .convert_to_prefab = "转换为预制体",
+        .no_prefabs_available = "无可用的预制体",
+        .add_override = "添加覆盖",
+        .revert_override = "恢复覆盖",
+        .prefab_override = "预制体覆盖",
+        .visibility = "可见性",
+        .visible = "可见",
     }),
 };

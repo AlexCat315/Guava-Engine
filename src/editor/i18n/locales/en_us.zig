@@ -308,5 +308,20 @@ pub const locale = types.LocaleInfo{
         .scale_tool = "Scale (R)",
         .global = "Global",
         .local = "Local",
+        
+        // Prefab related
+        .prefab = "Prefab",
+        .prefab_browser = "Prefab Browser",
+        .prefab_instance = "Prefab Instance",
+        .update_prefab_instance = "Update Instance",
+        .break_prefab_connection = "Break Connection",
+        .select_prefab_asset = "Select Prefab Asset",
+        .convert_to_prefab = "Convert to Prefab",
+        .no_prefabs_available = "No prefabs available",
+        .add_override = "Add Override",
+        .revert_override = "Revert Override",
+        .prefab_override = "Prefab Override",
+        .visibility = "Visibility",
+        .visible = "Visible",
     }),
 };

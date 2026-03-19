@@ -32,7 +32,7 @@ const TimelineTrack = struct {
     }
 };
 
-const AnimationEditorState = struct {
+pub const AnimationEditorState = struct {
     selected_clip: ?handles.AnimationClipHandle = null,
     selected_graph: ?*animation_graph_mod.AnimationGraph = null,
     timeline_scale: f32 = 1.0,

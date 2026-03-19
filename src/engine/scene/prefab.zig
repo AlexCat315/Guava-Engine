@@ -9,6 +9,49 @@ const scene_io = @import("scene_io.zig");
 
 const current_prefab_version: u32 = 1;
 
+/// Prefab 库 - 管理所有 Prefab 资源
+pub const PrefabLibrary = struct {
+    allocator: std.mem.Allocator,
+    /// Prefab ID -> PrefabResource
+    prefabs: std.StringHashMap(*PrefabResource),
+
+    pub fn init(allocator: std.mem.Allocator) PrefabLibrary {
+        return .{
+            .allocator = allocator,
+            .prefabs = std.StringHashMap(*PrefabResource).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *PrefabLibrary) void {
+        var it = self.prefabs.valueIterator();
+        while (it.next()) |prefab_ptr| {
+            prefab_ptr.*.deinit();
+            self.allocator.destroy(prefab_ptr.*);
+        }
+        self.prefabs.deinit();
+    }
+
+    /// 注册 Prefab
+    pub fn registerPrefab(self: *PrefabLibrary, prefab: *PrefabResource) !void {
+        try self.prefabs.put(prefab.id, prefab);
+    }
+
+    /// 获取 Prefab
+    pub fn getPrefab(self: *const PrefabLibrary, id: []const u8) ?*PrefabResource {
+        return self.prefabs.get(id);
+    }
+
+    /// 移除 Prefab
+    pub fn removePrefab(self: *PrefabLibrary, id: []const u8) bool {
+        if (self.prefabs.fetchRemove(id)) |kv| {
+            kv.value.deinit();
+            self.allocator.destroy(kv.value);
+            return true;
+        }
+        return false;
+    }
+};
+
 /// Prefab ID 格式: prefab://assets/prefabs/hero/v1
 pub const PrefabId = []const u8;
 
@@ -91,7 +134,7 @@ pub const PrefabResource = struct {
         for (self.nested_prefab_ids.items) |prefab_id| {
             self.allocator.free(prefab_id);
         }
-        self.nested_prefab_ids.deinit();
+        self.nested_prefab_ids.deinit(self.allocator);
     }
 };
 
@@ -287,7 +330,7 @@ pub fn createPrefabFromEntities(
 
         try entity_data_list.append(allocator, .{
             .prefab_entity_id = entity_id_map.get(entity_id).?,
-            .name = entity_name,
+            .name = try allocator.dupe(u8, entity.name),
             .parent = if (entity.parent) |parent_id| entity_id_map.get(parent_id) else null,
             .local_transform = entity.local_transform,
             .camera = entity.camera,
@@ -568,7 +611,7 @@ pub fn detectDiffs(
             // 检测修改 - 查找旧实体
             for (old_prefab.entities) |old_entity| {
                 if (old_entity.prefab_entity_id == new_entity.prefab_entity_id) {
-                    const entity_diff = try detectEntityDiff(allocator, &old_entity, &new_entity);
+                    const entity_diff = detectEntityDiff(&old_entity, &new_entity);
                     if (entity_diff.has_changes) {
                         try diff.modified_entities.append(allocator, entity_diff);
                     }
@@ -613,10 +656,9 @@ const ComponentChangeList = struct {
 };
 
 fn detectEntityDiff(
-    _allocator: std.mem.Allocator,
     old_entity: *const PrefabEntityData,
     new_entity: *const PrefabEntityData,
-) !EntityDiff {
+) EntityDiff {
     var diff = EntityDiff{
         .prefab_entity_id = old_entity.prefab_entity_id,
         .has_changes = false,

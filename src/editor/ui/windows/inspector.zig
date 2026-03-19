@@ -210,6 +210,90 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
         }
     }
 
+    // Prefab 组件显示
+    if (entity.prefab_instance_override != null or entity.prefab_entity_id != null) {
+        if (inspectorSectionMatches(filter, state.text(.prefab)) and engine.ui.ImGui.collapsingHeader(state.text(.prefab), filter.len != 0)) {
+            beginInspectorSectionBody();
+            defer endInspectorSectionBody();
+            engine.ui.ImGui.dummy(0.0, 4.0);
+            
+            if (try drawPrefabHeaderContextMenu(state, layer_context, selected, entity)) {
+                return;
+            }
+            
+            if (beginInspectorPropertyGrid("prefab_properties")) {
+                defer endInspectorPropertyGrid();
+                
+                if (entity.prefab_instance_override) |override| {
+                    drawInspectorTextRow(state.text(.prefab_instance), override.prefab_id);
+                    
+                    var version_buffer: [32]u8 = undefined;
+                    const version_text = try std.fmt.bufPrint(&version_buffer, "{d}", .{override.prefab_version});
+                    drawInspectorTextRow("Version", version_text);
+                    
+                    // 显示覆盖信息
+                    if (state.prefab_instance_show_overrides) {
+                        const mask = override.override_mask;
+                        var has_overrides = false;
+                        
+                        if (mask.local_transform) {
+                            engine.ui.ImGui.text("• Transform overridden");
+                            has_overrides = true;
+                        }
+                        if (mask.name) {
+                            engine.ui.ImGui.text("• Name overridden");
+                            has_overrides = true;
+                        }
+                        if (mask.visible) {
+                            engine.ui.ImGui.text("• Visibility overridden");
+                            has_overrides = true;
+                        }
+                        if (mask.mesh) {
+                            engine.ui.ImGui.text("• Mesh overridden");
+                            has_overrides = true;
+                        }
+                        if (mask.material) {
+                            engine.ui.ImGui.text("• Material overridden");
+                            has_overrides = true;
+                        }
+                        
+                        if (!has_overrides) {
+                            engine.ui.ImGui.text("No overrides");
+                        }
+                    }
+                } else if (entity.prefab_entity_id) |prefab_entity_id| {
+                    var id_buffer: [32]u8 = undefined;
+                    const id_text = try std.fmt.bufPrint(&id_buffer, "{d}", .{prefab_entity_id});
+                    drawInspectorTextRow("Prefab Entity ID", id_text);
+                    engine.ui.ImGui.text("Part of Prefab instance");
+                }
+            }
+            
+            engine.ui.ImGui.dummy(0.0, 4.0);
+            
+            // Prefab 操作按钮
+            engine.ui.ImGui.pushStyleVarVec2(.item_spacing, .{ 4.0, 4.0 });
+            defer engine.ui.ImGui.popStyleVar(1);
+            
+            if (entity.prefab_instance_override != null) {
+                if (engine.ui.ImGui.buttonEx(state.text(.update_prefab_instance), 120.0, 0.0)) {
+                    if (entity.prefab_instance_override) |override| {
+                        _ = try layer_context.world.updateAllPrefabInstances(override.prefab_id);
+                    }
+                }
+                engine.ui.ImGui.sameLine();
+                if (engine.ui.ImGui.buttonEx(state.text(.break_prefab_connection), 120.0, 0.0)) {
+                    try scene_hierarchy.breakPrefabConnection(state, layer_context, selected);
+                    return;
+                }
+            } else if (entity.prefab_entity_id != null) {
+                if (engine.ui.ImGui.buttonEx(state.text(.add_override), 120.0, 0.0)) {
+                    try scene_hierarchy.addPrefabOverride(state, layer_context, selected);
+                }
+            }
+        }
+    }
+
     if (inspectorSectionMatches(filter, state.text(.transform))) {
         const transform_open = engine.ui.ImGui.collapsingHeader(state.text(.transform), filter.len != 0);
         if (try drawTransformHeaderContextMenu(state, layer_context, selected, entity, world_transform)) {
@@ -1073,6 +1157,40 @@ fn drawVfxHeaderContextMenu(
     if (engine.ui.ImGui.menuItem(state.text(.remove_vfx_component), null, false, true)) {
         try removeVfxComponent(state, layer_context, selected, entity);
         return true;
+    }
+    return false;
+}
+
+fn drawPrefabHeaderContextMenu(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    selected: engine.scene.EntityId,
+    entity: *engine.scene.Entity,
+) !bool {
+    if (!engine.ui.ImGui.beginPopupContextItem("prefab_header_context")) {
+        return false;
+    }
+    defer engine.ui.ImGui.endPopup();
+
+    if (entity.prefab_instance_override) |override| {
+        if (engine.ui.ImGui.menuItem(state.text(.update_prefab_instance), null, false, true)) {
+            _ = try layer_context.world.updateAllPrefabInstances(override.prefab_id);
+        }
+        if (engine.ui.ImGui.menuItem(state.text(.break_prefab_connection), null, false, true)) {
+            try scene_hierarchy.breakPrefabConnection(state, layer_context, selected);
+            return true;
+        }
+        if (engine.ui.ImGui.menuItem(state.text(.select_prefab_asset), null, false, true)) {
+            state.selected_prefab_id = try state.allocator.?.dupe(u8, override.prefab_id);
+            state.prefab_browser_open = true;
+        }
+    } else if (entity.prefab_entity_id != null) {
+        if (engine.ui.ImGui.menuItem(state.text(.add_override), null, false, true)) {
+            try scene_hierarchy.addPrefabOverride(state, layer_context, selected);
+        }
+        if (engine.ui.ImGui.menuItem(state.text(.revert_override), null, false, entity.prefab_instance_override != null)) {
+            try layer_context.world.revertPrefabOverride(selected);
+        }
     }
     return false;
 }

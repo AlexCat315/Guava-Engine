@@ -121,7 +121,7 @@ pub const World = struct {
     allocator: std.mem.Allocator,
     resources: assets_lib.ResourceLibrary,
     /// Prefab 库
-    prefab_library: prefab_mod.PrefabLibrary = .{},
+    prefab_library: prefab_mod.PrefabLibrary,
     entities: std.ArrayList(Entity) = .empty,
     id_to_index: std.AutoHashMap(EntityId, usize),
     next_id: EntityId = 1,
@@ -2235,23 +2235,45 @@ pub fn detectPrefabDiff(
     }
 
     /// 批量更新所有 Prefab 实例
-    pub fn updateAllPrefabInstances(self: *World, prefab_id: []const u8) !void {
+    /// 遍历场景中所有指定 Prefab 的实例并应用最新版本
+    pub fn updateAllPrefabInstances(self: *World, prefab_id: []const u8) !usize {
         const prefab = self.prefab_library.get(prefab_id) orelse
             return error.PrefabNotFound;
 
+        var updated_count: usize = 0;
+
         // 遍历所有实体，查找 Prefab 实例的根实体
         for (self.entities.items) |*entity| {
-            if (entity.prefab_entity_id == 0 && entity.parent == null) {
-                // 这是潜在的 Prefab 实例根实体
-                if (entity.prefab_instance_override) |override| {
+            if (entity.prefab_entity_id == 0 and entity.parent == null) {
+                // 检查是否是 Prefab 实例
+                if (entity.prefab_instance_override) |*override| {
                     if (std.mem.eql(u8, override.prefab_id, prefab_id)) {
                         // 找到匹配 Prefab ID 的实例，更新它
-                        // TODO: 实现实际的更新逻辑
-                        _ = override;
+                        // 创建从当前实体状态到最新 Prefab 的差异
+                        const diff = try self.detectEntityTreeDiff(entity.id, prefab);
+                        defer diff.deinit(self.allocator);
+
+                        // 应用差异更新
+                        try prefab_mod.updatePrefabInstance(self, entity.id, &diff, prefab);
+
+                        // 更新版本号
+                        override.prefab_version = prefab.version;
+
+                        updated_count += 1;
                     }
                 }
             }
         }
+
+        if (updated_count > 0) {
+            std.log.info("Updated {d} Prefab instances for '{s}' to version {d}", .{
+                updated_count,
+                prefab_id,
+                prefab.version,
+            });
+        }
+
+        return updated_count;
     }
 
     /// 应用 Prefab 更新到所有实例
@@ -2270,14 +2292,14 @@ pub fn detectPrefabDiff(
         // 查找并更新所有实例
         var updated_count: usize = 0;
         for (self.entities.items) |*entity| {
-            if (entity.prefab_entity_id == 0 && entity.parent == null) {
+            if (entity.prefab_entity_id == 0 and entity.parent == null) {
                 if (entity.prefab_instance_override) |override| {
                     if (std.mem.eql(u8, override.prefab_id, old_prefab_id)) {
                         // 更新实例
                         try prefab_mod.updatePrefabInstance(self, entity.id, &diff, new_prefab);
                         
                         // 更新 Prefab ID 引用
-                        allocator.free(override.prefab_id);
+                        self.allocator.free(override.prefab_id);
                         override.prefab_id = try self.allocator.dupe(u8, new_prefab_id);
                         
                         updated_count += 1;
@@ -2291,6 +2313,172 @@ pub fn detectPrefabDiff(
             old_prefab_id,
             new_prefab_id,
         });
+    }
+
+    /// 检测实体树与 Prefab 的差异
+    fn detectEntityTreeDiff(
+        self: *World,
+        root_entity_id: EntityId,
+        new_prefab: *const prefab_mod.PrefabResource,
+    ) !prefab_mod.PrefabDiff {
+        var diff = prefab_mod.PrefabDiff{
+            .allocator = self.allocator,
+            .added_entities = std.ArrayList(u32).init(self.allocator),
+            .removed_entities = std.ArrayList(u32).init(self.allocator),
+            .modified_entities = std.ArrayList(prefab_mod.EntityDiff).init(self.allocator),
+        };
+        errdefer diff.deinit();
+
+        // 收集当前实例中的所有实体（按 prefab_entity_id）
+        var instance_entity_map = std.AutoHashMap(u32, EntityId).init(self.allocator);
+        defer instance_entity_map.deinit();
+
+        try self.collectPrefabEntitiesRecursive(root_entity_id, &instance_entity_map);
+
+        // 收集 Prefab 中的所有实体 ID
+        var prefab_entity_set = std.AutoHashMap(u32, void).init(self.allocator);
+        defer prefab_entity_set.deinit();
+
+        for (new_prefab.entities) |entity| {
+            try prefab_entity_set.put(entity.prefab_entity_id, {});
+        }
+
+        // 检测新增的实体（在 Prefab 中但不在实例中）
+        for (new_prefab.entities) |prefab_entity| {
+            if (!instance_entity_map.contains(prefab_entity.prefab_entity_id)) {
+                try diff.added_entities.append(prefab_entity.prefab_entity_id);
+            }
+        }
+
+        // 检测删除的实体（在实例中但不在 Prefab 中）
+        var instance_it = instance_entity_map.keyIterator();
+        while (instance_it.next()) |prefab_entity_id| {
+            if (!prefab_entity_set.contains(prefab_entity_id.*)) {
+                try diff.removed_entities.append(prefab_entity_id.*);
+            }
+        }
+
+        // 检测修改的实体
+        var it = instance_entity_map.iterator();
+        while (it.next()) |entry| {
+            const prefab_entity_id = entry.key_ptr.*;
+            const entity_id = entry.value_ptr.*;
+
+            // 查找对应的 Prefab 实体
+            const prefab_entity = self.findPrefabEntity(new_prefab, prefab_entity_id) orelse continue;
+
+            if (self.getEntity(entity_id)) |entity| {
+                // 检测差异
+                const entity_diff = self.detectSingleEntityDiff(entity, prefab_entity);
+                if (entity_diff.has_changes) {
+                    try diff.modified_entities.append(entity_diff);
+                }
+            }
+        }
+
+        return diff;
+    }
+
+    /// 递归收集 Prefab 实例中的所有实体
+    fn collectPrefabEntitiesRecursive(
+        self: *World,
+        entity_id: EntityId,
+        out_map: *std.AutoHashMap(u32, EntityId),
+    ) !void {
+        const entity = self.getEntity(entity_id) orelse return;
+
+        // 记录实体（如果有 prefab_entity_id）
+        if (entity.prefab_entity_id) |prefab_id| {
+            try out_map.put(prefab_id, entity_id);
+        }
+
+        // 递归处理子实体
+        for (entity.children.items) |child_id| {
+            try self.collectPrefabEntitiesRecursive(child_id, out_map);
+        }
+    }
+
+    /// 在 Prefab 中查找实体
+    fn findPrefabEntity(
+        self: *World,
+        prefab: *const prefab_mod.PrefabResource,
+        prefab_entity_id: u32,
+    ) ?*const prefab_mod.PrefabEntityData {
+        _ = self;
+        for (prefab.entities) |*entity| {
+            if (entity.prefab_entity_id == prefab_entity_id) {
+                return entity;
+            }
+        }
+        return null;
+    }
+
+    /// 检测单个实体与 Prefab 实体的差异
+    fn detectSingleEntityDiff(
+        self: *World,
+        entity: *Entity,
+        prefab_entity: *const prefab_mod.PrefabEntityData,
+    ) prefab_mod.EntityDiff {
+        _ = self;
+        var diff = prefab_mod.EntityDiff{
+            .prefab_entity_id = prefab_entity.prefab_entity_id,
+            .has_changes = false,
+            .transform_changed = false,
+            .name_changed = false,
+            .component_changes = .{},
+        };
+
+        // 检测名称变化
+        if (!std.mem.eql(u8, entity.name, prefab_entity.name)) {
+            diff.name_changed = true;
+            diff.has_changes = true;
+        }
+
+        // 检测变换变化
+        const et = &entity.local_transform;
+        const pt = &prefab_entity.local_transform;
+        if (!std.mem.eql(f32, et.translation[0..3], pt.translation[0..3]) or
+            !std.mem.eql(f32, et.rotation[0..4], pt.rotation[0..4]) or
+            !std.mem.eql(f32, et.scale[0..3], pt.scale[0..3]))
+        {
+            diff.transform_changed = true;
+            diff.has_changes = true;
+        }
+
+        // 检测组件变化
+        if (!equalOptionalComponents(entity.mesh, prefab_entity.mesh)) {
+            diff.component_changes.mesh_changed = true;
+            diff.has_changes = true;
+        }
+        if (!equalOptionalComponents(entity.material, prefab_entity.material)) {
+            diff.component_changes.material_changed = true;
+            diff.has_changes = true;
+        }
+        if (!equalOptionalComponents(entity.light, prefab_entity.light)) {
+            diff.component_changes.light_changed = true;
+            diff.has_changes = true;
+        }
+        if (!equalOptionalComponents(entity.camera, prefab_entity.camera)) {
+            diff.component_changes.camera_changed = true;
+            diff.has_changes = true;
+        }
+        if (!equalOptionalComponents(entity.vfx, prefab_entity.vfx)) {
+            diff.component_changes.vfx_changed = true;
+            diff.has_changes = true;
+        }
+        if (!equalOptionalComponents(entity.rigidbody, prefab_entity.rigidbody)) {
+            diff.component_changes.rigidbody_changed = true;
+            diff.has_changes = true;
+        }
+
+        return diff;
+    }
+
+    /// 比较两个可选组件是否相等
+    fn equalOptionalComponents(a: anytype, b: @TypeOf(a)) bool {
+        if (a == null and b == null) return true;
+        if (a == null or b == null) return false;
+        return std.meta.eql(a.?, b.?);
     }
 
 /// 检查实体是否是 Prefab 实例

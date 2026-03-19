@@ -4,6 +4,7 @@ const context = @import("./context.zig");
 const vm_mod = @import("./vm.zig");
 const hot_reload_mod = @import("./hot_reload.zig");
 const handles = @import("../assets/handles.zig");
+const world_mod = @import("../scene/world.zig");
 
 const log = std.log.scoped(.script_runtime);
 
@@ -50,7 +51,7 @@ pub const ScriptRuntime = struct {
         // 销毁实体脚本列表
         var iter = self.entity_scripts.valueIterator();
         while (iter.next()) |list| {
-            list.deinit();
+            list.deinit(self.allocator);
         }
         self.entity_scripts.deinit();
 
@@ -63,7 +64,7 @@ pub const ScriptRuntime = struct {
         self.vms.deinit();
 
         // 销毁热重载管理器
-        if (self.hot_reload) |hr| {
+        if (self.hot_reload) |*hr| {
             hr.deinit();
         }
     }
@@ -117,10 +118,10 @@ pub const ScriptRuntime = struct {
         instance.state = .destroyed;
 
         // 从实例表中移除
-        self.instances.remove(instance.id);
+        _ = self.instances.remove(instance.id);
 
         // 从实体脚本列表中移除
-        if (self.entity_scripts.get(instance.entity_id)) |list| {
+        if (self.entity_scripts.getPtr(instance.entity_id)) |list| {
             for (list.items, 0..) |id, i| {
                 if (id == instance.id) {
                     _ = list.swapRemove(i);
@@ -154,6 +155,8 @@ pub const ScriptRuntime = struct {
 
     /// 重新加载脚本
     pub fn reloadScript(self: *ScriptRuntime, handle: handles.ScriptHandle) !void {
+        _ = self;
+        _ = handle;
         // TODO: 实现脚本重载
     }
 
@@ -183,7 +186,7 @@ pub const ScriptRuntime = struct {
                             // 调用 OnInit（处理错误）
                             vm.callInit(instance, &ctx) catch |err| {
                                 std.log.err("Script init error: {}", .{err});
-                                instance.state = .error;
+                                instance.state = .failed;
                             };
                         } else |err| {
                             std.log.err("Failed to create script instance: {}", .{err});

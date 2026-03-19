@@ -301,4 +301,19 @@ pub const MessageId = enum {
     scale_tool,
     global,
     local,
+    
+    // Prefab 相关
+    prefab,
+    prefab_browser,
+    prefab_instance,
+    update_prefab_instance,
+    break_prefab_connection,
+    select_prefab_asset,
+    convert_to_prefab,
+    no_prefabs_available,
+    add_override,
+    revert_override,
+    prefab_override,
+    visibility,
+    visible,
 };

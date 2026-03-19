@@ -341,7 +341,7 @@ pub const Application = struct {
                             // 调用 OnUpdate（处理错误）
                             vm.callUpdate(instance, &ctx, delta_seconds) catch |err| {
                                 std.log.err("Script update error: {}", .{err});
-                                instance.state = .error;
+                                instance.state = .failed;
                             };
                         }
                     }

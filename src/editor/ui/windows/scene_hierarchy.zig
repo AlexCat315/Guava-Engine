@@ -9,6 +9,7 @@ const inspector = @import("inspector.zig");
 const camera = @import("../../interaction/camera.zig");
 const ui_icons = @import("../icons.zig");
 const layout = @import("../layout.zig");
+const prefab_mod = @import("guava").scene.prefab;
 
 const hierarchy_row_icon_size: f32 = 16.0;
 const hierarchy_status_icon_size: f32 = 16.0;
@@ -668,6 +669,11 @@ fn drawHierarchyNodeContextMenu(
     const all_frozen = allEntitiesFrozen(state, targets);
     const all_locked = allEntitiesLocked(state, targets);
     const has_parent = anyEntityHasParent(layer_context.world, targets);
+    
+    // 获取实体信息用于 Prefab 菜单
+    const entity = layer_context.world.getEntity(entity_id) orelse return false;
+    const is_prefab_instance = entity.prefab_instance_override != null;
+    const is_prefab_child = entity.prefab_entity_id != null and !is_prefab_instance;
 
     if (engine.ui.ImGui.menuItem(state.text(.rename), null, false, can_rename)) {
         beginHierarchyRename(state, layer_context.world, entity_id);
@@ -681,6 +687,65 @@ fn drawHierarchyNodeContextMenu(
         return true;
     }
     engine.ui.ImGui.separator();
+    
+    // Prefab 相关菜单
+    if (is_prefab_instance or is_prefab_child) {
+        if (engine.ui.ImGui.beginMenu(state.text(.prefab))) {
+            defer engine.ui.ImGui.endMenu();
+            
+            if (is_prefab_instance) {
+                // Prefab 实例根实体的选项
+                if (engine.ui.ImGui.menuItem(state.text(.update_prefab_instance), null, false, true)) {
+                    if (entity.prefab_instance_override) |override| {
+                        _ = try layer_context.world.updateAllPrefabInstances(override.prefab_id);
+                    }
+                }
+                if (engine.ui.ImGui.menuItem(state.text(.break_prefab_connection), null, false, true)) {
+                    try breakPrefabConnection(state, layer_context, entity_id);
+                    return true;
+                }
+                if (engine.ui.ImGui.menuItem(state.text(.select_prefab_asset), null, false, true)) {
+                    if (entity.prefab_instance_override) |override| {
+                        state.selected_prefab_id = try state.allocator.?.dupe(u8, override.prefab_id);
+                        state.prefab_browser_open = true;
+                    }
+                }
+            } else if (is_prefab_child) {
+                // Prefab 子实体的选项
+                if (engine.ui.ImGui.menuItem(state.text(.add_override), null, false, true)) {
+                    try addPrefabOverride(state, layer_context, entity_id);
+                }
+                if (engine.ui.ImGui.menuItem(state.text(.revert_override), null, false, entity.prefab_instance_override != null)) {
+                    try layer_context.world.revertPrefabOverride(entity_id);
+                }
+            }
+        }
+        engine.ui.ImGui.separator();
+    } else {
+        // 普通实体可以转换为 Prefab 实例
+        if (engine.ui.ImGui.beginMenu(state.text(.convert_to_prefab))) {
+            defer engine.ui.ImGui.endMenu();
+            
+            // 显示可用的 Prefab 列表
+            var it = layer_context.world.prefab_library.prefab_by_id.iterator();
+            while (it.next()) |entry| {
+                const prefab_id = entry.key_ptr.*;
+                const index = entry.value_ptr.*;
+                const prefab = &layer_context.world.prefab_library.prefabs.items[index];
+                
+                if (engine.ui.ImGui.menuItem(prefab.name, null, false, true)) {
+                    try convertToPrefabInstance(state, layer_context, entity_id, prefab_id);
+                    return true;
+                }
+            }
+            
+            if (layer_context.world.prefab_library.count() == 0) {
+                _ = engine.ui.ImGui.menuItem(state.text(.no_prefabs_available), null, false, false);
+            }
+        }
+        engine.ui.ImGui.separator();
+    }
+    
     if (engine.ui.ImGui.menuItem(state.text(if (all_frozen) .unfreeze else .freeze), null, false, true)) {
         try setFrozenForEntities(state, layer_context, targets, !all_frozen);
         return false;
@@ -694,6 +759,94 @@ fn drawHierarchyNodeContextMenu(
         return true;
     }
     return false;
+}
+
+/// 断开 Prefab 连接（将实例转换为普通实体）
+pub fn breakPrefabConnection(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity_id: engine.scene.EntityId,
+) !void {
+    const entity = layer_context.world.getEntity(entity_id) orelse return;
+    
+    // 清除 Prefab 实例覆盖数据
+    if (entity.prefab_instance_override) |*override| {
+        override.deinit(state.allocator.?);
+        entity.prefab_instance_override = null;
+    }
+    
+    // 清除所有子实体的 prefab_entity_id
+    try clearPrefabEntityIdsRecursive(layer_context.world, entity_id);
+    
+    try history.captureSnapshot(state, layer_context);
+}
+
+/// 递归清除 Prefab 实体 ID
+fn clearPrefabEntityIdsRecursive(world: *engine.scene.World, entity_id: engine.scene.EntityId) !void {
+    const entity = world.getEntity(entity_id) orelse return;
+    
+    // 清除当前实体的 prefab_entity_id
+    entity.prefab_entity_id = null;
+    
+    // 递归处理子实体
+    for (entity.children.items) |child_id| {
+        try clearPrefabEntityIdsRecursive(world, child_id);
+    }
+}
+
+/// 添加 Prefab 覆盖
+pub fn addPrefabOverride(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity_id: engine.scene.EntityId,
+) !void {
+    const entity = layer_context.world.getEntity(entity_id) orelse return;
+    const allocator = state.allocator.?;
+    
+    // 创建新的覆盖数据
+    const override = prefab_mod.PrefabInstanceOverride{
+        .prefab_id = try allocator.dupe(u8, entity.prefab_instance_override.?.prefab_id),
+        .prefab_version = entity.prefab_instance_override.?.prefab_version,
+        .root_prefab_entity_id = entity.prefab_entity_id orelse 0,
+        .override_mask = .{
+            .local_transform = true,
+        },
+        .local_transform_override = entity.local_transform,
+    };
+    
+    // 释放旧的覆盖数据（如果存在）
+    if (entity.prefab_instance_override) |*old_override| {
+        old_override.deinit(allocator);
+    }
+    
+    entity.prefab_instance_override = override;
+    try history.captureSnapshot(state, layer_context);
+}
+
+/// 将实体转换为 Prefab 实例
+fn convertToPrefabInstance(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity_id: engine.scene.EntityId,
+    prefab_id: []const u8,
+) !void {
+    const entity = layer_context.world.getEntity(entity_id) orelse return;
+    const allocator = state.allocator.?;
+    
+    // 获取 Prefab
+    const prefab = layer_context.world.getPrefab(prefab_id) orelse return;
+    
+    // 创建 Prefab 实例覆盖数据
+    const override = prefab_mod.PrefabInstanceOverride{
+        .prefab_id = try allocator.dupe(u8, prefab_id),
+        .prefab_version = prefab.version,
+        .root_prefab_entity_id = 0,
+    };
+    
+    entity.prefab_instance_override = override;
+    entity.prefab_entity_id = 0; // 根实体
+    
+    try history.captureSnapshot(state, layer_context);
 }
 
 fn unparentEntities(

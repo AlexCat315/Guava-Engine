@@ -177,7 +177,7 @@ pub const ScriptContext = struct {
     }
 
     /// 打印错误
-    pub fn error(self: *ScriptContext, message: []const u8) void {
+    pub fn logError(self: *ScriptContext, message: []const u8) void {
         std.log.err("[Script:{d}] {s}", .{ self.entity, message });
     }
 
