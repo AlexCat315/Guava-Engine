@@ -268,6 +268,160 @@ pub const StepStats = struct {
     contacts_resolved: usize = 0,
 };
 
+pub const RayQuery = struct {
+    origin: components.Vec3,
+    direction: components.Vec3,
+    max_distance: f32 = std.math.inf(f32),
+};
+
+pub const QueryFilter = struct {
+    exclude_entity: ?EntityId = null,
+    include_triggers: bool = false,
+    layer_id: ?u16 = null,
+    layer_group_mask: u16 = 0xFFFF,
+};
+
+pub const RaycastHit = struct {
+    entity_id: EntityId,
+    distance: f32,
+    position: components.Vec3,
+    normal: components.Vec3,
+    bounds: AABB,
+    is_trigger: bool,
+};
+
+pub const OverlapHit = struct {
+    entity_id: EntityId,
+    bounds: AABB,
+    is_trigger: bool,
+};
+
+pub const SweepHit = struct {
+    entity_id: EntityId,
+    fraction: f32,
+    distance: f32,
+    position: components.Vec3,
+    normal: components.Vec3,
+    bounds: AABB,
+    is_trigger: bool,
+};
+
+pub fn raycast(world: *scene_mod.World, query: RayQuery, filter: QueryFilter) ?RaycastHit {
+    if (query.max_distance < 0.0) {
+        return null;
+    }
+
+    const direction_length = vec3.length(query.direction);
+    if (direction_length <= epsilon) {
+        return null;
+    }
+
+    world.updateHierarchy();
+    const normalized_direction = vec3.scale(query.direction, 1.0 / direction_length);
+
+    var best_hit: ?RaycastHit = null;
+    for (world.entities.items) |*entity| {
+        if (!queryFilterMatches(entity, filter)) {
+            continue;
+        }
+
+        const bounds = colliderBoundsForEntityTransform(world, entity.id, entity.world_transform_cache) orelse continue;
+        const hit = raycastAabb(bounds, query.origin, normalized_direction, query.max_distance) orelse continue;
+        if (best_hit == null or hit.distance < best_hit.?.distance) {
+            best_hit = .{
+                .entity_id = entity.id,
+                .distance = hit.distance,
+                .position = hit.position,
+                .normal = hit.normal,
+                .bounds = bounds,
+                .is_trigger = isTriggerOnly(entity),
+            };
+        }
+    }
+
+    return best_hit;
+}
+
+pub fn overlapAabb(
+    world: *scene_mod.World,
+    allocator: std.mem.Allocator,
+    query_bounds: AABB,
+    filter: QueryFilter,
+) ![]OverlapHit {
+    var hits = std.ArrayList(OverlapHit).empty;
+    errdefer hits.deinit(allocator);
+
+    if (!query_bounds.isValid()) {
+        return try hits.toOwnedSlice(allocator);
+    }
+
+    world.updateHierarchy();
+    for (world.entities.items) |*entity| {
+        if (!queryFilterMatches(entity, filter)) {
+            continue;
+        }
+
+        const bounds = colliderBoundsForEntityTransform(world, entity.id, entity.world_transform_cache) orelse continue;
+        if (!aabbIntersects(query_bounds, bounds)) {
+            continue;
+        }
+
+        try hits.append(allocator, .{
+            .entity_id = entity.id,
+            .bounds = bounds,
+            .is_trigger = isTriggerOnly(entity),
+        });
+    }
+
+    return try hits.toOwnedSlice(allocator);
+}
+
+pub fn sweepAabb(
+    world: *scene_mod.World,
+    query_bounds: AABB,
+    translation: components.Vec3,
+    filter: QueryFilter,
+) ?SweepHit {
+    if (!query_bounds.isValid()) {
+        return null;
+    }
+
+    const travel_distance = vec3.length(translation);
+    if (travel_distance <= epsilon) {
+        return null;
+    }
+
+    world.updateHierarchy();
+
+    const direction = vec3.scale(translation, 1.0 / travel_distance);
+    const query_half_extents = vec3.scale(query_bounds.extent(), 0.5);
+    const query_center = query_bounds.centroid();
+
+    var best_hit: ?SweepHit = null;
+    for (world.entities.items) |*entity| {
+        if (!queryFilterMatches(entity, filter)) {
+            continue;
+        }
+
+        const bounds = colliderBoundsForEntityTransform(world, entity.id, entity.world_transform_cache) orelse continue;
+        const expanded_bounds = expandAabb(bounds, query_half_extents);
+        const hit = raycastAabb(expanded_bounds, query_center, direction, travel_distance) orelse continue;
+        if (best_hit == null or hit.distance < best_hit.?.distance) {
+            best_hit = .{
+                .entity_id = entity.id,
+                .fraction = hit.distance / travel_distance,
+                .distance = hit.distance,
+                .position = hit.position,
+                .normal = hit.normal,
+                .bounds = bounds,
+                .is_trigger = isTriggerOnly(entity),
+            };
+        }
+    }
+
+    return best_hit;
+}
+
 pub fn initPhysicsEvents() void {
     g_physics_event_queue = .{};
     g_trigger_event_queue = .{};
@@ -420,7 +574,6 @@ fn stepJolt(world: *scene_mod.World, delta_seconds: f32, config: Config) StepSta
         .reserved1 = 0,
     };
 
-    std.debug.print("ZIG CALLING JOLT: capacity={d}\n", .{body_states.items.len});
     const success = guava_jolt_context_step_incremental(
         context,
         delta_seconds,
@@ -433,8 +586,6 @@ fn stepJolt(world: *scene_mod.World, delta_seconds: f32, config: Config) StepSta
         releaseJoltWorldState(@intFromPtr(world));
         return stepJoltFallback(world, delta_seconds, config, stats);
     }
-
-    std.debug.print("Jolt state_count: {d}\\n", .{jolt_stats.state_count});
 
     applyJoltBodyStates(world, body_states.items[0..@min(body_states.items.len, @as(usize, @intCast(jolt_stats.state_count)))]);
     world.updateHierarchy();
@@ -974,6 +1125,130 @@ fn isTriggerOnly(entity: *const scene_mod.Entity) bool {
     return has_collider and !has_solid;
 }
 
+fn queryFilterMatches(entity: *const scene_mod.Entity, filter: QueryFilter) bool {
+    if (filter.exclude_entity) |excluded| {
+        if (entity.id == excluded) {
+            return false;
+        }
+    }
+
+    if (!hasAnyCollider(entity)) {
+        return false;
+    }
+
+    if (!filter.include_triggers and isTriggerOnly(entity)) {
+        return false;
+    }
+
+    const layer_info = extractLayerInfo(entity);
+    if (filter.layer_id) |required_layer_id| {
+        if (layer_info.id != required_layer_id) {
+            return false;
+        }
+    }
+
+    return (layer_info.group & filter.layer_group_mask) != 0;
+}
+
+fn aabbIntersects(lhs: AABB, rhs: AABB) bool {
+    if (!lhs.isValid() or !rhs.isValid()) {
+        return false;
+    }
+
+    return !(lhs.max[0] < rhs.min[0] or lhs.min[0] > rhs.max[0] or
+        lhs.max[1] < rhs.min[1] or lhs.min[1] > rhs.max[1] or
+        lhs.max[2] < rhs.min[2] or lhs.min[2] > rhs.max[2]);
+}
+
+fn aabbContainsPoint(bounds: AABB, point: components.Vec3) bool {
+    if (!bounds.isValid()) {
+        return false;
+    }
+
+    return point[0] >= bounds.min[0] and point[0] <= bounds.max[0] and
+        point[1] >= bounds.min[1] and point[1] <= bounds.max[1] and
+        point[2] >= bounds.min[2] and point[2] <= bounds.max[2];
+}
+
+fn expandAabb(bounds: AABB, half_extents: components.Vec3) AABB {
+    return .{
+        .min = vec3.sub(bounds.min, half_extents),
+        .max = vec3.add(bounds.max, half_extents),
+    };
+}
+
+const AabbRayHit = struct {
+    distance: f32,
+    position: components.Vec3,
+    normal: components.Vec3,
+};
+
+fn raycastAabb(
+    bounds: AABB,
+    origin: components.Vec3,
+    direction: components.Vec3,
+    max_distance: f32,
+) ?AabbRayHit {
+    if (!bounds.isValid() or max_distance < 0.0) {
+        return null;
+    }
+
+    const inside = aabbContainsPoint(bounds, origin);
+    var t_min: f32 = 0.0;
+    var t_max: f32 = max_distance;
+    var enter_normal: components.Vec3 = .{ 0.0, 0.0, 0.0 };
+
+    var axis: usize = 0;
+    while (axis < 3) : (axis += 1) {
+        const axis_direction = direction[axis];
+        if (@abs(axis_direction) <= epsilon) {
+            if (origin[axis] < bounds.min[axis] or origin[axis] > bounds.max[axis]) {
+                return null;
+            }
+            continue;
+        }
+
+        const inverse_direction = 1.0 / axis_direction;
+        var t1 = (bounds.min[axis] - origin[axis]) * inverse_direction;
+        var t2 = (bounds.max[axis] - origin[axis]) * inverse_direction;
+
+        var near_normal: components.Vec3 = .{ 0.0, 0.0, 0.0 };
+        var far_normal: components.Vec3 = .{ 0.0, 0.0, 0.0 };
+        near_normal[axis] = -1.0;
+        far_normal[axis] = 1.0;
+
+        if (t1 > t2) {
+            std.mem.swap(f32, &t1, &t2);
+            std.mem.swap(components.Vec3, &near_normal, &far_normal);
+        }
+
+        if (t1 > t_min) {
+            t_min = t1;
+            enter_normal = near_normal;
+        }
+
+        t_max = @min(t_max, t2);
+        if (t_max < t_min) {
+            return null;
+        }
+    }
+
+    if (t_max < 0.0) {
+        return null;
+    }
+
+    const distance = if (inside) 0.0 else t_min;
+    if (distance > max_distance) {
+        return null;
+    }
+
+    return .{
+        .distance = distance,
+        .position = vec3.add(origin, vec3.scale(direction, distance)),
+        .normal = if (inside) vec3.scale(direction, -1.0) else enter_normal,
+    };
+}
+
 fn translateBounds(bounds: AABB, offset: components.Vec3) AABB {
     return .{
         .min = vec3.add(bounds.min, offset),
@@ -1165,8 +1440,6 @@ fn runGroundContactScenario(config: Config) !void {
     var step_index: usize = 0;
     while (step_index < 180) : (step_index += 1) {
         _ = step(&world, 1.0 / 60.0, config);
-        const cur_body = world.getEntityConst(body_id).?;
-        std.debug.print("after step, v: {d}\n", .{cur_body.rigidbody.?.linear_velocity[0]});
     }
     world.updateHierarchy();
 
@@ -1202,8 +1475,6 @@ fn runKinematicWallScenario(config: Config) !void {
     var step_index: usize = 0;
     while (step_index < 30) : (step_index += 1) {
         _ = step(&world, 1.0 / 60.0, config);
-        const cur_body = world.getEntityConst(body_id).?;
-        std.debug.print("after step, v: {d}\n", .{cur_body.rigidbody.?.linear_velocity[0]});
     }
     world.updateHierarchy();
 
@@ -1360,4 +1631,105 @@ test "physics trigger event detection" {
     try std.testing.expect(body.world_transform_cache.translation[1] < 2.0);
 
     deinitPhysicsEvents();
+}
+
+test "physics raycast returns nearest collider hit" {
+    var world = scene_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+    defer deinitWorld(&world);
+
+    const front = try world.createEntity(.{
+        .name = "Front",
+        .rigidbody = .{ .motion_type = .static },
+        .box_collider = .{ .half_extents = .{ 0.5, 0.5, 0.5 } },
+        .local_transform = .{
+            .translation = .{ 0.0, 0.0, 1.0 },
+        },
+    });
+    _ = try world.createEntity(.{
+        .name = "Back",
+        .rigidbody = .{ .motion_type = .static },
+        .box_collider = .{ .half_extents = .{ 0.5, 0.5, 0.5 } },
+        .local_transform = .{
+            .translation = .{ 0.0, 0.0, 4.0 },
+        },
+    });
+
+    const hit = raycast(&world, .{
+        .origin = .{ 0.0, 0.0, -2.0 },
+        .direction = .{ 0.0, 0.0, 1.0 },
+        .max_distance = 10.0,
+    }, .{}) orelse return error.TestExpectedNonNull;
+
+    try std.testing.expectEqual(front, hit.entity_id);
+    try std.testing.expectApproxEqAbs(@as(f32, 2.5), hit.distance, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, -1.0), hit.normal[2], 0.0001);
+}
+
+test "physics overlap excludes triggers by default" {
+    var world = scene_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+    defer deinitWorld(&world);
+
+    const solid = try world.createEntity(.{
+        .name = "Solid",
+        .rigidbody = .{ .motion_type = .static },
+        .box_collider = .{
+            .half_extents = .{ 0.5, 0.5, 0.5 },
+            .layer_group = 0b0001,
+        },
+    });
+    const trigger = try world.createEntity(.{
+        .name = "Trigger",
+        .rigidbody = .{ .motion_type = .static },
+        .box_collider = .{
+            .half_extents = .{ 0.5, 0.5, 0.5 },
+            .is_trigger = true,
+            .layer_group = 0b0010,
+        },
+    });
+
+    const query_bounds = AABB{
+        .min = .{ -1.0, -1.0, -1.0 },
+        .max = .{ 1.0, 1.0, 1.0 },
+    };
+
+    const default_hits = try overlapAabb(&world, std.testing.allocator, query_bounds, .{});
+    defer std.testing.allocator.free(default_hits);
+    try std.testing.expectEqual(@as(usize, 1), default_hits.len);
+    try std.testing.expectEqual(solid, default_hits[0].entity_id);
+
+    const filtered_hits = try overlapAabb(&world, std.testing.allocator, query_bounds, .{
+        .include_triggers = true,
+        .layer_group_mask = 0b0010,
+    });
+    defer std.testing.allocator.free(filtered_hits);
+    try std.testing.expectEqual(@as(usize, 1), filtered_hits.len);
+    try std.testing.expectEqual(trigger, filtered_hits[0].entity_id);
+    try std.testing.expect(filtered_hits[0].is_trigger);
+}
+
+test "physics sweep aabb reports first blocking collider" {
+    var world = scene_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+    defer deinitWorld(&world);
+
+    const wall = try world.createEntity(.{
+        .name = "Wall",
+        .rigidbody = .{ .motion_type = .static },
+        .box_collider = .{ .half_extents = .{ 0.5, 0.5, 0.5 } },
+        .local_transform = .{
+            .translation = .{ 2.0, 0.0, 0.0 },
+        },
+    });
+
+    const hit = sweepAabb(&world, .{
+        .min = .{ -0.5, -0.5, -0.5 },
+        .max = .{ 0.5, 0.5, 0.5 },
+    }, .{ 5.0, 0.0, 0.0 }, .{}) orelse return error.TestExpectedNonNull;
+
+    try std.testing.expectEqual(wall, hit.entity_id);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), hit.distance, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.2), hit.fraction, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, -1.0), hit.normal[0], 0.0001);
 }

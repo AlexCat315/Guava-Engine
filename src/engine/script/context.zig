@@ -3,6 +3,7 @@ const components = @import("../scene/components.zig");
 const world_mod = @import("../scene/world.zig");
 const types = @import("./types.zig");
 const input_mod = @import("../core/input.zig");
+const physics_mod = @import("../physics/system.zig");
 
 /// 实体类型别名
 pub const EntityId = world_mod.EntityId;
@@ -317,6 +318,20 @@ pub const ScriptContext = struct {
     /// 获取已缩放的DeltaTime（delta_time * time_scale）
     pub fn getScaledDeltaTime(self: *ScriptContext) f32 {
         return self.delta_time * self.time_scale;
+    }
+
+    /// ===== 物理查询 API =====
+    pub fn physicsRaycast(
+        self: *ScriptContext,
+        origin: components.Vec3,
+        direction: components.Vec3,
+        max_distance: f32,
+    ) ?physics_mod.RaycastHit {
+        return physics_mod.raycast(self.world, .{
+            .origin = origin,
+            .direction = direction,
+            .max_distance = max_distance,
+        }, .{});
     }
 };
 
