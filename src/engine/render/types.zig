@@ -23,6 +23,8 @@ pub const EditorViewportState = struct {
     show_grid: bool = true,
     show_bones: bool = false,
     show_collision: bool = false,
+    show_collision_bvh: bool = false,
+    show_constraints: bool = false,
     // 视口级曝光只影响编辑器预览，不写回场景相机资源。
     exposure_enabled: bool = false,
     exposure: f32 = 1.0,

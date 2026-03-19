@@ -366,9 +366,13 @@ pub const World = struct {
                 vec3.length(.{ world_mat[2], world_mat[6], world_mat[10] }),
             };
 
-            // Rotation is trickier to extract from matrix, but for now we'll just
-            // accumulate quats (which is faster and more precise for hierarchies)
-            entity.world_transform_cache.rotation = quat.mul(parent_world.rotation, entity.local_transform.rotation);
+            // Extract rotation from the combined matrix for consistency
+            const rot_mat: [3][3]f32 = .{
+                .{ world_mat[0], world_mat[1], world_mat[2] },
+                .{ world_mat[4], world_mat[5], world_mat[6] },
+                .{ world_mat[8], world_mat[9], world_mat[10] },
+            };
+            entity.world_transform_cache.rotation = quat.fromMat3(rot_mat);
 
             entity.dirty = false;
         }

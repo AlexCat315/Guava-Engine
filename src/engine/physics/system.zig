@@ -92,10 +92,13 @@ const JoltBodyDesc = extern struct {
     mass: f32,
     gravity_scale: f32,
     linear_damping: f32,
+    angular_damping: f32,
     max_linear_speed: f32,
+    max_angular_speed: f32,
     position: [3]f32,
     rotation: [4]f32,
     linear_velocity: [3]f32,
+    angular_velocity: [3]f32,
     box_half_extents: [3]f32,
     box_center: [3]f32,
     sphere_radius: f32,
@@ -677,10 +680,13 @@ fn buildJoltBodyDesc(world: *const scene_mod.World, entity: *const scene_mod.Ent
         .mass = body.mass,
         .gravity_scale = body.gravity_scale,
         .linear_damping = body.linear_damping,
+        .angular_damping = body.angular_damping,
         .max_linear_speed = config.max_linear_speed,
+        .max_angular_speed = 100.0,
         .position = world_transform.translation,
         .rotation = world_transform.rotation,
         .linear_velocity = body.linear_velocity,
+        .angular_velocity = body.angular_velocity,
         .box_half_extents = .{ 0.0, 0.0, 0.0 },
         .box_center = .{ 0.0, 0.0, 0.0 },
         .sphere_radius = 0.0,
@@ -1228,4 +1234,130 @@ test "physics jolt step preserves kinematic bodies as static colliders" {
     try runKinematicWallScenario(.{
         .backend = .jolt,
     });
+}
+
+test "physics builtin sphere collider integration" {
+    var world = scene_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+    defer deinitWorld(&world);
+
+    _ = try world.createEntity(.{
+        .name = "Ground",
+        .rigidbody = .{ .motion_type = .static },
+        .box_collider = .{ .half_extents = .{ 5.0, 0.5, 5.0 } },
+    });
+    const body_id = try world.createEntity(.{
+        .name = "Body",
+        .rigidbody = .{
+            .motion_type = .dynamic,
+            .linear_damping = 0.0,
+        },
+        .sphere_collider = .{ .radius = 0.5 },
+        .local_transform = .{
+            .translation = .{ 0.0, 3.0, 0.0 },
+        },
+    });
+
+    var step_index: usize = 0;
+    while (step_index < 120) : (step_index += 1) {
+        _ = step(&world, 1.0 / 60.0, .{ .backend = .builtin });
+    }
+    world.updateHierarchy();
+
+    const body = world.getEntityConst(body_id).?;
+    try std.testing.expect(body.world_transform_cache.translation[1] < 2.0);
+    try std.testing.expect(body.world_transform_cache.translation[1] > 0.4);
+}
+
+test "physics builtin angular velocity initialization" {
+    var world = scene_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+    defer deinitWorld(&world);
+
+    const body_id = try world.createEntity(.{
+        .name = "Body",
+        .rigidbody = .{
+            .motion_type = .dynamic,
+            .angular_velocity = .{ 0.0, 10.0, 0.0 },
+        },
+        .box_collider = .{ .half_extents = .{ 0.5, 0.5, 0.5 } },
+    });
+
+    world.updateHierarchy();
+    const body = world.getEntityConst(body_id).?;
+    try std.testing.expectApproxEqAbs(@as(f32, 10.0), body.rigidbody.?.angular_velocity[1], epsilon);
+}
+
+test "physics builtin multiple body stacking" {
+    var world = scene_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+    defer deinitWorld(&world);
+
+    _ = try world.createEntity(.{
+        .name = "Ground",
+        .rigidbody = .{ .motion_type = .static },
+        .box_collider = .{ .half_extents = .{ 5.0, 0.5, 5.0 } },
+    });
+
+    _ = try world.createEntity(.{
+        .name = "Body1",
+        .rigidbody = .{ .motion_type = .dynamic },
+        .box_collider = .{ .half_extents = .{ 0.5, 0.5, 0.5 } },
+        .local_transform = .{ .translation = .{ 0.0, 2.0, 0.0 } },
+    });
+
+    _ = try world.createEntity(.{
+        .name = "Body2",
+        .rigidbody = .{ .motion_type = .dynamic },
+        .box_collider = .{ .half_extents = .{ 0.5, 0.5, 0.5 } },
+        .local_transform = .{ .translation = .{ 0.0, 4.0, 0.0 } },
+    });
+
+    var step_index: usize = 0;
+    while (step_index < 180) : (step_index += 1) {
+        _ = step(&world, 1.0 / 60.0, .{ .backend = .builtin });
+    }
+    world.updateHierarchy();
+
+    const stats = step(&world, 1.0 / 60.0, .{ .backend = .builtin });
+    try std.testing.expectEqual(@as(usize, 1), stats.static_bodies);
+    try std.testing.expectEqual(@as(usize, 2), stats.dynamic_bodies);
+}
+
+test "physics trigger event detection" {
+    var world = scene_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+    defer deinitWorld(&world);
+
+    _ = try world.createEntity(.{
+        .name = "Trigger",
+        .rigidbody = .{ .motion_type = .static },
+        .box_collider = .{ .half_extents = .{ 1.0, 1.0, 1.0 }, .is_trigger = true },
+    });
+    const body_id = try world.createEntity(.{
+        .name = "Body",
+        .rigidbody = .{
+            .motion_type = .dynamic,
+            .linear_velocity = .{ 0.0, -2.0, 0.0 },
+            .gravity_scale = 0.0,
+        },
+        .box_collider = .{ .half_extents = .{ 0.5, 0.5, 0.5 } },
+        .local_transform = .{ .translation = .{ 0.0, 3.0, 0.0 } },
+    });
+
+    initPhysicsEvents();
+
+    var step_index: usize = 0;
+    while (step_index < 60) : (step_index += 1) {
+        _ = step(&world, 1.0 / 60.0, .{ .backend = .builtin });
+    }
+
+    clearTriggerEvents();
+    _ = step(&world, 1.0 / 60.0, .{ .backend = .builtin });
+
+    world.updateHierarchy();
+    const body = world.getEntityConst(body_id).?;
+    try std.testing.expect(body.world_transform_cache.translation[1] < 2.0);
+
+    deinitPhysicsEvents();
 }

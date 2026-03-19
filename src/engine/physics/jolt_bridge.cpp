@@ -243,10 +243,13 @@ struct GuavaJoltBodyDesc {
   float mass;
   float gravity_scale;
   float linear_damping;
+  float angular_damping;
   float max_linear_speed;
+  float max_angular_speed;
   float position[3];
   float rotation[4];
   float linear_velocity[3];
+  float angular_velocity[3];
   float box_half_extents[3];
   float box_center[3];
   float sphere_radius;
@@ -329,7 +332,9 @@ bool EqualShapeAndSettings(const GuavaJoltBodyDesc &lhs,
   return lhs.motion_type == rhs.motion_type && lhs.flags == rhs.flags &&
          lhs.mass == rhs.mass && lhs.gravity_scale == rhs.gravity_scale &&
          lhs.linear_damping == rhs.linear_damping &&
+         lhs.angular_damping == rhs.angular_damping &&
          lhs.max_linear_speed == rhs.max_linear_speed &&
+         lhs.max_angular_speed == rhs.max_angular_speed &&
          lhs.sphere_radius == rhs.sphere_radius &&
          EqualVec3(lhs.box_half_extents, rhs.box_half_extents) &&
          EqualVec3(lhs.box_center, rhs.box_center) &&
@@ -342,7 +347,8 @@ bool EqualPoseAndVelocity(const GuavaJoltBodyDesc &lhs,
                           const GuavaJoltBodyDesc &rhs) {
   return EqualVec3(lhs.position, rhs.position) &&
          EqualQuat(lhs.rotation, rhs.rotation) &&
-         EqualVec3(lhs.linear_velocity, rhs.linear_velocity);
+         EqualVec3(lhs.linear_velocity, rhs.linear_velocity) &&
+         EqualVec3(lhs.angular_velocity, rhs.angular_velocity);
 }
 
 bool BuildBodyShape(const GuavaJoltBodyDesc &desc, JPH::ShapeRefC &out_shape) {
@@ -399,12 +405,15 @@ MakeBodyCreationSettings(const GuavaJoltBodyDesc &desc, JPH::ShapeRefC shape) {
                                      ToObjectLayer(motion_type));
   settings.mUserData = desc.entity_id;
   settings.mLinearVelocity = ToVec3(desc.linear_velocity);
+  settings.mAngularVelocity = ToVec3(desc.angular_velocity);
   settings.mAllowSleeping = (desc.flags & kFlagAllowSleep) != 0;
   settings.mIsSensor = (desc.flags & kFlagBodyIsSensor) != 0;
   settings.mCollideKinematicVsNonDynamic =
       motion_type == JPH::EMotionType::Kinematic || settings.mIsSensor;
   settings.mLinearDamping = desc.linear_damping;
+  settings.mAngularDamping = desc.angular_damping;
   settings.mMaxLinearVelocity = desc.max_linear_speed;
+  settings.mMaxAngularVelocity = desc.max_angular_speed;
   settings.mGravityFactor = desc.gravity_scale;
   if (motion_type != JPH::EMotionType::Static) {
     settings.mOverrideMassProperties =
@@ -637,7 +646,7 @@ struct GuavaJoltContext {
         body_interface.SetPositionRotationAndVelocity(
             entry->second.body_id, ToRVec3(desc.position),
             ToQuat(desc.rotation), ToVec3(desc.linear_velocity),
-            JPH::Vec3::sZero());
+            ToVec3(desc.angular_velocity));
         break;
       }
       entry->second.desc.position[0] = desc.position[0];
@@ -650,6 +659,9 @@ struct GuavaJoltContext {
       entry->second.desc.linear_velocity[0] = desc.linear_velocity[0];
       entry->second.desc.linear_velocity[1] = desc.linear_velocity[1];
       entry->second.desc.linear_velocity[2] = desc.linear_velocity[2];
+      entry->second.desc.angular_velocity[0] = desc.angular_velocity[0];
+      entry->second.desc.angular_velocity[1] = desc.angular_velocity[1];
+      entry->second.desc.angular_velocity[2] = desc.angular_velocity[2];
     }
 
     return true;
