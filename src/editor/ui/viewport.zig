@@ -808,7 +808,7 @@ fn applyPendingViewportAssetDrop(state: *EditorState, layer_context: *engine.cor
 
             switch (entry.kind) {
                 .model => {
-                    const spawn_transform = try calculateSpawnTransformFromPixel(state, layer_context, pending.pixel);
+                    const spawn_transform = try calculateSpawnTransformFromPixel(state, layer_context, pending.pixel, null);
                     try history.importModelPathAt(state, layer_context, entry.path, spawn_transform);
                 },
                 .material => {
@@ -835,7 +835,12 @@ fn applyPendingViewportAssetDrop(state: *EditorState, layer_context: *engine.cor
         },
         .place_actor => {
             const actor_kind = pending.actor_kind orelse return;
-            const spawn_transform = try calculateSpawnTransformFromPixel(state, layer_context, pending.pixel);
+            const spawn_transform = try calculateSpawnTransformFromPixel(
+                state,
+                layer_context,
+                pending.pixel,
+                placementHalfExtentsForActorKind(actor_kind),
+            );
             switch (actor_kind) {
                 .empty => try history.spawnEmptyEntityAt(state, layer_context, spawn_transform),
                 .camera => try history.spawnCameraEntityAt(state, layer_context, spawn_transform),
@@ -856,10 +861,25 @@ fn calculateSpawnTransformFromPixel(
     state: *EditorState,
     layer_context: *engine.core.LayerContext,
     pixel: ?[2]u32,
+    placement_half_extents: ?[3]f32,
 ) !engine.scene.Transform {
     if (pixel) |p| {
         const viewport_size = layer_context.renderer.sceneViewportSize();
         if (camera.activeCameraRayFromViewportPixel(state, layer_context, p, viewport_size)) |ray| {
+            if (placement_half_extents) |half_extents| {
+                if (try physicsAwareSpawnTransform(layer_context, ray, half_extents)) |spawn_transform| {
+                    return spawn_transform;
+                }
+            }
+
+            if (engine.physics.raycast(layer_context.world, .{
+                .origin = ray.origin,
+                .direction = ray.direction,
+                .max_distance = 2048.0,
+            }, .{})) |hit| {
+                return .{ .translation = hit.position };
+            }
+
             if (layer_context.world.raycastSurface(ray)) |hit| {
                 return .{ .translation = hit.position };
             }
@@ -879,6 +899,52 @@ fn calculateSpawnTransformFromPixel(
         }
     }
     return history.spawnTransform(state, layer_context);
+}
+
+fn placementHalfExtentsForActorKind(actor_kind: state_mod.PlaceActorKind) ?[3]f32 {
+    return switch (actor_kind) {
+        .cube, .sphere => .{ 0.5, 0.5, 0.5 },
+        .plane => .{ 0.5, 0.05, 0.5 },
+        .empty, .camera, .point_light, .spot_light, .directional_light, .vfx_fountain, .vfx_orbit => .{ 0.25, 0.25, 0.25 },
+    };
+}
+
+fn physicsAwareSpawnTransform(
+    layer_context: *engine.core.LayerContext,
+    ray: engine.scene.Ray,
+    half_extents: [3]f32,
+) !?engine.scene.Transform {
+    const surface_hit = engine.physics.raycast(layer_context.world, .{
+        .origin = ray.origin,
+        .direction = ray.direction,
+        .max_distance = 2048.0,
+    }, .{}) orelse return null;
+
+    const sweep_start = vec3.add(ray.origin, vec3.scale(ray.direction, 0.05));
+    const sweep_distance = @max(surface_hit.distance - 0.05, 0.0) + vec3.length(half_extents) + 0.5;
+    const sweep_bounds = engine.physics.aabbFromCenterHalfExtents(sweep_start, half_extents);
+    const sweep_hit = engine.physics.sweepAabb(
+        layer_context.world,
+        sweep_bounds,
+        vec3.scale(ray.direction, sweep_distance),
+        .{},
+    ) orelse return .{ .translation = surface_hit.position };
+
+    const candidate_translation = vec3.add(sweep_start, vec3.scale(ray.direction, sweep_hit.distance));
+    const candidate_bounds = engine.physics.aabbFromCenterHalfExtents(candidate_translation, half_extents);
+    const overlaps = try engine.physics.overlapAabb(
+        layer_context.world,
+        layer_context.world.allocator,
+        candidate_bounds,
+        .{ .exclude_entity = sweep_hit.entity_id },
+    );
+    defer layer_context.world.allocator.free(overlaps);
+
+    if (overlaps.len != 0) {
+        return .{ .translation = surface_hit.position };
+    }
+
+    return .{ .translation = candidate_translation };
 }
 
 fn handleViewportAssetDropTargets(state: *EditorState, layer_context: *engine.core.LayerContext) !void {

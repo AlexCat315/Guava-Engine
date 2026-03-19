@@ -4,6 +4,7 @@ const world_mod = @import("../scene/world.zig");
 const types = @import("./types.zig");
 const input_mod = @import("../core/input.zig");
 const physics_mod = @import("../physics/system.zig");
+const AABB = @import("../math/aabb.zig").AABB;
 
 /// 实体类型别名
 pub const EntityId = world_mod.EntityId;
@@ -332,6 +333,49 @@ pub const ScriptContext = struct {
             .direction = direction,
             .max_distance = max_distance,
         }, .{});
+    }
+
+    pub fn physicsOverlapAabb(
+        self: *ScriptContext,
+        query_bounds: AABB,
+        filter: physics_mod.QueryFilter,
+    ) ![]physics_mod.OverlapHit {
+        return physics_mod.overlapAabb(self.world, self.allocator, query_bounds, filter);
+    }
+
+    pub fn physicsOverlapBox(
+        self: *ScriptContext,
+        center: components.Vec3,
+        half_extents: components.Vec3,
+        filter: physics_mod.QueryFilter,
+    ) ![]physics_mod.OverlapHit {
+        return self.physicsOverlapAabb(
+            physics_mod.aabbFromCenterHalfExtents(center, half_extents),
+            filter,
+        );
+    }
+
+    pub fn physicsSweepAabb(
+        self: *ScriptContext,
+        query_bounds: AABB,
+        translation: components.Vec3,
+        filter: physics_mod.QueryFilter,
+    ) ?physics_mod.SweepHit {
+        return physics_mod.sweepAabb(self.world, query_bounds, translation, filter);
+    }
+
+    pub fn physicsSweepBox(
+        self: *ScriptContext,
+        center: components.Vec3,
+        half_extents: components.Vec3,
+        translation: components.Vec3,
+        filter: physics_mod.QueryFilter,
+    ) ?physics_mod.SweepHit {
+        return self.physicsSweepAabb(
+            physics_mod.aabbFromCenterHalfExtents(center, half_extents),
+            translation,
+            filter,
+        );
     }
 };
 

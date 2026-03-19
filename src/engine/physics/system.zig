@@ -152,6 +152,50 @@ const JoltStepStats = extern struct {
     reserved1: u16,
 };
 
+const JoltQueryFilter = extern struct {
+    exclude_entity: u64,
+    layer_id: u16,
+    layer_group_mask: u16,
+    has_exclude_entity: u8,
+    include_triggers: u8,
+    has_layer_id: u8,
+    reserved0: u8,
+};
+
+const JoltRayQuery = extern struct {
+    origin: [3]f32,
+    direction: [3]f32,
+    max_distance: f32,
+};
+
+const JoltRaycastHit = extern struct {
+    entity_id: u64,
+    distance: f32,
+    position: [3]f32,
+    normal: [3]f32,
+    is_trigger: u8,
+    reserved0: u8,
+    reserved1: u16,
+};
+
+const JoltOverlapHit = extern struct {
+    entity_id: u64,
+    is_trigger: u8,
+    reserved0: u8,
+    reserved1: u16,
+};
+
+const JoltSweepHit = extern struct {
+    entity_id: u64,
+    fraction: f32,
+    distance: f32,
+    position: [3]f32,
+    normal: [3]f32,
+    is_trigger: u8,
+    reserved0: u8,
+    reserved1: u16,
+};
+
 const JoltContext = opaque {};
 
 const JoltBackendLimits = struct {
@@ -210,6 +254,35 @@ extern fn guava_jolt_context_add_or_update_constraint(
 extern fn guava_jolt_context_remove_constraint(
     context: *JoltContext,
     entity_id: u64,
+) callconv(.c) bool;
+extern fn guava_jolt_context_sync_snapshot(
+    context: *JoltContext,
+    bodies: [*]const JoltBodyDesc,
+    body_count: usize,
+    delta_seconds: f32,
+) callconv(.c) bool;
+extern fn guava_jolt_context_raycast(
+    context: *JoltContext,
+    query: *const JoltRayQuery,
+    filter: *const JoltQueryFilter,
+    out_hit: *JoltRaycastHit,
+) callconv(.c) bool;
+extern fn guava_jolt_context_overlap_aabb(
+    context: *JoltContext,
+    center: *const [3]f32,
+    half_extents: *const [3]f32,
+    filter: *const JoltQueryFilter,
+    out_hits: [*]JoltOverlapHit,
+    out_capacity: usize,
+    out_count: *usize,
+) callconv(.c) bool;
+extern fn guava_jolt_context_sweep_aabb(
+    context: *JoltContext,
+    center: *const [3]f32,
+    half_extents: *const [3]f32,
+    translation: *const [3]f32,
+    filter: *const JoltQueryFilter,
+    out_hit: *JoltSweepHit,
 ) callconv(.c) bool;
 
 export fn GuavaJoltEnqueueTriggerEvent(event: *const extern struct {
@@ -306,6 +379,13 @@ pub const SweepHit = struct {
     is_trigger: bool,
 };
 
+pub fn aabbFromCenterHalfExtents(center: components.Vec3, half_extents: components.Vec3) AABB {
+    return .{
+        .min = vec3.sub(center, half_extents),
+        .max = vec3.add(center, half_extents),
+    };
+}
+
 pub fn raycast(world: *scene_mod.World, query: RayQuery, filter: QueryFilter) ?RaycastHit {
     if (query.max_distance < 0.0) {
         return null;
@@ -319,6 +399,63 @@ pub fn raycast(world: *scene_mod.World, query: RayQuery, filter: QueryFilter) ?R
     world.updateHierarchy();
     const normalized_direction = vec3.scale(query.direction, 1.0 / direction_length);
 
+    if (joltRaycast(world, query.origin, normalized_direction, query.max_distance, filter)) |maybe_hit| {
+        return maybe_hit;
+    }
+
+    return raycastBuiltin(world, query.origin, normalized_direction, query.max_distance, filter);
+}
+
+pub fn overlapAabb(
+    world: *scene_mod.World,
+    allocator: std.mem.Allocator,
+    query_bounds: AABB,
+    filter: QueryFilter,
+) ![]OverlapHit {
+    if (!query_bounds.isValid()) {
+        return allocator.alloc(OverlapHit, 0);
+    }
+
+    world.updateHierarchy();
+
+    if (try joltOverlapAabb(world, allocator, query_bounds, filter)) |hits| {
+        return hits;
+    }
+
+    return overlapAabbBuiltin(world, allocator, query_bounds, filter);
+}
+
+pub fn sweepAabb(
+    world: *scene_mod.World,
+    query_bounds: AABB,
+    translation: components.Vec3,
+    filter: QueryFilter,
+) ?SweepHit {
+    if (!query_bounds.isValid()) {
+        return null;
+    }
+
+    const travel_distance = vec3.length(translation);
+    if (travel_distance <= epsilon) {
+        return null;
+    }
+
+    world.updateHierarchy();
+
+    if (joltSweepAabb(world, query_bounds, translation, filter)) |maybe_hit| {
+        return maybe_hit;
+    }
+
+    return sweepAabbBuiltin(world, query_bounds, translation, travel_distance, filter);
+}
+
+fn raycastBuiltin(
+    world: *scene_mod.World,
+    origin: components.Vec3,
+    normalized_direction: components.Vec3,
+    max_distance: f32,
+    filter: QueryFilter,
+) ?RaycastHit {
     var best_hit: ?RaycastHit = null;
     for (world.entities.items) |*entity| {
         if (!queryFilterMatches(entity, filter)) {
@@ -326,7 +463,7 @@ pub fn raycast(world: *scene_mod.World, query: RayQuery, filter: QueryFilter) ?R
         }
 
         const bounds = colliderBoundsForEntityTransform(world, entity.id, entity.world_transform_cache) orelse continue;
-        const hit = raycastAabb(bounds, query.origin, normalized_direction, query.max_distance) orelse continue;
+        const hit = raycastAabb(bounds, origin, normalized_direction, max_distance) orelse continue;
         if (best_hit == null or hit.distance < best_hit.?.distance) {
             best_hit = .{
                 .entity_id = entity.id,
@@ -342,7 +479,7 @@ pub fn raycast(world: *scene_mod.World, query: RayQuery, filter: QueryFilter) ?R
     return best_hit;
 }
 
-pub fn overlapAabb(
+fn overlapAabbBuiltin(
     world: *scene_mod.World,
     allocator: std.mem.Allocator,
     query_bounds: AABB,
@@ -351,11 +488,6 @@ pub fn overlapAabb(
     var hits = std.ArrayList(OverlapHit).empty;
     errdefer hits.deinit(allocator);
 
-    if (!query_bounds.isValid()) {
-        return try hits.toOwnedSlice(allocator);
-    }
-
-    world.updateHierarchy();
     for (world.entities.items) |*entity| {
         if (!queryFilterMatches(entity, filter)) {
             continue;
@@ -376,23 +508,13 @@ pub fn overlapAabb(
     return try hits.toOwnedSlice(allocator);
 }
 
-pub fn sweepAabb(
+fn sweepAabbBuiltin(
     world: *scene_mod.World,
     query_bounds: AABB,
     translation: components.Vec3,
+    travel_distance: f32,
     filter: QueryFilter,
 ) ?SweepHit {
-    if (!query_bounds.isValid()) {
-        return null;
-    }
-
-    const travel_distance = vec3.length(translation);
-    if (travel_distance <= epsilon) {
-        return null;
-    }
-
-    world.updateHierarchy();
-
     const direction = vec3.scale(translation, 1.0 / travel_distance);
     const query_half_extents = vec3.scale(query_bounds.extent(), 0.5);
     const query_center = query_bounds.centroid();
@@ -751,6 +873,54 @@ fn ensureJoltWorldContext(
     return context;
 }
 
+fn joltBackendLimitsCover(existing: JoltBackendLimits, required: JoltBackendLimits) bool {
+    return existing.temp_allocator_size_bytes >= required.temp_allocator_size_bytes and
+        existing.max_bodies >= required.max_bodies and
+        existing.num_body_mutexes >= required.num_body_mutexes and
+        existing.max_body_pairs >= required.max_body_pairs and
+        existing.max_contact_constraints >= required.max_contact_constraints;
+}
+
+fn ensureJoltQueryContext(
+    world: *scene_mod.World,
+    body_count: usize,
+) ?*JoltContext {
+    const query_config = Config{};
+    const limits = effectiveJoltBackendLimits(query_config, body_count);
+    const create_config = buildJoltStepConfig(query_config, 0.0, limits);
+
+    const key = @intFromPtr(world);
+    g_jolt_world_states_mutex.lock();
+    defer g_jolt_world_states_mutex.unlock();
+
+    if (g_jolt_world_states.getPtr(key)) |state| {
+        if (joltBackendLimitsCover(state.limits, limits)) {
+            return state.context;
+        }
+
+        guava_jolt_context_destroy(state.context);
+        const replacement = guava_jolt_context_create(&create_config) orelse {
+            _ = g_jolt_world_states.remove(key);
+            return null;
+        };
+        state.* = .{
+            .context = replacement,
+            .limits = limits,
+        };
+        return replacement;
+    }
+
+    const context = guava_jolt_context_create(&create_config) orelse return null;
+    g_jolt_world_states.put(jolt_state_allocator, key, .{
+        .context = context,
+        .limits = limits,
+    }) catch {
+        guava_jolt_context_destroy(context);
+        return null;
+    };
+    return context;
+}
+
 var g_jolt_initialized_for_world: std.AutoHashMapUnmanaged(usize, bool) = .empty;
 var g_jolt_initialized_mutex: std.Thread.Mutex = .{};
 
@@ -765,6 +935,209 @@ fn releaseJoltWorldState(key: usize) void {
     g_jolt_initialized_mutex.lock();
     defer g_jolt_initialized_mutex.unlock();
     _ = g_jolt_initialized_for_world.fetchRemove(key);
+}
+
+fn joltRaycast(
+    world: *scene_mod.World,
+    origin: components.Vec3,
+    normalized_direction: components.Vec3,
+    max_distance: f32,
+    filter: QueryFilter,
+) ??RaycastHit {
+    const body_count = countQueryableBodies(world);
+    const context = ensureJoltQueryContext(world, body_count) orelse return null;
+    if (!syncJoltQuerySnapshot(world, context, body_count)) {
+        return null;
+    }
+
+    var raw_hit: JoltRaycastHit = std.mem.zeroes(JoltRaycastHit);
+    const query = JoltRayQuery{
+        .origin = origin,
+        .direction = normalized_direction,
+        .max_distance = max_distance,
+    };
+    const query_filter = joltQueryFilter(filter);
+    if (!guava_jolt_context_raycast(context, &query, &query_filter, &raw_hit)) {
+        return null;
+    }
+
+    if (raw_hit.entity_id == 0) {
+        return @as(?RaycastHit, null);
+    }
+
+    return makeRaycastHit(world, raw_hit);
+}
+
+fn joltOverlapAabb(
+    world: *scene_mod.World,
+    allocator: std.mem.Allocator,
+    query_bounds: AABB,
+    filter: QueryFilter,
+) !?[]OverlapHit {
+    const body_count = countQueryableBodies(world);
+    const context = ensureJoltQueryContext(world, body_count) orelse return null;
+    if (!syncJoltQuerySnapshot(world, context, body_count)) {
+        return null;
+    }
+
+    if (body_count == 0) {
+        return try allocator.alloc(OverlapHit, 0);
+    }
+
+    const center = query_bounds.centroid();
+    const half_extents = queryHalfExtents(query_bounds);
+    const query_filter = joltQueryFilter(filter);
+
+    var raw_hits = try allocator.alloc(JoltOverlapHit, body_count);
+    defer allocator.free(raw_hits);
+
+    var raw_hit_count: usize = 0;
+    if (!guava_jolt_context_overlap_aabb(
+        context,
+        &center,
+        &half_extents,
+        &query_filter,
+        raw_hits.ptr,
+        raw_hits.len,
+        &raw_hit_count,
+    )) {
+        return null;
+    }
+
+    var hits = std.ArrayList(OverlapHit).empty;
+    errdefer hits.deinit(allocator);
+
+    for (raw_hits[0..@min(raw_hit_count, raw_hits.len)]) |raw_hit| {
+        const hit = makeOverlapHit(world, raw_hit) orelse continue;
+        try hits.append(allocator, hit);
+    }
+
+    return try hits.toOwnedSlice(allocator);
+}
+
+fn joltSweepAabb(
+    world: *scene_mod.World,
+    query_bounds: AABB,
+    translation: components.Vec3,
+    filter: QueryFilter,
+) ??SweepHit {
+    const body_count = countQueryableBodies(world);
+    const context = ensureJoltQueryContext(world, body_count) orelse return null;
+    if (!syncJoltQuerySnapshot(world, context, body_count)) {
+        return null;
+    }
+
+    var raw_hit: JoltSweepHit = std.mem.zeroes(JoltSweepHit);
+    const center = query_bounds.centroid();
+    const half_extents = queryHalfExtents(query_bounds);
+    const query_filter = joltQueryFilter(filter);
+
+    if (!guava_jolt_context_sweep_aabb(
+        context,
+        &center,
+        &half_extents,
+        &translation,
+        &query_filter,
+        &raw_hit,
+    )) {
+        return null;
+    }
+
+    if (raw_hit.entity_id == 0) {
+        return @as(?SweepHit, null);
+    }
+
+    return makeSweepHit(world, raw_hit);
+}
+
+fn countQueryableBodies(world: *const scene_mod.World) usize {
+    var count: usize = 0;
+    for (world.entities.items) |*entity| {
+        if (hasAnyCollider(entity)) {
+            count += 1;
+        }
+    }
+    return count;
+}
+
+fn syncJoltQuerySnapshot(
+    world: *scene_mod.World,
+    context: *JoltContext,
+    body_count: usize,
+) bool {
+    var body_descs = std.ArrayList(JoltBodyDesc).empty;
+    defer body_descs.deinit(world.allocator);
+    body_descs.ensureTotalCapacity(world.allocator, body_count) catch return false;
+
+    const query_config = Config{};
+    for (world.entities.items) |*entity| {
+        if (buildJoltBodyDesc(world, entity, query_config)) |desc| {
+            body_descs.appendAssumeCapacity(desc);
+        }
+    }
+
+    var empty_desc = std.mem.zeroes(JoltBodyDesc);
+    const desc_ptr = if (body_descs.items.len > 0)
+        body_descs.items.ptr
+    else
+        @as([*]const JoltBodyDesc, @ptrCast(&empty_desc));
+
+    return guava_jolt_context_sync_snapshot(context, desc_ptr, body_descs.items.len, 0.0);
+}
+
+fn joltQueryFilter(filter: QueryFilter) JoltQueryFilter {
+    return .{
+        .exclude_entity = filter.exclude_entity orelse 0,
+        .layer_id = filter.layer_id orelse 0,
+        .layer_group_mask = filter.layer_group_mask,
+        .has_exclude_entity = if (filter.exclude_entity != null) 1 else 0,
+        .include_triggers = if (filter.include_triggers) 1 else 0,
+        .has_layer_id = if (filter.layer_id != null) 1 else 0,
+        .reserved0 = 0,
+    };
+}
+
+fn queryHalfExtents(bounds: AABB) components.Vec3 {
+    return maxVec3(vec3.scale(bounds.extent(), 0.5), .{ epsilon, epsilon, epsilon });
+}
+
+fn entityQueryBounds(world: *scene_mod.World, entity_id: EntityId) ?AABB {
+    const entity = world.getEntityConst(entity_id) orelse return null;
+    return colliderBoundsForEntityTransform(world, entity_id, entity.world_transform_cache);
+}
+
+fn makeRaycastHit(world: *scene_mod.World, raw_hit: JoltRaycastHit) ?RaycastHit {
+    _ = world.getEntityConst(raw_hit.entity_id) orelse return null;
+    return .{
+        .entity_id = raw_hit.entity_id,
+        .distance = raw_hit.distance,
+        .position = raw_hit.position,
+        .normal = vec3.normalize(raw_hit.normal),
+        .bounds = entityQueryBounds(world, raw_hit.entity_id) orelse AABB.empty(),
+        .is_trigger = raw_hit.is_trigger != 0,
+    };
+}
+
+fn makeOverlapHit(world: *scene_mod.World, raw_hit: JoltOverlapHit) ?OverlapHit {
+    _ = world.getEntityConst(raw_hit.entity_id) orelse return null;
+    return .{
+        .entity_id = raw_hit.entity_id,
+        .bounds = entityQueryBounds(world, raw_hit.entity_id) orelse AABB.empty(),
+        .is_trigger = raw_hit.is_trigger != 0,
+    };
+}
+
+fn makeSweepHit(world: *scene_mod.World, raw_hit: JoltSweepHit) ?SweepHit {
+    _ = world.getEntityConst(raw_hit.entity_id) orelse return null;
+    return .{
+        .entity_id = raw_hit.entity_id,
+        .fraction = raw_hit.fraction,
+        .distance = raw_hit.distance,
+        .position = raw_hit.position,
+        .normal = vec3.normalize(raw_hit.normal),
+        .bounds = entityQueryBounds(world, raw_hit.entity_id) orelse AABB.empty(),
+        .is_trigger = raw_hit.is_trigger != 0,
+    };
 }
 
 fn applyJoltBodyStates(world: *scene_mod.World, body_states: []const JoltBodyState) void {
@@ -1732,4 +2105,36 @@ test "physics sweep aabb reports first blocking collider" {
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), hit.distance, 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.2), hit.fraction, 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, -1.0), hit.normal[0], 0.0001);
+}
+
+test "physics native queries avoid rotated box AABB false positives" {
+    const quat = @import("../math/quat.zig");
+
+    var world = scene_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+    defer deinitWorld(&world);
+
+    _ = try world.createEntity(.{
+        .name = "RotatedThinBox",
+        .rigidbody = .{ .motion_type = .static },
+        .box_collider = .{ .half_extents = .{ 1.0, 0.01, 0.5 } },
+        .local_transform = .{
+            .rotation = quat.fromAxisAngle(.{ 0.0, 0.0, 1.0 }, std.math.pi / 4.0),
+        },
+    });
+
+    try std.testing.expect(raycast(&world, .{
+        .origin = .{ 0.7, -0.7, -2.0 },
+        .direction = .{ 0.0, 0.0, 1.0 },
+        .max_distance = 10.0,
+    }, .{}) == null);
+
+    const hits = try overlapAabb(
+        &world,
+        std.testing.allocator,
+        aabbFromCenterHalfExtents(.{ 0.7, -0.7, 0.0 }, .{ 0.05, 0.05, 0.05 }),
+        .{},
+    );
+    defer std.testing.allocator.free(hits);
+    try std.testing.expectEqual(@as(usize, 0), hits.len);
 }
