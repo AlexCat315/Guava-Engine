@@ -1,3 +1,46 @@
+//! 渲染系统核心模块
+//!
+//! 本模块提供完整的渲染管线实现，是 Guava Engine 渲染系统的核心。
+//!
+//! ## 渲染管线流程
+//!
+//! 1. **Depth Prepass** - 深度预通道，优化后续渲染
+//! 2. **Shadow Pass** - 阴影贴图渲染
+//! 3. **Base Pass** - 主渲染通道，渲染场景几何体
+//! 4. **Skybox Pass** - 天空盒渲染
+//! 5. **Bloom Pass** - 泛光后处理
+//! 6. **FXAA Pass** - 快速近似抗锯齿
+//! 7. **Tonemap Pass** - 色调映射
+//! 8. **Gizmo Pass** - 编辑器 Gizmo 渲染
+//! 9. **Outline Pass** - 选中物体轮廓
+//! 10. **ID Pass** - 物体 ID 拾取（用于编辑器选择）
+//!
+//! ## 主要功能
+//!
+//! - **设备管理** - 创建和管理 GPU 设备
+//! - **资源管理** - 纹理、缓冲区、管线等 GPU 资源
+//! - **渲染图** - 自动管理渲染通道依赖
+//! - **场景提取** - 视锥剔除和场景数据准备
+//! - **后处理** - Bloom、FXAA、色调映射等效果
+//! - **编辑器支持** - Gizmo、选择高亮、ID 拾取
+//!
+//! ## 使用示例
+//!
+//! ```zig
+//! // 创建渲染器配置
+//! const config = RendererConfig{
+//!     .requested_backends = &.{.metal, .vulkan},
+//!     .enable_validation = true,
+//! };
+//!
+//! // 初始化渲染器
+//! var renderer = try Renderer.init(allocator, config);
+//! defer renderer.deinit();
+//!
+//! // 渲染帧
+//! const report = try renderer.drawFrame(&world, viewport_state);
+//! ```
+
 const std = @import("std");
 const assets_lib = @import("../assets/library.zig");
 const handles = @import("../assets/handles.zig");
@@ -34,50 +77,89 @@ const vec3 = @import("../math/vec3.zig");
 const physics_mod = @import("../physics/system.zig");
 const render_log = std.log.scoped(.viewport_render);
 
+/// 是否已记录视口后端日志
 var g_logged_viewport_backend: bool = false;
+/// 是否已记录环境状态日志
 var g_logged_environment_status: bool = false;
+/// 已记录的后处理状态
 var g_logged_postfx_state: ?types.EditorViewportState = null;
+/// 是否已记录场景提取剔除日志
 var g_logged_scene_extraction_culling: bool = false;
+/// 已记录的碰撞覆盖盒数量
 var g_logged_collision_overlay_boxes: ?usize = null;
 
+/// 图形 API 类型
 pub const GraphicsAPI = rhi_types.GraphicsAPI;
+/// 运行时信息
 pub const RuntimeInfo = rhi_types.RuntimeInfo;
+/// 选择历史管理
 pub const SelectionHistory = selection_history_mod.SelectionHistory;
+/// 选择更新模式
 pub const SelectionUpdateMode = selection_history_mod.SelectionUpdateMode;
+/// 编辑器 Gizmo 状态
 pub const EditorGizmoState = gizmo_pass_mod.EditorGizmoState;
+/// 编辑器视口状态
 pub const EditorViewportState = types.EditorViewportState;
 
+/// 渲染器配置
+///
+/// 用于初始化渲染器时指定各种参数。
 pub const RendererConfig = struct {
+    /// 请求的图形后端列表（按优先级排序）
     requested_backends: []const rhi_types.GraphicsAPI = &.{},
+    /// 后端选择策略
     selection_policy: rhi_types.BackendSelectionPolicy = .explicit_order,
+    /// 是否启用验证层（调试用）
     enable_validation: bool = true,
+    /// 帧在飞数量（用于帧同步）
     frames_in_flight: u32 = 2,
 };
 
+/// 帧报告
+///
+/// 包含一帧渲染的统计信息，用于性能分析和调试。
 pub const FrameReport = struct {
+    /// 使用的图形后端
     backend: types.GraphicsAPI,
+    /// 执行的渲染通道数量
     passes_executed: usize,
+    /// 渲染图资源数量
     graph_resources: usize,
+    /// 场景快照
     scene: types.SceneSnapshot,
+    /// 运行时信息
     runtime: types.RuntimeInfo,
+    /// 绘制调用次数
     draw_calls: usize = 0,
+    /// 绘制的三角形数量
     triangles_drawn: usize = 0,
 };
 
+/// 选择回读请求
 const SelectionReadbackRequest = struct {
+    /// 像素 X 坐标
     pixel_x: u32,
+    /// 像素 Y 坐标
     pixel_y: u32,
+    /// 选择更新模式
     mode: SelectionUpdateMode,
 };
 
+/// 飞行中的选择回读
 const InFlightSelectionReadback = struct {
+    /// 请求信息
     request: SelectionReadbackRequest,
+    /// 缓冲区偏移
     offset: u32,
 };
 
+/// 飞行中的选择批次
 const InFlightSelectionBatch = struct {
+    /// GPU 同步围栏
     fence: rhi_mod.Fence,
+    /// 传输缓冲区
     transfer_buffer: rhi_mod.TransferBuffer,
+    /// 回读列表
     readbacks: []InFlightSelectionReadback,
 
     fn deinit(self: *InFlightSelectionBatch, allocator: std.mem.Allocator, device: *rhi_mod.RhiDevice) void {
@@ -88,6 +170,9 @@ const InFlightSelectionBatch = struct {
     }
 };
 
+/// 构建场景提取视锥体
+///
+/// 从主相机计算视锥体，用于视锥剔除。
 fn buildSceneExtractionFrustum(
     scene_cache: *mesh_pass_mod.MeshSceneCache,
     world: *const scene_mod.World,
@@ -527,37 +612,103 @@ const MaterialThumbnailPreview = struct {
     }
 };
 
+/// 渲染器结构体
+///
+/// Renderer 是渲染系统的核心，管理整个渲染管线。
+/// 包含所有渲染通道、GPU 资源和编辑器渲染状态。
+///
+/// ## 主要组件
+///
+/// - **RHI 设备** - GPU 资源管理和命令提交
+/// - **渲染图** - 自动管理渲染通道依赖
+/// - **场景缓存** - 优化场景数据访问
+/// - **渲染通道** - 各种渲染通道（阴影、基础、后处理等）
+/// - **编辑器支持** - Gizmo、选择、缩略图等
+///
+/// ## 使用示例
+///
+/// ```zig
+/// // 初始化渲染器
+/// var renderer = try Renderer.init(allocator, platform, window, .{});
+/// defer renderer.deinit();
+///
+/// // 渲染帧
+/// const report = try renderer.drawFrame(&world, viewport_state);
+/// ```
 pub const Renderer = struct {
+    /// 内存分配器
     allocator: std.mem.Allocator,
+    /// 平台抽象
     platform: platform_mod.Platform,
+    /// RHI 设备（GPU 资源管理）
     rhi: rhi_mod.RhiDevice,
+    /// 渲染图（管理渲染通道依赖）
     graph: graph_mod.RenderGraph,
+    /// 场景缓存（优化场景数据访问）
     scene_cache: mesh_pass_mod.MeshSceneCache,
+    /// 缩略图场景缓存
     thumbnail_scene_cache: mesh_pass_mod.MeshSceneCache,
+    /// 渲染世界（提取的场景数据）
     render_world: scene_extraction.RenderWorld,
+    /// 缩略图渲染世界
     thumbnail_render_world: scene_extraction.RenderWorld,
+    /// ID 拾取通道（用于编辑器选择）
     id_pass: id_pass_mod.IdPass,
+    /// 深度预通道（优化后续渲染）
     depth_prepass: depth_prepass_mod.DepthPrepass,
+    /// 阴影通道（阴影贴图渲染）
     shadow_pass: shadow_pass_mod.ShadowPass,
+    /// 基础通道（主渲染）
     base_pass: base_pass_mod.BasePass,
+    /// 天空盒通道
     skybox_pass: ?skybox_pass_mod.SkyboxPass = null,
+    /// 泛光后处理通道
     bloom_pass: bloom_pass_mod.BloomPass,
+    /// FXAA 抗锯齿通道
     fxaa_pass: fxaa_pass_mod.FxaaPass,
+    /// 轮廓通道（选中物体高亮）
     outline_pass: outline_pass_mod.OutlinePass,
+    /// Gizmo 通道（编辑器可视化）
     gizmo_pass: gizmo_pass_mod.GizmoPass,
+    /// 色调映射通道
     tonemap_pass: tonemap_pass_mod.TonemapPass,
+    /// 选择历史管理
     selection_history: SelectionHistory,
+    /// 选择是否已初始化
     selection_seeded: bool = false,
+    /// 编辑器 Gizmo 状态
     editor_gizmo_state: EditorGizmoState = .{},
+    /// 编辑器视口状态
     editor_viewport_state: EditorViewportState = .{},
+    /// 待处理的选择回读请求
     pending_selection_readbacks: std.ArrayList(SelectionReadbackRequest) = .empty,
+    /// 飞行中的选择批次
     in_flight_selection_batches: std.ArrayList(InFlightSelectionBatch) = .empty,
+    /// 场景视口状态（纹理等）
     scene_viewport: SceneViewportState = .{},
+    /// 阴影贴图状态
     shadow_map: ShadowMapState = .{},
+    /// 材质缩略图预览
     material_thumbnail_preview: MaterialThumbnailPreview,
+    /// 材质缩略图缓存
     material_thumbnail_cache: std.StringHashMap(MaterialThumbnailCacheEntry) = undefined,
+    /// 材质缩略图请求队列
     material_thumbnail_requests: std.ArrayList([]u8) = .empty,
 
+    /// 初始化渲染器
+    ///
+    /// ## 参数
+    /// - `allocator` - 内存分配器
+    /// - `platform` - 平台抽象
+    /// - `window` - 窗口（用于创建交换链）
+    /// - `config` - 渲染器配置
+    ///
+    /// ## 返回
+    /// 初始化的 Renderer 实例
+    ///
+    /// ## 错误
+    /// - `error.OutOfMemory` - 内存不足
+    /// - `error.DeviceCreationFailed` - GPU 设备创建失败
     pub fn init(
         allocator: std.mem.Allocator,
         platform: platform_mod.Platform,
