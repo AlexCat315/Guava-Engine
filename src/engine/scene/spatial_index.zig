@@ -1,6 +1,7 @@
 const std = @import("std");
 const AABB = @import("../math/aabb.zig").AABB;
 const frustum_mod = @import("../math/frustum.zig");
+const spatial_log = std.log.scoped(.spatial_index);
 
 pub const ItemId = u64;
 
@@ -26,6 +27,7 @@ pub const StaticBoundsBvh = struct {
     allocator: std.mem.Allocator,
     items: std.ArrayList(BoundsItem) = .empty,
     nodes: std.ArrayList(Node) = .empty,
+    root_index: ?u32 = null,
     item_indices: std.AutoHashMap(ItemId, usize),
     item_leaf_nodes: std.AutoHashMap(ItemId, u32),
     pending_additions: std.ArrayList(BoundsItem) = .empty,
@@ -35,6 +37,8 @@ pub const StaticBoundsBvh = struct {
 
     const max_leaf_items: usize = 4;
     const max_incremental_overlay_items: usize = 24;
+    const rebalance_ratio_threshold: usize = 3;
+    const rebalance_min_items: usize = 8;
 
     pub fn init(allocator: std.mem.Allocator) StaticBoundsBvh {
         return .{
@@ -66,7 +70,7 @@ pub const StaticBoundsBvh = struct {
     }
 
     pub fn nodeCount(self: *const StaticBoundsBvh) usize {
-        return self.nodes.items.len;
+        return if (self.root_index) |root_index| self.activeNodeCountRecursive(root_index) else 0;
     }
 
     pub fn rebuild(self: *StaticBoundsBvh, source_items: []const BoundsItem) !void {
@@ -79,12 +83,13 @@ pub const StaticBoundsBvh = struct {
         self.pending_removals.clearRetainingCapacity();
 
         if (source_items.len == 0) {
+            self.root_index = null;
             self.dirty = false;
             return;
         }
 
         try self.items.appendSlice(self.allocator, source_items);
-        _ = try self.buildNode(0, self.items.items.len, null);
+        self.root_index = try self.buildNode(0, self.items.items.len, null);
         self.dirty = false;
     }
 
@@ -122,7 +127,7 @@ pub const StaticBoundsBvh = struct {
             return self.updateItemBounds(item.id, item.bounds);
         }
 
-        if (self.nodes.items.len == 0) {
+        if (self.root_index == null) {
             self.items.append(self.allocator, item) catch return false;
             errdefer _ = self.items.pop();
             self.item_indices.put(item.id, 0) catch return false;
@@ -137,6 +142,7 @@ pub const StaticBoundsBvh = struct {
                 .start = 0,
                 .count = 1,
             }) catch return false;
+            self.root_index = 0;
             return true;
         }
 
@@ -157,6 +163,7 @@ pub const StaticBoundsBvh = struct {
             self.dirty = true;
             return false;
         }
+        self.rebalanceFromNode(leaf_index);
 
         return true;
     }
@@ -194,6 +201,7 @@ pub const StaticBoundsBvh = struct {
             }
             if (self.items.items.len == 0) {
                 self.nodes.clearRetainingCapacity();
+                self.root_index = null;
             }
             return true;
         }
@@ -201,6 +209,7 @@ pub const StaticBoundsBvh = struct {
         if (!self.tryMergeLeafWithSibling(leaf_node_index)) {
             self.refitFromNode(leaf_node_index);
         }
+        self.rebalanceFromNode(leaf_node_index);
         return true;
     }
 
@@ -214,8 +223,8 @@ pub const StaticBoundsBvh = struct {
         var candidates = std.ArrayList(ItemId).empty;
         errdefer candidates.deinit(allocator);
 
-        if (self.nodes.items.len > 0) {
-            try self.collectRayCandidatesRecursive(allocator, 0, ray_origin, ray_direction, max_distance, &candidates);
+        if (self.root_index) |root_index| {
+            try self.collectRayCandidatesRecursive(allocator, root_index, ray_origin, ray_direction, max_distance, &candidates);
         }
         try self.collectPendingRayCandidates(allocator, ray_origin, ray_direction, max_distance, &candidates);
         return try candidates.toOwnedSlice(allocator);
@@ -229,8 +238,8 @@ pub const StaticBoundsBvh = struct {
         var candidates = std.ArrayList(ItemId).empty;
         errdefer candidates.deinit(allocator);
 
-        if (self.nodes.items.len > 0) {
-            try self.collectFrustumCandidatesRecursive(allocator, 0, frustum, &candidates);
+        if (self.root_index) |root_index| {
+            try self.collectFrustumCandidatesRecursive(allocator, root_index, frustum, &candidates);
         }
         try self.collectPendingFrustumCandidates(allocator, frustum, &candidates);
         return try candidates.toOwnedSlice(allocator);
@@ -302,12 +311,22 @@ pub const StaticBoundsBvh = struct {
         self.nodes.items[node_index].bounds = bounds;
     }
 
+    fn activeNodeCountRecursive(self: *const StaticBoundsBvh, node_index: u32) usize {
+        const node = self.nodes.items[node_index];
+        if (node.isLeaf()) {
+            return 1;
+        }
+        return 1 +
+            self.activeNodeCountRecursive(node.left.?) +
+            self.activeNodeCountRecursive(node.right.?);
+    }
+
     fn findBestLeafForBounds(self: *const StaticBoundsBvh, bounds: AABB) ?u32 {
-        if (self.nodes.items.len == 0) {
+        if (self.root_index == null) {
             return null;
         }
 
-        var current: u32 = 0;
+        var current: u32 = self.root_index.?;
         while (!self.nodes.items[current].isLeaf()) {
             const node = self.nodes.items[current];
             const left_index = node.left.?;
@@ -374,6 +393,7 @@ pub const StaticBoundsBvh = struct {
     fn collapseEmptyLeaf(self: *StaticBoundsBvh, leaf_node_index: u32) bool {
         if (self.items.items.len == 0) {
             self.nodes.clearRetainingCapacity();
+            self.root_index = null;
             return true;
         }
 
@@ -410,6 +430,93 @@ pub const StaticBoundsBvh = struct {
         self.setLeafMappingsForRange(merged_start, merged_end, parent_index);
         self.refitFromNode(parent_index);
         return true;
+    }
+
+    fn rebalanceFromNode(self: *StaticBoundsBvh, start_node_index: u32) void {
+        var current: ?u32 = start_node_index;
+        while (current) |node_index| {
+            const parent_index = self.nodes.items[node_index].parent;
+            if (self.shouldRebuildSubtree(node_index)) {
+                if (self.rebuildSubtree(node_index)) |new_root| {
+                    const range = self.subtreeRange(new_root);
+                    spatial_log.debug("local subtree rebuilt start={} end={} active_nodes={}", .{
+                        range.start,
+                        range.end,
+                        self.nodeCount(),
+                    });
+                } else {
+                    self.dirty = true;
+                    return;
+                }
+            }
+            current = parent_index;
+        }
+    }
+
+    fn shouldRebuildSubtree(self: *const StaticBoundsBvh, node_index: u32) bool {
+        const node = self.nodes.items[node_index];
+        if (node.isLeaf()) {
+            return false;
+        }
+
+        const left_count = self.subtreeItemCount(node.left.?);
+        const right_count = self.subtreeItemCount(node.right.?);
+        const total = left_count + right_count;
+        if (total < rebalance_min_items) {
+            return false;
+        }
+
+        const smaller = @max(@min(left_count, right_count), 1);
+        const larger = @max(left_count, right_count);
+        return larger >= smaller * rebalance_ratio_threshold;
+    }
+
+    fn rebuildSubtree(self: *StaticBoundsBvh, node_index: u32) ?u32 {
+        const node = self.nodes.items[node_index];
+        if (node.isLeaf()) {
+            return node_index;
+        }
+
+        const range = self.subtreeRange(node_index);
+        const parent = node.parent;
+        const new_root = self.buildNode(range.start, range.end, parent) catch return null;
+
+        if (parent) |parent_index| {
+            if (self.nodes.items[parent_index].left == node_index) {
+                self.nodes.items[parent_index].left = new_root;
+            } else if (self.nodes.items[parent_index].right == node_index) {
+                self.nodes.items[parent_index].right = new_root;
+            } else {
+                return null;
+            }
+            self.refitFromNode(parent_index);
+        } else {
+            self.root_index = new_root;
+        }
+        return new_root;
+    }
+
+    fn subtreeRange(self: *const StaticBoundsBvh, node_index: u32) struct { start: usize, end: usize } {
+        const node = self.nodes.items[node_index];
+        if (node.isLeaf()) {
+            const start: usize = node.start;
+            return .{ .start = start, .end = start + node.count };
+        }
+
+        const left = self.subtreeRange(node.left.?);
+        const right = self.subtreeRange(node.right.?);
+        return .{
+            .start = @min(left.start, right.start),
+            .end = @max(left.end, right.end),
+        };
+    }
+
+    fn subtreeItemCount(self: *const StaticBoundsBvh, node_index: u32) usize {
+        const node = self.nodes.items[node_index];
+        if (node.isLeaf()) {
+            return node.count;
+        }
+        return self.subtreeItemCount(node.left.?) + self.subtreeItemCount(node.right.?);
     }
 
     fn collapseParentIntoSibling(self: *StaticBoundsBvh, parent_index: u32, sibling_index: u32) bool {
@@ -799,4 +906,41 @@ test "StaticBoundsBvh performs in-tree split and merge" {
     );
     defer std.testing.allocator.free(candidates);
     try std.testing.expectEqual(@as(usize, 4), candidates.len);
+}
+
+test "StaticBoundsBvh local subtree rebuild updates active root" {
+    var bvh = StaticBoundsBvh.init(std.testing.allocator);
+    defer bvh.deinit();
+
+    try bvh.rebuild(&.{
+        .{ .id = 1, .bounds = .{ .min = .{ -6.0, -1.0, -1.0 }, .max = .{ -5.0, 1.0, 1.0 } } },
+        .{ .id = 2, .bounds = .{ .min = .{ -4.0, -1.0, -1.0 }, .max = .{ -3.0, 1.0, 1.0 } } },
+        .{ .id = 3, .bounds = .{ .min = .{ -2.0, -1.0, -1.0 }, .max = .{ -1.0, 1.0, 1.0 } } },
+        .{ .id = 4, .bounds = .{ .min = .{ 0.0, -1.0, -1.0 }, .max = .{ 1.0, 1.0, 1.0 } } },
+        .{ .id = 5, .bounds = .{ .min = .{ 2.0, -1.0, -1.0 }, .max = .{ 3.0, 1.0, 1.0 } } },
+        .{ .id = 6, .bounds = .{ .min = .{ 4.0, -1.0, -1.0 }, .max = .{ 5.0, 1.0, 1.0 } } },
+        .{ .id = 7, .bounds = .{ .min = .{ 6.0, -1.0, -1.0 }, .max = .{ 7.0, 1.0, 1.0 } } },
+        .{ .id = 8, .bounds = .{ .min = .{ 8.0, -1.0, -1.0 }, .max = .{ 9.0, 1.0, 1.0 } } },
+    });
+
+    const initial_root = bvh.root_index.?;
+    try std.testing.expect(bvh.insertItem(.{
+        .id = 9,
+        .bounds = .{ .min = .{ 10.0, -1.0, -1.0 }, .max = .{ 11.0, 1.0, 1.0 } },
+    }));
+    try std.testing.expect(bvh.insertItem(.{
+        .id = 10,
+        .bounds = .{ .min = .{ 12.0, -1.0, -1.0 }, .max = .{ 13.0, 1.0, 1.0 } },
+    }));
+    try std.testing.expect(bvh.root_index.? != initial_root);
+
+    const candidates = try bvh.queryRayCandidates(
+        std.testing.allocator,
+        .{ -8.0, 0.0, 0.0 },
+        .{ 1.0, 0.0, 0.0 },
+        24.0,
+    );
+    defer std.testing.allocator.free(candidates);
+    try std.testing.expectEqual(@as(usize, 10), candidates.len);
+    try std.testing.expect(bvh.nodeCount() > 0);
 }
