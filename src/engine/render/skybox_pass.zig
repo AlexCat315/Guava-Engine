@@ -41,49 +41,6 @@ pub const SkyboxPass = struct {
         return self.pipeline != null and self.sampler != null;
     }
 
-    fn mat4Inverse(m: [16]f32) [16]f32 {
-        // Simplified matrix inverse for view-projection matrices
-        // In a production engine, use a proper matrix inverse function
-        var result: [16]f32 = undefined;
-        
-        // For view-projection matrices, we can compute the inverse more efficiently
-        // by inverting view and projection separately and multiplying in reverse order
-        // This is a placeholder - should implement proper matrix inverse
-        
-        // Simple implementation that works for typical view-projection matrices
-        const det = m[0] * (m[5] * m[10] - m[9] * m[6]) -
-                   m[4] * (m[1] * m[10] - m[9] * m[2]) +
-                   m[8] * (m[1] * m[6] - m[5] * m[2]);
-        
-        if (@abs(det) < 0.00001) {
-            return m; // Return original if singular
-        }
-        
-        const inv_det = 1.0 / det;
-        
-        result[0] = (m[5] * m[10] - m[9] * m[6]) * inv_det;
-        result[1] = (m[9] * m[2] - m[1] * m[10]) * inv_det;
-        result[2] = (m[1] * m[6] - m[5] * m[2]) * inv_det;
-        result[3] = 0.0;
-        
-        result[4] = (m[8] * m[6] - m[4] * m[10]) * inv_det;
-        result[5] = (m[0] * m[10] - m[8] * m[2]) * inv_det;
-        result[6] = (m[4] * m[2] - m[0] * m[6]) * inv_det;
-        result[7] = 0.0;
-        
-        result[8] = (m[4] * m[9] - m[8] * m[5]) * inv_det;
-        result[9] = (m[8] * m[1] - m[0] * m[9]) * inv_det;
-        result[10] = (m[0] * m[5] - m[4] * m[1]) * inv_det;
-        result[11] = 0.0;
-        
-        result[12] = -(m[12] * result[0] + m[13] * result[4] + m[14] * result[8]);
-        result[13] = -(m[12] * result[1] + m[13] * result[5] + m[14] * result[9]);
-        result[14] = -(m[12] * result[2] + m[13] * result[6] + m[14] * result[10]);
-        result[15] = 1.0;
-        
-        return result;
-    }
-
     pub fn draw(
         self: *SkyboxPass,
         device: *rhi_mod.RhiDevice,
@@ -103,12 +60,12 @@ pub const SkyboxPass = struct {
         view_rot_only[12] = 0.0;
         view_rot_only[13] = 0.0;
         view_rot_only[14] = 0.0;
-        
+
         // Compute VP = projection * view_rot_only
         const vp = math.mul(prepared_scene.projection_matrix, view_rot_only);
-        
+
         // Precompute inverse VP on CPU
-        const inv_vp = mat4Inverse(vp);
+        const inv_vp = math.inverse(vp) orelse math.identity();
 
         var uniforms = SkyboxUniforms{
             .projection = prepared_scene.projection_matrix,

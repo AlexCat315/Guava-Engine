@@ -32,6 +32,65 @@ pub fn mul(a: Mat4, b: Mat4) Mat4 {
     return result;
 }
 
+pub fn inverse(matrix: Mat4) ?Mat4 {
+    var augmented: [4][8]f32 = undefined;
+
+    for (0..4) |row| {
+        for (0..4) |col| {
+            augmented[row][col] = get(matrix, row, col);
+            augmented[row][col + 4] = if (row == col) 1.0 else 0.0;
+        }
+    }
+
+    for (0..4) |pivot_col| {
+        var pivot_row = pivot_col;
+        var max_value = @abs(augmented[pivot_row][pivot_col]);
+        for ((pivot_col + 1)..4) |candidate_row| {
+            const candidate_value = @abs(augmented[candidate_row][pivot_col]);
+            if (candidate_value > max_value) {
+                max_value = candidate_value;
+                pivot_row = candidate_row;
+            }
+        }
+
+        if (max_value <= 0.000001) {
+            return null;
+        }
+
+        if (pivot_row != pivot_col) {
+            const tmp = augmented[pivot_col];
+            augmented[pivot_col] = augmented[pivot_row];
+            augmented[pivot_row] = tmp;
+        }
+
+        const pivot = augmented[pivot_col][pivot_col];
+        for (0..8) |col| {
+            augmented[pivot_col][col] /= pivot;
+        }
+
+        for (0..4) |row| {
+            if (row == pivot_col) {
+                continue;
+            }
+            const factor = augmented[row][pivot_col];
+            if (@abs(factor) <= 0.000001) {
+                continue;
+            }
+            for (0..8) |col| {
+                augmented[row][col] -= factor * augmented[pivot_col][col];
+            }
+        }
+    }
+
+    var result: Mat4 = undefined;
+    for (0..4) |row| {
+        for (0..4) |col| {
+            set(&result, row, col, augmented[row][col + 4]);
+        }
+    }
+    return result;
+}
+
 pub fn translation(offset: components.Vec3) Mat4 {
     var result = identity();
     set(&result, 0, 3, offset[0]);
@@ -218,4 +277,20 @@ test "inverse transform matrix cancels transform matrix" {
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), composed[12], 0.0005);
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), composed[13], 0.0005);
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), composed[14], 0.0005);
+}
+
+test "generic inverse matches inverse transform matrix for affine transforms" {
+    const transform: components.Transform = .{
+        .translation = .{ -1.5, 0.75, 6.0 },
+        .rotation = quat.normalize(.{ -0.15, 0.4, 0.2, 0.87 }),
+        .scale = .{ 1.2, 2.5, 0.8 },
+    };
+
+    const matrix = transformMatrix(transform);
+    const expected = inverseTransformMatrix(transform);
+    const actual = inverse(matrix) orelse return error.TestUnexpectedResult;
+
+    for (expected, actual) |expected_value, actual_value| {
+        try std.testing.expectApproxEqAbs(expected_value, actual_value, 0.001);
+    }
 }

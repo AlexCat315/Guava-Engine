@@ -5,7 +5,6 @@ const mesh_mod = @import("../assets/mesh_resource.zig");
 const rhi_types = @import("../rhi/types.zig");
 const components = @import("components.zig");
 const world_mod = @import("world.zig");
-const scene_io = @import("scene_io.zig");
 
 const current_prefab_version: u32 = 1;
 
@@ -33,7 +32,10 @@ pub const PrefabLibrary = struct {
 
     /// 注册 Prefab
     pub fn registerPrefab(self: *PrefabLibrary, prefab: *PrefabResource) !void {
-        try self.prefabs.put(prefab.id, prefab);
+        if (try self.prefabs.fetchPut(prefab.id, prefab)) |existing| {
+            existing.value.deinit();
+            self.allocator.destroy(existing.value);
+        }
     }
 
     /// 获取 Prefab
@@ -61,11 +63,47 @@ const PrefabFile = struct {
     prefab_id: []const u8,
     root_entity_name: []const u8,
     asset_records: []asset_registry.AssetRecord,
-    meshes: []scene_io.MeshRecord,
-    textures: []scene_io.TextureRecord,
-    materials: []scene_io.MaterialRecord,
+    meshes: []MeshRecord,
+    textures: []TextureRecord,
+    materials: []MaterialRecord,
     /// 扁平化存储的实体数组，通过 parent 字段建立关系
     entities: []PrefabEntityRecord,
+};
+
+const MeshRecord = struct {
+    asset_id: []const u8,
+    name: []const u8,
+    primitive_type: rhi_types.PrimitiveType,
+    vertices: []const mesh_mod.Vertex,
+    indices: []const u32,
+};
+
+const TextureRecord = struct {
+    asset_id: []const u8,
+    name: []const u8,
+    width: u32,
+    height: u32,
+    format: rhi_types.TextureFormat,
+    pixels_hex: []const u8,
+};
+
+const MaterialRecord = struct {
+    asset_id: []const u8,
+    name: []const u8,
+    shading: components.ShadingModel,
+    base_color_factor: [4]f32,
+    base_color_texture_asset_id: ?[]const u8 = null,
+};
+
+const MeshComponentRecord = struct {
+    asset_id: ?[]const u8 = null,
+    primitive: components.Primitive = .custom,
+};
+
+const MaterialComponentRecord = struct {
+    asset_id: ?[]const u8 = null,
+    shading: components.ShadingModel = .pbr_metallic_roughness,
+    base_color_factor: [4]f32 = .{ 1.0, 1.0, 1.0, 1.0 },
 };
 
 /// Prefab 中的实体记录
@@ -76,12 +114,12 @@ const PrefabEntityRecord = struct {
     parent: ?u32 = null, // 指向父实体的 prefab_entity_id
     local_transform: components.Transform = .{},
     camera: ?components.Camera = null,
-    mesh: ?scene_io.MeshComponentRecord = null,
-    rigidbody: ?scene_io.RigidbodyRecord = null,
-    box_collider: ?scene_io.BoxColliderRecord = null,
-    sphere_collider: ?scene_io.SphereColliderRecord = null,
-    mesh_collider: ?scene_io.MeshColliderRecord = null,
-    material: ?scene_io.MaterialComponentRecord = null,
+    mesh: ?MeshComponentRecord = null,
+    rigidbody: ?components.Rigidbody = null,
+    box_collider: ?components.BoxCollider = null,
+    sphere_collider: ?components.SphereCollider = null,
+    mesh_collider: ?components.MeshCollider = null,
+    material: ?MaterialComponentRecord = null,
     light: ?components.Light = null,
     vfx: ?components.Vfx = null,
     visible: bool = true,
@@ -116,7 +154,7 @@ pub const PrefabResource = struct {
             .mesh_asset_bindings = std.AutoHashMap([]const u8, assets_handles.MeshHandle).init(allocator),
             .texture_asset_bindings = std.AutoHashMap([]const u8, assets_handles.TextureHandle).init(allocator),
             .material_asset_bindings = std.AutoHashMap([]const u8, assets_handles.MaterialHandle).init(allocator),
-            .nested_prefab_ids = std.ArrayList([]u8).init(allocator),
+            .nested_prefab_ids = .empty,
         };
     }
 
@@ -144,6 +182,8 @@ pub const PrefabEntityData = struct {
     prefab_entity_id: u32,
     name: []u8,
     parent: ?u32 = null,
+    mesh_asset_id: ?[]u8 = null,
+    material_asset_id: ?[]u8 = null,
     local_transform: components.Transform = .{},
     camera: ?components.Camera = null,
     mesh: ?components.Mesh = null,
@@ -165,6 +205,8 @@ pub const PrefabEntityData = struct {
 
     pub fn deinit(self: *PrefabEntityData, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
+        if (self.mesh_asset_id) |asset_id| allocator.free(asset_id);
+        if (self.material_asset_id) |asset_id| allocator.free(asset_id);
         if (self.nested_prefab_id) |id| allocator.free(id);
     }
 };
@@ -283,7 +325,9 @@ pub fn loadPrefabFromPath(
 ) !PrefabResource {
     const source = try std.fs.cwd().readFileAlloc(allocator, path, 16 * 1024 * 1024);
     defer allocator.free(source);
-    return try deserializePrefabFromSlice(allocator, source);
+    var prefab = try deserializePrefabFromSlice(allocator, source);
+    prefab.source_path = try allocator.dupe(u8, path);
+    return prefab;
 }
 
 /// 创建 Prefab (从 World 中的实体树)
@@ -293,16 +337,17 @@ pub fn createPrefabFromEntities(
     root_entity_id: world_mod.EntityId,
     prefab_id: []const u8,
 ) !PrefabResource {
-    var prefab = PrefabResource.init(allocator, prefab_id, prefab_id);
+    const root_entity = world.getEntityConst(root_entity_id) orelse return error.EntityNotFound;
+    var prefab = PrefabResource.init(allocator, prefab_id, root_entity.name);
 
     // 构建实体列表 (扁平化)
-    var entity_list = std.ArrayList(world_mod.EntityId).init(allocator);
-    defer entity_list.deinit();
+    var entity_list = std.ArrayList(world_mod.EntityId).empty;
+    defer entity_list.deinit(allocator);
 
-    try collectEntitiesRecursive(root_entity_id, world, &entity_list);
+    try collectEntitiesRecursive(root_entity_id, world, &entity_list, allocator);
 
     // 转换实体数据
-    var entity_data_list = std.ArrayList(PrefabEntityData).init(allocator);
+    var entity_data_list = std.ArrayList(PrefabEntityData).empty;
     defer {
         for (entity_data_list.items) |*ed| {
             ed.deinit(allocator);
@@ -332,6 +377,26 @@ pub fn createPrefabFromEntities(
             .prefab_entity_id = entity_id_map.get(entity_id).?,
             .name = try allocator.dupe(u8, entity.name),
             .parent = if (entity.parent) |parent_id| entity_id_map.get(parent_id) else null,
+            .mesh_asset_id = if (entity.mesh) |mesh|
+                if (mesh.handle) |handle|
+                    if (world.resources.meshAssetId(handle)) |asset_id|
+                        try allocator.dupe(u8, asset_id)
+                    else
+                        null
+                else
+                    null
+            else
+                null,
+            .material_asset_id = if (entity.material) |material|
+                if (material.handle) |handle|
+                    if (world.resources.materialAssetId(handle)) |asset_id|
+                        try allocator.dupe(u8, asset_id)
+                    else
+                        null
+                else
+                    null
+            else
+                null,
             .local_transform = entity.local_transform,
             .camera = entity.camera,
             .mesh = entity.mesh,
@@ -355,7 +420,7 @@ pub fn createPrefabFromEntities(
         }
     }
 
-    prefab.entities = try entity_data_list.toOwnedSlice();
+    prefab.entities = try entity_data_list.toOwnedSlice(allocator);
 
     return prefab;
 }
@@ -458,11 +523,12 @@ fn collectEntitiesRecursive(
     entity_id: world_mod.EntityId,
     world: *const world_mod.World,
     list: *std.ArrayList(world_mod.EntityId),
+    allocator: std.mem.Allocator,
 ) !void {
-    try list.append(entity_id);
+    try list.append(allocator, entity_id);
     const entity = world.getEntityConst(entity_id) orelse return;
     for (entity.children.items) |child_id| {
-        try collectEntitiesRecursive(child_id, world, list);
+        try collectEntitiesRecursive(child_id, world, list, allocator);
     }
 }
 
@@ -482,7 +548,7 @@ fn buildPrefabFile(allocator: std.mem.Allocator, prefab: *const PrefabResource) 
             .local_transform = entity.local_transform,
             .camera = entity.camera,
             .mesh = if (entity.mesh) |mesh| .{
-                .asset_id = null, // TODO: 资源绑定
+                .asset_id = entity.mesh_asset_id,
                 .primitive = mesh.primitive,
             } else null,
             .rigidbody = entity.rigidbody,
@@ -490,7 +556,7 @@ fn buildPrefabFile(allocator: std.mem.Allocator, prefab: *const PrefabResource) 
             .sphere_collider = entity.sphere_collider,
             .mesh_collider = entity.mesh_collider,
             .material = if (entity.material) |mat| .{
-                .asset_id = null,
+                .asset_id = entity.material_asset_id,
                 .shading = mat.shading,
                 .base_color_factor = mat.base_color_factor,
             } else null,
@@ -532,7 +598,7 @@ fn deserializePrefabV1FromSlice(
     prefab.version = prefab_file.version;
 
     // 转换记录到实体数据
-    var entity_data_list = std.ArrayList(PrefabEntityData).init(allocator);
+    var entity_data_list = std.ArrayList(PrefabEntityData).empty;
     defer {
         for (entity_data_list.items) |*ed| {
             ed.deinit(allocator);
@@ -545,6 +611,20 @@ fn deserializePrefabV1FromSlice(
             .prefab_entity_id = record.prefab_entity_id,
             .name = try allocator.dupe(u8, record.name),
             .parent = record.parent,
+            .mesh_asset_id = if (record.mesh) |mesh|
+                if (mesh.asset_id) |asset_id|
+                    try allocator.dupe(u8, asset_id)
+                else
+                    null
+            else
+                null,
+            .material_asset_id = if (record.material) |material|
+                if (material.asset_id) |asset_id|
+                    try allocator.dupe(u8, asset_id)
+                else
+                    null
+            else
+                null,
             .local_transform = record.local_transform,
             .camera = record.camera,
             .mesh = if (record.mesh) |mesh| .{
@@ -577,7 +657,7 @@ fn deserializePrefabV1FromSlice(
         }
     }
 
-    prefab.entities = try entity_data_list.toOwnedSlice();
+    prefab.entities = try entity_data_list.toOwnedSlice(allocator);
 
     return prefab;
 }
@@ -590,9 +670,9 @@ pub fn detectDiffs(
 ) !PrefabDiff {
     var diff = PrefabDiff{
         .allocator = allocator,
-        .added_entities = std.ArrayList(u32).init(allocator),
-        .removed_entities = std.ArrayList(u32).init(allocator),
-        .modified_entities = std.ArrayList(EntityDiff).init(allocator),
+        .added_entities = .empty,
+        .removed_entities = .empty,
+        .modified_entities = .empty,
     };
 
     // 构建旧实体的 ID 集合
@@ -697,6 +777,25 @@ fn detectEntityDiff(
         diff.component_changes.light_changed = true;
         diff.has_changes = true;
     }
+    if (!equalOrNull(old_entity.camera, new_entity.camera)) {
+        diff.component_changes.camera_changed = true;
+        diff.has_changes = true;
+    }
+    if (!equalOrNull(old_entity.rigidbody, new_entity.rigidbody)) {
+        diff.component_changes.rigidbody_changed = true;
+        diff.has_changes = true;
+    }
+    if (!equalOrNull(old_entity.box_collider, new_entity.box_collider) or
+        !equalOrNull(old_entity.sphere_collider, new_entity.sphere_collider) or
+        !equalOrNull(old_entity.mesh_collider, new_entity.mesh_collider))
+    {
+        diff.component_changes.collider_changed = true;
+        diff.has_changes = true;
+    }
+    if (!equalOrNull(old_entity.vfx, new_entity.vfx)) {
+        diff.component_changes.vfx_changed = true;
+        diff.has_changes = true;
+    }
 
     return diff;
 }
@@ -704,8 +803,7 @@ fn detectEntityDiff(
 fn equalOrNull(a: anytype, b: @TypeOf(a)) bool {
     if (a == null and b == null) return true;
     if (a == null or b == null) return false;
-    // 简化比较 - 实际实现需要更详细的比较
-    return a.* == b.*;
+    return std.meta.eql(a.?, b.?);
 }
 
 // ============================================================================
@@ -969,24 +1067,42 @@ pub fn updatePrefabInstance(
     for (diff.modified_entities.items) |entity_diff| {
         // 查找对应的实体
         const entity = findEntityByPrefabId(world, root_entity_id, entity_diff.prefab_entity_id) orelse continue;
-
-        // 检查是否有覆盖 - 如果有覆盖则不应用修改
-        if (entity.prefab_instance_override != null) {
-            continue; // 有覆盖，跳过更新
-        }
+        const prefab_entity = findPrefabEntity(prefab, entity_diff.prefab_entity_id) orelse continue;
+        const overrides = if (entity.prefab_instance_override) |*override| override else null;
 
         // 应用修改
-        if (entity_diff.transform_changed) {
-            for (prefab.entities) |prefab_entity| {
-                if (prefab_entity.prefab_entity_id == entity_diff.prefab_entity_id) {
-                    entity.local_transform = prefab_entity.local_transform;
-                    world.markDirty(entity.id);
-                    break;
-                }
-            }
+        if (entity_diff.name_changed and !(overrides != null and overrides.?.override_mask.name)) {
+            world.allocator.free(entity.name);
+            entity.name = try world.allocator.dupe(u8, prefab_entity.name);
         }
 
-        // TODO: 应用组件修改
+        if (entity_diff.transform_changed and !(overrides != null and overrides.?.override_mask.local_transform)) {
+            entity.local_transform = prefab_entity.local_transform;
+            world.markDirty(entity.id);
+        }
+        if (entity_diff.component_changes.mesh_changed and !(overrides != null and overrides.?.override_mask.mesh)) {
+            entity.mesh = resolvePrefabMesh(world, prefab_entity);
+        }
+        if (entity_diff.component_changes.material_changed and !(overrides != null and overrides.?.override_mask.material)) {
+            entity.material = resolvePrefabMaterial(world, prefab_entity);
+        }
+        if (entity_diff.component_changes.light_changed and !(overrides != null and overrides.?.override_mask.light)) {
+            entity.light = prefab_entity.light;
+        }
+        if (entity_diff.component_changes.camera_changed and !(overrides != null and overrides.?.override_mask.camera)) {
+            entity.camera = prefab_entity.camera;
+        }
+        if (entity_diff.component_changes.rigidbody_changed and !(overrides != null and overrides.?.override_mask.rigidbody)) {
+            entity.rigidbody = prefab_entity.rigidbody;
+        }
+        if (entity_diff.component_changes.collider_changed and !(overrides != null and overrides.?.override_mask.collider)) {
+            entity.box_collider = prefab_entity.box_collider;
+            entity.sphere_collider = prefab_entity.sphere_collider;
+            entity.mesh_collider = prefab_entity.mesh_collider;
+        }
+        if (entity_diff.component_changes.vfx_changed and !(overrides != null and overrides.?.override_mask.vfx)) {
+            entity.vfx = prefab_entity.vfx;
+        }
     }
 
     // 2. 添加新实体
@@ -1009,9 +1125,14 @@ pub fn updatePrefabInstance(
 
         // 复制其他组件
         desc.camera = prefab_entity.camera;
-        desc.mesh = prefab_entity.mesh;
-        desc.material = prefab_entity.material;
+        desc.mesh = resolvePrefabMesh(world, prefab_entity);
+        desc.material = resolvePrefabMaterial(world, prefab_entity);
         desc.light = prefab_entity.light;
+        desc.rigidbody = prefab_entity.rigidbody;
+        desc.box_collider = prefab_entity.box_collider;
+        desc.sphere_collider = prefab_entity.sphere_collider;
+        desc.mesh_collider = prefab_entity.mesh_collider;
+        desc.vfx = prefab_entity.vfx;
         desc.visible = prefab_entity.visible;
 
         const new_entity_id = try world.createEntity(desc);
@@ -1032,6 +1153,26 @@ pub fn updatePrefabInstance(
             _ = world.destroyEntity(entity.id);
         }
     }
+}
+
+fn resolvePrefabMesh(world: *world_mod.World, prefab_entity: *const PrefabEntityData) ?components.Mesh {
+    var mesh = prefab_entity.mesh orelse return null;
+    if (mesh.handle == null) {
+        if (prefab_entity.mesh_asset_id) |asset_id| {
+            mesh.handle = world.resources.meshHandleByAssetId(asset_id);
+        }
+    }
+    return mesh;
+}
+
+fn resolvePrefabMaterial(world: *world_mod.World, prefab_entity: *const PrefabEntityData) ?components.Material {
+    var material = prefab_entity.material orelse return null;
+    if (material.handle == null) {
+        if (prefab_entity.material_asset_id) |asset_id| {
+            material.handle = world.resources.materialHandleByAssetId(asset_id);
+        }
+    }
+    return material;
 }
 
 /// 根据 prefab_entity_id 查找实体

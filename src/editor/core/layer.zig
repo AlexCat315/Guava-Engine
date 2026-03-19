@@ -12,6 +12,7 @@ const history = @import("../actions/history.zig");
 const vfx_runtime = @import("../runtime/vfx.zig");
 const layout = @import("../ui/layout.zig");
 const animation_editor = @import("../ui/windows/animation_editor.zig");
+const prefab_browser = @import("../ui/windows/prefab_browser.zig");
 
 fn initEditorStyle() void {
     // 采用更沉稳、现代的深灰色调，精简强调色应用以减少视觉疲劳
@@ -175,6 +176,10 @@ pub const EditorLayer = struct {
             if (self.animation_editor_state) |*editor_state| {
                 try animation_editor.drawAnimationEditorWindow(&self.state, layer_context, editor_state);
             }
+        }
+
+        if (self.state.prefab_browser_open) {
+            try prefab_browser.drawPrefabBrowserWindow(&self.state, layer_context);
         }
     }
 };

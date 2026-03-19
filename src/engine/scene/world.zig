@@ -1782,17 +1782,28 @@ pub const World = struct {
     }
 
     pub fn createPrefab(self: *World, root_entity_id: EntityId, prefab_id: []const u8) !void {
-        const prefab = try prefab_mod.createPrefabFromEntities(
+        var prefab_value = try prefab_mod.createPrefabFromEntities(
             self.allocator,
             self,
             root_entity_id,
             prefab_id,
         );
+        errdefer prefab_value.deinit();
+
+        const prefab = try self.allocator.create(prefab_mod.PrefabResource);
+        errdefer self.allocator.destroy(prefab);
+        prefab.* = prefab_value;
         try self.prefab_library.registerPrefab(prefab);
     }
 
     pub fn loadPrefab(self: *World, path: []const u8) !prefab_mod.PrefabId {
-        const prefab = try prefab_mod.loadPrefabFromPath(self.allocator, path);
+        var prefab_value = try prefab_mod.loadPrefabFromPath(self.allocator, path);
+        errdefer prefab_value.deinit();
+
+        const prefab = try self.allocator.create(prefab_mod.PrefabResource);
+        errdefer self.allocator.destroy(prefab);
+        prefab.* = prefab_value;
+
         const prefab_id = try self.allocator.dupe(u8, prefab.id);
         errdefer self.allocator.free(prefab_id);
         try self.prefab_library.registerPrefab(prefab);
@@ -1802,6 +1813,10 @@ pub const World = struct {
     pub fn savePrefab(self: *World, id: []const u8, path: []const u8) !void {
         const prefab = self.prefab_library.getPrefab(id) orelse return error.PrefabNotFound;
         try prefab_mod.savePrefabToPath(self.allocator, prefab, path);
+        if (prefab.source_path) |existing| {
+            self.allocator.free(existing);
+        }
+        prefab.source_path = try self.allocator.dupe(u8, path);
     }
 
     pub fn instantiatePrefab(self: *World, prefab_id: []const u8, options: prefab_mod.InstantiateOptions) !EntityId {
@@ -2294,23 +2309,43 @@ pub fn createPrefab(
     root_entity_id: EntityId,
     prefab_id: []const u8,
 ) !void {
-    const prefab = try prefab_mod.createPrefabFromEntities(
+    var prefab_value = try prefab_mod.createPrefabFromEntities(
         self.allocator,
         self,
         root_entity_id,
         prefab_id,
     );
-    try self.prefab_library.add(prefab, prefab_id, null);
+    errdefer prefab_value.deinit();
+
+    const prefab = try self.allocator.create(prefab_mod.PrefabResource);
+    errdefer self.allocator.destroy(prefab);
+    prefab.* = prefab_value;
+    try self.prefab_library.registerPrefab(prefab);
 }
 
 /// 加载 Prefab 从文件
 pub fn loadPrefab(self: *World, path: []const u8) !prefab_mod.PrefabId {
-    return try self.prefab_library.loadFromPath(path);
+    var prefab_value = try prefab_mod.loadPrefabFromPath(self.allocator, path);
+    errdefer prefab_value.deinit();
+
+    const prefab = try self.allocator.create(prefab_mod.PrefabResource);
+    errdefer self.allocator.destroy(prefab);
+    prefab.* = prefab_value;
+
+    const prefab_id = try self.allocator.dupe(u8, prefab.id);
+    errdefer self.allocator.free(prefab_id);
+    try self.prefab_library.registerPrefab(prefab);
+    return prefab_id;
 }
 
 /// 保存 Prefab 到文件
 pub fn savePrefab(self: *World, id: []const u8, path: []const u8) !void {
-    try self.prefab_library.saveToPath(id, path);
+    const prefab = self.prefab_library.getPrefab(id) orelse return error.PrefabNotFound;
+    try prefab_mod.savePrefabToPath(self.allocator, prefab, path);
+    if (prefab.source_path) |existing| {
+        self.allocator.free(existing);
+    }
+    prefab.source_path = try self.allocator.dupe(u8, path);
 }
 
 /// 实例化 Prefab
@@ -2319,19 +2354,21 @@ pub fn instantiatePrefab(
     prefab_id: []const u8,
     options: prefab_mod.InstantiateOptions,
 ) !EntityId {
-    const prefab = self.prefab_library.get(prefab_id) orelse
+    const prefab = self.prefab_library.getPrefab(prefab_id) orelse
         return error.PrefabNotFound;
     return try prefab_mod.instantiatePrefab(self.allocator, self, prefab, options);
 }
 
 /// 获取 Prefab
 pub fn getPrefab(self: *const World, id: []const u8) ?*prefab_mod.PrefabResource {
-    return self.prefab_library.get(id);
+    return self.prefab_library.getPrefab(id);
 }
 
 /// 移除 Prefab
 pub fn removePrefab(self: *World, id: []const u8) !void {
-    try self.prefab_library.remove(id);
+    if (!self.prefab_library.removePrefab(id)) {
+        return error.PrefabNotFound;
+    }
 }
 
 /// 检测 Prefab 差异
@@ -2340,9 +2377,9 @@ pub fn detectPrefabDiff(
     old_prefab_id: []const u8,
     new_prefab_id: []const u8,
 ) !prefab_mod.PrefabDiff {
-    const old_prefab = self.prefab_library.get(old_prefab_id) orelse
+    const old_prefab = self.prefab_library.getPrefab(old_prefab_id) orelse
         return error.PrefabNotFound;
-    const new_prefab = self.prefab_library.get(new_prefab_id) orelse
+    const new_prefab = self.prefab_library.getPrefab(new_prefab_id) orelse
         return error.PrefabNotFound;
     return try prefab_mod.detectDiffs(self.allocator, old_prefab, new_prefab);
 }
@@ -2353,45 +2390,37 @@ pub fn updatePrefabInstance(
     root_entity_id: EntityId,
     prefab_id: []const u8,
 ) !void {
-    const prefab = self.prefab_library.get(prefab_id) orelse
+    const prefab = self.prefab_library.getPrefab(prefab_id) orelse
         return error.PrefabNotFound;
-
-    // TODO: 实现增量更新
-    // 1. 获取旧 Prefab
-    // 2. Diff 检测
-    // 3. 应用变更
-    _ = root_entity_id;
-    _ = prefab;
+    var diff = try detectEntityTreeDiff(self, root_entity_id, prefab);
+    defer diff.deinit();
+    try prefab_mod.updatePrefabInstance(self, root_entity_id, &diff, prefab);
 }
 
 /// 批量更新所有 Prefab 实例
 /// 遍历场景中所有指定 Prefab 的实例并应用最新版本
 pub fn updateAllPrefabInstances(self: *World, prefab_id: []const u8) !usize {
-    const prefab = self.prefab_library.get(prefab_id) orelse
+    const prefab = self.prefab_library.getPrefab(prefab_id) orelse
         return error.PrefabNotFound;
 
     var updated_count: usize = 0;
 
     // 遍历所有实体，查找 Prefab 实例的根实体
     for (self.entities.items) |*entity| {
-        if (isPrefabRootEntity(entity)) {
-            // 检查是否是 Prefab 实例
-            if (entity.prefab_instance_override) |*override| {
-                if (std.mem.eql(u8, override.prefab_id, prefab_id)) {
-                    // 找到匹配 Prefab ID 的实例，更新它
-                    // 创建从当前实体状态到最新 Prefab 的差异
-                    var diff = try self.detectEntityTreeDiff(entity.id, prefab);
-                    defer diff.deinit();
-
-                    // 应用差异更新
-                    try prefab_mod.updatePrefabInstance(self, entity.id, &diff, prefab);
-
-                    // 更新版本号
-                    override.prefab_version = prefab.version;
-
-                    updated_count += 1;
-                }
+        if (!isPrefabRootEntity(entity)) {
+            continue;
+        }
+        if (entity.prefab_instance_override) |*override| {
+            if (!std.mem.eql(u8, override.prefab_id, prefab_id)) {
+                continue;
             }
+
+            var diff = try detectEntityTreeDiff(self, entity.id, prefab);
+            defer diff.deinit();
+
+            try prefab_mod.updatePrefabInstance(self, entity.id, &diff, prefab);
+            override.prefab_version = prefab.version;
+            updated_count += 1;
         }
     }
 
