@@ -1,3 +1,45 @@
+//! 应用程序核心模块
+//!
+//! 本模块提供应用程序的生命周期管理和主循环实现。
+//! Application 是 Guava Engine 应用的主入口点，负责协调所有子系统。
+//!
+//! ## 主要功能
+//!
+//! - **生命周期管理** - 初始化、运行、清理
+//! - **窗口管理** - 创建和管理主窗口
+//! - **渲染器集成** - 初始化和管理渲染系统
+//! - **场景管理** - 创建和管理场景世界
+//! - **层栈系统** - 管理应用逻辑层
+//! - **输入处理** - 处理键盘、鼠标输入
+//! - **物理模拟** - 固定时间步进物理
+//! - **脚本系统** - 脚本热重载和执行
+//! - **动画系统** - 骨骼动画更新
+//!
+//! ## 使用示例
+//!
+//! ```zig
+//! const guava = @import("guava");
+//!
+//! pub fn main() !void {
+//!     // 创建应用配置
+//!     const config = guava.core.ApplicationConfig{
+//!         .name = "My Game",
+//!         .window_width = 1920,
+//!         .window_height = 1080,
+//!     };
+//!
+//!     // 初始化应用
+//!     var app = try guava.core.Application.init(allocator, config);
+//!     defer app.deinit();
+//!
+//!     // 推送应用层
+//!     try app.pushLayer(my_layer);
+//!
+//!     // 运行应用（0 表示无限循环）
+//!     const report = try app.run(0);
+//! }
+//! ```
+
 const std = @import("std");
 const animator_system = @import("../animation/animator_system.zig");
 const physics_system = @import("../physics/system.zig");
@@ -14,45 +56,105 @@ const window_mod = @import("../platform/window.zig");
 const scene_mod = @import("../scene/scene.zig");
 const job_system_mod = @import("job_system.zig");
 
+/// 应用程序配置
+///
+/// 用于初始化应用程序时指定各种参数。
 pub const ApplicationConfig = struct {
+    /// 应用程序名称（显示在窗口标题栏）
     name: []const u8 = "Guava Engine",
+    /// 窗口宽度（像素）
     window_width: u32 = 1280,
+    /// 窗口高度（像素）
     window_height: u32 = 720,
+    /// 是否无边框窗口
     window_borderless: bool = false,
+    /// 是否使用原生标题栏控件（macOS）
     window_native_titlebar_controls: bool = false,
+    /// 帧延迟（毫秒，用于限制帧率）
     frame_delay_ms: u32 = 16,
+    /// 首选的图形后端列表
     preferred_backends: []const render_types.GraphicsAPI = render_types.defaultPreferredBackends,
+    /// 后端选择策略
     backend_selection_policy: render_types.BackendSelectionPolicy = .explicit_order,
+    /// 是否启用验证层（调试用）
     enable_validation: bool = true,
+    /// 帧在飞数量（用于帧同步）
     frames_in_flight: u32 = 2,
+    /// 线程数量（null 表示自动检测）
     thread_count: ?usize = null,
+    /// 物理系统配置
     physics: physics_system.Config = .{},
+    /// 脚本系统配置
     script: script_system.ScriptSystemConfig = .{},
 };
 
+/// 运行报告
+///
+/// 包含应用程序运行结束后的统计信息。
 pub const RunReport = struct {
+    /// 渲染的帧数
     frames: usize,
+    /// 使用的图形后端
     backend: render_types.GraphicsAPI,
+    /// 场景摘要
     scene: scene_mod.Summary,
+    /// 渲染通道数量
     passes: usize,
+    /// 运行时信息
     runtime: render_types.RuntimeInfo,
+    /// 绘制调用次数
     draw_calls: usize,
+    /// 绘制的三角形数量
     triangles_drawn: usize,
 };
 
+/// 应用程序主类
+///
+/// 管理引擎的所有子系统，提供主循环实现。
+/// 这是构建 Guava Engine 应用的核心类。
+///
+/// ## 生命周期
+///
+/// 1. `init()` - 初始化所有子系统
+/// 2. `pushLayer()` / `pushOverlay()` - 添加应用逻辑层
+/// 3. `run()` - 运行主循环
+/// 4. `deinit()` - 清理所有资源
+///
+/// ## 子系统
+///
+/// - **Window** - 窗口管理
+/// - **Renderer** - 渲染系统
+/// - **World** - 场景世界
+/// - **JobSystem** - 作业系统
+/// - **ScriptRuntime** - 脚本运行时
+/// - **InputState** - 输入状态
+/// - **LayerStack** - 层栈
 pub const Application = struct {
+    /// 内存分配器
     allocator: std.mem.Allocator,
+    /// 应用程序配置
     config: ApplicationConfig,
+    /// 平台信息
     platform: platform_mod.Platform,
+    /// 主窗口
     window: window_mod.Window,
+    /// 渲染器
     renderer: renderer_mod.Renderer,
+    /// 场景世界
     world: scene_mod.World,
+    /// 层栈
     layers: layer_stack_mod.LayerStack,
+    /// 作业系统
     job_system: *job_system_mod.JobSystem,
+    /// 脚本运行时
     script_runtime: script_system.ScriptRuntime,
+    /// 输入状态
     input: input_mod.InputState = .{},
+    /// 播放控制器（用于暂停/步进）
     playback_controller: layer_mod.PlaybackController = .{},
+    /// 是否已初始化
     initialized: bool = false,
+    /// 高精度计时器
     timer: std.time.Timer,
     /// 全局时间（秒）
     global_time: f32 = 0.0,
@@ -61,6 +163,20 @@ pub const Application = struct {
     /// 物理时间累积器
     physics_accumulator_seconds: f32 = 0.0,
 
+    /// 初始化应用程序
+    ///
+    /// 创建窗口、渲染器、场景世界等所有子系统。
+    ///
+    /// ## 参数
+    /// - `allocator` - 内存分配器
+    /// - `config` - 应用程序配置
+    ///
+    /// ## 返回
+    /// 初始化的 Application 实例
+    ///
+    /// ## 错误
+    /// - `error.OutOfMemory` - 内存不足
+    /// - `error.DeviceCreationFailed` - GPU 设备创建失败
     pub fn init(allocator: std.mem.Allocator, config: ApplicationConfig) !Application {
         const platform = platform_mod.detect();
 
@@ -108,6 +224,10 @@ pub const Application = struct {
         };
     }
 
+    /// 清理应用程序
+    ///
+    /// 释放所有子系统占用的资源。
+    /// 调用此方法后，应用程序不再可用。
     pub fn deinit(self: *Application) void {
         self.script_runtime.bindWorld(&self.world);
         self.script_runtime.callDestroyAll(&self.world);
@@ -123,6 +243,13 @@ pub const Application = struct {
         self.job_system.deinit();
     }
 
+    /// 推送层到层栈
+    ///
+    /// 层是应用逻辑的基本单位。层按顺序更新，
+    /// 后推送的层在先推送的层之上。
+    ///
+    /// ## 参数
+    /// - `layer` - 要推送的层
     pub fn pushLayer(self: *Application, layer: layer_mod.Layer) !void {
         try self.layers.pushLayer(layer);
         if (self.initialized) {
@@ -131,6 +258,13 @@ pub const Application = struct {
         }
     }
 
+    /// 推送覆盖层到层栈
+    ///
+    /// 覆盖层总是在普通层之上渲染。
+    /// 通常用于 UI 层。
+    ///
+    /// ## 参数
+    /// - `overlay` - 要推送的覆盖层
     pub fn pushOverlay(self: *Application, overlay: layer_mod.Layer) !void {
         try self.layers.pushOverlay(overlay);
         if (self.initialized) {
@@ -139,6 +273,23 @@ pub const Application = struct {
         }
     }
 
+    /// 运行应用程序主循环
+    ///
+    /// 主循环持续运行直到窗口关闭或达到指定帧数。
+    /// 每帧执行以下操作：
+    /// 1. 处理输入事件
+    /// 2. 更新动画系统
+    /// 3. 步进物理模拟
+    /// 4. 更新脚本系统
+    /// 5. 更新层级变换
+    /// 6. 更新所有层
+    /// 7. 渲染帧
+    ///
+    /// ## 参数
+    /// - `frame_count` - 要渲染的帧数（0 表示无限循环）
+    ///
+    /// ## 返回
+    /// 运行报告，包含统计信息
     pub fn run(self: *Application, frame_count: usize) !RunReport {
         if (!self.initialized) {
             try self.attachLayers();
@@ -204,6 +355,7 @@ pub const Application = struct {
         };
     }
 
+    /// 附加所有层
     fn attachLayers(self: *Application) !void {
         var layer_context = self.makeLayerContext(0, 0.0);
         for (self.layers.layers.items) |layer| {
@@ -212,6 +364,7 @@ pub const Application = struct {
         self.initialized = true;
     }
 
+    /// 分离所有层
     fn detachLayers(self: *Application) void {
         var index = self.layers.layers.items.len;
         while (index > 0) {
@@ -221,6 +374,7 @@ pub const Application = struct {
         self.initialized = false;
     }
 
+    /// 处理窗口事件
     fn pumpEvents(self: *Application) !void {
         while (try self.window.pollEvent()) |event| {
             imgui_mod.processEvent(&event.raw);
@@ -278,6 +432,7 @@ pub const Application = struct {
         }
     }
 
+    /// 创建层上下文
     fn makeLayerContext(self: *Application, frame_index: usize, delta_seconds: f32) layer_mod.LayerContext {
         return .{
             .world = &self.world,
@@ -291,6 +446,10 @@ pub const Application = struct {
         };
     }
 
+    /// 步进物理模拟
+    ///
+    /// 使用固定时间步进，确保物理模拟的稳定性。
+    /// 支持多次子步进以处理帧率波动。
     fn advancePhysics(self: *Application, delta_seconds: f32) void {
         if (!self.config.physics.enabled or self.config.physics.fixed_timestep_seconds <= 0.0001) {
             return;
@@ -315,6 +474,9 @@ pub const Application = struct {
         }
     }
 
+    /// 更新脚本系统
+    ///
+    /// 检查热重载，调用所有脚本的 OnUpdate 方法。
     fn updateScripts(self: *Application, delta_seconds: f32) void {
         self.script_runtime.bindWorld(&self.world);
 
@@ -357,6 +519,15 @@ pub const Application = struct {
     }
 
     /// 加载脚本资源
+    ///
+    /// 从文件加载脚本并注册到资源系统。
+    /// 支持热重载。
+    ///
+    /// ## 参数
+    /// - `path` - 脚本文件路径
+    ///
+    /// ## 返回
+    /// 脚本资源句柄
     pub fn loadScript(self: *Application, path: []const u8) !handles.ScriptHandle {
         self.script_runtime.bindWorld(&self.world);
         const source = try std.fs.cwd().readFileAlloc(self.allocator, path, 1024 * 1024);
