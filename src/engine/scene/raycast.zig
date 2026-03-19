@@ -267,10 +267,13 @@ test "raycastSurface hits the nearest visible triangle" {
         .rotation = @import("../math/quat.zig").fromEuler(.{ -std.math.pi * 0.5, 0.0, 0.0 }),
     });
 
+    // 更新层级以构建空间索引
+    world.updateHierarchy();
+
     const hit = raycastSurface(&world, .{
         .origin = .{ 0.0, 2.0, 0.0 },
         .direction = .{ 0.0, -1.0, 0.0 },
-    }).?;
+    }) orelse return error.TestExpectedNonNull;
 
     try std.testing.expectEqual(front, hit.entity_id);
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), hit.position[1], 0.0001);
@@ -326,7 +329,7 @@ test "raycastSurface rebuilds broad phase after transform changes" {
     const hit = raycastSurface(&world, .{
         .origin = .{ 0.0, 2.0, 0.0 },
         .direction = .{ 0.0, -1.0, 0.0 },
-    }).?;
+    }) orelse return error.TestExpectedNonNull;
 
     try std.testing.expectEqual(plane, hit.entity_id);
 }

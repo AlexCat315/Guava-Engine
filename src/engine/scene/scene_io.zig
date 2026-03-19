@@ -1120,9 +1120,9 @@ test "scene serialization round-trips meshes, lights, textures, and asset ids" {
     try std.testing.expectEqual(@as(usize, 5), summary.mesh_count);
     try std.testing.expectEqual(@as(usize, 2), summary.light_count);
     try std.testing.expect(loaded.findEntityByName("PointLight") != null);
-    try std.testing.expect(loaded.findEntityByName("guava_showcase_GuavaShowcase_0") != null);
+    try std.testing.expect(loaded.findEntityByName("guava_showcase_GuavaShowcase") != null);
 
-    const imported = loaded.findEntityByName("guava_showcase_GuavaShowcase_0").?;
+    const imported = loaded.findEntityByName("guava_showcase_GuavaShowcase").?;
     const mesh_handle = imported.mesh.?.handle.?;
     const material_handle = imported.material.?.handle.?;
     const mesh = loaded.resources.mesh(mesh_handle).?;

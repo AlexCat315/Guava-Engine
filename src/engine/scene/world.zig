@@ -305,18 +305,20 @@ pub const World = struct {
             self.queueRenderableSync(id);
             if (self.dynamic_renderables.getPtr(id)) |state| {
                 state.steady_query_count = 0;
-                self.dynamic_dirty_renderables.put(id, {}) catch {
-                    self.dynamic_renderable_spatial_index.markDirty();
-                };
+                _ = self.dynamic_dirty_renderables.put(id, {}) catch {};
+                self.dynamic_renderable_spatial_index.markDirty();
             } else if (self.promoteRenderableToDynamic(id)) {
-                self.dynamic_dirty_renderables.put(id, {}) catch {};
+                _ = self.dynamic_dirty_renderables.put(id, {}) catch {};
+                self.dynamic_renderable_spatial_index.markDirty();
             } else {
                 self.renderable_spatial_index.markDirty();
             }
         }
-        if (entity.dirty) return;
 
+        const was_dirty = entity.dirty;
         entity.dirty = true;
+        if (was_dirty) return;
+
         for (entity.children.items) |child_id| {
             self.markDirty(child_id);
         }
@@ -2029,14 +2031,18 @@ test "glTF static import creates world entities, textures, normals, tangents, an
         },
     );
 
+    // 1 个 node 实体 + 1 个额外的 primitive 实体 = 2 个实体
+    // (mesh 有 2 个 primitives，第一个使用 node 实体，第二个创建子实体)
     try std.testing.expectEqual(@as(usize, 2), report.entity_count);
     try std.testing.expectEqual(@as(usize, 2), report.mesh_count);
     try std.testing.expectEqual(@as(usize, 2), report.material_count);
     try std.testing.expectEqual(@as(usize, 1), report.texture_count);
-    try std.testing.expect(world.findEntityByName("guava_showcase_GuavaShowcase_0") != null);
+    // 第一个 primitive 使用 node 实体，名称为 "guava_showcase_GuavaShowcase"
+    try std.testing.expect(world.findEntityByName("guava_showcase_GuavaShowcase") != null);
+    // 第二个 primitive 创建子实体，名称为 "guava_showcase_GuavaShowcase_1"
     try std.testing.expect(world.findEntityByName("guava_showcase_GuavaShowcase_1") != null);
 
-    const imported = world.findEntityByName("guava_showcase_GuavaShowcase_0").?;
+    const imported = world.findEntityByName("guava_showcase_GuavaShowcase").?;
     const mesh = world.resources.mesh(imported.mesh.?.handle.?).?;
     const material = world.resources.material(imported.material.?.handle.?).?;
 
@@ -2062,7 +2068,10 @@ test "glTF instance import creates a movable root entity" {
     try std.testing.expectEqualStrings("guava_showcase Instance", root.name);
     try std.testing.expectApproxEqAbs(@as(f32, 3.0), root.local_transform.translation[0], 0.0001);
 
-    const imported = world.findEntityByName("guava_showcase_GuavaShowcase_0").?;
+    // 根实例实体 + node 实体 + 额外的 primitive 实体 = 3 个实体
+    // 第一个 primitive 使用 node 实体，名称为 "guava_showcase_GuavaShowcase"
+    const imported = world.findEntityByName("guava_showcase_GuavaShowcase").?;
+    // node 实体的父实体是根实例
     try std.testing.expectEqual(report.root_entity.?, imported.parent.?);
     const imported_world = world.worldTransform(imported.id).?;
     try std.testing.expectApproxEqAbs(@as(f32, 3.0), imported_world.translation[0], 0.0001);

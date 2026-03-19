@@ -2284,7 +2284,6 @@ fn importNodeRecursive(
             default_material,
             mesh_index,
             node,
-            root_transform,
             node_entity_id,
             base_dir,
             source_stem,
@@ -2321,7 +2320,6 @@ fn importNodeMesh(
     default_material: handles.MaterialHandle,
     mesh_index: u32,
     node: Node,
-    root_transform: components.Transform,
     import_parent: ?u64,
     base_dir: []const u8,
     source_stem: []const u8,
@@ -2360,28 +2358,46 @@ fn importNodeMesh(
             source_stem,
         );
 
-        const entity_name = try entityNameForPrimitive(
-            world.allocator,
-            source_stem,
-            node.name orelse mesh.name orelse "Node",
-            primitive_index,
-        );
-        defer world.allocator.free(entity_name);
+        // 第一个 primitive 使用已存在的 node 实体 (import_parent)
+        // 后续的 primitives 创建新的子实体
+        if (primitive_index == 0) {
+            // 更新已存在的 node 实体，添加 mesh 和 material 组件
+            if (import_parent) |entity_id| {
+                if (world.getEntity(entity_id)) |entity| {
+                    entity.mesh = .{
+                        .handle = mesh_handle,
+                        .primitive = .custom,
+                    };
+                    entity.material = .{
+                        .handle = material.handle,
+                    };
+                }
+            }
+        } else {
+            const entity_name = try entityNameForPrimitive(
+                world.allocator,
+                source_stem,
+                node.name orelse mesh.name orelse "Node",
+                primitive_index,
+            );
+            defer world.allocator.free(entity_name);
 
-        _ = try world.createEntity(.{
-            .name = entity_name,
-            .parent = import_parent,
-            .mesh = .{
-                .handle = mesh_handle,
-                .primitive = .custom,
-            },
-            .material = .{
-                .handle = material.handle,
-            },
-            .local_transform = if (import_parent != null) .{} else root_transform,
-        });
+            _ = try world.createEntity(.{
+                .name = entity_name,
+                .parent = import_parent,
+                .mesh = .{
+                    .handle = mesh_handle,
+                    .primitive = .custom,
+                },
+                .material = .{
+                    .handle = material.handle,
+                },
+                .local_transform = .{},
+            });
 
-        report.entity_count += 1;
+            report.entity_count += 1;
+        }
+
         report.mesh_count += 1;
         report.material_count += @intFromBool(material.created);
         report.texture_count += material.created_texture_count;
