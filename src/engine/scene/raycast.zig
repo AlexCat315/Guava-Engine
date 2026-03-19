@@ -255,7 +255,7 @@ fn normalize(vector: [3]f32) [3]f32 {
 }
 
 test "raycastSurface hits the nearest visible triangle" {
-    var world = world_mod.World.init(std.testing.allocator);
+    var world = world_mod.World.init(std.testing.allocator, null);
     defer world.deinit();
 
     const front = try world.createPrimitiveEntity(.plane, .{
@@ -278,7 +278,7 @@ test "raycastSurface hits the nearest visible triangle" {
 }
 
 test "raycastSurface ignores editor only meshes" {
-    var world = world_mod.World.init(std.testing.allocator);
+    var world = world_mod.World.init(std.testing.allocator, null);
     defer world.deinit();
 
     const mesh_handle = try world.resources.ensurePrimitiveMesh(.plane);
@@ -293,7 +293,7 @@ test "raycastSurface ignores editor only meshes" {
         .material = .{
             .handle = material_handle,
         },
-        .transform = .{
+        .local_transform = .{
             .rotation = @import("../math/quat.zig").fromEuler(.{ -std.math.pi * 0.5, 0.0, 0.0 }),
         },
     });

@@ -456,7 +456,7 @@ fn expectPpmSimilar(golden: []const u8, actual: []const u8, max_diff_per_pixel: 
 }
 
 test "base pass golden ppm matches bootstrap scene" {
-    var world = scene_mod.World.init(std.testing.allocator);
+    var world = scene_mod.World.init(std.testing.allocator, null);
     defer world.deinit();
     try world.bootstrap3D();
 

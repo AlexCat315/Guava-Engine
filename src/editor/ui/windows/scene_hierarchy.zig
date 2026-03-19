@@ -836,7 +836,7 @@ fn createFolderEntity(state: *EditorState, layer_context: *engine.core.LayerCont
 }
 
 test "collectDraggedEntityRoots keeps only selection roots during multi-drag" {
-    var world = engine.scene.World.init(std.testing.allocator);
+    var world = engine.scene.World.init(std.testing.allocator, null);
     defer world.deinit();
 
     const root = try world.createEntity(.{ .name = "Root" });
@@ -851,7 +851,7 @@ test "collectDraggedEntityRoots keeps only selection roots during multi-drag" {
 }
 
 test "wouldCreateHierarchyCycle rejects descendant drop targets" {
-    var world = engine.scene.World.init(std.testing.allocator);
+    var world = engine.scene.World.init(std.testing.allocator, null);
     defer world.deinit();
 
     const root = try world.createEntity(.{ .name = "Root" });

@@ -8,6 +8,11 @@ pub const EntityDesc = world_mod.EntityDesc;
 pub const Summary = world_mod.Summary;
 pub const Ray = @import("raycast.zig").Ray;
 pub const SurfaceRaycastHit = @import("raycast.zig").SurfaceRaycastHit;
+pub const Rigidbody = @import("components.zig").Rigidbody;
+pub const RigidbodyMotionType = @import("components.zig").RigidbodyMotionType;
+pub const BoxCollider = @import("components.zig").BoxCollider;
+pub const SphereCollider = @import("components.zig").SphereCollider;
+pub const MeshCollider = @import("components.zig").MeshCollider;
 pub const Vfx = @import("components.zig").Vfx;
 pub const VfxKind = @import("components.zig").VfxKind;
 pub const VfxRuntimeParticle = @import("vfx_runtime.zig").VfxRuntimeParticle;
@@ -22,4 +27,5 @@ test {
     _ = @import("raycast.zig");
     _ = @import("scene_io.zig");
     _ = @import("vfx_runtime.zig");
+    _ = @import("../physics/system.zig");
 }

@@ -73,6 +73,38 @@ pub const Animator = struct {
     looping: bool = true,
 };
 
+pub const RigidbodyMotionType = enum {
+    static,
+    dynamic,
+    kinematic,
+};
+
+pub const Rigidbody = struct {
+    motion_type: RigidbodyMotionType = .dynamic,
+    mass: f32 = 1.0,
+    linear_velocity: Vec3 = .{ 0.0, 0.0, 0.0 },
+    gravity_scale: f32 = 1.0,
+    linear_damping: f32 = 0.04,
+    allow_sleep: bool = true,
+};
+
+pub const BoxCollider = struct {
+    half_extents: Vec3 = .{ 0.5, 0.5, 0.5 },
+    center: Vec3 = .{ 0.0, 0.0, 0.0 },
+    is_trigger: bool = false,
+};
+
+pub const SphereCollider = struct {
+    radius: f32 = 0.5,
+    center: Vec3 = .{ 0.0, 0.0, 0.0 },
+    is_trigger: bool = false,
+};
+
+pub const MeshCollider = struct {
+    use_attached_mesh: bool = true,
+    is_trigger: bool = false,
+};
+
 pub const ShadingModel = enum {
     unlit,
     lambert,

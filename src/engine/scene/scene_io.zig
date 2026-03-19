@@ -6,7 +6,7 @@ const rhi_types = @import("../rhi/types.zig");
 const components = @import("components.zig");
 const world_mod = @import("world.zig");
 
-const current_scene_version: u32 = 4;
+const current_scene_version: u32 = 5;
 
 const SceneHeader = struct {
     version: u32 = 1,
@@ -58,12 +58,42 @@ const MaterialComponentRecord = struct {
     base_color_factor: [4]f32 = .{ 1.0, 1.0, 1.0, 1.0 },
 };
 
+const RigidbodyRecord = struct {
+    motion_type: components.RigidbodyMotionType = .dynamic,
+    mass: f32 = 1.0,
+    linear_velocity: [3]f32 = .{ 0.0, 0.0, 0.0 },
+    gravity_scale: f32 = 1.0,
+    linear_damping: f32 = 0.04,
+    allow_sleep: bool = true,
+};
+
+const BoxColliderRecord = struct {
+    half_extents: [3]f32 = .{ 0.5, 0.5, 0.5 },
+    center: [3]f32 = .{ 0.0, 0.0, 0.0 },
+    is_trigger: bool = false,
+};
+
+const SphereColliderRecord = struct {
+    radius: f32 = 0.5,
+    center: [3]f32 = .{ 0.0, 0.0, 0.0 },
+    is_trigger: bool = false,
+};
+
+const MeshColliderRecord = struct {
+    use_attached_mesh: bool = true,
+    is_trigger: bool = false,
+};
+
 const EntityRecord = struct {
     name: []const u8,
     parent: ?u32 = null,
     local_transform: components.Transform = .{},
     camera: ?components.Camera = null,
     mesh: ?MeshComponentRecord = null,
+    rigidbody: ?RigidbodyRecord = null,
+    box_collider: ?BoxColliderRecord = null,
+    sphere_collider: ?SphereColliderRecord = null,
+    mesh_collider: ?MeshColliderRecord = null,
     material: ?MaterialComponentRecord = null,
     light: ?components.Light = null,
     vfx: ?components.Vfx = null,
@@ -168,7 +198,7 @@ pub fn deserializeWorldFromSlice(allocator: std.mem.Allocator, world: *world_mod
 
     switch (header_parse.value.version) {
         1, 2 => try deserializeLegacyWorldFromSlice(allocator, world, source),
-        3, 4 => try deserializeWorldV4FromSlice(allocator, world, source),
+        3, 4, 5 => try deserializeWorldV4FromSlice(allocator, world, source),
         else => return error.UnsupportedSceneVersion,
     }
 }
@@ -284,6 +314,28 @@ fn buildSceneFile(allocator: std.mem.Allocator, world: *const world_mod.World) !
             .local_transform = entity.local_transform,
             .camera = entity.camera,
             .mesh = mesh_component,
+            .rigidbody = if (entity.rigidbody) |body| .{
+                .motion_type = body.motion_type,
+                .mass = body.mass,
+                .linear_velocity = body.linear_velocity,
+                .gravity_scale = body.gravity_scale,
+                .linear_damping = body.linear_damping,
+                .allow_sleep = body.allow_sleep,
+            } else null,
+            .box_collider = if (entity.box_collider) |collider| .{
+                .half_extents = collider.half_extents,
+                .center = collider.center,
+                .is_trigger = collider.is_trigger,
+            } else null,
+            .sphere_collider = if (entity.sphere_collider) |collider| .{
+                .radius = collider.radius,
+                .center = collider.center,
+                .is_trigger = collider.is_trigger,
+            } else null,
+            .mesh_collider = if (entity.mesh_collider) |collider| .{
+                .use_attached_mesh = collider.use_attached_mesh,
+                .is_trigger = collider.is_trigger,
+            } else null,
             .material = material_component,
             .light = entity.light,
             .vfx = entity.vfx,
@@ -318,7 +370,7 @@ fn deserializeWorldV4FromSlice(allocator: std.mem.Allocator, world: *world_mod.W
     defer parsed.deinit();
 
     const scene = parsed.value;
-    if (scene.version != 3 and scene.version != current_scene_version) {
+    if (scene.version != 3 and scene.version != 4 and scene.version != current_scene_version) {
         return error.UnsupportedSceneVersion;
     }
 
@@ -397,6 +449,40 @@ fn deserializeWorldV4FromSlice(allocator: std.mem.Allocator, world: *world_mod.W
                     else
                         null,
                     .primitive = mesh_component.primitive,
+                }
+            else
+                null,
+            .rigidbody = if (entity.rigidbody) |body|
+                .{
+                    .motion_type = body.motion_type,
+                    .mass = body.mass,
+                    .linear_velocity = body.linear_velocity,
+                    .gravity_scale = body.gravity_scale,
+                    .linear_damping = body.linear_damping,
+                    .allow_sleep = body.allow_sleep,
+                }
+            else
+                null,
+            .box_collider = if (entity.box_collider) |collider|
+                .{
+                    .half_extents = collider.half_extents,
+                    .center = collider.center,
+                    .is_trigger = collider.is_trigger,
+                }
+            else
+                null,
+            .sphere_collider = if (entity.sphere_collider) |collider|
+                .{
+                    .radius = collider.radius,
+                    .center = collider.center,
+                    .is_trigger = collider.is_trigger,
+                }
+            else
+                null,
+            .mesh_collider = if (entity.mesh_collider) |collider|
+                .{
+                    .use_attached_mesh = collider.use_attached_mesh,
+                    .is_trigger = collider.is_trigger,
                 }
             else
                 null,
@@ -1010,7 +1096,7 @@ fn hexLowerAlloc(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
 }
 
 test "scene serialization round-trips meshes, lights, textures, and asset ids" {
-    var world = world_mod.World.init(std.testing.allocator);
+    var world = world_mod.World.init(std.testing.allocator, null);
     defer world.deinit();
 
     try world.bootstrap3D();
@@ -1025,7 +1111,7 @@ test "scene serialization round-trips meshes, lights, textures, and asset ids" {
     const encoded = try serializeWorldAlloc(std.testing.allocator, &world);
     defer std.testing.allocator.free(encoded);
 
-    var loaded = world_mod.World.init(std.testing.allocator);
+    var loaded = world_mod.World.init(std.testing.allocator, null);
     defer loaded.deinit();
     try deserializeWorldFromSlice(std.testing.allocator, &loaded, encoded);
 
@@ -1048,7 +1134,7 @@ test "scene serialization round-trips meshes, lights, textures, and asset ids" {
 }
 
 test "scene serialization is byte deterministic for identical world state" {
-    var world = world_mod.World.init(std.testing.allocator);
+    var world = world_mod.World.init(std.testing.allocator, null);
     defer world.deinit();
 
     try world.bootstrap3D();
@@ -1061,7 +1147,7 @@ test "scene serialization is byte deterministic for identical world state" {
 }
 
 test "scene serialization round-trips parent relationships" {
-    var world = world_mod.World.init(std.testing.allocator);
+    var world = world_mod.World.init(std.testing.allocator, null);
     defer world.deinit();
 
     const root = try world.createEntity(.{
@@ -1070,7 +1156,7 @@ test "scene serialization round-trips parent relationships" {
     const child = try world.createEntity(.{
         .name = "Child",
         .parent = root,
-        .transform = .{
+        .local_transform = .{
             .translation = .{ 0.0, 2.0, 0.0 },
         },
     });
@@ -1078,7 +1164,7 @@ test "scene serialization round-trips parent relationships" {
     const encoded = try serializeWorldAlloc(std.testing.allocator, &world);
     defer std.testing.allocator.free(encoded);
 
-    var loaded = world_mod.World.init(std.testing.allocator);
+    var loaded = world_mod.World.init(std.testing.allocator, null);
     defer loaded.deinit();
     try deserializeWorldFromSlice(std.testing.allocator, &loaded, encoded);
 
@@ -1091,7 +1177,7 @@ test "scene serialization round-trips parent relationships" {
 }
 
 test "scene serialization round-trips folder entities" {
-    var world = world_mod.World.init(std.testing.allocator);
+    var world = world_mod.World.init(std.testing.allocator, null);
     defer world.deinit();
 
     const folder = try world.createFolderEntity(.{
@@ -1105,7 +1191,7 @@ test "scene serialization round-trips folder entities" {
     const encoded = try serializeWorldAlloc(std.testing.allocator, &world);
     defer std.testing.allocator.free(encoded);
 
-    var loaded = world_mod.World.init(std.testing.allocator);
+    var loaded = world_mod.World.init(std.testing.allocator, null);
     defer loaded.deinit();
     try deserializeWorldFromSlice(std.testing.allocator, &loaded, encoded);
 
@@ -1115,7 +1201,7 @@ test "scene serialization round-trips folder entities" {
 }
 
 test "scene serialization round-trips vfx entities" {
-    var world = world_mod.World.init(std.testing.allocator);
+    var world = world_mod.World.init(std.testing.allocator, null);
     defer world.deinit();
 
     _ = try world.createVfxEntity(.orbit, .{
@@ -1125,12 +1211,12 @@ test "scene serialization round-trips vfx entities" {
     const encoded = try serializeWorldAlloc(std.testing.allocator, &world);
     defer std.testing.allocator.free(encoded);
 
-    var loaded = world_mod.World.init(std.testing.allocator);
+    var loaded = world_mod.World.init(std.testing.allocator, null);
     defer loaded.deinit();
     try deserializeWorldFromSlice(std.testing.allocator, &loaded, encoded);
 
     const loaded_vfx = loaded.findEntityByName("OrbitVfx").?;
     try std.testing.expect(loaded_vfx.vfx != null);
     try std.testing.expectEqual(components.VfxKind.orbit, loaded_vfx.vfx.?.kind);
-    try std.testing.expectApproxEqAbs(@as(f32, 2.0), loaded_vfx.transform.translation[0], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 2.0), loaded_vfx.local_transform.translation[0], 0.0001);
 }

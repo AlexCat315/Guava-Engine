@@ -50,6 +50,10 @@ pub const Entity = struct {
     mesh: ?components.Mesh = null,
     skinned_mesh: ?components.SkinnedMesh = null,
     animator: ?components.Animator = null,
+    rigidbody: ?components.Rigidbody = null,
+    box_collider: ?components.BoxCollider = null,
+    sphere_collider: ?components.SphereCollider = null,
+    mesh_collider: ?components.MeshCollider = null,
     material: ?components.Material = null,
     light: ?components.Light = null,
     vfx: ?components.Vfx = null,
@@ -78,6 +82,10 @@ pub const EntityDesc = struct {
     mesh: ?components.Mesh = null,
     skinned_mesh: ?components.SkinnedMesh = null,
     animator: ?components.Animator = null,
+    rigidbody: ?components.Rigidbody = null,
+    box_collider: ?components.BoxCollider = null,
+    sphere_collider: ?components.SphereCollider = null,
+    mesh_collider: ?components.MeshCollider = null,
     material: ?components.Material = null,
     light: ?components.Light = null,
     vfx: ?components.Vfx = null,
@@ -93,6 +101,8 @@ pub const Summary = struct {
     material_count: usize = 0,
     light_count: usize = 0,
     vfx_count: usize = 0,
+    rigidbody_count: usize = 0,
+    collider_count: usize = 0,
 };
 
 pub const World = struct {
@@ -212,6 +222,10 @@ pub const World = struct {
             .mesh = desc.mesh,
             .skinned_mesh = desc.skinned_mesh,
             .animator = desc.animator,
+            .rigidbody = desc.rigidbody,
+            .box_collider = desc.box_collider,
+            .sphere_collider = desc.sphere_collider,
+            .mesh_collider = desc.mesh_collider,
             .material = desc.material,
             .light = desc.light,
             .vfx = desc.vfx,
@@ -802,6 +816,12 @@ pub const World = struct {
             if (entity.vfx != null) {
                 result.vfx_count += 1;
             }
+            if (entity.rigidbody != null) {
+                result.rigidbody_count += 1;
+            }
+            if (entity.box_collider != null or entity.sphere_collider != null or entity.mesh_collider != null) {
+                result.collider_count += 1;
+            }
         }
 
         return result;
@@ -837,6 +857,12 @@ pub const World = struct {
                 .handle = plane_mesh,
                 .primitive = .plane,
             },
+            .rigidbody = .{
+                .motion_type = .static,
+            },
+            .box_collider = .{
+                .half_extents = .{ 5.0, 0.1, 5.0 },
+            },
             .material = .{
                 .handle = default_material,
             },
@@ -850,6 +876,12 @@ pub const World = struct {
             .mesh = .{
                 .handle = cube_mesh,
                 .primitive = .cube,
+            },
+            .rigidbody = .{
+                .motion_type = .dynamic,
+            },
+            .box_collider = .{
+                .half_extents = .{ 0.5, 0.5, 0.5 },
             },
             .material = .{
                 .handle = default_material,
@@ -1220,6 +1252,10 @@ pub const World = struct {
             .mesh = source.mesh,
             .skinned_mesh = source.skinned_mesh,
             .animator = source.animator,
+            .rigidbody = source.rigidbody,
+            .box_collider = source.box_collider,
+            .sphere_collider = source.sphere_collider,
+            .mesh_collider = source.mesh_collider,
             .material = source.material,
             .light = source.light,
             .vfx = source.vfx,
@@ -1807,7 +1843,7 @@ fn rotateZ(radians: f32, vector: components.Vec3) components.Vec3 {
 }
 
 test "bootstrap creates a minimal 3D scene" {
-    var world = World.init(std.testing.allocator);
+    var world = World.init(std.testing.allocator, null);
     defer world.deinit();
 
     try world.bootstrap3D();
@@ -1821,7 +1857,7 @@ test "bootstrap creates a minimal 3D scene" {
 }
 
 test "glTF static import creates world entities, textures, normals, tangents, and multi primitive materials" {
-    var world = World.init(std.testing.allocator);
+    var world = World.init(std.testing.allocator, null);
     defer world.deinit();
 
     const report = try world.importGltfStaticModel(
@@ -1849,7 +1885,7 @@ test "glTF static import creates world entities, textures, normals, tangents, an
 }
 
 test "glTF instance import creates a movable root entity" {
-    var world = World.init(std.testing.allocator);
+    var world = World.init(std.testing.allocator, null);
     defer world.deinit();
 
     const report = try world.importGltfStaticModelInstance(
@@ -1872,7 +1908,7 @@ test "glTF instance import creates a movable root entity" {
 }
 
 test "world supports editor duplicate and destroy operations" {
-    var world = World.init(std.testing.allocator);
+    var world = World.init(std.testing.allocator, null);
     defer world.deinit();
 
     try world.bootstrap3D();
@@ -1885,7 +1921,7 @@ test "world supports editor duplicate and destroy operations" {
 }
 
 test "createVfxEntity adds a selectable VFX anchor entity" {
-    var world = World.init(std.testing.allocator);
+    var world = World.init(std.testing.allocator, null);
     defer world.deinit();
 
     const entity_id = try world.createVfxEntity(.fountain, .{
@@ -1900,7 +1936,7 @@ test "createVfxEntity adds a selectable VFX anchor entity" {
 }
 
 test "world hierarchy composes transforms and preserves world space on reparent" {
-    var world = World.init(std.testing.allocator);
+    var world = World.init(std.testing.allocator, null);
     defer world.deinit();
 
     const parent_a = try world.createEntity(.{
@@ -1934,7 +1970,7 @@ test "world hierarchy composes transforms and preserves world space on reparent"
 }
 
 test "duplicateEntity copies subtrees and destroyEntity removes descendants" {
-    var world = World.init(std.testing.allocator);
+    var world = World.init(std.testing.allocator, null);
     defer world.deinit();
 
     const root = try world.createEntity(.{
@@ -1967,7 +2003,7 @@ test "duplicateEntity copies subtrees and destroyEntity removes descendants" {
 }
 
 test "folder entities preserve folder state through duplication" {
-    var world = World.init(std.testing.allocator);
+    var world = World.init(std.testing.allocator, null);
     defer world.deinit();
 
     const folder = try world.createFolderEntity(.{
@@ -1981,7 +2017,7 @@ test "folder entities preserve folder state through duplication" {
 }
 
 test "renderable spatial index moves dirty meshes into dynamic partition" {
-    var world = World.init(std.testing.allocator);
+    var world = World.init(std.testing.allocator, null);
     defer world.deinit();
 
     const a = try world.createPrimitiveEntity(.plane, .{
@@ -2055,7 +2091,7 @@ test "renderable spatial index moves dirty meshes into dynamic partition" {
 }
 
 test "dynamic renderable movement refits dynamic BVH without growing dynamic partition" {
-    var world = World.init(std.testing.allocator);
+    var world = World.init(std.testing.allocator, null);
     defer world.deinit();
 
     const entity_id = try world.createPrimitiveEntity(.plane, .{
@@ -2102,7 +2138,7 @@ test "dynamic renderable movement refits dynamic BVH without growing dynamic par
 }
 
 test "renderable bounds frustum query reuses cached bounds for visible BVH candidates" {
-    var world = World.init(std.testing.allocator);
+    var world = World.init(std.testing.allocator, null);
     defer world.deinit();
 
     const near_cube = try world.createPrimitiveEntity(.cube, .{
@@ -2132,7 +2168,7 @@ test "renderable bounds frustum query reuses cached bounds for visible BVH candi
 }
 
 test "renderable ray bounds query returns sorted cached bounds candidates" {
-    var world = World.init(std.testing.allocator);
+    var world = World.init(std.testing.allocator, null);
     defer world.deinit();
 
     const near_cube = try world.createPrimitiveEntity(.cube, .{
@@ -2159,7 +2195,7 @@ test "renderable ray bounds query returns sorted cached bounds candidates" {
 }
 
 test "renderable partition caches update incrementally for create and destroy" {
-    var world = World.init(std.testing.allocator);
+    var world = World.init(std.testing.allocator, null);
     defer world.deinit();
 
     const first = try world.createPrimitiveEntity(.cube, .{

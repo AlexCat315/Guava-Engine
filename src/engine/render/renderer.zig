@@ -1891,7 +1891,7 @@ fn makeOwnedTestAssetRecord(
 }
 
 test "resolveMaterialThumbnailSource captures loaded material signatures" {
-    var world = scene_mod.World.init(std.testing.allocator);
+    var world = scene_mod.World.init(std.testing.allocator, null);
     defer world.deinit();
 
     const texture_handle = try world.assets().createTexture(.{
@@ -1935,7 +1935,7 @@ test "resolveMaterialThumbnailSource captures loaded material signatures" {
 }
 
 test "material thumbnail preview scene mirrors source material resources" {
-    var world = scene_mod.World.init(std.testing.allocator);
+    var world = scene_mod.World.init(std.testing.allocator, null);
     defer world.deinit();
 
     const texture_handle = try world.assets().createTexture(.{

@@ -1,5 +1,6 @@
 const std = @import("std");
 const animator_system = @import("../animation/animator_system.zig");
+const physics_system = @import("../physics/system.zig");
 const layer_mod = @import("layer.zig");
 const layer_stack_mod = @import("layer_stack.zig");
 const input_mod = @import("input.zig");
@@ -23,6 +24,7 @@ pub const ApplicationConfig = struct {
     enable_validation: bool = true,
     frames_in_flight: u32 = 2,
     thread_count: ?usize = null,
+    physics: physics_system.Config = .{},
 };
 
 pub const RunReport = struct {
@@ -48,6 +50,7 @@ pub const Application = struct {
     playback_controller: layer_mod.PlaybackController = .{},
     initialized: bool = false,
     timer: std.time.Timer,
+    physics_accumulator_seconds: f32 = 0.0,
 
     pub fn init(allocator: std.mem.Allocator, config: ApplicationConfig) !Application {
         const platform = platform_mod.detect();
@@ -143,6 +146,7 @@ pub const Application = struct {
             const should_advance_simulation = self.playback_controller.shouldAdvance();
             if (should_advance_simulation) {
                 animator_system.update(&self.world, delta_seconds);
+                self.advancePhysics(delta_seconds);
             }
 
             // P1: Update hierarchy transforms and bounds once per frame
@@ -261,5 +265,29 @@ pub const Application = struct {
             .frame_index = frame_index,
             .delta_seconds = delta_seconds,
         };
+    }
+
+    fn advancePhysics(self: *Application, delta_seconds: f32) void {
+        if (!self.config.physics.enabled or self.config.physics.fixed_timestep_seconds <= 0.0001) {
+            return;
+        }
+
+        const max_window = self.config.physics.fixed_timestep_seconds *
+            @as(f32, @floatFromInt(self.config.physics.max_substeps_per_frame));
+        self.physics_accumulator_seconds = @min(self.physics_accumulator_seconds + delta_seconds, max_window);
+
+        var substeps: u8 = 0;
+        while (self.physics_accumulator_seconds + 0.000001 >= self.config.physics.fixed_timestep_seconds and
+            substeps < self.config.physics.max_substeps_per_frame) : (substeps += 1)
+        {
+            _ = physics_system.step(&self.world, self.config.physics.fixed_timestep_seconds, self.config.physics);
+            self.physics_accumulator_seconds -= self.config.physics.fixed_timestep_seconds;
+        }
+
+        if (substeps == self.config.physics.max_substeps_per_frame and
+            self.physics_accumulator_seconds >= self.config.physics.fixed_timestep_seconds)
+        {
+            self.physics_accumulator_seconds = 0.0;
+        }
     }
 };

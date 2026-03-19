@@ -1061,7 +1061,7 @@ fn makeOwnedMaterialRecord(
 }
 
 test "applyMaterialAssetToEntity assigns loaded material assets to entities" {
-    var world = engine.scene.World.init(std.testing.allocator);
+    var world = engine.scene.World.init(std.testing.allocator, null);
     defer world.deinit();
 
     const material_handle = try world.assets().createMaterial(.{
@@ -1114,7 +1114,7 @@ test "applyMaterialAssetToEntity assigns loaded material assets to entities" {
 }
 
 test "applyMaterialAssetToEntity rejects unloaded material assets" {
-    var world = engine.scene.World.init(std.testing.allocator);
+    var world = engine.scene.World.init(std.testing.allocator, null);
     defer world.deinit();
 
     const entity_id = try world.createEntity(.{ .name = "Cube" });
