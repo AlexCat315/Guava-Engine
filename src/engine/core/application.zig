@@ -1,4 +1,5 @@
 const std = @import("std");
+const animator_system = @import("../animation/animator_system.zig");
 const layer_mod = @import("layer.zig");
 const layer_stack_mod = @import("layer_stack.zig");
 const input_mod = @import("input.zig");
@@ -136,14 +137,18 @@ pub const Application = struct {
             try self.pumpEvents();
             imgui_mod.newFrame();
 
-            // P1: Update hierarchy transforms and bounds once per frame
-            self.world.updateHierarchy();
-
             const elapsed_ns = self.timer.lap();
             var delta_seconds = @as(f32, @floatFromInt(elapsed_ns)) / @as(f32, @floatFromInt(std.time.ns_per_s));
             delta_seconds = @min(delta_seconds, 0.1); // 最大帧间隔锁定为 0.1 秒
-            var layer_context = self.makeLayerContext(frames_rendered, delta_seconds);
             const should_advance_simulation = self.playback_controller.shouldAdvance();
+            if (should_advance_simulation) {
+                animator_system.update(&self.world, delta_seconds);
+            }
+
+            // P1: Update hierarchy transforms and bounds once per frame
+            self.world.updateHierarchy();
+
+            var layer_context = self.makeLayerContext(frames_rendered, delta_seconds);
             for (self.layers.layers.items, 0..) |layer, index| {
                 if (index < self.layers.overlay_start and !should_advance_simulation) {
                     continue;

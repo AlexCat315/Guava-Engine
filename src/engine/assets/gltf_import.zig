@@ -1163,6 +1163,13 @@ fn instantiateCookedModel(
         report.entity_count += 1;
     }
 
+    for (cooked.entities, 0..) |entity, index| {
+        if (entity.animator_clip_asset_id == null) {
+            continue;
+        }
+        try world.bindAnimatorTargets(entity_ids[index], entity_ids);
+    }
+
     return report;
 }
 

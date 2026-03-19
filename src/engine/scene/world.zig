@@ -23,6 +23,11 @@ const SpatialPartitionSnapshot = struct {
     dynamic_items: usize,
 };
 
+const AnimatorBinding = struct {
+    animator_entity_id: EntityId,
+    target_entities: []EntityId,
+};
+
 var g_logged_spatial_partition_snapshot: ?SpatialPartitionSnapshot = null;
 
 pub const EntityId = u64;
@@ -101,6 +106,7 @@ pub const World = struct {
     dynamic_renderables: std.AutoHashMap(EntityId, DynamicRenderableState),
     dynamic_dirty_renderables: std.AutoHashMap(EntityId, void),
     renderable_sync_candidates: std.AutoHashMap(EntityId, void),
+    animator_bindings: std.ArrayList(AnimatorBinding) = .empty,
     renderable_full_sync_required: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, job_system: ?*job_system_mod.JobSystem) World {
@@ -143,6 +149,10 @@ pub const World = struct {
         self.dynamic_renderables.deinit();
         self.dynamic_dirty_renderables.deinit();
         self.renderable_sync_candidates.deinit();
+        for (self.animator_bindings.items) |binding| {
+            self.allocator.free(binding.target_entities);
+        }
+        self.animator_bindings.deinit(self.allocator);
         self.resources.deinit();
         if (reinitialize) {
             self.entities = .empty;
@@ -158,6 +168,7 @@ pub const World = struct {
             self.dynamic_renderables = std.AutoHashMap(EntityId, DynamicRenderableState).init(self.allocator);
             self.dynamic_dirty_renderables = std.AutoHashMap(EntityId, void).init(self.allocator);
             self.renderable_sync_candidates = std.AutoHashMap(EntityId, void).init(self.allocator);
+            self.animator_bindings = .empty;
             self.renderable_full_sync_required = false;
         }
     }
@@ -999,6 +1010,38 @@ pub const World = struct {
         return &self.resources;
     }
 
+    pub fn bindAnimatorTargets(self: *World, animator_entity_id: EntityId, target_entities: []const EntityId) !void {
+        if (!self.hasEntity(animator_entity_id)) {
+            return error.EntityNotFound;
+        }
+
+        const owned_targets = try self.allocator.dupe(EntityId, target_entities);
+        errdefer self.allocator.free(owned_targets);
+
+        for (self.animator_bindings.items) |*binding| {
+            if (binding.animator_entity_id != animator_entity_id) {
+                continue;
+            }
+            self.allocator.free(binding.target_entities);
+            binding.target_entities = owned_targets;
+            return;
+        }
+
+        try self.animator_bindings.append(self.allocator, .{
+            .animator_entity_id = animator_entity_id,
+            .target_entities = owned_targets,
+        });
+    }
+
+    pub fn animatorTargets(self: *const World, animator_entity_id: EntityId) ?[]const EntityId {
+        for (self.animator_bindings.items) |binding| {
+            if (binding.animator_entity_id == animator_entity_id) {
+                return binding.target_entities;
+            }
+        }
+        return null;
+    }
+
     fn worldTransformRecursive(self: *const World, id: EntityId, depth: usize) ?components.Transform {
         _ = depth;
         return self.worldTransformConst(id);
@@ -1058,6 +1101,7 @@ pub const World = struct {
         _ = self.dynamic_renderables.remove(id);
         _ = self.dynamic_dirty_renderables.remove(id);
         _ = self.renderable_sync_candidates.remove(id);
+        self.removeAnimatorBinding(id);
 
         // Remove from parent's children list
         if (entity.parent) |parent_id| {
@@ -1083,6 +1127,11 @@ pub const World = struct {
 
     fn duplicateEntityRecursive(self: *World, source_id: EntityId, new_parent: ?EntityId) !EntityId {
         const source = self.getEntityConst(source_id) orelse return error.EntityNotFound;
+        var source_subtree_ids = std.ArrayList(EntityId).empty;
+        defer source_subtree_ids.deinit(self.allocator);
+        if (self.animatorTargets(source_id) != null) {
+            try self.collectSubtreeIds(source_id, &source_subtree_ids);
+        }
 
         var child_ids = std.ArrayList(EntityId).empty;
         defer child_ids.deinit(self.allocator);
@@ -1119,6 +1168,27 @@ pub const World = struct {
                 continue;
             }
             _ = try self.duplicateEntityRecursive(child_id, duplicate_id);
+        }
+
+        if (self.animatorTargets(source_id)) |targets| {
+            var duplicate_subtree_ids = std.ArrayList(EntityId).empty;
+            defer duplicate_subtree_ids.deinit(self.allocator);
+            try self.collectSubtreeIds(duplicate_id, &duplicate_subtree_ids);
+
+            var remapped_targets = std.ArrayList(EntityId).empty;
+            defer remapped_targets.deinit(self.allocator);
+            try remapped_targets.ensureTotalCapacity(self.allocator, @intCast(targets.len));
+
+            for (targets) |target_id| {
+                const subtree_index = indexOfEntityId(source_subtree_ids.items, target_id) orelse continue;
+                if (subtree_index >= duplicate_subtree_ids.items.len) {
+                    continue;
+                }
+                remapped_targets.appendAssumeCapacity(duplicate_subtree_ids.items[subtree_index]);
+            }
+            if (remapped_targets.items.len == targets.len) {
+                try self.bindAnimatorTargets(duplicate_id, remapped_targets.items);
+            }
         }
 
         return duplicate_id;
@@ -1561,6 +1631,17 @@ pub const World = struct {
             index += 1;
         }
     }
+
+    fn removeAnimatorBinding(self: *World, animator_entity_id: EntityId) void {
+        for (self.animator_bindings.items, 0..) |binding, index| {
+            if (binding.animator_entity_id != animator_entity_id) {
+                continue;
+            }
+            self.allocator.free(binding.target_entities);
+            _ = self.animator_bindings.swapRemove(index);
+            return;
+        }
+    }
 };
 
 fn sliceContainsEntityId(entity_ids: []const EntityId, entity_id: EntityId) bool {
@@ -1570,6 +1651,15 @@ fn sliceContainsEntityId(entity_ids: []const EntityId, entity_id: EntityId) bool
         }
     }
     return false;
+}
+
+fn indexOfEntityId(entity_ids: []const EntityId, entity_id: EntityId) ?usize {
+    for (entity_ids, 0..) |candidate, index| {
+        if (candidate == entity_id) {
+            return index;
+        }
+    }
+    return null;
 }
 
 fn composeTransform(parent: components.Transform, local: components.Transform) components.Transform {
