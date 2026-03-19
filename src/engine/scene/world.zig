@@ -51,6 +51,12 @@ pub const Entity = struct {
     }
 };
 
+pub const RenderableRayCandidate = struct {
+    id: EntityId,
+    bounds: AABB,
+    enter_distance: f32,
+};
+
 pub const EntityDesc = struct {
     name: []const u8,
     parent: ?EntityId = null,
@@ -883,29 +889,49 @@ pub const World = struct {
         ray_direction: [3]f32,
         max_distance: f32,
     ) ![]EntityId {
-        try self.ensureRenderableSpatialState();
+        const bounds_candidates = try self.queryRenderableRayBounds(allocator, ray_origin, ray_direction, max_distance);
+        defer allocator.free(bounds_candidates);
 
         var candidates = std.ArrayList(EntityId).empty;
         errdefer candidates.deinit(allocator);
+        try candidates.ensureTotalCapacity(allocator, @intCast(bounds_candidates.len));
+        for (bounds_candidates) |candidate| {
+            candidates.appendAssumeCapacity(candidate.id);
+        }
+        return try candidates.toOwnedSlice(allocator);
+    }
 
-        const static_candidates = try self.renderable_spatial_index.queryRayCandidates(
+    pub fn queryRenderableRayBounds(
+        self: *World,
+        allocator: std.mem.Allocator,
+        ray_origin: [3]f32,
+        ray_direction: [3]f32,
+        max_distance: f32,
+    ) ![]RenderableRayCandidate {
+        try self.ensureRenderableSpatialState();
+
+        var candidates = std.ArrayList(RenderableRayCandidate).empty;
+        errdefer candidates.deinit(allocator);
+
+        const static_candidates = try self.renderable_spatial_index.queryRayCandidatesDetailed(
             allocator,
             ray_origin,
             ray_direction,
             max_distance,
         );
         defer allocator.free(static_candidates);
-        try candidates.appendSlice(allocator, static_candidates);
+        try self.appendRenderableRayCandidates(allocator, &candidates, static_candidates);
 
-        const dynamic_candidates = try self.dynamic_renderable_spatial_index.queryRayCandidates(
+        const dynamic_candidates = try self.dynamic_renderable_spatial_index.queryRayCandidatesDetailed(
             allocator,
             ray_origin,
             ray_direction,
             max_distance,
         );
         defer allocator.free(dynamic_candidates);
-        try candidates.appendSlice(allocator, dynamic_candidates);
+        try self.appendRenderableRayCandidates(allocator, &candidates, dynamic_candidates);
 
+        std.sort.heap(RenderableRayCandidate, candidates.items, {}, lessThanRenderableRayCandidateDistance);
         return try candidates.toOwnedSlice(allocator);
     }
 
@@ -1403,6 +1429,26 @@ pub const World = struct {
         try indices.put(item.id, next_index);
     }
 
+    fn appendRenderableRayCandidates(
+        self: *World,
+        allocator: std.mem.Allocator,
+        candidates: *std.ArrayList(RenderableRayCandidate),
+        source: []const spatial_index_mod.RayCandidate,
+    ) !void {
+        try candidates.ensureUnusedCapacity(allocator, source.len);
+        for (source) |candidate| {
+            const bounds = self.worldBoundsConst(candidate.id) orelse continue;
+            if (!bounds.isValid()) {
+                continue;
+            }
+            candidates.appendAssumeCapacity(.{
+                .id = candidate.id,
+                .bounds = bounds,
+                .enter_distance = candidate.enter_distance,
+            });
+        }
+    }
+
     const BoundsItemChange = enum {
         unchanged,
         updated,
@@ -1440,6 +1486,10 @@ pub const World = struct {
             indices.put(moved_item.id, item_index) catch {};
         }
         return true;
+    }
+
+    fn lessThanRenderableRayCandidateDistance(_: void, lhs: RenderableRayCandidate, rhs: RenderableRayCandidate) bool {
+        return lhs.enter_distance < rhs.enter_distance;
     }
 
     fn nextAvailableDerivedName(self: *const World, base_name: []const u8, suffix: []const u8) ![]u8 {
@@ -1897,6 +1947,33 @@ test "renderable bounds frustum query reuses cached bounds for visible BVH candi
     try std.testing.expectEqual(@as(usize, 1), bounds_items.len);
     try std.testing.expectEqual(near_cube, bounds_items[0].id);
     try std.testing.expectEqualDeep(world.worldBoundsConst(near_cube).?, bounds_items[0].bounds);
+}
+
+test "renderable ray bounds query returns sorted cached bounds candidates" {
+    var world = World.init(std.testing.allocator);
+    defer world.deinit();
+
+    const near_cube = try world.createPrimitiveEntity(.cube, .{
+        .translation = .{ 0.0, 0.0, 0.0 },
+    });
+    const far_cube = try world.createPrimitiveEntity(.cube, .{
+        .translation = .{ 6.0, 0.0, 0.0 },
+    });
+
+    const candidates = try world.queryRenderableRayBounds(
+        std.testing.allocator,
+        .{ -4.0, 0.0, 0.0 },
+        .{ 1.0, 0.0, 0.0 },
+        20.0,
+    );
+    defer std.testing.allocator.free(candidates);
+
+    try std.testing.expectEqual(@as(usize, 2), candidates.len);
+    try std.testing.expectEqual(near_cube, candidates[0].id);
+    try std.testing.expectEqual(far_cube, candidates[1].id);
+    try std.testing.expect(candidates[0].enter_distance <= candidates[1].enter_distance);
+    try std.testing.expectEqualDeep(world.worldBoundsConst(near_cube).?, candidates[0].bounds);
+    try std.testing.expectEqualDeep(world.worldBoundsConst(far_cube).?, candidates[1].bounds);
 }
 
 test "renderable partition caches update incrementally for create and destroy" {

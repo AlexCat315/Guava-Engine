@@ -10,6 +10,11 @@ pub const BoundsItem = struct {
     bounds: AABB,
 };
 
+pub const RayCandidate = struct {
+    id: ItemId,
+    enter_distance: f32,
+};
+
 const Node = struct {
     bounds: AABB,
     left: ?u32,
@@ -227,6 +232,24 @@ pub const StaticBoundsBvh = struct {
             try self.collectRayCandidatesRecursive(allocator, root_index, ray_origin, ray_direction, max_distance, &candidates);
         }
         try self.collectPendingRayCandidates(allocator, ray_origin, ray_direction, max_distance, &candidates);
+        return try candidates.toOwnedSlice(allocator);
+    }
+
+    pub fn queryRayCandidatesDetailed(
+        self: *const StaticBoundsBvh,
+        allocator: std.mem.Allocator,
+        ray_origin: [3]f32,
+        ray_direction: [3]f32,
+        max_distance: f32,
+    ) ![]RayCandidate {
+        var candidates = std.ArrayList(RayCandidate).empty;
+        errdefer candidates.deinit(allocator);
+
+        if (self.root_index) |root_index| {
+            try self.collectRayCandidateDetailsRecursive(allocator, root_index, ray_origin, ray_direction, max_distance, &candidates);
+        }
+        try self.collectPendingRayCandidateDetails(allocator, ray_origin, ray_direction, max_distance, &candidates);
+        std.sort.heap(RayCandidate, candidates.items, {}, lessThanRayCandidateDistance);
         return try candidates.toOwnedSlice(allocator);
     }
 
@@ -640,7 +663,9 @@ pub const StaticBoundsBvh = struct {
                 if (self.pending_removals.contains(item.id)) {
                     continue;
                 }
-                try candidates.append(allocator, item.id);
+                if (item.bounds.rayIntersection(ray_origin, ray_direction, max_distance) != null) {
+                    try candidates.append(allocator, item.id);
+                }
             }
             return;
         }
@@ -711,6 +736,77 @@ pub const StaticBoundsBvh = struct {
             if (item.bounds.rayIntersection(ray_origin, ray_direction, max_distance) != null) {
                 try candidates.append(allocator, item.id);
             }
+        }
+    }
+
+    fn collectRayCandidateDetailsRecursive(
+        self: *const StaticBoundsBvh,
+        allocator: std.mem.Allocator,
+        node_index: u32,
+        ray_origin: [3]f32,
+        ray_direction: [3]f32,
+        max_distance: f32,
+        candidates: *std.ArrayList(RayCandidate),
+    ) !void {
+        const node = self.nodes.items[node_index];
+        if (node.bounds.rayIntersection(ray_origin, ray_direction, max_distance) == null) {
+            return;
+        }
+
+        if (node.isLeaf()) {
+            const start: usize = node.start;
+            const end = start + node.count;
+            for (self.items.items[start..end]) |item| {
+                if (self.pending_removals.contains(item.id)) {
+                    continue;
+                }
+                const hit = item.bounds.rayIntersection(ray_origin, ray_direction, max_distance) orelse continue;
+                try candidates.append(allocator, .{
+                    .id = item.id,
+                    .enter_distance = hit.enter_distance,
+                });
+            }
+            return;
+        }
+
+        const left_index = node.left.?;
+        const right_index = node.right.?;
+        const left_hit = self.nodes.items[left_index].bounds.rayIntersection(ray_origin, ray_direction, max_distance);
+        const right_hit = self.nodes.items[right_index].bounds.rayIntersection(ray_origin, ray_direction, max_distance);
+
+        if (left_hit != null and right_hit != null) {
+            if (left_hit.?.enter_distance <= right_hit.?.enter_distance) {
+                try self.collectRayCandidateDetailsRecursive(allocator, left_index, ray_origin, ray_direction, max_distance, candidates);
+                try self.collectRayCandidateDetailsRecursive(allocator, right_index, ray_origin, ray_direction, max_distance, candidates);
+            } else {
+                try self.collectRayCandidateDetailsRecursive(allocator, right_index, ray_origin, ray_direction, max_distance, candidates);
+                try self.collectRayCandidateDetailsRecursive(allocator, left_index, ray_origin, ray_direction, max_distance, candidates);
+            }
+            return;
+        }
+
+        if (left_hit != null) {
+            try self.collectRayCandidateDetailsRecursive(allocator, left_index, ray_origin, ray_direction, max_distance, candidates);
+        }
+        if (right_hit != null) {
+            try self.collectRayCandidateDetailsRecursive(allocator, right_index, ray_origin, ray_direction, max_distance, candidates);
+        }
+    }
+
+    fn collectPendingRayCandidateDetails(
+        self: *const StaticBoundsBvh,
+        allocator: std.mem.Allocator,
+        ray_origin: [3]f32,
+        ray_direction: [3]f32,
+        max_distance: f32,
+        candidates: *std.ArrayList(RayCandidate),
+    ) !void {
+        for (self.pending_additions.items) |item| {
+            const hit = item.bounds.rayIntersection(ray_origin, ray_direction, max_distance) orelse continue;
+            try candidates.append(allocator, .{
+                .id = item.id,
+                .enter_distance = hit.enter_distance,
+            });
         }
     }
 
@@ -789,6 +885,10 @@ fn siblingNodeIndex(parent: Node, child_index: u32) ?u32 {
     if (parent.left == child_index) return parent.right;
     if (parent.right == child_index) return parent.left;
     return null;
+}
+
+fn lessThanRayCandidateDistance(_: void, lhs: RayCandidate, rhs: RayCandidate) bool {
+    return lhs.enter_distance < rhs.enter_distance;
 }
 
 fn isImbalanced(left_count: usize, right_count: usize) bool {

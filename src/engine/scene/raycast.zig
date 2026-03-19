@@ -26,7 +26,7 @@ pub const SurfaceRaycastHit = struct {
 
 pub fn raycastSurface(world: *world_mod.World, ray: Ray) ?SurfaceRaycastHit {
     const normalized_direction = normalize(ray.direction);
-    const candidate_ids = world.queryRenderableRayCandidates(
+    const candidates = world.queryRenderableRayBounds(
         world.allocator,
         ray.origin,
         normalized_direction,
@@ -35,7 +35,7 @@ pub fn raycastSurface(world: *world_mod.World, ray: Ray) ?SurfaceRaycastHit {
         raycast_log.warn("raycast broad phase query failed; fallback to brute force, error={}", .{err});
         return raycastSurfaceBruteForce(world, ray.origin, normalized_direction);
     };
-    defer world.allocator.free(candidate_ids);
+    defer world.allocator.free(candidates);
 
     const snapshot = BvhLogSnapshot{
         .static_items = world.renderable_spatial_index.itemCount(),
@@ -59,9 +59,14 @@ pub fn raycastSurface(world: *world_mod.World, ray: Ray) ?SurfaceRaycastHit {
     }
 
     var best_hit: ?SurfaceRaycastHit = null;
-    // broad phase 先筛 renderable bounds，triangle narrow phase 仍复用现有命中实现。
-    for (candidate_ids) |entity_id| {
-        const entity = world.getEntityConst(entity_id) orelse continue;
+    // broad phase 现在会给出按 AABB 入射距离排序的 bounds 候选；一旦后续候选已经比当前命中更远，就可以提前停掉窄相位。
+    for (candidates) |candidate| {
+        if (best_hit) |resolved_best_hit| {
+            if (candidate.enter_distance > resolved_best_hit.distance) {
+                break;
+            }
+        }
+        const entity = world.getEntityConst(candidate.id) orelse continue;
         testEntitySurface(world, entity, ray.origin, normalized_direction, &best_hit);
     }
     return best_hit;

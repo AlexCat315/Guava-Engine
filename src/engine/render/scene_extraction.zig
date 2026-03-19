@@ -142,16 +142,16 @@ pub fn extractWorld(
     }
 
     if (frustum) |resolved_frustum| {
-        const candidate_ids = try world.queryRenderableFrustumCandidates(render_world.allocator, resolved_frustum);
-        defer render_world.allocator.free(candidate_ids);
+        const visible_bounds = try world.queryRenderableBoundsInFrustum(render_world.allocator, resolved_frustum);
+        defer render_world.allocator.free(visible_bounds);
 
         var candidate_set = std.AutoHashMap(scene_mod.EntityId, void).init(render_world.allocator);
         errdefer candidate_set.deinit();
-        try candidate_set.ensureTotalCapacity(@intCast(candidate_ids.len));
-        for (candidate_ids) |candidate_id| {
-            candidate_set.putAssumeCapacity(candidate_id, {});
+        try candidate_set.ensureTotalCapacity(@intCast(visible_bounds.len));
+        for (visible_bounds) |candidate| {
+            candidate_set.putAssumeCapacity(candidate.id, {});
         }
-        stats.frustum_candidates = candidate_ids.len;
+        stats.frustum_candidates = visible_bounds.len;
         visible_renderables = candidate_set;
     }
 
