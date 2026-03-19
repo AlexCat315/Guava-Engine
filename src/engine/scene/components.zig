@@ -111,6 +111,26 @@ pub const MeshCollider = struct {
     layer_group: u16 = 0xFFFF,
 };
 
+pub const ConstraintType = enum(u8) {
+    point_to_point,
+    hinge,
+    slider,
+    distance,
+};
+
+pub const Constraint = struct {
+    constraint_type: ConstraintType = .point_to_point,
+    entity_a: EntityId,
+    entity_b: EntityId,
+    pivot_a: Vec3 = .{ 0.0, 0.0, 0.0 },
+    pivot_b: Vec3 = .{ 0.0, 0.0, 0.0 },
+    axis_a: Vec3 = .{ 0.0, 1.0, 0.0 },
+    axis_b: Vec3 = .{ 0.0, 1.0, 0.0 },
+    min_limit: f32 = 0.0,
+    max_limit: f32 = 0.0,
+    is_enabled: bool = true,
+};
+
 pub const ShadingModel = enum {
     unlit,
     lambert,
@@ -148,6 +168,14 @@ pub const VfxKind = enum {
 
 pub const Vfx = struct {
     kind: VfxKind = .fountain,
+};
+
+/// 脚本组件 - 附加到实体上运行脚本逻辑
+pub const Script = struct {
+    script_handle: ?*anyopaque = null,
+    enabled: bool = true,
+    parameters: []const u8 = &.{},
+};
     looping: bool = true,
     emission_rate: f32 = 18.0,
     particle_lifetime: f32 = 1.25,

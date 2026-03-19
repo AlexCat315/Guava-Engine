@@ -20,6 +20,29 @@ pub const TriggerEventKind = enum(u8) {
     exit,
 };
 
+pub const DebugShape = union(enum) {
+    box: DebugBox,
+    sphere: DebugSphere,
+};
+
+pub const DebugBox = struct {
+    center: components.Vec3,
+    half_extents: components.Vec3,
+};
+
+pub const DebugSphere = struct {
+    center: components.Vec3,
+    radius: f32,
+};
+
+pub const PhysicsDebugInfo = struct {
+    entity_id: EntityId,
+    shape: DebugShape,
+    is_trigger: bool,
+};
+
+var g_physics_debug_info: std.ArrayListUnmanaged(PhysicsDebugInfo) = .empty;
+
 const PhysicsEvent = union(enum) {
     entity_created: EntityId,
     entity_destroyed: EntityId,
@@ -239,6 +262,53 @@ pub fn clearTriggerEvents() void {
     g_trigger_event_mutex.lock();
     defer g_trigger_event_mutex.unlock();
     g_trigger_event_queue.clearRetainingCapacity();
+}
+
+pub fn collectDebugShapes(world: *scene_mod.World, allocator: std.mem.Allocator) ![]PhysicsDebugInfo {
+    g_physics_debug_info.clearRetainingCapacity();
+    
+    for (world.entities.items) |entity| {
+        if (!hasAnyCollider(&entity)) continue;
+        
+        const world_transform = entity.world_transform_cache;
+        const is_trigger = isTriggerOnly(&entity);
+        
+        if (entity.box_collider) |collider| {
+            const center = vec3.add(
+                world_transform.translation,
+                vec3.mul(world_transform.scale, collider.center),
+            );
+            const half_extents = vec3.mul(world_transform.scale, collider.half_extents);
+            
+            try g_physics_debug_info.append(allocator, .{
+                .entity_id = entity.id,
+                .shape = .{ .box = .{
+                    .center = center,
+                    .half_extents = half_extents,
+                }},
+                .is_trigger = is_trigger,
+            });
+        }
+        
+        if (entity.sphere_collider) |collider| {
+            const center = vec3.add(
+                world_transform.translation,
+                vec3.mul(world_transform.scale, collider.center),
+            );
+            const radius = maxComponent(world_transform.scale) * collider.radius;
+            
+            try g_physics_debug_info.append(allocator, .{
+                .entity_id = entity.id,
+                .shape = .{ .sphere = .{
+                    .center = center,
+                    .radius = radius,
+                }},
+                .is_trigger = is_trigger,
+            });
+        }
+    }
+    
+    return g_physics_debug_info.items;
 }
 
 pub fn enqueuePhysicsEvent(event: PhysicsEvent) void {

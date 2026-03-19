@@ -9,6 +9,7 @@ const vec3 = @import("../math/vec3.zig");
 const AABB = @import("../math/aabb.zig").AABB;
 const frustum_mod = @import("../math/frustum.zig");
 const job_system_mod = @import("../core/job_system.zig");
+const prefab_mod = @import("prefab.zig");
 
 const compose_epsilon = 0.0001;
 const dynamic_reintegration_query_threshold: u8 = 3;
@@ -57,14 +58,24 @@ pub const Entity = struct {
     material: ?components.Material = null,
     light: ?components.Light = null,
     vfx: ?components.Vfx = null,
+    script: ?components.Script = null,
     visible: bool = true,
     editor_only: bool = false,
     is_folder: bool = false,
     children: std.ArrayListUnmanaged(EntityId) = .empty,
 
+    // Prefab 相关字段
+    /// 该实体在原始 Prefab 中的 ID (如果是 Prefab 实例)
+    prefab_entity_id: ?u32 = null,
+    /// Prefab 实例覆盖数据 (如果有覆盖)
+    prefab_instance_override: ?prefab_mod.PrefabInstanceOverride = null,
+
     pub fn deinit(self: *Entity, allocator: std.mem.Allocator) void {
         self.children.deinit(allocator);
         allocator.free(self.name);
+        if (self.prefab_instance_override) |*override| {
+            override.deinit(allocator);
+        }
     }
 };
 
@@ -89,6 +100,7 @@ pub const EntityDesc = struct {
     material: ?components.Material = null,
     light: ?components.Light = null,
     vfx: ?components.Vfx = null,
+    script: ?components.Script = null,
     visible: bool = true,
     editor_only: bool = false,
     is_folder: bool = false,
@@ -108,6 +120,8 @@ pub const Summary = struct {
 pub const World = struct {
     allocator: std.mem.Allocator,
     resources: assets_lib.ResourceLibrary,
+    /// Prefab 库
+    prefab_library: prefab_mod.PrefabLibrary = .{},
     entities: std.ArrayList(Entity) = .empty,
     id_to_index: std.AutoHashMap(EntityId, usize),
     next_id: EntityId = 1,
@@ -130,6 +144,7 @@ pub const World = struct {
         return .{
             .allocator = allocator,
             .resources = assets_lib.ResourceLibrary.init(allocator, job_system),
+            .prefab_library = prefab_mod.PrefabLibrary.init(allocator),
             .id_to_index = std.AutoHashMap(EntityId, usize).init(allocator),
             .job_system = job_system,
             .renderable_spatial_index = spatial_index_mod.StaticBoundsBvh.init(allocator),
@@ -176,10 +191,12 @@ pub const World = struct {
         }
         self.skinned_mesh_bindings.deinit(self.allocator);
         self.resources.deinit();
+        self.prefab_library.deinit();
         if (reinitialize) {
             self.entities = .empty;
             self.id_to_index = std.AutoHashMap(EntityId, usize).init(self.allocator);
             self.resources = assets_lib.ResourceLibrary.init(self.allocator, self.job_system);
+            self.prefab_library = prefab_mod.PrefabLibrary.init(self.allocator);
             self.vfx_runtime_emitters = .empty;
             self.renderable_spatial_index = spatial_index_mod.StaticBoundsBvh.init(self.allocator);
             self.dynamic_renderable_spatial_index = spatial_index_mod.StaticBoundsBvh.init(self.allocator);
@@ -2138,6 +2155,116 @@ test "dynamic renderable movement refits dynamic BVH without growing dynamic par
 }
 
 test "renderable bounds frustum query reuses cached bounds for visible BVH candidates" {
+
+    // ========================================================================
+    // Prefab 相关方法
+    // ========================================================================
+
+    /// 从实体树创建 Prefab
+    pub fn createPrefab(
+        self: *World,
+        root_entity_id: EntityId,
+        prefab_id: []const u8,
+    ) !void {
+        const prefab = try prefab_mod.createPrefabFromEntities(
+            self.allocator,
+            self,
+            root_entity_id,
+            prefab_id,
+        );
+        try self.prefab_library.add(prefab, prefab_id, null);
+    }
+
+    /// 加载 Prefab 从文件
+    pub fn loadPrefab(self: *World, path: []const u8) !prefab_mod.PrefabId {
+        return try self.prefab_library.loadFromPath(path);
+    }
+
+    /// 保存 Prefab 到文件
+    pub fn savePrefab(self: *World, id: []const u8, path: []const u8) !void {
+        try self.prefab_library.saveToPath(id, path);
+    }
+
+    /// 实例化 Prefab
+    pub fn instantiatePrefab(
+        self: *World,
+        prefab_id: []const u8,
+        options: prefab_mod.InstantiateOptions,
+    ) !EntityId {
+        const prefab = self.prefab_library.get(prefab_id) orelse
+            return error.PrefabNotFound;
+        return try prefab_mod.instantiatePrefab(self.allocator, self, prefab, options);
+    }
+
+    /// 获取 Prefab
+    pub fn getPrefab(self: *const World, id: []const u8) ?*prefab_mod.PrefabResource {
+        return self.prefab_library.get(id);
+    }
+
+    /// 移除 Prefab
+    pub fn removePrefab(self: *World, id: []const u8) !void {
+        try self.prefab_library.remove(id);
+    }
+
+    /// 检测 Prefab 差异
+    pub fn detectPrefabDiff(
+        self: *World,
+        old_prefab_id: []const u8,
+        new_prefab_id: []const u8,
+    ) !prefab_mod.PrefabDiff {
+        const old_prefab = self.prefab_library.get(old_prefab_id) orelse
+            return error.PrefabNotFound;
+        const new_prefab = self.prefab_library.get(new_prefab_id) orelse
+            return error.PrefabNotFound;
+        return try prefab_mod.detectDiffs(self.allocator, old_prefab, new_prefab);
+    }
+
+    /// 更新 Prefab 实例
+    pub fn updatePrefabInstance(
+        self: *World,
+        root_entity_id: EntityId,
+        prefab_id: []const u8,
+    ) !void {
+        const prefab = self.prefab_library.get(prefab_id) orelse
+            return error.PrefabNotFound;
+
+        // TODO: 实现增量更新
+        // 1. 获取旧 Prefab
+        // 2. Diff 检测
+        // 3. 应用变更
+        _ = root_entity_id;
+        _ = prefab;
+    }
+
+    /// 检查实体是否是 Prefab 实例
+    pub fn isPrefabInstance(self: *const World, entity_id: EntityId) bool {
+        const entity = self.getEntityConst(entity_id) orelse return false;
+        return entity.prefab_entity_id != null;
+    }
+
+    /// 获取实体的 Prefab 覆盖数据
+    pub fn getPrefabOverride(self: *const World, entity_id: EntityId) ?*const prefab_mod.PrefabInstanceOverride {
+        const entity = self.getEntityConst(entity_id) orelse return null;
+        return entity.prefab_instance_override;
+    }
+
+    /// 应用 Prefab 覆盖 (恢复到原始值)
+    pub fn revertPrefabOverride(self: *World, entity_id: EntityId) !void {
+        const entity = self.getEntity(entity_id) orelse return error.EntityNotFound;
+        if (entity.prefab_instance_override) |override| {
+            // 恢复覆盖的字段
+            if (override.override_mask.local_transform and override.local_transform_override) |transform| {
+                entity.local_transform = transform;
+            }
+            if (override.override_mask.visible and override.visible_override != null) {
+                entity.visible = override.visible_override.?;
+            }
+            // 释放覆盖数据
+            override.deinit(self.allocator);
+            entity.prefab_instance_override = null;
+        }
+    }
+
     var world = World.init(std.testing.allocator, null);
     defer world.deinit();
 

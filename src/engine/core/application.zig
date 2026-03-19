@@ -1,6 +1,8 @@
 const std = @import("std");
 const animator_system = @import("../animation/animator_system.zig");
 const physics_system = @import("../physics/system.zig");
+const script_system = @import("../script/script.zig");
+const handles = @import("../assets/handles.zig");
 const layer_mod = @import("layer.zig");
 const layer_stack_mod = @import("layer_stack.zig");
 const input_mod = @import("input.zig");
@@ -25,6 +27,7 @@ pub const ApplicationConfig = struct {
     frames_in_flight: u32 = 2,
     thread_count: ?usize = null,
     physics: physics_system.Config = .{},
+    script: script_system.ScriptSystemConfig = .{},
 };
 
 pub const RunReport = struct {
@@ -46,6 +49,7 @@ pub const Application = struct {
     world: scene_mod.World,
     layers: layer_stack_mod.LayerStack,
     job_system: *job_system_mod.JobSystem,
+    script_runtime: script_system.ScriptRuntime,
     input: input_mod.InputState = .{},
     playback_controller: layer_mod.PlaybackController = .{},
     initialized: bool = false,
@@ -78,6 +82,10 @@ pub const Application = struct {
             .frames_in_flight = config.frames_in_flight,
         });
 
+        // 初始化脚本运行时
+        var script_runtime = script_system.ScriptRuntime.init(allocator, config.script);
+        try script_runtime.initVMs();
+
         const timer = try std.time.Timer.start();
 
         return .{
@@ -88,6 +96,7 @@ pub const Application = struct {
             .renderer = renderer,
             .world = world,
             .job_system = job_system,
+            .script_runtime = script_runtime,
             .layers = layer_stack_mod.LayerStack.init(allocator),
             .input = .{},
             .timer = timer,
@@ -99,6 +108,8 @@ pub const Application = struct {
             self.detachLayers();
         }
         self.layers.deinit();
+        self.script_runtime.deinit();
+        physics_system.deinitWorld(&self.world);
         self.world.deinit();
         self.renderer.deinit();
         self.window.deinit();
@@ -147,6 +158,8 @@ pub const Application = struct {
             if (should_advance_simulation) {
                 animator_system.update(&self.world, delta_seconds);
                 self.advancePhysics(delta_seconds);
+                // 更新脚本系统
+                self.updateScripts(delta_seconds);
             }
 
             // P1: Update hierarchy transforms and bounds once per frame
@@ -289,5 +302,36 @@ pub const Application = struct {
         {
             self.physics_accumulator_seconds = 0.0;
         }
+    }
+
+    fn updateScripts(self: *Application, delta_seconds: f32) void {
+        // 遍历所有实体，调用脚本的 OnUpdate
+        for (self.world.entities.items) |*entity| {
+            if (entity.script) |*script| {
+                if (!script.enabled) continue;
+                // TODO: 获取脚本实例并调用 onUpdate
+                _ = delta_seconds;
+            }
+        }
+        
+        // 检查热重载
+        self.script_runtime.checkHotReload();
+    }
+
+    /// 加载脚本资源
+    pub fn loadScript(self: *Application, path: []const u8) !handles.ScriptHandle {
+        const source = try std.fs.cwd().readFileAlloc(self.allocator, path, 1024 * 1024);
+        errdefer self.allocator.free(source);
+
+        const desc = .{
+            .source = source,
+            .language = .zig,
+            .entry_fn = "main",
+            .description = path,
+            .source_path = path,
+        };
+
+        const handle = try self.world.resources.createScript(desc);
+        return handle;
     }
 };

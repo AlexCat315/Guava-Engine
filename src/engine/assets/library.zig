@@ -7,6 +7,7 @@ const registry_mod = @import("registry.zig");
 const skeleton_mod = @import("skeleton_resource.zig");
 const skin_mod = @import("skin_resource.zig");
 const texture_mod = @import("texture_resource.zig");
+const script_mod = @import("script_resource.zig");
 const components = @import("../scene/components.zig");
 const job_system_mod = @import("../core/job_system.zig");
 
@@ -19,6 +20,7 @@ pub const ResourceLibrary = struct {
     skeletons: std.ArrayList(skeleton_mod.SkeletonResource) = .empty,
     skins: std.ArrayList(skin_mod.SkinResource) = .empty,
     animation_clips: std.ArrayList(animation_clip_mod.AnimationClipResource) = .empty,
+    scripts: std.ArrayList(script_mod.ScriptResource) = .empty,
     asset_registry: registry_mod.AssetRegistry,
     mesh_records: std.AutoHashMap(handles.MeshHandle, usize),
     material_records: std.AutoHashMap(handles.MaterialHandle, usize),
@@ -26,12 +28,14 @@ pub const ResourceLibrary = struct {
     skeleton_records: std.AutoHashMap(handles.SkeletonHandle, usize),
     skin_records: std.AutoHashMap(handles.SkinHandle, usize),
     animation_clip_records: std.AutoHashMap(handles.AnimationClipHandle, usize),
+    script_records: std.AutoHashMap(handles.ScriptHandle, usize),
     mesh_handles_by_asset_id: std.StringHashMap(handles.MeshHandle),
     material_handles_by_asset_id: std.StringHashMap(handles.MaterialHandle),
     texture_handles_by_asset_id: std.StringHashMap(handles.TextureHandle),
     skeleton_handles_by_asset_id: std.StringHashMap(handles.SkeletonHandle),
     skin_handles_by_asset_id: std.StringHashMap(handles.SkinHandle),
     animation_clip_handles_by_asset_id: std.StringHashMap(handles.AnimationClipHandle),
+    script_handles_by_asset_id: std.StringHashMap(handles.ScriptHandle),
     cube_mesh: ?handles.MeshHandle = null,
     sphere_mesh: ?handles.MeshHandle = null,
     plane_mesh: ?handles.MeshHandle = null,
@@ -49,12 +53,14 @@ pub const ResourceLibrary = struct {
             .skeleton_records = std.AutoHashMap(handles.SkeletonHandle, usize).init(allocator),
             .skin_records = std.AutoHashMap(handles.SkinHandle, usize).init(allocator),
             .animation_clip_records = std.AutoHashMap(handles.AnimationClipHandle, usize).init(allocator),
+            .script_records = std.AutoHashMap(handles.ScriptHandle, usize).init(allocator),
             .mesh_handles_by_asset_id = std.StringHashMap(handles.MeshHandle).init(allocator),
             .material_handles_by_asset_id = std.StringHashMap(handles.MaterialHandle).init(allocator),
             .texture_handles_by_asset_id = std.StringHashMap(handles.TextureHandle).init(allocator),
             .skeleton_handles_by_asset_id = std.StringHashMap(handles.SkeletonHandle).init(allocator),
             .skin_handles_by_asset_id = std.StringHashMap(handles.SkinHandle).init(allocator),
             .animation_clip_handles_by_asset_id = std.StringHashMap(handles.AnimationClipHandle).init(allocator),
+            .script_handles_by_asset_id = std.StringHashMap(handles.ScriptHandle).init(allocator),
         };
     }
 
@@ -71,12 +77,15 @@ pub const ResourceLibrary = struct {
         self.material_handles_by_asset_id.deinit();
         freeHandleKeys(self.allocator, handles.MeshHandle, &self.mesh_handles_by_asset_id);
         self.mesh_handles_by_asset_id.deinit();
+        freeHandleKeys(self.allocator, handles.ScriptHandle, &self.script_handles_by_asset_id);
+        self.script_handles_by_asset_id.deinit();
         self.animation_clip_records.deinit();
         self.skin_records.deinit();
         self.skeleton_records.deinit();
         self.texture_records.deinit();
         self.material_records.deinit();
         self.mesh_records.deinit();
+        self.script_records.deinit();
         self.asset_registry.deinit();
 
         for (self.meshes.items) |*mesh_resource| {
@@ -108,6 +117,11 @@ pub const ResourceLibrary = struct {
             clip_resource.deinit(self.allocator);
         }
         self.animation_clips.deinit(self.allocator);
+
+        for (self.scripts.items) |*script_resource| {
+            script_mod.deinit(script_resource, self.allocator);
+        }
+        self.scripts.deinit(self.allocator);
     }
 
     pub fn createMesh(self: *ResourceLibrary, desc: mesh_mod.MeshResourceDesc) !handles.MeshHandle {
@@ -144,6 +158,12 @@ pub const ResourceLibrary = struct {
         const resource = try animation_clip_mod.clone(self.allocator, desc);
         try self.animation_clips.append(self.allocator, resource);
         return handles.animationClipHandle(self.animation_clips.items.len - 1);
+    }
+
+    pub fn createScript(self: *ResourceLibrary, desc: script_mod.ScriptResourceDesc) !handles.ScriptHandle {
+        const resource = try script_mod.clone(self.allocator, desc);
+        try self.scripts.append(self.allocator, resource);
+        return handles.scriptHandle(self.scripts.items.len - 1);
     }
 
     pub fn mesh(self: *const ResourceLibrary, handle: handles.MeshHandle) ?*const mesh_mod.MeshResource {
@@ -210,6 +230,17 @@ pub const ResourceLibrary = struct {
             return null;
         }
         return &self.animation_clips.items[index];
+    }
+
+    pub fn script(self: *const ResourceLibrary, handle: handles.ScriptHandle) ?*const script_mod.ScriptResource {
+        if (!handles.isValid(handle)) {
+            return null;
+        }
+        const index = handles.indexOf(handle);
+        if (index >= self.scripts.items.len) {
+            return null;
+        }
+        return &self.scripts.items[index];
     }
 
     pub fn assetRecordById(self: *const ResourceLibrary, asset_id: []const u8) ?*const registry_mod.AssetRecord {

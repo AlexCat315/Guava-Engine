@@ -31,6 +31,7 @@ const types = @import("types.zig");
 const AABB = @import("../math/aabb.zig").AABB;
 const frustum_mod = @import("../math/frustum.zig");
 const vec3 = @import("../math/vec3.zig");
+const physics_mod = @import("../physics/system.zig");
 const render_log = std.log.scoped(.viewport_render);
 
 var g_logged_viewport_backend: bool = false;
@@ -1597,6 +1598,34 @@ pub const Renderer = struct {
         prepared_scene: *const mesh_pass_mod.PreparedScene,
         lines: *std.ArrayList(gizmo_pass_mod.WorldLineVertex),
     ) !void {
+        // 优先使用物理调试信息绘制真实的 collider 形状
+        const debug_shapes = try physics_mod.collectDebugShapes(scene, allocator);
+        defer allocator.free(debug_shapes);
+        
+        if (debug_shapes.len > 0) {
+            if (g_logged_collision_overlay_boxes == null or g_logged_collision_overlay_boxes.? != debug_shapes.len) {
+                render_log.info("physics debug draw shapes={}", .{debug_shapes.len});
+                g_logged_collision_overlay_boxes = debug_shapes.len;
+            }
+            
+            for (debug_shapes) |shape| {
+                switch (shape.shape) {
+                    .box => |box| {
+                        const aabb = AABB{
+                            .min = vec3.sub(box.center, box.half_extents),
+                            .max = vec3.add(box.center, box.half_extents),
+                        };
+                        try appendBoxEdges(allocator, lines, cornersForAabb(aabb));
+                    },
+                    .sphere => |sphere| {
+                        try appendSphereEdges(allocator, lines, sphere.center, sphere.radius, 16);
+                    },
+                }
+            }
+            return;
+        }
+        
+        // 回退到渲染 BVH bounds
         const collision_frustum = frustum_mod.Frustum.fromViewProjection(prepared_scene.view_projection);
         const bounds_items = try scene.queryRenderableBoundsInFrustum(allocator, collision_frustum);
         defer allocator.free(bounds_items);
@@ -1645,6 +1674,37 @@ pub const Renderer = struct {
     fn appendLine(allocator: std.mem.Allocator, lines: *std.ArrayList(gizmo_pass_mod.WorldLineVertex), a: [3]f32, b: [3]f32) !void {
         try lines.append(allocator, .{ .position = a });
         try lines.append(allocator, .{ .position = b });
+    }
+
+    fn appendSphereEdges(allocator: std.mem.Allocator, lines: *std.ArrayList(gizmo_pass_mod.WorldLineVertex), center: [3]f32, radius: f32, segments: u32) !void {
+        const pi = std.math.pi;
+        
+        // 绘制纬线
+        var i: u32 = 0;
+        while (i < segments) : (i += 1) {
+            const lat1 = pi * @as(f32, @intCast(i)) / @as(f32, @intCast(segments)) - pi / 2.0;
+            const lat2 = pi * @as(f32, @intCast(i + 1)) / @as(f32, @intCast(segments)) - pi / 2.0;
+            
+            var j: u32 = 0;
+            while (j < segments) : (j += 1) {
+                const lon1 = 2.0 * pi * @as(f32, @intCast(j)) / @as(f32, @intCast(segments));
+                const lon2 = 2.0 * pi * @as(f32, @intCast(j + 1)) / @as(f32, @intCast(segments));
+                
+                const p1 = sphericalToCartesian(center, radius, lat1, lon1);
+                const p2 = sphericalToCartesian(center, radius, lat1, lon2);
+                const p3 = sphericalToCartesian(center, radius, lat2, lon1);
+                
+                try appendLine(allocator, lines, p1, p2);
+                try appendLine(allocator, lines, p1, p3);
+            }
+        }
+    }
+
+    fn sphericalToCartesian(center: [3]f32, radius: f32, lat: f32, lon: f32) [3]f32 {
+        const x = radius * std.math.cos(lat) * std.math.cos(lon);
+        const y = radius * std.math.sin(lat);
+        const z = radius * std.math.cos(lat) * std.math.sin(lon);
+        return .{ center[0] + x, center[1] + y, center[2] + z };
     }
 
     fn enqueueSelectionReadbacks(self: *Renderer, frame: rhi_mod.Frame, id_texture: *const rhi_mod.Texture) !void {
