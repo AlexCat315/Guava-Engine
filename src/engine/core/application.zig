@@ -109,6 +109,8 @@ pub const Application = struct {
     }
 
     pub fn deinit(self: *Application) void {
+        self.script_runtime.bindWorld(&self.world);
+        self.script_runtime.callDestroyAll(&self.world);
         if (self.initialized) {
             self.detachLayers();
         }
@@ -159,10 +161,10 @@ pub const Application = struct {
             const elapsed_ns = self.timer.lap();
             var delta_seconds = @as(f32, @floatFromInt(elapsed_ns)) / @as(f32, @floatFromInt(std.time.ns_per_s));
             delta_seconds = @min(delta_seconds, 0.1); // 最大帧间隔锁定为 0.1 秒
-            
+
             // 更新全局时间
             self.global_time += delta_seconds * self.time_scale;
-            
+
             const should_advance_simulation = self.playback_controller.shouldAdvance();
             if (should_advance_simulation) {
                 animator_system.update(&self.world, delta_seconds);
@@ -314,9 +316,12 @@ pub const Application = struct {
     }
 
     fn updateScripts(self: *Application, delta_seconds: f32) void {
+        self.script_runtime.bindWorld(&self.world);
+
         // 检查热重载
         self.script_runtime.checkHotReload();
-        
+        self.script_runtime.callInitAll(&self.world);
+
         // 遍历所有实体，调用脚本的 OnUpdate
         for (self.world.entities.items) |*entity| {
             if (entity.script) |*script| {
@@ -325,9 +330,10 @@ pub const Application = struct {
                     // 获取脚本实例
                     if (self.script_runtime.instances.get(instance_id)) |instance| {
                         // 获取 VM
-                        if (self.script_runtime.getVM(script.language)) |vm| {
+                        const script_language: script_system.ScriptLanguage = @enumFromInt(@intFromEnum(script.language));
+                        if (self.script_runtime.getVM(script_language)) |vm| {
                             // 创建上下文（包含输入和时间）
-                            var ctx = script_system.context.ScriptContext{
+                            var ctx = script_system.ScriptContext{
                                 .entity = entity.id,
                                 .world = &self.world,
                                 .instance = instance,
@@ -337,7 +343,7 @@ pub const Application = struct {
                                 .delta_time = delta_seconds,
                                 .time_scale = self.time_scale,
                             };
-                            
+
                             // 调用 OnUpdate（处理错误）
                             vm.callUpdate(instance, &ctx, delta_seconds) catch |err| {
                                 std.log.err("Script update error: {}", .{err});
@@ -352,8 +358,9 @@ pub const Application = struct {
 
     /// 加载脚本资源
     pub fn loadScript(self: *Application, path: []const u8) !handles.ScriptHandle {
+        self.script_runtime.bindWorld(&self.world);
         const source = try std.fs.cwd().readFileAlloc(self.allocator, path, 1024 * 1024);
-        errdefer self.allocator.free(source);
+        defer self.allocator.free(source);
 
         const desc = .{
             .source = source,
@@ -364,6 +371,9 @@ pub const Application = struct {
         };
 
         const handle = try self.world.resources.createScript(desc);
+        if (self.script_runtime.hot_reload) |*hr| {
+            try hr.registerScript(path, handle);
+        }
         return handle;
     }
 };

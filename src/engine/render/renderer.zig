@@ -1552,10 +1552,10 @@ pub const Renderer = struct {
             defer solid_lines.deinit(self.allocator);
             var trigger_lines = std.ArrayList(gizmo_pass_mod.WorldLineVertex).empty;
             defer trigger_lines.deinit(self.allocator);
-            
+
             try appendCollisionLines(self.allocator, scene, prepared_scene, &solid_lines, &trigger_lines);
-            
-            var collision_stats = gizmo_pass_mod.DrawStats{};
+
+            var collision_stats = mesh_pass_mod.DrawStats{};
             if (solid_lines.items.len > 0) {
                 const solid_stats = try self.gizmo_pass.drawWorldLines(
                     &self.rhi,
@@ -1621,13 +1621,13 @@ pub const Renderer = struct {
         // 优先使用物理调试信息绘制真实的 collider 形状
         const debug_shapes = try physics_mod.collectDebugShapes(scene, allocator);
         defer allocator.free(debug_shapes);
-        
+
         if (debug_shapes.len > 0) {
             if (g_logged_collision_overlay_boxes == null or g_logged_collision_overlay_boxes.? != debug_shapes.len) {
                 render_log.info("physics debug draw shapes={}", .{debug_shapes.len});
                 g_logged_collision_overlay_boxes = debug_shapes.len;
             }
-            
+
             for (debug_shapes) |shape| {
                 switch (shape.shape) {
                     .box => |box| {
@@ -1652,7 +1652,7 @@ pub const Renderer = struct {
             }
             return;
         }
-        
+
         // 回退到渲染 BVH bounds
         const collision_frustum = frustum_mod.Frustum.fromViewProjection(prepared_scene.view_projection);
         const bounds_items = try scene.queryRenderableBoundsInFrustum(allocator, collision_frustum);
@@ -1706,22 +1706,22 @@ pub const Renderer = struct {
 
     fn appendSphereEdges(allocator: std.mem.Allocator, lines: *std.ArrayList(gizmo_pass_mod.WorldLineVertex), center: [3]f32, radius: f32, segments: u32) !void {
         const pi = std.math.pi;
-        
+
         // 绘制纬线
         var i: u32 = 0;
         while (i < segments) : (i += 1) {
-            const lat1 = pi * @as(f32, @intCast(i)) / @as(f32, @intCast(segments)) - pi / 2.0;
-            const lat2 = pi * @as(f32, @intCast(i + 1)) / @as(f32, @intCast(segments)) - pi / 2.0;
-            
+            const lat1 = pi * @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(segments)) - pi / 2.0;
+            const lat2 = pi * @as(f32, @floatFromInt(i + 1)) / @as(f32, @floatFromInt(segments)) - pi / 2.0;
+
             var j: u32 = 0;
             while (j < segments) : (j += 1) {
-                const lon1 = 2.0 * pi * @as(f32, @intCast(j)) / @as(f32, @intCast(segments));
-                const lon2 = 2.0 * pi * @as(f32, @intCast(j + 1)) / @as(f32, @intCast(segments));
-                
+                const lon1 = 2.0 * pi * @as(f32, @floatFromInt(j)) / @as(f32, @floatFromInt(segments));
+                const lon2 = 2.0 * pi * @as(f32, @floatFromInt(j + 1)) / @as(f32, @floatFromInt(segments));
+
                 const p1 = sphericalToCartesian(center, radius, lat1, lon1);
                 const p2 = sphericalToCartesian(center, radius, lat1, lon2);
                 const p3 = sphericalToCartesian(center, radius, lat2, lon1);
-                
+
                 try appendLine(allocator, lines, p1, p2);
                 try appendLine(allocator, lines, p1, p3);
             }

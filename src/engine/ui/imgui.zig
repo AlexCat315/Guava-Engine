@@ -238,6 +238,29 @@ pub const DrawList = struct {
         _ = self;
         c.guava_imgui_draw_list_add_line(p1[0], p1[1], p2[0], p2[1], color, thickness);
     }
+
+    pub fn addRectFilled(self: DrawList, p_min: [2]f32, p_max: [2]f32, color: u32, rounding: f32, flags: u32) void {
+        _ = self;
+        c.guava_imgui_draw_list_add_rect_filled(
+            p_min[0],
+            p_min[1],
+            p_max[0],
+            p_max[1],
+            color,
+            rounding,
+            flags,
+        );
+    }
+
+    pub fn addCircleFilled(self: DrawList, center: [2]f32, radius: f32, color: u32, num_segments: i32) void {
+        _ = self;
+        c.guava_imgui_draw_list_add_circle_filled(center[0], center[1], radius, color, num_segments);
+    }
+
+    pub fn addText(self: DrawList, pos: [2]f32, color: u32, value: []const u8) void {
+        _ = self;
+        c.guava_imgui_draw_list_add_text(pos[0], pos[1], color, value.ptr, value.len);
+    }
 };
 
 pub fn getWindowDrawList() DrawList {

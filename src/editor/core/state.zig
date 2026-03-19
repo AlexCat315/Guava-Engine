@@ -280,14 +280,14 @@ pub const EditorState = struct {
     viewport_selection_press_active: bool = false,
     viewport_selection_press_mouse: [2]f32 = .{ 0.0, 0.0 },
     pending_viewport_drop: ?PendingViewportDrop = null,
-    
+
     // Prefab 编辑器状态
     prefab_browser_open: bool = false,
     selected_prefab_id: ?[]const u8 = null,
     editing_prefab_id: ?[]const u8 = null,
     prefab_browser_search_buffer: [128]u8 = [_]u8{0} ** 128,
     prefab_instance_show_overrides: bool = true,
-    
+
     playback_toolbar_window_initialized: bool = false,
     playback_toolbar_offset: [2]f32 = .{ 0.0, 0.0 },
     playback_toolbar_custom_position: bool = false,
@@ -423,6 +423,28 @@ pub const EditorState = struct {
         if (self.material_component_clipboard) |*clipboard| {
             clipboard.deinit(allocator);
             self.material_component_clipboard = null;
+        }
+    }
+
+    pub fn setSelectedPrefabId(self: *EditorState, prefab_id: ?[]const u8) !void {
+        const allocator = self.allocator orelse return error.AllocatorNotInitialized;
+        if (self.selected_prefab_id) |existing| {
+            allocator.free(existing);
+            self.selected_prefab_id = null;
+        }
+        if (prefab_id) |id| {
+            self.selected_prefab_id = try allocator.dupe(u8, id);
+        }
+    }
+
+    pub fn setEditingPrefabId(self: *EditorState, prefab_id: ?[]const u8) !void {
+        const allocator = self.allocator orelse return error.AllocatorNotInitialized;
+        if (self.editing_prefab_id) |existing| {
+            allocator.free(existing);
+            self.editing_prefab_id = null;
+        }
+        if (prefab_id) |id| {
+            self.editing_prefab_id = try allocator.dupe(u8, id);
         }
     }
 

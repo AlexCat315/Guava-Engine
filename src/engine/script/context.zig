@@ -192,7 +192,6 @@ pub const ScriptContext = struct {
     }
 
     /// ===== 输入系统 API =====
-
     /// 检查按键是否按下
     pub fn isKeyDown(self: *ScriptContext, key: input_mod.Key) bool {
         if (self.input) |inp| {
@@ -282,7 +281,6 @@ pub const ScriptContext = struct {
     }
 
     /// ===== 时间系统 API =====
-
     /// 获取全局时间（秒）
     pub fn getTime(self: *ScriptContext) f32 {
         return self.time;
@@ -325,20 +323,7 @@ pub const ScriptContext = struct {
 // 扩展 Entity 添加 hasComponent 和 getComponent 方法
 pub fn entityHasComponent(entity: *world_mod.Entity, comptime T: type) bool {
     const type_name = @typeName(T);
-    return if (comptime std.mem.eql(u8, type_name, "components.Transform")) true
-    else if (comptime std.mem.eql(u8, type_name, "components.Camera")) entity.camera != null
-    else if (comptime std.mem.eql(u8, type_name, "components.Mesh")) entity.mesh != null
-    else if (comptime std.mem.eql(u8, type_name, "components.SkinnedMesh")) entity.skinned_mesh != null
-    else if (comptime std.mem.eql(u8, type_name, "components.Animator")) entity.animator != null
-    else if (comptime std.mem.eql(u8, type_name, "components.Rigidbody")) entity.rigidbody != null
-    else if (comptime std.mem.eql(u8, type_name, "components.BoxCollider")) entity.box_collider != null
-    else if (comptime std.mem.eql(u8, type_name, "components.SphereCollider")) entity.sphere_collider != null
-    else if (comptime std.mem.eql(u8, type_name, "components.MeshCollider")) entity.mesh_collider != null
-    else if (comptime std.mem.eql(u8, type_name, "components.Material")) entity.material != null
-    else if (comptime std.mem.eql(u8, type_name, "components.Light")) entity.light != null
-    else if (comptime std.mem.eql(u8, type_name, "components.Vfx")) entity.vfx != null
-    else if (comptime std.mem.eql(u8, type_name, "script.types.Script")) entity.script != null
-    else false;
+    return if (comptime std.mem.eql(u8, type_name, "components.Transform")) true else if (comptime std.mem.eql(u8, type_name, "components.Camera")) entity.camera != null else if (comptime std.mem.eql(u8, type_name, "components.Mesh")) entity.mesh != null else if (comptime std.mem.eql(u8, type_name, "components.SkinnedMesh")) entity.skinned_mesh != null else if (comptime std.mem.eql(u8, type_name, "components.Animator")) entity.animator != null else if (comptime std.mem.eql(u8, type_name, "components.Rigidbody")) entity.rigidbody != null else if (comptime std.mem.eql(u8, type_name, "components.BoxCollider")) entity.box_collider != null else if (comptime std.mem.eql(u8, type_name, "components.SphereCollider")) entity.sphere_collider != null else if (comptime std.mem.eql(u8, type_name, "components.MeshCollider")) entity.mesh_collider != null else if (comptime std.mem.eql(u8, type_name, "components.Material")) entity.material != null else if (comptime std.mem.eql(u8, type_name, "components.Light")) entity.light != null else if (comptime std.mem.eql(u8, type_name, "components.Vfx")) entity.vfx != null else if (comptime std.mem.eql(u8, type_name, "script.types.Script") or std.mem.eql(u8, type_name, "components.Script")) entity.script != null else false;
 }
 
 pub fn entityGetComponent(entity: *world_mod.Entity, comptime T: type) ?*T {
@@ -367,7 +352,8 @@ pub fn entityGetComponent(entity: *world_mod.Entity, comptime T: type) ?*T {
         @ptrCast(entity.light)
     else if (comptime std.mem.eql(u8, type_name, "components.Vfx"))
         @ptrCast(entity.vfx)
-    else if (comptime std.mem.eql(u8, type_name, "script.types.Script"))
+    else if (comptime std.mem.eql(u8, type_name, "script.types.Script") or std.mem.eql(u8, type_name, "components.Script"))
         @ptrCast(entity.script)
-    else null;
+    else
+        null;
 }

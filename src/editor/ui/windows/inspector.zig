@@ -216,26 +216,26 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
             beginInspectorSectionBody();
             defer endInspectorSectionBody();
             engine.ui.ImGui.dummy(0.0, 4.0);
-            
+
             if (try drawPrefabHeaderContextMenu(state, layer_context, selected, entity)) {
                 return;
             }
-            
+
             if (beginInspectorPropertyGrid("prefab_properties")) {
                 defer endInspectorPropertyGrid();
-                
+
                 if (entity.prefab_instance_override) |override| {
                     drawInspectorTextRow(state.text(.prefab_instance), override.prefab_id);
-                    
+
                     var version_buffer: [32]u8 = undefined;
                     const version_text = try std.fmt.bufPrint(&version_buffer, "{d}", .{override.prefab_version});
                     drawInspectorTextRow("Version", version_text);
-                    
+
                     // 显示覆盖信息
                     if (state.prefab_instance_show_overrides) {
                         const mask = override.override_mask;
                         var has_overrides = false;
-                        
+
                         if (mask.local_transform) {
                             engine.ui.ImGui.text("• Transform overridden");
                             has_overrides = true;
@@ -256,7 +256,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                             engine.ui.ImGui.text("• Material overridden");
                             has_overrides = true;
                         }
-                        
+
                         if (!has_overrides) {
                             engine.ui.ImGui.text("No overrides");
                         }
@@ -268,13 +268,13 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                     engine.ui.ImGui.text("Part of Prefab instance");
                 }
             }
-            
+
             engine.ui.ImGui.dummy(0.0, 4.0);
-            
+
             // Prefab 操作按钮
             engine.ui.ImGui.pushStyleVarVec2(.item_spacing, .{ 4.0, 4.0 });
             defer engine.ui.ImGui.popStyleVar(1);
-            
+
             if (entity.prefab_instance_override != null) {
                 if (engine.ui.ImGui.buttonEx(state.text(.update_prefab_instance), 120.0, 0.0)) {
                     if (entity.prefab_instance_override) |override| {
@@ -1181,7 +1181,7 @@ fn drawPrefabHeaderContextMenu(
             return true;
         }
         if (engine.ui.ImGui.menuItem(state.text(.select_prefab_asset), null, false, true)) {
-            state.selected_prefab_id = try state.allocator.?.dupe(u8, override.prefab_id);
+            try state.setSelectedPrefabId(override.prefab_id);
             state.prefab_browser_open = true;
         }
     } else if (entity.prefab_entity_id != null) {

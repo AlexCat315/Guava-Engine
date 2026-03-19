@@ -804,6 +804,44 @@ extern "C" void guava_imgui_draw_list_add_line(float p1_x, float p1_y,
                                       color, thickness);
 }
 
+extern "C" void guava_imgui_draw_list_add_rect_filled(float p_min_x,
+                                                      float p_min_y,
+                                                      float p_max_x,
+                                                      float p_max_y,
+                                                      uint32_t color,
+                                                      float rounding,
+                                                      uint32_t flags) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::GetWindowDrawList()->AddRectFilled(
+      ImVec2(p_min_x, p_min_y), ImVec2(p_max_x, p_max_y), color, rounding,
+      static_cast<ImDrawFlags>(flags));
+}
+
+extern "C" void guava_imgui_draw_list_add_circle_filled(float center_x,
+                                                        float center_y,
+                                                        float radius,
+                                                        uint32_t color,
+                                                        int32_t num_segments) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::GetWindowDrawList()->AddCircleFilled(
+      ImVec2(center_x, center_y), radius, color, num_segments);
+}
+
+extern "C" void guava_imgui_draw_list_add_text(float pos_x, float pos_y,
+                                               uint32_t color,
+                                               const char *text,
+                                               size_t text_len) {
+  if (!g_imgui_initialized || text == nullptr) {
+    return;
+  }
+  ImGui::GetWindowDrawList()->AddText(ImVec2(pos_x, pos_y), color, text,
+                                      text + text_len);
+}
+
 extern "C" uint32_t guava_imgui_get_color_u32(float r, float g, float b,
                                               float a) {
   if (!g_imgui_initialized) {

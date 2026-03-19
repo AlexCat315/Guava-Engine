@@ -104,10 +104,10 @@ pub const EditorLayer = struct {
 
         self.state.dock_layout_initialized = false;
         self.state.scene_camera = layer_context.world.primaryCameraEntity();
-        
+
         // Initialize animation editor state
         self.animation_editor_state = try animation_editor.createAnimationEditorState(layer_context.world.allocator);
-        
+
         try camera.createEditorCamera(&self.state, layer_context);
         manipulation.syncGizmoState(&self.state, layer_context);
         utils.syncInspectorNameBuffer(&self.state, layer_context);
@@ -121,20 +121,20 @@ pub const EditorLayer = struct {
         asset_preview.clearPreviewTexture(&self.state);
         self.state.preview_device = null;
         self.state.icon_device = null;
-        
+
         if (self.state.allocator) |allocator| {
             self.state.frozen_entities.deinit(allocator);
             self.state.frozen_entities = .empty;
             self.state.selection_locked_entities.deinit(allocator);
             self.state.selection_locked_entities = .empty;
-            
+
             // Cleanup animation editor state
             if (self.animation_editor_state) |*editor_state| {
-                animation_editor.destroyAnimationEditorState(&editor_state, allocator);
+                animation_editor.destroyAnimationEditorState(editor_state, allocator);
                 self.animation_editor_state = null;
             }
         }
-        
+
         layout.releaseLayoutTemplates(&self.state);
         content_browser.clearAssetBrowser(&self.state);
         self.state.clearOwnedClipboards();
@@ -169,11 +169,11 @@ pub const EditorLayer = struct {
         camera.handleCameraControls(&self.state, layer_context);
         try viewport.handleViewportSelection(&self.state, layer_context);
         manipulation.syncGizmoState(&self.state, layer_context);
-        
+
         // Draw animation editor window if open
         if (self.state.animation_editor_open) {
             if (self.animation_editor_state) |*editor_state| {
-                try animation_editor.drawAnimationEditorWindow(&self.state, layer_context, &editor_state);
+                try animation_editor.drawAnimationEditorWindow(&self.state, layer_context, editor_state);
             }
         }
     }

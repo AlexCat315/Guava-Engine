@@ -637,7 +637,7 @@ pub fn detectDiffs(
 }
 
 /// 单个实体的 Diff
-const EntityDiff = struct {
+pub const EntityDiff = struct {
     prefab_entity_id: u32,
     has_changes: bool,
     transform_changed: bool,
@@ -714,10 +714,10 @@ fn equalOrNull(a: anytype, b: @TypeOf(a)) bool {
 
 test "PrefabResource 创建和销毁" {
     const allocator = std.testing.allocator;
-    
+
     var prefab = PrefabResource.init(allocator, "prefab://test/hero/v1", "Hero");
     defer prefab.deinit();
-    
+
     try std.testing.expectEqualStrings("prefab://test/hero/v1", prefab.id);
     try std.testing.expectEqualStrings("Hero", prefab.name);
     try std.testing.expectEqual(@as(usize, 0), prefab.entities.len);
@@ -726,7 +726,7 @@ test "PrefabResource 创建和销毁" {
 
 test "PrefabInstanceOverride 创建和销毁" {
     const allocator = std.testing.allocator;
-    
+
     var override = PrefabInstanceOverride{
         .prefab_id = try allocator.dupe(u8, "prefab://test/hero/v1"),
         .prefab_version = 1,
@@ -737,7 +737,7 @@ test "PrefabInstanceOverride 创建和销毁" {
         .visible_override = null,
     };
     defer override.deinit(allocator);
-    
+
     try std.testing.expectEqualStrings("prefab://test/hero/v1", override.prefab_id);
     try std.testing.expectEqual(@as(u32, 1), override.prefab_version);
 }
@@ -745,21 +745,21 @@ test "PrefabInstanceOverride 创建和销毁" {
 test "创建 Prefab 从简单实体" {
     var world = world_mod.World.init(std.testing.allocator, null);
     defer world.deinit();
-    
+
     try world.bootstrap3D();
-    
+
     // 创建一个简单的实体树
     const root = try world.createEntity(.{
         .name = "Hero",
         .local_transform = .{ .translation = .{ 1.0, 2.0, 3.0 } },
     });
-    
+
     _ = try world.createEntity(.{
         .name = "Sword",
         .parent = root,
         .local_transform = .{ .translation = .{ 0.0, 1.0, 0.0 } },
     });
-    
+
     // 创建 Prefab
     var prefab = try createPrefabFromEntities(
         std.testing.allocator,
@@ -768,15 +768,15 @@ test "创建 Prefab 从简单实体" {
         "prefab://test/hero/v1",
     );
     defer prefab.deinit();
-    
+
     try std.testing.expectEqual(@as(usize, 2), prefab.entities.len);
     try std.testing.expectEqualStrings("Hero", prefab.entities[0].name);
     try std.testing.expectEqualStrings("Sword", prefab.entities[1].name);
-    
+
     // 验证 prefab_entity_id 分配
     try std.testing.expectEqual(@as(u32, 0), prefab.entities[0].prefab_entity_id);
     try std.testing.expectEqual(@as(u32, 1), prefab.entities[1].prefab_entity_id);
-    
+
     // 验证父关系
     try std.testing.expectEqual(@as(?u32, null), prefab.entities[0].parent);
     try std.testing.expectEqual(@as(?u32, 0), prefab.entities[1].parent);
@@ -784,11 +784,11 @@ test "创建 Prefab 从简单实体" {
 
 test "Prefab 序列化和反序列化" {
     const allocator = std.testing.allocator;
-    
+
     // 创建 Prefab
     var prefab = PrefabResource.init(allocator, "prefab://test/hero/v1", "Hero");
     defer prefab.deinit();
-    
+
     // 添加一些实体数据
     var entity_data = try allocator.alloc(PrefabEntityData, 1);
     entity_data[0] = .{
@@ -805,15 +805,15 @@ test "Prefab 序列化和反序列化" {
         .nested_prefab_id = null,
     };
     prefab.entities = entity_data;
-    
+
     // 序列化
     const serialized = try serializePrefabAlloc(allocator, &prefab);
     defer allocator.free(serialized);
-    
+
     // 反序列化
     var deserialized = try deserializePrefabFromSlice(allocator, serialized);
     defer deserialized.deinit();
-    
+
     try std.testing.expectEqualStrings(prefab.id, deserialized.id);
     try std.testing.expectEqualStrings(prefab.name, deserialized.name);
     try std.testing.expectEqual(prefab.entities.len, deserialized.entities.len);
@@ -823,10 +823,10 @@ test "Prefab 序列化和反序列化" {
 test "Prefab 实例化" {
     var world = world_mod.World.init(std.testing.allocator, null);
     defer world.deinit();
-    
+
     // 创建 Prefab
     var prefab = PrefabResource.init(world.allocator, "prefab://test/hero/v1", "Hero");
-    
+
     // 添加实体数据
     var entity_data = try world.allocator.alloc(PrefabEntityData, 2);
     entity_data[0] = .{
@@ -852,9 +852,9 @@ test "Prefab 实例化" {
         .nested_prefab_id = null,
     };
     prefab.entities = entity_data;
-    
+
     defer prefab.deinit();
-    
+
     // 实例化
     const root_id = try instantiatePrefab(
         world.allocator,
@@ -862,11 +862,11 @@ test "Prefab 实例化" {
         &prefab,
         .{ .name_prefix = "Instance1", .transform = .{ .translation = .{ 10.0, 0.0, 0.0 } } },
     );
-    
+
     // 验证实例化结果
     const root = world.getEntityConst(root_id).?;
     try std.testing.expect(std.mem.startsWith(u8, root.name, "Instance1_Hero"));
-    
+
     // 验证变换应用
     const world_transform = world.worldTransform(root_id).?;
     try std.testing.expectApproxEqAbs(@as(f32, 10.0), world_transform.translation[0], 0.0001);
@@ -874,7 +874,7 @@ test "Prefab 实例化" {
 
 test "Prefab Diff 检测" {
     const allocator = std.testing.allocator;
-    
+
     // 创建旧 Prefab
     var old_prefab = PrefabResource.init(allocator, "prefab://test/hero/v1", "Hero");
     var old_entities = try allocator.alloc(PrefabEntityData, 1);
@@ -890,7 +890,7 @@ test "Prefab Diff 检测" {
     };
     old_prefab.entities = old_entities;
     defer old_prefab.deinit();
-    
+
     // 创建新 Prefab (修改了名称和位置)
     var new_prefab = PrefabResource.init(allocator, "prefab://test/hero/v2", "Hero");
     var new_entities = try allocator.alloc(PrefabEntityData, 2); // 多了一个实体
@@ -916,16 +916,16 @@ test "Prefab Diff 检测" {
     };
     new_prefab.entities = new_entities;
     defer new_prefab.deinit();
-    
+
     // 检测 Diff
     var diff = try detectDiffs(allocator, &old_prefab, &new_prefab);
     defer diff.deinit();
-    
+
     // 验证结果
     try std.testing.expectEqual(@as(usize, 1), diff.added_entities.items.len); // 新增 1 个实体
     try std.testing.expectEqual(@as(usize, 0), diff.removed_entities.items.len); // 没有删除
     try std.testing.expectEqual(@as(usize, 1), diff.modified_entities.items.len); // 修改 1 个实体
-    
+
     try std.testing.expectEqual(@as(u32, 1), diff.added_entities.items[0]);
     try std.testing.expectEqual(@as(u32, 0), diff.modified_entities.items[0].prefab_entity_id);
     try std.testing.expect(diff.modified_entities.items[0].name_changed);
@@ -934,10 +934,10 @@ test "Prefab Diff 检测" {
 
 test "生成 Prefab ID" {
     const allocator = std.testing.allocator;
-    
+
     const id = try makePrefabIdAlloc(allocator, "assets/prefabs/hero", 1);
     defer allocator.free(id);
-    
+
     try std.testing.expectEqualStrings("prefab://assets/prefabs/hero/v1", id);
 }
 
@@ -969,12 +969,12 @@ pub fn updatePrefabInstance(
     for (diff.modified_entities.items) |entity_diff| {
         // 查找对应的实体
         const entity = findEntityByPrefabId(world, root_entity_id, entity_diff.prefab_entity_id) orelse continue;
-        
+
         // 检查是否有覆盖 - 如果有覆盖则不应用修改
         if (entity.prefab_instance_override != null) {
             continue; // 有覆盖，跳过更新
         }
-        
+
         // 应用修改
         if (entity_diff.transform_changed) {
             for (prefab.entities) |prefab_entity| {
@@ -985,37 +985,42 @@ pub fn updatePrefabInstance(
                 }
             }
         }
-        
+
         // TODO: 应用组件修改
     }
-    
+
     // 2. 添加新实体
     for (diff.added_entities.items) |prefab_entity_id| {
         // 查找父实体
         const prefab_entity = findPrefabEntity(prefab, prefab_entity_id) orelse continue;
-        
+
         // 创建新实体
         var desc = world_mod.EntityDesc{
             .name = prefab_entity.name,
             .local_transform = prefab_entity.local_transform,
-            .parent = if (prefab_entity.parent) |parent_id| 
-                findEntityByPrefabId(world, root_entity_id, parent_id) else null,
+            .parent = if (prefab_entity.parent) |parent_id|
+                if (findEntityByPrefabId(world, root_entity_id, parent_id)) |parent_entity|
+                    parent_entity.id
+                else
+                    null
+            else
+                null,
         };
-        
+
         // 复制其他组件
         desc.camera = prefab_entity.camera;
         desc.mesh = prefab_entity.mesh;
         desc.material = prefab_entity.material;
         desc.light = prefab_entity.light;
         desc.visible = prefab_entity.visible;
-        
+
         const new_entity_id = try world.createEntity(desc);
-        
+
         // 设置 Prefab 实体 ID
         const new_entity = world.getEntity(new_entity_id).?;
         new_entity.prefab_entity_id = prefab_entity_id;
     }
-    
+
     // 3. 删除实体
     for (diff.removed_entities.items) |prefab_entity_id| {
         if (findEntityByPrefabId(world, root_entity_id, prefab_entity_id)) |entity| {
@@ -1037,12 +1042,12 @@ fn findEntityByPrefabId(
 ) ?*world_mod.Entity {
     // 获取根实体
     const root = world.getEntity(root_entity_id) orelse return null;
-    
+
     // 检查根实体
     if (root.prefab_entity_id == prefab_entity_id) {
         return root;
     }
-    
+
     // 递归搜索子实体
     return findEntityInChildren(world, root, prefab_entity_id);
 }
@@ -1055,11 +1060,11 @@ fn findEntityInChildren(
 ) ?*world_mod.Entity {
     for (parent.children.items) |child_id| {
         const child = world.getEntity(child_id) orelse continue;
-        
+
         if (child.prefab_entity_id == prefab_entity_id) {
             return child;
         }
-        
+
         if (findEntityInChildren(world, child, prefab_entity_id)) |entity| {
             return entity;
         }

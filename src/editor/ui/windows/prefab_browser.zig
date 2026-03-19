@@ -22,13 +22,16 @@ pub fn drawPrefabBrowserWindow(state: *EditorState, layer_context: *engine.core.
     defer layout.endSectionBody();
 
     // 搜索框
-    var search_buffer: [256]u8 = undefined;
-    _ = engine.ui.ImGui.inputText("##search", &search_buffer, engine.ui.ImGui.InputTextFlagschars_no_blank);
+    _ = engine.ui.ImGui.inputText(
+        "##search",
+        &state.prefab_browser_search_buffer,
+        engine.ui.ImGui.InputTextFlagschars_no_blank,
+    );
 
     engine.ui.ImGui.separator();
 
     // 获取所有 Prefab
-    const prefab_count = layer_context.world.prefab_library.count();
+    const prefab_count = layer_context.world.prefab_library.prefabs.count();
     if (prefab_count == 0) {
         engine.ui.ImGui.text(state.text(.no_prefabs));
         engine.ui.ImGui.separator();
@@ -41,21 +44,17 @@ pub fn drawPrefabBrowserWindow(state: *EditorState, layer_context: *engine.core.
     }
 
     // Prefab 列表
-    if (engine.ui.ImGui.beginChild("prefab_list", .{
-        .height = engine.ui.ImGui.contentRegionAvail()[1] * 0.6,
-    })) {
+    if (engine.ui.ImGui.beginChild("prefab_list", 0.0, engine.ui.ImGui.contentRegionAvail()[1] * 0.6, false)) {
         defer engine.ui.ImGui.endChild();
 
-        var it = layer_context.world.prefab_library.prefab_by_id.iterator();
+        var it = layer_context.world.prefab_library.prefabs.iterator();
         while (it.next()) |entry| {
             const prefab_id = entry.key_ptr.*;
-            const index = entry.value_ptr.*;
+            const prefab = entry.value_ptr.*;
 
             // 检查是否被选中
             const is_selected = state.selected_prefab_id != null and
                 std.mem.eql(u8, state.selected_prefab_id.?, prefab_id);
-
-            const prefab = &layer_context.world.prefab_library.prefabs.items[index];
 
             // 显示 Prefab 行
             if (engine.ui.ImGui.selectable(
@@ -63,7 +62,7 @@ pub fn drawPrefabBrowserWindow(state: *EditorState, layer_context: *engine.core.
                 is_selected,
                 .{},
             )) {
-                state.selected_prefab_id = prefab_id;
+                try state.setSelectedPrefabId(prefab_id);
             }
 
             // 右键上下文菜单
@@ -120,7 +119,7 @@ pub fn drawPrefabBrowserWindow(state: *EditorState, layer_context: *engine.core.
 
         // 编辑按钮
         if (engine.ui.ImGui.button(state.text(.edit_prefab), .{})) {
-            state.editing_prefab_id = selected_id;
+            try state.setEditingPrefabId(selected_id);
         }
 
         // 保存按钮
@@ -158,7 +157,7 @@ pub fn createPrefabFromSelection(state: *EditorState, layer_context: *engine.cor
     );
 
     try layer_context.world.createPrefab(selected, prefab_id);
-    state.selected_prefab_id = prefab_id;
+    try state.setSelectedPrefabId(prefab_id);
 }
 
 /// 实例化 Prefab 到场景中

@@ -5,10 +5,15 @@ const handles = @import("../assets/handles.zig");
 
 const log = std.log.scoped(.hot_reload);
 
+const WatchedScript = struct {
+    handle: handles.ScriptHandle,
+    last_mtime: i128,
+};
+
 /// 热重载管理器
 pub const HotReloadManager = struct {
-    /// 文件修改时间缓存
-    file_mtimes: std.AutoHashMap([]const u8, i128),
+    /// 已注册脚本文件
+    watched_scripts: std.StringHashMap(WatchedScript),
     /// 待重载的脚本列表
     pending_reload: std.ArrayList(handles.ScriptHandle),
     /// 运行时引用
@@ -18,54 +23,71 @@ pub const HotReloadManager = struct {
 
     pub fn init(allocator: std.mem.Allocator, rt: *runtime_mod.ScriptRuntime) HotReloadManager {
         return .{
-            .file_mtimes = std.AutoHashMap([]const u8, i128).init(allocator),
-            .pending_reload = std.ArrayList(handles.ScriptHandle).init(allocator),
+            .watched_scripts = std.StringHashMap(WatchedScript).init(allocator),
+            .pending_reload = .empty,
             .runtime = rt,
             .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *HotReloadManager) void {
-        var keys = self.file_mtimes.keyIterator();
+        var keys = self.watched_scripts.keyIterator();
         while (keys.next()) |key| {
             self.allocator.free(key.*);
         }
-        self.file_mtimes.deinit();
+        self.watched_scripts.deinit();
         self.pending_reload.deinit(self.allocator);
     }
 
     /// 注册脚本文件
-    pub fn registerScript(self: *HotReloadManager, path: []const u8) !void {
+    pub fn registerScript(self: *HotReloadManager, path: []const u8, handle: handles.ScriptHandle) !void {
+        if (self.watched_scripts.getEntry(path)) |entry| {
+            entry.value_ptr.* = .{
+                .handle = handle,
+                .last_mtime = getFileMtime(path) catch entry.value_ptr.last_mtime,
+            };
+            return;
+        }
+
         const path_copy = try self.allocator.dupe(u8, path);
         errdefer self.allocator.free(path_copy);
 
         const mtime = getFileMtime(path) catch 0;
-        try self.file_mtimes.put(path_copy, mtime);
+        try self.watched_scripts.put(path_copy, .{
+            .handle = handle,
+            .last_mtime = mtime,
+        });
     }
 
     /// 检查是否有脚本需要重载
     pub fn checkForChanges(self: *HotReloadManager) void {
         self.pending_reload.clearRetainingCapacity();
 
-        var it = self.file_mtypes.iterator();
+        var it = self.watched_scripts.iterator();
         while (it.next()) |entry| {
             const path = entry.key_ptr.*;
-            const last_mtime = entry.value_ptr.*;
+            const watched_script = entry.value_ptr;
 
             const current_mtime = getFileMtime(path) catch continue;
-            if (current_mtime > last_mtime) {
+            if (current_mtime > watched_script.last_mtime) {
                 // 文件已修改，标记待重载
                 log.info("Script file modified: {s}", .{path});
-                // TODO: 查找对应的脚本句柄并加入待重载列表
-                entry.value_ptr.* = current_mtime;
+                self.pending_reload.append(self.allocator, watched_script.handle) catch |err| {
+                    log.err("Failed to queue hot reload for {s}: {}", .{ path, err });
+                    continue;
+                };
+                watched_script.last_mtime = current_mtime;
             }
         }
     }
 
     /// 处理待重载的脚本
     pub fn processPendingReload(self: *HotReloadManager) void {
-        _ = self;
-        // TODO: 实现具体的重载逻辑
+        for (self.pending_reload.items) |handle| {
+            self.reloadScript(handle) catch |err| {
+                log.err("Failed to hot reload script {}: {}", .{ handle, err });
+            };
+        }
     }
 
     /// 触发单个脚本重载
@@ -92,7 +114,7 @@ pub const FileWatcher = struct {
 
     pub fn init(allocator: std.mem.Allocator) FileWatcher {
         return .{
-            .paths = std.ArrayList([]const u8).init(allocator),
+            .paths = .empty,
             .allocator = allocator,
         };
     }
@@ -101,14 +123,14 @@ pub const FileWatcher = struct {
         for (self.paths.items) |path| {
             self.allocator.free(path);
         }
-        self.paths.deinit();
+        self.paths.deinit(self.allocator);
     }
 
     /// 添加监听路径
     pub fn addPath(self: *FileWatcher, path: []const u8) !void {
         const path_copy = try self.allocator.dupe(u8, path);
         errdefer self.allocator.free(path_copy);
-        try self.paths.append(path_copy);
+        try self.paths.append(self.allocator, path_copy);
     }
 
     /// 检查变更（轮询实现）
@@ -116,7 +138,7 @@ pub const FileWatcher = struct {
         for (self.paths.items) |path| {
             const current_mtime = getFileMtime(path) catch continue;
             if (last_mtimes.get(path)) |last_mtime| {
-                if (current_mtime > last_mtime.*) {
+                if (current_mtime > last_mtime) {
                     log.info("File changed: {s}", .{path});
                 }
             }

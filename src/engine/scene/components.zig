@@ -170,13 +170,6 @@ pub const VfxKind = enum {
 
 pub const Vfx = struct {
     kind: VfxKind = .fountain,
-};
-
-/// 脚本组件 - 附加到实体上运行脚本逻辑
-pub const Script = struct {
-    script_handle: ?*anyopaque = null,
-    enabled: bool = true,
-    parameters: []const u8 = &.{},
     looping: bool = true,
     emission_rate: f32 = 18.0,
     particle_lifetime: f32 = 1.25,
@@ -186,6 +179,21 @@ pub const Script = struct {
     spread: f32 = 0.35,
     size: f32 = 0.12,
     color: Vec3 = .{ 1.0, 0.58, 0.26 },
+};
+
+pub const ScriptLanguage = enum(u8) {
+    zig,
+    csharp,
+    lua,
+};
+
+/// 脚本组件 - 附加到实体上运行脚本逻辑
+pub const Script = struct {
+    script_handle: ?handles.ScriptHandle = null,
+    language: ScriptLanguage = .zig,
+    instance_id: ?u64 = null,
+    enabled: bool = true,
+    parameters: []const u8 = &.{},
 };
 
 pub fn defaultVfx(kind: VfxKind) Vfx {

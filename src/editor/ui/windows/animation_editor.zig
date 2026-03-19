@@ -7,7 +7,6 @@ const inspector = @import("inspector.zig");
 const ui_icons = @import("../icons.zig");
 const layout = @import("../layout.zig");
 const animation_graph_mod = engine.animation.animation_graph;
-const animation_clip_mod = engine.assets.animation_clip_resource;
 const handles = engine.assets.handles;
 const i18n = @import("../../i18n/message_id.zig");
 
@@ -23,10 +22,11 @@ const TimelineTrack = struct {
             vec3: [3]f32,
             quat: [4]f32,
         },
-        interpolation: animation_clip_mod.Interpolation,
+        interpolation: engine.assets.AnimationInterpolation,
     };
 
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
         self.keyframes.deinit(allocator);
         self.* = undefined;
     }
@@ -51,26 +51,29 @@ pub const AnimationEditorState = struct {
         self.* = undefined;
     }
 
-    pub fn loadClip(self: *@This(), allocator: std.mem.Allocator, clip: *const animation_clip_mod.AnimationClipResource) !void {
+    pub fn loadClip(self: *@This(), allocator: std.mem.Allocator, clip: *const engine.assets.AnimationClipResource) !void {
         self.clearTracks(allocator);
+        self.current_time = 0.0;
+        self.selected_track = null;
+        self.selected_keyframe = null;
 
         for (clip.translation_tracks) |track| {
             var timeline_track = TimelineTrack{
                 .name = try std.fmt.allocPrint(allocator, "Translation_{}", .{track.target_entity_index}),
                 .type = .translation,
                 .target_index = track.target_entity_index,
-                .keyframes = std.ArrayList(TimelineTrack.Keyframe).init(allocator),
+                .keyframes = .empty,
             };
 
             for (track.times, 0..) |time, idx| {
-                try timeline_track.keyframes.append(.{
+                try timeline_track.keyframes.append(allocator, .{
                     .time = time,
                     .value = .{ .vec3 = track.values[idx] },
                     .interpolation = track.interpolation,
                 });
             }
 
-            try self.tracks.append(timeline_track);
+            try self.tracks.append(allocator, timeline_track);
         }
 
         for (clip.rotation_tracks) |track| {
@@ -78,18 +81,18 @@ pub const AnimationEditorState = struct {
                 .name = try std.fmt.allocPrint(allocator, "Rotation_{}", .{track.target_entity_index}),
                 .type = .rotation,
                 .target_index = track.target_entity_index,
-                .keyframes = std.ArrayList(TimelineTrack.Keyframe).init(allocator),
+                .keyframes = .empty,
             };
 
             for (track.times, 0..) |time, idx| {
-                try timeline_track.keyframes.append(.{
+                try timeline_track.keyframes.append(allocator, .{
                     .time = time,
                     .value = .{ .quat = track.values[idx] },
                     .interpolation = track.interpolation,
                 });
             }
 
-            try self.tracks.append(timeline_track);
+            try self.tracks.append(allocator, timeline_track);
         }
 
         for (clip.scale_tracks) |track| {
@@ -97,18 +100,18 @@ pub const AnimationEditorState = struct {
                 .name = try std.fmt.allocPrint(allocator, "Scale_{}", .{track.target_entity_index}),
                 .type = .scale,
                 .target_index = track.target_entity_index,
-                .keyframes = std.ArrayList(TimelineTrack.Keyframe).init(allocator),
+                .keyframes = .empty,
             };
 
             for (track.times, 0..) |time, idx| {
-                try timeline_track.keyframes.append(.{
+                try timeline_track.keyframes.append(allocator, .{
                     .time = time,
                     .value = .{ .vec3 = track.values[idx] },
                     .interpolation = track.interpolation,
                 });
             }
 
-            try self.tracks.append(timeline_track);
+            try self.tracks.append(allocator, timeline_track);
         }
     }
 
@@ -132,17 +135,27 @@ pub fn drawAnimationEditorWindow(state: *EditorState, layer_context: *engine.cor
         return;
     }
 
+    if (editor_state.is_playing) {
+        const clip_duration = if (editor_state.selected_clip) |clip_handle|
+            if (layer_context.world.resources.animationClip(clip_handle)) |clip| @max(clip.duration, 0.001) else 0.0
+        else
+            0.0;
+        if (clip_duration > 0.0) {
+            editor_state.current_time = @mod(editor_state.current_time + layer_context.delta_seconds, clip_duration);
+        }
+    }
+
     layout.beginSectionBody();
     defer layout.endSectionBody();
 
-    if (engine.ui.ImGui.beginChild("animation_editor_main", .{-1, -engine.ui.ImGui.getFrameHeight() - 8}, false, engine.ui.ImGui.WindowFlags.none)) {
+    if (engine.ui.ImGui.beginChild("animation_editor_main", -1.0, -48.0, false)) {
         defer engine.ui.ImGui.endChild();
 
-        if (engine.ui.ImGui.beginTable("animation_editor_layout", 2, engine.ui.ImGui.TableFlags.resizable | engine.ui.ImGui.TableFlags.borders_innerV)) {
+        if (engine.ui.ImGui.beginTable("animation_editor_layout", 2)) {
             defer engine.ui.ImGui.endTable();
 
-            engine.ui.ImGui.tableSetupColumn("Tracks", engine.ui.ImGui.TableColumnFlags.width_stretch, 0.3);
-            engine.ui.ImGui.tableSetupColumn("Timeline", engine.ui.ImGui.TableColumnFlags.width_stretch, 0.7);
+            engine.ui.ImGui.tableSetupColumn("Tracks", true, 0.3);
+            engine.ui.ImGui.tableSetupColumn("Timeline", true, 0.7);
 
             engine.ui.ImGui.tableNextRow();
             engine.ui.ImGui.tableNextColumn();
@@ -158,40 +171,44 @@ pub fn drawAnimationEditorWindow(state: *EditorState, layer_context: *engine.cor
     drawTimelineControls(state, editor_state, layer_context);
 }
 
-fn drawTrackList(state: *EditorState, editor_state: *AnimationEditorState, _: *engine.core.LayerContext) void {
-    engine.ui.ImGui.text(state.text(.animation_tracks));
+fn drawTrackList(state: *EditorState, editor_state: *AnimationEditorState, layer_context: *engine.core.LayerContext) void {
+    engine.ui.ImGui.text(localText(state, .animation_tracks));
     engine.ui.ImGui.separator();
 
-    if (engine.ui.ImGui.beginChild("track_list", .{-1, -1}, false, engine.ui.ImGui.WindowFlags.none)) {
+    if (engine.ui.ImGui.beginChild("track_list", -1.0, -1.0, false)) {
         defer engine.ui.ImGui.endChild();
 
         for (editor_state.tracks.items, 0..) |track, index| {
             const is_selected = editor_state.selected_track == @as(u32, @intCast(index));
-            
+
             var track_label: [256]u8 = undefined;
             const label = std.fmt.bufPrint(&track_label, "{s}##track_{}", .{ track.name, index }) catch continue;
 
-            if (engine.ui.ImGui.selectableEx(label, is_selected, engine.ui.ImGui.SelectableFlags.none, .{-1, 22})) {
+            if (engine.ui.ImGui.selectable(label, is_selected, false, -1.0, 22.0)) {
                 editor_state.selected_track = @intCast(index);
             }
 
-            if (engine.ui.ImGui.beginPopupContextItem()) {
+            if (engine.ui.ImGui.beginPopupContextItem(null)) {
                 defer engine.ui.ImGui.endPopup();
 
-                if (engine.ui.ImGui.menuItem(state.text(.delete_track), null, false, true)) {
-                    // TODO: Implement track deletion
+                if (engine.ui.ImGui.menuItem(localText(state, .delete_track), null, false, true)) {
+                    deleteTrack(
+                        editor_state,
+                        state.allocator orelse layer_context.world.allocator,
+                        index,
+                    );
                 }
             }
         }
 
         if (editor_state.tracks.items.len == 0) {
-            engine.ui.ImGui.textWrapped(state.text(.no_animation_tracks_loaded));
+            engine.ui.ImGui.textWrapped(localText(state, .no_animation_tracks_loaded));
         }
     }
 }
 
 fn drawTimeline(state: *EditorState, editor_state: *AnimationEditorState, layer_context: *engine.core.LayerContext) void {
-    engine.ui.ImGui.text(state.text(.animation_timeline));
+    engine.ui.ImGui.text(localText(state, .animation_timeline));
     engine.ui.ImGui.separator();
 
     const clip = if (editor_state.selected_clip) |clip_handle|
@@ -199,17 +216,17 @@ fn drawTimeline(state: *EditorState, editor_state: *AnimationEditorState, layer_
     else
         null;
 
-    const duration = clip orelse 1.0;
+    const duration: f32 = if (clip) |clip_resource| clip_resource.duration else 1.0;
     const pixels_per_second = 50.0 * editor_state.timeline_scale;
 
-    if (engine.ui.ImGui.beginChild("timeline_area", .{-1, -1}, true, engine.ui.ImGui.WindowFlags.none)) {
+    if (engine.ui.ImGui.beginChild("timeline_area", -1.0, -1.0, true)) {
         defer engine.ui.ImGui.endChild();
 
         const content_height = engine.ui.ImGui.contentRegionAvail()[1];
         const track_height = 24.0;
         const max_tracks = @max(1, @min(editor_state.tracks.items.len, @as(usize, @intFromFloat(content_height / track_height))));
 
-        if (engine.ui.ImGui.beginChild("timeline_ruler", .{-1, 24}, false, engine.ui.ImGui.WindowFlags.none)) {
+        if (engine.ui.ImGui.beginChild("timeline_ruler", -1.0, 24.0, false)) {
             defer engine.ui.ImGui.endChild();
 
             const canvas_width = engine.ui.ImGui.contentRegionAvail()[0];
@@ -217,70 +234,52 @@ fn drawTimeline(state: *EditorState, editor_state: *AnimationEditorState, layer_
             var draw_list = engine.ui.ImGui.getWindowDrawList();
             const cursor_pos = engine.ui.ImGui.cursorScreenPos();
 
-            const major_tick_height = 12.0;
-            const minor_tick_height = 6.0;
-            const time_interval = if (pixels_per_second > 30.0) 0.1 else if (pixels_per_second > 10.0) 0.5 else 1.0;
+            const major_tick_height: f32 = 12.0;
+            const minor_tick_height: f32 = 6.0;
+            const time_interval: f32 = if (pixels_per_second > 30.0) 0.1 else if (pixels_per_second > 10.0) 0.5 else 1.0;
 
             var time: f32 = 0.0;
             while (time <= duration) : (time += time_interval) {
                 const x = cursor_pos[0] + time * pixels_per_second - editor_state.timeline_offset;
                 if (x >= cursor_pos[0] and x <= cursor_pos[0] + canvas_width) {
                     const is_major = @abs(@mod(time, 1.0)) < 0.01 or time == 0.0;
-                    const tick_height = if (is_major) major_tick_height else minor_tick_height;
-                    
-                    draw_list.addLine(
-                        .{ x, cursor_pos[1] + 2 },
-                        .{ x, cursor_pos[1] + tick_height },
-                        engine.ui.ImGui.colorConvertFloat4ToU32(.{ 0.7, 0.7, 0.7, 1.0 }),
-                        1.0
-                    );
+                    const tick_height: f32 = if (is_major) major_tick_height else minor_tick_height;
+
+                    draw_list.addLine(.{ x, cursor_pos[1] + 2 }, .{ x, cursor_pos[1] + tick_height }, engine.ui.ImGui.getColorU32(.{ 0.7, 0.7, 0.7, 1.0 }), 1.0);
 
                     if (is_major and time < duration) {
                         var time_label: [16]u8 = undefined;
                         const label = std.fmt.bufPrint(&time_label, "{d:.1}s", .{time}) catch continue;
-                        draw_list.addText(.{ x + 2, cursor_pos[1] + 2 }, 
-                            engine.ui.ImGui.colorConvertFloat4ToU32(.{ 0.8, 0.8, 0.8, 1.0 }), 
-                            label);
+                        draw_list.addText(.{ x + 2, cursor_pos[1] + 2 }, engine.ui.ImGui.getColorU32(.{ 0.8, 0.8, 0.8, 1.0 }), label);
                     }
                 }
             }
 
             const current_time_x = cursor_pos[0] + editor_state.current_time * pixels_per_second - editor_state.timeline_offset;
             if (current_time_x >= cursor_pos[0] and current_time_x <= cursor_pos[0] + canvas_width) {
-                draw_list.addLine(
-                    .{ current_time_x, cursor_pos[1] },
-                    .{ current_time_x, cursor_pos[1] + 22 },
-                    engine.ui.ImGui.colorConvertFloat4ToU32(.{ 0.9, 0.3, 0.3, 1.0 }),
-                    2.0
-                );
+                draw_list.addLine(.{ current_time_x, cursor_pos[1] }, .{ current_time_x, cursor_pos[1] + 22 }, engine.ui.ImGui.getColorU32(.{ 0.9, 0.3, 0.3, 1.0 }), 2.0);
             }
         }
 
-        if (engine.ui.ImGui.beginChild("timeline_tracks", .{-1, -1}, false, engine.ui.ImGui.WindowFlags.none)) {
+        if (engine.ui.ImGui.beginChild("timeline_tracks", -1.0, -1.0, false)) {
             defer engine.ui.ImGui.endChild();
 
             for (editor_state.tracks.items, 0..) |track, track_index| {
                 if (track_index >= max_tracks) break;
 
-                engine.ui.ImGui.pushID(@as(i32, @intCast(track_index)));
-                defer engine.ui.ImGui.popID();
+                engine.ui.ImGui.pushIdU64(track_index);
+                defer engine.ui.ImGui.popId();
 
-                if (engine.ui.ImGui.beginChild("track", .{-1, track_height}, true, engine.ui.ImGui.WindowFlags.none)) {
+                if (engine.ui.ImGui.beginChild("track", -1.0, track_height, true)) {
                     defer engine.ui.ImGui.endChild();
 
                     const cursor_pos = engine.ui.ImGui.cursorScreenPos();
                     const canvas_width = engine.ui.ImGui.contentRegionAvail()[0];
                     var draw_list = engine.ui.ImGui.getWindowDrawList();
 
-                    draw_list.addRectFilled(
-                        cursor_pos,
-                        .{ cursor_pos[0] + canvas_width, cursor_pos[1] + track_height },
-                        engine.ui.ImGui.colorConvertFloat4ToU32(.{ 0.15, 0.15, 0.15, 1.0 }),
-                        0,
-                        0
-                    );
+                    draw_list.addRectFilled(cursor_pos, .{ cursor_pos[0] + canvas_width, cursor_pos[1] + track_height }, engine.ui.ImGui.getColorU32(.{ 0.15, 0.15, 0.15, 1.0 }), 0, 0);
 
-                    for (track.keyframes.items) |keyframe| {
+                    for (track.keyframes.items, 0..) |keyframe, keyframe_index| {
                         const x = cursor_pos[0] + keyframe.time * pixels_per_second - editor_state.timeline_offset;
                         if (x >= cursor_pos[0] and x <= cursor_pos[0] + canvas_width) {
                             const keyframe_color = switch (track.type) {
@@ -289,39 +288,24 @@ fn drawTimeline(state: *EditorState, editor_state: *AnimationEditorState, layer_
                                 .scale => [4]f32{ 0.2, 0.9, 0.6, 1.0 },
                             };
 
-                            draw_list.addCircleFilled(
-                                .{ x, cursor_pos[1] + track_height * 0.5 },
-                                4.0,
-                                engine.ui.ImGui.colorConvertFloat4ToU32(keyframe_color),
-                                8
-                            );
+                            draw_list.addCircleFilled(.{ x, cursor_pos[1] + track_height * 0.5 }, 4.0, engine.ui.ImGui.getColorU32(keyframe_color), 8);
 
-                            if (i == 0) {
-                                draw_list.addLine(
-                                    .{ cursor_pos[0], cursor_pos[1] + track_height * 0.5 },
-                                    .{ x, cursor_pos[1] + track_height * 0.5 },
-                                    engine.ui.ImGui.colorConvertFloat4ToU32(keyframe_color),
-                                    1.0
-                                );
+                            if (keyframe_index == 0) {
+                                draw_list.addLine(.{ cursor_pos[0], cursor_pos[1] + track_height * 0.5 }, .{ x, cursor_pos[1] + track_height * 0.5 }, engine.ui.ImGui.getColorU32(keyframe_color), 1.0);
                             }
 
-                            if (i < track.keyframes.items.len - 1) {
-                                const next_keyframe = track.keyframes.items[i + 1];
+                            if (keyframe_index < track.keyframes.items.len - 1) {
+                                const next_keyframe = track.keyframes.items[keyframe_index + 1];
                                 const next_x = cursor_pos[0] + next_keyframe.time * pixels_per_second - editor_state.timeline_offset;
-                                
+
                                 if (next_x >= cursor_pos[0] and next_x <= cursor_pos[0] + canvas_width) {
-                                    draw_list.addLine(
-                                        .{ x, cursor_pos[1] + track_height * 0.5 },
-                                        .{ next_x, cursor_pos[1] + track_height * 0.5 },
-                                        engine.ui.ImGui.colorConvertFloat4ToU32(keyframe_color),
-                                        1.0
-                                    );
+                                    draw_list.addLine(.{ x, cursor_pos[1] + track_height * 0.5 }, .{ next_x, cursor_pos[1] + track_height * 0.5 }, engine.ui.ImGui.getColorU32(keyframe_color), 1.0);
                                 }
                             }
                         }
                     }
 
-                    engine.ui.ImGui.setCursorScreenPos(.{ cursor_pos[0] + 4, cursor_pos[1] + 2 });
+                    engine.ui.ImGui.setCursorPos(.{ 4.0, 2.0 });
                     engine.ui.ImGui.text(track.name);
                 }
             }
@@ -330,33 +314,33 @@ fn drawTimeline(state: *EditorState, editor_state: *AnimationEditorState, layer_
 }
 
 fn drawTimelineControls(state: *EditorState, editor_state: *AnimationEditorState, layer_context: *engine.core.LayerContext) void {
-    if (engine.ui.ImGui.button(state.text(.play_pause))) {
+    if (engine.ui.ImGui.button(localText(state, .play_pause))) {
         editor_state.is_playing = !editor_state.is_playing;
     }
-    
+
     engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.button(state.text(.stop))) {
+    if (engine.ui.ImGui.button(localText(state, .stop))) {
         editor_state.is_playing = false;
         editor_state.current_time = 0.0;
     }
-    
+
     engine.ui.ImGui.sameLine();
     engine.ui.ImGui.setNextItemWidth(100.0);
-    _ = engine.ui.ImGui.dragFloat("##current_time", &editor_state.current_time, 0.01, 0.0, 100.0, "%.2f");
-    
+    _ = engine.ui.ImGui.dragFloat("##current_time", &editor_state.current_time, 0.01, 0.0, 100.0);
+
     engine.ui.ImGui.sameLine();
     engine.ui.ImGui.setNextItemWidth(100.0);
-    _ = engine.ui.ImGui.dragFloat("##timeline_scale", &editor_state.timeline_scale, 0.01, 0.1, 10.0, "Scale: %.2fx");
-    
+    _ = engine.ui.ImGui.dragFloat("##timeline_scale", &editor_state.timeline_scale, 0.01, 0.1, 10.0);
+
     engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.button(state.text(.load_clip))) {
+    if (engine.ui.ImGui.button(localText(state, .load_clip))) {
         if (layer_context.renderer.selectedEntity()) |entity_id| {
             const entity = layer_context.world.getEntity(entity_id) orelse return;
             if (entity.animator) |animator| {
                 if (animator.default_clip_handle) |clip_handle| {
                     editor_state.selected_clip = clip_handle;
                     if (layer_context.world.resources.animationClip(clip_handle)) |clip| {
-                        editor_state.loadClip(layer_context.world.allocator orelse std.heap.page_allocator, clip) catch |err| {
+                        editor_state.loadClip(layer_context.world.allocator, clip) catch |err| {
                             std.log.err("Failed to load animation clip: {}", .{err});
                         };
                     }
@@ -367,8 +351,9 @@ fn drawTimelineControls(state: *EditorState, editor_state: *AnimationEditorState
 }
 
 pub fn createAnimationEditorState(allocator: std.mem.Allocator) !AnimationEditorState {
+    _ = allocator;
     return AnimationEditorState{
-        .tracks = std.ArrayList(TimelineTrack).init(allocator),
+        .tracks = .empty,
     };
 }
 
@@ -376,10 +361,8 @@ pub fn destroyAnimationEditorState(editor_state: *AnimationEditorState, allocato
     editor_state.deinit(allocator);
 }
 
-const i = @import("../../i18n/message_id.zig");
-
-pub const MessageId = enum(u32) {
-    animation_editor = i.text_common_end,
+pub const MessageId = enum {
+    animation_editor,
     animation_tracks,
     animation_timeline,
     play_pause,
@@ -416,6 +399,31 @@ pub const text_map = .{
     .zh_cn = &MessageId.zh_cn,
 };
 
+fn localText(state: *const EditorState, id: MessageId) []const u8 {
+    return switch (state.language) {
+        .en_us => switch (id) {
+            .animation_editor => MessageId.en_us.animation_editor,
+            .animation_tracks => MessageId.en_us.animation_tracks,
+            .animation_timeline => MessageId.en_us.animation_timeline,
+            .play_pause => MessageId.en_us.play_pause,
+            .stop => MessageId.en_us.stop,
+            .load_clip => MessageId.en_us.load_clip,
+            .no_animation_tracks_loaded => MessageId.en_us.no_animation_tracks_loaded,
+            .delete_track => MessageId.en_us.delete_track,
+        },
+        .zh_cn => switch (id) {
+            .animation_editor => MessageId.zh_cn.animation_editor,
+            .animation_tracks => MessageId.zh_cn.animation_tracks,
+            .animation_timeline => MessageId.zh_cn.animation_timeline,
+            .play_pause => MessageId.zh_cn.play_pause,
+            .stop => MessageId.zh_cn.stop,
+            .load_clip => MessageId.zh_cn.load_clip,
+            .no_animation_tracks_loaded => MessageId.zh_cn.no_animation_tracks_loaded,
+            .delete_track => MessageId.zh_cn.delete_track,
+        },
+    };
+}
+
 fn blendQuat(a: [4]f32, b: [4]f32, t: f32) [4]f32 {
     var qa = engine.math.quat.normalize(a);
     var qb = engine.math.quat.normalize(b);
@@ -449,4 +457,23 @@ fn blendQuat(a: [4]f32, b: [4]f32, t: f32) [4]f32 {
         qa[2] * s0 + qb[2] * s1,
         qa[3] * s0 + qb[3] * s1,
     };
+}
+
+fn deleteTrack(editor_state: *AnimationEditorState, allocator: std.mem.Allocator, index: usize) void {
+    if (index >= editor_state.tracks.items.len) {
+        return;
+    }
+
+    const index_u32: u32 = @intCast(index);
+    var removed = editor_state.tracks.orderedRemove(index);
+    removed.deinit(allocator);
+
+    if (editor_state.selected_track) |selected_track| {
+        if (selected_track == index_u32) {
+            editor_state.selected_track = null;
+            editor_state.selected_keyframe = null;
+        } else if (selected_track > index_u32) {
+            editor_state.selected_track = selected_track - 1;
+        }
+    }
 }

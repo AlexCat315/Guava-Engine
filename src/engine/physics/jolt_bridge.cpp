@@ -460,11 +460,11 @@ struct GuavaJoltContext {
   bool AddOrUpdateConstraint(const GuavaJoltConstraintDesc &desc) {
     JPH::BodyID body_a_id = GetBodyID(desc.entity_a);
     JPH::BodyID body_b_id = GetBodyID(desc.entity_b);
-    if (!body_a_id.IsInvalid() || !body_b_id.IsInvalid()) {
-      // 检查 body 是否有效
-      if (!IsBodyValid(desc.entity_a) || !IsBodyValid(desc.entity_b)) {
-        return false;
-      }
+    if (body_a_id.IsInvalid() || body_b_id.IsInvalid()) {
+      return false;
+    }
+    if (!IsBodyValid(desc.entity_a) || !IsBodyValid(desc.entity_b)) {
+      return false;
     }
 
     auto existing = constraint_records.find(desc.entity_id);
@@ -474,65 +474,60 @@ struct GuavaJoltContext {
       constraint_records.erase(existing);
     }
 
-    // 获取 body 指针（在锁的保护下）
-    JPH::Body *body_a = nullptr;
-    JPH::Body *body_b = nullptr;
+    JPH::TwoBodyConstraint *constraint = nullptr;
     {
       const JPH::BodyLockInterface &lock_interface = physics_system.GetBodyLockInterface();
-      JPH::BodyLockRead lock_a(lock_interface, body_a_id);
-      JPH::BodyLockRead lock_b(lock_interface, body_b_id);
+      JPH::BodyLockWrite lock_a(lock_interface, body_a_id);
+      JPH::BodyLockWrite lock_b(lock_interface, body_b_id);
       if (!lock_a.Succeeded() || !lock_b.Succeeded()) {
         return false;
       }
-      body_a = const_cast<JPH::Body *>(lock_a.GetBody());
-      body_b = const_cast<JPH::Body *>(lock_b.GetBody());
-      // 注意：锁在这里释放，但我们只使用 body 指针来创建约束
-      // 这通常安全，因为 body 不会被删除直到物理系统销毁
-    }
+      JPH::Body &body_a = lock_a.GetBody();
+      JPH::Body &body_b = lock_b.GetBody();
 
-    JPH::TwoBodyConstraint *constraint = nullptr;
-    switch (desc.constraint_type) {
-    case 0: {
-      JPH::PointConstraintSettings settings;
-      settings.mPoint1 = JPH::RVec3(desc.pivot_a[0], desc.pivot_a[1], desc.pivot_a[2]);
-      settings.mPoint2 = JPH::RVec3(desc.pivot_b[0], desc.pivot_b[1], desc.pivot_b[2]);
-      constraint = static_cast<JPH::TwoBodyConstraint *>(settings.Create(*body_a, *body_b));
-      break;
-    }
-    case 1: {
-      JPH::HingeConstraintSettings settings;
-      settings.mPoint1 = JPH::RVec3(desc.pivot_a[0], desc.pivot_a[1], desc.pivot_a[2]);
-      settings.mPoint2 = JPH::RVec3(desc.pivot_b[0], desc.pivot_b[1], desc.pivot_b[2]);
-      settings.mHingeAxis1 = JPH::Vec3(desc.axis_a[0], desc.axis_a[1], desc.axis_a[2]);
-      settings.mHingeAxis2 = JPH::Vec3(desc.axis_b[0], desc.axis_b[1], desc.axis_b[2]);
-      settings.mLimitsMin = desc.min_limit;
-      settings.mLimitsMax = desc.max_limit;
-      constraint = static_cast<JPH::TwoBodyConstraint *>(settings.Create(*body_a, *body_b));
-      break;
-    }
-    case 2: {
-      JPH::SliderConstraintSettings settings;
-      settings.mSpace = JPH::EConstraintSpace::WorldSpace;
-      settings.mPoint1 = JPH::RVec3(desc.pivot_a[0], desc.pivot_a[1], desc.pivot_a[2]);
-      settings.mPoint2 = JPH::RVec3(desc.pivot_b[0], desc.pivot_b[1], desc.pivot_b[2]);
-      settings.mSliderAxis1 = JPH::Vec3(desc.axis_a[0], desc.axis_a[1], desc.axis_a[2]);
-      settings.mSliderAxis2 = JPH::Vec3(desc.axis_b[0], desc.axis_b[1], desc.axis_b[2]);
-      settings.mLimitsMin = desc.min_limit;
-      settings.mLimitsMax = desc.max_limit;
-      constraint = static_cast<JPH::TwoBodyConstraint *>(settings.Create(*body_a, *body_b));
-      break;
-    }
-    case 3: {
-      JPH::DistanceConstraintSettings settings;
-      settings.mPoint1 = JPH::RVec3(desc.pivot_a[0], desc.pivot_a[1], desc.pivot_a[2]);
-      settings.mPoint2 = JPH::RVec3(desc.pivot_b[0], desc.pivot_b[1], desc.pivot_b[2]);
-      settings.mMinDistance = desc.min_limit;
-      settings.mMaxDistance = desc.max_limit;
-      constraint = static_cast<JPH::TwoBodyConstraint *>(settings.Create(*body_a, *body_b));
-      break;
-    }
-    default:
-      return false;
+      switch (desc.constraint_type) {
+      case 0: {
+        JPH::PointConstraintSettings settings;
+        settings.mPoint1 = JPH::RVec3(desc.pivot_a[0], desc.pivot_a[1], desc.pivot_a[2]);
+        settings.mPoint2 = JPH::RVec3(desc.pivot_b[0], desc.pivot_b[1], desc.pivot_b[2]);
+        constraint = static_cast<JPH::TwoBodyConstraint *>(settings.Create(body_a, body_b));
+        break;
+      }
+      case 1: {
+        JPH::HingeConstraintSettings settings;
+        settings.mPoint1 = JPH::RVec3(desc.pivot_a[0], desc.pivot_a[1], desc.pivot_a[2]);
+        settings.mPoint2 = JPH::RVec3(desc.pivot_b[0], desc.pivot_b[1], desc.pivot_b[2]);
+        settings.mHingeAxis1 = JPH::Vec3(desc.axis_a[0], desc.axis_a[1], desc.axis_a[2]);
+        settings.mHingeAxis2 = JPH::Vec3(desc.axis_b[0], desc.axis_b[1], desc.axis_b[2]);
+        settings.mLimitsMin = desc.min_limit;
+        settings.mLimitsMax = desc.max_limit;
+        constraint = static_cast<JPH::TwoBodyConstraint *>(settings.Create(body_a, body_b));
+        break;
+      }
+      case 2: {
+        JPH::SliderConstraintSettings settings;
+        settings.mSpace = JPH::EConstraintSpace::WorldSpace;
+        settings.mPoint1 = JPH::RVec3(desc.pivot_a[0], desc.pivot_a[1], desc.pivot_a[2]);
+        settings.mPoint2 = JPH::RVec3(desc.pivot_b[0], desc.pivot_b[1], desc.pivot_b[2]);
+        settings.mSliderAxis1 = JPH::Vec3(desc.axis_a[0], desc.axis_a[1], desc.axis_a[2]);
+        settings.mSliderAxis2 = JPH::Vec3(desc.axis_b[0], desc.axis_b[1], desc.axis_b[2]);
+        settings.mLimitsMin = desc.min_limit;
+        settings.mLimitsMax = desc.max_limit;
+        constraint = static_cast<JPH::TwoBodyConstraint *>(settings.Create(body_a, body_b));
+        break;
+      }
+      case 3: {
+        JPH::DistanceConstraintSettings settings;
+        settings.mPoint1 = JPH::RVec3(desc.pivot_a[0], desc.pivot_a[1], desc.pivot_a[2]);
+        settings.mPoint2 = JPH::RVec3(desc.pivot_b[0], desc.pivot_b[1], desc.pivot_b[2]);
+        settings.mMinDistance = desc.min_limit;
+        settings.mMaxDistance = desc.max_limit;
+        constraint = static_cast<JPH::TwoBodyConstraint *>(settings.Create(body_a, body_b));
+        break;
+      }
+      default:
+        return false;
+      }
     }
 
     if (!constraint) {
