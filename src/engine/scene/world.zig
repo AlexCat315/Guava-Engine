@@ -333,11 +333,14 @@ pub const World = struct {
         }
 
         // Second pass: update bounds (bottom-up)
-        // For simplicity, we can do it in a separate pass or combine.
-        // Bottom-up is better for bounds.
         for (self.entities.items) |*entity| {
             _ = self.updateBoundsRecursive(entity.id);
         }
+
+        // Third pass: force full spatial index rebuild
+        self.renderable_full_sync_required = true;
+        self.syncRenderableSpatialItems() catch {};
+        self.refitDirtyDynamicRenderables() catch {};
     }
 
     fn updateTransformRecursive(self: *World, id: EntityId, parent_world: components.Transform) void {
