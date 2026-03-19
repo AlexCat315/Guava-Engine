@@ -262,11 +262,9 @@ test "raycastSurface hits the nearest visible triangle" {
 
     const front = try world.createPrimitiveEntity(.plane, .{
         .translation = .{ 0.0, 0.0, 0.0 },
-        .rotation = @import("../math/quat.zig").fromEuler(.{ -std.math.pi * 0.5, 0.0, 0.0 }),
     });
     _ = try world.createPrimitiveEntity(.plane, .{
         .translation = .{ 0.0, 0.0, -3.0 },
-        .rotation = @import("../math/quat.zig").fromEuler(.{ -std.math.pi * 0.5, 0.0, 0.0 }),
     });
 
     // 更新层级以构建空间索引
@@ -298,9 +296,6 @@ test "raycastSurface ignores editor only meshes" {
         .material = .{
             .handle = material_handle,
         },
-        .local_transform = .{
-            .rotation = @import("../math/quat.zig").fromEuler(.{ -std.math.pi * 0.5, 0.0, 0.0 }),
-        },
     });
 
     try std.testing.expect(raycastSurface(&world, .{
@@ -315,7 +310,6 @@ test "raycastSurface rebuilds broad phase after transform changes" {
 
     const plane = try world.createPrimitiveEntity(.plane, .{
         .translation = .{ 0.0, 4.0, 0.0 },
-        .rotation = @import("../math/quat.zig").fromEuler(.{ -std.math.pi * 0.5, 0.0, 0.0 }),
     });
 
     try std.testing.expect(raycastSurface(&world, .{
@@ -325,7 +319,6 @@ test "raycastSurface rebuilds broad phase after transform changes" {
 
     try std.testing.expect(world.setEntityLocalTransform(plane, .{
         .translation = .{ 0.0, 0.0, 0.0 },
-        .rotation = @import("../math/quat.zig").fromEuler(.{ -std.math.pi * 0.5, 0.0, 0.0 }),
     }));
 
     const hit = raycastSurface(&world, .{

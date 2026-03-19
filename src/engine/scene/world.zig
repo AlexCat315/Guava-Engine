@@ -360,19 +360,22 @@ pub const World = struct {
             entity.world_transform_cache.translation = .{ world_mat[12], world_mat[13], world_mat[14] };
 
             // Simplified decomposition for now - assuming no skew
-            entity.world_transform_cache.scale = .{
-                vec3.length(.{ world_mat[0], world_mat[4], world_mat[8] }),
-                vec3.length(.{ world_mat[1], world_mat[5], world_mat[9] }),
-                vec3.length(.{ world_mat[2], world_mat[6], world_mat[10] }),
-            };
+            const scale_x = vec3.length(.{ world_mat[0], world_mat[1], world_mat[2] });
+            const scale_y = vec3.length(.{ world_mat[4], world_mat[5], world_mat[6] });
+            const scale_z = vec3.length(.{ world_mat[8], world_mat[9], world_mat[10] });
+            entity.world_transform_cache.scale = .{ scale_x, scale_y, scale_z };
 
-            // Extract rotation from the combined matrix for consistency
-            const rot_mat: [3][3]f32 = .{
-                .{ world_mat[0], world_mat[1], world_mat[2] },
-                .{ world_mat[4], world_mat[5], world_mat[6] },
-                .{ world_mat[8], world_mat[9], world_mat[10] },
+            // Normalize the basis vectors before converting back to a quaternion.
+            const safe_scale_x = if (scale_x <= compose_epsilon) 1.0 else scale_x;
+            const safe_scale_y = if (scale_y <= compose_epsilon) 1.0 else scale_y;
+            const safe_scale_z = if (scale_z <= compose_epsilon) 1.0 else scale_z;
+            const rot_mat = [_]f32{
+                world_mat[0] / safe_scale_x, world_mat[1] / safe_scale_x, world_mat[2] / safe_scale_x, 0.0,
+                world_mat[4] / safe_scale_y, world_mat[5] / safe_scale_y, world_mat[6] / safe_scale_y, 0.0,
+                world_mat[8] / safe_scale_z, world_mat[9] / safe_scale_z, world_mat[10] / safe_scale_z, 0.0,
+                0.0,                        0.0,                        0.0,                         1.0,
             };
-            entity.world_transform_cache.rotation = quat.fromMat3(rot_mat);
+            entity.world_transform_cache.rotation = quat.normalize(quat.fromRotationMatrix(rot_mat));
 
             entity.dirty = false;
         }
