@@ -1170,6 +1170,13 @@ fn instantiateCookedModel(
         try world.bindAnimatorTargets(entity_ids[index], entity_ids);
     }
 
+    for (cooked.entities, 0..) |entity, index| {
+        if (entity.skin_asset_id == null) {
+            continue;
+        }
+        try world.bindSkinnedMeshTargets(entity_ids[index], entity_ids);
+    }
+
     return report;
 }
 

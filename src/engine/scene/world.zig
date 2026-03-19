@@ -28,6 +28,11 @@ const AnimatorBinding = struct {
     target_entities: []EntityId,
 };
 
+const SkinnedMeshBinding = struct {
+    entity_id: EntityId,
+    target_entities: []EntityId,
+};
+
 var g_logged_spatial_partition_snapshot: ?SpatialPartitionSnapshot = null;
 
 pub const EntityId = u64;
@@ -107,6 +112,7 @@ pub const World = struct {
     dynamic_dirty_renderables: std.AutoHashMap(EntityId, void),
     renderable_sync_candidates: std.AutoHashMap(EntityId, void),
     animator_bindings: std.ArrayList(AnimatorBinding) = .empty,
+    skinned_mesh_bindings: std.ArrayList(SkinnedMeshBinding) = .empty,
     renderable_full_sync_required: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, job_system: ?*job_system_mod.JobSystem) World {
@@ -153,6 +159,10 @@ pub const World = struct {
             self.allocator.free(binding.target_entities);
         }
         self.animator_bindings.deinit(self.allocator);
+        for (self.skinned_mesh_bindings.items) |binding| {
+            self.allocator.free(binding.target_entities);
+        }
+        self.skinned_mesh_bindings.deinit(self.allocator);
         self.resources.deinit();
         if (reinitialize) {
             self.entities = .empty;
@@ -169,6 +179,7 @@ pub const World = struct {
             self.dynamic_dirty_renderables = std.AutoHashMap(EntityId, void).init(self.allocator);
             self.renderable_sync_candidates = std.AutoHashMap(EntityId, void).init(self.allocator);
             self.animator_bindings = .empty;
+            self.skinned_mesh_bindings = .empty;
             self.renderable_full_sync_required = false;
         }
     }
@@ -1042,6 +1053,38 @@ pub const World = struct {
         return null;
     }
 
+    pub fn bindSkinnedMeshTargets(self: *World, entity_id: EntityId, target_entities: []const EntityId) !void {
+        if (!self.hasEntity(entity_id)) {
+            return error.EntityNotFound;
+        }
+
+        const owned_targets = try self.allocator.dupe(EntityId, target_entities);
+        errdefer self.allocator.free(owned_targets);
+
+        for (self.skinned_mesh_bindings.items) |*binding| {
+            if (binding.entity_id != entity_id) {
+                continue;
+            }
+            self.allocator.free(binding.target_entities);
+            binding.target_entities = owned_targets;
+            return;
+        }
+
+        try self.skinned_mesh_bindings.append(self.allocator, .{
+            .entity_id = entity_id,
+            .target_entities = owned_targets,
+        });
+    }
+
+    pub fn skinnedMeshTargets(self: *const World, entity_id: EntityId) ?[]const EntityId {
+        for (self.skinned_mesh_bindings.items) |binding| {
+            if (binding.entity_id == entity_id) {
+                return binding.target_entities;
+            }
+        }
+        return null;
+    }
+
     fn worldTransformRecursive(self: *const World, id: EntityId, depth: usize) ?components.Transform {
         _ = depth;
         return self.worldTransformConst(id);
@@ -1102,6 +1145,7 @@ pub const World = struct {
         _ = self.dynamic_dirty_renderables.remove(id);
         _ = self.renderable_sync_candidates.remove(id);
         self.removeAnimatorBinding(id);
+        self.removeSkinnedMeshBinding(id);
 
         // Remove from parent's children list
         if (entity.parent) |parent_id| {
@@ -1639,6 +1683,17 @@ pub const World = struct {
             }
             self.allocator.free(binding.target_entities);
             _ = self.animator_bindings.swapRemove(index);
+            return;
+        }
+    }
+
+    fn removeSkinnedMeshBinding(self: *World, entity_id: EntityId) void {
+        for (self.skinned_mesh_bindings.items, 0..) |binding, index| {
+            if (binding.entity_id != entity_id) {
+                continue;
+            }
+            self.allocator.free(binding.target_entities);
+            _ = self.skinned_mesh_bindings.swapRemove(index);
             return;
         }
     }

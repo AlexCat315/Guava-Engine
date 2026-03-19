@@ -15,6 +15,17 @@ const ibl_precompute = @import("ibl_precompute.zig");
 
 const frustum_mod = @import("../math/frustum.zig");
 
+pub const max_skin_joints: usize = 64;
+
+pub const GpuVertex = extern struct {
+    position: [3]f32,
+    normal: [3]f32,
+    color: [4]f32,
+    uv: [2]f32,
+    joints: [4]f32,
+    weights: [4]f32,
+};
+
 pub const DrawStats = struct {
     draw_calls: usize = 0,
     triangles_drawn: usize = 0,
@@ -28,6 +39,8 @@ pub const DrawStats = struct {
 pub const VertexUniforms = extern struct {
     view_projection: [16]f32,
     model: [16]f32,
+    skinning_meta: [4]u32,
+    skin_matrices: [max_skin_joints][16]f32,
 };
 
 pub const BasePassUniforms = extern struct {
@@ -62,6 +75,8 @@ pub const DrawItem = struct {
     has_textures: [4]u32,
     ibl_params: [4]f32,
     model: [16]f32,
+    skinning_meta: [4]u32,
+    skin_matrices: [max_skin_joints][16]f32,
 };
 
 pub const CameraBlock = struct {
@@ -170,6 +185,11 @@ const MaterialState = struct {
     pbr_factors: [4]f32,
     has_textures: [4]u32,
     ibl_params: [4]f32,
+};
+
+const SkinningState = struct {
+    meta: [4]u32 = .{ 0, 0, 0, 0 },
+    matrices: [max_skin_joints][16]f32 = identitySkinMatrices(),
 };
 
 const fallback_white_bgra = [_]u8{
@@ -361,6 +381,8 @@ pub const MeshSceneCache = struct {
                 .has_textures = material_state.has_textures,
                 .ibl_params = material_state.ibl_params,
                 .model = render_mesh.transform.toMatrix(),
+                .skinning_meta = buildSkinningState(world, render_mesh.entity_id, render_mesh.transform).meta,
+                .skin_matrices = buildSkinningState(world, render_mesh.entity_id, render_mesh.transform).matrices,
             };
 
             const is_transparent = if (render_mesh.material) |mat| mat.base_color_factor[3] < 1.0 else false;
@@ -489,14 +511,31 @@ pub const MeshSceneCache = struct {
         }
 
         const vertex_buffer = try device.createBuffer(.{
-            .size = @intCast(@sizeOf(mesh_mod.Vertex) * mesh.vertices.len),
+            .size = @intCast(@sizeOf(GpuVertex) * mesh.vertices.len),
             .usage = rhi_types.BufferUsage.vertex,
         });
         errdefer {
             var copy = vertex_buffer;
             device.releaseBuffer(&copy);
         }
-        try device.uploadBufferData(&vertex_buffer, std.mem.sliceAsBytes(mesh.vertices));
+        const gpu_vertices = try self.allocator.alloc(GpuVertex, mesh.vertices.len);
+        defer self.allocator.free(gpu_vertices);
+        for (mesh.vertices, 0..) |vertex, index| {
+            gpu_vertices[index] = .{
+                .position = vertex.position,
+                .normal = vertex.normal,
+                .color = vertex.color,
+                .uv = vertex.uv,
+                .joints = .{
+                    @floatFromInt(vertex.joints[0]),
+                    @floatFromInt(vertex.joints[1]),
+                    @floatFromInt(vertex.joints[2]),
+                    @floatFromInt(vertex.joints[3]),
+                },
+                .weights = vertex.weights,
+            };
+        }
+        try device.uploadBufferData(&vertex_buffer, std.mem.sliceAsBytes(gpu_vertices));
 
         const index_buffer = try device.createBuffer(.{
             .size = @intCast(@sizeOf(u32) * mesh.indices.len),
@@ -694,6 +733,52 @@ pub const MeshSceneCache = struct {
         return state;
     }
 };
+
+fn buildSkinningState(
+    world: *const scene_mod.World,
+    entity_id: scene_mod.EntityId,
+    model_transform: components.Transform,
+) SkinningState {
+    const entity = world.getEntityConst(entity_id) orelse return .{};
+    const skinned_mesh = entity.skinned_mesh orelse return .{};
+    const skin_handle = skinned_mesh.skin_handle orelse return .{};
+    const targets = world.skinnedMeshTargets(entity_id) orelse return .{};
+    const skin = world.resources.skin(skin_handle) orelse return .{};
+
+    var state = SkinningState{};
+    const joint_count = @min(skin.joint_entity_indices.len, max_skin_joints);
+    if (joint_count == 0) {
+        return state;
+    }
+
+    const inverse_model = math.inverseTransformMatrix(model_transform);
+    state.meta[0] = 1;
+    state.meta[1] = @intCast(joint_count);
+
+    var joint_index: usize = 0;
+    while (joint_index < joint_count) : (joint_index += 1) {
+        const target_index = skin.joint_entity_indices[joint_index];
+        if (target_index >= targets.len) {
+            continue;
+        }
+        const joint_transform = world.worldTransformConst(targets[target_index]) orelse continue;
+        const joint_matrix = joint_transform.toMatrix();
+        state.matrices[joint_index] = math.mul(
+            inverse_model,
+            math.mul(joint_matrix, skin.inverse_bind_matrices[joint_index]),
+        );
+    }
+
+    return state;
+}
+
+fn identitySkinMatrices() [max_skin_joints][16]f32 {
+    var matrices: [max_skin_joints][16]f32 = undefined;
+    for (&matrices) |*matrix_value| {
+        matrix_value.* = math.identity();
+    }
+    return matrices;
+}
 
 fn fallbackBrdfLutBytes(allocator: std.mem.Allocator, size: u32) ![]u8 {
     const lut = try ibl_precompute.generateBRDFLUT(allocator, size);

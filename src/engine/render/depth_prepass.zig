@@ -1,5 +1,4 @@
 const std = @import("std");
-const mesh_resource = @import("../assets/mesh_resource.zig");
 const mesh_pass_mod = @import("mesh_pass.zig");
 const rhi_mod = @import("../rhi/device.zig");
 const rhi_types = @import("../rhi/types.zig");
@@ -46,6 +45,8 @@ pub const DepthPrepass = struct {
             var vertex_uniforms = mesh_pass_mod.VertexUniforms{
                 .view_projection = prepared_scene.view_projection,
                 .model = item.model,
+                .skinning_meta = item.skinning_meta,
+                .skin_matrices = item.skin_matrices,
             };
             device.bindVertexBuffer(pass, 0, &item.vertex_buffer, 0);
             device.bindIndexBuffer(pass, &item.index_buffer, .u32, 0);
@@ -67,7 +68,7 @@ pub const DepthPrepass = struct {
         const vertex_layouts = [_]rhi_mod.VertexBufferLayoutDesc{
             .{
                 .slot = 0,
-                .stride = @sizeOf(mesh_resource.Vertex),
+                .stride = @sizeOf(mesh_pass_mod.GpuVertex),
                 .input_rate = .per_vertex,
             },
         };
@@ -76,7 +77,19 @@ pub const DepthPrepass = struct {
                 .location = 0,
                 .buffer_slot = 0,
                 .format = .float3,
-                .offset = @offsetOf(mesh_resource.Vertex, "position"),
+                .offset = @offsetOf(mesh_pass_mod.GpuVertex, "position"),
+            },
+            .{
+                .location = 4,
+                .buffer_slot = 0,
+                .format = .float4,
+                .offset = @offsetOf(mesh_pass_mod.GpuVertex, "joints"),
+            },
+            .{
+                .location = 5,
+                .buffer_slot = 0,
+                .format = .float4,
+                .offset = @offsetOf(mesh_pass_mod.GpuVertex, "weights"),
             },
         };
 

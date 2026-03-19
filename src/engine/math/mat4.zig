@@ -86,6 +86,22 @@ pub fn transformMatrix(transform: components.Transform) Mat4 {
     return mul(mul(translation(transform.translation), rotate), scale(transform.scale));
 }
 
+pub fn inverseTransformMatrix(transform: components.Transform) Mat4 {
+    const safe_inverse_scale: components.Vec3 = .{
+        if (@abs(transform.scale[0]) <= 0.00001) 0.0 else 1.0 / transform.scale[0],
+        if (@abs(transform.scale[1]) <= 0.00001) 0.0 else 1.0 / transform.scale[1],
+        if (@abs(transform.scale[2]) <= 0.00001) 0.0 else 1.0 / transform.scale[2],
+    };
+    const inverse_scale = scale(safe_inverse_scale);
+    const inverse_rotate = quat.toMat4(quat.inverse(quat.normalize(transform.rotation)));
+    const inverse_translate = translation(.{
+        -transform.translation[0],
+        -transform.translation[1],
+        -transform.translation[2],
+    });
+    return mul(inverse_scale, mul(inverse_rotate, inverse_translate));
+}
+
 pub fn viewMatrix(transform: components.Transform) Mat4 {
     const inverse_translate = translation(.{
         -transform.translation[0],
@@ -185,4 +201,21 @@ test "perspective matrix keeps clip w positive for points in front of the camera
         matrix[15] * view_space_point[3];
 
     try std.testing.expect(clip_w > 0.0);
+}
+
+test "inverse transform matrix cancels transform matrix" {
+    const transform: components.Transform = .{
+        .translation = .{ 3.5, -2.0, 1.25 },
+        .rotation = quat.normalize(.{ 0.2, 0.35, -0.1, 0.9 }),
+        .scale = .{ 2.0, 0.5, 1.5 },
+    };
+    const composed = mul(transformMatrix(transform), inverseTransformMatrix(transform));
+
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), composed[0], 0.0005);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), composed[5], 0.0005);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), composed[10], 0.0005);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), composed[15], 0.0005);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), composed[12], 0.0005);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), composed[13], 0.0005);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), composed[14], 0.0005);
 }
