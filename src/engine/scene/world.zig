@@ -197,7 +197,6 @@ pub const World = struct {
         }
         if (desc.mesh != null or desc.vfx != null) {
             self.queueRenderableSync(id);
-            self.renderable_spatial_index.markDirty();
         }
 
         if (id >= self.next_id) {
@@ -1006,12 +1005,18 @@ pub const World = struct {
     fn removeEntityById(self: *World, id: EntityId) void {
         const index = self.id_to_index.get(id) orelse return;
         const entity = &self.entities.items[index];
-        if (removeBoundsItem(&self.static_renderable_items, &self.static_renderable_item_indices, id)) {
-            self.renderable_spatial_index.markDirty();
-        }
-        if (removeBoundsItem(&self.dynamic_renderable_items, &self.dynamic_renderable_item_indices, id)) {
-            self.dynamic_renderable_spatial_index.markDirty();
-        }
+        self.removeBoundsItemFromPartition(
+            &self.static_renderable_items,
+            &self.static_renderable_item_indices,
+            &self.renderable_spatial_index,
+            id,
+        );
+        self.removeBoundsItemFromPartition(
+            &self.dynamic_renderable_items,
+            &self.dynamic_renderable_item_indices,
+            &self.dynamic_renderable_spatial_index,
+            id,
+        );
         _ = self.dynamic_renderables.remove(id);
         _ = self.dynamic_dirty_renderables.remove(id);
         _ = self.renderable_sync_candidates.remove(id);
@@ -1231,18 +1236,27 @@ pub const World = struct {
 
         switch (desired_partition) {
             .none => {
-                if (removeBoundsItem(&self.static_renderable_items, &self.static_renderable_item_indices, entity_id)) {
-                    self.renderable_spatial_index.markDirty();
-                }
-                if (removeBoundsItem(&self.dynamic_renderable_items, &self.dynamic_renderable_item_indices, entity_id)) {
-                    self.dynamic_renderable_spatial_index.markDirty();
-                }
+                self.removeBoundsItemFromPartition(
+                    &self.static_renderable_items,
+                    &self.static_renderable_item_indices,
+                    &self.renderable_spatial_index,
+                    entity_id,
+                );
+                self.removeBoundsItemFromPartition(
+                    &self.dynamic_renderable_items,
+                    &self.dynamic_renderable_item_indices,
+                    &self.dynamic_renderable_spatial_index,
+                    entity_id,
+                );
                 _ = self.dynamic_dirty_renderables.remove(entity_id);
             },
             .static => {
-                if (removeBoundsItem(&self.dynamic_renderable_items, &self.dynamic_renderable_item_indices, entity_id)) {
-                    self.dynamic_renderable_spatial_index.markDirty();
-                }
+                self.removeBoundsItemFromPartition(
+                    &self.dynamic_renderable_items,
+                    &self.dynamic_renderable_item_indices,
+                    &self.dynamic_renderable_spatial_index,
+                    entity_id,
+                );
                 _ = self.dynamic_dirty_renderables.remove(entity_id);
                 try self.syncBoundsItemIntoPartition(
                     &self.static_renderable_items,
@@ -1255,9 +1269,12 @@ pub const World = struct {
                 );
             },
             .dynamic => {
-                if (removeBoundsItem(&self.static_renderable_items, &self.static_renderable_item_indices, entity_id)) {
-                    self.renderable_spatial_index.markDirty();
-                }
+                self.removeBoundsItemFromPartition(
+                    &self.static_renderable_items,
+                    &self.static_renderable_item_indices,
+                    &self.renderable_spatial_index,
+                    entity_id,
+                );
                 try self.syncBoundsItemIntoPartition(
                     &self.dynamic_renderable_items,
                     &self.dynamic_renderable_item_indices,
@@ -1307,12 +1324,32 @@ pub const World = struct {
         const change = try upsertBoundsItem(items, indices, self.allocator, item);
         switch (change) {
             .unchanged => {},
-            .inserted => bvh.markDirty(),
+            .inserted => {
+                if (!bvh.dirty and !bvh.insertItem(item)) {
+                    bvh.markDirty();
+                }
+            },
             .updated => {
                 if (!bvh.dirty and !bvh.updateItemBounds(item.id, item.bounds)) {
                     bvh.markDirty();
                 }
             },
+        }
+    }
+
+    fn removeBoundsItemFromPartition(
+        self: *World,
+        items: *std.ArrayList(spatial_index_mod.BoundsItem),
+        indices: *std.AutoHashMap(EntityId, usize),
+        bvh: *spatial_index_mod.StaticBoundsBvh,
+        item_id: EntityId,
+    ) void {
+        _ = self;
+        if (!removeBoundsItem(items, indices, item_id)) {
+            return;
+        }
+        if (!bvh.dirty and !bvh.removeItem(item_id)) {
+            bvh.markDirty();
         }
     }
 

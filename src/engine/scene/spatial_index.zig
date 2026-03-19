@@ -28,15 +28,21 @@ pub const StaticBoundsBvh = struct {
     nodes: std.ArrayList(Node) = .empty,
     item_indices: std.AutoHashMap(ItemId, usize),
     item_leaf_nodes: std.AutoHashMap(ItemId, u32),
+    pending_additions: std.ArrayList(BoundsItem) = .empty,
+    pending_addition_indices: std.AutoHashMap(ItemId, usize),
+    pending_removals: std.AutoHashMap(ItemId, void),
     dirty: bool = true,
 
     const max_leaf_items: usize = 4;
+    const max_incremental_overlay_items: usize = 24;
 
     pub fn init(allocator: std.mem.Allocator) StaticBoundsBvh {
         return .{
             .allocator = allocator,
             .item_indices = std.AutoHashMap(ItemId, usize).init(allocator),
             .item_leaf_nodes = std.AutoHashMap(ItemId, u32).init(allocator),
+            .pending_addition_indices = std.AutoHashMap(ItemId, usize).init(allocator),
+            .pending_removals = std.AutoHashMap(ItemId, void).init(allocator),
         };
     }
 
@@ -45,6 +51,9 @@ pub const StaticBoundsBvh = struct {
         self.nodes.deinit(self.allocator);
         self.item_indices.deinit();
         self.item_leaf_nodes.deinit();
+        self.pending_additions.deinit(self.allocator);
+        self.pending_addition_indices.deinit();
+        self.pending_removals.deinit();
         self.* = undefined;
     }
 
@@ -53,7 +62,7 @@ pub const StaticBoundsBvh = struct {
     }
 
     pub fn itemCount(self: *const StaticBoundsBvh) usize {
-        return self.items.items.len;
+        return (self.items.items.len -| self.pending_removals.count()) + self.pending_additions.items.len;
     }
 
     pub fn nodeCount(self: *const StaticBoundsBvh) usize {
@@ -65,6 +74,9 @@ pub const StaticBoundsBvh = struct {
         self.nodes.clearRetainingCapacity();
         self.item_indices.clearRetainingCapacity();
         self.item_leaf_nodes.clearRetainingCapacity();
+        self.pending_additions.clearRetainingCapacity();
+        self.pending_addition_indices.clearRetainingCapacity();
+        self.pending_removals.clearRetainingCapacity();
 
         if (source_items.len == 0) {
             self.dirty = false;
@@ -77,11 +89,65 @@ pub const StaticBoundsBvh = struct {
     }
 
     pub fn updateItemBounds(self: *StaticBoundsBvh, id: ItemId, bounds: AABB) bool {
+        if (self.pending_addition_indices.get(id)) |item_index| {
+            self.pending_additions.items[item_index].bounds = bounds;
+            return true;
+        }
+        if (self.pending_removals.contains(id)) {
+            return false;
+        }
         const item_index = self.item_indices.get(id) orelse return false;
         const leaf_node_index = self.item_leaf_nodes.get(id) orelse return false;
         self.items.items[item_index].bounds = bounds;
         self.refitFromNode(leaf_node_index);
         self.dirty = false;
+        return true;
+    }
+
+    pub fn insertItem(self: *StaticBoundsBvh, item: BoundsItem) bool {
+        if (self.dirty) {
+            return false;
+        }
+
+        if (self.pending_addition_indices.get(item.id)) |item_index| {
+            self.pending_additions.items[item_index] = item;
+            return true;
+        }
+
+        if (self.pending_removals.remove(item.id)) {
+            return self.updateItemBounds(item.id, item.bounds);
+        }
+
+        if (self.item_indices.contains(item.id)) {
+            return self.updateItemBounds(item.id, item.bounds);
+        }
+
+        const next_index = self.pending_additions.items.len;
+        self.pending_additions.append(self.allocator, item) catch return false;
+        self.pending_addition_indices.put(item.id, next_index) catch {
+            _ = self.pending_additions.pop();
+            return false;
+        };
+        self.markDirtyIfOverlayTooLarge();
+        return true;
+    }
+
+    pub fn removeItem(self: *StaticBoundsBvh, id: ItemId) bool {
+        if (self.dirty) {
+            return false;
+        }
+
+        if (self.pending_addition_indices.get(id)) |item_index| {
+            self.removePendingAdditionAt(item_index);
+            return true;
+        }
+
+        if (!self.item_indices.contains(id) or self.pending_removals.contains(id)) {
+            return false;
+        }
+
+        self.pending_removals.put(id, {}) catch return false;
+        self.markDirtyIfOverlayTooLarge();
         return true;
     }
 
@@ -95,11 +161,10 @@ pub const StaticBoundsBvh = struct {
         var candidates = std.ArrayList(ItemId).empty;
         errdefer candidates.deinit(allocator);
 
-        if (self.nodes.items.len == 0) {
-            return try candidates.toOwnedSlice(allocator);
+        if (self.nodes.items.len > 0) {
+            try self.collectRayCandidatesRecursive(allocator, 0, ray_origin, ray_direction, max_distance, &candidates);
         }
-
-        try self.collectRayCandidatesRecursive(allocator, 0, ray_origin, ray_direction, max_distance, &candidates);
+        try self.collectPendingRayCandidates(allocator, ray_origin, ray_direction, max_distance, &candidates);
         return try candidates.toOwnedSlice(allocator);
     }
 
@@ -111,11 +176,10 @@ pub const StaticBoundsBvh = struct {
         var candidates = std.ArrayList(ItemId).empty;
         errdefer candidates.deinit(allocator);
 
-        if (self.nodes.items.len == 0) {
-            return try candidates.toOwnedSlice(allocator);
+        if (self.nodes.items.len > 0) {
+            try self.collectFrustumCandidatesRecursive(allocator, 0, frustum, &candidates);
         }
-
-        try self.collectFrustumCandidatesRecursive(allocator, 0, frustum, &candidates);
+        try self.collectPendingFrustumCandidates(allocator, frustum, &candidates);
         return try candidates.toOwnedSlice(allocator);
     }
 
@@ -203,6 +267,9 @@ pub const StaticBoundsBvh = struct {
             const start: usize = node.start;
             const end = start + node.count;
             for (self.items.items[start..end]) |item| {
+                if (self.pending_removals.contains(item.id)) {
+                    continue;
+                }
                 try candidates.append(allocator, item.id);
             }
             return;
@@ -248,6 +315,9 @@ pub const StaticBoundsBvh = struct {
             const start: usize = node.start;
             const end = start + node.count;
             for (self.items.items[start..end]) |item| {
+                if (self.pending_removals.contains(item.id)) {
+                    continue;
+                }
                 if (frustum.intersectsAABB(item.bounds)) {
                     try candidates.append(allocator, item.id);
                 }
@@ -257,6 +327,53 @@ pub const StaticBoundsBvh = struct {
 
         try self.collectFrustumCandidatesRecursive(allocator, node.left.?, frustum, candidates);
         try self.collectFrustumCandidatesRecursive(allocator, node.right.?, frustum, candidates);
+    }
+
+    fn collectPendingRayCandidates(
+        self: *const StaticBoundsBvh,
+        allocator: std.mem.Allocator,
+        ray_origin: [3]f32,
+        ray_direction: [3]f32,
+        max_distance: f32,
+        candidates: *std.ArrayList(ItemId),
+    ) !void {
+        for (self.pending_additions.items) |item| {
+            if (item.bounds.rayIntersection(ray_origin, ray_direction, max_distance) != null) {
+                try candidates.append(allocator, item.id);
+            }
+        }
+    }
+
+    fn collectPendingFrustumCandidates(
+        self: *const StaticBoundsBvh,
+        allocator: std.mem.Allocator,
+        frustum: frustum_mod.Frustum,
+        candidates: *std.ArrayList(ItemId),
+    ) !void {
+        for (self.pending_additions.items) |item| {
+            if (frustum.intersectsAABB(item.bounds)) {
+                try candidates.append(allocator, item.id);
+            }
+        }
+    }
+
+    fn removePendingAdditionAt(self: *StaticBoundsBvh, item_index: usize) void {
+        const removed_id = self.pending_additions.items[item_index].id;
+        const moved_item = self.pending_additions.items[self.pending_additions.items.len - 1];
+        _ = self.pending_additions.swapRemove(item_index);
+        _ = self.pending_addition_indices.remove(removed_id);
+        if (item_index < self.pending_additions.items.len) {
+            self.pending_addition_indices.put(moved_item.id, item_index) catch {};
+        }
+    }
+
+    fn markDirtyIfOverlayTooLarge(self: *StaticBoundsBvh) void {
+        const overlay_items = self.pending_additions.items.len + self.pending_removals.count();
+        if (overlay_items >= max_incremental_overlay_items or
+            overlay_items * 2 > self.items.items.len + self.pending_additions.items.len)
+        {
+            self.dirty = true;
+        }
     }
 };
 
@@ -346,4 +463,45 @@ test "StaticBoundsBvh can refit a moved item in place" {
     defer std.testing.allocator.free(moved_ray_candidates);
     try std.testing.expectEqual(@as(usize, 1), moved_ray_candidates.len);
     try std.testing.expectEqual(@as(ItemId, 2), moved_ray_candidates[0]);
+}
+
+test "StaticBoundsBvh supports incremental insert and remove overlays" {
+    var bvh = StaticBoundsBvh.init(std.testing.allocator);
+    defer bvh.deinit();
+
+    try bvh.rebuild(&.{
+        .{
+            .id = 1,
+            .bounds = .{ .min = .{ -1.0, -1.0, -1.0 }, .max = .{ 1.0, 1.0, 1.0 } },
+        },
+    });
+    const initial_node_count = bvh.nodeCount();
+
+    try std.testing.expect(bvh.insertItem(.{
+        .id = 2,
+        .bounds = .{ .min = .{ 5.0, -1.0, -1.0 }, .max = .{ 7.0, 1.0, 1.0 } },
+    }));
+    try std.testing.expectEqual(initial_node_count, bvh.nodeCount());
+
+    const with_insert = try bvh.queryRayCandidates(
+        std.testing.allocator,
+        .{ -3.0, 0.0, 0.0 },
+        .{ 1.0, 0.0, 0.0 },
+        16.0,
+    );
+    defer std.testing.allocator.free(with_insert);
+    try std.testing.expectEqual(@as(usize, 2), with_insert.len);
+
+    try std.testing.expect(bvh.removeItem(1));
+    try std.testing.expectEqual(initial_node_count, bvh.nodeCount());
+
+    const after_remove = try bvh.queryRayCandidates(
+        std.testing.allocator,
+        .{ -3.0, 0.0, 0.0 },
+        .{ 1.0, 0.0, 0.0 },
+        16.0,
+    );
+    defer std.testing.allocator.free(after_remove);
+    try std.testing.expectEqual(@as(usize, 1), after_remove.len);
+    try std.testing.expectEqual(@as(ItemId, 2), after_remove[0]);
 }
