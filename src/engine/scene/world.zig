@@ -12,10 +12,18 @@ const job_system_mod = @import("../core/job_system.zig");
 
 const compose_epsilon = 0.0001;
 const dynamic_reintegration_query_threshold: u8 = 3;
+const spatial_log = std.log.scoped(.spatial_index);
 
 const DynamicRenderableState = struct {
     steady_query_count: u8 = 0,
 };
+
+const SpatialPartitionSnapshot = struct {
+    static_items: usize,
+    dynamic_items: usize,
+};
+
+var g_logged_spatial_partition_snapshot: ?SpatialPartitionSnapshot = null;
 
 pub const EntityId = u64;
 
@@ -76,8 +84,14 @@ pub const World = struct {
     vfx_runtime_emitters: std.ArrayList(vfx_runtime_mod.VfxRuntimeEmitter) = .empty,
     renderable_spatial_index: spatial_index_mod.StaticBoundsBvh,
     dynamic_renderable_spatial_index: spatial_index_mod.StaticBoundsBvh,
+    static_renderable_items: std.ArrayList(spatial_index_mod.BoundsItem) = .empty,
+    dynamic_renderable_items: std.ArrayList(spatial_index_mod.BoundsItem) = .empty,
+    static_renderable_item_indices: std.AutoHashMap(EntityId, usize),
+    dynamic_renderable_item_indices: std.AutoHashMap(EntityId, usize),
     dynamic_renderables: std.AutoHashMap(EntityId, DynamicRenderableState),
     dynamic_dirty_renderables: std.AutoHashMap(EntityId, void),
+    renderable_sync_candidates: std.AutoHashMap(EntityId, void),
+    renderable_full_sync_required: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, job_system: ?*job_system_mod.JobSystem) World {
         return .{
@@ -87,8 +101,11 @@ pub const World = struct {
             .job_system = job_system,
             .renderable_spatial_index = spatial_index_mod.StaticBoundsBvh.init(allocator),
             .dynamic_renderable_spatial_index = spatial_index_mod.StaticBoundsBvh.init(allocator),
+            .static_renderable_item_indices = std.AutoHashMap(EntityId, usize).init(allocator),
+            .dynamic_renderable_item_indices = std.AutoHashMap(EntityId, usize).init(allocator),
             .dynamic_renderables = std.AutoHashMap(EntityId, DynamicRenderableState).init(allocator),
             .dynamic_dirty_renderables = std.AutoHashMap(EntityId, void).init(allocator),
+            .renderable_sync_candidates = std.AutoHashMap(EntityId, void).init(allocator),
         };
     }
 
@@ -109,8 +126,13 @@ pub const World = struct {
         self.id_to_index.deinit();
         self.renderable_spatial_index.deinit();
         self.dynamic_renderable_spatial_index.deinit();
+        self.static_renderable_items.deinit(self.allocator);
+        self.dynamic_renderable_items.deinit(self.allocator);
+        self.static_renderable_item_indices.deinit();
+        self.dynamic_renderable_item_indices.deinit();
         self.dynamic_renderables.deinit();
         self.dynamic_dirty_renderables.deinit();
+        self.renderable_sync_candidates.deinit();
         self.resources.deinit();
         if (reinitialize) {
             self.entities = .empty;
@@ -119,8 +141,14 @@ pub const World = struct {
             self.vfx_runtime_emitters = .empty;
             self.renderable_spatial_index = spatial_index_mod.StaticBoundsBvh.init(self.allocator);
             self.dynamic_renderable_spatial_index = spatial_index_mod.StaticBoundsBvh.init(self.allocator);
+            self.static_renderable_items = .empty;
+            self.dynamic_renderable_items = .empty;
+            self.static_renderable_item_indices = std.AutoHashMap(EntityId, usize).init(self.allocator);
+            self.dynamic_renderable_item_indices = std.AutoHashMap(EntityId, usize).init(self.allocator);
             self.dynamic_renderables = std.AutoHashMap(EntityId, DynamicRenderableState).init(self.allocator);
             self.dynamic_dirty_renderables = std.AutoHashMap(EntityId, void).init(self.allocator);
+            self.renderable_sync_candidates = std.AutoHashMap(EntityId, void).init(self.allocator);
+            self.renderable_full_sync_required = false;
         }
     }
 
@@ -167,7 +195,10 @@ pub const World = struct {
                 try parent.children.append(self.allocator, id);
             }
         }
-        self.renderable_spatial_index.markDirty();
+        if (desc.mesh != null or desc.vfx != null) {
+            self.queueRenderableSync(id);
+            self.renderable_spatial_index.markDirty();
+        }
 
         if (id >= self.next_id) {
             self.next_id = id + 1;
@@ -198,14 +229,13 @@ pub const World = struct {
     pub fn markDirty(self: *World, id: EntityId) void {
         const entity = self.getEntity(id) orelse return;
         if (entity.mesh != null or entity.vfx != null) {
+            self.queueRenderableSync(id);
             if (self.dynamic_renderables.getPtr(id)) |state| {
                 state.steady_query_count = 0;
                 self.dynamic_dirty_renderables.put(id, {}) catch {
                     self.dynamic_renderable_spatial_index.markDirty();
                 };
             } else if (self.promoteRenderableToDynamic(id)) {
-                self.renderable_spatial_index.markDirty();
-                self.dynamic_renderable_spatial_index.markDirty();
                 self.dynamic_dirty_renderables.put(id, {}) catch {};
             } else {
                 self.renderable_spatial_index.markDirty();
@@ -976,10 +1006,15 @@ pub const World = struct {
     fn removeEntityById(self: *World, id: EntityId) void {
         const index = self.id_to_index.get(id) orelse return;
         const entity = &self.entities.items[index];
-        self.renderable_spatial_index.markDirty();
-        self.dynamic_renderable_spatial_index.markDirty();
+        if (removeBoundsItem(&self.static_renderable_items, &self.static_renderable_item_indices, id)) {
+            self.renderable_spatial_index.markDirty();
+        }
+        if (removeBoundsItem(&self.dynamic_renderable_items, &self.dynamic_renderable_item_indices, id)) {
+            self.dynamic_renderable_spatial_index.markDirty();
+        }
         _ = self.dynamic_renderables.remove(id);
         _ = self.dynamic_dirty_renderables.remove(id);
+        _ = self.renderable_sync_candidates.remove(id);
 
         // Remove from parent's children list
         if (entity.parent) |parent_id| {
@@ -1054,46 +1089,26 @@ pub const World = struct {
         }
 
         const reintegrated_dynamic = try self.reintegrateStableDynamicRenderables();
+        try self.syncRenderableSpatialItems();
         try self.refitDirtyDynamicRenderables();
 
         if (!self.renderable_spatial_index.dirty and !self.dynamic_renderable_spatial_index.dirty and !reintegrated_dynamic) {
             return;
         }
 
-        var static_bounds_items = std.ArrayList(spatial_index_mod.BoundsItem).empty;
-        defer static_bounds_items.deinit(self.allocator);
-        var dynamic_bounds_items = std.ArrayList(spatial_index_mod.BoundsItem).empty;
-        defer dynamic_bounds_items.deinit(self.allocator);
-
-        for (self.entities.items) |entity| {
-            if (entity.mesh == null and entity.vfx == null) {
-                continue;
-            }
-            if (self.dynamic_renderables.contains(entity.id)) {
-                const bounds = self.worldBoundsConst(entity.id) orelse continue;
-                if (!bounds.isValid()) {
-                    continue;
-                }
-                try dynamic_bounds_items.append(self.allocator, .{
-                    .id = entity.id,
-                    .bounds = bounds,
-                });
-                continue;
-            }
-            const bounds = self.worldBoundsConst(entity.id) orelse continue;
-            if (!bounds.isValid()) {
-                continue;
-            }
-            try static_bounds_items.append(self.allocator, .{
-                .id = entity.id,
-                .bounds = bounds,
-            });
+        var rebuilt_static = false;
+        if (self.renderable_spatial_index.dirty) {
+            // 静态树只从缓存分区条目重建，避免树 dirty 后重新线性扫完整个 World。
+            try self.renderable_spatial_index.rebuild(self.static_renderable_items.items);
+            rebuilt_static = true;
         }
-
-        // 统一维护 renderable 空间索引，静态/动态各自重建，避免动态对象拖累整棵静态树。
-        try self.renderable_spatial_index.rebuild(static_bounds_items.items);
-        try self.dynamic_renderable_spatial_index.rebuild(dynamic_bounds_items.items);
-        self.dynamic_dirty_renderables.clearRetainingCapacity();
+        var rebuilt_dynamic = false;
+        if (self.dynamic_renderable_spatial_index.dirty) {
+            try self.dynamic_renderable_spatial_index.rebuild(self.dynamic_renderable_items.items);
+            rebuilt_dynamic = true;
+            self.dynamic_dirty_renderables.clearRetainingCapacity();
+        }
+        self.logSpatialPartitionSnapshotIfNeeded(rebuilt_static, rebuilt_dynamic);
     }
 
     fn promoteRenderableToDynamic(self: *World, id: EntityId) bool {
@@ -1105,7 +1120,8 @@ pub const World = struct {
             return false;
         }
         self.dynamic_renderables.put(id, .{}) catch {
-            // OOM 时退回静态 BVH 全量重建路径，保证正确性优先。
+            // OOM 时退回缓存全量同步路径，保证正确性优先。
+            self.renderable_full_sync_required = true;
             return false;
         };
         return true;
@@ -1146,9 +1162,8 @@ pub const World = struct {
         for (reintegrate_ids.items) |entity_id| {
             _ = self.dynamic_renderables.remove(entity_id);
             _ = self.dynamic_dirty_renderables.remove(entity_id);
+            self.queueRenderableSync(entity_id);
         }
-        self.renderable_spatial_index.markDirty();
-        self.dynamic_renderable_spatial_index.markDirty();
         return true;
     }
 
@@ -1182,6 +1197,154 @@ pub const World = struct {
         }
     }
 
+    fn syncRenderableSpatialItems(self: *World) !void {
+        if (self.renderable_full_sync_required) {
+            try self.rebuildRenderableItemCachesFromWorld();
+            self.renderable_full_sync_required = false;
+            self.renderable_spatial_index.markDirty();
+            self.dynamic_renderable_spatial_index.markDirty();
+            self.renderable_sync_candidates.clearRetainingCapacity();
+            return;
+        }
+
+        if (self.renderable_sync_candidates.count() == 0) {
+            return;
+        }
+
+        var iter = self.renderable_sync_candidates.keyIterator();
+        while (iter.next()) |entity_id_ptr| {
+            try self.syncRenderableSpatialItem(entity_id_ptr.*);
+        }
+        self.renderable_sync_candidates.clearRetainingCapacity();
+    }
+
+    fn syncRenderableSpatialItem(self: *World, entity_id: EntityId) !void {
+        const entity = self.getEntityConst(entity_id);
+        const is_renderable = entity != null and (entity.?.mesh != null or entity.?.vfx != null);
+        const desired_bounds = if (is_renderable) self.worldBoundsConst(entity_id) else null;
+        const desired_partition: enum { none, static, dynamic } = blk: {
+            if (desired_bounds == null or !desired_bounds.?.isValid()) {
+                break :blk .none;
+            }
+            break :blk if (self.dynamic_renderables.contains(entity_id)) .dynamic else .static;
+        };
+
+        switch (desired_partition) {
+            .none => {
+                if (removeBoundsItem(&self.static_renderable_items, &self.static_renderable_item_indices, entity_id)) {
+                    self.renderable_spatial_index.markDirty();
+                }
+                if (removeBoundsItem(&self.dynamic_renderable_items, &self.dynamic_renderable_item_indices, entity_id)) {
+                    self.dynamic_renderable_spatial_index.markDirty();
+                }
+                _ = self.dynamic_dirty_renderables.remove(entity_id);
+            },
+            .static => {
+                if (removeBoundsItem(&self.dynamic_renderable_items, &self.dynamic_renderable_item_indices, entity_id)) {
+                    self.dynamic_renderable_spatial_index.markDirty();
+                }
+                _ = self.dynamic_dirty_renderables.remove(entity_id);
+                try self.syncBoundsItemIntoPartition(
+                    &self.static_renderable_items,
+                    &self.static_renderable_item_indices,
+                    &self.renderable_spatial_index,
+                    .{
+                        .id = entity_id,
+                        .bounds = desired_bounds.?,
+                    },
+                );
+            },
+            .dynamic => {
+                if (removeBoundsItem(&self.static_renderable_items, &self.static_renderable_item_indices, entity_id)) {
+                    self.renderable_spatial_index.markDirty();
+                }
+                try self.syncBoundsItemIntoPartition(
+                    &self.dynamic_renderable_items,
+                    &self.dynamic_renderable_item_indices,
+                    &self.dynamic_renderable_spatial_index,
+                    .{
+                        .id = entity_id,
+                        .bounds = desired_bounds.?,
+                    },
+                );
+            },
+        }
+    }
+
+    fn rebuildRenderableItemCachesFromWorld(self: *World) !void {
+        self.static_renderable_items.clearRetainingCapacity();
+        self.dynamic_renderable_items.clearRetainingCapacity();
+        self.static_renderable_item_indices.clearRetainingCapacity();
+        self.dynamic_renderable_item_indices.clearRetainingCapacity();
+
+        for (self.entities.items) |entity| {
+            if (entity.mesh == null and entity.vfx == null) {
+                continue;
+            }
+            const bounds = self.worldBoundsConst(entity.id) orelse continue;
+            if (!bounds.isValid()) {
+                continue;
+            }
+            const item = spatial_index_mod.BoundsItem{
+                .id = entity.id,
+                .bounds = bounds,
+            };
+            if (self.dynamic_renderables.contains(entity.id)) {
+                try appendBoundsItem(&self.dynamic_renderable_items, &self.dynamic_renderable_item_indices, self.allocator, item);
+            } else {
+                try appendBoundsItem(&self.static_renderable_items, &self.static_renderable_item_indices, self.allocator, item);
+            }
+        }
+    }
+
+    fn syncBoundsItemIntoPartition(
+        self: *World,
+        items: *std.ArrayList(spatial_index_mod.BoundsItem),
+        indices: *std.AutoHashMap(EntityId, usize),
+        bvh: *spatial_index_mod.StaticBoundsBvh,
+        item: spatial_index_mod.BoundsItem,
+    ) !void {
+        const change = try upsertBoundsItem(items, indices, self.allocator, item);
+        switch (change) {
+            .unchanged => {},
+            .inserted => bvh.markDirty(),
+            .updated => {
+                if (!bvh.dirty and !bvh.updateItemBounds(item.id, item.bounds)) {
+                    bvh.markDirty();
+                }
+            },
+        }
+    }
+
+    fn queueRenderableSync(self: *World, entity_id: EntityId) void {
+        self.renderable_sync_candidates.put(entity_id, {}) catch {
+            self.renderable_full_sync_required = true;
+        };
+    }
+
+    fn logSpatialPartitionSnapshotIfNeeded(self: *World, rebuilt_static: bool, rebuilt_dynamic: bool) void {
+        if (!rebuilt_static and !rebuilt_dynamic) {
+            return;
+        }
+
+        const snapshot = SpatialPartitionSnapshot{
+            .static_items = self.static_renderable_items.items.len,
+            .dynamic_items = self.dynamic_renderable_items.items.len,
+        };
+        if (g_logged_spatial_partition_snapshot == null or
+            g_logged_spatial_partition_snapshot.?.static_items != snapshot.static_items or
+            g_logged_spatial_partition_snapshot.?.dynamic_items != snapshot.dynamic_items or
+            rebuilt_static or
+            rebuilt_dynamic)
+        {
+            spatial_log.info(
+                "renderable spatial partitions synced static_items={} dynamic_items={} rebuilt_static={} rebuilt_dynamic={}",
+                .{ snapshot.static_items, snapshot.dynamic_items, rebuilt_static, rebuilt_dynamic },
+            );
+            g_logged_spatial_partition_snapshot = snapshot;
+        }
+    }
+
     fn hasDirtyEntities(self: *const World) bool {
         for (self.entities.items) |entity| {
             if (entity.dirty) {
@@ -1189,6 +1352,57 @@ pub const World = struct {
             }
         }
         return false;
+    }
+
+    fn appendBoundsItem(
+        items: *std.ArrayList(spatial_index_mod.BoundsItem),
+        indices: *std.AutoHashMap(EntityId, usize),
+        allocator: std.mem.Allocator,
+        item: spatial_index_mod.BoundsItem,
+    ) !void {
+        const next_index = items.items.len;
+        try items.append(allocator, item);
+        errdefer _ = items.pop();
+        try indices.put(item.id, next_index);
+    }
+
+    const BoundsItemChange = enum {
+        unchanged,
+        updated,
+        inserted,
+    };
+
+    fn upsertBoundsItem(
+        items: *std.ArrayList(spatial_index_mod.BoundsItem),
+        indices: *std.AutoHashMap(EntityId, usize),
+        allocator: std.mem.Allocator,
+        item: spatial_index_mod.BoundsItem,
+    ) !BoundsItemChange {
+        if (indices.get(item.id)) |item_index| {
+            if (std.meta.eql(items.items[item_index].bounds, item.bounds)) {
+                return .unchanged;
+            }
+            items.items[item_index] = item;
+            return .updated;
+        }
+
+        try appendBoundsItem(items, indices, allocator, item);
+        return .inserted;
+    }
+
+    fn removeBoundsItem(
+        items: *std.ArrayList(spatial_index_mod.BoundsItem),
+        indices: *std.AutoHashMap(EntityId, usize),
+        item_id: EntityId,
+    ) bool {
+        const item_index = indices.get(item_id) orelse return false;
+        const moved_item = items.items[items.items.len - 1];
+        _ = items.swapRemove(item_index);
+        _ = indices.remove(item_id);
+        if (item_index < items.items.len) {
+            indices.put(moved_item.id, item_index) catch {};
+        }
+        return true;
     }
 
     fn nextAvailableDerivedName(self: *const World, base_name: []const u8, suffix: []const u8) ![]u8 {
@@ -1646,4 +1860,51 @@ test "renderable bounds frustum query reuses cached bounds for visible BVH candi
     try std.testing.expectEqual(@as(usize, 1), bounds_items.len);
     try std.testing.expectEqual(near_cube, bounds_items[0].id);
     try std.testing.expectEqualDeep(world.worldBoundsConst(near_cube).?, bounds_items[0].bounds);
+}
+
+test "renderable partition caches update incrementally for create and destroy" {
+    var world = World.init(std.testing.allocator);
+    defer world.deinit();
+
+    const first = try world.createPrimitiveEntity(.cube, .{
+        .translation = .{ 0.0, 0.0, 0.0 },
+    });
+
+    const initial_query = try world.queryRenderableRayCandidates(
+        std.testing.allocator,
+        .{ -5.0, 0.0, 0.0 },
+        .{ 1.0, 0.0, 0.0 },
+        16.0,
+    );
+    defer std.testing.allocator.free(initial_query);
+    try std.testing.expectEqual(@as(usize, 1), world.static_renderable_items.items.len);
+    try std.testing.expectEqual(@as(usize, 0), world.dynamic_renderable_items.items.len);
+    try std.testing.expect(world.static_renderable_item_indices.contains(first));
+
+    const second = try world.createPrimitiveEntity(.cube, .{
+        .translation = .{ 6.0, 0.0, 0.0 },
+    });
+
+    const after_create = try world.queryRenderableRayCandidates(
+        std.testing.allocator,
+        .{ -5.0, 0.0, 0.0 },
+        .{ 1.0, 0.0, 0.0 },
+        20.0,
+    );
+    defer std.testing.allocator.free(after_create);
+    try std.testing.expectEqual(@as(usize, 2), world.static_renderable_items.items.len);
+    try std.testing.expect(world.static_renderable_item_indices.contains(second));
+
+    try std.testing.expect(world.destroyEntity(first));
+    const after_destroy = try world.queryRenderableRayCandidates(
+        std.testing.allocator,
+        .{ -5.0, 0.0, 0.0 },
+        .{ 1.0, 0.0, 0.0 },
+        20.0,
+    );
+    defer std.testing.allocator.free(after_destroy);
+    try std.testing.expectEqual(@as(usize, 1), world.static_renderable_items.items.len);
+    try std.testing.expect(!world.static_renderable_item_indices.contains(first));
+    try std.testing.expect(world.static_renderable_item_indices.contains(second));
+    try std.testing.expectEqual(second, world.static_renderable_items.items[0].id);
 }
