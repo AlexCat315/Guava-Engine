@@ -136,6 +136,7 @@ const JoltBodyState = extern struct {
     position: [3]f32,
     rotation: [4]f32,
     linear_velocity: [3]f32,
+    angular_velocity: [3]f32,
 };
 
 const JoltStepStats = extern struct {
@@ -629,6 +630,7 @@ fn applyJoltBodyStates(world: *scene_mod.World, body_states: []const JoltBodySta
             if (entity_mut.rigidbody) |body_val| {
                 var new_body = body_val;
                 new_body.linear_velocity = state.linear_velocity;
+                new_body.angular_velocity = state.angular_velocity;
                 entity_mut.rigidbody = new_body;
             }
         }

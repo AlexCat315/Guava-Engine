@@ -85,8 +85,10 @@ pub const Rigidbody = struct {
     motion_type: RigidbodyMotionType = .dynamic,
     mass: f32 = 1.0,
     linear_velocity: Vec3 = .{ 0.0, 0.0, 0.0 },
+    angular_velocity: Vec3 = .{ 0.0, 0.0, 0.0 },
     gravity_scale: f32 = 1.0,
     linear_damping: f32 = 0.04,
+    angular_damping: f32 = 0.04,
     allow_sleep: bool = true,
 };
 

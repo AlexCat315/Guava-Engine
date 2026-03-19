@@ -285,6 +285,7 @@ struct GuavaJoltBodyState {
   float position[3];
   float rotation[4];
   float linear_velocity[3];
+  float angular_velocity[3];
 };
 
 struct GuavaJoltStepStats {
@@ -770,6 +771,8 @@ bool guava_jolt_context_step_incremental(GuavaJoltContext *context,
                                           rotation);
     const JPH::Vec3 linear_velocity =
         body_interface.GetLinearVelocity(entry.second.body_id);
+    const JPH::Vec3 angular_velocity =
+        body_interface.GetAngularVelocity(entry.second.body_id);
 
     if (out_index < in_state_capacity) {
       GuavaJoltBodyState &state = out_states[out_index++];
@@ -784,6 +787,9 @@ bool guava_jolt_context_step_incremental(GuavaJoltContext *context,
       state.linear_velocity[0] = linear_velocity.GetX();
       state.linear_velocity[1] = linear_velocity.GetY();
       state.linear_velocity[2] = linear_velocity.GetZ();
+      state.angular_velocity[0] = angular_velocity.GetX();
+      state.angular_velocity[1] = angular_velocity.GetY();
+      state.angular_velocity[2] = angular_velocity.GetZ();
     }
 
     entry.second.desc.position[0] = static_cast<float>(position.GetX());
@@ -892,6 +898,8 @@ bool guava_jolt_context_step(GuavaJoltContext *context,
                                           rotation);
     const JPH::Vec3 linear_velocity =
         body_interface.GetLinearVelocity(entry.second.body_id);
+    const JPH::Vec3 angular_velocity =
+        body_interface.GetAngularVelocity(entry.second.body_id);
 
     if (out_index < in_state_capacity) {
       GuavaJoltBodyState &state = out_states[out_index++];
@@ -906,6 +914,9 @@ bool guava_jolt_context_step(GuavaJoltContext *context,
       state.linear_velocity[0] = linear_velocity.GetX();
       state.linear_velocity[1] = linear_velocity.GetY();
       state.linear_velocity[2] = linear_velocity.GetZ();
+      state.angular_velocity[0] = angular_velocity.GetX();
+      state.angular_velocity[1] = angular_velocity.GetY();
+      state.angular_velocity[2] = angular_velocity.GetZ();
     }
 
     entry.second.desc.position[0] = static_cast<float>(position.GetX());
