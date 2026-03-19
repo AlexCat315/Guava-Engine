@@ -59,8 +59,10 @@ pub fn raycastSurface(world: *world_mod.World, ray: Ray) ?SurfaceRaycastHit {
     }
 
     var best_hit: ?SurfaceRaycastHit = null;
+    std.debug.print("candidates count: {d}\\n", .{candidates.len});
     // broad phase 现在会给出按 AABB 入射距离排序的 bounds 候选；一旦后续候选已经比当前命中更远，就可以提前停掉窄相位。
     for (candidates) |candidate| {
+        std.debug.print("raycast candidate: id={}, bounds=({d},{d},{d} - {d},{d},{d}), enter_distance={d}\\n", .{ candidate.id, candidate.bounds.min[0], candidate.bounds.min[1], candidate.bounds.min[2], candidate.bounds.max[0], candidate.bounds.max[1], candidate.bounds.max[2], candidate.enter_distance });
         if (best_hit) |resolved_best_hit| {
             if (candidate.enter_distance > resolved_best_hit.distance) {
                 break;

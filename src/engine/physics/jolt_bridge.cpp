@@ -162,9 +162,15 @@ public:
 
   void OnContactRemoved(const JPH::SubShapeIDPair &pair) override {
     GuavaTriggerEvent event{};
-    // 直接从 BodyID 获取用户数据（通过 physics_system 的 body 映射）
-    event.entity_a = pair.GetBody1ID().GetIndexAndSequenceNumber();
-    event.entity_b = pair.GetBody2ID().GetIndexAndSequenceNumber();
+    if (physics_system != nullptr) {
+      const JPH::Body *body1 = physics_system->GetBodyLockInterface().TryGetBody(pair.GetBody1ID());
+      const JPH::Body *body2 = physics_system->GetBodyLockInterface().TryGetBody(pair.GetBody2ID());
+      event.entity_a = body1 ? body1->GetUserData() : 0;
+      event.entity_b = body2 ? body2->GetUserData() : 0;
+    } else {
+      event.entity_a = 0;
+      event.entity_b = 0;
+    }
     event.kind = 2;
     GuavaJoltEnqueueTriggerEvent(&event);
   }
@@ -344,6 +350,7 @@ bool BuildBodyShape(const GuavaJoltBodyDesc &desc, JPH::ShapeRefC &out_shape) {
 
   if ((desc.flags & kFlagHasBox) != 0) {
     const JPH::Vec3 half_extents = ToVec3(desc.box_half_extents);
+    fprintf(stderr, "BuildBodyShape: ID %llu, motion_type=%u, HasBox, half_extents=(%f, %f, %f)\\n", desc.entity_id, desc.motion_type, half_extents.GetX(), half_extents.GetY(), half_extents.GetZ());
     if (half_extents.ReduceMin() > 0.0f) {
       compound_settings.AddShape(ToVec3(desc.box_center),
                                  JPH::Quat::sIdentity(),
@@ -370,6 +377,7 @@ bool BuildBodyShape(const GuavaJoltBodyDesc &desc, JPH::ShapeRefC &out_shape) {
   }
 
   if (shape_count == 0) {
+    fprintf(stderr, "BuildBodyShape: ID %llu, shape_count == 0! Flags=%u\\n", desc.entity_id, desc.flags);
     return false;
   }
 
@@ -414,6 +422,8 @@ struct GuavaJoltContext {
         object_vs_broad_phase_layer_filter, object_layer_pair_filter);
     physics_system.SetGravity(ToVec3(config.gravity));
     physics_system.SetContactListener(&contact_listener);
+    contact_listener.SetPhysicsSystem(&physics_system);
+    job_system.Init(JPH::cMaxPhysicsJobs);
   }
 
   ~GuavaJoltContext() { 
@@ -581,6 +591,7 @@ struct GuavaJoltContext {
     const JPH::BodyID body_id = body_interface.CreateAndAddBody(
         MakeBodyCreationSettings(desc, shape), activation);
     if (body_id.IsInvalid()) {
+      fprintf(stderr, "Jolt Error: CreateAndAddBody failed for entity %llu\\n", desc.entity_id);
       return false;
     }
 
@@ -683,6 +694,7 @@ bool guava_jolt_context_add_or_update_body(GuavaJoltContext *context,
 
 bool guava_jolt_context_remove_body(GuavaJoltContext *context,
                                     uint64_t entity_id) {
+  fprintf(stderr, "Removing body %llu\\n", entity_id);
   if (context == nullptr) {
     return false;
   }
@@ -744,6 +756,7 @@ bool guava_jolt_context_step_incremental(GuavaJoltContext *context,
   }
 
   size_t out_index = 0;
+  fprintf(stderr, "Jolt stepping! body_records.size() = %zu\\n", context->body_records.size());
   for (auto &entry : context->body_records) {
     const JPH::EMotionType motion_type =
         ToMotionType(entry.second.desc.motion_type);
