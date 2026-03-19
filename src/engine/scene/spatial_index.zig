@@ -435,86 +435,114 @@ pub const StaticBoundsBvh = struct {
     fn rebalanceFromNode(self: *StaticBoundsBvh, start_node_index: u32) void {
         var current: ?u32 = start_node_index;
         while (current) |node_index| {
-            const parent_index = self.nodes.items[node_index].parent;
-            if (self.shouldRebuildSubtree(node_index)) {
-                if (self.rebuildSubtree(node_index)) |new_root| {
-                    const range = self.subtreeRange(new_root);
-                    spatial_log.debug("local subtree rebuilt start={} end={} active_nodes={}", .{
-                        range.start,
-                        range.end,
-                        self.nodeCount(),
-                    });
+            const rotated_root = self.rebalanceSingleNode(node_index) orelse {
+                self.dirty = true;
+                return;
+            };
+            current = self.nodes.items[rotated_root].parent;
+        }
+    }
+
+    fn rebalanceSingleNode(self: *StaticBoundsBvh, node_index: u32) ?u32 {
+        var current = node_index;
+        while (true) {
+            const node = self.nodes.items[current];
+            if (node.isLeaf()) {
+                return current;
+            }
+
+            const left_index = node.left.?;
+            const right_index = node.right.?;
+            const left_count = self.subtreeItemCount(left_index);
+            const right_count = self.subtreeItemCount(right_index);
+
+            if (isImbalanced(left_count, right_count)) {
+                if (left_count > right_count) {
+                    if (!self.nodes.items[left_index].isLeaf()) {
+                        const left_left_count = self.subtreeItemCount(self.nodes.items[left_index].left.?);
+                        const left_right_count = self.subtreeItemCount(self.nodes.items[left_index].right.?);
+                        if (left_right_count > left_left_count) {
+                            _ = self.rotateLeft(left_index) orelse return null;
+                        }
+                        current = self.rotateRight(current) orelse return null;
+                        spatial_log.debug("local bvh rotation direction=right active_nodes={}", .{self.nodeCount()});
+                        continue;
+                    }
                 } else {
-                    self.dirty = true;
-                    return;
+                    if (!self.nodes.items[right_index].isLeaf()) {
+                        const right_left_count = self.subtreeItemCount(self.nodes.items[right_index].left.?);
+                        const right_right_count = self.subtreeItemCount(self.nodes.items[right_index].right.?);
+                        if (right_left_count > right_right_count) {
+                            _ = self.rotateRight(right_index) orelse return null;
+                        }
+                        current = self.rotateLeft(current) orelse return null;
+                        spatial_log.debug("local bvh rotation direction=left active_nodes={}", .{self.nodeCount()});
+                        continue;
+                    }
                 }
             }
-            current = parent_index;
+
+            self.refitSingleNode(current);
+            return current;
         }
     }
 
-    fn shouldRebuildSubtree(self: *const StaticBoundsBvh, node_index: u32) bool {
-        const node = self.nodes.items[node_index];
-        if (node.isLeaf()) {
-            return false;
-        }
+    fn rotateLeft(self: *StaticBoundsBvh, pivot_index: u32) ?u32 {
+        const pivot = self.nodes.items[pivot_index];
+        const right_index = pivot.right orelse return null;
+        const right = self.nodes.items[right_index];
+        const transfer_index = right.left orelse return null;
+        const parent_index = pivot.parent;
 
-        const left_count = self.subtreeItemCount(node.left.?);
-        const right_count = self.subtreeItemCount(node.right.?);
-        const total = left_count + right_count;
-        if (total < rebalance_min_items) {
-            return false;
-        }
+        self.nodes.items[pivot_index].right = transfer_index;
+        self.nodes.items[transfer_index].parent = pivot_index;
 
-        const smaller = @max(@min(left_count, right_count), 1);
-        const larger = @max(left_count, right_count);
-        return larger >= smaller * rebalance_ratio_threshold;
+        self.nodes.items[right_index].left = pivot_index;
+        self.nodes.items[right_index].parent = parent_index;
+        self.nodes.items[pivot_index].parent = right_index;
+
+        self.replaceParentChildLink(parent_index, pivot_index, right_index);
+        self.refitSingleNode(pivot_index);
+        self.refitSingleNode(right_index);
+        return right_index;
     }
 
-    fn rebuildSubtree(self: *StaticBoundsBvh, node_index: u32) ?u32 {
-        const node = self.nodes.items[node_index];
-        if (node.isLeaf()) {
-            return node_index;
-        }
+    fn rotateRight(self: *StaticBoundsBvh, pivot_index: u32) ?u32 {
+        const pivot = self.nodes.items[pivot_index];
+        const left_index = pivot.left orelse return null;
+        const left = self.nodes.items[left_index];
+        const transfer_index = left.right orelse return null;
+        const parent_index = pivot.parent;
 
-        const range = self.subtreeRange(node_index);
-        const parent = node.parent;
-        const new_root = self.buildNode(range.start, range.end, parent) catch return null;
+        self.nodes.items[pivot_index].left = transfer_index;
+        self.nodes.items[transfer_index].parent = pivot_index;
 
-        if (parent) |parent_index| {
-            if (self.nodes.items[parent_index].left == node_index) {
-                self.nodes.items[parent_index].left = new_root;
-            } else if (self.nodes.items[parent_index].right == node_index) {
-                self.nodes.items[parent_index].right = new_root;
-            } else {
-                return null;
+        self.nodes.items[left_index].right = pivot_index;
+        self.nodes.items[left_index].parent = parent_index;
+        self.nodes.items[pivot_index].parent = left_index;
+
+        self.replaceParentChildLink(parent_index, pivot_index, left_index);
+        self.refitSingleNode(pivot_index);
+        self.refitSingleNode(left_index);
+        return left_index;
+    }
+
+    fn replaceParentChildLink(self: *StaticBoundsBvh, parent_index: ?u32, old_child: u32, new_child: u32) void {
+        if (parent_index) |resolved_parent_index| {
+            if (self.nodes.items[resolved_parent_index].left == old_child) {
+                self.nodes.items[resolved_parent_index].left = new_child;
+            } else if (self.nodes.items[resolved_parent_index].right == old_child) {
+                self.nodes.items[resolved_parent_index].right = new_child;
             }
-            self.refitFromNode(parent_index);
         } else {
-            self.root_index = new_root;
+            self.root_index = new_child;
         }
-        return new_root;
-    }
-
-    fn subtreeRange(self: *const StaticBoundsBvh, node_index: u32) struct { start: usize, end: usize } {
-        const node = self.nodes.items[node_index];
-        if (node.isLeaf()) {
-            const start: usize = node.start;
-            return .{ .start = start, .end = start + node.count };
-        }
-
-        const left = self.subtreeRange(node.left.?);
-        const right = self.subtreeRange(node.right.?);
-        return .{
-            .start = @min(left.start, right.start),
-            .end = @max(left.end, right.end),
-        };
     }
 
     fn subtreeItemCount(self: *const StaticBoundsBvh, node_index: u32) usize {
         const node = self.nodes.items[node_index];
         if (node.isLeaf()) {
-            return node.count;
+            return @intCast(node.count);
         }
         return self.subtreeItemCount(node.left.?) + self.subtreeItemCount(node.right.?);
     }
@@ -763,6 +791,18 @@ fn siblingNodeIndex(parent: Node, child_index: u32) ?u32 {
     return null;
 }
 
+fn isImbalanced(left_count: usize, right_count: usize) bool {
+    const larger = @max(left_count, right_count);
+    const smaller = @min(left_count, right_count);
+    if (larger < StaticBoundsBvh.rebalance_min_items) {
+        return false;
+    }
+    if (smaller == 0) {
+        return true;
+    }
+    return larger >= smaller * StaticBoundsBvh.rebalance_ratio_threshold;
+}
+
 test "StaticBoundsBvh returns only ray-overlapping candidates" {
     var bvh = StaticBoundsBvh.init(std.testing.allocator);
     defer bvh.deinit();
@@ -908,7 +948,7 @@ test "StaticBoundsBvh performs in-tree split and merge" {
     try std.testing.expectEqual(@as(usize, 4), candidates.len);
 }
 
-test "StaticBoundsBvh local subtree rebuild updates active root" {
+test "StaticBoundsBvh local rotations update active root" {
     var bvh = StaticBoundsBvh.init(std.testing.allocator);
     defer bvh.deinit();
 
@@ -924,23 +964,25 @@ test "StaticBoundsBvh local subtree rebuild updates active root" {
     });
 
     const initial_root = bvh.root_index.?;
-    try std.testing.expect(bvh.insertItem(.{
-        .id = 9,
-        .bounds = .{ .min = .{ 10.0, -1.0, -1.0 }, .max = .{ 11.0, 1.0, 1.0 } },
-    }));
-    try std.testing.expect(bvh.insertItem(.{
-        .id = 10,
-        .bounds = .{ .min = .{ 12.0, -1.0, -1.0 }, .max = .{ 13.0, 1.0, 1.0 } },
-    }));
+    for (9..19) |id| {
+        const min_x = @as(f32, @floatFromInt((id - 9) * 2 + 10));
+        try std.testing.expect(bvh.insertItem(.{
+            .id = @intCast(id),
+            .bounds = .{
+                .min = .{ min_x, -1.0, -1.0 },
+                .max = .{ min_x + 1.0, 1.0, 1.0 },
+            },
+        }));
+    }
     try std.testing.expect(bvh.root_index.? != initial_root);
 
     const candidates = try bvh.queryRayCandidates(
         std.testing.allocator,
         .{ -8.0, 0.0, 0.0 },
         .{ 1.0, 0.0, 0.0 },
-        24.0,
+        48.0,
     );
     defer std.testing.allocator.free(candidates);
-    try std.testing.expectEqual(@as(usize, 10), candidates.len);
+    try std.testing.expectEqual(@as(usize, 18), candidates.len);
     try std.testing.expect(bvh.nodeCount() > 0);
 }
