@@ -26,6 +26,7 @@ const SpatialPartitionSnapshot = struct {
 const AnimatorBinding = struct {
     animator_entity_id: EntityId,
     target_entities: []EntityId,
+    base_local_transforms: []components.Transform,
 };
 
 const SkinnedMeshBinding = struct {
@@ -157,6 +158,7 @@ pub const World = struct {
         self.renderable_sync_candidates.deinit();
         for (self.animator_bindings.items) |binding| {
             self.allocator.free(binding.target_entities);
+            self.allocator.free(binding.base_local_transforms);
         }
         self.animator_bindings.deinit(self.allocator);
         for (self.skinned_mesh_bindings.items) |binding| {
@@ -1028,19 +1030,30 @@ pub const World = struct {
 
         const owned_targets = try self.allocator.dupe(EntityId, target_entities);
         errdefer self.allocator.free(owned_targets);
+        const owned_base_transforms = try self.allocator.alloc(components.Transform, target_entities.len);
+        errdefer self.allocator.free(owned_base_transforms);
+        for (target_entities, 0..) |target_entity_id, index| {
+            owned_base_transforms[index] = if (self.getEntityConst(target_entity_id)) |entity|
+                entity.local_transform
+            else
+                .{};
+        }
 
         for (self.animator_bindings.items) |*binding| {
             if (binding.animator_entity_id != animator_entity_id) {
                 continue;
             }
             self.allocator.free(binding.target_entities);
+            self.allocator.free(binding.base_local_transforms);
             binding.target_entities = owned_targets;
+            binding.base_local_transforms = owned_base_transforms;
             return;
         }
 
         try self.animator_bindings.append(self.allocator, .{
             .animator_entity_id = animator_entity_id,
             .target_entities = owned_targets,
+            .base_local_transforms = owned_base_transforms,
         });
     }
 
@@ -1048,6 +1061,15 @@ pub const World = struct {
         for (self.animator_bindings.items) |binding| {
             if (binding.animator_entity_id == animator_entity_id) {
                 return binding.target_entities;
+            }
+        }
+        return null;
+    }
+
+    pub fn animatorBaseTransforms(self: *const World, animator_entity_id: EntityId) ?[]const components.Transform {
+        for (self.animator_bindings.items) |binding| {
+            if (binding.animator_entity_id == animator_entity_id) {
+                return binding.base_local_transforms;
             }
         }
         return null;
@@ -1682,6 +1704,7 @@ pub const World = struct {
                 continue;
             }
             self.allocator.free(binding.target_entities);
+            self.allocator.free(binding.base_local_transforms);
             _ = self.animator_bindings.swapRemove(index);
             return;
         }

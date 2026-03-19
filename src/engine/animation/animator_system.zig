@@ -1,8 +1,35 @@
 const std = @import("std");
 const animation_clip_mod = @import("../assets/animation_clip_resource.zig");
+const handles = @import("../assets/handles.zig");
 const components = @import("../scene/components.zig");
 const world_mod = @import("../scene/world.zig");
 const quat = @import("../math/quat.zig");
+
+pub const PlayClipOptions = struct {
+    blend_duration_seconds: f32 = 0.0,
+    reset_time: bool = true,
+};
+
+pub const PlayClipError = error{
+    EntityNotFound,
+    MissingAnimator,
+};
+
+const PlaybackState = struct {
+    sampled_time: f32,
+    finished: bool = false,
+};
+
+const ClipSample = struct {
+    clip: *const animation_clip_mod.AnimationClipResource,
+    time: f32,
+};
+
+const AnimatorPoseState = struct {
+    primary: ClipSample,
+    secondary: ?ClipSample = null,
+    blend_factor: f32 = 0.0,
+};
 
 pub fn update(world: *world_mod.World, delta_seconds: f32) void {
     if (delta_seconds <= 0.0) {
@@ -17,46 +44,151 @@ pub fn update(world: *world_mod.World, delta_seconds: f32) void {
             continue;
         }
 
-        const clip_handle = animator_value.default_clip_handle orelse continue;
-        const clip = world.resources.animationClip(clip_handle) orelse continue;
         const targets = world.animatorTargets(entity_id) orelse continue;
+        const base_transforms = world.animatorBaseTransforms(entity_id) orelse continue;
 
         var next_animator = animator_value;
-        const scaled_delta = delta_seconds * next_animator.speed;
-        next_animator.time_seconds += scaled_delta;
-        const sampled_time = resolvePlaybackTime(&next_animator, clip.duration);
-        applyClip(world, targets, clip, sampled_time);
+        const pose_state = resolvePoseState(world, &next_animator, delta_seconds) orelse continue;
+        applyPose(world, targets, base_transforms, pose_state);
         world.entities.items[entity_index].animator = next_animator;
     }
 }
 
-fn resolvePlaybackTime(animator: *components.Animator, duration: f32) f32 {
-    if (duration <= 0.0001) {
-        animator.time_seconds = 0.0;
+pub fn playClip(
+    world: *world_mod.World,
+    animator_entity_id: world_mod.EntityId,
+    clip_handle: handles.AnimationClipHandle,
+    options: PlayClipOptions,
+) PlayClipError!void {
+    const entity = world.getEntity(animator_entity_id) orelse return error.EntityNotFound;
+    const animator = entity.animator orelse return error.MissingAnimator;
+
+    var next_animator = animator;
+    if (options.blend_duration_seconds <= 0.0001 or
+        next_animator.default_clip_handle == null or
+        next_animator.default_clip_handle.? == clip_handle)
+    {
+        next_animator.default_clip_handle = clip_handle;
+        if (options.reset_time or animator.default_clip_handle != clip_handle) {
+            next_animator.time_seconds = 0.0;
+        }
+        next_animator.next_clip_handle = null;
+        next_animator.next_time_seconds = 0.0;
+        next_animator.blend_duration_seconds = 0.0;
+        next_animator.blend_time_seconds = 0.0;
+        next_animator.playing = true;
+        entity.animator = next_animator;
+        return;
+    }
+
+    next_animator.next_clip_handle = clip_handle;
+    next_animator.next_time_seconds = if (options.reset_time or next_animator.next_clip_handle != clip_handle)
+        0.0
+    else
+        next_animator.next_time_seconds;
+    next_animator.blend_duration_seconds = options.blend_duration_seconds;
+    next_animator.blend_time_seconds = 0.0;
+    next_animator.playing = true;
+    entity.animator = next_animator;
+}
+
+fn resolvePoseState(
+    world: *world_mod.World,
+    animator: *components.Animator,
+    delta_seconds: f32,
+) ?AnimatorPoseState {
+    const clip_handle = animator.default_clip_handle orelse return null;
+    const clip = world.resources.animationClip(clip_handle) orelse return null;
+
+    const scaled_delta = delta_seconds * animator.speed;
+    animator.time_seconds += scaled_delta;
+    const primary_state = resolvePlaybackTimeState(animator.looping, animator.speed, &animator.time_seconds, clip.duration);
+
+    if (animator.next_clip_handle) |next_handle| {
+        const next_clip = world.resources.animationClip(next_handle) orelse {
+            animator.next_clip_handle = null;
+            animator.next_time_seconds = 0.0;
+            animator.blend_duration_seconds = 0.0;
+            animator.blend_time_seconds = 0.0;
+            if (primary_state.finished) {
+                animator.playing = false;
+            }
+            return .{
+                .primary = .{ .clip = clip, .time = primary_state.sampled_time },
+            };
+        };
+
+        animator.next_time_seconds += scaled_delta;
+        const secondary_state = resolvePlaybackTimeState(animator.looping, animator.speed, &animator.next_time_seconds, next_clip.duration);
+        animator.blend_time_seconds += delta_seconds;
+
+        const blend_factor = std.math.clamp(
+            if (animator.blend_duration_seconds <= 0.0001)
+                1.0
+            else
+                animator.blend_time_seconds / animator.blend_duration_seconds,
+            0.0,
+            1.0,
+        );
+
+        if (blend_factor >= 0.9999) {
+            animator.default_clip_handle = next_handle;
+            animator.time_seconds = secondary_state.sampled_time;
+            animator.next_clip_handle = null;
+            animator.next_time_seconds = 0.0;
+            animator.blend_duration_seconds = 0.0;
+            animator.blend_time_seconds = 0.0;
+            animator.playing = !secondary_state.finished;
+            return .{
+                .primary = .{ .clip = next_clip, .time = secondary_state.sampled_time },
+            };
+        }
+
+        return .{
+            .primary = .{ .clip = clip, .time = primary_state.sampled_time },
+            .secondary = .{ .clip = next_clip, .time = secondary_state.sampled_time },
+            .blend_factor = blend_factor,
+        };
+    }
+
+    if (primary_state.finished) {
         animator.playing = false;
-        return 0.0;
     }
 
-    if (animator.looping) {
-        animator.time_seconds = wrapTime(animator.time_seconds, duration);
-        return animator.time_seconds;
+    return .{
+        .primary = .{ .clip = clip, .time = primary_state.sampled_time },
+    };
+}
+
+fn resolvePlaybackTime(animator: *components.Animator, duration: f32) f32 {
+    const state = resolvePlaybackTimeState(animator.looping, animator.speed, &animator.time_seconds, duration);
+    if (state.finished) {
+        animator.playing = false;
+    }
+    return state.sampled_time;
+}
+
+fn resolvePlaybackTimeState(looping: bool, speed: f32, time_seconds: *f32, duration: f32) PlaybackState {
+    if (duration <= 0.0001) {
+        time_seconds.* = 0.0;
+        return .{ .sampled_time = 0.0, .finished = true };
     }
 
-    if (animator.time_seconds <= 0.0) {
-        animator.time_seconds = 0.0;
-        if (animator.speed < 0.0) {
-            animator.playing = false;
-        }
-        return 0.0;
+    if (looping) {
+        time_seconds.* = wrapTime(time_seconds.*, duration);
+        return .{ .sampled_time = time_seconds.* };
     }
-    if (animator.time_seconds >= duration) {
-        animator.time_seconds = duration;
-        if (animator.speed >= 0.0) {
-            animator.playing = false;
-        }
-        return duration;
+
+    if (time_seconds.* <= 0.0) {
+        time_seconds.* = 0.0;
+        return .{ .sampled_time = 0.0, .finished = speed < 0.0 };
     }
-    return animator.time_seconds;
+    if (time_seconds.* >= duration) {
+        time_seconds.* = duration;
+        return .{ .sampled_time = duration, .finished = speed >= 0.0 };
+    }
+
+    return .{ .sampled_time = time_seconds.* };
 }
 
 fn wrapTime(time_seconds: f32, duration: f32) f32 {
@@ -67,47 +199,80 @@ fn wrapTime(time_seconds: f32, duration: f32) f32 {
     return wrapped;
 }
 
-fn applyClip(
+fn applyPose(
     world: *world_mod.World,
     targets: []const world_mod.EntityId,
-    clip: *const animation_clip_mod.AnimationClipResource,
-    sample_time: f32,
+    base_transforms: []const components.Transform,
+    pose_state: AnimatorPoseState,
 ) void {
-    for (clip.translation_tracks) |track| {
-        if (track.target_entity_index >= targets.len) {
-            continue;
-        }
-        const entity = world.getEntity(targets[track.target_entity_index]) orelse continue;
-        const sampled = sampleVec3Track(track.interpolation, track.times, track.values, sample_time);
-        if (!std.meta.eql(entity.local_transform.translation, sampled)) {
-            entity.local_transform.translation = sampled;
+    for (targets, 0..) |target_id, target_index| {
+        const entity = world.getEntity(target_id) orelse continue;
+        const base_transform = if (target_index < base_transforms.len) base_transforms[target_index] else entity.local_transform;
+        const primary_transform = sampleClipTransform(
+            pose_state.primary.clip,
+            @intCast(target_index),
+            base_transform,
+            pose_state.primary.time,
+        );
+        const final_transform = if (pose_state.secondary) |secondary|
+            blendTransform(
+                primary_transform,
+                sampleClipTransform(secondary.clip, @intCast(target_index), base_transform, secondary.time),
+                pose_state.blend_factor,
+            )
+        else
+            primary_transform;
+
+        if (!std.meta.eql(entity.local_transform, final_transform)) {
+            entity.local_transform = final_transform;
             world.markDirty(entity.id);
         }
+    }
+}
+
+fn sampleClipTransform(
+    clip: *const animation_clip_mod.AnimationClipResource,
+    target_index: u32,
+    base_transform: components.Transform,
+    sample_time: f32,
+) components.Transform {
+    var transform = base_transform;
+
+    if (findVec3Track(clip.translation_tracks, target_index)) |track| {
+        transform.translation = sampleVec3Track(track.interpolation, track.times, track.values, sample_time);
+    }
+    if (findQuatTrack(clip.rotation_tracks, target_index)) |track| {
+        transform.rotation = sampleQuatTrack(track.interpolation, track.times, track.values, sample_time);
+    }
+    if (findVec3Track(clip.scale_tracks, target_index)) |track| {
+        transform.scale = sampleVec3Track(track.interpolation, track.times, track.values, sample_time);
     }
 
-    for (clip.rotation_tracks) |track| {
-        if (track.target_entity_index >= targets.len) {
-            continue;
-        }
-        const entity = world.getEntity(targets[track.target_entity_index]) orelse continue;
-        const sampled = sampleQuatTrack(track.interpolation, track.times, track.values, sample_time);
-        if (!std.meta.eql(entity.local_transform.rotation, sampled)) {
-            entity.local_transform.rotation = sampled;
-            world.markDirty(entity.id);
-        }
-    }
+    return transform;
+}
 
-    for (clip.scale_tracks) |track| {
-        if (track.target_entity_index >= targets.len) {
-            continue;
-        }
-        const entity = world.getEntity(targets[track.target_entity_index]) orelse continue;
-        const sampled = sampleVec3Track(track.interpolation, track.times, track.values, sample_time);
-        if (!std.meta.eql(entity.local_transform.scale, sampled)) {
-            entity.local_transform.scale = sampled;
-            world.markDirty(entity.id);
+fn findVec3Track(
+    tracks: []const animation_clip_mod.Vec3Track,
+    target_index: u32,
+) ?*const animation_clip_mod.Vec3Track {
+    for (tracks) |*track| {
+        if (track.target_entity_index == target_index) {
+            return track;
         }
     }
+    return null;
+}
+
+fn findQuatTrack(
+    tracks: []const animation_clip_mod.QuatTrack,
+    target_index: u32,
+) ?*const animation_clip_mod.QuatTrack {
+    for (tracks) |*track| {
+        if (track.target_entity_index == target_index) {
+            return track;
+        }
+    }
+    return null;
 }
 
 fn sampleVec3Track(
@@ -221,6 +386,14 @@ fn slerpQuat(a: [4]f32, b: [4]f32, t: f32) [4]f32 {
     };
 }
 
+fn blendTransform(a: components.Transform, b: components.Transform, factor: f32) components.Transform {
+    return .{
+        .translation = lerpVec3(a.translation, b.translation, factor),
+        .rotation = slerpQuat(a.rotation, b.rotation, factor),
+        .scale = lerpVec3(a.scale, b.scale, factor),
+    };
+}
+
 test "animator system samples translation and looping time" {
     var world = world_mod.World.init(std.testing.allocator, null);
     defer world.deinit();
@@ -288,4 +461,55 @@ test "animator system stops non-looping clips at the end" {
     const target = world.getEntityConst(target_id).?;
     try std.testing.expect(!animator.playing);
     try std.testing.expectApproxEqAbs(@as(f32, 0.70710677), target.local_transform.rotation[1], 0.0001);
+}
+
+test "animator system cross-fades between clips" {
+    var world = world_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+
+    const target_id = try world.createEntity(.{
+        .name = "Target",
+        .local_transform = .{
+            .translation = .{ 1.0, 0.0, 0.0 },
+        },
+    });
+    const clip_a = try world.resources.createAnimationClip(.{
+        .name = "Idle",
+        .duration = 2.0,
+        .translation_tracks = &.{
+            .{
+                .target_entity_index = 0,
+                .times = &.{ 0.0, 2.0 },
+                .values = &.{ .{ 0.0, 0.0, 0.0 }, .{ 0.0, 0.0, 0.0 } },
+            },
+        },
+    });
+    const clip_b = try world.resources.createAnimationClip(.{
+        .name = "Move",
+        .duration = 2.0,
+        .translation_tracks = &.{
+            .{
+                .target_entity_index = 0,
+                .times = &.{ 0.0, 2.0 },
+                .values = &.{ .{ 10.0, 0.0, 0.0 }, .{ 10.0, 0.0, 0.0 } },
+            },
+        },
+    });
+    const animator_id = try world.createEntity(.{
+        .name = "Animator",
+        .animator = .{
+            .default_clip_handle = clip_a,
+        },
+    });
+    try world.bindAnimatorTargets(animator_id, &.{target_id});
+
+    try playClip(&world, animator_id, clip_b, .{ .blend_duration_seconds = 1.0 });
+    update(&world, 0.5);
+    try std.testing.expectApproxEqAbs(@as(f32, 5.0), world.getEntityConst(target_id).?.local_transform.translation[0], 0.0001);
+
+    update(&world, 0.6);
+    const animator = world.getEntityConst(animator_id).?.animator.?;
+    try std.testing.expectEqual(@as(?handles.AnimationClipHandle, clip_b), animator.default_clip_handle);
+    try std.testing.expectEqual(@as(?handles.AnimationClipHandle, null), animator.next_clip_handle);
+    try std.testing.expectApproxEqAbs(@as(f32, 10.0), world.getEntityConst(target_id).?.local_transform.translation[0], 0.0001);
 }
