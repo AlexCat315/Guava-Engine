@@ -122,13 +122,42 @@ pub const StaticBoundsBvh = struct {
             return self.updateItemBounds(item.id, item.bounds);
         }
 
-        const next_index = self.pending_additions.items.len;
-        self.pending_additions.append(self.allocator, item) catch return false;
-        self.pending_addition_indices.put(item.id, next_index) catch {
-            _ = self.pending_additions.pop();
+        if (self.nodes.items.len == 0) {
+            self.items.append(self.allocator, item) catch return false;
+            errdefer _ = self.items.pop();
+            self.item_indices.put(item.id, 0) catch return false;
+            errdefer _ = self.item_indices.remove(item.id);
+            self.item_leaf_nodes.put(item.id, 0) catch return false;
+            errdefer _ = self.item_leaf_nodes.remove(item.id);
+            self.nodes.append(self.allocator, .{
+                .bounds = item.bounds,
+                .left = null,
+                .right = null,
+                .parent = null,
+                .start = 0,
+                .count = 1,
+            }) catch return false;
+            return true;
+        }
+
+        self.item_indices.ensureTotalCapacity(self.item_indices.count() + 1) catch return false;
+        self.item_leaf_nodes.ensureTotalCapacity(self.item_leaf_nodes.count() + 1) catch return false;
+
+        const leaf_index = self.findBestLeafForBounds(item.bounds) orelse return false;
+        const insert_pos: usize = self.nodes.items[leaf_index].start + self.nodes.items[leaf_index].count;
+        self.items.insert(self.allocator, insert_pos, item) catch return false;
+        self.shiftItemIndicesAfterInsert(insert_pos);
+        self.shiftNodeStartsAfterInsert(insert_pos, leaf_index);
+        self.item_indices.put(item.id, insert_pos) catch return false;
+        self.item_leaf_nodes.put(item.id, leaf_index) catch return false;
+        self.nodes.items[leaf_index].count += 1;
+        self.refitFromNode(leaf_index);
+
+        if (self.nodes.items[leaf_index].count > max_leaf_items and !self.splitLeafNode(leaf_index)) {
+            self.dirty = true;
             return false;
-        };
-        self.markDirtyIfOverlayTooLarge();
+        }
+
         return true;
     }
 
@@ -146,8 +175,32 @@ pub const StaticBoundsBvh = struct {
             return false;
         }
 
-        self.pending_removals.put(id, {}) catch return false;
-        self.markDirtyIfOverlayTooLarge();
+        const item_index = self.item_indices.get(id) orelse return false;
+        const leaf_node_index = self.item_leaf_nodes.get(id) orelse return false;
+        _ = self.items.orderedRemove(item_index);
+        _ = self.item_indices.remove(id);
+        _ = self.item_leaf_nodes.remove(id);
+        self.shiftItemIndicesAfterRemove(item_index);
+        self.shiftNodeStartsAfterRemove(item_index, leaf_node_index);
+
+        if (self.nodes.items[leaf_node_index].count > 0) {
+            self.nodes.items[leaf_node_index].count -= 1;
+        }
+
+        if (self.nodes.items[leaf_node_index].count == 0) {
+            if (!self.collapseEmptyLeaf(leaf_node_index)) {
+                self.dirty = true;
+                return false;
+            }
+            if (self.items.items.len == 0) {
+                self.nodes.clearRetainingCapacity();
+            }
+            return true;
+        }
+
+        if (!self.tryMergeLeafWithSibling(leaf_node_index)) {
+            self.refitFromNode(leaf_node_index);
+        }
         return true;
     }
 
@@ -247,6 +300,188 @@ pub const StaticBoundsBvh = struct {
             bounds.expandAABB(self.nodes.items[node.right.?].bounds);
         }
         self.nodes.items[node_index].bounds = bounds;
+    }
+
+    fn findBestLeafForBounds(self: *const StaticBoundsBvh, bounds: AABB) ?u32 {
+        if (self.nodes.items.len == 0) {
+            return null;
+        }
+
+        var current: u32 = 0;
+        while (!self.nodes.items[current].isLeaf()) {
+            const node = self.nodes.items[current];
+            const left_index = node.left.?;
+            const right_index = node.right.?;
+            current = if (insertionCost(self.nodes.items[left_index].bounds, bounds) <= insertionCost(self.nodes.items[right_index].bounds, bounds))
+                left_index
+            else
+                right_index;
+        }
+        return current;
+    }
+
+    fn splitLeafNode(self: *StaticBoundsBvh, leaf_node_index: u32) bool {
+        const leaf = self.nodes.items[leaf_node_index];
+        if (!leaf.isLeaf() or leaf.count <= max_leaf_items) {
+            return true;
+        }
+
+        self.nodes.ensureUnusedCapacity(self.allocator, 2) catch return false;
+
+        const start: usize = leaf.start;
+        const end = start + leaf.count;
+        const split_bounds = computeBoundsForRange(self.items.items, start, end);
+        const axis = longestAxis(split_bounds);
+        std.sort.heap(BoundsItem, self.items.items[start..end], axis, lessThanCentroid);
+
+        const mid = start + (end - start) / 2;
+        const left_index: u32 = @intCast(self.nodes.items.len);
+        const right_index: u32 = left_index + 1;
+        const left_bounds = computeBoundsForRange(self.items.items, start, mid);
+        const right_bounds = computeBoundsForRange(self.items.items, mid, end);
+
+        self.nodes.appendAssumeCapacity(.{
+            .bounds = left_bounds,
+            .left = null,
+            .right = null,
+            .parent = leaf_node_index,
+            .start = @intCast(start),
+            .count = @intCast(mid - start),
+        });
+        self.nodes.appendAssumeCapacity(.{
+            .bounds = right_bounds,
+            .left = null,
+            .right = null,
+            .parent = leaf_node_index,
+            .start = @intCast(mid),
+            .count = @intCast(end - mid),
+        });
+
+        self.nodes.items[leaf_node_index] = .{
+            .bounds = split_bounds,
+            .left = left_index,
+            .right = right_index,
+            .parent = leaf.parent,
+            .start = @intCast(start),
+            .count = 0,
+        };
+        self.setLeafMappingsForRange(start, mid, left_index);
+        self.setLeafMappingsForRange(mid, end, right_index);
+        self.refitFromNode(leaf_node_index);
+        return true;
+    }
+
+    fn collapseEmptyLeaf(self: *StaticBoundsBvh, leaf_node_index: u32) bool {
+        if (self.items.items.len == 0) {
+            self.nodes.clearRetainingCapacity();
+            return true;
+        }
+
+        const leaf = self.nodes.items[leaf_node_index];
+        const parent_index = leaf.parent orelse return false;
+        const sibling_index = siblingNodeIndex(self.nodes.items[parent_index], leaf_node_index) orelse return false;
+        return self.collapseParentIntoSibling(parent_index, sibling_index);
+    }
+
+    fn tryMergeLeafWithSibling(self: *StaticBoundsBvh, leaf_node_index: u32) bool {
+        const leaf = self.nodes.items[leaf_node_index];
+        const parent_index = leaf.parent orelse return false;
+        const sibling_index = siblingNodeIndex(self.nodes.items[parent_index], leaf_node_index) orelse return false;
+        const sibling = self.nodes.items[sibling_index];
+        if (!sibling.isLeaf()) {
+            return false;
+        }
+
+        const combined_count = leaf.count + sibling.count;
+        if (combined_count > max_leaf_items) {
+            return false;
+        }
+
+        const merged_start = @min(leaf.start, sibling.start);
+        const merged_end = merged_start + combined_count;
+        self.nodes.items[parent_index] = .{
+            .bounds = computeBoundsForRange(self.items.items, merged_start, merged_end),
+            .left = null,
+            .right = null,
+            .parent = self.nodes.items[parent_index].parent,
+            .start = merged_start,
+            .count = combined_count,
+        };
+        self.setLeafMappingsForRange(merged_start, merged_end, parent_index);
+        self.refitFromNode(parent_index);
+        return true;
+    }
+
+    fn collapseParentIntoSibling(self: *StaticBoundsBvh, parent_index: u32, sibling_index: u32) bool {
+        const parent_parent = self.nodes.items[parent_index].parent;
+        const sibling = self.nodes.items[sibling_index];
+        if (sibling.isLeaf()) {
+            const start: usize = sibling.start;
+            const end = start + sibling.count;
+            self.nodes.items[parent_index] = .{
+                .bounds = computeBoundsForRange(self.items.items, start, end),
+                .left = null,
+                .right = null,
+                .parent = parent_parent,
+                .start = sibling.start,
+                .count = sibling.count,
+            };
+            self.setLeafMappingsForRange(start, end, parent_index);
+        } else {
+            self.nodes.items[parent_index] = sibling;
+            self.nodes.items[parent_index].parent = parent_parent;
+            if (sibling.left) |left_index| {
+                self.nodes.items[left_index].parent = parent_index;
+            }
+            if (sibling.right) |right_index| {
+                self.nodes.items[right_index].parent = parent_index;
+            }
+        }
+        self.refitFromNode(parent_index);
+        return true;
+    }
+
+    fn setLeafMappingsForRange(self: *StaticBoundsBvh, start: usize, end: usize, leaf_node_index: u32) void {
+        for (self.items.items[start..end], start..) |item, item_index| {
+            self.item_indices.put(item.id, item_index) catch {};
+            self.item_leaf_nodes.put(item.id, leaf_node_index) catch {};
+        }
+    }
+
+    fn shiftItemIndicesAfterInsert(self: *StaticBoundsBvh, insert_index: usize) void {
+        var item_index = insert_index + 1;
+        while (item_index < self.items.items.len) : (item_index += 1) {
+            self.item_indices.put(self.items.items[item_index].id, item_index) catch {};
+        }
+    }
+
+    fn shiftItemIndicesAfterRemove(self: *StaticBoundsBvh, removed_index: usize) void {
+        var item_index = removed_index;
+        while (item_index < self.items.items.len) : (item_index += 1) {
+            self.item_indices.put(self.items.items[item_index].id, item_index) catch {};
+        }
+    }
+
+    fn shiftNodeStartsAfterInsert(self: *StaticBoundsBvh, insert_index: usize, inserted_leaf: u32) void {
+        for (self.nodes.items, 0..) |*node, node_index| {
+            if (node_index == inserted_leaf) {
+                continue;
+            }
+            if (node.start >= insert_index) {
+                node.start += 1;
+            }
+        }
+    }
+
+    fn shiftNodeStartsAfterRemove(self: *StaticBoundsBvh, removed_index: usize, removed_leaf: u32) void {
+        for (self.nodes.items, 0..) |*node, node_index| {
+            if (node_index == removed_leaf) {
+                continue;
+            }
+            if (node.start > removed_index) {
+                node.start -= 1;
+            }
+        }
     }
 
     fn collectRayCandidatesRecursive(
@@ -392,6 +627,35 @@ fn lessThanCentroid(axis: usize, lhs: BoundsItem, rhs: BoundsItem) bool {
     return lhs.bounds.centroid()[axis] < rhs.bounds.centroid()[axis];
 }
 
+fn computeBoundsForRange(items: []const BoundsItem, start: usize, end: usize) AABB {
+    var bounds = AABB.empty();
+    for (items[start..end]) |item| {
+        bounds.expandAABB(item.bounds);
+    }
+    return bounds;
+}
+
+fn insertionCost(existing: AABB, incoming: AABB) f32 {
+    return boundsVolume(combinedBounds(existing, incoming)) - boundsVolume(existing);
+}
+
+fn combinedBounds(a: AABB, b: AABB) AABB {
+    var bounds = a;
+    bounds.expandAABB(b);
+    return bounds;
+}
+
+fn boundsVolume(bounds: AABB) f32 {
+    const extent = bounds.extent();
+    return extent[0] * extent[1] * extent[2];
+}
+
+fn siblingNodeIndex(parent: Node, child_index: u32) ?u32 {
+    if (parent.left == child_index) return parent.right;
+    if (parent.right == child_index) return parent.left;
+    return null;
+}
+
 test "StaticBoundsBvh returns only ray-overlapping candidates" {
     var bvh = StaticBoundsBvh.init(std.testing.allocator);
     defer bvh.deinit();
@@ -504,4 +768,35 @@ test "StaticBoundsBvh supports incremental insert and remove overlays" {
     defer std.testing.allocator.free(after_remove);
     try std.testing.expectEqual(@as(usize, 1), after_remove.len);
     try std.testing.expectEqual(@as(ItemId, 2), after_remove[0]);
+}
+
+test "StaticBoundsBvh performs in-tree split and merge" {
+    var bvh = StaticBoundsBvh.init(std.testing.allocator);
+    defer bvh.deinit();
+
+    try bvh.rebuild(&.{
+        .{ .id = 1, .bounds = .{ .min = .{ -4.0, -1.0, -1.0 }, .max = .{ -3.0, 1.0, 1.0 } } },
+        .{ .id = 2, .bounds = .{ .min = .{ -2.0, -1.0, -1.0 }, .max = .{ -1.0, 1.0, 1.0 } } },
+        .{ .id = 3, .bounds = .{ .min = .{ 0.0, -1.0, -1.0 }, .max = .{ 1.0, 1.0, 1.0 } } },
+        .{ .id = 4, .bounds = .{ .min = .{ 2.0, -1.0, -1.0 }, .max = .{ 3.0, 1.0, 1.0 } } },
+    });
+    const initial_node_count = bvh.nodeCount();
+
+    try std.testing.expect(bvh.insertItem(.{
+        .id = 5,
+        .bounds = .{ .min = .{ 4.0, -1.0, -1.0 }, .max = .{ 5.0, 1.0, 1.0 } },
+    }));
+    try std.testing.expect(bvh.nodeCount() > initial_node_count);
+
+    try std.testing.expect(bvh.removeItem(5));
+    try std.testing.expect(bvh.itemCount() == 4);
+
+    const candidates = try bvh.queryRayCandidates(
+        std.testing.allocator,
+        .{ -6.0, 0.0, 0.0 },
+        .{ 1.0, 0.0, 0.0 },
+        16.0,
+    );
+    defer std.testing.allocator.free(candidates);
+    try std.testing.expectEqual(@as(usize, 4), candidates.len);
 }

@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const platform_mod = @import("../core/platform.zig");
 const window_mod = @import("../platform/window.zig");
 const sdl = @import("../platform/sdl.zig").c;
@@ -247,9 +248,11 @@ pub const RhiDevice = struct {
 
     pub fn deinit(self: *RhiDevice) void {
         self.releaseAllDepthTextures();
-
-        _ = sdl.SDL_WaitForGPUIdle(self.raw);
-        sdl.SDL_ReleaseWindowFromGPUDevice(self.raw, self.window);
+        if (builtin.os.tag == .macos and self.api == .metal) {
+            // SDL3/macOS 的 Metal device 析构链当前会在显式 destroy 时崩溃，先交给后续 SDL_Quit 兜底回收。
+            return;
+        }
+        // Metal shutdown on SDL3/macOS 在显式 release window claim 时会崩；直接 destroy device 让 SDL 自己回收关联关系更稳定。
         sdl.SDL_DestroyGPUDevice(self.raw);
     }
 
