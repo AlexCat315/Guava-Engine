@@ -92,17 +92,23 @@ pub const BoxCollider = struct {
     half_extents: Vec3 = .{ 0.5, 0.5, 0.5 },
     center: Vec3 = .{ 0.0, 0.0, 0.0 },
     is_trigger: bool = false,
+    layer_id: u16 = 0,
+    layer_group: u16 = 0xFFFF,
 };
 
 pub const SphereCollider = struct {
     radius: f32 = 0.5,
     center: Vec3 = .{ 0.0, 0.0, 0.0 },
     is_trigger: bool = false,
+    layer_id: u16 = 0,
+    layer_group: u16 = 0xFFFF,
 };
 
 pub const MeshCollider = struct {
     use_attached_mesh: bool = true,
     is_trigger: bool = false,
+    layer_id: u16 = 0,
+    layer_group: u16 = 0xFFFF,
 };
 
 pub const ShadingModel = enum {

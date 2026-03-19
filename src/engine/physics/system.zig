@@ -6,6 +6,40 @@ const vec3 = @import("../math/vec3.zig");
 
 const physics_log = std.log.scoped(.physics);
 const epsilon: f32 = 0.0001;
+const jolt_state_allocator = std.heap.page_allocator;
+
+pub const TriggerEvent = struct {
+    entity_a: EntityId,
+    entity_b: EntityId,
+    kind: TriggerEventKind,
+};
+
+pub const TriggerEventKind = enum(u8) {
+    enter,
+    stay,
+    exit,
+};
+
+const PhysicsEvent = union(enum) {
+    entity_created: EntityId,
+    entity_destroyed: EntityId,
+    rigidbody_added: EntityId,
+    rigidbody_removed: EntityId,
+    collider_added: EntityId,
+    collider_removed: EntityId,
+    transform_changed: EntityId,
+};
+
+const PhysicsBodyHandle = struct {
+    body_id: u32,
+    cached_desc: JoltBodyDesc,
+};
+
+var g_physics_event_queue: std.ArrayListUnmanaged(PhysicsEvent) = .empty;
+var g_physics_event_mutex: std.Thread.Mutex = .{};
+var g_trigger_event_queue: std.ArrayListUnmanaged(TriggerEvent) = .empty;
+var g_trigger_event_mutex: std.Thread.Mutex = .{};
+var g_trigger_callback: ?*const fn (TriggerEvent) void = null;
 
 const jolt_flag_has_box: u32 = 1 << 0;
 const jolt_flag_has_sphere: u32 = 1 << 1;
@@ -40,6 +74,8 @@ const JoltBodyDesc = extern struct {
     sphere_center: [3]f32,
     mesh_half_extents: [3]f32,
     mesh_center: [3]f32,
+    layer_id: u16,
+    layer_group: u16,
 };
 
 const JoltStepConfig = extern struct {
@@ -70,7 +106,33 @@ const JoltStepStats = extern struct {
     reserved1: u16,
 };
 
-extern fn guava_jolt_step(
+const JoltContext = opaque {};
+
+const JoltBackendLimits = struct {
+    temp_allocator_size_bytes: u32,
+    max_bodies: u32,
+    num_body_mutexes: u32,
+    max_body_pairs: u32,
+    max_contact_constraints: u32,
+
+    fn eql(self: JoltBackendLimits, other: JoltBackendLimits) bool {
+        return self.temp_allocator_size_bytes == other.temp_allocator_size_bytes and
+            self.max_bodies == other.max_bodies and
+            self.num_body_mutexes == other.num_body_mutexes and
+            self.max_body_pairs == other.max_body_pairs and
+            self.max_contact_constraints == other.max_contact_constraints;
+    }
+};
+
+const JoltWorldState = struct {
+    context: *JoltContext,
+    limits: JoltBackendLimits,
+};
+
+extern fn guava_jolt_context_create(config: *const JoltStepConfig) callconv(.c) ?*JoltContext;
+extern fn guava_jolt_context_destroy(context: *JoltContext) callconv(.c) void;
+extern fn guava_jolt_context_step(
+    context: *JoltContext,
     bodies: [*]const JoltBodyDesc,
     body_count: usize,
     config: *const JoltStepConfig,
@@ -78,11 +140,51 @@ extern fn guava_jolt_step(
     state_capacity: usize,
     out_stats: *JoltStepStats,
 ) callconv(.c) bool;
+extern fn guava_jolt_context_add_or_update_body(
+    context: *JoltContext,
+    desc: *const JoltBodyDesc,
+    delta_seconds: f32,
+) callconv(.c) bool;
+extern fn guava_jolt_context_remove_body(
+    context: *JoltContext,
+    entity_id: u64,
+) callconv(.c) bool;
+extern fn guava_jolt_context_step_incremental(
+    context: *JoltContext,
+    delta_seconds: f32,
+    collision_steps: u32,
+    out_states: [*]JoltBodyState,
+    state_capacity: usize,
+    out_stats: *JoltStepStats,
+) callconv(.c) bool;
+
+export fn GuavaJoltEnqueueTriggerEvent(event: *const extern struct {
+    entity_a: u64,
+    entity_b: u64,
+    kind: u8,
+}) void {
+    g_trigger_event_mutex.lock();
+    defer g_trigger_event_mutex.unlock();
+    
+    const trigger_event = TriggerEvent{
+        .entity_a = event.entity_a,
+        .entity_b = event.entity_b,
+        .kind = @enumFromInt(event.kind),
+    };
+    
+    g_trigger_event_queue.append(jolt_state_allocator, trigger_event) catch return;
+    
+    if (g_trigger_callback) |callback| {
+        callback(trigger_event);
+    }
+}
 
 var g_logged_config = false;
 var g_logged_jolt_backend = false;
 var g_logged_jolt_fallback = false;
 var g_last_snapshot: ?StepSnapshot = null;
+var g_jolt_world_states: std.AutoHashMapUnmanaged(usize, JoltWorldState) = .empty;
+var g_jolt_world_states_mutex: std.Thread.Mutex = .{};
 
 pub const Backend = enum {
     jolt,
@@ -112,14 +214,55 @@ pub const StepStats = struct {
     contacts_resolved: usize = 0,
 };
 
+pub fn initPhysicsEvents() void {
+    g_physics_event_queue = .{};
+    g_trigger_event_queue = .{};
+    g_trigger_callback = null;
+}
+
+pub fn deinitPhysicsEvents() void {
+    g_physics_event_queue.deinit(jolt_state_allocator);
+    g_trigger_event_queue.deinit(jolt_state_allocator);
+}
+
+pub fn setTriggerCallback(callback: ?*const fn (TriggerEvent) void) void {
+    g_trigger_callback = callback;
+}
+
+pub fn pollTriggerEvents() []const TriggerEvent {
+    g_trigger_event_mutex.lock();
+    defer g_trigger_event_mutex.unlock();
+    return g_trigger_event_queue.items;
+}
+
+pub fn clearTriggerEvents() void {
+    g_trigger_event_mutex.lock();
+    defer g_trigger_event_mutex.unlock();
+    g_trigger_event_queue.clearRetainingCapacity();
+}
+
+pub fn enqueuePhysicsEvent(event: PhysicsEvent) void {
+    g_physics_event_mutex.lock();
+    defer g_physics_event_mutex.unlock();
+    g_physics_event_queue.append(jolt_state_allocator, event) catch return;
+}
+
+pub fn deinitWorld(world: *scene_mod.World) void {
+    releaseJoltWorldState(@intFromPtr(world));
+}
+
 pub fn step(world: *scene_mod.World, delta_seconds: f32, config: Config) StepStats {
     if (!config.enabled or delta_seconds <= epsilon) {
+        releaseJoltWorldState(@intFromPtr(world));
         return .{};
     }
 
     logConfigOnce(config);
     return switch (config.backend) {
-        .builtin => stepBuiltin(world, delta_seconds, config),
+        .builtin => blk: {
+            releaseJoltWorldState(@intFromPtr(world));
+            break :blk stepBuiltin(world, delta_seconds, config);
+        },
         .jolt => stepJolt(world, delta_seconds, config),
     };
 }
@@ -141,7 +284,7 @@ fn stepBuiltin(world: *scene_mod.World, delta_seconds: f32, config: Config) Step
 
 fn stepJolt(world: *scene_mod.World, delta_seconds: f32, config: Config) StepStats {
     if (!g_logged_jolt_backend) {
-        physics_log.info("physics backend jolt active", .{});
+        physics_log.info("physics backend jolt active (persistent body cache)", .{});
         g_logged_jolt_backend = true;
     }
 
@@ -150,22 +293,16 @@ fn stepJolt(world: *scene_mod.World, delta_seconds: f32, config: Config) StepSta
     var stats = StepStats{};
     countBodies(world, &stats);
 
-    var body_descs = std.ArrayList(JoltBodyDesc).empty;
-    defer body_descs.deinit(world.allocator);
+    const limits = effectiveJoltBackendLimits(config, stats.dynamic_bodies + stats.static_bodies);
+    const jolt_config = buildJoltStepConfig(config, delta_seconds, limits);
+    const context = ensureJoltWorldContext(world, &jolt_config, limits) orelse
+        return stepJoltFallback(world, delta_seconds, config, stats);
+
+    processPhysicsEvents(world, context, config);
+
     var body_states = std.ArrayList(JoltBodyState).empty;
     defer body_states.deinit(world.allocator);
-
-    for (world.entities.items) |entity| {
-        const desc = buildJoltBodyDesc(world, &entity, config) orelse continue;
-        body_descs.append(world.allocator, desc) catch return stepJoltFallback(world, delta_seconds, config, stats);
-    }
-
-    if (body_descs.items.len == 0) {
-        maybeLogStepSnapshot(stats);
-        return stats;
-    }
-
-    body_states.resize(world.allocator, body_descs.items.len) catch return stepJoltFallback(world, delta_seconds, config, stats);
+    body_states.resize(world.allocator, stats.dynamic_bodies) catch return stepJoltFallback(world, delta_seconds, config, stats);
 
     var jolt_stats = JoltStepStats{
         .dynamic_bodies = 0,
@@ -176,26 +313,17 @@ fn stepJolt(world: *scene_mod.World, delta_seconds: f32, config: Config) StepSta
         .reserved0 = 0,
         .reserved1 = 0,
     };
-    const jolt_config = JoltStepConfig{
-        .delta_seconds = delta_seconds,
-        .gravity = config.gravity,
-        .collision_steps = @max(config.jolt_collision_steps, 1),
-        .temp_allocator_size_bytes = config.jolt_temp_allocator_size_bytes,
-        .max_bodies = config.jolt_max_bodies,
-        .num_body_mutexes = config.jolt_num_body_mutexes,
-        .max_body_pairs = config.jolt_max_body_pairs,
-        .max_contact_constraints = config.jolt_max_contact_constraints,
-    };
 
-    const success = guava_jolt_step(
-        body_descs.items.ptr,
-        body_descs.items.len,
-        &jolt_config,
+    const success = guava_jolt_context_step_incremental(
+        context,
+        delta_seconds,
+        config.jolt_collision_steps,
         body_states.items.ptr,
         body_states.items.len,
         &jolt_stats,
     );
     if (!success or jolt_stats.success == 0) {
+        releaseJoltWorldState(@intFromPtr(world));
         return stepJoltFallback(world, delta_seconds, config, stats);
     }
 
@@ -209,6 +337,47 @@ fn stepJolt(world: *scene_mod.World, delta_seconds: f32, config: Config) StepSta
     return stats;
 }
 
+fn processPhysicsEvents(world: *scene_mod.World, context: *JoltContext, config: Config) void {
+    g_physics_event_mutex.lock();
+    defer g_physics_event_mutex.unlock();
+
+    for (g_physics_event_queue.items) |event| {
+        switch (event) {
+            .entity_created => |entity_id| {
+                if (world.getEntityConst(entity_id)) |entity| {
+                    if (buildJoltBodyDesc(world, entity, config)) |desc| {
+                        _ = guava_jolt_context_add_or_update_body(context, &desc, 0.0);
+                    }
+                }
+            },
+            .entity_destroyed => |entity_id| {
+                _ = guava_jolt_context_remove_body(context, entity_id);
+            },
+            .rigidbody_added, .collider_added => |entity_id| {
+                if (world.getEntityConst(entity_id)) |entity| {
+                    if (buildJoltBodyDesc(world, entity, config)) |desc| {
+                        _ = guava_jolt_context_add_or_update_body(context, &desc, 0.0);
+                    }
+                }
+            },
+            .rigidbody_removed, .collider_removed => |entity_id| {
+                _ = guava_jolt_context_remove_body(context, entity_id);
+            },
+            .transform_changed => |entity_id| {
+                if (world.getEntityConst(entity_id)) |entity| {
+                    if (entity.rigidbody != null or hasAnyCollider(entity)) {
+                        if (buildJoltBodyDesc(world, entity, config)) |desc| {
+                            _ = guava_jolt_context_add_or_update_body(context, &desc, 0.0);
+                        }
+                    }
+                }
+            },
+        }
+    }
+
+    g_physics_event_queue.clearRetainingCapacity();
+}
+
 fn stepJoltFallback(world: *scene_mod.World, delta_seconds: f32, config: Config, fallback_counts: StepStats) StepStats {
     if (!config.allow_builtin_fallback) {
         maybeLogStepSnapshot(fallback_counts);
@@ -220,6 +389,80 @@ fn stepJoltFallback(world: *scene_mod.World, delta_seconds: f32, config: Config,
         g_logged_jolt_fallback = true;
     }
     return stepBuiltin(world, delta_seconds, config);
+}
+
+fn buildJoltStepConfig(config: Config, delta_seconds: f32, limits: JoltBackendLimits) JoltStepConfig {
+    return .{
+        .delta_seconds = delta_seconds,
+        .gravity = config.gravity,
+        .collision_steps = @max(config.jolt_collision_steps, 1),
+        .temp_allocator_size_bytes = limits.temp_allocator_size_bytes,
+        .max_bodies = limits.max_bodies,
+        .num_body_mutexes = limits.num_body_mutexes,
+        .max_body_pairs = limits.max_body_pairs,
+        .max_contact_constraints = limits.max_contact_constraints,
+    };
+}
+
+fn effectiveJoltBackendLimits(config: Config, body_count: usize) JoltBackendLimits {
+    const max_u32 = std.math.maxInt(u32);
+    const body_count_u32 = @as(u32, @intCast(@min(body_count, max_u32)));
+    const body_count_plus_padding = saturatingAddU32(body_count_u32, 16);
+    const estimated_pairs = saturatingAddU32(saturatingMulU32(body_count_u32, 4), 16);
+    const estimated_contacts = saturatingAddU32(saturatingMulU32(body_count_u32, 8), 16);
+    return .{
+        .temp_allocator_size_bytes = @max(config.jolt_temp_allocator_size_bytes, 1024 * 1024),
+        .max_bodies = @max(config.jolt_max_bodies, body_count_plus_padding),
+        .num_body_mutexes = config.jolt_num_body_mutexes,
+        .max_body_pairs = @max(config.jolt_max_body_pairs, estimated_pairs),
+        .max_contact_constraints = @max(config.jolt_max_contact_constraints, estimated_contacts),
+    };
+}
+
+fn ensureJoltWorldContext(
+    world: *scene_mod.World,
+    create_config: *const JoltStepConfig,
+    limits: JoltBackendLimits,
+) ?*JoltContext {
+    const key = @intFromPtr(world);
+    g_jolt_world_states_mutex.lock();
+    defer g_jolt_world_states_mutex.unlock();
+
+    if (g_jolt_world_states.getPtr(key)) |state| {
+        if (state.limits.eql(limits)) {
+            return state.context;
+        }
+
+        guava_jolt_context_destroy(state.context);
+        const replacement = guava_jolt_context_create(create_config) orelse {
+            _ = g_jolt_world_states.remove(key);
+            return null;
+        };
+        state.* = .{
+            .context = replacement,
+            .limits = limits,
+        };
+        return replacement;
+    }
+
+    const context = guava_jolt_context_create(create_config) orelse return null;
+    g_jolt_world_states.put(jolt_state_allocator, key, .{
+        .context = context,
+        .limits = limits,
+    }) catch {
+        guava_jolt_context_destroy(context);
+        return null;
+    };
+    return context;
+}
+
+fn releaseJoltWorldState(key: usize) void {
+    g_jolt_world_states_mutex.lock();
+    defer g_jolt_world_states_mutex.unlock();
+
+    if (g_jolt_world_states.fetchRemove(key)) |removed| {
+        guava_jolt_context_destroy(removed.value.context);
+    }
 }
 
 fn applyJoltBodyStates(world: *scene_mod.World, body_states: []const JoltBodyState) void {
@@ -251,6 +494,8 @@ fn buildJoltBodyDesc(world: *const scene_mod.World, entity: *const scene_mod.Ent
     const body = entity.rigidbody orelse components.Rigidbody{ .motion_type = .static };
     const world_transform = entity.world_transform_cache;
     const scale_abs = absVec3(world_transform.scale);
+    
+    const layer_info = extractLayerInfo(entity);
 
     var desc = JoltBodyDesc{
         .entity_id = entity.id,
@@ -269,6 +514,8 @@ fn buildJoltBodyDesc(world: *const scene_mod.World, entity: *const scene_mod.Ent
         .sphere_center = .{ 0.0, 0.0, 0.0 },
         .mesh_half_extents = .{ 0.0, 0.0, 0.0 },
         .mesh_center = .{ 0.0, 0.0, 0.0 },
+        .layer_id = layer_info.id,
+        .layer_group = layer_info.group,
     };
     if (body.allow_sleep) {
         desc.flags |= jolt_flag_allow_sleep;
@@ -303,6 +550,19 @@ fn buildJoltBodyDesc(world: *const scene_mod.World, entity: *const scene_mod.Ent
     }
 
     return if ((desc.flags & (jolt_flag_has_box | jolt_flag_has_sphere | jolt_flag_has_mesh_proxy)) != 0) desc else null;
+}
+
+fn extractLayerInfo(entity: *const scene_mod.Entity) struct { id: u16, group: u16 } {
+    if (entity.box_collider) |collider| {
+        return .{ .id = collider.layer_id, .group = collider.layer_group };
+    }
+    if (entity.sphere_collider) |collider| {
+        return .{ .id = collider.layer_id, .group = collider.layer_group };
+    }
+    if (entity.mesh_collider) |collider| {
+        return .{ .id = collider.layer_id, .group = collider.layer_group };
+    }
+    return .{ .id = 0, .group = 0xFFFF };
 }
 
 fn motionTypeToJolt(motion_type: components.RigidbodyMotionType) u32 {
@@ -689,9 +949,20 @@ fn maxVec3(value: components.Vec3, min_value: components.Vec3) components.Vec3 {
     };
 }
 
+fn saturatingAddU32(lhs: u32, rhs: u32) u32 {
+    const sum, const overflowed = @addWithOverflow(lhs, rhs);
+    return if (overflowed != 0) std.math.maxInt(u32) else sum;
+}
+
+fn saturatingMulU32(lhs: u32, rhs: u32) u32 {
+    const product, const overflowed = @mulWithOverflow(lhs, rhs);
+    return if (overflowed != 0) std.math.maxInt(u32) else product;
+}
+
 fn runGroundContactScenario(config: Config) !void {
     var world = scene_mod.World.init(std.testing.allocator, null);
     defer world.deinit();
+    defer deinitWorld(&world);
 
     _ = try world.createEntity(.{
         .name = "Ground",
@@ -724,6 +995,7 @@ fn runGroundContactScenario(config: Config) !void {
 fn runKinematicWallScenario(config: Config) !void {
     var world = scene_mod.World.init(std.testing.allocator, null);
     defer world.deinit();
+    defer deinitWorld(&world);
 
     _ = try world.createEntity(.{
         .name = "Wall",

@@ -14,8 +14,17 @@
 #include <array>
 #include <cstdint>
 #include <mutex>
+#include <new>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
+
+struct GuavaJoltBodyDesc;
+struct GuavaJoltStepConfig;
+struct GuavaJoltBodyState;
+struct GuavaJoltStepStats;
+struct GuavaJoltContext;
 
 namespace {
 constexpr uint32_t kFlagHasBox = 1u << 0;
@@ -103,18 +112,62 @@ public:
   }
 };
 
-class CountingContactListener final : public JPH::ContactListener {
+struct GuavaTriggerEvent {
+  uint64_t entity_a;
+  uint64_t entity_b;
+  uint8_t kind;
+};
+
+extern void GuavaJoltEnqueueTriggerEvent(const GuavaTriggerEvent *event);
+
+class GuavaContactListener final : public JPH::ContactListener {
 public:
-  void OnContactAdded(const JPH::Body &, const JPH::Body &,
+  void OnContactAdded(const JPH::Body &body1, const JPH::Body &body2,
                       const JPH::ContactManifold &,
                       JPH::ContactSettings &) override {
-    ++m_count;
+    ++m_contact_count;
+
+    const bool is_sensor1 = body1.IsSensor();
+    const bool is_sensor2 = body2.IsSensor();
+
+    if (is_sensor1 || is_sensor2) {
+      GuavaTriggerEvent event{};
+      event.entity_a = body1.GetUserData();
+      event.entity_b = body2.GetUserData();
+      event.kind = 0;
+      GuavaJoltEnqueueTriggerEvent(&event);
+    }
   }
 
-  uint32_t GetCount() const { return m_count; }
+  void OnContactPersisted(const JPH::Body &body1, const JPH::Body &body2,
+                          const JPH::ContactManifold &,
+                          JPH::ContactSettings &) override {
+    const bool is_sensor1 = body1.IsSensor();
+    const bool is_sensor2 = body2.IsSensor();
+
+    if (is_sensor1 || is_sensor2) {
+      GuavaTriggerEvent event{};
+      event.entity_a = body1.GetUserData();
+      event.entity_b = body2.GetUserData();
+      event.kind = 1;
+      GuavaJoltEnqueueTriggerEvent(&event);
+    }
+  }
+
+  void OnContactRemoved(const JPH::BodySubShapePair &pair) override {
+    GuavaTriggerEvent event{};
+    event.entity_a = pair.GetBody1()->GetUserData();
+    event.entity_b = pair.GetBody2()->GetUserData();
+    event.kind = 2;
+    GuavaJoltEnqueueTriggerEvent(&event);
+  }
+
+  void Reset() { m_contact_count = 0; }
+
+  uint32_t GetCount() const { return m_contact_count; }
 
 private:
-  uint32_t m_count = 0;
+  uint32_t m_contact_count = 0;
 };
 
 struct Globals {
@@ -215,180 +268,480 @@ struct GuavaJoltStepStats {
   uint8_t reserved0;
   uint16_t reserved1;
 };
+}
 
-bool guava_jolt_step(const GuavaJoltBodyDesc *in_bodies, size_t in_body_count,
-                     const GuavaJoltStepConfig *in_config,
-                     GuavaJoltBodyState *out_states, size_t in_state_capacity,
-                     GuavaJoltStepStats *out_stats) {
-  if (out_stats == nullptr || in_config == nullptr) {
+namespace {
+struct BodyRecord {
+  GuavaJoltBodyDesc desc{};
+  JPH::BodyID body_id{};
+};
+
+bool EqualVec3(const float lhs[3], const float rhs[3]) {
+  for (int index = 0; index < 3; ++index) {
+    if (lhs[index] != rhs[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool EqualQuat(const float lhs[4], const float rhs[4]) {
+  for (int index = 0; index < 4; ++index) {
+    if (lhs[index] != rhs[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool EqualShapeAndSettings(const GuavaJoltBodyDesc &lhs,
+                           const GuavaJoltBodyDesc &rhs) {
+  return lhs.motion_type == rhs.motion_type && lhs.flags == rhs.flags &&
+         lhs.mass == rhs.mass && lhs.gravity_scale == rhs.gravity_scale &&
+         lhs.linear_damping == rhs.linear_damping &&
+         lhs.max_linear_speed == rhs.max_linear_speed &&
+         lhs.sphere_radius == rhs.sphere_radius &&
+         EqualVec3(lhs.box_half_extents, rhs.box_half_extents) &&
+         EqualVec3(lhs.box_center, rhs.box_center) &&
+         EqualVec3(lhs.sphere_center, rhs.sphere_center) &&
+         EqualVec3(lhs.mesh_half_extents, rhs.mesh_half_extents) &&
+         EqualVec3(lhs.mesh_center, rhs.mesh_center);
+}
+
+bool EqualPoseAndVelocity(const GuavaJoltBodyDesc &lhs,
+                          const GuavaJoltBodyDesc &rhs) {
+  return EqualVec3(lhs.position, rhs.position) &&
+         EqualQuat(lhs.rotation, rhs.rotation) &&
+         EqualVec3(lhs.linear_velocity, rhs.linear_velocity);
+}
+
+bool BuildBodyShape(const GuavaJoltBodyDesc &desc, JPH::ShapeRefC &out_shape) {
+  int shape_count = 0;
+  JPH::StaticCompoundShapeSettings compound_settings;
+
+  if ((desc.flags & kFlagHasBox) != 0) {
+    const JPH::Vec3 half_extents = ToVec3(desc.box_half_extents);
+    if (half_extents.ReduceMin() > 0.0f) {
+      compound_settings.AddShape(ToVec3(desc.box_center),
+                                 JPH::Quat::sIdentity(),
+                                 new JPH::BoxShape(half_extents));
+      ++shape_count;
+    }
+  }
+
+  if ((desc.flags & kFlagHasSphere) != 0 && desc.sphere_radius > 0.0f) {
+    compound_settings.AddShape(ToVec3(desc.sphere_center),
+                               JPH::Quat::sIdentity(),
+                               new JPH::SphereShape(desc.sphere_radius));
+    ++shape_count;
+  }
+
+  if ((desc.flags & kFlagHasMeshProxy) != 0) {
+    const JPH::Vec3 half_extents = ToVec3(desc.mesh_half_extents);
+    if (half_extents.ReduceMin() > 0.0f) {
+      compound_settings.AddShape(ToVec3(desc.mesh_center),
+                                 JPH::Quat::sIdentity(),
+                                 new JPH::BoxShape(half_extents));
+      ++shape_count;
+    }
+  }
+
+  if (shape_count == 0) {
+    return false;
+  }
+
+  JPH::Shape::ShapeResult shape_result = compound_settings.Create();
+  if (shape_result.HasError()) {
+    return false;
+  }
+
+  out_shape = shape_result.Get();
+  return true;
+}
+
+JPH::BodyCreationSettings
+MakeBodyCreationSettings(const GuavaJoltBodyDesc &desc, JPH::ShapeRefC shape) {
+  const JPH::EMotionType motion_type = ToMotionType(desc.motion_type);
+  JPH::BodyCreationSettings settings(shape.GetPtr(), ToRVec3(desc.position),
+                                     ToQuat(desc.rotation), motion_type,
+                                     ToObjectLayer(motion_type));
+  settings.mUserData = desc.entity_id;
+  settings.mLinearVelocity = ToVec3(desc.linear_velocity);
+  settings.mAllowSleeping = (desc.flags & kFlagAllowSleep) != 0;
+  settings.mIsSensor = (desc.flags & kFlagBodyIsSensor) != 0;
+  settings.mCollideKinematicVsNonDynamic =
+      motion_type == JPH::EMotionType::Kinematic || settings.mIsSensor;
+  settings.mLinearDamping = desc.linear_damping;
+  settings.mMaxLinearVelocity = desc.max_linear_speed;
+  settings.mGravityFactor = desc.gravity_scale;
+  if (motion_type != JPH::EMotionType::Static) {
+    settings.mOverrideMassProperties =
+        JPH::EOverrideMassProperties::CalculateInertia;
+    settings.mMassPropertiesOverride.mMass = std::max(desc.mass, 0.001f);
+  }
+  return settings;
+}
+} // namespace
+
+struct GuavaJoltContext {
+  explicit GuavaJoltContext(const GuavaJoltStepConfig &config) {
+    physics_system.Init(
+        config.max_bodies, config.num_body_mutexes, config.max_body_pairs,
+        config.max_contact_constraints, broad_phase_layer_interface,
+        object_vs_broad_phase_layer_filter, object_layer_pair_filter);
+    physics_system.SetGravity(ToVec3(config.gravity));
+    physics_system.SetContactListener(&contact_listener);
+  }
+
+  ~GuavaJoltContext() { ClearBodies(); }
+
+  void ClearBodies() {
+    JPH::BodyInterface &body_interface = physics_system.GetBodyInterface();
+    for (auto &entry : body_records) {
+      if (body_interface.IsAdded(entry.second.body_id)) {
+        body_interface.RemoveBody(entry.second.body_id);
+      }
+      body_interface.DestroyBody(entry.second.body_id);
+    }
+    body_records.clear();
+  }
+
+  bool RemoveBody(uint64_t entity_id) {
+    const auto entry = body_records.find(entity_id);
+    if (entry == body_records.end()) {
+      return true;
+    }
+
+    JPH::BodyInterface &body_interface = physics_system.GetBodyInterface();
+    if (body_interface.IsAdded(entry->second.body_id)) {
+      body_interface.RemoveBody(entry->second.body_id);
+    }
+    body_interface.DestroyBody(entry->second.body_id);
+    body_records.erase(entry);
+    return true;
+  }
+
+  bool CreateBody(const GuavaJoltBodyDesc &desc) {
+    JPH::ShapeRefC shape;
+    if (!BuildBodyShape(desc, shape)) {
+      return false;
+    }
+
+    JPH::BodyInterface &body_interface = physics_system.GetBodyInterface();
+    const JPH::EMotionType motion_type = ToMotionType(desc.motion_type);
+    const JPH::EActivation activation = motion_type == JPH::EMotionType::Dynamic
+                                            ? JPH::EActivation::Activate
+                                            : JPH::EActivation::DontActivate;
+    const JPH::BodyID body_id = body_interface.CreateAndAddBody(
+        MakeBodyCreationSettings(desc, shape), activation);
+    if (body_id.IsInvalid()) {
+      return false;
+    }
+
+    BodyRecord record{};
+    record.desc = desc;
+    record.body_id = body_id;
+    body_records.insert_or_assign(desc.entity_id, record);
+    return true;
+  }
+
+  bool SyncExistingBody(const GuavaJoltBodyDesc &desc, float delta_seconds) {
+    auto entry = body_records.find(desc.entity_id);
+    if (entry == body_records.end()) {
+      return CreateBody(desc);
+    }
+
+    if (!EqualShapeAndSettings(entry->second.desc, desc)) {
+      if (!RemoveBody(desc.entity_id)) {
+        return false;
+      }
+      return CreateBody(desc);
+    }
+
+    if (!EqualPoseAndVelocity(entry->second.desc, desc)) {
+      JPH::BodyInterface &body_interface = physics_system.GetBodyInterface();
+      const JPH::EMotionType motion_type = ToMotionType(desc.motion_type);
+      switch (motion_type) {
+      case JPH::EMotionType::Static:
+        body_interface.SetPositionAndRotationWhenChanged(
+            entry->second.body_id, ToRVec3(desc.position),
+            ToQuat(desc.rotation), JPH::EActivation::DontActivate);
+        break;
+      case JPH::EMotionType::Kinematic:
+        body_interface.MoveKinematic(
+            entry->second.body_id, ToRVec3(desc.position),
+            ToQuat(desc.rotation), std::max(delta_seconds, 1.0e-5f));
+        break;
+      case JPH::EMotionType::Dynamic:
+        body_interface.SetPositionRotationAndVelocity(
+            entry->second.body_id, ToRVec3(desc.position),
+            ToQuat(desc.rotation), ToVec3(desc.linear_velocity),
+            JPH::Vec3::sZero());
+        break;
+      }
+      entry->second.desc.position[0] = desc.position[0];
+      entry->second.desc.position[1] = desc.position[1];
+      entry->second.desc.position[2] = desc.position[2];
+      entry->second.desc.rotation[0] = desc.rotation[0];
+      entry->second.desc.rotation[1] = desc.rotation[1];
+      entry->second.desc.rotation[2] = desc.rotation[2];
+      entry->second.desc.rotation[3] = desc.rotation[3];
+      entry->second.desc.linear_velocity[0] = desc.linear_velocity[0];
+      entry->second.desc.linear_velocity[1] = desc.linear_velocity[1];
+      entry->second.desc.linear_velocity[2] = desc.linear_velocity[2];
+    }
+
+    return true;
+  }
+
+  BroadPhaseLayerInterfaceImpl broad_phase_layer_interface{};
+  ObjectVsBroadPhaseLayerFilterImpl object_vs_broad_phase_layer_filter{};
+  ObjectLayerPairFilterImpl object_layer_pair_filter{};
+  GuavaContactListener contact_listener{};
+  JPH::PhysicsSystem physics_system{};
+  JPH::JobSystemSingleThreaded job_system{};
+  std::unordered_map<uint64_t, BodyRecord> body_records{};
+};
+
+extern "C" {
+GuavaJoltContext *
+guava_jolt_context_create(const GuavaJoltStepConfig *in_config) {
+  if (in_config == nullptr) {
+    return nullptr;
+  }
+
+  EnsureInitialized();
+  return new (std::nothrow) GuavaJoltContext(*in_config);
+}
+
+void guava_jolt_context_destroy(GuavaJoltContext *context) { delete context; }
+
+bool guava_jolt_context_add_or_update_body(GuavaJoltContext *context,
+                                           const GuavaJoltBodyDesc *desc,
+                                           float delta_seconds) {
+  if (context == nullptr || desc == nullptr) {
+    return false;
+  }
+
+  JPH::ShapeRefC shape;
+  if (!BuildBodyShape(*desc, shape)) {
+    return context->RemoveBody(desc->entity_id);
+  }
+
+  return context->SyncExistingBody(*desc, delta_seconds);
+}
+
+bool guava_jolt_context_remove_body(GuavaJoltContext *context,
+                                    uint64_t entity_id) {
+  if (context == nullptr) {
+    return false;
+  }
+  return context->RemoveBody(entity_id);
+}
+
+bool guava_jolt_context_step_incremental(GuavaJoltContext *context,
+                                         float delta_seconds,
+                                         uint32_t collision_steps,
+                                         GuavaJoltBodyState *out_states,
+                                         size_t in_state_capacity,
+                                         GuavaJoltStepStats *out_stats) {
+  if (context == nullptr || out_stats == nullptr) {
     return false;
   }
 
   *out_stats = {};
-  EnsureInitialized();
+  context->contact_listener.Reset();
 
-  BroadPhaseLayerInterfaceImpl broad_phase_layer_interface;
-  ObjectVsBroadPhaseLayerFilterImpl object_vs_broad_phase_layer_filter;
-  ObjectLayerPairFilterImpl object_layer_pair_filter;
-  CountingContactListener contact_listener;
-
-  const uint32_t max_bodies = std::max<uint32_t>(
-      in_config->max_bodies, static_cast<uint32_t>(in_body_count) + 16);
-  const uint32_t max_pairs = std::max<uint32_t>(
-      in_config->max_body_pairs, static_cast<uint32_t>(in_body_count) * 4 + 16);
-  const uint32_t max_contacts =
-      std::max<uint32_t>(in_config->max_contact_constraints,
-                         static_cast<uint32_t>(in_body_count) * 8 + 16);
-  const uint32_t allocator_size =
-      std::max<uint32_t>(in_config->temp_allocator_size_bytes, 1024 * 1024);
-  const int collision_steps =
-      std::max<int>(1, static_cast<int>(in_config->collision_steps));
-
-  JPH::PhysicsSystem physics_system;
-  physics_system.Init(max_bodies, in_config->num_body_mutexes, max_pairs,
-                      max_contacts, broad_phase_layer_interface,
-                      object_vs_broad_phase_layer_filter,
-                      object_layer_pair_filter);
-  physics_system.SetGravity(ToVec3(in_config->gravity));
-  physics_system.SetContactListener(&contact_listener);
-
-  JPH::TempAllocatorImpl temp_allocator(static_cast<int>(allocator_size));
-  JPH::JobSystemSingleThreaded job_system;
-  JPH::BodyInterface &body_interface = physics_system.GetBodyInterface();
-
-  std::vector<JPH::BodyID> created_ids;
-  std::vector<std::pair<uint64_t, JPH::BodyID>> body_lookup;
-  created_ids.reserve(in_body_count);
-  body_lookup.reserve(in_body_count);
-
-  for (size_t i = 0; i < in_body_count; ++i) {
-    const GuavaJoltBodyDesc &desc = in_bodies[i];
-    const JPH::EMotionType motion_type = ToMotionType(desc.motion_type);
-
-    int shape_count = 0;
-    JPH::StaticCompoundShapeSettings compound_settings;
-
-    if ((desc.flags & kFlagHasBox) != 0) {
-      JPH::Vec3 half_extents = ToVec3(desc.box_half_extents);
-      if (half_extents.ReduceMin() > 0.0f) {
-        compound_settings.AddShape(ToVec3(desc.box_center),
-                                   JPH::Quat::sIdentity(),
-                                   new JPH::BoxShape(half_extents));
-        ++shape_count;
-      }
-    }
-
-    if ((desc.flags & kFlagHasSphere) != 0 && desc.sphere_radius > 0.0f) {
-      compound_settings.AddShape(ToVec3(desc.sphere_center),
-                                 JPH::Quat::sIdentity(),
-                                 new JPH::SphereShape(desc.sphere_radius));
-      ++shape_count;
-    }
-
-    if ((desc.flags & kFlagHasMeshProxy) != 0) {
-      JPH::Vec3 half_extents = ToVec3(desc.mesh_half_extents);
-      if (half_extents.ReduceMin() > 0.0f) {
-        compound_settings.AddShape(ToVec3(desc.mesh_center),
-                                   JPH::Quat::sIdentity(),
-                                   new JPH::BoxShape(half_extents));
-        ++shape_count;
-      }
-    }
-
-    if (shape_count == 0)
-      continue;
-
-    JPH::Shape::ShapeResult shape_result = compound_settings.Create();
-    if (shape_result.HasError())
-      return false;
-
-    JPH::ShapeRefC shape = shape_result.Get();
-    JPH::BodyCreationSettings settings(shape.GetPtr(), ToRVec3(desc.position),
-                                       ToQuat(desc.rotation), motion_type,
-                                       ToObjectLayer(motion_type));
-    settings.mUserData = desc.entity_id;
-    settings.mLinearVelocity = ToVec3(desc.linear_velocity);
-    settings.mAllowSleeping = (desc.flags & kFlagAllowSleep) != 0;
-    settings.mIsSensor = (desc.flags & kFlagBodyIsSensor) != 0;
-    settings.mCollideKinematicVsNonDynamic =
-        motion_type == JPH::EMotionType::Kinematic || settings.mIsSensor;
-    settings.mLinearDamping = desc.linear_damping;
-    settings.mMaxLinearVelocity = desc.max_linear_speed;
-    settings.mGravityFactor = desc.gravity_scale;
-    if (motion_type != JPH::EMotionType::Static) {
-      settings.mOverrideMassProperties =
-          JPH::EOverrideMassProperties::CalculateInertia;
-      settings.mMassPropertiesOverride.mMass = std::max(desc.mass, 0.001f);
-    }
-
-    const JPH::EActivation activation = motion_type == JPH::EMotionType::Dynamic
-                                            ? JPH::EActivation::Activate
-                                            : JPH::EActivation::DontActivate;
-    const JPH::BodyID body_id =
-        body_interface.CreateAndAddBody(settings, activation);
-    if (!body_id.IsInvalid()) {
-      created_ids.push_back(body_id);
-      body_lookup.emplace_back(desc.entity_id, body_id);
-      switch (motion_type) {
-      case JPH::EMotionType::Dynamic:
-        ++out_stats->dynamic_bodies;
-        break;
-      case JPH::EMotionType::Static:
-      case JPH::EMotionType::Kinematic:
-        ++out_stats->static_bodies;
-        break;
-      }
+  JPH::BodyInterface &body_interface =
+      context->physics_system.GetBodyInterface();
+  for (const auto &entry : context->body_records) {
+    switch (ToMotionType(entry.second.desc.motion_type)) {
+    case JPH::EMotionType::Dynamic:
+      ++out_stats->dynamic_bodies;
+      break;
+    case JPH::EMotionType::Static:
+    case JPH::EMotionType::Kinematic:
+      ++out_stats->static_bodies;
+      break;
     }
   }
 
-  const JPH::EPhysicsUpdateError update_error = physics_system.Update(
-      in_config->delta_seconds, collision_steps, &temp_allocator, &job_system);
+  const uint32_t allocator_size = 10 * 1024 * 1024;
+  const int actual_collision_steps =
+      std::max<int>(1, static_cast<int>(collision_steps));
+  JPH::TempAllocatorImpl temp_allocator(static_cast<int>(allocator_size));
+  const JPH::EPhysicsUpdateError update_error =
+      context->physics_system.Update(delta_seconds, actual_collision_steps,
+                                     &temp_allocator, &context->job_system);
   if (update_error != JPH::EPhysicsUpdateError::None) {
     return false;
   }
 
   size_t out_index = 0;
-  for (size_t i = 0; i < in_body_count && out_index < in_state_capacity; ++i) {
-    const GuavaJoltBodyDesc &desc = in_bodies[i];
-    const JPH::EMotionType motion_type = ToMotionType(desc.motion_type);
-    if (motion_type == JPH::EMotionType::Static)
+  for (auto &entry : context->body_records) {
+    const JPH::EMotionType motion_type =
+        ToMotionType(entry.second.desc.motion_type);
+    if (motion_type == JPH::EMotionType::Static) {
       continue;
-
-    JPH::RVec3 position = ToRVec3(desc.position);
-    JPH::Quat rotation = ToQuat(desc.rotation);
-    JPH::Vec3 linear_velocity = ToVec3(desc.linear_velocity);
-
-    for (const auto &entry : body_lookup) {
-      if (entry.first == desc.entity_id) {
-        body_interface.GetPositionAndRotation(entry.second, position, rotation);
-        linear_velocity = body_interface.GetLinearVelocity(entry.second);
-        break;
-      }
     }
 
-    GuavaJoltBodyState &state = out_states[out_index++];
-    state.entity_id = desc.entity_id;
-    state.position[0] = static_cast<float>(position.GetX());
-    state.position[1] = static_cast<float>(position.GetY());
-    state.position[2] = static_cast<float>(position.GetZ());
-    state.rotation[0] = rotation.GetX();
-    state.rotation[1] = rotation.GetY();
-    state.rotation[2] = rotation.GetZ();
-    state.rotation[3] = rotation.GetW();
-    state.linear_velocity[0] = linear_velocity.GetX();
-    state.linear_velocity[1] = linear_velocity.GetY();
-    state.linear_velocity[2] = linear_velocity.GetZ();
+    JPH::RVec3 position;
+    JPH::Quat rotation;
+    body_interface.GetPositionAndRotation(entry.second.body_id, position,
+                                          rotation);
+    const JPH::Vec3 linear_velocity =
+        body_interface.GetLinearVelocity(entry.second.body_id);
+
+    if (out_index < in_state_capacity) {
+      GuavaJoltBodyState &state = out_states[out_index++];
+      state.entity_id = entry.first;
+      state.position[0] = static_cast<float>(position.GetX());
+      state.position[1] = static_cast<float>(position.GetY());
+      state.position[2] = static_cast<float>(position.GetZ());
+      state.rotation[0] = rotation.GetX();
+      state.rotation[1] = rotation.GetY();
+      state.rotation[2] = rotation.GetZ();
+      state.rotation[3] = rotation.GetW();
+      state.linear_velocity[0] = linear_velocity.GetX();
+      state.linear_velocity[1] = linear_velocity.GetY();
+      state.linear_velocity[2] = linear_velocity.GetZ();
+    }
+
+    entry.second.desc.position[0] = static_cast<float>(position.GetX());
+    entry.second.desc.position[1] = static_cast<float>(position.GetY());
+    entry.second.desc.position[2] = static_cast<float>(position.GetZ());
+    entry.second.desc.rotation[0] = rotation.GetX();
+    entry.second.desc.rotation[1] = rotation.GetY();
+    entry.second.desc.rotation[2] = rotation.GetZ();
+    entry.second.desc.rotation[3] = rotation.GetW();
+    entry.second.desc.linear_velocity[0] = linear_velocity.GetX();
+    entry.second.desc.linear_velocity[1] = linear_velocity.GetY();
+    entry.second.desc.linear_velocity[2] = linear_velocity.GetZ();
   }
 
-  for (const JPH::BodyID &body_id : created_ids) {
-    if (body_interface.IsAdded(body_id))
-      body_interface.RemoveBody(body_id);
-  }
-  if (!created_ids.empty())
-    body_interface.DestroyBodies(created_ids.data(),
-                                 static_cast<int>(created_ids.size()));
+  out_stats->contacts_resolved = context->contact_listener.GetCount();
+  out_stats->state_count = static_cast<uint32_t>(out_index);
+  out_stats->success = 1;
+  return true;
+}
 
-  out_stats->contacts_resolved = contact_listener.GetCount();
+bool guava_jolt_context_step(GuavaJoltContext *context,
+                             const GuavaJoltBodyDesc *in_bodies,
+                             size_t in_body_count,
+                             const GuavaJoltStepConfig *in_config,
+                             GuavaJoltBodyState *out_states,
+                             size_t in_state_capacity,
+                             GuavaJoltStepStats *out_stats) {
+  if (context == nullptr || out_stats == nullptr || in_config == nullptr) {
+    return false;
+  }
+
+  *out_stats = {};
+  context->contact_listener.Reset();
+  context->physics_system.SetGravity(ToVec3(in_config->gravity));
+
+  std::unordered_set<uint64_t> seen_entities;
+  seen_entities.reserve(in_body_count);
+
+  for (size_t index = 0; index < in_body_count; ++index) {
+    const GuavaJoltBodyDesc &desc = in_bodies[index];
+    seen_entities.insert(desc.entity_id);
+
+    JPH::ShapeRefC shape;
+    if (!BuildBodyShape(desc, shape)) {
+      if (!context->RemoveBody(desc.entity_id)) {
+        return false;
+      }
+      continue;
+    }
+
+    if (!context->SyncExistingBody(desc, in_config->delta_seconds)) {
+      return false;
+    }
+  }
+
+  std::vector<uint64_t> stale_entities;
+  stale_entities.reserve(context->body_records.size());
+  for (const auto &entry : context->body_records) {
+    if (seen_entities.find(entry.first) == seen_entities.end()) {
+      stale_entities.push_back(entry.first);
+    }
+  }
+  for (uint64_t entity_id : stale_entities) {
+    if (!context->RemoveBody(entity_id)) {
+      return false;
+    }
+  }
+
+  JPH::BodyInterface &body_interface =
+      context->physics_system.GetBodyInterface();
+  for (const auto &entry : context->body_records) {
+    switch (ToMotionType(entry.second.desc.motion_type)) {
+    case JPH::EMotionType::Dynamic:
+      ++out_stats->dynamic_bodies;
+      break;
+    case JPH::EMotionType::Static:
+    case JPH::EMotionType::Kinematic:
+      ++out_stats->static_bodies;
+      break;
+    }
+  }
+
+  const uint32_t allocator_size =
+      std::max<uint32_t>(in_config->temp_allocator_size_bytes, 1024 * 1024);
+  const int collision_steps =
+      std::max<int>(1, static_cast<int>(in_config->collision_steps));
+  JPH::TempAllocatorImpl temp_allocator(static_cast<int>(allocator_size));
+  const JPH::EPhysicsUpdateError update_error =
+      context->physics_system.Update(in_config->delta_seconds, collision_steps,
+                                     &temp_allocator, &context->job_system);
+  if (update_error != JPH::EPhysicsUpdateError::None) {
+    return false;
+  }
+
+  size_t out_index = 0;
+  for (auto &entry : context->body_records) {
+    const JPH::EMotionType motion_type =
+        ToMotionType(entry.second.desc.motion_type);
+    if (motion_type == JPH::EMotionType::Static) {
+      continue;
+    }
+
+    JPH::RVec3 position;
+    JPH::Quat rotation;
+    body_interface.GetPositionAndRotation(entry.second.body_id, position,
+                                          rotation);
+    const JPH::Vec3 linear_velocity =
+        body_interface.GetLinearVelocity(entry.second.body_id);
+
+    if (out_index < in_state_capacity) {
+      GuavaJoltBodyState &state = out_states[out_index++];
+      state.entity_id = entry.first;
+      state.position[0] = static_cast<float>(position.GetX());
+      state.position[1] = static_cast<float>(position.GetY());
+      state.position[2] = static_cast<float>(position.GetZ());
+      state.rotation[0] = rotation.GetX();
+      state.rotation[1] = rotation.GetY();
+      state.rotation[2] = rotation.GetZ();
+      state.rotation[3] = rotation.GetW();
+      state.linear_velocity[0] = linear_velocity.GetX();
+      state.linear_velocity[1] = linear_velocity.GetY();
+      state.linear_velocity[2] = linear_velocity.GetZ();
+    }
+
+    entry.second.desc.position[0] = static_cast<float>(position.GetX());
+    entry.second.desc.position[1] = static_cast<float>(position.GetY());
+    entry.second.desc.position[2] = static_cast<float>(position.GetZ());
+    entry.second.desc.rotation[0] = rotation.GetX();
+    entry.second.desc.rotation[1] = rotation.GetY();
+    entry.second.desc.rotation[2] = rotation.GetZ();
+    entry.second.desc.rotation[3] = rotation.GetW();
+    entry.second.desc.linear_velocity[0] = linear_velocity.GetX();
+    entry.second.desc.linear_velocity[1] = linear_velocity.GetY();
+    entry.second.desc.linear_velocity[2] = linear_velocity.GetZ();
+  }
+
+  out_stats->contacts_resolved = context->contact_listener.GetCount();
   out_stats->state_count = static_cast<uint32_t>(out_index);
   out_stats->success = 1;
   return true;
