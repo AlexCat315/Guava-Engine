@@ -1,3 +1,34 @@
+//! 场景世界管理模块
+//!
+//! 本模块提供 ECS（Entity-Component-System）架构的场景管理功能。
+//! World 是场景的核心容器，管理所有实体及其组件。
+//!
+//! ## 核心功能
+//!
+//! - **实体管理** - 创建、销毁、查询实体
+//! - **组件管理** - 添加、移除、修改组件
+//! - **层级系统** - 支持父子关系，自动计算世界变换
+//! - **空间索引** - BVH 加速结构，用于快速视锥剔除和射线检测
+//! - **Prefab 系统** - 预制体实例化和管理
+//! - **VFX 系统** - 粒子特效运行时管理
+//!
+//! ## 使用示例
+//!
+//! ```zig
+//! // 创建世界
+//! var world = World.init(allocator, null);
+//! defer world.deinit();
+//!
+//! // 创建实体
+//! const entity = try world.createEntity(.{
+//!     .name = "Player",
+//!     .local_transform = .{ .translation = .{ 0, 1, 0 } },
+//! });
+//!
+//! // 更新层级（计算世界变换）
+//! world.updateHierarchy();
+//! ```
+
 const std = @import("std");
 const assets_lib = @import("../assets/library.zig");
 const gltf_import = @import("../assets/gltf_import.zig");
@@ -15,54 +46,121 @@ const compose_epsilon = 0.0001;
 const dynamic_reintegration_query_threshold: u8 = 3;
 const spatial_log = std.log.scoped(.spatial_index);
 
+/// 动态可渲染物状态
 const DynamicRenderableState = struct {
+    /// 连续查询次数（用于判断是否需要重新集成到静态树）
     steady_query_count: u8 = 0,
 };
 
+/// 空间分区快照（用于调试）
 const SpatialPartitionSnapshot = struct {
     static_items: usize,
     dynamic_items: usize,
 };
 
+/// 动画器绑定（骨骼 -> 目标实体）
 const AnimatorBinding = struct {
+    /// 动画器实体 ID
     animator_entity_id: EntityId,
+    /// 目标实体 ID 列表
     target_entities: []EntityId,
+    /// 基础局部变换列表
     base_local_transforms: []components.Transform,
 };
 
+/// 蒙皮网格绑定
 const SkinnedMeshBinding = struct {
+    /// 实体 ID
     entity_id: EntityId,
+    /// 目标实体 ID 列表（骨骼关节）
     target_entities: []EntityId,
 };
 
+/// 已记录的空间分区快照（用于避免重复日志）
 var g_logged_spatial_partition_snapshot: ?SpatialPartitionSnapshot = null;
 
+/// 实体 ID 类型
 pub const EntityId = u64;
 
+/// 实体结构体
+///
+/// 实体是 ECS 架构中的基本单位，是组件的容器。
+/// 每个实体有一个唯一 ID 和一个名称，可以包含任意组合的组件。
+///
+/// ## 核心字段
+///
+/// - `id` - 唯一标识符
+/// - `name` - 实体名称（用于调试和编辑器显示）
+/// - `parent` - 父实体 ID（用于层级关系）
+/// - `local_transform` - 局部空间变换
+/// - `world_transform_cache` - 世界空间变换（缓存）
+/// - `world_bounds_cache` - 世界空间包围盒（缓存）
+/// - `dirty` - 是否需要更新变换
+/// - `visible` - 是否可见
+/// - `editor_only` - 是否仅在编辑器中显示
+///
+/// ## 组件字段
+///
+/// 所有组件字段都是可选的（`?Type`），实体可以按需附加组件：
+/// - `camera` - 相机组件
+/// - `mesh` - 网格组件
+/// - `skinned_mesh` - 蒙皮网格组件
+/// - `animator` - 动画器组件
+/// - `rigidbody` - 刚体组件
+/// - `box_collider` / `sphere_collider` / `mesh_collider` - 碰撞器组件
+/// - `constraint` - 约束组件
+/// - `material` - 材质组件
+/// - `light` - 光源组件
+/// - `vfx` - 特效组件
+/// - `script` - 脚本组件
 pub const Entity = struct {
+    /// 唯一标识符
     id: EntityId,
+    /// 实体名称
     name: []u8,
+    /// 父实体 ID（null 表示根实体）
     parent: ?EntityId = null,
+    /// 局部空间变换（相对于父实体）
     local_transform: components.Transform = .{},
+    /// 世界空间变换（缓存，由 updateHierarchy 更新）
     world_transform_cache: components.Transform = .{},
+    /// 世界空间包围盒（缓存，用于视锥剔除和射线检测）
     world_bounds_cache: ?AABB = null,
+    /// 是否需要更新变换
     dirty: bool = true,
+    /// 相机组件
     camera: ?components.Camera = null,
+    /// 网格组件
     mesh: ?components.Mesh = null,
+    /// 蒙皮网格组件
     skinned_mesh: ?components.SkinnedMesh = null,
+    /// 动画器组件
     animator: ?components.Animator = null,
+    /// 刚体组件
     rigidbody: ?components.Rigidbody = null,
+    /// 盒碰撞器组件
     box_collider: ?components.BoxCollider = null,
+    /// 球碰撞器组件
     sphere_collider: ?components.SphereCollider = null,
+    /// 网格碰撞器组件
     mesh_collider: ?components.MeshCollider = null,
+    /// 约束组件
     constraint: ?components.Constraint = null,
+    /// 材质组件
     material: ?components.Material = null,
+    /// 光源组件
     light: ?components.Light = null,
+    /// 特效组件
     vfx: ?components.Vfx = null,
+    /// 脚本组件
     script: ?components.Script = null,
+    /// 是否可见
     visible: bool = true,
+    /// 是否仅在编辑器中显示
     editor_only: bool = false,
+    /// 是否为文件夹（用于层级面板组织）
     is_folder: bool = false,
+    /// 子实体列表
     children: std.ArrayListUnmanaged(EntityId) = .empty,
 
     // Prefab 相关字段
@@ -71,6 +169,7 @@ pub const Entity = struct {
     /// Prefab 实例覆盖数据 (如果有覆盖)
     prefab_instance_override: ?prefab_mod.PrefabInstanceOverride = null,
 
+    /// 释放实体占用的资源
     pub fn deinit(self: *Entity, allocator: std.mem.Allocator) void {
         self.children.deinit(allocator);
         allocator.free(self.name);
@@ -84,68 +183,188 @@ fn isPrefabRootEntity(entity: *const Entity) bool {
     return entity.prefab_entity_id != null and entity.prefab_entity_id.? == 0 and entity.parent == null;
 }
 
+/// 可渲染物射线检测候选
+///
+/// 用于射线检测的宽阶段结果，包含实体 ID 和包围盒信息。
 pub const RenderableRayCandidate = struct {
+    /// 实体 ID
     id: EntityId,
+    /// 世界空间包围盒
     bounds: AABB,
+    /// 射线进入距离
     enter_distance: f32,
 };
 
+/// 实体描述结构体
+///
+/// 用于创建新实体时传递参数。所有字段都有默认值，
+/// 可以按需指定需要的组件。
+///
+/// ## 使用示例
+///
+/// ```zig
+/// const entity = try world.createEntity(.{
+///     .name = "MyEntity",
+///     .local_transform = .{
+///         .translation = .{ 0, 1, 0 },
+///     },
+///     .mesh = .{ .primitive = .cube },
+///     .material = .{},
+/// });
+/// ```
 pub const EntityDesc = struct {
+    /// 实体名称
     name: []const u8,
+    /// 父实体 ID
     parent: ?EntityId = null,
+    /// 局部变换
     local_transform: components.Transform = .{},
+    /// 相机组件
     camera: ?components.Camera = null,
+    /// 网格组件
     mesh: ?components.Mesh = null,
+    /// 蒙皮网格组件
     skinned_mesh: ?components.SkinnedMesh = null,
+    /// 动画器组件
     animator: ?components.Animator = null,
+    /// 刚体组件
     rigidbody: ?components.Rigidbody = null,
+    /// 盒碰撞器组件
     box_collider: ?components.BoxCollider = null,
+    /// 球碰撞器组件
     sphere_collider: ?components.SphereCollider = null,
+    /// 网格碰撞器组件
     mesh_collider: ?components.MeshCollider = null,
+    /// 约束组件
     constraint: ?components.Constraint = null,
+    /// 材质组件
     material: ?components.Material = null,
+    /// 光源组件
     light: ?components.Light = null,
+    /// 特效组件
     vfx: ?components.Vfx = null,
+    /// 脚本组件
     script: ?components.Script = null,
+    /// 是否可见
     visible: bool = true,
+    /// 是否仅在编辑器中显示
     editor_only: bool = false,
+    /// 是否为文件夹
     is_folder: bool = false,
 };
 
+/// 场景摘要
+///
+/// 统计场景中各类实体的数量。
 pub const Summary = struct {
+    /// 实体总数
     entity_count: usize = 0,
+    /// 相机数量
     camera_count: usize = 0,
+    /// 网格数量
     mesh_count: usize = 0,
+    /// 材质数量
     material_count: usize = 0,
+    /// 光源数量
     light_count: usize = 0,
+    /// 特效数量
     vfx_count: usize = 0,
+    /// 刚体数量
     rigidbody_count: usize = 0,
+    /// 碰撞器数量
     collider_count: usize = 0,
 };
 
+/// 场景世界结构体
+///
+/// World 是场景的核心容器，管理所有实体、组件和资源。
+/// 提供完整的 ECS（Entity-Component-System）功能。
+///
+/// ## 主要功能
+///
+/// - **实体管理** - 创建、销毁、查询实体
+/// - **组件存储** - 每个实体可以拥有任意组合的组件
+/// - **层级系统** - 支持父子关系，自动计算世界变换
+/// - **空间索引** - BVH 加速结构，用于快速视锥剔除和射线检测
+/// - **资源管理** - 通过 ResourceLibrary 管理网格、材质、纹理等资源
+/// - **Prefab 系统** - 预制体库，支持实例化和覆盖
+/// - **VFX 系统** - 粒子特效运行时管理
+///
+/// ## 使用示例
+///
+/// ```zig
+/// // 创建世界
+/// var world = World.init(allocator, null);
+/// defer world.deinit();
+///
+/// // 创建实体
+/// const entity = try world.createEntity(.{
+///     .name = "Player",
+///     .local_transform = .{ .translation = .{ 0, 1, 0 } },
+///     .mesh = .{ .primitive = .cube },
+///     .material = .{},
+/// });
+///
+/// // 更新层级（计算世界变换）
+/// world.updateHierarchy();
+///
+/// // 查询实体
+/// if (world.getEntity(entity)) |e| {
+///     // 修改组件
+///     e.local_transform.translation[1] += 1.0;
+///     e.dirty = true;
+/// }
+/// ```
 pub const World = struct {
+    /// 内存分配器
     allocator: std.mem.Allocator,
+    /// 资源库（管理网格、材质、纹理等资源）
     resources: assets_lib.ResourceLibrary,
     /// Prefab 库
     prefab_library: prefab_mod.PrefabLibrary,
+    /// 实体列表
     entities: std.ArrayList(Entity) = .empty,
+    /// ID 到索引的映射（用于快速查找）
     id_to_index: std.AutoHashMap(EntityId, usize),
+    /// 下一个可用的实体 ID
     next_id: EntityId = 1,
+    /// 作业系统（用于并行处理）
     job_system: ?*job_system_mod.JobSystem = null,
+    /// VFX 运行时发射器列表
     vfx_runtime_emitters: std.ArrayList(vfx_runtime_mod.VfxRuntimeEmitter) = .empty,
+    /// 静态可渲染物空间索引（BVH）
     renderable_spatial_index: spatial_index_mod.StaticBoundsBvh,
+    /// 动态可渲染物空间索引（BVH）
     dynamic_renderable_spatial_index: spatial_index_mod.StaticBoundsBvh,
+    /// 静态可渲染物项目列表
     static_renderable_items: std.ArrayList(spatial_index_mod.BoundsItem) = .empty,
+    /// 动态可渲染物项目列表
     dynamic_renderable_items: std.ArrayList(spatial_index_mod.BoundsItem) = .empty,
+    /// 静态可渲染物 ID 到索引的映射
     static_renderable_item_indices: std.AutoHashMap(EntityId, usize),
+    /// 动态可渲染物 ID 到索引的映射
     dynamic_renderable_item_indices: std.AutoHashMap(EntityId, usize),
+    /// 动态可渲染物状态映射
     dynamic_renderables: std.AutoHashMap(EntityId, DynamicRenderableState),
+    /// 脏动态可渲染物集合
     dynamic_dirty_renderables: std.AutoHashMap(EntityId, void),
+    /// 可渲染物同步候选集合
     renderable_sync_candidates: std.AutoHashMap(EntityId, void),
+    /// 动画器绑定列表
     animator_bindings: std.ArrayList(AnimatorBinding) = .empty,
+    /// 蒙皮网格绑定列表
     skinned_mesh_bindings: std.ArrayList(SkinnedMeshBinding) = .empty,
+    /// 是否需要完全同步可渲染物
     renderable_full_sync_required: bool = false,
 
+    /// 初始化世界
+    ///
+    /// ## 参数
+    /// - `allocator` - 内存分配器
+    /// - `job_system` - 可选的作业系统，用于并行处理
+    ///
+    /// ## 返回
+    /// 初始化的 World 实例
     pub fn init(allocator: std.mem.Allocator, job_system: ?*job_system_mod.JobSystem) World {
         return .{
             .allocator = allocator,
@@ -163,10 +382,12 @@ pub const World = struct {
         };
     }
 
+    /// 释放世界占用的所有资源
     pub fn deinit(self: *World) void {
         self.clearStorage(false);
     }
 
+    /// 清空世界中的所有实体（保留资源库）
     pub fn clear(self: *World) void {
         self.clearStorage(true);
     }
