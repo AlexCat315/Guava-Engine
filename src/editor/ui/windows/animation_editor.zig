@@ -152,8 +152,6 @@ pub fn drawAnimationEditorWindow(state: *EditorState, layer_context: *engine.cor
         defer engine.ui.ImGui.endChild();
 
         if (engine.ui.ImGui.beginTable("animation_editor_layout", 2)) {
-            defer engine.ui.ImGui.endTable();
-
             engine.ui.ImGui.tableSetupColumn("Tracks", true, 0.3);
             engine.ui.ImGui.tableSetupColumn("Timeline", true, 0.7);
 
@@ -165,6 +163,8 @@ pub fn drawAnimationEditorWindow(state: *EditorState, layer_context: *engine.cor
             engine.ui.ImGui.tableNextColumn();
 
             drawTimeline(state, editor_state, layer_context);
+
+            engine.ui.ImGui.endTable();
         }
     }
 

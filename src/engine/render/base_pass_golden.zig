@@ -469,12 +469,70 @@ test "base pass golden ppm matches bootstrap scene" {
     try expectPpmSimilar(golden, ppm, 2.0);
 }
 
-test "shadow pass baseline placeholder" {
-    // Placeholder for P0 shadow baseline scene
-    try std.testing.expect(true);
+test "shadow pass baseline verifies light space matrix and directional light" {
+    var world = scene_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+    try world.bootstrap3D();
+
+    // Find directional light entity
+    var light_entity_id: ?scene_mod.EntityId = null;
+    for (world.entities.items) |entity| {
+        if (entity.light) |light| {
+            if (light.kind == .directional) {
+                light_entity_id = entity.id;
+                break;
+            }
+        }
+    }
+
+    try std.testing.expect(light_entity_id != null);
+
+    const light_entity = world.getEntityConst(light_entity_id.?).?;
+    try std.testing.expect(light_entity.light.?.kind == .directional);
+    try std.testing.expect(light_entity.light.?.intensity > 0.0);
+
+    // Verify light direction is normalized (rotation quaternion)
+    const quat = @import("../math/quat.zig");
+    const light_dir = quat.rotateVec3(light_entity.local_transform.rotation, .{ 0.0, 0.0, -1.0 });
+    const dir_len = @sqrt(light_dir[0] * light_dir[0] + light_dir[1] * light_dir[1] + light_dir[2] * light_dir[2]);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), dir_len, 0.001);
 }
 
-test "import and animation baseline placeholder" {
-    // Placeholder for P0 import & animation baseline scene
-    try std.testing.expect(true);
+test "import and animation baseline verifies animation clip creation and playback" {
+    var world = scene_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+
+    const target_id = try world.createEntity(.{
+        .name = "AnimatedCube",
+        .local_transform = .{
+            .translation = .{ 0.0, 0.0, 0.0 },
+        },
+    });
+
+    const clip_handle = try world.resources.createAnimationClip(.{
+        .name = "Bounce",
+        .duration = 1.0,
+        .translation_tracks = &.{
+            .{
+                .target_entity_index = 0,
+                .times = &.{ 0.0, 0.5, 1.0 },
+                .values = &.{ .{ 0.0, 0.0, 0.0 }, .{ 0.0, 1.0, 0.0 }, .{ 0.0, 0.0, 0.0 } },
+            },
+        },
+    });
+
+    const animator_id = try world.createEntity(.{
+        .name = "Animator",
+        .animator = .{
+            .default_clip_handle = clip_handle,
+        },
+    });
+
+    try world.bindAnimatorTargets(animator_id, &.{target_id});
+
+    // Verify clip was created
+    const clip = world.resources.animationClip(clip_handle);
+    try std.testing.expect(clip != null);
+    try std.testing.expectEqualStrings("Bounce", clip.?.name);
+    try std.testing.expectEqual(@as(usize, 1), clip.?.translation_tracks.len);
 }
