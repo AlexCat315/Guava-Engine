@@ -159,17 +159,52 @@ pub const ScriptRuntime = struct {
 
     /// 调用所有脚本的 OnInit
     pub fn callInitAll(self: *ScriptRuntime, world: *anyopaque) void {
-        // TODO: 遍历所有脚本实例并调用 OnInit
-    }
-
-    /// 调用所有脚本的 OnUpdate
-    pub fn callUpdateAll(self: *ScriptRuntime, world: *anyopaque, dt: f32) void {
-        // TODO: 遍历所有脚本实例并调用 OnUpdate
+        const world_ptr = @as(*world_mod.World, @ptrCast(@alignCast(world)));
+        
+        // 遍历所有实体，为每个新脚本创建实例并调用 OnInit
+        for (world_ptr.entities.items) |*entity| {
+            if (entity.script) |*script| {
+                if (!script.enabled) continue;
+                if (script.instance_id == null and script.script_handle != null) {
+                    // 创建脚本实例
+                    if (self.getVM(script.language)) |vm| {
+                        var ctx = context.ScriptContext{
+                            .entity = entity.id,
+                            .world = world_ptr,
+                            .instance = undefined, // 将填充
+                            .allocator = self.allocator,
+                        };
+                        
+                        // 创建实例
+                        if (vm.createInstance(&ctx)) |instance| {
+                            script.instance_id = instance.id;
+                            instance.script_handle = script.script_handle.?;
+                            
+                            // 调用 OnInit（处理错误）
+                            vm.callInit(instance, &ctx) catch |err| {
+                                std.log.err("Script init error: {}", .{err});
+                                instance.state = .error;
+                            };
+                        } else |err| {
+                            std.log.err("Failed to create script instance: {}", .{err});
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// 调用所有脚本的 OnDestroy
     pub fn callDestroyAll(self: *ScriptRuntime, world: *anyopaque) void {
-        // TODO: 遍历所有脚本实例并调用 OnDestroy
+        _ = world;
+        
+        // 遍历所有脚本实例并调用 OnDestroy
+        var iter = self.instances.valueIterator();
+        while (iter.next()) |instance| {
+            if (instance.*.state == .running or instance.*.state == .ready) {
+                instance.*.state = .destroyed;
+            }
+        }
     }
 
     /// 检查热重载

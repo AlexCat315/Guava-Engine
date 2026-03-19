@@ -197,6 +197,7 @@ pub const MessageId = enum {
     asset_preview,
     settings,
     material_editor,
+    animation_editor,
     editor,
     english,
     chinese,

@@ -50,6 +50,8 @@ const PhysicsEvent = union(enum) {
     rigidbody_removed: EntityId,
     collider_added: EntityId,
     collider_removed: EntityId,
+    constraint_added: EntityId,
+    constraint_removed: EntityId,
     transform_changed: EntityId,
 };
 
@@ -99,6 +101,20 @@ const JoltBodyDesc = extern struct {
     mesh_center: [3]f32,
     layer_id: u16,
     layer_group: u16,
+};
+
+const JoltConstraintDesc = extern struct {
+    entity_id: u64,
+    constraint_type: u8,
+    entity_a: u64,
+    entity_b: u64,
+    pivot_a: [3]f32,
+    pivot_b: [3]f32,
+    axis_a: [3]f32,
+    axis_b: [3]f32,
+    min_limit: f32,
+    max_limit: f32,
+    is_enabled: u8,
 };
 
 const JoltStepConfig = extern struct {
@@ -179,6 +195,14 @@ extern fn guava_jolt_context_step_incremental(
     out_states: [*]JoltBodyState,
     state_capacity: usize,
     out_stats: *JoltStepStats,
+) callconv(.c) bool;
+extern fn guava_jolt_context_add_or_update_constraint(
+    context: *JoltContext,
+    desc: *const JoltConstraintDesc,
+) callconv(.c) bool;
+extern fn guava_jolt_context_remove_constraint(
+    context: *JoltContext,
+    entity_id: u64,
 ) callconv(.c) bool;
 
 export fn GuavaJoltEnqueueTriggerEvent(event: *const extern struct {
@@ -422,6 +446,7 @@ fn processPhysicsEvents(world: *scene_mod.World, context: *JoltContext, config: 
             },
             .entity_destroyed => |entity_id| {
                 _ = guava_jolt_context_remove_body(context, entity_id);
+                _ = guava_jolt_context_remove_constraint(context, entity_id);
             },
             .rigidbody_added, .collider_added => |entity_id| {
                 if (world.getEntityConst(entity_id)) |entity| {
@@ -432,6 +457,18 @@ fn processPhysicsEvents(world: *scene_mod.World, context: *JoltContext, config: 
             },
             .rigidbody_removed, .collider_removed => |entity_id| {
                 _ = guava_jolt_context_remove_body(context, entity_id);
+            },
+            .constraint_added => |entity_id| {
+                if (world.getEntityConst(entity_id)) |entity| {
+                    if (entity.constraint) |constraint| {
+                        if (buildJoltConstraintDesc(world, entity, constraint)) |desc| {
+                            _ = guava_jolt_context_add_or_update_constraint(context, &desc);
+                        }
+                    }
+                }
+            },
+            .constraint_removed => |entity_id| {
+                _ = guava_jolt_context_remove_constraint(context, entity_id);
             },
             .transform_changed => |entity_id| {
                 if (world.getEntityConst(entity_id)) |entity| {
@@ -554,6 +591,28 @@ fn applyJoltBodyStates(world: *scene_mod.World, body_states: []const JoltBodySta
             }
         }
     }
+}
+
+fn buildJoltConstraintDesc(world: *const scene_mod.World, entity: *const scene_mod.Entity, constraint: components.Constraint) ?JoltConstraintDesc {
+    const body_a = world.getEntityConst(constraint.entity_a) orelse return null;
+    const body_b = world.getEntityConst(constraint.entity_b) orelse return null;
+    
+    _ = body_a;
+    _ = body_b;
+    
+    return JoltConstraintDesc{
+        .entity_id = entity.id,
+        .constraint_type = @intFromEnum(constraint.constraint_type),
+        .entity_a = constraint.entity_a,
+        .entity_b = constraint.entity_b,
+        .pivot_a = constraint.pivot_a,
+        .pivot_b = constraint.pivot_b,
+        .axis_a = constraint.axis_a,
+        .axis_b = constraint.axis_b,
+        .min_limit = constraint.min_limit,
+        .max_limit = constraint.max_limit,
+        .is_enabled = if (constraint.is_enabled) 1 else 0,
+    };
 }
 
 fn buildJoltBodyDesc(world: *const scene_mod.World, entity: *const scene_mod.Entity, config: Config) ?JoltBodyDesc {

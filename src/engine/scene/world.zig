@@ -2154,72 +2154,70 @@ test "dynamic renderable movement refits dynamic BVH without growing dynamic par
     try std.testing.expectEqual(@as(usize, 1), world.dynamic_renderables.count());
 }
 
-test "renderable bounds frustum query reuses cached bounds for visible BVH candidates" {
+// ========================================================================
+// Prefab 相关方法
+// ========================================================================
 
-    // ========================================================================
-    // Prefab 相关方法
-    // ========================================================================
+/// 从实体树创建 Prefab
+pub fn createPrefab(
+    self: *World,
+    root_entity_id: EntityId,
+    prefab_id: []const u8,
+) !void {
+    const prefab = try prefab_mod.createPrefabFromEntities(
+        self.allocator,
+        self,
+        root_entity_id,
+        prefab_id,
+    );
+    try self.prefab_library.add(prefab, prefab_id, null);
+}
 
-    /// 从实体树创建 Prefab
-    pub fn createPrefab(
-        self: *World,
-        root_entity_id: EntityId,
-        prefab_id: []const u8,
-    ) !void {
-        const prefab = try prefab_mod.createPrefabFromEntities(
-            self.allocator,
-            self,
-            root_entity_id,
-            prefab_id,
-        );
-        try self.prefab_library.add(prefab, prefab_id, null);
-    }
+/// 加载 Prefab 从文件
+pub fn loadPrefab(self: *World, path: []const u8) !prefab_mod.PrefabId {
+    return try self.prefab_library.loadFromPath(path);
+}
 
-    /// 加载 Prefab 从文件
-    pub fn loadPrefab(self: *World, path: []const u8) !prefab_mod.PrefabId {
-        return try self.prefab_library.loadFromPath(path);
-    }
+/// 保存 Prefab 到文件
+pub fn savePrefab(self: *World, id: []const u8, path: []const u8) !void {
+    try self.prefab_library.saveToPath(id, path);
+}
 
-    /// 保存 Prefab 到文件
-    pub fn savePrefab(self: *World, id: []const u8, path: []const u8) !void {
-        try self.prefab_library.saveToPath(id, path);
-    }
+/// 实例化 Prefab
+pub fn instantiatePrefab(
+    self: *World,
+    prefab_id: []const u8,
+    options: prefab_mod.InstantiateOptions,
+) !EntityId {
+    const prefab = self.prefab_library.get(prefab_id) orelse
+        return error.PrefabNotFound;
+    return try prefab_mod.instantiatePrefab(self.allocator, self, prefab, options);
+}
 
-    /// 实例化 Prefab
-    pub fn instantiatePrefab(
-        self: *World,
-        prefab_id: []const u8,
-        options: prefab_mod.InstantiateOptions,
-    ) !EntityId {
-        const prefab = self.prefab_library.get(prefab_id) orelse
-            return error.PrefabNotFound;
-        return try prefab_mod.instantiatePrefab(self.allocator, self, prefab, options);
-    }
+/// 获取 Prefab
+pub fn getPrefab(self: *const World, id: []const u8) ?*prefab_mod.PrefabResource {
+    return self.prefab_library.get(id);
+}
 
-    /// 获取 Prefab
-    pub fn getPrefab(self: *const World, id: []const u8) ?*prefab_mod.PrefabResource {
-        return self.prefab_library.get(id);
-    }
+/// 移除 Prefab
+pub fn removePrefab(self: *World, id: []const u8) !void {
+    try self.prefab_library.remove(id);
+}
 
-    /// 移除 Prefab
-    pub fn removePrefab(self: *World, id: []const u8) !void {
-        try self.prefab_library.remove(id);
-    }
+/// 检测 Prefab 差异
+pub fn detectPrefabDiff(
+    self: *World,
+    old_prefab_id: []const u8,
+    new_prefab_id: []const u8,
+) !prefab_mod.PrefabDiff {
+    const old_prefab = self.prefab_library.get(old_prefab_id) orelse
+        return error.PrefabNotFound;
+    const new_prefab = self.prefab_library.get(new_prefab_id) orelse
+        return error.PrefabNotFound;
+    return try prefab_mod.detectDiffs(self.allocator, old_prefab, new_prefab);
+}
 
-    /// 检测 Prefab 差异
-    pub fn detectPrefabDiff(
-        self: *World,
-        old_prefab_id: []const u8,
-        new_prefab_id: []const u8,
-    ) !prefab_mod.PrefabDiff {
-        const old_prefab = self.prefab_library.get(old_prefab_id) orelse
-            return error.PrefabNotFound;
-        const new_prefab = self.prefab_library.get(new_prefab_id) orelse
-            return error.PrefabNotFound;
-        return try prefab_mod.detectDiffs(self.allocator, old_prefab, new_prefab);
-    }
-
-    /// 更新 Prefab 实例
+/// 更新 Prefab 实例
     pub fn updatePrefabInstance(
         self: *World,
         root_entity_id: EntityId,
@@ -2236,35 +2234,95 @@ test "renderable bounds frustum query reuses cached bounds for visible BVH candi
         _ = prefab;
     }
 
-    /// 检查实体是否是 Prefab 实例
-    pub fn isPrefabInstance(self: *const World, entity_id: EntityId) bool {
-        const entity = self.getEntityConst(entity_id) orelse return false;
-        return entity.prefab_entity_id != null;
-    }
+    /// 批量更新所有 Prefab 实例
+    pub fn updateAllPrefabInstances(self: *World, prefab_id: []const u8) !void {
+        const prefab = self.prefab_library.get(prefab_id) orelse
+            return error.PrefabNotFound;
 
-    /// 获取实体的 Prefab 覆盖数据
-    pub fn getPrefabOverride(self: *const World, entity_id: EntityId) ?*const prefab_mod.PrefabInstanceOverride {
-        const entity = self.getEntityConst(entity_id) orelse return null;
-        return entity.prefab_instance_override;
-    }
-
-    /// 应用 Prefab 覆盖 (恢复到原始值)
-    pub fn revertPrefabOverride(self: *World, entity_id: EntityId) !void {
-        const entity = self.getEntity(entity_id) orelse return error.EntityNotFound;
-        if (entity.prefab_instance_override) |override| {
-            // 恢复覆盖的字段
-            if (override.override_mask.local_transform and override.local_transform_override) |transform| {
-                entity.local_transform = transform;
+        // 遍历所有实体，查找 Prefab 实例的根实体
+        for (self.entities.items) |*entity| {
+            if (entity.prefab_entity_id == 0 && entity.parent == null) {
+                // 这是潜在的 Prefab 实例根实体
+                if (entity.prefab_instance_override) |override| {
+                    if (std.mem.eql(u8, override.prefab_id, prefab_id)) {
+                        // 找到匹配 Prefab ID 的实例，更新它
+                        // TODO: 实现实际的更新逻辑
+                        _ = override;
+                    }
+                }
             }
-            if (override.override_mask.visible and override.visible_override != null) {
-                entity.visible = override.visible_override.?;
-            }
-            // 释放覆盖数据
-            override.deinit(self.allocator);
-            entity.prefab_instance_override = null;
         }
     }
 
+    /// 应用 Prefab 更新到所有实例
+    pub fn applyPrefabUpdate(
+        self: *World,
+        old_prefab_id: []const u8,
+        new_prefab_id: []const u8,
+    ) !void {
+        // 检测差异
+        const diff = try self.detectPrefabDiff(old_prefab_id, new_prefab_id);
+        defer diff.deinit();
+
+        const new_prefab = self.getPrefab(new_prefab_id) orelse
+            return error.PrefabNotFound;
+
+        // 查找并更新所有实例
+        var updated_count: usize = 0;
+        for (self.entities.items) |*entity| {
+            if (entity.prefab_entity_id == 0 && entity.parent == null) {
+                if (entity.prefab_instance_override) |override| {
+                    if (std.mem.eql(u8, override.prefab_id, old_prefab_id)) {
+                        // 更新实例
+                        try prefab_mod.updatePrefabInstance(self, entity.id, &diff, new_prefab);
+                        
+                        // 更新 Prefab ID 引用
+                        allocator.free(override.prefab_id);
+                        override.prefab_id = try self.allocator.dupe(u8, new_prefab_id);
+                        
+                        updated_count += 1;
+                    }
+                }
+            }
+        }
+
+        std.log.info("Updated {d} Prefab instances from {s} to {s}", .{
+            updated_count,
+            old_prefab_id,
+            new_prefab_id,
+        });
+    }
+
+/// 检查实体是否是 Prefab 实例
+pub fn isPrefabInstance(self: *const World, entity_id: EntityId) bool {
+    const entity = self.getEntityConst(entity_id) orelse return false;
+    return entity.prefab_entity_id != null;
+}
+
+/// 获取实体的 Prefab 覆盖数据
+pub fn getPrefabOverride(self: *const World, entity_id: EntityId) ?*const prefab_mod.PrefabInstanceOverride {
+    const entity = self.getEntityConst(entity_id) orelse return null;
+    return entity.prefab_instance_override;
+}
+
+/// 应用 Prefab 覆盖 (恢复到原始值)
+pub fn revertPrefabOverride(self: *World, entity_id: EntityId) !void {
+    const entity = self.getEntity(entity_id) orelse return error.EntityNotFound;
+    if (entity.prefab_instance_override) |override| {
+        // 恢复覆盖的字段
+        if (override.override_mask.local_transform and override.local_transform_override) |transform| {
+            entity.local_transform = transform;
+        }
+        if (override.override_mask.visible and override.visible_override != null) {
+            entity.visible = override.visible_override.?;
+        }
+        // 释放覆盖数据
+        override.deinit(self.allocator);
+        entity.prefab_instance_override = null;
+    }
+}
+
+test "renderable bounds frustum query reuses cached bounds for visible BVH candidates" {
     var world = World.init(std.testing.allocator, null);
     defer world.deinit();
 

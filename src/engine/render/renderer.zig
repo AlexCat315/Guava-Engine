@@ -1548,17 +1548,36 @@ pub const Renderer = struct {
         }
 
         if (self.editor_viewport_state.show_collision) {
-            var collision_lines = std.ArrayList(gizmo_pass_mod.WorldLineVertex).empty;
-            defer collision_lines.deinit(self.allocator);
-            try appendCollisionLines(self.allocator, scene, prepared_scene, &collision_lines);
-            const collision_stats = try self.gizmo_pass.drawWorldLines(
-                &self.rhi,
-                frame,
-                pass,
-                prepared_scene.view_projection,
-                collision_lines.items,
-                .{ 0.30, 0.92, 0.52, 1.0 },
-            );
+            var solid_lines = std.ArrayList(gizmo_pass_mod.WorldLineVertex).empty;
+            defer solid_lines.deinit(self.allocator);
+            var trigger_lines = std.ArrayList(gizmo_pass_mod.WorldLineVertex).empty;
+            defer trigger_lines.deinit(self.allocator);
+            
+            try appendCollisionLines(self.allocator, scene, prepared_scene, &solid_lines, &trigger_lines);
+            
+            var collision_stats = gizmo_pass_mod.DrawStats{};
+            if (solid_lines.items.len > 0) {
+                const solid_stats = try self.gizmo_pass.drawWorldLines(
+                    &self.rhi,
+                    frame,
+                    pass,
+                    prepared_scene.view_projection,
+                    solid_lines.items,
+                    .{ 0.30, 0.92, 0.52, 1.0 },
+                );
+                collision_stats.add(solid_stats);
+            }
+            if (trigger_lines.items.len > 0) {
+                const trigger_stats = try self.gizmo_pass.drawWorldLines(
+                    &self.rhi,
+                    frame,
+                    pass,
+                    prepared_scene.view_projection,
+                    trigger_lines.items,
+                    .{ 0.92, 0.70, 0.30, 1.0 },
+                );
+                collision_stats.add(trigger_stats);
+            }
             stats.add(collision_stats);
         }
 
@@ -1596,7 +1615,8 @@ pub const Renderer = struct {
         allocator: std.mem.Allocator,
         scene: *scene_mod.Scene,
         prepared_scene: *const mesh_pass_mod.PreparedScene,
-        lines: *std.ArrayList(gizmo_pass_mod.WorldLineVertex),
+        solid_lines: *std.ArrayList(gizmo_pass_mod.WorldLineVertex),
+        trigger_lines: *std.ArrayList(gizmo_pass_mod.WorldLineVertex),
     ) !void {
         // 优先使用物理调试信息绘制真实的 collider 形状
         const debug_shapes = try physics_mod.collectDebugShapes(scene, allocator);
@@ -1615,10 +1635,18 @@ pub const Renderer = struct {
                             .min = vec3.sub(box.center, box.half_extents),
                             .max = vec3.add(box.center, box.half_extents),
                         };
-                        try appendBoxEdges(allocator, lines, cornersForAabb(aabb));
+                        if (shape.is_trigger) {
+                            try appendBoxEdges(allocator, trigger_lines, cornersForAabb(aabb));
+                        } else {
+                            try appendBoxEdges(allocator, solid_lines, cornersForAabb(aabb));
+                        }
                     },
                     .sphere => |sphere| {
-                        try appendSphereEdges(allocator, lines, sphere.center, sphere.radius, 16);
+                        if (shape.is_trigger) {
+                            try appendSphereEdges(allocator, trigger_lines, sphere.center, sphere.radius, 16);
+                        } else {
+                            try appendSphereEdges(allocator, solid_lines, sphere.center, sphere.radius, 16);
+                        }
                     },
                 }
             }

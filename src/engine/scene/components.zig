@@ -1,5 +1,7 @@
 const handles = @import("../assets/handles.zig");
+const world_mod = @import("../scene/world.zig");
 
+pub const EntityId = world_mod.EntityId;
 pub const Vec2 = [2]f32;
 pub const Vec3 = [3]f32;
 pub const Quat = [4]f32;
@@ -175,7 +177,6 @@ pub const Script = struct {
     script_handle: ?*anyopaque = null,
     enabled: bool = true,
     parameters: []const u8 = &.{},
-};
     looping: bool = true,
     emission_rate: f32 = 18.0,
     particle_lifetime: f32 = 1.25,

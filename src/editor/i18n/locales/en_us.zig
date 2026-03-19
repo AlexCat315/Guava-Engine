@@ -204,6 +204,7 @@ pub const locale = types.LocaleInfo{
         .asset_preview = "Asset Preview",
         .settings = "Settings",
         .material_editor = "Material Editor",
+        .animation_editor = "Animation Editor",
         .editor = "Editor",
         .english = "English",
         .chinese = "Chinese",

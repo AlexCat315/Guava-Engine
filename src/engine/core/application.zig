@@ -54,6 +54,11 @@ pub const Application = struct {
     playback_controller: layer_mod.PlaybackController = .{},
     initialized: bool = false,
     timer: std.time.Timer,
+    /// 全局时间（秒）
+    global_time: f32 = 0.0,
+    /// 时间缩放（用于慢动作、暂停等）
+    time_scale: f32 = 1.0,
+    /// 物理时间累积器
     physics_accumulator_seconds: f32 = 0.0,
 
     pub fn init(allocator: std.mem.Allocator, config: ApplicationConfig) !Application {
@@ -154,11 +159,15 @@ pub const Application = struct {
             const elapsed_ns = self.timer.lap();
             var delta_seconds = @as(f32, @floatFromInt(elapsed_ns)) / @as(f32, @floatFromInt(std.time.ns_per_s));
             delta_seconds = @min(delta_seconds, 0.1); // 最大帧间隔锁定为 0.1 秒
+            
+            // 更新全局时间
+            self.global_time += delta_seconds * self.time_scale;
+            
             const should_advance_simulation = self.playback_controller.shouldAdvance();
             if (should_advance_simulation) {
                 animator_system.update(&self.world, delta_seconds);
                 self.advancePhysics(delta_seconds);
-                // 更新脚本系统
+                // 更新脚本系统（传递时间和输入）
                 self.updateScripts(delta_seconds);
             }
 
@@ -305,17 +314,40 @@ pub const Application = struct {
     }
 
     fn updateScripts(self: *Application, delta_seconds: f32) void {
+        // 检查热重载
+        self.script_runtime.checkHotReload();
+        
         // 遍历所有实体，调用脚本的 OnUpdate
         for (self.world.entities.items) |*entity| {
             if (entity.script) |*script| {
                 if (!script.enabled) continue;
-                // TODO: 获取脚本实例并调用 onUpdate
-                _ = delta_seconds;
+                if (script.instance_id) |instance_id| {
+                    // 获取脚本实例
+                    if (self.script_runtime.instances.get(instance_id)) |instance| {
+                        // 获取 VM
+                        if (self.script_runtime.getVM(script.language)) |vm| {
+                            // 创建上下文（包含输入和时间）
+                            var ctx = script_system.context.ScriptContext{
+                                .entity = entity.id,
+                                .world = &self.world,
+                                .instance = instance,
+                                .allocator = self.allocator,
+                                .input = &self.input,
+                                .time = self.global_time,
+                                .delta_time = delta_seconds,
+                                .time_scale = self.time_scale,
+                            };
+                            
+                            // 调用 OnUpdate（处理错误）
+                            vm.callUpdate(instance, &ctx, delta_seconds) catch |err| {
+                                std.log.err("Script update error: {}", .{err});
+                                instance.state = .error;
+                            };
+                        }
+                    }
+                }
             }
         }
-        
-        // 检查热重载
-        self.script_runtime.checkHotReload();
     }
 
     /// 加载脚本资源

@@ -7,6 +7,10 @@
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Collision/Shape/StaticCompoundShape.h>
+#include <Jolt/Physics/Constraints/PointConstraint.h>
+#include <Jolt/Physics/Constraints/HingeConstraint.h>
+#include <Jolt/Physics/Constraints/SliderConstraint.h>
+#include <Jolt/Physics/Constraints/DistanceConstraint.h>
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/RegisterTypes.h>
 
@@ -241,6 +245,20 @@ struct GuavaJoltBodyDesc {
   float mesh_center[3];
 };
 
+struct GuavaJoltConstraintDesc {
+  uint64_t entity_id;
+  uint8_t constraint_type;
+  uint64_t entity_a;
+  uint64_t entity_b;
+  float pivot_a[3];
+  float pivot_b[3];
+  float axis_a[3];
+  float axis_b[3];
+  float min_limit;
+  float max_limit;
+  uint8_t is_enabled;
+};
+
 struct GuavaJoltStepConfig {
   float delta_seconds;
   float gravity[3];
@@ -393,7 +411,10 @@ struct GuavaJoltContext {
     physics_system.SetContactListener(&contact_listener);
   }
 
-  ~GuavaJoltContext() { ClearBodies(); }
+  ~GuavaJoltContext() { 
+    ClearBodies(); 
+    ClearConstraints();
+  }
 
   void ClearBodies() {
     JPH::BodyInterface &body_interface = physics_system.GetBodyInterface();
@@ -404,6 +425,105 @@ struct GuavaJoltContext {
       body_interface.DestroyBody(entry.second.body_id);
     }
     body_records.clear();
+  }
+
+  void ClearConstraints() {
+    for (auto &entry : constraint_records) {
+      physics_system.RemoveConstraint(entry.second);
+      delete entry.second;
+    }
+    constraint_records.clear();
+  }
+
+  JPH::Body *GetBody(uint64_t entity_id) {
+    auto entry = body_records.find(entity_id);
+    if (entry == body_records.end()) {
+      return nullptr;
+    }
+    JPH::BodyInterface &body_interface = physics_system.GetBodyInterface();
+    JPH::Body *body = body_interface.TryGetBody(entry->second.body_id);
+    return body;
+  }
+
+  bool AddOrUpdateConstraint(const GuavaJoltConstraintDesc &desc) {
+    JPH::Body *body_a = GetBody(desc.entity_a);
+    JPH::Body *body_b = GetBody(desc.entity_b);
+    if (!body_a || !body_b) {
+      return false;
+    }
+
+    auto existing = constraint_records.find(desc.entity_id);
+    if (existing != constraint_records.end()) {
+      physics_system.RemoveConstraint(existing->second);
+      delete existing->second;
+      constraint_records.erase(existing);
+    }
+
+    JPH::TwoBodyConstraint *constraint = nullptr;
+    switch (desc.constraint_type) {
+    case 0: {
+      JPH::PointConstraintSettings settings;
+      settings.mPoint1 = JPH::RVec3(desc.pivot_a[0], desc.pivot_a[1], desc.pivot_a[2]);
+      settings.mPoint2 = JPH::RVec3(desc.pivot_b[0], desc.pivot_b[1], desc.pivot_b[2]);
+      constraint = static_cast<JPH::TwoBodyConstraint *>(settings.Create(*body_a, *body_b));
+      break;
+    }
+    case 1: {
+      JPH::HingeConstraintSettings settings;
+      settings.mPoint1 = JPH::RVec3(desc.pivot_a[0], desc.pivot_a[1], desc.pivot_a[2]);
+      settings.mPoint2 = JPH::RVec3(desc.pivot_b[0], desc.pivot_b[1], desc.pivot_b[2]);
+      settings.mHingeAxis1 = JPH::Vec3(desc.axis_a[0], desc.axis_a[1], desc.axis_a[2]);
+      settings.mHingeAxis2 = JPH::Vec3(desc.axis_b[0], desc.axis_b[1], desc.axis_b[2]);
+      settings.mLimitsMin = desc.min_limit;
+      settings.mLimitsMax = desc.max_limit;
+      constraint = static_cast<JPH::TwoBodyConstraint *>(settings.Create(*body_a, *body_b));
+      break;
+    }
+    case 2: {
+      JPH::SliderConstraintSettings settings;
+      settings.mSpace = JPH::EConstraintSpace::WorldSpace;
+      settings.mPoint1 = JPH::RVec3(desc.pivot_a[0], desc.pivot_a[1], desc.pivot_a[2]);
+      settings.mPoint2 = JPH::RVec3(desc.pivot_b[0], desc.pivot_b[1], desc.pivot_b[2]);
+      settings.mSliderAxis1 = JPH::Vec3(desc.axis_a[0], desc.axis_a[1], desc.axis_a[2]);
+      settings.mSliderAxis2 = JPH::Vec3(desc.axis_b[0], desc.axis_b[1], desc.axis_b[2]);
+      settings.mLimitsMin = desc.min_limit;
+      settings.mLimitsMax = desc.max_limit;
+      constraint = static_cast<JPH::TwoBodyConstraint *>(settings.Create(*body_a, *body_b));
+      break;
+    }
+    case 3: {
+      JPH::DistanceConstraintSettings settings;
+      settings.mPoint1 = JPH::RVec3(desc.pivot_a[0], desc.pivot_a[1], desc.pivot_a[2]);
+      settings.mPoint2 = JPH::RVec3(desc.pivot_b[0], desc.pivot_b[1], desc.pivot_b[2]);
+      settings.mMinDistance = desc.min_limit;
+      settings.mMaxDistance = desc.max_limit;
+      constraint = static_cast<JPH::TwoBodyConstraint *>(settings.Create(*body_a, *body_b));
+      break;
+    }
+    default:
+      return false;
+    }
+
+    if (!constraint) {
+      return false;
+    }
+
+    constraint->SetEnabled(desc.is_enabled != 0);
+    physics_system.AddConstraint(constraint);
+    constraint_records.insert_or_assign(desc.entity_id, constraint);
+    return true;
+  }
+
+  bool RemoveConstraint(uint64_t entity_id) {
+    auto entry = constraint_records.find(entity_id);
+    if (entry == constraint_records.end()) {
+      return true;
+    }
+
+    physics_system.RemoveConstraint(entry->second);
+    delete entry->second;
+    constraint_records.erase(entry);
+    return true;
   }
 
   bool RemoveBody(uint64_t entity_id) {
@@ -501,6 +621,7 @@ struct GuavaJoltContext {
   JPH::PhysicsSystem physics_system{};
   JPH::JobSystemSingleThreaded job_system{};
   std::unordered_map<uint64_t, BodyRecord> body_records{};
+  std::unordered_map<uint64_t, JPH::TwoBodyConstraint *> constraint_records{};
 };
 
 extern "C" {
@@ -537,6 +658,22 @@ bool guava_jolt_context_remove_body(GuavaJoltContext *context,
     return false;
   }
   return context->RemoveBody(entity_id);
+}
+
+bool guava_jolt_context_add_or_update_constraint(
+    GuavaJoltContext *context, const GuavaJoltConstraintDesc *desc) {
+  if (context == nullptr || desc == nullptr) {
+    return false;
+  }
+  return context->AddOrUpdateConstraint(*desc);
+}
+
+bool guava_jolt_context_remove_constraint(GuavaJoltContext *context,
+                                          uint64_t entity_id) {
+  if (context == nullptr) {
+    return false;
+  }
+  return context->RemoveConstraint(entity_id);
 }
 
 bool guava_jolt_context_step_incremental(GuavaJoltContext *context,

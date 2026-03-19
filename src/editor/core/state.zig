@@ -245,6 +245,7 @@ pub const EditorState = struct {
     settings_open: bool = false,
     render_settings_open: bool = false,
     material_editor_open: bool = false,
+    animation_editor_open: bool = false,
     layout_template_name_buffer: [128]u8 = [_]u8{0} ** 128,
     layout_templates: std.ArrayList(LayoutTemplateEntry) = .empty,
     layout_templates_loaded: bool = false,
@@ -279,6 +280,14 @@ pub const EditorState = struct {
     viewport_selection_press_active: bool = false,
     viewport_selection_press_mouse: [2]f32 = .{ 0.0, 0.0 },
     pending_viewport_drop: ?PendingViewportDrop = null,
+    
+    // Prefab 编辑器状态
+    prefab_browser_open: bool = false,
+    selected_prefab_id: ?[]const u8 = null,
+    editing_prefab_id: ?[]const u8 = null,
+    prefab_browser_search_buffer: [128]u8 = [_]u8{0} ** 128,
+    prefab_instance_show_overrides: bool = true,
+    
     playback_toolbar_window_initialized: bool = false,
     playback_toolbar_offset: [2]f32 = .{ 0.0, 0.0 },
     playback_toolbar_custom_position: bool = false,
@@ -489,8 +498,42 @@ pub const EditorState = struct {
             self.asset_registry = null;
         }
 
+        // 释放 Prefab 相关状态
+        if (self.selected_prefab_id) |id| {
+            allocator.free(id);
+            self.selected_prefab_id = null;
+        }
+        if (self.editing_prefab_id) |id| {
+            allocator.free(id);
+            self.editing_prefab_id = null;
+        }
+
         // 注意：preview_device 和 icon_device 是外部指针，不在此释放
         // preview_texture 由 RHI 管理，不在此释放
+    }
+};
+
+pub const AnimationEditorState = struct {
+    selected_clip: ?engine.assets.handles.AnimationClipHandle = null,
+    selected_graph: ?*engine.animation.animation_graph.AnimationGraph = null,
+    timeline_scale: f32 = 1.0,
+    timeline_offset: f32 = 0.0,
+    current_time: f32 = 0.0,
+    is_playing: bool = false,
+    selected_track: ?u32 = null,
+    selected_keyframe: ?u32 = null,
+    selected_bone: ?u32 = null,
+    show_bone_hierarchy: bool = true,
+    show_skinning: bool = true,
+    bone_filter_buffer: [128]u8 = [_]u8{0} ** 128,
+    last_updated_clip: ?engine.assets.handles.AnimationClipHandle = null,
+
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        if (self.selected_graph) |graph| {
+            graph.deinit(allocator);
+            allocator.destroy(graph);
+        }
+        self.* = undefined;
     }
 };
 

@@ -2,6 +2,7 @@ const std = @import("std");
 const components = @import("../scene/components.zig");
 const world_mod = @import("../scene/world.zig");
 const types = @import("./types.zig");
+const input_mod = @import("../core/input.zig");
 
 /// 实体类型别名
 pub const EntityId = world_mod.EntityId;
@@ -16,6 +17,14 @@ pub const ScriptContext = struct {
     instance: *types.ScriptInstance,
     /// 分配器
     allocator: std.mem.Allocator,
+    /// 输入状态（可选）
+    input: ?*const input_mod.InputState = null,
+    /// 全局时间（秒）
+    time: f32 = 0.0,
+    /// DeltaTime（秒）
+    delta_time: f32 = 0.0,
+    /// 时间缩放
+    time_scale: f32 = 1.0,
 
     /// 获取实体的名称
     pub fn getName(self: *ScriptContext) []const u8 {
@@ -180,6 +189,136 @@ pub const ScriptContext = struct {
     /// 设置用户数据指针
     pub fn setUserData(self: *ScriptContext, data: *anyopaque) void {
         self.instance.user_data = data;
+    }
+
+    /// ===== 输入系统 API =====
+
+    /// 检查按键是否按下
+    pub fn isKeyDown(self: *ScriptContext, key: input_mod.Key) bool {
+        if (self.input) |inp| {
+            return inp.isKeyDown(key);
+        }
+        return false;
+    }
+
+    /// 检查按键是否在本帧按下
+    pub fn wasKeyPressed(self: *ScriptContext, key: input_mod.Key) bool {
+        if (self.input) |inp| {
+            return inp.wasKeyPressed(key);
+        }
+        return false;
+    }
+
+    /// 检查按键是否在本帧释放
+    pub fn wasKeyReleased(self: *ScriptContext, key: input_mod.Key) bool {
+        if (self.input) |inp| {
+            return inp.wasKeyReleased(key);
+        }
+        return false;
+    }
+
+    /// 检查鼠标按键是否按下
+    pub fn isMouseButtonDown(self: *ScriptContext, button: input_mod.MouseButton) bool {
+        if (self.input) |inp| {
+            return inp.isMouseDown(button);
+        }
+        return false;
+    }
+
+    /// 检查鼠标按键是否在本帧按下
+    pub fn wasMouseButtonPressed(self: *ScriptContext, button: input_mod.MouseButton) bool {
+        if (self.input) |inp| {
+            return inp.wasMousePressed(button);
+        }
+        return false;
+    }
+
+    /// 检查鼠标按键是否在本帧释放
+    pub fn wasMouseButtonReleased(self: *ScriptContext, button: input_mod.MouseButton) bool {
+        if (self.input) |inp| {
+            return inp.wasMouseReleased(button);
+        }
+        return false;
+    }
+
+    /// 检查鼠标是否双击
+    pub fn wasMouseDoubleClicked(self: *ScriptContext, button: input_mod.MouseButton) bool {
+        if (self.input) |inp| {
+            return inp.wasMouseDoubleClicked(button);
+        }
+        return false;
+    }
+
+    /// 获取鼠标位置
+    pub fn getMousePosition(self: *ScriptContext) ?[2]f32 {
+        if (self.input) |inp| {
+            return inp.mouse_position;
+        }
+        return null;
+    }
+
+    /// 获取鼠标Delta（本帧移动量）
+    pub fn getMouseDelta(self: *ScriptContext) ?[2]f32 {
+        if (self.input) |inp| {
+            return inp.mouse_delta;
+        }
+        return null;
+    }
+
+    /// 获取鼠标滚轮值
+    pub fn getMouseWheel(self: *ScriptContext) ?[2]f32 {
+        if (self.input) |inp| {
+            return inp.mouse_wheel;
+        }
+        return null;
+    }
+
+    /// 检查修饰键（Shift/Ctrl/Alt）
+    pub fn getModifiers(self: *ScriptContext) ?input_mod.Modifiers {
+        if (self.input) |inp| {
+            return inp.modifiers;
+        }
+        return null;
+    }
+
+    /// ===== 时间系统 API =====
+
+    /// 获取全局时间（秒）
+    pub fn getTime(self: *ScriptContext) f32 {
+        return self.time;
+    }
+
+    /// 获取DeltaTime（秒）
+    pub fn getDeltaTime(self: *ScriptContext) f32 {
+        return self.delta_time;
+    }
+
+    /// 获取帧率
+    pub fn getFPS(self: *ScriptContext) f32 {
+        if (self.delta_time > 0.0) {
+            return 1.0 / self.delta_time;
+        }
+        return 0.0;
+    }
+
+    /// 获取时间缩放
+    pub fn getTimeScale(self: *ScriptContext) f32 {
+        return self.time_scale;
+    }
+
+    /// 设置时间缩放
+    pub fn setTimeScale(self: *ScriptContext, scale: f32) void {
+        self.time_scale = scale;
+    }
+
+    /// 获取已缩放的时间（time * time_scale）
+    pub fn getScaledTime(self: *ScriptContext) f32 {
+        return self.time * self.time_scale;
+    }
+
+    /// 获取已缩放的DeltaTime（delta_time * time_scale）
+    pub fn getScaledDeltaTime(self: *ScriptContext) f32 {
+        return self.delta_time * self.time_scale;
     }
 };
 
