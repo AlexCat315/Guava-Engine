@@ -596,7 +596,7 @@ fn freeHandleKeys(
 }
 
 test "resource library resolves handles by stable asset id" {
-    var library = ResourceLibrary.init(std.testing.allocator);
+    var library = ResourceLibrary.init(std.testing.allocator, null);
     defer library.deinit();
 
     const mesh_handle = try library.createMesh(.{
@@ -614,7 +614,7 @@ test "resource library resolves handles by stable asset id" {
 }
 
 test "resource library resolves animation resource handles by stable asset id" {
-    var library = ResourceLibrary.init(std.testing.allocator);
+    var library = ResourceLibrary.init(std.testing.allocator, null);
     defer library.deinit();
 
     const skeleton_handle = try library.createSkeleton(.{

@@ -122,7 +122,7 @@ struct GuavaTriggerEvent {
   uint8_t kind;
 };
 
-extern void GuavaJoltEnqueueTriggerEvent(const GuavaTriggerEvent *event);
+extern "C" void GuavaJoltEnqueueTriggerEvent(const GuavaTriggerEvent *event);
 
 class GuavaContactListener final : public JPH::ContactListener {
 public:

@@ -9,8 +9,6 @@ const rhi_types = @import("../rhi/types.zig");
 
 pub const current_environment_map_cache_version: u32 = registry_mod.AssetType.texture.importVersion() + 2;
 
-const derived_importer_name = "ibl-derived-v1";
-
 const CookedIBLData = struct {
     version: u32 = current_environment_map_cache_version,
     asset_id: []const u8,
@@ -147,31 +145,39 @@ pub fn loadIBLData(
     const prefiltered_bytes = try decodeRgb32fHexToRgbaBytes(allocator, cooked.prefiltered_pixels_hex);
     defer allocator.free(prefiltered_bytes);
 
-    const irradiance_handle = try ensureDerivedTexture(
+    const derived_dependencies = [_][]const u8{record.id};
+
+    const irradiance_handle = try environment_map_resource.ensureDerivedTexture(
         allocator,
         library,
-        record,
         asset_id,
+        record.source_path,
         "ibl/irradiance",
         "IBL Irradiance",
+        record.source_hash,
+        record.import_settings_hash,
+        derived_dependencies[0..],
         cooked.irradiance_width,
         cooked.irradiance_height,
         .rgba32_float,
         irradiance_bytes,
     );
-    const prefiltered_handle = try ensureDerivedTexture(
+    const prefiltered_handle = try environment_map_resource.ensureDerivedTexture(
         allocator,
         library,
-        record,
         asset_id,
+        record.source_path,
         "ibl/prefiltered",
         "IBL Prefiltered",
+        record.source_hash,
+        record.import_settings_hash,
+        derived_dependencies[0..],
         cooked.prefiltered_width,
         cooked.prefiltered_height,
         .rgba32_float,
         prefiltered_bytes,
     );
-    const brdf_lut_handle = try ensureBRDFLUT(allocator, library, cooked.brdf_lut_size);
+    const brdf_lut_handle = try environment_map_resource.ensureBRDFLUTTexture(allocator, library, cooked.brdf_lut_size);
 
     return .{
         .name = try allocator.dupe(u8, record.id),
@@ -186,46 +192,6 @@ pub fn loadIBLData(
         .prefiltered_size = cooked.prefiltered_width,
         .prefiltered_mip_levels = cooked.prefiltered_mip_levels,
     };
-}
-
-pub fn ensureBRDFLUT(
-    allocator: std.mem.Allocator,
-    library: *library_mod.ResourceLibrary,
-    size: u32,
-) !handles.TextureHandle {
-    const asset_id = try std.fmt.allocPrint(allocator, "builtin://ibl/brdf_lut/{d}", .{size});
-    defer allocator.free(asset_id);
-
-    if (library.textureHandleByAssetId(asset_id)) |handle| {
-        return handle;
-    }
-
-    const lut = try ibl_precompute.generateBRDFLUT(allocator, size);
-    defer allocator.free(lut);
-
-    const lut_bytes = try expandRg32fToRgbaBytes(allocator, lut);
-    defer allocator.free(lut_bytes);
-
-    const handle = try library.createTexture(.{
-        .name = "IBL BRDF LUT",
-        .width = size,
-        .height = size,
-        .format = .rgba32_float,
-        .pixels = lut_bytes,
-    });
-    _ = try library.bindTextureAssetRecord(
-        handle,
-        try makeSyntheticTextureRecord(
-            allocator,
-            asset_id,
-            "internal://ibl/brdf_lut",
-            "IBL BRDF LUT",
-            "ibl-brdf-lut",
-            derived_importer_name,
-            &.{},
-        ),
-    );
-    return handle;
 }
 
 fn cookedIBLDataIsCurrent(
@@ -283,90 +249,6 @@ fn cookIBLDataRecord(
     });
 }
 
-fn ensureDerivedTexture(
-    allocator: std.mem.Allocator,
-    library: *library_mod.ResourceLibrary,
-    source_record: *const registry_mod.AssetRecord,
-    asset_id: []const u8,
-    suffix: []const u8,
-    display_name: []const u8,
-    width: u32,
-    height: u32,
-    format: rhi_types.TextureFormat,
-    pixels: []const u8,
-) !handles.TextureHandle {
-    const derived_asset_id = try std.fmt.allocPrint(allocator, "{s}#{s}", .{ asset_id, suffix });
-    defer allocator.free(derived_asset_id);
-
-    if (library.textureHandleByAssetId(derived_asset_id)) |handle| {
-        return handle;
-    }
-
-    const source_path = try std.fmt.allocPrint(allocator, "{s}#{s}", .{ source_record.source_path, suffix });
-    defer allocator.free(source_path);
-
-    const handle = try library.createTexture(.{
-        .name = display_name,
-        .width = width,
-        .height = height,
-        .format = format,
-        .pixels = pixels,
-    });
-    _ = try library.bindTextureAssetRecord(
-        handle,
-        try makeSyntheticTextureRecord(
-            allocator,
-            derived_asset_id,
-            source_path,
-            display_name,
-            source_record.source_hash,
-            source_record.import_settings_hash,
-            &.{source_record.id},
-        ),
-    );
-    return handle;
-}
-
-fn makeSyntheticTextureRecord(
-    allocator: std.mem.Allocator,
-    id: []const u8,
-    source_path: []const u8,
-    display_name: []const u8,
-    source_hash: []const u8,
-    import_settings_hash: []const u8,
-    dependencies: []const []const u8,
-) !registry_mod.AssetRecord {
-    const dependency_ids = try allocator.alloc([]u8, dependencies.len);
-    var dependency_count: usize = 0;
-    errdefer {
-        var index: usize = 0;
-        while (index < dependency_count) : (index += 1) {
-            allocator.free(dependency_ids[index]);
-        }
-        allocator.free(dependency_ids);
-    }
-    for (dependencies, 0..) |dependency, index| {
-        dependency_ids[index] = try allocator.dupe(u8, dependency);
-        dependency_count = index + 1;
-    }
-
-    return .{
-        .id = try allocator.dupe(u8, id),
-        .type = .texture,
-        .source_path = try allocator.dupe(u8, source_path),
-        .source_hash = try allocator.dupe(u8, source_hash),
-        .import_settings_hash = try allocator.dupe(u8, import_settings_hash),
-        .import_version = current_environment_map_cache_version,
-        .dependency_ids = dependency_ids,
-        .outputs = try allocator.alloc(registry_mod.AssetOutput, 0),
-        .metadata = .{
-            .display_name = try allocator.dupe(u8, display_name),
-            .importer = try allocator.dupe(u8, derived_importer_name),
-            .source_extension = try allocator.dupe(u8, ".hdr"),
-        },
-    };
-}
-
 fn decodeRgb32fHexToRgbaBytes(allocator: std.mem.Allocator, hex: []const u8) ![]u8 {
     const rgb_bytes = try decodeHexAlloc(allocator, hex);
     defer allocator.free(rgb_bytes);
@@ -388,31 +270,6 @@ fn decodeRgb32fHexToRgbaBytes(allocator: std.mem.Allocator, hex: []const u8) ![]
         rgba[dst] = rgb[src];
         rgba[dst + 1] = rgb[src + 1];
         rgba[dst + 2] = rgb[src + 2];
-        rgba[dst + 3] = 1.0;
-    }
-
-    const bytes = try allocator.alloc(u8, rgba.len * @sizeOf(f32));
-    @memcpy(bytes, std.mem.sliceAsBytes(rgba));
-    allocator.free(rgba);
-    return bytes;
-}
-
-fn expandRg32fToRgbaBytes(allocator: std.mem.Allocator, rg: []const f32) ![]u8 {
-    if (rg.len % 2 != 0) {
-        return error.InvalidBRDFPayload;
-    }
-
-    const pixel_count = rg.len / 2;
-    var rgba = try allocator.alloc(f32, pixel_count * 4);
-    errdefer allocator.free(rgba);
-
-    var index: usize = 0;
-    while (index < pixel_count) : (index += 1) {
-        const src = index * 2;
-        const dst = index * 4;
-        rgba[dst] = rg[src];
-        rgba[dst + 1] = rg[src + 1];
-        rgba[dst + 2] = 0.0;
         rgba[dst + 3] = 1.0;
     }
 
