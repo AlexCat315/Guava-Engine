@@ -196,7 +196,7 @@ pub fn duplicateEntities(
 
 pub fn spawnEmptyEntity(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const selection_before = layer_context.renderer.selectedEntities();
-    const entity_id = try layer_context.world.createEmptyEntity(spawnTransform(state, layer_context));
+    const entity_id = try createEmptyEntityViaQueueOrWorld(layer_context, spawnTransform(state, layer_context));
     try layer_context.renderer.replaceSelection(entity_id);
     utils.syncInspectorNameBuffer(state, layer_context);
     camera.focusSelection(state, layer_context);
@@ -205,7 +205,7 @@ pub fn spawnEmptyEntity(state: *EditorState, layer_context: *engine.core.LayerCo
 
 pub fn spawnCameraEntity(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const selection_before = layer_context.renderer.selectedEntities();
-    const entity_id = try layer_context.world.createCameraEntity(camera.activeCameraTransform(state, layer_context));
+    const entity_id = try createCameraEntityViaQueueOrWorld(layer_context, camera.activeCameraTransform(state, layer_context));
     try layer_context.renderer.replaceSelection(entity_id);
     state.scene_camera = entity_id;
     utils.syncInspectorNameBuffer(state, layer_context);
@@ -216,7 +216,7 @@ pub fn spawnCameraEntity(state: *EditorState, layer_context: *engine.core.LayerC
 pub fn spawnPrimitive(state: *EditorState, layer_context: *engine.core.LayerContext, primitive: engine.scene.Primitive) !void {
     const selection_before = layer_context.renderer.selectedEntities();
     const spawn_transform = spawnTransform(state, layer_context);
-    const entity_id = try layer_context.world.createPrimitiveEntity(primitive, spawn_transform);
+    const entity_id = try createPrimitiveEntityViaQueueOrWorld(layer_context, primitive, spawn_transform);
     try layer_context.renderer.replaceSelection(entity_id);
     utils.syncInspectorNameBuffer(state, layer_context);
     camera.focusSelection(state, layer_context);
@@ -227,7 +227,27 @@ pub fn spawnPointLight(state: *EditorState, layer_context: *engine.core.LayerCon
     const selection_before = layer_context.renderer.selectedEntities();
     var transform = spawnTransform(state, layer_context);
     transform.translation[1] += 1.0;
-    const entity_id = try layer_context.world.createLightEntity(.point, transform, 24.0);
+    const entity_id = try createLightEntityViaQueueOrWorld(layer_context, .point, transform, 24.0);
+    try layer_context.renderer.replaceSelection(entity_id);
+    utils.syncInspectorNameBuffer(state, layer_context);
+    camera.focusSelection(state, layer_context);
+    try recordCreatedEntities(state, layer_context, &.{entity_id}, selection_before);
+}
+
+pub fn spawnSpotLight(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const selection_before = layer_context.renderer.selectedEntities();
+    var transform = spawnTransform(state, layer_context);
+    transform.translation[1] += 1.0;
+    const entity_id = try createLightEntityViaQueueOrWorld(layer_context, .spot, transform, 24.0);
+    try layer_context.renderer.replaceSelection(entity_id);
+    utils.syncInspectorNameBuffer(state, layer_context);
+    camera.focusSelection(state, layer_context);
+    try recordCreatedEntities(state, layer_context, &.{entity_id}, selection_before);
+}
+
+pub fn spawnDirectionalLight(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const selection_before = layer_context.renderer.selectedEntities();
+    const entity_id = try createLightEntityViaQueueOrWorld(layer_context, .directional, spawnTransform(state, layer_context), 3.0);
     try layer_context.renderer.replaceSelection(entity_id);
     utils.syncInspectorNameBuffer(state, layer_context);
     camera.focusSelection(state, layer_context);
@@ -236,7 +256,7 @@ pub fn spawnPointLight(state: *EditorState, layer_context: *engine.core.LayerCon
 
 pub fn spawnVfxEntity(state: *EditorState, layer_context: *engine.core.LayerContext, kind: engine.scene.VfxKind) !void {
     const selection_before = layer_context.renderer.selectedEntities();
-    const entity_id = try layer_context.world.createVfxEntity(kind, spawnTransform(state, layer_context));
+    const entity_id = try createVfxEntityViaQueueOrWorld(layer_context, kind, spawnTransform(state, layer_context));
     try layer_context.renderer.replaceSelection(entity_id);
     utils.syncInspectorNameBuffer(state, layer_context);
     camera.focusSelection(state, layer_context);
@@ -245,7 +265,7 @@ pub fn spawnVfxEntity(state: *EditorState, layer_context: *engine.core.LayerCont
 
 pub fn spawnEmptyEntityAt(state: *EditorState, layer_context: *engine.core.LayerContext, transform: engine.scene.Transform) !void {
     const selection_before = layer_context.renderer.selectedEntities();
-    const entity_id = try layer_context.world.createEmptyEntity(transform);
+    const entity_id = try createEmptyEntityViaQueueOrWorld(layer_context, transform);
     try layer_context.renderer.replaceSelection(entity_id);
     utils.syncInspectorNameBuffer(state, layer_context);
     try recordCreatedEntities(state, layer_context, &.{entity_id}, selection_before);
@@ -253,7 +273,7 @@ pub fn spawnEmptyEntityAt(state: *EditorState, layer_context: *engine.core.Layer
 
 pub fn spawnCameraEntityAt(state: *EditorState, layer_context: *engine.core.LayerContext, transform: engine.scene.Transform) !void {
     const selection_before = layer_context.renderer.selectedEntities();
-    const entity_id = try layer_context.world.createCameraEntity(transform);
+    const entity_id = try createCameraEntityViaQueueOrWorld(layer_context, transform);
     try layer_context.renderer.replaceSelection(entity_id);
     state.scene_camera = entity_id;
     utils.syncInspectorNameBuffer(state, layer_context);
@@ -262,7 +282,7 @@ pub fn spawnCameraEntityAt(state: *EditorState, layer_context: *engine.core.Laye
 
 pub fn spawnPrimitiveAt(state: *EditorState, layer_context: *engine.core.LayerContext, primitive: engine.scene.Primitive, transform: engine.scene.Transform) !void {
     const selection_before = layer_context.renderer.selectedEntities();
-    const entity_id = try layer_context.world.createPrimitiveEntity(primitive, transform);
+    const entity_id = try createPrimitiveEntityViaQueueOrWorld(layer_context, primitive, transform);
     try layer_context.renderer.replaceSelection(entity_id);
     utils.syncInspectorNameBuffer(state, layer_context);
     try recordCreatedEntities(state, layer_context, &.{entity_id}, selection_before);
@@ -270,7 +290,7 @@ pub fn spawnPrimitiveAt(state: *EditorState, layer_context: *engine.core.LayerCo
 
 pub fn spawnPointLightAt(state: *EditorState, layer_context: *engine.core.LayerContext, transform: engine.scene.Transform) !void {
     const selection_before = layer_context.renderer.selectedEntities();
-    const entity_id = try layer_context.world.createLightEntity(.point, transform, 24.0);
+    const entity_id = try createLightEntityViaQueueOrWorld(layer_context, .point, transform, 24.0);
     try layer_context.renderer.replaceSelection(entity_id);
     utils.syncInspectorNameBuffer(state, layer_context);
     try recordCreatedEntities(state, layer_context, &.{entity_id}, selection_before);
@@ -278,7 +298,7 @@ pub fn spawnPointLightAt(state: *EditorState, layer_context: *engine.core.LayerC
 
 pub fn spawnSpotLightAt(state: *EditorState, layer_context: *engine.core.LayerContext, transform: engine.scene.Transform) !void {
     const selection_before = layer_context.renderer.selectedEntities();
-    const entity_id = try layer_context.world.createLightEntity(.spot, transform, 24.0);
+    const entity_id = try createLightEntityViaQueueOrWorld(layer_context, .spot, transform, 24.0);
     try layer_context.renderer.replaceSelection(entity_id);
     utils.syncInspectorNameBuffer(state, layer_context);
     try recordCreatedEntities(state, layer_context, &.{entity_id}, selection_before);
@@ -286,7 +306,7 @@ pub fn spawnSpotLightAt(state: *EditorState, layer_context: *engine.core.LayerCo
 
 pub fn spawnDirectionalLightAt(state: *EditorState, layer_context: *engine.core.LayerContext, transform: engine.scene.Transform) !void {
     const selection_before = layer_context.renderer.selectedEntities();
-    const entity_id = try layer_context.world.createLightEntity(.directional, transform, 1.0);
+    const entity_id = try createLightEntityViaQueueOrWorld(layer_context, .directional, transform, 1.0);
     try layer_context.renderer.replaceSelection(entity_id);
     utils.syncInspectorNameBuffer(state, layer_context);
     try recordCreatedEntities(state, layer_context, &.{entity_id}, selection_before);
@@ -294,10 +314,197 @@ pub fn spawnDirectionalLightAt(state: *EditorState, layer_context: *engine.core.
 
 pub fn spawnVfxEntityAt(state: *EditorState, layer_context: *engine.core.LayerContext, kind: engine.scene.VfxKind, transform: engine.scene.Transform) !void {
     const selection_before = layer_context.renderer.selectedEntities();
-    const entity_id = try layer_context.world.createVfxEntity(kind, transform);
+    const entity_id = try createVfxEntityViaQueueOrWorld(layer_context, kind, transform);
     try layer_context.renderer.replaceSelection(entity_id);
     utils.syncInspectorNameBuffer(state, layer_context);
     try recordCreatedEntities(state, layer_context, &.{entity_id}, selection_before);
+}
+
+pub fn createFolderEntityViaQueueOrWorld(layer_context: *engine.core.LayerContext, transform: engine.scene.Transform) !engine.scene.EntityId {
+    if (layer_context.command_queue) |queue| {
+        const name = try layer_context.world.nextAvailableName("Folder");
+        defer layer_context.world.allocator.free(name);
+        try queue.enqueueCreateEntity(.{
+            .name = name,
+            .local_transform = transform,
+            .is_folder = true,
+        });
+        return try executeSingleCreateResult(layer_context);
+    }
+    return layer_context.world.createFolderEntity(transform);
+}
+
+fn createEmptyEntityViaQueueOrWorld(layer_context: *engine.core.LayerContext, transform: engine.scene.Transform) !engine.scene.EntityId {
+    if (layer_context.command_queue) |queue| {
+        const name = try layer_context.world.nextAvailableName("Empty");
+        defer layer_context.world.allocator.free(name);
+        try queue.enqueueCreateEntity(.{
+            .name = name,
+            .local_transform = transform,
+        });
+        return try executeSingleCreateResult(layer_context);
+    }
+    return layer_context.world.createEmptyEntity(transform);
+}
+
+fn createCameraEntityViaQueueOrWorld(layer_context: *engine.core.LayerContext, transform: engine.scene.Transform) !engine.scene.EntityId {
+    if (layer_context.command_queue) |queue| {
+        const name = try layer_context.world.nextAvailableName("Camera");
+        defer layer_context.world.allocator.free(name);
+        try queue.enqueueCreateEntity(.{
+            .name = name,
+            .local_transform = transform,
+            .camera = .{},
+        });
+        return try executeSingleCreateResult(layer_context);
+    }
+    return layer_context.world.createCameraEntity(transform);
+}
+
+fn createPrimitiveEntityViaQueueOrWorld(
+    layer_context: *engine.core.LayerContext,
+    primitive: engine.scene.Primitive,
+    transform: engine.scene.Transform,
+) !engine.scene.EntityId {
+    if (layer_context.command_queue) |queue| {
+        const mesh_handle = try layer_context.world.resources.ensurePrimitiveMesh(primitive);
+        const material_handle = try layer_context.world.resources.ensureDefaultMaterial();
+        const base_name = switch (primitive) {
+            .cube => "Cube",
+            .sphere => "Sphere",
+            .plane => "Plane",
+            .custom => "Mesh",
+        };
+        const name = try layer_context.world.nextAvailableName(base_name);
+        defer layer_context.world.allocator.free(name);
+        try queue.enqueueCreateEntity(.{
+            .name = name,
+            .local_transform = transform,
+            .mesh = .{
+                .handle = mesh_handle,
+                .primitive = primitive,
+            },
+            .material = .{
+                .handle = material_handle,
+            },
+        });
+        return try executeSingleCreateResult(layer_context);
+    }
+    return layer_context.world.createPrimitiveEntity(primitive, transform);
+}
+
+fn createLightEntityViaQueueOrWorld(
+    layer_context: *engine.core.LayerContext,
+    kind: engine.scene.LightKind,
+    transform: engine.scene.Transform,
+    intensity: f32,
+) !engine.scene.EntityId {
+    if (layer_context.command_queue) |queue| {
+        const base_name = switch (kind) {
+            .directional => "DirectionalLight",
+            .point => "PointLight",
+            .spot => "SpotLight",
+        };
+        const name = try layer_context.world.nextAvailableName(base_name);
+        defer layer_context.world.allocator.free(name);
+
+        var light_transform = transform;
+        var mesh: ?engine.scene.Mesh = null;
+        var material: ?engine.scene.Material = null;
+
+        if (kind != .directional) {
+            const proxy_mesh = try layer_context.world.resources.ensurePrimitiveMesh(.sphere);
+            const material_name = try std.fmt.allocPrint(layer_context.world.allocator, "{s}Material", .{name});
+            defer layer_context.world.allocator.free(material_name);
+            const tint: [4]f32 = switch (kind) {
+                .point => .{ 1.0, 0.86, 0.55, 1.0 },
+                .spot => .{ 0.65, 0.8, 1.0, 1.0 },
+                .directional => .{ 1.0, 1.0, 1.0, 1.0 },
+            };
+            const proxy_material = try layer_context.world.resources.createMaterial(.{
+                .name = material_name,
+                .base_color_factor = tint,
+                .base_color_texture = try layer_context.world.resources.ensureWhiteTexture(),
+            });
+
+            light_transform.scale = switch (kind) {
+                .point => .{ 0.18, 0.18, 0.18 },
+                .spot => .{ 0.24, 0.24, 0.24 },
+                .directional => light_transform.scale,
+            };
+            mesh = .{
+                .handle = proxy_mesh,
+                .primitive = .sphere,
+            };
+            material = .{
+                .handle = proxy_material,
+                .base_color_factor = tint,
+            };
+        }
+
+        try queue.enqueueCreateEntity(.{
+            .name = name,
+            .local_transform = light_transform,
+            .mesh = mesh,
+            .material = material,
+            .light = .{
+                .kind = kind,
+                .intensity = intensity,
+                .range = if (kind == .point) 12.0 else 10.0,
+            },
+        });
+        return try executeSingleCreateResult(layer_context);
+    }
+    return layer_context.world.createLightEntity(kind, transform, intensity);
+}
+
+fn createVfxEntityViaQueueOrWorld(
+    layer_context: *engine.core.LayerContext,
+    kind: engine.scene.VfxKind,
+    transform: engine.scene.Transform,
+) !engine.scene.EntityId {
+    if (layer_context.command_queue) |queue| {
+        const base_name = switch (kind) {
+            .fountain => "FountainVfx",
+            .orbit => "OrbitVfx",
+        };
+        const name = try layer_context.world.nextAvailableName(base_name);
+        defer layer_context.world.allocator.free(name);
+
+        const mesh_handle = try layer_context.world.resources.ensurePrimitiveMesh(.sphere);
+        const vfx = engine.scene.defaultVfx(kind);
+        var root_transform = transform;
+        root_transform.scale = switch (kind) {
+            .fountain => .{ 0.18, 0.18, 0.18 },
+            .orbit => .{ 0.2, 0.2, 0.2 },
+        };
+
+        try queue.enqueueCreateEntity(.{
+            .name = name,
+            .local_transform = root_transform,
+            .mesh = .{
+                .handle = mesh_handle,
+                .primitive = .sphere,
+            },
+            .material = .{
+                .shading = .unlit,
+                .base_color_factor = .{ vfx.color[0], vfx.color[1], vfx.color[2], 1.0 },
+            },
+            .vfx = vfx,
+        });
+        return try executeSingleCreateResult(layer_context);
+    }
+    return layer_context.world.createVfxEntity(kind, transform);
+}
+
+fn executeSingleCreateResult(layer_context: *engine.core.LayerContext) !engine.scene.EntityId {
+    const allocator = layer_context.world.allocator;
+    const results = try executeQueuedCommands(layer_context);
+    defer allocator.free(results);
+    if (results.len == 0 or !results[0].ok() or results[0].entity_id == null) {
+        return error.CommandExecutionFailed;
+    }
+    return results[0].entity_id.?;
 }
 
 pub fn spawnTransform(state: *EditorState, layer_context: *engine.core.LayerContext) engine.scene.Transform {

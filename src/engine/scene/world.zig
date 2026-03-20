@@ -1699,7 +1699,7 @@ pub const World = struct {
         return duplicate_id;
     }
 
-    fn nextAvailableName(self: *const World, base_name: []const u8) ![]u8 {
+    pub fn nextAvailableName(self: *const World, base_name: []const u8) ![]u8 {
         return self.nextAvailableDerivedName(base_name, "");
     }
 

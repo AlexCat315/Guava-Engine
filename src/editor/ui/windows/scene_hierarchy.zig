@@ -1059,7 +1059,7 @@ fn drawHierarchyStatusIconButton(
 fn createFolderEntity(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const selection_before = layer_context.renderer.selectedEntities();
     const transform = history.spawnTransform(state, layer_context);
-    const entity_id = try layer_context.world.createFolderEntity(transform);
+    const entity_id = try history.createFolderEntityViaQueueOrWorld(layer_context, transform);
     try layer_context.renderer.replaceSelection(entity_id);
     utils.syncInspectorNameBuffer(state, layer_context);
     try history.recordCreatedEntities(state, layer_context, &.{entity_id}, selection_before);

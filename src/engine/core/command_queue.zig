@@ -36,6 +36,11 @@ pub const CommandQueue = struct {
                 .name = try self.allocator.dupe(u8, spec.name),
                 .parent = spec.parent,
                 .local_transform = spec.local_transform,
+                .camera = spec.camera,
+                .mesh = spec.mesh,
+                .material = spec.material,
+                .light = spec.light,
+                .vfx = spec.vfx,
                 .visible = spec.visible,
                 .editor_only = spec.editor_only,
                 .is_folder = spec.is_folder,
@@ -174,6 +179,11 @@ fn executeCommand(world: *scene_mod.World, command: command_mod.Command) !comman
                 .name = create.name,
                 .parent = create.parent,
                 .local_transform = create.local_transform,
+                .camera = create.camera,
+                .mesh = create.mesh,
+                .material = create.material,
+                .light = create.light,
+                .vfx = create.vfx,
                 .visible = create.visible,
                 .editor_only = create.editor_only,
                 .is_folder = create.is_folder,
@@ -348,4 +358,70 @@ test "CommandQueue reports parent errors without aborting the batch" {
     try std.testing.expectEqual(command_mod.CommandError.parent_not_found, results[0].err.?);
     try std.testing.expect(results[1].ok());
     try std.testing.expectEqualStrings("StillRuns", world.getEntityConst(entity_id).?.name);
+}
+
+test "CommandQueue create_entity preserves attached components" {
+    var queue = CommandQueue.init(std.testing.allocator);
+    defer queue.deinit();
+
+    var world = scene_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+
+    const mesh_handle = try world.resources.ensurePrimitiveMesh(.sphere);
+    const material_handle = try world.resources.ensureDefaultMaterial();
+    const vfx = components_mod.defaultVfx(.orbit);
+
+    try queue.enqueueCreateEntity(.{
+        .name = "QueuedActor",
+        .local_transform = .{
+            .translation = .{ 4.0, 2.0, -1.0 },
+            .scale = .{ 0.5, 0.5, 0.5 },
+        },
+        .camera = .{
+            .is_primary = true,
+        },
+        .mesh = .{
+            .handle = mesh_handle,
+            .primitive = .sphere,
+        },
+        .material = .{
+            .handle = material_handle,
+            .shading = .unlit,
+            .base_color_factor = .{ 0.2, 0.4, 0.8, 1.0 },
+        },
+        .light = .{
+            .kind = .spot,
+            .intensity = 24.0,
+            .range = 16.0,
+        },
+        .vfx = vfx,
+        .editor_only = true,
+    });
+
+    const results = try queue.executeAll(&world);
+    defer std.testing.allocator.free(results);
+
+    try std.testing.expectEqual(@as(usize, 1), results.len);
+    try std.testing.expect(results[0].ok());
+
+    const entity = world.getEntityConst(results[0].entity_id.?).?;
+    try std.testing.expectEqualStrings("QueuedActor", entity.name);
+    try std.testing.expect(entity.camera != null);
+    try std.testing.expect(entity.camera.?.is_primary);
+    try std.testing.expect(entity.mesh != null);
+    try std.testing.expectEqual(mesh_handle, entity.mesh.?.handle.?);
+    try std.testing.expectEqual(components_mod.Primitive.sphere, entity.mesh.?.primitive);
+    try std.testing.expect(entity.material != null);
+    try std.testing.expectEqual(material_handle, entity.material.?.handle.?);
+    try std.testing.expectEqual(components_mod.ShadingModel.unlit, entity.material.?.shading);
+    try std.testing.expectEqualDeep([4]f32{ 0.2, 0.4, 0.8, 1.0 }, entity.material.?.base_color_factor);
+    try std.testing.expect(entity.light != null);
+    try std.testing.expectEqual(components_mod.LightKind.spot, entity.light.?.kind);
+    try std.testing.expectApproxEqAbs(@as(f32, 24.0), entity.light.?.intensity, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 16.0), entity.light.?.range, 0.0001);
+    try std.testing.expect(entity.vfx != null);
+    try std.testing.expectEqual(components_mod.VfxKind.orbit, entity.vfx.?.kind);
+    try std.testing.expect(entity.editor_only);
+    try std.testing.expectApproxEqAbs(@as(f32, 4.0), entity.local_transform.translation[0], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), entity.local_transform.scale[0], 0.0001);
 }
