@@ -24,6 +24,42 @@ const schema_components_descriptor = protocol.ResourceDescriptor{
     .size = null,
 };
 
+const schema_scene_descriptor = protocol.ResourceDescriptor{
+    .uri = "schema://scene-json-v6",
+    .name = "Scene JSON v6 Schema",
+    .title = "Scene JSON v6 Schema",
+    .description = "Stable JSON contract for scene_io.zig scene files, including top-level arrays and entity record payloads.",
+    .mimeType = "application/json",
+    .size = null,
+};
+
+const schema_prefab_descriptor = protocol.ResourceDescriptor{
+    .uri = "schema://prefab",
+    .name = "Prefab Schema",
+    .title = "Prefab Schema",
+    .description = "Stable JSON contract for prefab files, prefab entity records, and instance override masks.",
+    .mimeType = "application/json",
+    .size = null,
+};
+
+const schema_material_descriptor = protocol.ResourceDescriptor{
+    .uri = "schema://material",
+    .name = "Material Schema",
+    .title = "Material Schema",
+    .description = "Stable JSON contract for MaterialResource and MaterialResourceDesc payloads used by the engine.",
+    .mimeType = "application/json",
+    .size = null,
+};
+
+const schema_tools_descriptor = protocol.ResourceDescriptor{
+    .uri = "schema://tools",
+    .name = "Tool Schema",
+    .title = "Tool Schema",
+    .description = "JSON contract for MCP tool arguments, including required fields, paging defaults, and staged transaction inputs.",
+    .mimeType = "application/json",
+    .size = null,
+};
+
 pub const SnapshotStore = struct {
     allocator: std.mem.Allocator,
     collaboration: ?*const collaboration_mod.Store = null,
@@ -111,7 +147,7 @@ pub const SnapshotStore = struct {
         }
 
         const listed_count = countListedResources(mutable.entries.items) +
-            1 +
+            5 +
             @as(usize, if (mutable.collaboration != null) 3 else 0) +
             @as(usize, if (mutable.script_runtime != null) 1 else 0);
         try resources.ensureTotalCapacity(allocator, listed_count);
@@ -130,6 +166,10 @@ pub const SnapshotStore = struct {
         }
 
         try resources.append(allocator, try copyResourceDescriptorAlloc(allocator, schema_components_descriptor));
+        try resources.append(allocator, try copyResourceDescriptorAlloc(allocator, schema_scene_descriptor));
+        try resources.append(allocator, try copyResourceDescriptorAlloc(allocator, schema_prefab_descriptor));
+        try resources.append(allocator, try copyResourceDescriptorAlloc(allocator, schema_material_descriptor));
+        try resources.append(allocator, try copyResourceDescriptorAlloc(allocator, schema_tools_descriptor));
 
         if (mutable.collaboration) |_| {
             try collaboration_mod.Store.appendResourceDescriptorsAlloc(allocator, &resources);
@@ -170,6 +210,34 @@ pub const SnapshotStore = struct {
                 .uri = try allocator.dupe(u8, schema_components_descriptor.uri),
                 .mimeType = try allocator.dupe(u8, "application/json"),
                 .text = try buildComponentsSchemaJsonAlloc(allocator),
+            };
+        }
+        if (std.mem.eql(u8, uri, "schema://scene-json-v6")) {
+            return .{
+                .uri = try allocator.dupe(u8, schema_scene_descriptor.uri),
+                .mimeType = try allocator.dupe(u8, "application/json"),
+                .text = try buildSceneSchemaJsonAlloc(allocator),
+            };
+        }
+        if (std.mem.eql(u8, uri, "schema://prefab")) {
+            return .{
+                .uri = try allocator.dupe(u8, schema_prefab_descriptor.uri),
+                .mimeType = try allocator.dupe(u8, "application/json"),
+                .text = try buildPrefabSchemaJsonAlloc(allocator),
+            };
+        }
+        if (std.mem.eql(u8, uri, "schema://material")) {
+            return .{
+                .uri = try allocator.dupe(u8, schema_material_descriptor.uri),
+                .mimeType = try allocator.dupe(u8, "application/json"),
+                .text = try buildMaterialSchemaJsonAlloc(allocator),
+            };
+        }
+        if (std.mem.eql(u8, uri, "schema://tools")) {
+            return .{
+                .uri = try allocator.dupe(u8, schema_tools_descriptor.uri),
+                .mimeType = try allocator.dupe(u8, "application/json"),
+                .text = try buildToolsSchemaJsonAlloc(allocator),
             };
         }
 
@@ -750,6 +818,308 @@ fn buildComponentsSchemaJsonAlloc(allocator: std.mem.Allocator) ![]u8 {
     });
 }
 
+fn buildSceneSchemaJsonAlloc(allocator: std.mem.Allocator) ![]u8 {
+    const FieldSchema = struct {
+        name: []const u8,
+        type: []const u8,
+        description: []const u8,
+        required: bool = false,
+    };
+    const SectionSchema = struct {
+        name: []const u8,
+        description: []const u8,
+        fields: []const FieldSchema,
+    };
+    const SchemaDocument = struct {
+        version: []const u8,
+        source: []const u8,
+        notes: []const []const u8,
+        root: []const FieldSchema,
+        sections: []const SectionSchema,
+    };
+
+    const scene_fields = [_]FieldSchema{
+        .{ .name = "version", .type = "u32", .description = "Scene schema version. Current stable value is 6.", .required = true },
+        .{ .name = "scene_id", .type = "string", .description = "Stable scene asset identifier.", .required = true },
+        .{ .name = "asset_records", .type = "AssetRecord[]", .description = "Asset registry rows referenced by the scene.", .required = true },
+        .{ .name = "meshes", .type = "MeshRecord[]", .description = "Embedded or referenced mesh resources.", .required = true },
+        .{ .name = "textures", .type = "TextureRecord[]", .description = "Texture resources used by the scene.", .required = true },
+        .{ .name = "materials", .type = "MaterialRecord[]", .description = "Material resources used by the scene.", .required = true },
+        .{ .name = "skeletons", .type = "SkeletonRecord[]", .description = "Optional skeleton resources." },
+        .{ .name = "skins", .type = "SkinRecord[]", .description = "Optional skin resources." },
+        .{ .name = "animation_clips", .type = "AnimationClipRecord[]", .description = "Optional animation clips." },
+        .{ .name = "entities", .type = "EntityRecord[]", .description = "Flat entity array with parent indices.", .required = true },
+    };
+    const material_record_fields = [_]FieldSchema{
+        .{ .name = "asset_id", .type = "string", .description = "Stable material asset id.", .required = true },
+        .{ .name = "name", .type = "string", .description = "Display name.", .required = true },
+        .{ .name = "shading", .type = "ShadingModel", .description = "Material shading model.", .required = true },
+        .{ .name = "base_color_factor", .type = "Vec4", .description = "RGBA multiplier encoded as an array.", .required = true },
+        .{ .name = "base_color_texture_asset_id", .type = "string|null", .description = "Optional base color texture asset id." },
+    };
+    const mesh_component_fields = [_]FieldSchema{
+        .{ .name = "asset_id", .type = "string|null", .description = "Optional mesh asset id." },
+        .{ .name = "primitive", .type = "Primitive", .description = "Fallback primitive enum." },
+    };
+    const material_component_fields = [_]FieldSchema{
+        .{ .name = "asset_id", .type = "string|null", .description = "Optional material asset id." },
+        .{ .name = "shading", .type = "ShadingModel", .description = "Material shading model override." },
+        .{ .name = "base_color_factor", .type = "Vec4", .description = "RGBA multiplier encoded as an array." },
+    };
+    const entity_record_fields = [_]FieldSchema{
+        .{ .name = "name", .type = "string", .description = "Entity display name.", .required = true },
+        .{ .name = "parent", .type = "u32|null", .description = "Parent entity index or null for a root." },
+        .{ .name = "local_transform", .type = "Transform", .description = "Local transform with array vectors." },
+        .{ .name = "camera", .type = "Camera|null", .description = "Optional camera payload." },
+        .{ .name = "mesh", .type = "MeshComponentRecord|null", .description = "Optional mesh component record." },
+        .{ .name = "skinned_mesh", .type = "SkinnedMeshComponentRecord|null", .description = "Optional skinned mesh component record." },
+        .{ .name = "animator", .type = "AnimatorComponentRecord|null", .description = "Optional animator component record." },
+        .{ .name = "material", .type = "MaterialComponentRecord|null", .description = "Optional material component record." },
+        .{ .name = "light", .type = "Light|null", .description = "Optional light payload." },
+        .{ .name = "vfx", .type = "Vfx|null", .description = "Optional VFX payload." },
+        .{ .name = "script", .type = "Script|null", .description = "Optional script payload." },
+        .{ .name = "visible", .type = "bool", .description = "Entity visibility flag." },
+        .{ .name = "editor_only", .type = "bool", .description = "Editor-only flag." },
+        .{ .name = "is_folder", .type = "bool", .description = "Hierarchy folder flag." },
+    };
+
+    return stringifyAlloc(allocator, SchemaDocument{
+        .version = "6",
+        .source = "src/engine/scene/scene_io.zig",
+        .notes = &.{
+            "This resource documents the stable JSON surface, not every private helper struct in scene_io.zig.",
+            "Vec2, Vec3, Vec4, and Quat values remain JSON arrays, matching schema://components.",
+            "EntityRecord uses flat storage with parent indices instead of recursive children arrays.",
+        },
+        .root = &scene_fields,
+        .sections = &.{
+            .{ .name = "SceneFile", .description = "Top-level scene document.", .fields = &scene_fields },
+            .{ .name = "MaterialRecord", .description = "Serialized material asset record.", .fields = &material_record_fields },
+            .{ .name = "MeshComponentRecord", .description = "Serialized mesh component payload inside EntityRecord.", .fields = &mesh_component_fields },
+            .{ .name = "MaterialComponentRecord", .description = "Serialized material component payload inside EntityRecord.", .fields = &material_component_fields },
+            .{ .name = "EntityRecord", .description = "Flat entity row in the scene file.", .fields = &entity_record_fields },
+        },
+    });
+}
+
+fn buildPrefabSchemaJsonAlloc(allocator: std.mem.Allocator) ![]u8 {
+    const FieldSchema = struct {
+        name: []const u8,
+        type: []const u8,
+        description: []const u8,
+        required: bool = false,
+    };
+    const SectionSchema = struct {
+        name: []const u8,
+        description: []const u8,
+        fields: []const FieldSchema,
+    };
+    const SchemaDocument = struct {
+        version: []const u8,
+        source: []const u8,
+        notes: []const []const u8,
+        root: []const FieldSchema,
+        sections: []const SectionSchema,
+    };
+
+    const prefab_fields = [_]FieldSchema{
+        .{ .name = "version", .type = "u32", .description = "Prefab schema version. Current stable value is 1.", .required = true },
+        .{ .name = "prefab_id", .type = "string", .description = "Stable prefab identifier.", .required = true },
+        .{ .name = "root_entity_name", .type = "string", .description = "Root entity display name.", .required = true },
+        .{ .name = "asset_records", .type = "AssetRecord[]", .description = "Asset registry rows referenced by the prefab.", .required = true },
+        .{ .name = "meshes", .type = "MeshRecord[]", .description = "Embedded or referenced mesh resources.", .required = true },
+        .{ .name = "textures", .type = "TextureRecord[]", .description = "Texture resources used by the prefab.", .required = true },
+        .{ .name = "materials", .type = "MaterialRecord[]", .description = "Material resources used by the prefab.", .required = true },
+        .{ .name = "entities", .type = "PrefabEntityRecord[]", .description = "Flat prefab entity array keyed by prefab_entity_id.", .required = true },
+    };
+    const prefab_entity_fields = [_]FieldSchema{
+        .{ .name = "prefab_entity_id", .type = "u32", .description = "Stable id used inside the prefab.", .required = true },
+        .{ .name = "name", .type = "string", .description = "Entity display name.", .required = true },
+        .{ .name = "parent", .type = "u32|null", .description = "Parent prefab_entity_id or null for a root." },
+        .{ .name = "local_transform", .type = "Transform", .description = "Local transform with array vectors." },
+        .{ .name = "mesh", .type = "MeshComponentRecord|null", .description = "Optional mesh component payload." },
+        .{ .name = "material", .type = "MaterialComponentRecord|null", .description = "Optional material component payload." },
+        .{ .name = "visible", .type = "bool", .description = "Visibility flag." },
+        .{ .name = "editor_only", .type = "bool", .description = "Editor-only flag." },
+        .{ .name = "is_folder", .type = "bool", .description = "Hierarchy folder flag." },
+        .{ .name = "nested_prefab_id", .type = "string|null", .description = "Optional nested prefab reference." },
+    };
+    const override_mask_fields = [_]FieldSchema{
+        .{ .name = "local_transform", .type = "bool", .description = "Whether local transform override is active." },
+        .{ .name = "name", .type = "bool", .description = "Whether name override is active." },
+        .{ .name = "visible", .type = "bool", .description = "Whether visibility override is active." },
+        .{ .name = "mesh", .type = "bool", .description = "Whether mesh override is active." },
+        .{ .name = "material", .type = "bool", .description = "Whether material override is active." },
+        .{ .name = "light", .type = "bool", .description = "Whether light override is active." },
+        .{ .name = "camera", .type = "bool", .description = "Whether camera override is active." },
+        .{ .name = "rigidbody", .type = "bool", .description = "Whether rigidbody override is active." },
+        .{ .name = "collider", .type = "bool", .description = "Whether collider override is active." },
+        .{ .name = "vfx", .type = "bool", .description = "Whether VFX override is active." },
+        .{ .name = "script", .type = "bool", .description = "Whether script override is active." },
+    };
+
+    return stringifyAlloc(allocator, SchemaDocument{
+        .version = "1",
+        .source = "src/engine/scene/prefab.zig",
+        .notes = &.{
+            "Prefab files use flat entity storage keyed by prefab_entity_id.",
+            "OverrideMask is a runtime-facing contract for instance overrides and should stay aligned with prefab instance editing.",
+            "Vector fields remain array encoded, matching schema://components.",
+        },
+        .root = &prefab_fields,
+        .sections = &.{
+            .{ .name = "PrefabFile", .description = "Top-level prefab document.", .fields = &prefab_fields },
+            .{ .name = "PrefabEntityRecord", .description = "Serialized entity row inside a prefab file.", .fields = &prefab_entity_fields },
+            .{ .name = "OverrideMask", .description = "Prefab instance override flags.", .fields = &override_mask_fields },
+        },
+    });
+}
+
+fn buildMaterialSchemaJsonAlloc(allocator: std.mem.Allocator) ![]u8 {
+    const FieldSchema = struct {
+        name: []const u8,
+        type: []const u8,
+        description: []const u8,
+        required: bool = false,
+    };
+    const SchemaDocument = struct {
+        version: []const u8,
+        source: []const u8,
+        notes: []const []const u8,
+        resource: []const FieldSchema,
+        resource_desc: []const FieldSchema,
+    };
+
+    const resource_fields = [_]FieldSchema{
+        .{ .name = "name", .type = "string", .description = "Material display name.", .required = true },
+        .{ .name = "shading", .type = "ShadingModel", .description = "Material shading model." },
+        .{ .name = "base_color_factor", .type = "Vec4", .description = "RGBA multiplier encoded as an array." },
+        .{ .name = "base_color_texture", .type = "texture_handle|null", .description = "Optional base color texture handle." },
+        .{ .name = "metallic_roughness_texture", .type = "texture_handle|null", .description = "Optional metallic-roughness texture handle." },
+        .{ .name = "normal_texture", .type = "texture_handle|null", .description = "Optional normal map handle." },
+        .{ .name = "occlusion_texture", .type = "texture_handle|null", .description = "Optional occlusion texture handle." },
+        .{ .name = "emissive_texture", .type = "texture_handle|null", .description = "Optional emissive texture handle." },
+        .{ .name = "emissive_factor", .type = "Vec3", .description = "RGB emissive multiplier encoded as an array." },
+        .{ .name = "metallic_factor", .type = "f32", .description = "Metalness factor." },
+        .{ .name = "roughness_factor", .type = "f32", .description = "Roughness factor." },
+        .{ .name = "alpha_cutoff", .type = "f32", .description = "Alpha cutoff threshold." },
+        .{ .name = "double_sided", .type = "bool", .description = "Double-sided rendering flag." },
+        .{ .name = "use_ibl", .type = "bool", .description = "Enable image based lighting." },
+        .{ .name = "ibl_intensity", .type = "f32", .description = "IBL intensity multiplier." },
+    };
+
+    return stringifyAlloc(allocator, SchemaDocument{
+        .version = "1",
+        .source = "src/engine/assets/material_resource.zig",
+        .notes = &.{
+            "MaterialResource and MaterialResourceDesc intentionally share the same field surface.",
+            "Texture references are runtime handles; text assets should map ids to handles before instantiation.",
+            "Color and vector values remain JSON arrays, not keyed objects.",
+        },
+        .resource = &resource_fields,
+        .resource_desc = &resource_fields,
+    });
+}
+
+fn buildToolsSchemaJsonAlloc(allocator: std.mem.Allocator) ![]u8 {
+    const PropertySchema = struct {
+        name: []const u8,
+        type: []const u8,
+        description: []const u8,
+        required: bool = false,
+    };
+    const ToolSchema = struct {
+        name: []const u8,
+        description: []const u8,
+        properties: []const PropertySchema,
+    };
+    const ToolsDocument = struct {
+        version: []const u8,
+        notes: []const []const u8,
+        tools: []const ToolSchema,
+    };
+
+    const create_entity_properties = [_]PropertySchema{
+        .{ .name = "name", .type = "string", .description = "Entity display name.", .required = true },
+        .{ .name = "parent", .type = "entity_id|null", .description = "Optional parent entity id." },
+        .{ .name = "visible", .type = "bool", .description = "Initial visibility flag." },
+        .{ .name = "editor_only", .type = "bool", .description = "Initial editor-only flag." },
+        .{ .name = "is_folder", .type = "bool", .description = "Create a hierarchy folder instead of a renderable entity." },
+        .{ .name = "local_transform", .type = "Transform", .description = "Optional initial local transform." },
+        .{ .name = "components", .type = "object", .description = "Optional component payloads using schema://components." },
+    };
+    const delete_entity_properties = [_]PropertySchema{
+        .{ .name = "entity_id", .type = "entity_id", .description = "Target entity id.", .required = true },
+    };
+    const rename_entity_properties = [_]PropertySchema{
+        .{ .name = "entity_id", .type = "entity_id", .description = "Target entity id.", .required = true },
+        .{ .name = "name", .type = "string", .description = "New entity display name.", .required = true },
+    };
+    const set_parent_properties = [_]PropertySchema{
+        .{ .name = "entity_id", .type = "entity_id", .description = "Target entity id.", .required = true },
+        .{ .name = "parent_id", .type = "entity_id|null", .description = "Parent entity id or null to re-root.", .required = true },
+    };
+    const transform_properties = [_]PropertySchema{
+        .{ .name = "entity_id", .type = "entity_id", .description = "Target entity id.", .required = true },
+        .{ .name = "translation", .type = "Vec3", .description = "Translation array [x, y, z]." },
+        .{ .name = "rotation", .type = "Quat", .description = "Quaternion array [x, y, z, w]." },
+        .{ .name = "scale", .type = "Vec3", .description = "Scale array [x, y, z]." },
+    };
+    const set_visible_properties = [_]PropertySchema{
+        .{ .name = "entity_id", .type = "entity_id", .description = "Target entity id.", .required = true },
+        .{ .name = "visible", .type = "bool", .description = "New visibility flag.", .required = true },
+    };
+    const query_entities_properties = [_]PropertySchema{
+        .{ .name = "id", .type = "entity_id", .description = "Filter to one entity id." },
+        .{ .name = "name_contains", .type = "string", .description = "Case-insensitive substring filter." },
+        .{ .name = "has_component", .type = "string", .description = "Component name from schema://components." },
+        .{ .name = "parent_id", .type = "entity_id", .description = "Filter by parent entity id." },
+        .{ .name = "visible", .type = "bool", .description = "Filter by visibility flag." },
+        .{ .name = "origin", .type = "Vec3", .description = "Center of radius query." },
+        .{ .name = "radius", .type = "f32", .description = "Radius in world units." },
+        .{ .name = "limit", .type = "usize", .description = "Maximum rows to return. Default 50." },
+        .{ .name = "offset", .type = "usize", .description = "Row offset for paging. Default 0." },
+        .{ .name = "count_only", .type = "bool", .description = "Return only totals without item payloads." },
+    };
+    const compile_script_properties = [_]PropertySchema{
+        .{ .name = "entity_id", .type = "entity_id", .description = "Attach or replace the script on this entity." },
+        .{ .name = "script_handle", .type = "script_handle", .description = "Optional existing script handle to replace." },
+        .{ .name = "source", .type = "string", .description = "Zig source to compile for wasm.", .required = true },
+        .{ .name = "source_path", .type = "string", .description = "Optional source path label shown in diagnostics." },
+        .{ .name = "description", .type = "string", .description = "Optional human label for the compile request." },
+        .{ .name = "enabled", .type = "bool", .description = "Whether the resulting script starts enabled." },
+    };
+    const stage_transaction_properties = [_]PropertySchema{
+        .{ .name = "commands", .type = "Command[]", .description = "Ordered staged commands to preview before apply.", .required = true },
+        .{ .name = "label", .type = "string", .description = "Human-readable preview label." },
+    };
+    const apply_preview_properties = [_]PropertySchema{};
+    const discard_preview_properties = [_]PropertySchema{};
+
+    return stringifyAlloc(allocator, ToolsDocument{
+        .version = "1",
+        .notes = &.{
+            "All vector and quaternion arguments inherit the array encoding rules from schema://components.",
+            "query_entities should default to paged access: limit=50, offset=0, count_only=false.",
+            "Staged transaction commands share the same command payload shapes as the write tools they wrap.",
+        },
+        .tools = &.{
+            .{ .name = "create_entity", .description = "Create a new entity and optional initial component payloads.", .properties = &create_entity_properties },
+            .{ .name = "delete_entity", .description = "Delete an entity by id.", .properties = &delete_entity_properties },
+            .{ .name = "rename_entity", .description = "Rename an entity.", .properties = &rename_entity_properties },
+            .{ .name = "set_parent", .description = "Re-parent an entity or move it to the root.", .properties = &set_parent_properties },
+            .{ .name = "set_local_transform", .description = "Write local transform channels on an entity.", .properties = &transform_properties },
+            .{ .name = "set_world_transform", .description = "Write world transform channels on an entity.", .properties = &transform_properties },
+            .{ .name = "set_visible", .description = "Update entity visibility.", .properties = &set_visible_properties },
+            .{ .name = "query_entities", .description = "Run a paged entity query with optional radius filtering.", .properties = &query_entities_properties },
+            .{ .name = "compile_script", .description = "Compile Zig source to WASM and attach or reload it.", .properties = &compile_script_properties },
+            .{ .name = "stage_transaction", .description = "Preview a staged command batch without committing it to the main world.", .properties = &stage_transaction_properties },
+            .{ .name = "apply_staged_transaction", .description = "Commit the current staged transaction into the main world.", .properties = &apply_preview_properties },
+            .{ .name = "discard_staged_transaction", .description = "Discard the current staged transaction preview.", .properties = &discard_preview_properties },
+        },
+    });
+}
+
 fn optionalHandleValue(handle: anytype) ?u32 {
     if (handle) |resolved| {
         const raw = @intFromEnum(resolved);
@@ -795,10 +1165,14 @@ test "SnapshotStore publishes read-only hierarchy, selection, and entity snapsho
 
     const listed = try store.listAlloc(std.testing.allocator);
     defer freeResourceDescriptors(std.testing.allocator, listed);
-    try std.testing.expectEqual(@as(usize, 3), listed.len);
+    try std.testing.expectEqual(@as(usize, 7), listed.len);
     try std.testing.expectEqualStrings("scene://hierarchy", listed[0].uri);
     try std.testing.expectEqualStrings("selection://current", listed[1].uri);
     try std.testing.expectEqualStrings("schema://components", listed[2].uri);
+    try std.testing.expectEqualStrings("schema://scene-json-v6", listed[3].uri);
+    try std.testing.expectEqualStrings("schema://prefab", listed[4].uri);
+    try std.testing.expectEqualStrings("schema://material", listed[5].uri);
+    try std.testing.expectEqualStrings("schema://tools", listed[6].uri);
 
     const selection = (try store.readAlloc(std.testing.allocator, "selection://current")).?;
     defer freeTextResourceContents(std.testing.allocator, selection);
@@ -830,13 +1204,17 @@ test "SnapshotStore exposes collaboration context and preview resources" {
 
     const listed = try store.listAlloc(std.testing.allocator);
     defer freeResourceDescriptors(std.testing.allocator, listed);
-    try std.testing.expectEqual(@as(usize, 6), listed.len);
+    try std.testing.expectEqual(@as(usize, 10), listed.len);
     try std.testing.expectEqualStrings("scene://hierarchy", listed[0].uri);
     try std.testing.expectEqualStrings("selection://current", listed[1].uri);
     try std.testing.expectEqualStrings("schema://components", listed[2].uri);
-    try std.testing.expectEqualStrings("editor://context", listed[3].uri);
-    try std.testing.expectEqualStrings("editor://intent-log", listed[4].uri);
-    try std.testing.expectEqualStrings("preview://staged", listed[5].uri);
+    try std.testing.expectEqualStrings("schema://scene-json-v6", listed[3].uri);
+    try std.testing.expectEqualStrings("schema://prefab", listed[4].uri);
+    try std.testing.expectEqualStrings("schema://material", listed[5].uri);
+    try std.testing.expectEqualStrings("schema://tools", listed[6].uri);
+    try std.testing.expectEqualStrings("editor://context", listed[7].uri);
+    try std.testing.expectEqualStrings("editor://intent-log", listed[8].uri);
+    try std.testing.expectEqualStrings("preview://staged", listed[9].uri);
 
     const context = (try store.readAlloc(std.testing.allocator, "editor://context")).?;
     defer freeTextResourceContents(std.testing.allocator, context);
@@ -867,4 +1245,35 @@ test "SnapshotStore exposes schema resource for AI-facing component contracts" {
     try std.testing.expect(std.mem.indexOf(u8, schema.text, "\"vectors_are_arrays\": true") != null);
     try std.testing.expect(std.mem.indexOf(u8, schema.text, "\"name\": \"material\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, schema.text, "\"name\": \"ScriptLanguage\"") != null);
+}
+
+test "SnapshotStore exposes scene, prefab, material, and tool schemas" {
+    var store = SnapshotStore.init(std.testing.allocator, null, null);
+    defer store.deinit();
+
+    var world = scene_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+
+    try store.replaceFromSelection(&world, null, &.{});
+
+    const scene_schema = (try store.readAlloc(std.testing.allocator, "schema://scene-json-v6")).?;
+    defer freeTextResourceContents(std.testing.allocator, scene_schema);
+    try std.testing.expect(std.mem.indexOf(u8, scene_schema.text, "\"name\": \"SceneFile\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, scene_schema.text, "\"name\": \"EntityRecord\"") != null);
+
+    const prefab_schema = (try store.readAlloc(std.testing.allocator, "schema://prefab")).?;
+    defer freeTextResourceContents(std.testing.allocator, prefab_schema);
+    try std.testing.expect(std.mem.indexOf(u8, prefab_schema.text, "\"name\": \"PrefabFile\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prefab_schema.text, "\"name\": \"OverrideMask\"") != null);
+
+    const material_schema = (try store.readAlloc(std.testing.allocator, "schema://material")).?;
+    defer freeTextResourceContents(std.testing.allocator, material_schema);
+    try std.testing.expect(std.mem.indexOf(u8, material_schema.text, "\"name\": \"base_color_texture\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, material_schema.text, "\"name\": \"ibl_intensity\"") != null);
+
+    const tools_schema = (try store.readAlloc(std.testing.allocator, "schema://tools")).?;
+    defer freeTextResourceContents(std.testing.allocator, tools_schema);
+    try std.testing.expect(std.mem.indexOf(u8, tools_schema.text, "\"name\": \"query_entities\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tools_schema.text, "\"name\": \"compile_script\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tools_schema.text, "\"name\": \"stage_transaction\"") != null);
 }
