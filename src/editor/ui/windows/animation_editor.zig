@@ -39,6 +39,7 @@ pub const AnimationEditorState = struct {
     selected_runtime: ?animation_graph_mod.RuntimeClipBlend = null,
     selected_graph_state: ?u32 = null,
     selected_graph_transition: ?u32 = null,
+    selected_transition_condition: ?u32 = null,
     new_transition_target_state: u32 = 0,
     new_transition_elapsed_seconds: f32 = 0.25,
     new_transition_duration: f32 = 0.2,
@@ -49,6 +50,7 @@ pub const AnimationEditorState = struct {
     selected_track: ?u32 = null,
     selected_keyframe: ?u32 = null,
     state_name_buffer: [128]u8 = [_]u8{0} ** 128,
+    condition_parameter_name_buffer: [128]u8 = [_]u8{0} ** 128,
     tracks: std.ArrayList(TimelineTrack),
 
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
@@ -450,6 +452,16 @@ pub const MessageId = enum {
     no_transition_selected,
     transition_conditions,
     no_transition_conditions,
+    add_condition,
+    delete_condition,
+    no_condition_selected,
+    condition_type,
+    threshold,
+    parameter_name,
+    comparison,
+    condition_kind_elapsed,
+    condition_kind_remaining,
+    condition_kind_parameter,
     no_animator_selected,
     no_animation_graph_bound,
     no_graph_parameters,
@@ -495,6 +507,16 @@ pub const MessageId = enum {
         .no_transition_selected = "Select a transition to inspect it.",
         .transition_conditions = "Conditions",
         .no_transition_conditions = "This transition has no conditions and will fire immediately.",
+        .add_condition = "Add Condition",
+        .delete_condition = "Delete Condition",
+        .no_condition_selected = "Select a condition to edit it.",
+        .condition_type = "Condition Type",
+        .threshold = "Threshold",
+        .parameter_name = "Parameter",
+        .comparison = "Comparison",
+        .condition_kind_elapsed = "Time Elapsed",
+        .condition_kind_remaining = "Time Remaining",
+        .condition_kind_parameter = "Parameter",
         .no_animator_selected = "Select an entity with an Animator component to inspect runtime animation data.",
         .no_animation_graph_bound = "The selected Animator is using clip playback only; no animation graph is bound.",
         .no_graph_parameters = "This animation graph does not define any runtime parameters.",
@@ -541,6 +563,16 @@ pub const MessageId = enum {
         .no_transition_selected = "请选择一个过渡以查看详情。",
         .transition_conditions = "条件",
         .no_transition_conditions = "该过渡没有任何条件，会立刻触发。",
+        .add_condition = "添加条件",
+        .delete_condition = "删除条件",
+        .no_condition_selected = "请选择一个条件进行编辑。",
+        .condition_type = "条件类型",
+        .threshold = "阈值",
+        .parameter_name = "参数",
+        .comparison = "比较",
+        .condition_kind_elapsed = "已过时间",
+        .condition_kind_remaining = "剩余时间",
+        .condition_kind_parameter = "参数",
         .no_animator_selected = "请选择带有 Animator 组件的实体以查看运行时动画数据。",
         .no_animation_graph_bound = "当前选中的 Animator 仍在使用 clip 播放，没有绑定动画图。",
         .no_graph_parameters = "该动画图没有定义运行时参数。",
@@ -595,6 +627,16 @@ fn localText(state: *const EditorState, id: MessageId) []const u8 {
             .no_transition_selected => MessageId.en_us.no_transition_selected,
             .transition_conditions => MessageId.en_us.transition_conditions,
             .no_transition_conditions => MessageId.en_us.no_transition_conditions,
+            .add_condition => MessageId.en_us.add_condition,
+            .delete_condition => MessageId.en_us.delete_condition,
+            .no_condition_selected => MessageId.en_us.no_condition_selected,
+            .condition_type => MessageId.en_us.condition_type,
+            .threshold => MessageId.en_us.threshold,
+            .parameter_name => MessageId.en_us.parameter_name,
+            .comparison => MessageId.en_us.comparison,
+            .condition_kind_elapsed => MessageId.en_us.condition_kind_elapsed,
+            .condition_kind_remaining => MessageId.en_us.condition_kind_remaining,
+            .condition_kind_parameter => MessageId.en_us.condition_kind_parameter,
             .no_animator_selected => MessageId.en_us.no_animator_selected,
             .no_animation_graph_bound => MessageId.en_us.no_animation_graph_bound,
             .no_graph_parameters => MessageId.en_us.no_graph_parameters,
@@ -640,6 +682,16 @@ fn localText(state: *const EditorState, id: MessageId) []const u8 {
             .no_transition_selected => MessageId.zh_cn.no_transition_selected,
             .transition_conditions => MessageId.zh_cn.transition_conditions,
             .no_transition_conditions => MessageId.zh_cn.no_transition_conditions,
+            .add_condition => MessageId.zh_cn.add_condition,
+            .delete_condition => MessageId.zh_cn.delete_condition,
+            .no_condition_selected => MessageId.zh_cn.no_condition_selected,
+            .condition_type => MessageId.zh_cn.condition_type,
+            .threshold => MessageId.zh_cn.threshold,
+            .parameter_name => MessageId.zh_cn.parameter_name,
+            .comparison => MessageId.zh_cn.comparison,
+            .condition_kind_elapsed => MessageId.zh_cn.condition_kind_elapsed,
+            .condition_kind_remaining => MessageId.zh_cn.condition_kind_remaining,
+            .condition_kind_parameter => MessageId.zh_cn.condition_kind_parameter,
             .no_animator_selected => MessageId.zh_cn.no_animator_selected,
             .no_animation_graph_bound => MessageId.zh_cn.no_animation_graph_bound,
             .no_graph_parameters => MessageId.zh_cn.no_graph_parameters,
@@ -692,10 +744,12 @@ fn blendQuat(a: [4]f32, b: [4]f32, t: f32) [4]f32 {
 fn clearGraphAuthoringState(editor_state: *AnimationEditorState) void {
     editor_state.selected_graph_state = null;
     editor_state.selected_graph_transition = null;
+    editor_state.selected_transition_condition = null;
     editor_state.new_transition_target_state = 0;
     editor_state.new_transition_elapsed_seconds = 0.25;
     editor_state.new_transition_duration = 0.2;
     @memset(editor_state.state_name_buffer[0..], 0);
+    @memset(editor_state.condition_parameter_name_buffer[0..], 0);
 }
 
 fn writeTextBuffer(buffer: []u8, value: []const u8) void {
@@ -721,6 +775,24 @@ fn setSelectedGraphState(
         }
     }
     @memset(editor_state.state_name_buffer[0..], 0);
+}
+
+fn setSelectedTransitionCondition(
+    editor_state: *AnimationEditorState,
+    transition: *const animation_graph_mod.Transition,
+    condition_index: ?u32,
+) void {
+    editor_state.selected_transition_condition = condition_index;
+    @memset(editor_state.condition_parameter_name_buffer[0..], 0);
+
+    if (condition_index) |index| {
+        if (index < transition.conditions.len) {
+            switch (transition.conditions[index]) {
+                .parameter => |parameter| writeTextBuffer(editor_state.condition_parameter_name_buffer[0..], parameter.name),
+                else => {},
+            }
+        }
+    }
 }
 
 fn defaultTransitionTarget(
@@ -780,6 +852,29 @@ fn syncGraphAuthoringSelection(
     {
         editor_state.new_transition_target_state = defaultTransitionTarget(graph, editor_state.selected_graph_state);
     }
+}
+
+fn syncTransitionConditionSelection(
+    editor_state: *AnimationEditorState,
+    transition: *const animation_graph_mod.Transition,
+) void {
+    if (transition.conditions.len == 0) {
+        setSelectedTransitionCondition(editor_state, transition, null);
+        return;
+    }
+
+    if (editor_state.selected_transition_condition) |selected_condition| {
+        if (selected_condition < transition.conditions.len) {
+            if (transition.conditions[selected_condition] == .parameter and
+                utils.zeroTerminatedSlice(editor_state.condition_parameter_name_buffer[0..]).len == 0)
+            {
+                setSelectedTransitionCondition(editor_state, transition, selected_condition);
+            }
+            return;
+        }
+    }
+
+    setSelectedTransitionCondition(editor_state, transition, 0);
 }
 
 fn replaceOwnedText(allocator: std.mem.Allocator, target: *[]u8, value: []const u8) !void {
@@ -866,6 +961,94 @@ fn transitionConditionLabel(
             return std.fmt.bufPrint(buffer, "{s} {s} {d:.2}", .{ parameter.name, comparator, parameter.value }) catch parameter.name;
         },
     };
+}
+
+fn transitionConditionNumericValue(condition: animation_graph_mod.TransitionCondition) f32 {
+    return switch (condition) {
+        .time_elapsed => |value| value,
+        .time_remaining => |value| value,
+        .parameter => |parameter| parameter.value,
+    };
+}
+
+fn transitionConditionTypeIndex(condition: animation_graph_mod.TransitionCondition) u32 {
+    return switch (condition) {
+        .time_elapsed => 0,
+        .time_remaining => 1,
+        .parameter => 2,
+    };
+}
+
+fn transitionConditionTypeLabel(state: *EditorState, type_index: u32) []const u8 {
+    return switch (type_index) {
+        0 => localText(state, .condition_kind_elapsed),
+        1 => localText(state, .condition_kind_remaining),
+        else => localText(state, .condition_kind_parameter),
+    };
+}
+
+fn defaultConditionParameterName(
+    editor_state: *const AnimationEditorState,
+    graph: *const animation_graph_mod.AnimationGraph,
+) []const u8 {
+    if (graph.parameters.items.len != 0) {
+        return graph.parameters.items[0].name;
+    }
+
+    const typed_name = utils.zeroTerminatedSlice(editor_state.condition_parameter_name_buffer[0..]);
+    if (typed_name.len != 0) {
+        return typed_name;
+    }
+
+    return "Parameter";
+}
+
+fn drawConditionTypeCombo(state: *EditorState, widget_id: []const u8, type_index: *u32) bool {
+    var changed = false;
+    if (engine.ui.ImGui.beginCombo(widget_id, transitionConditionTypeLabel(state, type_index.*))) {
+        defer engine.ui.ImGui.endCombo();
+
+        for ([_]u32{ 0, 1, 2 }) |candidate| {
+            const selected = candidate == type_index.*;
+            if (engine.ui.ImGui.selectable(transitionConditionTypeLabel(state, candidate), selected, false, -1.0, 22.0)) {
+                type_index.* = candidate;
+                changed = true;
+            }
+        }
+    }
+    return changed;
+}
+
+fn comparisonLabel(comparison: anytype) []const u8 {
+    return switch (comparison) {
+        .less => "<",
+        .greater => ">",
+        .equal => "==",
+    };
+}
+
+fn drawComparisonCombo(
+    widget_id: []const u8,
+    comparison: anytype,
+) bool {
+    var changed = false;
+    if (engine.ui.ImGui.beginCombo(widget_id, comparisonLabel(comparison.*))) {
+        defer engine.ui.ImGui.endCombo();
+
+        if (engine.ui.ImGui.selectable("<", comparison.* == .less, false, -1.0, 22.0)) {
+            comparison.* = .less;
+            changed = true;
+        }
+        if (engine.ui.ImGui.selectable(">", comparison.* == .greater, false, -1.0, 22.0)) {
+            comparison.* = .greater;
+            changed = true;
+        }
+        if (engine.ui.ImGui.selectable("==", comparison.* == .equal, false, -1.0, 22.0)) {
+            comparison.* = .equal;
+            changed = true;
+        }
+    }
+    return changed;
 }
 
 fn syncAnimationSource(layer_context: *engine.core.LayerContext, editor_state: *AnimationEditorState) !void {
@@ -1451,9 +1634,9 @@ fn drawGraphTransitionsList(
     else
         null;
 
-    if (engine.ui.ImGui.beginChild("animation_graph_transition_list", -1.0, 180.0, true)) {
-        defer engine.ui.ImGui.endChild();
-
+    const show_transition_list = engine.ui.ImGui.beginChild("animation_graph_transition_list", -1.0, 180.0, true);
+    defer engine.ui.ImGui.endChild();
+    if (show_transition_list) {
         for (graph.transitions.items, 0..) |transition, index| {
             const from_name = if (transition.from_state < graph.states.items.len) graph.states.items[transition.from_state].name else "?";
             const to_name = if (transition.to_state < graph.states.items.len) graph.states.items[transition.to_state].name else "?";
@@ -1468,6 +1651,7 @@ fn drawGraphTransitionsList(
             ) catch continue;
             if (engine.ui.ImGui.selectable(label, is_selected, false, -1.0, 22.0)) {
                 editor_state.selected_graph_transition = @intCast(index);
+                setSelectedTransitionCondition(editor_state, &graph.transitions.items[index], null);
             }
         }
     }
@@ -1484,6 +1668,8 @@ fn drawGraphTransitionsList(
     }
 
     const transition = &editable_graph.transitions.items[transition_index];
+    syncTransitionConditionSelection(editor_state, transition);
+
     if (layout.beginInspectorPropertyTable("animation_graph_transition_details", 0.34)) {
         defer layout.endInspectorPropertyTable();
 
@@ -1512,16 +1698,201 @@ fn drawGraphTransitionsList(
         if (transition.conditions.len == 0) {
             engine.ui.ImGui.textWrapped(localText(state, .no_transition_conditions));
         } else {
-            for (transition.conditions) |condition| {
-                var condition_buffer: [192]u8 = undefined;
-                engine.ui.ImGui.textWrapped(transitionConditionLabel(condition, &condition_buffer));
+            const show_condition_list = engine.ui.ImGui.beginChild("animation_graph_transition_conditions", -1.0, 116.0, true);
+            defer engine.ui.ImGui.endChild();
+
+            if (show_condition_list) {
+                for (transition.conditions, 0..) |condition, index| {
+                    engine.ui.ImGui.pushIdU64(index);
+                    defer engine.ui.ImGui.popId();
+
+                    const is_selected = editor_state.selected_transition_condition != null and
+                        editor_state.selected_transition_condition.? == index;
+
+                    var condition_buffer: [192]u8 = undefined;
+                    if (engine.ui.ImGui.selectable(
+                        transitionConditionLabel(condition, &condition_buffer),
+                        is_selected,
+                        false,
+                        -1.0,
+                        22.0,
+                    )) {
+                        setSelectedTransitionCondition(editor_state, transition, @intCast(index));
+                    }
+                }
             }
         }
+    }
+
+    if (engine.ui.ImGui.button(localText(state, .add_condition))) {
+        transition.addCondition(editable_graph.allocator, .{ .time_elapsed = 0.0 }) catch |err| {
+            std.log.err("Failed to add animation graph transition condition: {}", .{err});
+            return;
+        };
+        setSelectedTransitionCondition(editor_state, transition, @as(u32, @intCast(transition.conditions.len - 1)));
+        refreshGraphEditorData(layer_context, editor_state);
+    }
+
+    const condition_index = editor_state.selected_transition_condition orelse {
+        engine.ui.ImGui.textWrapped(localText(state, .no_condition_selected));
+        if (engine.ui.ImGui.button(localText(state, .delete_transition))) {
+            var removed = editable_graph.transitions.orderedRemove(transition_index);
+            removed.deinit(editable_graph.allocator);
+
+            editor_state.selected_transition_condition = null;
+            @memset(editor_state.condition_parameter_name_buffer[0..], 0);
+
+            if (editable_graph.transitions.items.len == 0) {
+                editor_state.selected_graph_transition = null;
+            } else if (transition_index >= editable_graph.transitions.items.len) {
+                editor_state.selected_graph_transition = @as(u32, @intCast(editable_graph.transitions.items.len - 1));
+            }
+            refreshGraphEditorData(layer_context, editor_state);
+        }
+        return;
+    };
+
+    if (condition_index >= transition.conditions.len) {
+        engine.ui.ImGui.textWrapped(localText(state, .no_condition_selected));
+        if (engine.ui.ImGui.button(localText(state, .delete_transition))) {
+            var removed = editable_graph.transitions.orderedRemove(transition_index);
+            removed.deinit(editable_graph.allocator);
+
+            editor_state.selected_transition_condition = null;
+            @memset(editor_state.condition_parameter_name_buffer[0..], 0);
+
+            if (editable_graph.transitions.items.len == 0) {
+                editor_state.selected_graph_transition = null;
+            } else if (transition_index >= editable_graph.transitions.items.len) {
+                editor_state.selected_graph_transition = @as(u32, @intCast(editable_graph.transitions.items.len - 1));
+            }
+            refreshGraphEditorData(layer_context, editor_state);
+        }
+        return;
+    }
+
+    const selected_condition = &transition.conditions[condition_index];
+    if (layout.beginInspectorPropertyTable("animation_graph_transition_condition_editor", 0.34)) {
+        defer layout.endInspectorPropertyTable();
+
+        layout.drawInspectorPropertyRow(localText(state, .condition_type), null);
+        var condition_type = transitionConditionTypeIndex(selected_condition.*);
+        if (drawConditionTypeCombo(state, "##graph_transition_condition_type", &condition_type)) {
+            const previous_condition = selected_condition.*;
+            const previous_value = @max(transitionConditionNumericValue(previous_condition), 0.0);
+            const previous_comparison = switch (previous_condition) {
+                .parameter => |parameter| parameter.comparison,
+                else => animation_graph_mod.TransitionCondition.parameter.comparison.greater,
+            };
+            const parameter_name = switch (previous_condition) {
+                .parameter => |parameter| parameter.name,
+                else => defaultConditionParameterName(editor_state, editable_graph),
+            };
+
+            selected_condition.set(editable_graph.allocator, switch (condition_type) {
+                0 => .{ .time_elapsed = previous_value },
+                1 => .{ .time_remaining = previous_value },
+                else => .{
+                    .parameter = .{
+                        .name = @constCast(parameter_name),
+                        .value = previous_value,
+                        .comparison = previous_comparison,
+                    },
+                },
+            }) catch |err| {
+                std.log.err("Failed to change animation graph condition type: {}", .{err});
+            };
+            setSelectedTransitionCondition(editor_state, transition, @intCast(condition_index));
+            refreshGraphEditorData(layer_context, editor_state);
+        }
+
+        switch (selected_condition.*) {
+            .time_elapsed => |*threshold| {
+                layout.drawInspectorPropertyRow(localText(state, .threshold), null);
+                var value = threshold.*;
+                if (engine.ui.ImGui.dragFloat("##graph_transition_condition_threshold", &value, 0.01, 0.0, 120.0)) {
+                    threshold.* = @max(value, 0.0);
+                    refreshGraphEditorData(layer_context, editor_state);
+                }
+            },
+            .time_remaining => |*threshold| {
+                layout.drawInspectorPropertyRow(localText(state, .threshold), null);
+                var value = threshold.*;
+                if (engine.ui.ImGui.dragFloat("##graph_transition_condition_threshold", &value, 0.01, 0.0, 120.0)) {
+                    threshold.* = @max(value, 0.0);
+                    refreshGraphEditorData(layer_context, editor_state);
+                }
+            },
+            .parameter => |*parameter| {
+                layout.drawInspectorPropertyRow(localText(state, .parameter_name), null);
+                if (editable_graph.parameters.items.len == 0) {
+                    if (engine.ui.ImGui.inputTextWithHint(
+                        "##graph_transition_condition_parameter",
+                        localText(state, .parameter_name),
+                        editor_state.condition_parameter_name_buffer[0..],
+                    )) {
+                        const next_name = utils.zeroTerminatedSlice(editor_state.condition_parameter_name_buffer[0..]);
+                        if (next_name.len != 0 and !std.mem.eql(u8, next_name, parameter.name)) {
+                            replaceOwnedText(editable_graph.allocator, &parameter.name, next_name) catch |err| {
+                                std.log.err("Failed to rename animation graph condition parameter: {}", .{err});
+                            };
+                            setSelectedTransitionCondition(editor_state, transition, @intCast(condition_index));
+                            refreshGraphEditorData(layer_context, editor_state);
+                        }
+                    }
+                } else {
+                    const preview = if (editable_graph.findParameter(parameter.name)) |parameter_index|
+                        editable_graph.parameters.items[parameter_index].name
+                    else
+                        parameter.name;
+
+                    if (engine.ui.ImGui.beginCombo("##graph_transition_condition_parameter", preview)) {
+                        defer engine.ui.ImGui.endCombo();
+
+                        for (editable_graph.parameters.items) |graph_parameter| {
+                            const is_selected = std.mem.eql(u8, graph_parameter.name, parameter.name);
+                            if (engine.ui.ImGui.selectable(graph_parameter.name, is_selected, false, -1.0, 22.0)) {
+                                replaceOwnedText(editable_graph.allocator, &parameter.name, graph_parameter.name) catch |err| {
+                                    std.log.err("Failed to assign animation graph condition parameter: {}", .{err});
+                                    continue;
+                                };
+                                setSelectedTransitionCondition(editor_state, transition, @intCast(condition_index));
+                                refreshGraphEditorData(layer_context, editor_state);
+                            }
+                        }
+                    }
+                }
+
+                layout.drawInspectorPropertyRow(localText(state, .comparison), null);
+                if (drawComparisonCombo("##graph_transition_condition_comparison", &parameter.comparison)) {
+                    refreshGraphEditorData(layer_context, editor_state);
+                }
+
+                layout.drawInspectorPropertyRow(localText(state, .threshold), null);
+                var value = parameter.value;
+                if (engine.ui.ImGui.dragFloat("##graph_transition_condition_parameter_value", &value, 0.01, -1000.0, 1000.0)) {
+                    parameter.value = value;
+                    refreshGraphEditorData(layer_context, editor_state);
+                }
+            },
+        }
+    }
+
+    if (engine.ui.ImGui.button(localText(state, .delete_condition))) {
+        transition.removeCondition(editable_graph.allocator, condition_index) catch |err| {
+            std.log.err("Failed to remove animation graph transition condition: {}", .{err});
+            return;
+        };
+        syncTransitionConditionSelection(editor_state, transition);
+        refreshGraphEditorData(layer_context, editor_state);
     }
 
     if (engine.ui.ImGui.button(localText(state, .delete_transition))) {
         var removed = editable_graph.transitions.orderedRemove(transition_index);
         removed.deinit(editable_graph.allocator);
+
+        editor_state.selected_transition_condition = null;
+        @memset(editor_state.condition_parameter_name_buffer[0..], 0);
 
         if (editable_graph.transitions.items.len == 0) {
             editor_state.selected_graph_transition = null;

@@ -118,6 +118,12 @@ pub const TransitionCondition = union(enum) {
         }
         self.* = undefined;
     }
+
+    pub fn set(self: *@This(), allocator: std.mem.Allocator, condition: TransitionCondition) !void {
+        const next = try cloneTransitionCondition(allocator, condition);
+        self.deinit(allocator);
+        self.* = next;
+    }
 };
 
 pub const Transition = struct {
@@ -132,6 +138,50 @@ pub const Transition = struct {
         }
         allocator.free(self.conditions);
         self.* = undefined;
+    }
+
+    pub fn addCondition(
+        self: *@This(),
+        allocator: std.mem.Allocator,
+        condition: TransitionCondition,
+    ) !void {
+        const old_conditions = self.conditions;
+        const next_conditions = try allocator.alloc(TransitionCondition, old_conditions.len + 1);
+        errdefer allocator.free(next_conditions);
+
+        for (old_conditions, 0..) |existing, index| {
+            next_conditions[index] = existing;
+        }
+        next_conditions[old_conditions.len] = try cloneTransitionCondition(allocator, condition);
+
+        allocator.free(old_conditions);
+        self.conditions = next_conditions;
+    }
+
+    pub fn removeCondition(
+        self: *@This(),
+        allocator: std.mem.Allocator,
+        condition_index: usize,
+    ) !void {
+        if (condition_index >= self.conditions.len) {
+            return error.IndexOutOfBounds;
+        }
+
+        const old_conditions = self.conditions;
+        const next_conditions = try allocator.alloc(TransitionCondition, old_conditions.len - 1);
+
+        var next_index: usize = 0;
+        for (old_conditions, 0..) |existing, index| {
+            if (index == condition_index) {
+                continue;
+            }
+            next_conditions[next_index] = existing;
+            next_index += 1;
+        }
+
+        old_conditions[condition_index].deinit(allocator);
+        allocator.free(old_conditions);
+        self.conditions = next_conditions;
     }
 };
 
@@ -821,4 +871,37 @@ test "AnimationGraph runtime clip blend reports sample times and transition prog
     try std.testing.expectApproxEqAbs(@as(f32, 0.5), runtime.blend_factor, 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.25), runtime.transition_time, 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.5), runtime.transition_duration, 0.0001);
+}
+
+test "Transition condition editing preserves owned data and empty slices" {
+    var transition = Transition{
+        .from_state = 0,
+        .to_state = 1,
+        .duration = 0.2,
+        .conditions = try std.testing.allocator.alloc(TransitionCondition, 1),
+    };
+    defer transition.deinit(std.testing.allocator);
+
+    transition.conditions[0] = .{
+        .parameter = .{
+            .name = try std.testing.allocator.dupe(u8, "Speed"),
+            .value = 0.5,
+            .comparison = .greater,
+        },
+    };
+
+    try transition.addCondition(std.testing.allocator, .{ .time_elapsed = 0.25 });
+    try std.testing.expectEqual(@as(usize, 2), transition.conditions.len);
+    try std.testing.expect(transition.conditions[0] == .parameter);
+    try std.testing.expect(transition.conditions[1] == .time_elapsed);
+
+    try transition.conditions[0].set(std.testing.allocator, .{ .time_remaining = 0.1 });
+    try std.testing.expect(transition.conditions[0] == .time_remaining);
+
+    try transition.removeCondition(std.testing.allocator, 0);
+    try std.testing.expectEqual(@as(usize, 1), transition.conditions.len);
+    try std.testing.expect(transition.conditions[0] == .time_elapsed);
+
+    try transition.removeCondition(std.testing.allocator, 0);
+    try std.testing.expectEqual(@as(usize, 0), transition.conditions.len);
 }
