@@ -10,9 +10,8 @@ pub const EntityId = world_mod.EntityId;
 
 /// 脚本语言类型
 pub const ScriptLanguage = enum {
-    zig,      // 原生 Zig 脚本（编译执行）
-    csharp,   // C# 脚本（未来支持）
-    lua,      // Lua 脚本（未来支持）
+    zig, // 原生 Zig 脚本（编译执行）
+    csharp, // C# 脚本（未来支持）
 };
 
 /// 脚本实例的唯一标识
