@@ -243,6 +243,17 @@ pub const ResourceLibrary = struct {
         return &self.scripts.items[index];
     }
 
+    pub fn scriptMutable(self: *ResourceLibrary, handle: handles.ScriptHandle) ?*script_mod.ScriptResource {
+        if (!handles.isValid(handle)) {
+            return null;
+        }
+        const index = handles.indexOf(handle);
+        if (index >= self.scripts.items.len) {
+            return null;
+        }
+        return &self.scripts.items[index];
+    }
+
     pub fn assetRecordById(self: *const ResourceLibrary, asset_id: []const u8) ?*const registry_mod.AssetRecord {
         return self.asset_registry.recordById(asset_id);
     }

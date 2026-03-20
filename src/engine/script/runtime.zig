@@ -4,6 +4,7 @@ const context = @import("./context.zig");
 const vm_mod = @import("./vm.zig");
 const hot_reload_mod = @import("./hot_reload.zig");
 const handles = @import("../assets/handles.zig");
+const components = @import("../scene/components.zig");
 const world_mod = @import("../scene/world.zig");
 
 const log = std.log.scoped(.script_runtime);
@@ -116,6 +117,7 @@ pub const ScriptRuntime = struct {
             .id = instance_id,
             .entity_id = entity_id,
             .script_handle = script_handle,
+            .language = .zig,
             .vtable = .{},
             .state = .ready,
         };
@@ -149,30 +151,19 @@ pub const ScriptRuntime = struct {
     /// 销毁脚本实例
     pub fn destroyInstance(self: *ScriptRuntime, instance: *types.ScriptInstance) void {
         instance.state = .destroyed;
-
-        // 从实例表中移除
-        _ = self.instances.remove(instance.id);
-
-        // 从实体脚本列表中移除
-        if (self.entity_scripts.getPtr(instance.entity_id)) |list| {
-            for (list.items, 0..) |id, i| {
-                if (id == instance.id) {
-                    _ = list.swapRemove(i);
-                    break;
-                }
-            }
-            if (list.items.len == 0) {
-                list.deinit(self.allocator);
-                _ = self.entity_scripts.remove(instance.entity_id);
-            }
-        }
+        self.unregisterInstance(instance);
 
         // 释放错误信息
         if (instance.last_error.len > 0) {
             self.allocator.free(instance.last_error);
+            instance.last_error = &.{};
         }
 
-        self.allocator.destroy(instance);
+        if (self.getVM(instance.language)) |vm| {
+            vm.destroyInstance(instance);
+        } else {
+            self.allocator.destroy(instance);
+        }
     }
 
     /// 获取 VM
@@ -189,10 +180,25 @@ pub const ScriptRuntime = struct {
     /// 重新加载脚本
     pub fn reloadScript(self: *ScriptRuntime, handle: handles.ScriptHandle) !void {
         const world = self.world orelse return types.ScriptError.NotFound;
-        const resource = world.resources.script(handle) orelse return types.ScriptError.NotFound;
+        const resource = world.resources.scriptMutable(handle) orelse return types.ScriptError.NotFound;
         const vm = self.getVM(resource.language) orelse return types.ScriptError.InvalidLanguage;
 
-        try vm.load(resource.source, resource.language);
+        var refreshed_source: ?[]u8 = null;
+        var refreshed_mtime = resource.last_modified;
+        if (resource.source_path.len != 0) {
+            refreshed_source = try std.fs.cwd().readFileAlloc(self.allocator, resource.source_path, 8 * 1024 * 1024);
+            errdefer if (refreshed_source) |bytes| self.allocator.free(bytes);
+            refreshed_mtime = readFileMtime(resource.source_path) catch resource.last_modified;
+        }
+
+        const source = if (refreshed_source) |bytes| bytes else resource.source;
+        try vm.load(source, resource.language);
+
+        if (refreshed_source) |bytes| {
+            self.allocator.free(resource.source);
+            resource.source = bytes;
+            resource.last_modified = refreshed_mtime;
+        }
 
         for (world.entities.items) |*entity| {
             if (entity.script) |*script| {
@@ -202,16 +208,7 @@ pub const ScriptRuntime = struct {
 
                 if (script.instance_id) |instance_id| {
                     if (self.instances.get(instance_id)) |instance| {
-                        var ctx = context.ScriptContext{
-                            .entity = entity.id,
-                            .world = world,
-                            .instance = instance,
-                            .allocator = self.allocator,
-                        };
-                        vm.callDestroy(instance, &ctx) catch |err| {
-                            log.err("Script destroy during reload failed: {}", .{err});
-                        };
-                        self.destroyInstance(instance);
+                        self.destroyTrackedInstance(world, instance, true);
                     }
                     script.instance_id = null;
                 }
@@ -219,63 +216,39 @@ pub const ScriptRuntime = struct {
         }
     }
 
-    /// 调用所有脚本的 OnInit
-    pub fn callInitAll(self: *ScriptRuntime, world: *anyopaque) void {
+    pub fn reconcileWorld(self: *ScriptRuntime, world: *anyopaque) void {
         const world_ptr = @as(*world_mod.World, @ptrCast(@alignCast(world)));
 
-        // 遍历所有实体，为每个新脚本创建实例并调用 OnInit
-        for (world_ptr.entities.items) |*entity| {
-            if (entity.script) |*script| {
-                if (!script.enabled) continue;
-                if (script.instance_id == null and script.script_handle != null) {
-                    const script_language: types.ScriptLanguage = @enumFromInt(@intFromEnum(script.language));
-                    const script_resource = world_ptr.resources.script(script.script_handle.?) orelse {
-                        log.err("Script handle {} not found for entity {}", .{ script.script_handle.?, entity.id });
-                        continue;
-                    };
+        var stale_instances = std.ArrayList(*types.ScriptInstance).empty;
+        defer stale_instances.deinit(self.allocator);
 
-                    // 创建脚本实例
-                    if (self.getVM(script_language)) |vm| {
-                        vm.load(script_resource.source, script_resource.language) catch |err| {
-                            log.err("Failed to load script for entity {}: {}", .{ entity.id, err });
-                            continue;
-                        };
-
-                        var ctx = context.ScriptContext{
-                            .entity = entity.id,
-                            .world = world_ptr,
-                            .instance = undefined, // 将填充
-                            .allocator = self.allocator,
-                        };
-
-                        const instance = vm.createInstance(&ctx) catch |err| {
-                            std.log.err("Failed to create script instance: {}", .{err});
-                            continue;
-                        };
-
-                        instance.id = self.next_instance_id;
-                        self.next_instance_id += 1;
-                        instance.entity_id = entity.id;
-                        instance.script_handle = script.script_handle.?;
-                        ctx.instance = instance;
-
-                        self.registerInstance(entity.id, instance) catch |err| {
-                            std.log.err("Failed to register script instance: {}", .{err});
-                            vm.destroyInstance(instance);
-                            continue;
-                        };
-
-                        script.instance_id = instance.id;
-
-                        // 调用 OnInit（处理错误）
-                        vm.callInit(instance, &ctx) catch |err| {
-                            std.log.err("Script init error: {}", .{err});
-                            instance.state = .failed;
-                        };
-                    }
-                }
+        var instance_iter = self.instances.valueIterator();
+        while (instance_iter.next()) |instance_ptr| {
+            const instance = instance_ptr.*;
+            if (!self.instanceMatchesWorld(world_ptr, instance)) {
+                stale_instances.append(self.allocator, instance) catch |err| {
+                    log.err("Failed to queue stale script instance {}: {}", .{ instance.id, err });
+                    return;
+                };
             }
         }
+
+        for (stale_instances.items) |instance| {
+            if (self.instances.contains(instance.id)) {
+                self.destroyTrackedInstance(world_ptr, instance, true);
+            }
+        }
+
+        for (world_ptr.entities.items) |*entity| {
+            if (entity.script) |*script| {
+                self.ensureEntityScriptInstance(world_ptr, entity, script);
+            }
+        }
+    }
+
+    /// 调用所有脚本的 OnInit
+    pub fn callInitAll(self: *ScriptRuntime, world: *anyopaque) void {
+        self.reconcileWorld(world);
     }
 
     /// 调用所有脚本的 OnDestroy
@@ -293,27 +266,7 @@ pub const ScriptRuntime = struct {
         }
 
         for (to_destroy.items) |instance| {
-            var script_language: types.ScriptLanguage = .zig;
-            if (world_ptr.getEntity(instance.entity_id)) |entity| {
-                if (entity.script) |*script| {
-                    script_language = @enumFromInt(@intFromEnum(script.language));
-                    script.instance_id = null;
-                }
-            }
-
-            if (self.getVM(script_language)) |vm| {
-                var ctx = context.ScriptContext{
-                    .entity = instance.entity_id,
-                    .world = world_ptr,
-                    .instance = instance,
-                    .allocator = self.allocator,
-                };
-                vm.callDestroy(instance, &ctx) catch |err| {
-                    log.err("Script destroy error: {}", .{err});
-                };
-            }
-
-            self.destroyInstance(instance);
+            self.destroyTrackedInstance(world_ptr, instance, true);
         }
     }
 
@@ -324,4 +277,204 @@ pub const ScriptRuntime = struct {
             hr.processPendingReload();
         }
     }
+
+    fn unregisterInstance(self: *ScriptRuntime, instance: *types.ScriptInstance) void {
+        _ = self.instances.remove(instance.id);
+
+        if (self.entity_scripts.getPtr(instance.entity_id)) |list| {
+            for (list.items, 0..) |id, i| {
+                if (id == instance.id) {
+                    _ = list.swapRemove(i);
+                    break;
+                }
+            }
+            if (list.items.len == 0) {
+                list.deinit(self.allocator);
+                _ = self.entity_scripts.remove(instance.entity_id);
+            }
+        }
+    }
+
+    fn instanceMatchesWorld(self: *ScriptRuntime, world: *world_mod.World, instance: *const types.ScriptInstance) bool {
+        _ = self;
+        const entity = world.getEntityConst(instance.entity_id) orelse return false;
+        const script = entity.script orelse return false;
+        if (!script.enabled or script.script_handle == null) {
+            return false;
+        }
+
+        const script_language: types.ScriptLanguage = @enumFromInt(@intFromEnum(script.language));
+        return script.instance_id == instance.id and
+            script.script_handle.? == instance.script_handle and
+            script_language == instance.language;
+    }
+
+    fn destroyTrackedInstance(
+        self: *ScriptRuntime,
+        world: *world_mod.World,
+        instance: *types.ScriptInstance,
+        invoke_destroy: bool,
+    ) void {
+        if (world.getEntity(instance.entity_id)) |entity| {
+            if (entity.script) |*script| {
+                if (script.instance_id == instance.id) {
+                    script.instance_id = null;
+                }
+            }
+        }
+
+        if (invoke_destroy) {
+            if (self.getVM(instance.language)) |vm| {
+                var ctx = context.ScriptContext{
+                    .entity = instance.entity_id,
+                    .world = world,
+                    .instance = instance,
+                    .allocator = self.allocator,
+                };
+                vm.callDestroy(instance, &ctx) catch |err| {
+                    log.err("Script destroy error for entity {}: {}", .{ instance.entity_id, err });
+                };
+            }
+        }
+
+        self.destroyInstance(instance);
+    }
+
+    fn ensureEntityScriptInstance(
+        self: *ScriptRuntime,
+        world: *world_mod.World,
+        entity: *world_mod.Entity,
+        script: *components.Script,
+    ) void {
+        const script_handle = script.script_handle orelse {
+            script.instance_id = null;
+            return;
+        };
+        if (!script.enabled) {
+            script.instance_id = null;
+            return;
+        }
+
+        if (script.instance_id) |instance_id| {
+            if (self.instances.get(instance_id)) |instance| {
+                const script_language: types.ScriptLanguage = @enumFromInt(@intFromEnum(script.language));
+                if (instance.entity_id == entity.id and
+                    instance.script_handle == script_handle and
+                    instance.language == script_language)
+                {
+                    return;
+                }
+            }
+            script.instance_id = null;
+        }
+
+        const script_language: types.ScriptLanguage = @enumFromInt(@intFromEnum(script.language));
+        const script_resource = world.resources.script(script_handle) orelse {
+            log.err("Script handle {} not found for entity {}", .{ script_handle, entity.id });
+            return;
+        };
+        const vm = self.getVM(script_language) orelse {
+            log.err("No VM available for script language {} on entity {}", .{ script_language, entity.id });
+            return;
+        };
+
+        vm.load(script_resource.source, script_resource.language) catch |err| {
+            log.err("Failed to load script for entity {}: {}", .{ entity.id, err });
+            return;
+        };
+
+        var ctx = context.ScriptContext{
+            .entity = entity.id,
+            .world = world,
+            .instance = undefined,
+            .allocator = self.allocator,
+        };
+
+        const instance = vm.createInstance(&ctx) catch |err| {
+            log.err("Failed to create script instance for entity {}: {}", .{ entity.id, err });
+            return;
+        };
+
+        instance.id = self.next_instance_id;
+        self.next_instance_id += 1;
+        instance.entity_id = entity.id;
+        instance.script_handle = script_handle;
+        instance.language = script_language;
+        ctx.instance = instance;
+
+        self.registerInstance(entity.id, instance) catch |err| {
+            log.err("Failed to register script instance for entity {}: {}", .{ entity.id, err });
+            vm.destroyInstance(instance);
+            return;
+        };
+
+        script.instance_id = instance.id;
+        vm.callInit(instance, &ctx) catch |err| {
+            log.err("Script init error for entity {}: {}", .{ entity.id, err });
+            instance.state = .failed;
+        };
+    }
 };
+
+fn readFileMtime(path: []const u8) !i128 {
+    const file = try std.fs.cwd().openFile(path, .{});
+    defer file.close();
+
+    const stat = try file.stat();
+    return stat.mtime;
+}
+
+test "script runtime reconciles instance lifecycle against world state" {
+    var runtime = ScriptRuntime.init(std.testing.allocator, .{
+        .enable_hot_reload = false,
+    });
+    defer runtime.deinit();
+    try runtime.initVMs();
+
+    var world = world_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+    runtime.bindWorld(&world);
+
+    const first_handle = try world.resources.createScript(.{
+        .source = "//!guava builtin=rotate axis=y speed_deg=90 local=true\n",
+        .language = .zig,
+    });
+    const second_handle = try world.resources.createScript(.{
+        .source = "//!guava builtin=patrol speed=1.0 waypoints=0,0,0;1,0,0\n",
+        .language = .zig,
+    });
+
+    const entity_id = try world.createEntity(.{
+        .name = "ScriptedEntity",
+        .script = .{
+            .script_handle = first_handle,
+            .language = .zig,
+        },
+    });
+
+    runtime.reconcileWorld(&world);
+    try std.testing.expectEqual(@as(usize, 1), runtime.instances.count());
+    const first_instance_id = world.getEntityConst(entity_id).?.script.?.instance_id.?;
+    try std.testing.expect(runtime.instances.contains(first_instance_id));
+
+    world.getEntity(entity_id).?.script.?.enabled = false;
+    runtime.reconcileWorld(&world);
+    try std.testing.expectEqual(@as(usize, 0), runtime.instances.count());
+    try std.testing.expectEqual(@as(?u64, null), world.getEntityConst(entity_id).?.script.?.instance_id);
+
+    world.getEntity(entity_id).?.script.?.enabled = true;
+    runtime.reconcileWorld(&world);
+    try std.testing.expectEqual(@as(usize, 1), runtime.instances.count());
+    const second_instance_id = world.getEntityConst(entity_id).?.script.?.instance_id.?;
+    try std.testing.expect(second_instance_id != first_instance_id);
+
+    world.getEntity(entity_id).?.script.?.script_handle = second_handle;
+    runtime.reconcileWorld(&world);
+    try std.testing.expectEqual(@as(usize, 1), runtime.instances.count());
+    const third_instance_id = world.getEntityConst(entity_id).?.script.?.instance_id.?;
+    try std.testing.expect(third_instance_id != second_instance_id);
+
+    try std.testing.expect(world.destroyEntity(entity_id));
+    runtime.reconcileWorld(&world);
+    try std.testing.expectEqual(@as(usize, 0), runtime.instances.count());
+}

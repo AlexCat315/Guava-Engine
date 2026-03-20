@@ -382,7 +382,9 @@ pub const CSharpVM = struct {
     fn createInstanceStub(_: *CSharpVM, _: *context.ScriptContext) types.ScriptError!*types.ScriptInstance {
         return types.ScriptError.NotFound;
     }
-    fn destroyInstanceStub(_: *CSharpVM, _: *types.ScriptInstance) void {}
+    fn destroyInstanceStub(vm: *CSharpVM, instance: *types.ScriptInstance) void {
+        vm.allocator.destroy(instance);
+    }
     fn callInitStub(_: *CSharpVM, _: *types.ScriptInstance, _: *context.ScriptContext) types.ScriptError!void {}
     fn callUpdateStub(_: *CSharpVM, _: *types.ScriptInstance, _: *context.ScriptContext, _: f32) types.ScriptError!void {}
     fn callDestroyStub(_: *CSharpVM, _: *types.ScriptInstance, _: *context.ScriptContext) types.ScriptError!void {}

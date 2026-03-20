@@ -482,38 +482,40 @@ pub const Application = struct {
 
         // 检查热重载
         self.script_runtime.checkHotReload();
-        self.script_runtime.callInitAll(&self.world);
+        self.script_runtime.reconcileWorld(&self.world);
 
-        // 遍历所有实体，调用脚本的 OnUpdate
-        for (self.world.entities.items) |*entity| {
-            if (entity.script) |*script| {
-                if (!script.enabled) continue;
-                if (script.instance_id) |instance_id| {
-                    // 获取脚本实例
-                    if (self.script_runtime.instances.get(instance_id)) |instance| {
-                        // 获取 VM
-                        const script_language: script_system.ScriptLanguage = @enumFromInt(@intFromEnum(script.language));
-                        if (self.script_runtime.getVM(script_language)) |vm| {
-                            // 创建上下文（包含输入和时间）
-                            var ctx = script_system.ScriptContext{
-                                .entity = entity.id,
-                                .world = &self.world,
-                                .instance = instance,
-                                .allocator = self.allocator,
-                                .input = &self.input,
-                                .time = self.global_time,
-                                .delta_time = delta_seconds,
-                                .time_scale = self.time_scale,
-                            };
+        // 遍历存活实例，避免脚本在更新时修改 world.entities 破坏迭代。
+        var instance_iter = self.script_runtime.instances.valueIterator();
+        while (instance_iter.next()) |instance_ptr| {
+            const instance = instance_ptr.*;
+            const entity = self.world.getEntityConst(instance.entity_id) orelse continue;
+            const script = entity.script orelse continue;
+            const script_language: script_system.ScriptLanguage = @enumFromInt(@intFromEnum(script.language));
+            if (!script.enabled or
+                script.instance_id != instance.id or
+                script.script_handle == null or
+                script.script_handle.? != instance.script_handle or
+                script_language != instance.language)
+            {
+                continue;
+            }
 
-                            // 调用 OnUpdate（处理错误）
-                            vm.callUpdate(instance, &ctx, delta_seconds) catch |err| {
-                                std.log.err("Script update error: {}", .{err});
-                                instance.state = .failed;
-                            };
-                        }
-                    }
-                }
+            if (self.script_runtime.getVM(instance.language)) |vm| {
+                var ctx = script_system.ScriptContext{
+                    .entity = entity.id,
+                    .world = &self.world,
+                    .instance = instance,
+                    .allocator = self.allocator,
+                    .input = &self.input,
+                    .time = self.global_time,
+                    .delta_time = delta_seconds,
+                    .time_scale = self.time_scale,
+                };
+
+                vm.callUpdate(instance, &ctx, delta_seconds) catch |err| {
+                    std.log.err("Script update error for entity {}: {}", .{ entity.id, err });
+                    instance.state = .failed;
+                };
             }
         }
     }

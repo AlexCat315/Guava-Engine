@@ -124,6 +124,13 @@ pub const Entity = struct {
     local_transform: components.Transform = .{},
     /// 世界空间变换（缓存，由 updateHierarchy 更新）
     world_transform_cache: components.Transform = .{},
+    /// 世界空间矩阵（缓存，由 updateHierarchy 更新）
+    world_matrix_cache: [16]f32 = .{
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        0.0, 0.0, 0.0, 1.0,
+    },
     /// 世界空间包围盒（缓存，用于视锥剔除和射线检测）
     world_bounds_cache: ?AABB = null,
     /// 是否需要更新变换
@@ -478,6 +485,12 @@ pub const World = struct {
             .editor_only = desc.editor_only,
             .is_folder = desc.is_folder,
             .world_transform_cache = .{},
+            .world_matrix_cache = .{
+                1.0, 0.0, 0.0, 0.0,
+                0.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 0.0,
+                0.0, 0.0, 0.0, 1.0,
+            },
             .world_bounds_cache = null,
             .dirty = true,
             .children = .empty,
@@ -546,10 +559,12 @@ pub const World = struct {
     }
 
     pub fn updateHierarchy(self: *World) void {
+        const mat4 = @import("../math/mat4.zig");
+
         // First pass: update world transforms
         for (self.entities.items) |*entity| {
             if (entity.parent == null) {
-                self.updateTransformRecursive(entity.id, components.Transform.identity());
+                self.updateTransformRecursive(entity.id, mat4.identity());
             }
         }
 
@@ -558,22 +573,21 @@ pub const World = struct {
             _ = self.updateBoundsRecursive(entity.id);
         }
 
-        // Third pass: force full spatial index rebuild
-        self.renderable_full_sync_required = true;
+        // Third pass: sync only the renderables dirtied by this hierarchy update.
         self.syncRenderableSpatialItems() catch {};
         self.refitDirtyDynamicRenderables() catch {};
     }
 
-    fn updateTransformRecursive(self: *World, id: EntityId, parent_world: components.Transform) void {
+    fn updateTransformRecursive(self: *World, id: EntityId, parent_world_matrix: [16]f32) void {
         const entity = self.getEntity(id) orelse return;
         if (entity.dirty) {
             const mat4 = @import("../math/mat4.zig");
             const quat = @import("../math/quat.zig");
 
             // Combine parent and local
-            const parent_mat = mat4.transformMatrix(parent_world);
             const local_mat = mat4.transformMatrix(entity.local_transform);
-            const world_mat = mat4.mul(parent_mat, local_mat);
+            const world_mat = mat4.mul(parent_world_matrix, local_mat);
+            entity.world_matrix_cache = world_mat;
 
             // For now, we store it back in TRS.
             // In a real engine, we'd store the matrix and decompose only if needed.
@@ -591,10 +605,10 @@ pub const World = struct {
             const safe_scale_y = if (scale_y <= compose_epsilon) 1.0 else scale_y;
             const safe_scale_z = if (scale_z <= compose_epsilon) 1.0 else scale_z;
             const rot_mat = [_]f32{
-                world_mat[0] / safe_scale_x, world_mat[1] / safe_scale_x, world_mat[2] / safe_scale_x, 0.0,
-                world_mat[4] / safe_scale_y, world_mat[5] / safe_scale_y, world_mat[6] / safe_scale_y, 0.0,
+                world_mat[0] / safe_scale_x, world_mat[1] / safe_scale_x, world_mat[2] / safe_scale_x,  0.0,
+                world_mat[4] / safe_scale_y, world_mat[5] / safe_scale_y, world_mat[6] / safe_scale_y,  0.0,
                 world_mat[8] / safe_scale_z, world_mat[9] / safe_scale_z, world_mat[10] / safe_scale_z, 0.0,
-                0.0,                        0.0,                        0.0,                         1.0,
+                0.0,                         0.0,                         0.0,                          1.0,
             };
             entity.world_transform_cache.rotation = quat.normalize(quat.fromRotationMatrix(rot_mat));
 
@@ -602,7 +616,7 @@ pub const World = struct {
         }
 
         for (entity.children.items) |child_id| {
-            self.updateTransformRecursive(child_id, entity.world_transform_cache);
+            self.updateTransformRecursive(child_id, entity.world_matrix_cache);
         }
     }
 
@@ -2371,6 +2385,48 @@ test "world hierarchy composes transforms and preserves world space on reparent"
     try std.testing.expectApproxEqAbs(@as(f32, -7.0), local.translation[0], 0.0001);
 }
 
+test "hierarchy propagation keeps descendant translation exact under non-uniform parent scale" {
+    const mat4 = @import("../math/mat4.zig");
+    const quat = @import("../math/quat.zig");
+
+    var world = World.init(std.testing.allocator, null);
+    defer world.deinit();
+
+    const parent = try world.createEntity(.{
+        .name = "ScaledParent",
+        .local_transform = .{
+            .scale = .{ 2.0, 1.0, 1.0 },
+        },
+    });
+    const child = try world.createEntity(.{
+        .name = "RotatedChild",
+        .parent = parent,
+        .local_transform = .{
+            .rotation = quat.fromEuler(.{ 0.0, 0.0, std.math.pi * 0.25 }),
+        },
+    });
+    const grandchild = try world.createEntity(.{
+        .name = "Grandchild",
+        .parent = child,
+        .local_transform = .{
+            .translation = .{ 1.0, 0.0, 0.0 },
+        },
+    });
+
+    const grandchild_world = world.worldTransform(grandchild).?;
+    const expected_world = mat4.mul(
+        mat4.transformMatrix(world.getEntityConst(parent).?.local_transform),
+        mat4.mul(
+            mat4.transformMatrix(world.getEntityConst(child).?.local_transform),
+            mat4.transformMatrix(world.getEntityConst(grandchild).?.local_transform),
+        ),
+    );
+
+    try std.testing.expectApproxEqAbs(expected_world[12], grandchild_world.translation[0], 0.0001);
+    try std.testing.expectApproxEqAbs(expected_world[13], grandchild_world.translation[1], 0.0001);
+    try std.testing.expectApproxEqAbs(expected_world[14], grandchild_world.translation[2], 0.0001);
+}
+
 test "duplicateEntity copies subtrees and destroyEntity removes descendants" {
     var world = World.init(std.testing.allocator, null);
     defer world.deinit();
@@ -2490,6 +2546,46 @@ test "renderable spatial index moves dirty meshes into dynamic partition" {
     try std.testing.expectEqual(@as(usize, 2), world.renderable_spatial_index.itemCount());
     try std.testing.expectEqual(@as(usize, 0), world.dynamic_renderable_spatial_index.itemCount());
     try std.testing.expectEqual(@as(usize, 0), world.dynamic_renderables.count());
+}
+
+test "non-renderable hierarchy updates do not dirty renderable BVHs" {
+    var world = World.init(std.testing.allocator, null);
+    defer world.deinit();
+
+    _ = try world.createPrimitiveEntity(.plane, .{
+        .translation = .{ -2.0, 0.0, 0.0 },
+        .rotation = @import("../math/quat.zig").fromEuler(.{ -std.math.pi * 0.5, 0.0, 0.0 }),
+    });
+    _ = try world.createPrimitiveEntity(.plane, .{
+        .translation = .{ 2.0, 0.0, 0.0 },
+        .rotation = @import("../math/quat.zig").fromEuler(.{ -std.math.pi * 0.5, 0.0, 0.0 }),
+    });
+    const empty = try world.createEmptyEntity(.{
+        .translation = .{ 0.0, 0.0, 0.0 },
+    });
+
+    const initial_query = try world.queryRenderableRayCandidates(
+        std.testing.allocator,
+        .{ -5.0, 0.0, 0.0 },
+        .{ 1.0, 0.0, 0.0 },
+        16.0,
+    );
+    defer std.testing.allocator.free(initial_query);
+
+    try std.testing.expectEqual(@as(usize, 2), world.renderable_spatial_index.itemCount());
+    try std.testing.expectEqual(@as(usize, 0), world.dynamic_renderable_spatial_index.itemCount());
+    try std.testing.expect(!world.renderable_spatial_index.dirty);
+    try std.testing.expect(!world.dynamic_renderable_spatial_index.dirty);
+
+    try std.testing.expect(world.setEntityLocalTransform(empty, .{
+        .translation = .{ 5.0, 1.0, 0.0 },
+    }));
+    world.updateHierarchy();
+
+    try std.testing.expectEqual(@as(usize, 2), world.renderable_spatial_index.itemCount());
+    try std.testing.expectEqual(@as(usize, 0), world.dynamic_renderable_spatial_index.itemCount());
+    try std.testing.expect(!world.renderable_spatial_index.dirty);
+    try std.testing.expect(!world.dynamic_renderable_spatial_index.dirty);
 }
 
 test "dynamic renderable movement refits dynamic BVH without growing dynamic partition" {

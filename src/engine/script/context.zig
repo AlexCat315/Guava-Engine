@@ -56,7 +56,7 @@ pub const ScriptContext = struct {
     pub fn setPosition(self: *ScriptContext, pos: components.Vec3) void {
         if (self.world.id_to_index.get(self.entity)) |idx| {
             self.world.entities.items[idx].local_transform.translation = pos;
-            self.world.entities.items[idx].dirty = true;
+            self.world.markDirty(self.entity);
         }
     }
 
@@ -64,7 +64,7 @@ pub const ScriptContext = struct {
     pub fn setRotation(self: *ScriptContext, rot: components.Quat) void {
         if (self.world.id_to_index.get(self.entity)) |idx| {
             self.world.entities.items[idx].local_transform.rotation = rot;
-            self.world.entities.items[idx].dirty = true;
+            self.world.markDirty(self.entity);
         }
     }
 
@@ -72,7 +72,7 @@ pub const ScriptContext = struct {
     pub fn setScale(self: *ScriptContext, scale: components.Vec3) void {
         if (self.world.id_to_index.get(self.entity)) |idx| {
             self.world.entities.items[idx].local_transform.scale = scale;
-            self.world.entities.items[idx].dirty = true;
+            self.world.markDirty(self.entity);
         }
     }
 

@@ -85,6 +85,8 @@ pub const ScriptInstance = struct {
     entity_id: EntityId,
     /// 脚本资源句柄
     script_handle: handles.ScriptHandle,
+    /// 脚本语言
+    language: ScriptLanguage = .zig,
     /// 虚拟表
     vtable: ScriptVTable,
     /// 用户数据指针
