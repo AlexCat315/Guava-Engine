@@ -48,6 +48,7 @@ const handles = @import("../assets/handles.zig");
 const layer_mod = @import("layer.zig");
 const layer_stack_mod = @import("layer_stack.zig");
 const input_mod = @import("input.zig");
+const command_queue_mod = @import("command_queue.zig");
 const platform_mod = @import("platform.zig");
 const renderer_mod = @import("../render/renderer.zig");
 const render_types = @import("../render/types.zig");
@@ -140,6 +141,8 @@ pub const Application = struct {
     window: window_mod.Window,
     /// 渲染器
     renderer: renderer_mod.Renderer,
+    /// 引擎级命令队列
+    command_queue: command_queue_mod.CommandQueue,
     /// 场景世界
     world: scene_mod.World,
     /// 层栈
@@ -215,6 +218,7 @@ pub const Application = struct {
             .platform = platform,
             .window = window,
             .renderer = renderer,
+            .command_queue = command_queue_mod.CommandQueue.init(allocator),
             .world = world,
             .job_system = job_system,
             .script_runtime = script_runtime,
@@ -238,6 +242,7 @@ pub const Application = struct {
         self.script_runtime.deinit();
         physics_system.deinitWorld(&self.world);
         self.world.deinit();
+        self.command_queue.deinit();
         self.renderer.deinit();
         self.window.deinit();
         self.job_system.deinit();
@@ -312,6 +317,8 @@ pub const Application = struct {
             const elapsed_ns = self.timer.lap();
             var delta_seconds = @as(f32, @floatFromInt(elapsed_ns)) / @as(f32, @floatFromInt(std.time.ns_per_s));
             delta_seconds = @min(delta_seconds, 0.1); // 最大帧间隔锁定为 0.1 秒
+
+            try self.applyPendingCommands();
 
             // 更新全局时间
             self.global_time += delta_seconds * self.time_scale;
@@ -438,6 +445,7 @@ pub const Application = struct {
             .world = &self.world,
             .scene = &self.world,
             .renderer = &self.renderer,
+            .command_queue = &self.command_queue,
             .input = &self.input,
             .window = &self.window,
             .playback_controller = &self.playback_controller,
@@ -548,5 +556,23 @@ pub const Application = struct {
             try hr.registerScript(path, handle);
         }
         return handle;
+    }
+
+    fn applyPendingCommands(self: *Application) !void {
+        if (self.command_queue.len() == 0) {
+            return;
+        }
+
+        const results = try self.command_queue.executeAll(&self.world);
+        defer self.allocator.free(results);
+
+        for (results) |result| {
+            if (result.err) |err| {
+                std.log.warn("command queue execution failed for entity {any}: {s}", .{
+                    result.entity_id,
+                    @tagName(err),
+                });
+            }
+        }
     }
 };
