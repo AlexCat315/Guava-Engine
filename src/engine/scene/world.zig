@@ -194,11 +194,27 @@ pub const Entity = struct {
     pub fn deinit(self: *Entity, allocator: std.mem.Allocator) void {
         self.children.deinit(allocator);
         allocator.free(self.name);
+        if (self.script) |script| {
+            freeScriptParameters(allocator, script.parameters);
+        }
         if (self.prefab_instance_override) |*override| {
             override.deinit(allocator);
         }
     }
 };
+
+fn cloneScriptComponent(allocator: std.mem.Allocator, script: ?components.Script) !?components.Script {
+    const value = script orelse return null;
+    var cloned = value;
+    cloned.parameters = if (value.parameters.len != 0) try allocator.dupe(u8, value.parameters) else &.{};
+    return cloned;
+}
+
+fn freeScriptParameters(allocator: std.mem.Allocator, parameters: []const u8) void {
+    if (parameters.len != 0) {
+        allocator.free(parameters);
+    }
+}
 
 fn isPrefabRootEntity(entity: *const Entity) bool {
     return entity.prefab_entity_id != null and entity.prefab_entity_id.? == 0 and entity.parent == null;
@@ -502,7 +518,7 @@ pub const World = struct {
             .material = desc.material,
             .light = desc.light,
             .vfx = desc.vfx,
-            .script = desc.script,
+            .script = try cloneScriptComponent(self.allocator, desc.script),
             .visible = desc.visible,
             .editor_only = desc.editor_only,
             .is_folder = desc.is_folder,

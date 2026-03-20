@@ -2,6 +2,7 @@ const std = @import("std");
 const script_resource_mod = @import("../assets/script_resource.zig");
 const components = @import("../scene/components.zig");
 const context = @import("./context.zig");
+const parameter_reflection = @import("./parameter_reflection.zig");
 const types = @import("./types.zig");
 const vm_interface = @import("./vm_interface.zig");
 
@@ -113,6 +114,7 @@ pub const WasmVM = struct {
         state.on_init = findRequiredFunction(vm, state, "guava_on_init") catch return types.ScriptError.LoadError;
         state.on_update = findRequiredFunction(vm, state, "guava_on_update") catch return types.ScriptError.LoadError;
         state.on_destroy = findRequiredFunction(vm, state, "guava_on_destroy") catch return types.ScriptError.LoadError;
+        initializeParameterReflectionFunctions(state);
 
         instance.* = .{
             .id = 0,
@@ -236,6 +238,16 @@ const WasmInstanceState = struct {
     on_init: c.wasm_function_inst_t = null,
     on_update: c.wasm_function_inst_t = null,
     on_destroy: c.wasm_function_inst_t = null,
+    param_count_fn: c.wasm_function_inst_t = null,
+    param_name_ptr_fn: c.wasm_function_inst_t = null,
+    param_name_len_fn: c.wasm_function_inst_t = null,
+    param_kind_fn: c.wasm_function_inst_t = null,
+    param_get_f32_fn: c.wasm_function_inst_t = null,
+    param_set_f32_fn: c.wasm_function_inst_t = null,
+    param_get_bool_fn: c.wasm_function_inst_t = null,
+    param_set_bool_fn: c.wasm_function_inst_t = null,
+    param_get_i32_fn: c.wasm_function_inst_t = null,
+    param_set_i32_fn: c.wasm_function_inst_t = null,
     active_context: ?*context.ScriptContext = null,
     source: []u8 = &.{},
     bytecode: []u8 = &.{},
@@ -268,6 +280,66 @@ const WasmInstanceState = struct {
         self.* = undefined;
     }
 };
+
+pub fn reflectParameterSchemaJsonAlloc(allocator: std.mem.Allocator, bytecode: []const u8) ![]u8 {
+    var state: WasmInstanceState = undefined;
+    try state.init(allocator, "", bytecode);
+    defer state.deinit();
+
+    try instantiateReflectionState(&state);
+    defer releaseRuntime();
+
+    const definitions = try readReflectedParametersAlloc(allocator, &state);
+    defer parameter_reflection.deinitDefinitions(allocator, definitions);
+    return try parameter_reflection.buildMetadataJsonAlloc(allocator, definitions);
+}
+
+pub fn applyParameterPayload(
+    allocator: std.mem.Allocator,
+    instance: *types.ScriptInstance,
+    schema_json: []const u8,
+    payload_json: []const u8,
+) !bool {
+    const state = getInstanceState(instance) orelse return false;
+    if (state.param_count_fn == null) {
+        return false;
+    }
+
+    const definitions = try parameter_reflection.parseMetadataAlloc(allocator, schema_json);
+    defer parameter_reflection.deinitDefinitions(allocator, definitions);
+    if (definitions.len == 0) {
+        return false;
+    }
+
+    const values = try parameter_reflection.parseValuesAlloc(allocator, definitions, payload_json);
+    defer allocator.free(values);
+
+    for (definitions, values, 0..) |definition, value, index| {
+        const parameter_index: u32 = @intCast(index);
+        switch (definition.kind) {
+            .float => {
+                if (state.param_set_f32_fn == null) continue;
+                if (!try callSetterF32(state, state.param_set_f32_fn.?, parameter_index, value.float)) {
+                    return false;
+                }
+            },
+            .boolean => {
+                if (state.param_set_bool_fn == null) continue;
+                if (!try callSetterBool(state, state.param_set_bool_fn.?, parameter_index, value.boolean)) {
+                    return false;
+                }
+            },
+            .integer => {
+                if (state.param_set_i32_fn == null) continue;
+                if (!try callSetterI32(state, state.param_set_i32_fn.?, parameter_index, value.integer)) {
+                    return false;
+                }
+            },
+        }
+    }
+
+    return true;
+}
 
 fn acquireRuntime() !void {
     runtime_state.mutex.lock();
@@ -314,6 +386,184 @@ fn findRequiredFunction(vm: *WasmVM, state: *WasmInstanceState, name: [:0]const 
         return types.ScriptError.LoadError;
     }
     return function;
+}
+
+fn findOptionalFunction(state: *WasmInstanceState, name: [:0]const u8) c.wasm_function_inst_t {
+    return c.wasm_runtime_lookup_function(state.module_inst, name.ptr);
+}
+
+fn initializeParameterReflectionFunctions(state: *WasmInstanceState) void {
+    state.param_count_fn = findOptionalFunction(state, "guava_param_count");
+    state.param_name_ptr_fn = findOptionalFunction(state, "guava_param_name_ptr");
+    state.param_name_len_fn = findOptionalFunction(state, "guava_param_name_len");
+    state.param_kind_fn = findOptionalFunction(state, "guava_param_kind");
+    state.param_get_f32_fn = findOptionalFunction(state, "guava_param_get_f32");
+    state.param_set_f32_fn = findOptionalFunction(state, "guava_param_set_f32");
+    state.param_get_bool_fn = findOptionalFunction(state, "guava_param_get_bool");
+    state.param_set_bool_fn = findOptionalFunction(state, "guava_param_set_bool");
+    state.param_get_i32_fn = findOptionalFunction(state, "guava_param_get_i32");
+    state.param_set_i32_fn = findOptionalFunction(state, "guava_param_set_i32");
+}
+
+fn instantiateReflectionState(state: *WasmInstanceState) !void {
+    try acquireRuntime();
+    errdefer releaseRuntime();
+
+    var error_buffer = std.mem.zeroes([512]u8);
+    state.module = c.wasm_runtime_load(
+        state.bytecode.ptr,
+        @as(u32, @intCast(state.bytecode.len)),
+        @ptrCast(&error_buffer),
+        error_buffer.len,
+    );
+    if (state.module == null) {
+        return error.LoadError;
+    }
+
+    state.module_inst = c.wasm_runtime_instantiate(
+        state.module,
+        64 * 1024,
+        64 * 1024,
+        @ptrCast(&error_buffer),
+        error_buffer.len,
+    );
+    if (state.module_inst == null) {
+        return error.LoadError;
+    }
+
+    state.exec_env = c.wasm_runtime_create_exec_env(state.module_inst, 64 * 1024);
+    if (state.exec_env == null) {
+        return error.OutOfMemory;
+    }
+
+    initializeParameterReflectionFunctions(state);
+}
+
+fn readReflectedParametersAlloc(
+    allocator: std.mem.Allocator,
+    state: *WasmInstanceState,
+) ![]parameter_reflection.ParameterDefinition {
+    if (state.param_count_fn == null or
+        state.param_name_ptr_fn == null or
+        state.param_name_len_fn == null or
+        state.param_kind_fn == null)
+    {
+        return allocator.alloc(parameter_reflection.ParameterDefinition, 0);
+    }
+
+    const count = try callGetterU32(state, state.param_count_fn.?, null);
+    const definitions = try allocator.alloc(parameter_reflection.ParameterDefinition, count);
+    errdefer {
+        for (definitions[0..count]) |definition| {
+            allocator.free(definition.name);
+        }
+        allocator.free(definitions);
+    }
+
+    for (definitions, 0..) |*definition, index| {
+        const parameter_index: u32 = @intCast(index);
+        const app_name_ptr = try callGetterU32(state, state.param_name_ptr_fn.?, parameter_index);
+        const app_name_len = try callGetterU32(state, state.param_name_len_fn.?, parameter_index);
+        const kind_raw = try callGetterU32(state, state.param_kind_fn.?, parameter_index);
+        const kind = std.meta.intToEnum(parameter_reflection.ParameterKind, @as(u8, @intCast(kind_raw))) catch return error.InvalidData;
+        const bounds = parameter_reflection.defaultBounds(kind);
+
+        definition.* = .{
+            .name = try readGuestStringAlloc(allocator, state, app_name_ptr, app_name_len),
+            .kind = kind,
+            .default_value = switch (kind) {
+                .float => .{ .float = if (state.param_get_f32_fn) |function|
+                    try callGetterF32(state, function, parameter_index)
+                else
+                    0.0 },
+                .boolean => .{ .boolean = if (state.param_get_bool_fn) |function|
+                    try callGetterU32(state, function, parameter_index) != 0
+                else
+                    false },
+                .integer => .{ .integer = if (state.param_get_i32_fn) |function|
+                    try callGetterI32(state, function, parameter_index)
+                else
+                    0 },
+            },
+            .min = bounds.min,
+            .max = bounds.max,
+            .step = bounds.step,
+        };
+    }
+
+    return definitions;
+}
+
+fn readGuestStringAlloc(
+    allocator: std.mem.Allocator,
+    state: *WasmInstanceState,
+    app_offset: u32,
+    len: u32,
+) ![]u8 {
+    if (len == 0) {
+        return allocator.alloc(u8, 0);
+    }
+    if (!c.wasm_runtime_validate_app_addr(state.module_inst, app_offset, len)) {
+        return error.InvalidData;
+    }
+    const native_ptr = c.wasm_runtime_addr_app_to_native(state.module_inst, app_offset) orelse return error.InvalidData;
+    const bytes: [*]const u8 = @ptrCast(native_ptr);
+    return try allocator.dupe(u8, bytes[0..len]);
+}
+
+fn callGetterU32(state: *WasmInstanceState, function: c.wasm_function_inst_t, index: ?u32) !u32 {
+    c.wasm_runtime_clear_exception(state.module_inst);
+    var argv = [_]u32{ 0, index orelse 0 };
+    const argc: u32 = if (index != null) 2 else 1;
+    if (!c.wasm_runtime_call_wasm(state.exec_env, function, argc, &argv)) {
+        return error.RuntimeError;
+    }
+    return argv[0];
+}
+
+fn callGetterF32(state: *WasmInstanceState, function: c.wasm_function_inst_t, index: u32) !f32 {
+    c.wasm_runtime_clear_exception(state.module_inst);
+    var argv = [_]u32{ 0, index };
+    if (!c.wasm_runtime_call_wasm(state.exec_env, function, 2, &argv)) {
+        return error.RuntimeError;
+    }
+    return @bitCast(argv[0]);
+}
+
+fn callGetterI32(state: *WasmInstanceState, function: c.wasm_function_inst_t, index: u32) !i32 {
+    c.wasm_runtime_clear_exception(state.module_inst);
+    var argv = [_]u32{ 0, index };
+    if (!c.wasm_runtime_call_wasm(state.exec_env, function, 2, &argv)) {
+        return error.RuntimeError;
+    }
+    return @bitCast(argv[0]);
+}
+
+fn callSetterF32(state: *WasmInstanceState, function: c.wasm_function_inst_t, index: u32, value: f32) !bool {
+    c.wasm_runtime_clear_exception(state.module_inst);
+    var argv = [_]u32{ 0, index, @bitCast(value) };
+    if (!c.wasm_runtime_call_wasm(state.exec_env, function, 3, &argv)) {
+        return error.RuntimeError;
+    }
+    return argv[0] != 0;
+}
+
+fn callSetterBool(state: *WasmInstanceState, function: c.wasm_function_inst_t, index: u32, value: bool) !bool {
+    c.wasm_runtime_clear_exception(state.module_inst);
+    var argv = [_]u32{ 0, index, if (value) 1 else 0 };
+    if (!c.wasm_runtime_call_wasm(state.exec_env, function, 3, &argv)) {
+        return error.RuntimeError;
+    }
+    return argv[0] != 0;
+}
+
+fn callSetterI32(state: *WasmInstanceState, function: c.wasm_function_inst_t, index: u32, value: i32) !bool {
+    c.wasm_runtime_clear_exception(state.module_inst);
+    var argv = [_]u32{ 0, index, @bitCast(value) };
+    if (!c.wasm_runtime_call_wasm(state.exec_env, function, 3, &argv)) {
+        return error.RuntimeError;
+    }
+    return argv[0] != 0;
 }
 
 fn getInstanceState(instance: *types.ScriptInstance) ?*WasmInstanceState {

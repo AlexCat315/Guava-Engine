@@ -2312,6 +2312,46 @@ test "scene serialization is byte deterministic for identical world state" {
     try std.testing.expectEqualStrings(first, second);
 }
 
+test "scene save-load-resave is byte stable" {
+    var temp_dir = std.testing.tmpDir(.{});
+    defer temp_dir.cleanup();
+
+    const cwd = std.fs.cwd();
+    var original = try cwd.openDir(".", .{});
+    defer original.close();
+    try temp_dir.dir.setAsCwd();
+    defer original.setAsCwd() catch {};
+
+    var world = world_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+
+    try world.bootstrap3D();
+    const root = try world.createEntity(.{
+        .name = "SceneRoot",
+        .local_transform = .{ .translation = .{ 1.0, 2.0, 3.0 } },
+    });
+    _ = try world.createEntity(.{
+        .name = "SceneChild",
+        .parent = root,
+        .visible = false,
+        .local_transform = .{ .translation = .{ 0.5, 0.0, -1.0 } },
+    });
+
+    try saveWorldToPath(std.testing.allocator, &world, "assets/scenes/test.guava_scene");
+
+    var loaded = world_mod.World.init(std.testing.allocator, null);
+    defer loaded.deinit();
+    try loadWorldFromPath(std.testing.allocator, &loaded, "assets/scenes/test.guava_scene");
+    try saveWorldToPath(std.testing.allocator, &loaded, "assets/scenes/test_resaved.guava_scene");
+
+    const first = try std.fs.cwd().readFileAlloc(std.testing.allocator, "assets/scenes/test.guava_scene", 4 * 1024 * 1024);
+    defer std.testing.allocator.free(first);
+    const second = try std.fs.cwd().readFileAlloc(std.testing.allocator, "assets/scenes/test_resaved.guava_scene", 4 * 1024 * 1024);
+    defer std.testing.allocator.free(second);
+
+    try std.testing.expectEqualStrings(first, second);
+}
+
 test "scene serialization round-trips parent relationships" {
     var world = world_mod.World.init(std.testing.allocator, null);
     defer world.deinit();

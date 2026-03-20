@@ -494,6 +494,7 @@ fn processCompileScriptRequest(
                 existing_resource.language = .wasm;
                 replaceOwnedSlice(allocator, &existing_resource.source, source_bytes) catch return error.OutOfMemory;
                 replaceOwnedSlice(allocator, &existing_resource.bytecode, artifact.bytecode) catch return error.OutOfMemory;
+                replaceOwnedSlice(allocator, &existing_resource.user_data, artifact.parameter_schema) catch return error.OutOfMemory;
                 if (request.description) |description| {
                     replaceOwnedSlice(allocator, &existing_resource.description, description) catch return error.OutOfMemory;
                 }
@@ -516,6 +517,8 @@ fn processCompileScriptRequest(
                 });
                 const created_resource = layer_context.world.resources.scriptMutable(created_handle).?;
                 created_resource.bytecode = try allocator.dupe(u8, artifact.bytecode);
+                allocator.free(created_resource.user_data);
+                created_resource.user_data = try allocator.dupe(u8, artifact.parameter_schema);
                 created_resource.last_modified = if (source_path.len != 0)
                     readFileMtime(source_path) catch std.time.microTimestamp()
                 else

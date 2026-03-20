@@ -9,6 +9,7 @@ const content_browser = @import("../../assets/browser.zig");
 const vfx_runtime = @import("../../runtime/vfx.zig");
 const scene_hierarchy = @import("scene_hierarchy.zig");
 const layout = @import("../layout.zig");
+const script_parameter_reflection = engine.script.parameter_reflection_mod;
 
 const EditRowResult = struct {
     changed: bool = false,
@@ -869,6 +870,55 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
         }
     }
 
+    if (entity.script) |*script_component| {
+        if (inspectorSectionMatches(filter, "Script") and engine.ui.ImGui.collapsingHeader("Script", filter.len != 0)) {
+            beginInspectorSectionBody();
+            defer endInspectorSectionBody();
+            engine.ui.ImGui.dummy(0.0, 4.0);
+
+            if (beginInspectorPropertyGrid("script_properties")) {
+                defer endInspectorPropertyGrid();
+
+                var handle_buffer: [32]u8 = undefined;
+                const handle_text = if (script_component.script_handle) |handle|
+                    try std.fmt.bufPrint(&handle_buffer, "{d}", .{@intFromEnum(handle)})
+                else
+                    "none";
+                drawInspectorTextRow("Language", scriptLanguageLabel(script_component.language));
+                drawInspectorTextRow("Handle", handle_text);
+
+                var enabled = script_component.enabled;
+                if (drawInspectorCheckboxRow("Enabled", "##script_enabled", &enabled)) {
+                    script_component.enabled = enabled;
+                    if (layer_context.script_runtime) |runtime| {
+                        runtime.reconcileWorld(layer_context.world);
+                    }
+                }
+            }
+
+            if (script_component.language == .wasm) {
+                if (script_component.script_handle) |handle| {
+                    if (layer_context.world.assets().script(handle)) |resource| {
+                        if (resource.description.len != 0) {
+                            engine.ui.ImGui.textWrapped(resource.description);
+                        }
+                        if (resource.user_data.len != 0) {
+                            try drawReflectedScriptParameters(state, layer_context, selected, script_component, resource.user_data);
+                        } else {
+                            engine.ui.ImGui.textWrapped("This WASM script does not expose reflected public variables.");
+                        }
+                    } else {
+                        engine.ui.ImGui.textWrapped("The attached script handle is stale.");
+                    }
+                } else {
+                    engine.ui.ImGui.textWrapped("Attach a compiled WASM script to expose reflected public variables.");
+                }
+            } else {
+                engine.ui.ImGui.textWrapped("Parameter reflection is currently available for WASM scripts only.");
+            }
+        }
+    }
+
     if (inspectorSectionMatches(filter, state.text(.actions)) and engine.ui.ImGui.collapsingHeader(state.text(.actions), filter.len != 0)) {
         beginInspectorSectionBody();
         defer endInspectorSectionBody();
@@ -974,6 +1024,102 @@ fn drawAddComponentControls(
 
     return false;
 }
+
+fn scriptLanguageLabel(language: engine.scene.ScriptLanguage) []const u8 {
+    return switch (language) {
+        .zig => "zig",
+        .csharp => "csharp",
+        .wasm => "wasm",
+    };
+}
+
+fn drawReflectedScriptParameters(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity_id: engine.scene.EntityId,
+    script_component: *engine.scene.Script,
+    schema_json: []const u8,
+) !void {
+    const allocator = state.allocator orelse layer_context.world.allocator;
+    const definitions = script_parameter_reflection.parseMetadataAlloc(allocator, schema_json) catch {
+        engine.ui.ImGui.textWrapped("Failed to parse reflected parameter metadata.");
+        return;
+    };
+    defer script_parameter_reflection.deinitDefinitions(allocator, definitions);
+    if (definitions.len == 0) {
+        engine.ui.ImGui.textWrapped("This WASM script does not expose reflected public variables.");
+        return;
+    }
+
+    const values = script_parameter_reflection.parseValuesAlloc(allocator, definitions, script_component.parameters) catch {
+        engine.ui.ImGui.textWrapped("Failed to parse current script parameter values.");
+        return;
+    };
+    defer allocator.free(values);
+
+    var edited = false;
+    var committed = false;
+
+    if (beginInspectorPropertyGrid("script_reflected_parameters")) {
+        defer endInspectorPropertyGrid();
+
+        for (definitions, values, 0..) |definition, *value, index| {
+            var widget_id_buffer: [80]u8 = undefined;
+            const widget_id = try std.fmt.bufPrint(&widget_id_buffer, "##script_param_{d}", .{index});
+
+            switch (definition.kind) {
+                .float => {
+                    var current = value.float;
+                    if (drawInspectorFloatRow(definition.name, widget_id, &current, definition.step, definition.min, definition.max)) {
+                        value.* = .{ .float = std.math.clamp(current, definition.min, definition.max) };
+                        edited = true;
+                        committed = committed or engine.ui.ImGui.isItemDeactivatedAfterEdit();
+                    }
+                },
+                .boolean => {
+                    var current = value.boolean;
+                    if (drawInspectorCheckboxRow(definition.name, widget_id, &current)) {
+                        value.* = .{ .boolean = current };
+                        edited = true;
+                        committed = true;
+                    }
+                },
+                .integer => {
+                    var current = @as(f32, @floatFromInt(value.integer));
+                    if (drawInspectorFloatRow(definition.name, widget_id, &current, definition.step, definition.min, definition.max)) {
+                        const clamped = std.math.clamp(current, definition.min, definition.max);
+                        value.* = .{ .integer = @as(i32, @intFromFloat(@round(clamped))) };
+                        edited = true;
+                        committed = committed or engine.ui.ImGui.isItemDeactivatedAfterEdit();
+                    }
+                },
+            }
+        }
+    }
+
+    if (!edited) {
+        return;
+    }
+
+    const next_payload = try script_parameter_reflection.buildValuesJsonAlloc(allocator, definitions, values);
+    errdefer allocator.free(next_payload);
+    replaceOwnedScriptParameters(allocator, &script_component.parameters, next_payload);
+
+    if (layer_context.script_runtime) |runtime| {
+        _ = try runtime.applyEntityScriptParameters(layer_context.world, entity_id);
+    }
+    if (committed) {
+        try history.captureSnapshot(state, layer_context);
+    }
+}
+
+fn replaceOwnedScriptParameters(allocator: std.mem.Allocator, target: *[]const u8, next: []u8) void {
+    if (target.*.len != 0) {
+        allocator.free(target.*);
+    }
+    target.* = next;
+}
+
 fn drawTransformHeaderContextMenu(
     state: *EditorState,
     layer_context: *engine.core.LayerContext,

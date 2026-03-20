@@ -207,9 +207,25 @@ pub const PrefabEntityData = struct {
         allocator.free(self.name);
         if (self.mesh_asset_id) |asset_id| allocator.free(asset_id);
         if (self.material_asset_id) |asset_id| allocator.free(asset_id);
+        if (self.script) |script| {
+            freeScriptParameters(allocator, script.parameters);
+        }
         if (self.nested_prefab_id) |id| allocator.free(id);
     }
 };
+
+fn cloneScriptComponent(allocator: std.mem.Allocator, script: ?components.Script) !?components.Script {
+    const value = script orelse return null;
+    var cloned = value;
+    cloned.parameters = if (value.parameters.len != 0) try allocator.dupe(u8, value.parameters) else &.{};
+    return cloned;
+}
+
+fn freeScriptParameters(allocator: std.mem.Allocator, parameters: []const u8) void {
+    if (parameters.len != 0) {
+        allocator.free(parameters);
+    }
+}
 
 /// Prefab 实例覆盖数据 - 存储在实体上
 pub const PrefabInstanceOverride = struct {
@@ -407,7 +423,7 @@ pub fn createPrefabFromEntities(
             .material = entity.material,
             .light = entity.light,
             .vfx = entity.vfx,
-            .script = entity.script,
+            .script = try cloneScriptComponent(allocator, entity.script),
             .visible = entity.visible,
             .editor_only = entity.editor_only,
             .is_folder = entity.is_folder,
@@ -916,6 +932,51 @@ test "Prefab 序列化和反序列化" {
     try std.testing.expectEqualStrings(prefab.name, deserialized.name);
     try std.testing.expectEqual(prefab.entities.len, deserialized.entities.len);
     try std.testing.expectEqualStrings(prefab.entities[0].name, deserialized.entities[0].name);
+}
+
+test "Prefab save-load-resave is byte stable" {
+    var temp_dir = std.testing.tmpDir(.{});
+    defer temp_dir.cleanup();
+
+    const cwd = std.fs.cwd();
+    var original = try cwd.openDir(".", .{});
+    defer original.close();
+    try temp_dir.dir.setAsCwd();
+    defer original.setAsCwd() catch {};
+
+    const allocator = std.testing.allocator;
+    var prefab = PrefabResource.init(allocator, "prefab://test/robot/v1", "Robot");
+    defer prefab.deinit();
+
+    var entity_data = try allocator.alloc(PrefabEntityData, 2);
+    entity_data[0] = .{
+        .prefab_entity_id = 0,
+        .name = try allocator.dupe(u8, "Robot"),
+        .local_transform = .{ .translation = .{ 0.0, 1.0, 0.0 } },
+        .mesh = .{ .handle = null, .primitive = .cube },
+        .visible = true,
+    };
+    entity_data[1] = .{
+        .prefab_entity_id = 1,
+        .name = try allocator.dupe(u8, "Sensor"),
+        .parent = 0,
+        .local_transform = .{ .translation = .{ 0.25, 0.5, 0.0 } },
+        .light = .{ .kind = .point, .intensity = 12.0, .range = 5.0 },
+        .visible = false,
+    };
+    prefab.entities = entity_data;
+
+    try savePrefabToPath(allocator, &prefab, "assets/prefabs/test.prefab");
+    var loaded = try loadPrefabFromPath(allocator, "assets/prefabs/test.prefab");
+    defer loaded.deinit();
+    try savePrefabToPath(allocator, &loaded, "assets/prefabs/test_resaved.prefab");
+
+    const first = try std.fs.cwd().readFileAlloc(allocator, "assets/prefabs/test.prefab", 1024 * 1024);
+    defer allocator.free(first);
+    const second = try std.fs.cwd().readFileAlloc(allocator, "assets/prefabs/test_resaved.prefab", 1024 * 1024);
+    defer allocator.free(second);
+
+    try std.testing.expectEqualStrings(first, second);
 }
 
 test "Prefab 实例化" {

@@ -7,6 +7,7 @@ const hot_reload = @import("./hot_reload.zig");
 const vm_interface = @import("./vm_interface.zig");
 const wasm_compiler = @import("./wasm_compiler.zig");
 const script_resource_mod = @import("../assets/script_resource.zig");
+const parameter_reflection = @import("./parameter_reflection.zig");
 
 pub const types_mod = types;
 pub const context_mod = context;
@@ -34,6 +35,7 @@ pub const ZigVM = vm.ZigVM;
 pub const CSharpVM = vm.CSharpVM;
 pub const WasmVM = vm.WasmVM;
 pub const WasmCompileResult = wasm_compiler.CompileResult;
+pub const parameter_reflection_mod = parameter_reflection;
 
 pub const HotReloadManager = hot_reload.HotReloadManager;
 pub const FileWatcher = hot_reload.FileWatcher;

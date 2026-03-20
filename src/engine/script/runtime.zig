@@ -5,6 +5,7 @@ const context = @import("./context.zig");
 const vm_mod = @import("./vm.zig");
 const hot_reload_mod = @import("./hot_reload.zig");
 const wasm_compiler = @import("./wasm_compiler.zig");
+const wasm_vm_mod = @import("./wasm_vm.zig");
 const handles = @import("../assets/handles.zig");
 const components = @import("../scene/components.zig");
 const world_mod = @import("../scene/world.zig");
@@ -270,6 +271,33 @@ pub const ScriptRuntime = struct {
         return list.items;
     }
 
+    pub fn applyEntityScriptParameters(self: *ScriptRuntime, world: *world_mod.World, entity_id: types.EntityId) !bool {
+        const entity = world.getEntityConst(entity_id) orelse return false;
+        const script = entity.script orelse return false;
+        const instance_id = script.instance_id orelse return false;
+        if (script.language != .wasm or script.script_handle == null) {
+            return false;
+        }
+
+        const instance = self.instances.get(instance_id) orelse return false;
+        const resource = world.resources.script(script.script_handle.?) orelse return false;
+        if (resource.user_data.len == 0) {
+            return false;
+        }
+
+        const applied = wasm_vm_mod.applyParameterPayload(self.allocator, instance, resource.user_data, script.parameters) catch |err| {
+            self.recordEvent(.{
+                .script_handle = script.script_handle.?,
+                .entity_id = entity_id,
+                .phase = .update,
+                .severity = .@"error",
+                .message = @errorName(err),
+            });
+            return false;
+        };
+        return applied;
+    }
+
     /// 重新加载脚本
     pub fn reloadScript(self: *ScriptRuntime, handle: handles.ScriptHandle) !void {
         const world = self.world orelse return types.ScriptError.NotFound;
@@ -311,6 +339,8 @@ pub const ScriptRuntime = struct {
                     }
                     self.allocator.free(resource.bytecode);
                     resource.bytecode = try self.allocator.dupe(u8, artifact.bytecode);
+                    self.allocator.free(resource.user_data);
+                    resource.user_data = try self.allocator.dupe(u8, artifact.parameter_schema);
                     resource.last_modified = refreshed_mtime;
                 },
             }
@@ -561,6 +591,19 @@ pub const ScriptRuntime = struct {
         instance.script_handle = script_handle;
         instance.language = script_language;
         ctx.instance = instance;
+
+        if (script_language == .wasm and script.parameters.len != 0 and script_resource.user_data.len != 0) {
+            _ = wasm_vm_mod.applyParameterPayload(self.allocator, instance, script_resource.user_data, script.parameters) catch |err| {
+                self.recordEvent(.{
+                    .script_handle = script_handle,
+                    .entity_id = entity.id,
+                    .phase = .load,
+                    .severity = .@"error",
+                    .message = @errorName(err),
+                });
+                return;
+            };
+        }
 
         self.registerInstance(entity.id, instance) catch |err| {
             log.err("Failed to register script instance for entity {}: {}", .{ entity.id, err });
