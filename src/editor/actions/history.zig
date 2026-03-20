@@ -116,6 +116,7 @@ pub fn deleteEntities(
     if (roots.items.len == 0) {
         return;
     }
+    const use_scene_snapshot = entityListRequiresSceneSnapshot(layer_context.world, roots.items);
 
     var before = try captureEntitySnapshots(state, layer_context.world, roots.items);
     var before_owned = true;
@@ -129,8 +130,12 @@ pub fn deleteEntities(
     }
     if (changed) {
         try layer_context.renderer.replaceSelection(null);
-        try recordDeletedEntities(state, layer_context, &before, selection_before);
-        before_owned = false;
+        if (use_scene_snapshot) {
+            try captureSnapshot(state, layer_context);
+        } else {
+            try recordDeletedEntities(state, layer_context, &before, selection_before);
+            before_owned = false;
+        }
     }
 }
 
@@ -427,6 +432,13 @@ pub fn recordEntityMutation(
     selection_before: []const engine.scene.EntityId,
 ) !void {
     const allocator = state.allocator orelse layer_context.world.allocator;
+    if (entitySubtreeRequiresSceneSnapshot(layer_context.world, before.id)) {
+        var owned_before = before;
+        owned_before.deinit(allocator);
+        try captureSnapshot(state, layer_context);
+        return;
+    }
+
     var deltas = std.ArrayList(command_mod.SubtreeDelta).empty;
     errdefer deinitDeltaList(allocator, &deltas);
 
@@ -456,6 +468,14 @@ pub fn recordEntityBatchMutation(
     selection_before: []const engine.scene.EntityId,
 ) !void {
     const allocator = state.allocator orelse layer_context.world.allocator;
+    for (before_snapshots.items) |before| {
+        if (entitySubtreeRequiresSceneSnapshot(layer_context.world, before.id)) {
+            deinitEntitySnapshots(state, before_snapshots);
+            try captureSnapshot(state, layer_context);
+            return;
+        }
+    }
+
     var deltas = std.ArrayList(command_mod.SubtreeDelta).empty;
     errdefer deinitDeltaList(allocator, &deltas);
 
@@ -493,6 +513,12 @@ pub fn recordCreatedEntities(
     selection_before: []const engine.scene.EntityId,
 ) !void {
     const allocator = state.allocator orelse layer_context.world.allocator;
+    _ = selection_before;
+    if (entityListRequiresSceneSnapshot(layer_context.world, entity_ids)) {
+        try captureSnapshot(state, layer_context);
+        return;
+    }
+
     var deltas = std.ArrayList(command_mod.SubtreeDelta).empty;
     errdefer deinitDeltaList(allocator, &deltas);
 
@@ -843,6 +869,41 @@ fn containsEntityId(entity_ids: []const engine.scene.EntityId, entity_id: engine
             return true;
         }
     }
+    return false;
+}
+
+fn entityListRequiresSceneSnapshot(
+    world: *const engine.scene.World,
+    entity_ids: []const engine.scene.EntityId,
+) bool {
+    for (entity_ids) |entity_id| {
+        if (entitySubtreeRequiresSceneSnapshot(world, entity_id)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn entitySubtreeRequiresSceneSnapshot(
+    world: *const engine.scene.World,
+    entity_id: engine.scene.EntityId,
+) bool {
+    const entity = world.getEntityConst(entity_id) orelse return false;
+    if (entity.animator != null or
+        entity.skinned_mesh != null or
+        world.animatorTargets(entity_id) != null or
+        world.animatorGraph(entity_id) != null or
+        world.skinnedMeshTargets(entity_id) != null)
+    {
+        return true;
+    }
+
+    for (entity.children.items) |child_id| {
+        if (entitySubtreeRequiresSceneSnapshot(world, child_id)) {
+            return true;
+        }
+    }
+
     return false;
 }
 

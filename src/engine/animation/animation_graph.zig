@@ -513,9 +513,29 @@ pub const AnimationGraphInstance = struct {
                     self.next_state = transition.to_state;
                     self.transition_time = 0.0;
                     self.transition_duration = transition.duration;
+                    self.consumeTransitionTriggers(transition.conditions);
                     break;
                 }
             }
+        }
+    }
+
+    fn consumeTransitionTriggers(self: *@This(), conditions: []const TransitionCondition) void {
+        for (conditions) |condition| {
+            const parameter_condition = switch (condition) {
+                .parameter => |value| value,
+                else => continue,
+            };
+
+            const parameter_index = self.graph.findParameter(parameter_condition.name) orelse continue;
+            if (parameter_index >= self.graph.parameters.items.len or parameter_index >= self.parameters.items.len) {
+                continue;
+            }
+            if (self.graph.parameters.items[parameter_index].type != .trigger) {
+                continue;
+            }
+
+            self.parameters.items[parameter_index] = .{ .bool = false };
         }
     }
 
@@ -904,4 +924,55 @@ test "Transition condition editing preserves owned data and empty slices" {
 
     try transition.removeCondition(std.testing.allocator, 0);
     try std.testing.expectEqual(@as(usize, 0), transition.conditions.len);
+}
+
+test "AnimationGraph trigger parameters are consumed when transition starts" {
+    var graph = try AnimationGraph.init(std.testing.allocator, "TriggerGraph");
+    defer graph.deinit();
+
+    const idle = try graph.addState("Idle", handles.animationClipHandle(0));
+    const jump = try graph.addState("Jump", handles.animationClipHandle(1));
+    const land = try graph.addState("Land", handles.animationClipHandle(2));
+    graph.default_state = idle;
+    try graph.addParameter("Jump", .trigger, .{ .bool = false });
+
+    const idle_to_jump_conditions = [_]TransitionCondition{
+        .{
+            .parameter = .{
+                .name = try std.testing.allocator.dupe(u8, "Jump"),
+                .value = 0.5,
+                .comparison = .greater,
+            },
+        },
+    };
+    defer std.testing.allocator.free(idle_to_jump_conditions[0].parameter.name);
+    try graph.addTransition(idle, jump, 0.1, &idle_to_jump_conditions);
+
+    const jump_to_land_conditions = [_]TransitionCondition{
+        .{
+            .parameter = .{
+                .name = try std.testing.allocator.dupe(u8, "Jump"),
+                .value = 0.5,
+                .comparison = .greater,
+            },
+        },
+    };
+    defer std.testing.allocator.free(jump_to_land_conditions[0].parameter.name);
+    try graph.addTransition(jump, land, 0.1, &jump_to_land_conditions);
+
+    var instance = try AnimationGraphInstance.init(std.testing.allocator, &graph);
+    defer instance.deinit();
+
+    instance.setParameter(0, .{ .bool = true });
+    instance.update(0.0);
+
+    try std.testing.expectEqual(@as(?u32, jump), instance.next_state);
+    try std.testing.expectEqual(false, instance.parameters.items[0].bool);
+
+    instance.update(0.1);
+    try std.testing.expectEqual(@as(u32, jump), instance.current_state);
+    try std.testing.expectEqual(@as(?u32, null), instance.next_state);
+
+    instance.update(0.0);
+    try std.testing.expectEqual(@as(?u32, null), instance.next_state);
 }

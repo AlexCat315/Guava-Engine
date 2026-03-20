@@ -905,6 +905,17 @@ fn refreshGraphEditorData(
     };
 }
 
+fn commitGraphAuthoringChange(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    editor_state: *AnimationEditorState,
+) void {
+    history.captureSnapshot(state, layer_context) catch |err| {
+        std.log.err("Failed to capture animation graph history snapshot: {}", .{err});
+    };
+    refreshGraphEditorData(layer_context, editor_state);
+}
+
 fn clipLabel(
     layer_context: *engine.core.LayerContext,
     clip_handle: ?handles.AnimationClipHandle,
@@ -1374,7 +1385,7 @@ fn drawGraphStateEditor(
             return;
         };
         setSelectedGraphState(editor_state, editable_graph, new_state_index);
-        refreshGraphEditorData(layer_context, editor_state);
+        commitGraphAuthoringChange(state, layer_context, editor_state);
     }
 
     if (graph.states.items.len == 0) {
@@ -1430,7 +1441,7 @@ fn drawGraphStateEditor(
                 replaceOwnedText(editable_graph.allocator, &selected_state.name, next_name) catch |err| {
                     std.log.err("Failed to rename animation graph state: {}", .{err});
                 };
-                refreshGraphEditorData(layer_context, editor_state);
+                commitGraphAuthoringChange(state, layer_context, editor_state);
             }
         }
 
@@ -1445,28 +1456,28 @@ fn drawGraphStateEditor(
                     }
                 }
             }
-            refreshGraphEditorData(layer_context, editor_state);
+            commitGraphAuthoringChange(state, layer_context, editor_state);
         }
 
         layout.drawInspectorPropertyRow(localText(state, .speed), null);
         var speed = selected_state.speed;
         if (engine.ui.ImGui.dragFloat("##graph_state_speed", &speed, 0.01, -8.0, 8.0)) {
             selected_state.speed = speed;
-            refreshGraphEditorData(layer_context, editor_state);
+            commitGraphAuthoringChange(state, layer_context, editor_state);
         }
 
         layout.drawInspectorPropertyRow(localText(state, .loop), null);
         var loop = selected_state.loop;
         if (engine.ui.ImGui.checkbox("##graph_state_loop", &loop)) {
             selected_state.loop = loop;
-            refreshGraphEditorData(layer_context, editor_state);
+            commitGraphAuthoringChange(state, layer_context, editor_state);
         }
 
         layout.drawInspectorPropertyRow(localText(state, .duration), null);
         var duration = selected_state.duration_seconds;
         if (engine.ui.ImGui.dragFloat("##graph_state_duration", &duration, 0.01, 0.0, 120.0)) {
             selected_state.duration_seconds = @max(duration, 0.0);
-            refreshGraphEditorData(layer_context, editor_state);
+            commitGraphAuthoringChange(state, layer_context, editor_state);
         }
 
         layout.drawInspectorPropertyRow(localText(state, .default_state), null);
@@ -1475,7 +1486,7 @@ fn drawGraphStateEditor(
 
     if (engine.ui.ImGui.button(localText(state, .set_default_state))) {
         editable_graph.default_state = state_index;
-        refreshGraphEditorData(layer_context, editor_state);
+        commitGraphAuthoringChange(state, layer_context, editor_state);
     }
 
     engine.ui.ImGui.sameLine();
@@ -1606,7 +1617,7 @@ fn drawGraphTransitionsList(
                     return;
                 };
                 editor_state.selected_graph_transition = @as(u32, @intCast(editable_graph.transitions.items.len - 1));
-                refreshGraphEditorData(layer_context, editor_state);
+                commitGraphAuthoringChange(state, layer_context, editor_state);
             }
         }
     }
@@ -1677,21 +1688,21 @@ fn drawGraphTransitionsList(
         var from_state = transition.from_state;
         if (drawStateCombo("##graph_transition_source", editable_graph, &from_state)) {
             transition.from_state = from_state;
-            refreshGraphEditorData(layer_context, editor_state);
+            commitGraphAuthoringChange(state, layer_context, editor_state);
         }
 
         layout.drawInspectorPropertyRow(localText(state, .transition_target), null);
         var to_state = transition.to_state;
         if (drawStateCombo("##graph_transition_target", editable_graph, &to_state)) {
             transition.to_state = to_state;
-            refreshGraphEditorData(layer_context, editor_state);
+            commitGraphAuthoringChange(state, layer_context, editor_state);
         }
 
         layout.drawInspectorPropertyRow(localText(state, .blend_duration), null);
         var duration = transition.duration;
         if (engine.ui.ImGui.dragFloat("##graph_transition_duration", &duration, 0.01, 0.0, 30.0)) {
             transition.duration = @max(duration, 0.0);
-            refreshGraphEditorData(layer_context, editor_state);
+            commitGraphAuthoringChange(state, layer_context, editor_state);
         }
 
         layout.drawInspectorPropertyRow(localText(state, .transition_conditions), null);
@@ -1730,7 +1741,7 @@ fn drawGraphTransitionsList(
             return;
         };
         setSelectedTransitionCondition(editor_state, transition, @as(u32, @intCast(transition.conditions.len - 1)));
-        refreshGraphEditorData(layer_context, editor_state);
+        commitGraphAuthoringChange(state, layer_context, editor_state);
     }
 
     const condition_index = editor_state.selected_transition_condition orelse {
@@ -1747,7 +1758,7 @@ fn drawGraphTransitionsList(
             } else if (transition_index >= editable_graph.transitions.items.len) {
                 editor_state.selected_graph_transition = @as(u32, @intCast(editable_graph.transitions.items.len - 1));
             }
-            refreshGraphEditorData(layer_context, editor_state);
+            commitGraphAuthoringChange(state, layer_context, editor_state);
         }
         return;
     };
@@ -1766,7 +1777,7 @@ fn drawGraphTransitionsList(
             } else if (transition_index >= editable_graph.transitions.items.len) {
                 editor_state.selected_graph_transition = @as(u32, @intCast(editable_graph.transitions.items.len - 1));
             }
-            refreshGraphEditorData(layer_context, editor_state);
+            commitGraphAuthoringChange(state, layer_context, editor_state);
         }
         return;
     }
@@ -1803,7 +1814,7 @@ fn drawGraphTransitionsList(
                 std.log.err("Failed to change animation graph condition type: {}", .{err});
             };
             setSelectedTransitionCondition(editor_state, transition, @intCast(condition_index));
-            refreshGraphEditorData(layer_context, editor_state);
+            commitGraphAuthoringChange(state, layer_context, editor_state);
         }
 
         switch (selected_condition.*) {
@@ -1812,7 +1823,7 @@ fn drawGraphTransitionsList(
                 var value = threshold.*;
                 if (engine.ui.ImGui.dragFloat("##graph_transition_condition_threshold", &value, 0.01, 0.0, 120.0)) {
                     threshold.* = @max(value, 0.0);
-                    refreshGraphEditorData(layer_context, editor_state);
+                    commitGraphAuthoringChange(state, layer_context, editor_state);
                 }
             },
             .time_remaining => |*threshold| {
@@ -1820,7 +1831,7 @@ fn drawGraphTransitionsList(
                 var value = threshold.*;
                 if (engine.ui.ImGui.dragFloat("##graph_transition_condition_threshold", &value, 0.01, 0.0, 120.0)) {
                     threshold.* = @max(value, 0.0);
-                    refreshGraphEditorData(layer_context, editor_state);
+                    commitGraphAuthoringChange(state, layer_context, editor_state);
                 }
             },
             .parameter => |*parameter| {
@@ -1837,7 +1848,7 @@ fn drawGraphTransitionsList(
                                 std.log.err("Failed to rename animation graph condition parameter: {}", .{err});
                             };
                             setSelectedTransitionCondition(editor_state, transition, @intCast(condition_index));
-                            refreshGraphEditorData(layer_context, editor_state);
+                            commitGraphAuthoringChange(state, layer_context, editor_state);
                         }
                     }
                 } else {
@@ -1857,7 +1868,7 @@ fn drawGraphTransitionsList(
                                     continue;
                                 };
                                 setSelectedTransitionCondition(editor_state, transition, @intCast(condition_index));
-                                refreshGraphEditorData(layer_context, editor_state);
+                                commitGraphAuthoringChange(state, layer_context, editor_state);
                             }
                         }
                     }
@@ -1865,14 +1876,14 @@ fn drawGraphTransitionsList(
 
                 layout.drawInspectorPropertyRow(localText(state, .comparison), null);
                 if (drawComparisonCombo("##graph_transition_condition_comparison", &parameter.comparison)) {
-                    refreshGraphEditorData(layer_context, editor_state);
+                    commitGraphAuthoringChange(state, layer_context, editor_state);
                 }
 
                 layout.drawInspectorPropertyRow(localText(state, .threshold), null);
                 var value = parameter.value;
                 if (engine.ui.ImGui.dragFloat("##graph_transition_condition_parameter_value", &value, 0.01, -1000.0, 1000.0)) {
                     parameter.value = value;
-                    refreshGraphEditorData(layer_context, editor_state);
+                    commitGraphAuthoringChange(state, layer_context, editor_state);
                 }
             },
         }
@@ -1884,7 +1895,7 @@ fn drawGraphTransitionsList(
             return;
         };
         syncTransitionConditionSelection(editor_state, transition);
-        refreshGraphEditorData(layer_context, editor_state);
+        commitGraphAuthoringChange(state, layer_context, editor_state);
     }
 
     if (engine.ui.ImGui.button(localText(state, .delete_transition))) {
@@ -1899,7 +1910,7 @@ fn drawGraphTransitionsList(
         } else if (transition_index >= editable_graph.transitions.items.len) {
             editor_state.selected_graph_transition = @as(u32, @intCast(editable_graph.transitions.items.len - 1));
         }
-        refreshGraphEditorData(layer_context, editor_state);
+        commitGraphAuthoringChange(state, layer_context, editor_state);
     }
 }
 
