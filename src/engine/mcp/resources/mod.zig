@@ -15,6 +15,15 @@ pub const resource_templates = [_]protocol.ResourceTemplateDescriptor{
     },
 };
 
+const schema_components_descriptor = protocol.ResourceDescriptor{
+    .uri = "schema://components",
+    .name = "Component Schema",
+    .title = "Component Schema",
+    .description = "Stable JSON contract for entity fields, vector conventions, enums, and component payloads accepted by Guava Engine.",
+    .mimeType = "application/json",
+    .size = null,
+};
+
 pub const SnapshotStore = struct {
     allocator: std.mem.Allocator,
     collaboration: ?*const collaboration_mod.Store = null,
@@ -102,6 +111,7 @@ pub const SnapshotStore = struct {
         }
 
         const listed_count = countListedResources(mutable.entries.items) +
+            1 +
             @as(usize, if (mutable.collaboration != null) 3 else 0) +
             @as(usize, if (mutable.script_runtime != null) 1 else 0);
         try resources.ensureTotalCapacity(allocator, listed_count);
@@ -118,6 +128,8 @@ pub const SnapshotStore = struct {
                 .size = entry.text.len,
             });
         }
+
+        try resources.append(allocator, try copyResourceDescriptorAlloc(allocator, schema_components_descriptor));
 
         if (mutable.collaboration) |_| {
             try collaboration_mod.Store.appendResourceDescriptorsAlloc(allocator, &resources);
@@ -150,6 +162,14 @@ pub const SnapshotStore = struct {
                 .uri = try allocator.dupe(u8, entry.uri),
                 .mimeType = if (entry.mime_type) |mime_type| try allocator.dupe(u8, mime_type) else null,
                 .text = try allocator.dupe(u8, entry.text),
+            };
+        }
+
+        if (std.mem.eql(u8, uri, "schema://components")) {
+            return .{
+                .uri = try allocator.dupe(u8, schema_components_descriptor.uri),
+                .mimeType = try allocator.dupe(u8, "application/json"),
+                .text = try buildComponentsSchemaJsonAlloc(allocator),
             };
         }
 
@@ -232,6 +252,20 @@ fn freeEntriesOwned(allocator: std.mem.Allocator, entries: []ResourceEntry) void
         }
         allocator.free(entry.text);
     }
+}
+
+fn copyResourceDescriptorAlloc(
+    allocator: std.mem.Allocator,
+    descriptor: protocol.ResourceDescriptor,
+) !protocol.ResourceDescriptor {
+    return .{
+        .uri = try allocator.dupe(u8, descriptor.uri),
+        .name = try allocator.dupe(u8, descriptor.name),
+        .title = if (descriptor.title) |title| try allocator.dupe(u8, title) else null,
+        .description = if (descriptor.description) |description| try allocator.dupe(u8, description) else null,
+        .mimeType = if (descriptor.mimeType) |mime_type| try allocator.dupe(u8, mime_type) else null,
+        .size = descriptor.size,
+    };
 }
 
 fn buildResourceEntriesAlloc(
@@ -512,6 +546,210 @@ fn buildEntityDetailJsonAlloc(allocator: std.mem.Allocator, world: *const scene_
     });
 }
 
+fn buildComponentsSchemaJsonAlloc(allocator: std.mem.Allocator) ![]u8 {
+    const TypeSchema = struct {
+        name: []const u8,
+        encoding: []const u8,
+        example: ?[]const f32 = null,
+    };
+    const EnumSchema = struct {
+        name: []const u8,
+        values: []const []const u8,
+    };
+    const FieldSchema = struct {
+        name: []const u8,
+        type: []const u8,
+        description: []const u8,
+        required: bool = false,
+    };
+    const SectionSchema = struct {
+        name: []const u8,
+        description: []const u8,
+        fields: []const FieldSchema,
+    };
+    const ContractSchema = struct {
+        version: []const u8,
+        conventions: struct {
+            vectors_are_arrays: bool,
+            arrays_not_objects: bool,
+            notes: []const []const u8,
+        },
+        shared_types: []const TypeSchema,
+        enums: []const EnumSchema,
+        entity_fields: []const FieldSchema,
+        components: []const SectionSchema,
+    };
+
+    const vec2_example = [_]f32{ 0.0, 0.0 };
+    const vec3_example = [_]f32{ 0.0, 0.0, 0.0 };
+    const quat_example = [_]f32{ 0.0, 0.0, 0.0, 1.0 };
+    const color4_example = [_]f32{ 1.0, 1.0, 1.0, 1.0 };
+    const primitive_values = [_][]const u8{ "cube", "sphere", "plane", "custom" };
+    const shading_values = [_][]const u8{ "unlit", "lambert", "pbr_metallic_roughness" };
+    const light_values = [_][]const u8{ "directional", "point", "spot" };
+    const vfx_values = [_][]const u8{ "fountain", "orbit" };
+    const script_language_values = [_][]const u8{ "zig", "csharp", "wasm" };
+    const rigidbody_motion_values = [_][]const u8{ "static", "dynamic", "kinematic" };
+    const constraint_values = [_][]const u8{ "point_to_point", "hinge", "slider", "distance" };
+    const entity_fields = [_]FieldSchema{
+        .{ .name = "name", .type = "string", .description = "Entity display name.", .required = true },
+        .{ .name = "parent", .type = "entity_id|null", .description = "Parent entity id or null for a root." },
+        .{ .name = "local_transform", .type = "Transform", .description = "Local transform, always encoded with array vectors." },
+        .{ .name = "visible", .type = "bool", .description = "Entity visibility flag." },
+        .{ .name = "editor_only", .type = "bool", .description = "Whether the entity is editor-only." },
+        .{ .name = "is_folder", .type = "bool", .description = "Hierarchy organization flag." },
+    };
+    const camera_fields = [_]FieldSchema{
+        .{ .name = "is_primary", .type = "bool", .description = "Marks the primary scene camera." },
+        .{ .name = "projection", .type = "CameraProjection", .description = "Either { perspective = ... } or { orthographic = ... }." },
+    };
+    const mesh_fields = [_]FieldSchema{
+        .{ .name = "handle", .type = "asset_handle|null", .description = "Optional mesh asset handle." },
+        .{ .name = "primitive", .type = "Primitive", .description = "Fallback primitive when no mesh handle is bound." },
+    };
+    const skinned_mesh_fields = [_]FieldSchema{
+        .{ .name = "mesh_handle", .type = "asset_handle|null", .description = "Optional mesh asset handle." },
+        .{ .name = "primitive", .type = "Primitive", .description = "Fallback primitive when no mesh handle is bound." },
+        .{ .name = "skeleton_handle", .type = "asset_handle|null", .description = "Skeleton asset handle." },
+        .{ .name = "skin_handle", .type = "asset_handle|null", .description = "Skin asset handle." },
+    };
+    const animator_fields = [_]FieldSchema{
+        .{ .name = "skeleton_handle", .type = "asset_handle|null", .description = "Skeleton asset handle." },
+        .{ .name = "default_clip_handle", .type = "asset_handle|null", .description = "Default animation clip handle." },
+        .{ .name = "time_seconds", .type = "f32", .description = "Current animation time." },
+        .{ .name = "next_clip_handle", .type = "asset_handle|null", .description = "Pending next clip handle." },
+        .{ .name = "next_time_seconds", .type = "f32", .description = "Time in the pending next clip." },
+        .{ .name = "blend_duration_seconds", .type = "f32", .description = "Blend duration in seconds." },
+        .{ .name = "blend_time_seconds", .type = "f32", .description = "Current blend progress." },
+        .{ .name = "speed", .type = "f32", .description = "Playback speed multiplier." },
+        .{ .name = "playing", .type = "bool", .description = "Animation playing flag." },
+        .{ .name = "looping", .type = "bool", .description = "Animation looping flag." },
+    };
+    const rigidbody_fields = [_]FieldSchema{
+        .{ .name = "motion_type", .type = "RigidbodyMotionType", .description = "Motion mode for physics integration." },
+        .{ .name = "mass", .type = "f32", .description = "Mass in kilograms." },
+        .{ .name = "linear_velocity", .type = "Vec3", .description = "Linear velocity vector." },
+        .{ .name = "angular_velocity", .type = "Vec3", .description = "Angular velocity vector." },
+        .{ .name = "gravity_scale", .type = "f32", .description = "Gravity multiplier." },
+        .{ .name = "linear_damping", .type = "f32", .description = "Linear damping coefficient." },
+        .{ .name = "angular_damping", .type = "f32", .description = "Angular damping coefficient." },
+        .{ .name = "allow_sleep", .type = "bool", .description = "Whether the rigidbody may sleep." },
+    };
+    const box_collider_fields = [_]FieldSchema{
+        .{ .name = "half_extents", .type = "Vec3", .description = "Half extents of the box." },
+        .{ .name = "center", .type = "Vec3", .description = "Local center offset." },
+        .{ .name = "is_trigger", .type = "bool", .description = "Trigger-only collider flag." },
+        .{ .name = "layer_id", .type = "u16", .description = "Collision layer id." },
+        .{ .name = "layer_group", .type = "u16", .description = "Collision layer mask." },
+    };
+    const sphere_collider_fields = [_]FieldSchema{
+        .{ .name = "radius", .type = "f32", .description = "Sphere radius." },
+        .{ .name = "center", .type = "Vec3", .description = "Local center offset." },
+        .{ .name = "is_trigger", .type = "bool", .description = "Trigger-only collider flag." },
+        .{ .name = "layer_id", .type = "u16", .description = "Collision layer id." },
+        .{ .name = "layer_group", .type = "u16", .description = "Collision layer mask." },
+    };
+    const mesh_collider_fields = [_]FieldSchema{
+        .{ .name = "use_attached_mesh", .type = "bool", .description = "Use the attached mesh as the collision source." },
+        .{ .name = "is_trigger", .type = "bool", .description = "Trigger-only collider flag." },
+        .{ .name = "layer_id", .type = "u16", .description = "Collision layer id." },
+        .{ .name = "layer_group", .type = "u16", .description = "Collision layer mask." },
+    };
+    const constraint_fields = [_]FieldSchema{
+        .{ .name = "constraint_type", .type = "ConstraintType", .description = "Constraint kind." },
+        .{ .name = "entity_a", .type = "entity_id", .description = "First constrained entity.", .required = true },
+        .{ .name = "entity_b", .type = "entity_id", .description = "Second constrained entity.", .required = true },
+        .{ .name = "pivot_a", .type = "Vec3", .description = "Constraint pivot on entity A." },
+        .{ .name = "pivot_b", .type = "Vec3", .description = "Constraint pivot on entity B." },
+        .{ .name = "axis_a", .type = "Vec3", .description = "Constraint axis on entity A." },
+        .{ .name = "axis_b", .type = "Vec3", .description = "Constraint axis on entity B." },
+        .{ .name = "min_limit", .type = "f32", .description = "Minimum distance or angle limit." },
+        .{ .name = "max_limit", .type = "f32", .description = "Maximum distance or angle limit." },
+        .{ .name = "is_enabled", .type = "bool", .description = "Constraint enabled flag." },
+    };
+    const material_fields = [_]FieldSchema{
+        .{ .name = "handle", .type = "asset_handle|null", .description = "Optional material asset handle." },
+        .{ .name = "shading", .type = "ShadingModel", .description = "Shading model enum." },
+        .{ .name = "base_color_factor", .type = "Vec4", .description = "RGBA base color multiplier." },
+        .{ .name = "emissive_factor", .type = "Vec3", .description = "RGB emissive multiplier." },
+        .{ .name = "metallic_factor", .type = "f32", .description = "Metalness factor." },
+        .{ .name = "roughness_factor", .type = "f32", .description = "Roughness factor." },
+        .{ .name = "alpha_cutoff", .type = "f32", .description = "Alpha cutoff threshold." },
+        .{ .name = "double_sided", .type = "bool", .description = "Double-sided rendering flag." },
+    };
+    const light_fields = [_]FieldSchema{
+        .{ .name = "kind", .type = "LightKind", .description = "Light type enum." },
+        .{ .name = "color", .type = "Vec3", .description = "RGB light color." },
+        .{ .name = "intensity", .type = "f32", .description = "Light intensity multiplier." },
+        .{ .name = "range", .type = "f32", .description = "Point/spot light range." },
+    };
+    const vfx_fields = [_]FieldSchema{
+        .{ .name = "kind", .type = "VfxKind", .description = "Built-in VFX preset enum." },
+        .{ .name = "looping", .type = "bool", .description = "Loop playback flag." },
+        .{ .name = "emission_rate", .type = "f32", .description = "Particles per second." },
+        .{ .name = "particle_lifetime", .type = "f32", .description = "Lifetime in seconds." },
+        .{ .name = "speed", .type = "f32", .description = "Initial particle speed." },
+        .{ .name = "max_particles", .type = "u16", .description = "Maximum living particles." },
+        .{ .name = "radius", .type = "f32", .description = "Spawn radius." },
+        .{ .name = "spread", .type = "f32", .description = "Emission spread." },
+        .{ .name = "size", .type = "f32", .description = "Particle size." },
+        .{ .name = "color", .type = "Vec3", .description = "RGB particle color." },
+    };
+    const script_fields = [_]FieldSchema{
+        .{ .name = "script_handle", .type = "asset_handle|null", .description = "Script resource handle." },
+        .{ .name = "language", .type = "ScriptLanguage", .description = "Script language enum." },
+        .{ .name = "instance_id", .type = "u64|null", .description = "Runtime script instance id." },
+        .{ .name = "enabled", .type = "bool", .description = "Script enabled flag." },
+        .{ .name = "parameters", .type = "string", .description = "Serialized script parameter payload." },
+    };
+
+    return stringifyAlloc(allocator, ContractSchema{
+        .version = "1",
+        .conventions = .{
+            .vectors_are_arrays = true,
+            .arrays_not_objects = true,
+            .notes = &.{
+                "Vec2, Vec3, Quat, and Vec4 values must be JSON arrays, not keyed objects.",
+                "Optional handles and parent ids use null when absent.",
+                "Enum fields must use the exact lowercase strings declared in this schema.",
+            },
+        },
+        .shared_types = &.{
+            .{ .name = "Vec2", .encoding = "array<f32,2>", .example = &vec2_example },
+            .{ .name = "Vec3", .encoding = "array<f32,3>", .example = &vec3_example },
+            .{ .name = "Quat", .encoding = "array<f32,4>", .example = &quat_example },
+            .{ .name = "Vec4", .encoding = "array<f32,4>", .example = &color4_example },
+            .{ .name = "Transform", .encoding = "{ translation: Vec3, rotation: Quat, scale: Vec3 }" },
+            .{ .name = "CameraProjection", .encoding = "{ perspective: {...} } | { orthographic: {...} }" },
+        },
+        .enums = &.{
+            .{ .name = "Primitive", .values = &primitive_values },
+            .{ .name = "ShadingModel", .values = &shading_values },
+            .{ .name = "LightKind", .values = &light_values },
+            .{ .name = "VfxKind", .values = &vfx_values },
+            .{ .name = "ScriptLanguage", .values = &script_language_values },
+            .{ .name = "RigidbodyMotionType", .values = &rigidbody_motion_values },
+            .{ .name = "ConstraintType", .values = &constraint_values },
+        },
+        .entity_fields = &entity_fields,
+        .components = &.{
+            .{ .name = "camera", .description = "Camera component payload.", .fields = &camera_fields },
+            .{ .name = "mesh", .description = "Mesh component payload.", .fields = &mesh_fields },
+            .{ .name = "skinned_mesh", .description = "Skinned mesh component payload.", .fields = &skinned_mesh_fields },
+            .{ .name = "animator", .description = "Animator component payload.", .fields = &animator_fields },
+            .{ .name = "rigidbody", .description = "Rigidbody component payload.", .fields = &rigidbody_fields },
+            .{ .name = "box_collider", .description = "Box collider component payload.", .fields = &box_collider_fields },
+            .{ .name = "sphere_collider", .description = "Sphere collider component payload.", .fields = &sphere_collider_fields },
+            .{ .name = "mesh_collider", .description = "Mesh collider component payload.", .fields = &mesh_collider_fields },
+            .{ .name = "constraint", .description = "Constraint component payload.", .fields = &constraint_fields },
+            .{ .name = "material", .description = "Material component payload.", .fields = &material_fields },
+            .{ .name = "light", .description = "Light component payload.", .fields = &light_fields },
+            .{ .name = "vfx", .description = "VFX component payload.", .fields = &vfx_fields },
+            .{ .name = "script", .description = "Script component payload.", .fields = &script_fields },
+        },
+    });
+}
+
 fn optionalHandleValue(handle: anytype) ?u32 {
     if (handle) |resolved| {
         const raw = @intFromEnum(resolved);
@@ -557,9 +795,10 @@ test "SnapshotStore publishes read-only hierarchy, selection, and entity snapsho
 
     const listed = try store.listAlloc(std.testing.allocator);
     defer freeResourceDescriptors(std.testing.allocator, listed);
-    try std.testing.expectEqual(@as(usize, 2), listed.len);
+    try std.testing.expectEqual(@as(usize, 3), listed.len);
     try std.testing.expectEqualStrings("scene://hierarchy", listed[0].uri);
     try std.testing.expectEqualStrings("selection://current", listed[1].uri);
+    try std.testing.expectEqualStrings("schema://components", listed[2].uri);
 
     const selection = (try store.readAlloc(std.testing.allocator, "selection://current")).?;
     defer freeTextResourceContents(std.testing.allocator, selection);
@@ -591,12 +830,13 @@ test "SnapshotStore exposes collaboration context and preview resources" {
 
     const listed = try store.listAlloc(std.testing.allocator);
     defer freeResourceDescriptors(std.testing.allocator, listed);
-    try std.testing.expectEqual(@as(usize, 5), listed.len);
+    try std.testing.expectEqual(@as(usize, 6), listed.len);
     try std.testing.expectEqualStrings("scene://hierarchy", listed[0].uri);
     try std.testing.expectEqualStrings("selection://current", listed[1].uri);
-    try std.testing.expectEqualStrings("editor://context", listed[2].uri);
-    try std.testing.expectEqualStrings("editor://intent-log", listed[3].uri);
-    try std.testing.expectEqualStrings("preview://staged", listed[4].uri);
+    try std.testing.expectEqualStrings("schema://components", listed[2].uri);
+    try std.testing.expectEqualStrings("editor://context", listed[3].uri);
+    try std.testing.expectEqualStrings("editor://intent-log", listed[4].uri);
+    try std.testing.expectEqualStrings("preview://staged", listed[5].uri);
 
     const context = (try store.readAlloc(std.testing.allocator, "editor://context")).?;
     defer freeTextResourceContents(std.testing.allocator, context);
@@ -611,4 +851,20 @@ test "resource templates advertise dynamic entity snapshots" {
     try std.testing.expectEqual(@as(usize, 1), resource_templates.len);
     try std.testing.expectEqualStrings("entity://{id}", resource_templates[0].uriTemplate);
     try std.testing.expectEqualStrings("application/json", resource_templates[0].mimeType.?);
+}
+
+test "SnapshotStore exposes schema resource for AI-facing component contracts" {
+    var store = SnapshotStore.init(std.testing.allocator, null, null);
+    defer store.deinit();
+
+    var world = scene_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+
+    try store.replaceFromSelection(&world, null, &.{});
+
+    const schema = (try store.readAlloc(std.testing.allocator, "schema://components")).?;
+    defer freeTextResourceContents(std.testing.allocator, schema);
+    try std.testing.expect(std.mem.indexOf(u8, schema.text, "\"vectors_are_arrays\": true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, schema.text, "\"name\": \"material\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, schema.text, "\"name\": \"ScriptLanguage\"") != null);
 }

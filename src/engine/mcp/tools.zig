@@ -2,6 +2,7 @@ const std = @import("std");
 const handles = @import("../assets/handles.zig");
 const command_mod = @import("../core/command.zig");
 const command_queue_mod = @import("../core/command_queue.zig");
+const query_engine = @import("../core/query_engine.zig");
 const core = @import("../core/layer.zig");
 const script_resource_mod = @import("../assets/script_resource.zig");
 const protocol = @import("protocol.zig");
@@ -45,14 +46,52 @@ const CompileScriptRequest = struct {
     }
 };
 
+const QueryRequest = struct {
+    tool_name: []u8,
+    id: ?scene_mod.EntityId = null,
+    name_contains: ?[]u8 = null,
+    has_component: ?[]u8 = null,
+    parent_id: ?scene_mod.EntityId = null,
+    visible: ?bool = null,
+    origin: ?components.Vec3 = null,
+    radius: ?f32 = null,
+    limit: usize = 50,
+    offset: usize = 0,
+    count_only: bool = false,
+
+    fn deinit(self: *QueryRequest, allocator: std.mem.Allocator) void {
+        allocator.free(self.tool_name);
+        if (self.name_contains) |name_contains| allocator.free(name_contains);
+        if (self.has_component) |has_component| allocator.free(has_component);
+        self.* = undefined;
+    }
+
+    fn filter(self: QueryRequest) query_engine.Filter {
+        return .{
+            .id = self.id,
+            .name_contains = self.name_contains,
+            .has_component = self.has_component,
+            .parent_id = self.parent_id,
+            .visible = self.visible,
+            .origin = self.origin,
+            .radius = self.radius,
+            .limit = self.limit,
+            .offset = self.offset,
+            .count_only = self.count_only,
+        };
+    }
+};
+
 pub const PendingRequest = union(enum) {
     command: CommandRequest,
     compile_script: CompileScriptRequest,
+    query_entities: QueryRequest,
 
     pub fn deinit(self: *PendingRequest, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .command => |*command| command.deinit(allocator),
             .compile_script => |*compile| compile.deinit(allocator),
+            .query_entities => |*query| query.deinit(allocator),
         }
         self.* = undefined;
     }
@@ -62,6 +101,7 @@ pub const ToolResult = struct {
     kind: enum {
         command,
         compile_script,
+        query,
     } = .command,
     changed: bool = false,
     entity_id: ?scene_mod.EntityId = null,
@@ -70,9 +110,11 @@ pub const ToolResult = struct {
     script_error: ?[]u8 = null,
     compiled: bool = false,
     attached: bool = false,
+    query_result: ?query_engine.ResultSet = null,
 
     fn deinit(self: *ToolResult, allocator: std.mem.Allocator) void {
         if (self.script_error) |message| allocator.free(message);
+        if (self.query_result) |*query_result| query_result.deinit(allocator);
         self.* = undefined;
     }
 };
@@ -168,6 +210,7 @@ pub const Bridge = struct {
         const response_tool_name = try self.allocator.dupe(u8, switch (request) {
             .command => |command_request| command_request.tool_name,
             .compile_script => |compile_request| compile_request.tool_name,
+            .query_entities => |query_request| query_request.tool_name,
         });
         errdefer self.allocator.free(response_tool_name);
 
@@ -186,6 +229,12 @@ pub const Bridge = struct {
             },
             .compile_script => |compile_request| blk: {
                 break :blk try processCompileScriptRequest(self.allocator, layer_context, compile_request);
+            },
+            .query_entities => |query_request| blk: {
+                break :blk ToolResult{
+                    .kind = .query,
+                    .query_result = try query_engine.queryAlloc(self.allocator, layer_context.world, query_request.filter()),
+                };
             },
         };
         request.deinit(self.allocator);
@@ -222,6 +271,12 @@ pub fn parseToolCallAlloc(
                 .description = try parseOptionalStringAlloc(allocator, arguments, "description"),
                 .enabled = try parseBoolFromObject(try requireObject(arguments), "enabled", true),
             },
+        };
+    }
+
+    if (std.mem.eql(u8, tool_name, "query_entities")) {
+        return .{
+            .query_entities = try parseQueryRequestAlloc(allocator, owned_tool_name, arguments),
         };
     }
 
@@ -337,6 +392,19 @@ pub fn buildSummaryAlloc(allocator: std.mem.Allocator, response: CallResponse) !
             response.result.script_handle,
             response.result.compiled,
             response.result.attached,
+        });
+    }
+
+    if (response.result.kind == .query) {
+        const query = response.result.query_result.?;
+        return std.fmt.allocPrint(allocator, "{s} ok: total={}, returned={}, offset={}, limit={}, truncated={}, count_only={}", .{
+            response.tool_name,
+            query.total,
+            query.items.len,
+            query.offset,
+            query.limit,
+            query.truncated,
+            query.count_only,
         });
     }
 
@@ -547,6 +615,55 @@ fn parseCreateEntityAlloc(allocator: std.mem.Allocator, arguments: ?std.json.Val
     };
 }
 
+fn parseQueryRequestAlloc(
+    allocator: std.mem.Allocator,
+    owned_tool_name: []u8,
+    arguments: ?std.json.Value,
+) !QueryRequest {
+    const args = try requireObject(arguments);
+
+    const id = try parseOptionalEntityIdFromObject(args, "id");
+    const name_contains = try parseOptionalStringAllocFromObject(allocator, args, "name_contains");
+    errdefer if (name_contains) |text| allocator.free(text);
+    const has_component = try parseOptionalStringAllocFromObject(allocator, args, "has_component");
+    errdefer if (has_component) |text| allocator.free(text);
+    if (has_component) |component_name| {
+        if (!query_engine.isComponentNameSupported(component_name)) {
+            return error.InvalidArguments;
+        }
+    }
+
+    const has_origin = args.get("origin") != null;
+    const has_radius = args.get("radius") != null;
+    if (has_origin != has_radius) {
+        return error.InvalidArguments;
+    }
+
+    const origin = if (has_origin)
+        try parseVec3Value(args.get("origin").?)
+    else
+        null;
+    const radius = if (has_radius) blk: {
+        const value = try parseF32Value(args.get("radius").?);
+        if (value < 0.0) return error.InvalidArguments;
+        break :blk value;
+    } else null;
+
+    return .{
+        .tool_name = owned_tool_name,
+        .id = id,
+        .name_contains = name_contains,
+        .has_component = has_component,
+        .parent_id = try parseOptionalEntityIdFromObject(args, "parent_id"),
+        .visible = try parseOptionalBoolFromObject(args, "visible"),
+        .origin = origin,
+        .radius = radius,
+        .limit = try parseUsizeFromObject(args, "limit", 50),
+        .offset = try parseUsizeFromObject(args, "offset", 0),
+        .count_only = try parseBoolFromObject(args, "count_only", false),
+    };
+}
+
 fn requireObject(arguments: ?std.json.Value) Error!std.json.ObjectMap {
     const value = arguments orelse return error.InvalidArguments;
     return switch (value) {
@@ -652,6 +769,15 @@ fn parseRequiredBoolFromObject(object: std.json.ObjectMap, field_name: []const u
 fn parseBoolFromObject(object: std.json.ObjectMap, field_name: []const u8, default_value: bool) !bool {
     const value = object.get(field_name) orelse return default_value;
     return switch (value) {
+        .bool => |boolean| boolean,
+        else => error.InvalidArguments,
+    };
+}
+
+fn parseOptionalBoolFromObject(object: std.json.ObjectMap, field_name: []const u8) !?bool {
+    const value = object.get(field_name) orelse return null;
+    return switch (value) {
+        .null => null,
         .bool => |boolean| boolean,
         else => error.InvalidArguments,
     };
@@ -811,6 +937,18 @@ fn parseU16FromObject(object: std.json.ObjectMap, field_name: []const u8, defaul
     };
 }
 
+fn parseUsizeFromObject(object: std.json.ObjectMap, field_name: []const u8, default_value: usize) !usize {
+    const value = object.get(field_name) orelse return default_value;
+    return switch (value) {
+        .integer => |number| std.math.cast(usize, number) orelse error.InvalidArguments,
+        .float => |number| blk: {
+            if (@round(number) != number) return error.InvalidArguments;
+            break :blk std.math.cast(usize, @as(i128, @intFromFloat(number))) orelse error.InvalidArguments;
+        },
+        else => error.InvalidArguments,
+    };
+}
+
 fn parseF32Value(value: std.json.Value) !f32 {
     return switch (value) {
         .integer => |number| @floatFromInt(number),
@@ -961,4 +1099,46 @@ test "parseToolCallAlloc rejects invalid transform payloads" {
         error.InvalidArguments,
         parseToolCallAlloc(std.testing.allocator, "set_local_transform", parsed.value),
     );
+}
+
+test "parseToolCallAlloc parses query_entities with paging and radius filters" {
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator,
+        \\{
+        \\  "name": "query_entities",
+        \\  "arguments": {
+        \\    "name_contains": "light",
+        \\    "has_component": "light",
+        \\    "visible": true,
+        \\    "origin": [0, 0, 0],
+        \\    "radius": 12,
+        \\    "limit": 10,
+        \\    "offset": 5,
+        \\    "count_only": false
+        \\  }
+        \\}
+    , .{
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+
+    var request = try parseToolCallAlloc(
+        std.testing.allocator,
+        parsed.value.object.get("name").?.string,
+        parsed.value.object.get("arguments").?,
+    );
+    defer request.deinit(std.testing.allocator);
+
+    switch (request) {
+        .query_entities => |query| {
+            try std.testing.expectEqualStrings("query_entities", query.tool_name);
+            try std.testing.expectEqualStrings("light", query.name_contains.?);
+            try std.testing.expectEqualStrings("light", query.has_component.?);
+            try std.testing.expectEqual(@as(?bool, true), query.visible);
+            try std.testing.expectApproxEqAbs(@as(f32, 12.0), query.radius.?, 0.0001);
+            try std.testing.expectEqual(@as(usize, 10), query.limit);
+            try std.testing.expectEqual(@as(usize, 5), query.offset);
+            try std.testing.expectEqualSlices(f32, &.{ 0.0, 0.0, 0.0 }, &query.origin.?);
+        },
+        else => return error.UnexpectedCommandTag,
+    }
 }

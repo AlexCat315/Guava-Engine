@@ -183,7 +183,7 @@ const Server = struct {
                     .title = "Guava Engine MCP",
                     .version = "0.1.0",
                 },
-                .instructions = "Guava Engine MCP bridge with scene snapshots, editor context injection, staged ghost-preview transactions, and a writable WASM script pipeline. Resources: scene://hierarchy, selection://current, entity://{id}, editor://context, editor://intent-log, preview://staged, script://runtime-status. Tools: create_entity, delete_entity, rename_entity, set_parent, set_local_transform, set_world_transform, set_visible, compile_script, stage_transaction, apply_staged_transaction, discard_staged_transaction.",
+                .instructions = "Guava Engine MCP bridge with scene snapshots, component schema contracts, editor context injection, staged ghost-preview transactions, paged entity queries, and a writable WASM script pipeline. Resources: scene://hierarchy, selection://current, entity://{id}, schema://components, editor://context, editor://intent-log, preview://staged, script://runtime-status. Tools: create_entity, delete_entity, rename_entity, set_parent, set_local_transform, set_world_transform, set_visible, query_entities, compile_script, stage_transaction, apply_staged_transaction, discard_staged_transaction.",
             });
             return false;
         }
@@ -274,6 +274,30 @@ const Server = struct {
 
             const summary = try tools_mod.buildSummaryAlloc(std.heap.page_allocator, response);
             defer std.heap.page_allocator.free(summary);
+
+            if (response.result.kind == .query) {
+                const query = response.result.query_result.?;
+                try writeResult(stdout_file, id, .{
+                    .content = &.{
+                        .{
+                            .type = "text",
+                            .text = summary,
+                        },
+                    },
+                    .structuredContent = .{
+                        .tool = response.tool_name,
+                        .total = query.total,
+                        .offset = query.offset,
+                        .limit = query.limit,
+                        .returned = query.items.len,
+                        .count_only = query.count_only,
+                        .truncated = query.truncated,
+                        .items = query.items,
+                    },
+                    .isError = false,
+                });
+                return false;
+            }
 
             try writeResult(stdout_file, id, .{
                 .content = &.{
@@ -540,6 +564,26 @@ fn writeToolList(stdout_file: *std.fs.File, id: std.json.Value) !void {
                         .visible = .{ .type = "boolean" },
                     },
                     .required = &.{ "entity_id", "visible" },
+                },
+            },
+            .{
+                .name = "query_entities",
+                .description = "Query entities with pagination, optional component filters, and optional radius filtering. Use count_only before requesting large result sets.",
+                .inputSchema = .{
+                    .type = "object",
+                    .properties = .{
+                        .id = .{ .type = "integer" },
+                        .name_contains = .{ .type = "string" },
+                        .has_component = .{ .type = "string" },
+                        .parent_id = .{ .type = "integer" },
+                        .visible = .{ .type = "boolean" },
+                        .origin = .{ .type = "array" },
+                        .radius = .{ .type = "number" },
+                        .limit = .{ .type = "integer" },
+                        .offset = .{ .type = "integer" },
+                        .count_only = .{ .type = "boolean" },
+                    },
+                    .required = &.{},
                 },
             },
             .{
