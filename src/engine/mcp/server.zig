@@ -206,7 +206,7 @@ const Server = struct {
 
         if (std.mem.eql(u8, method, "resources/templates/list")) {
             try writeResult(stdout_file, id, .{
-                .resourceTemplates = &.{} ,
+                .resourceTemplates = resources_mod.resource_templates[0..],
             });
             return false;
         }

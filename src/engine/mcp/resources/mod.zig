@@ -4,6 +4,15 @@ const scene_mod = @import("../../scene/scene.zig");
 const components = @import("../../scene/components.zig");
 const render_mod = @import("../../render/renderer.zig");
 
+pub const resource_templates = [_]protocol.ResourceTemplateDescriptor{
+    .{
+        .uriTemplate = "entity://{id}",
+        .name = "Entity Detail",
+        .description = "Read-only snapshot for a specific entity id discovered from scene://hierarchy or selection://current.",
+        .mimeType = "application/json",
+    },
+};
+
 pub const SnapshotStore = struct {
     allocator: std.mem.Allocator,
     mutex: std.Thread.Mutex = .{},
@@ -82,8 +91,12 @@ pub const SnapshotStore = struct {
             resources.deinit(allocator);
         }
 
-        try resources.ensureTotalCapacity(allocator, mutable.entries.items.len);
+        const listed_count = countListedResources(mutable.entries.items);
+        try resources.ensureTotalCapacity(allocator, listed_count);
         for (mutable.entries.items) |entry| {
+            if (!shouldListEntry(entry.uri)) {
+                continue;
+            }
             try resources.append(allocator, .{
                 .uri = try allocator.dupe(u8, entry.uri),
                 .name = try allocator.dupe(u8, entry.name),
@@ -151,6 +164,20 @@ const ResourceEntry = struct {
     mime_type: ?[]u8 = null,
     text: []u8,
 };
+
+fn shouldListEntry(uri: []const u8) bool {
+    return !std.mem.startsWith(u8, uri, "entity://");
+}
+
+fn countListedResources(entries: []const ResourceEntry) usize {
+    var count: usize = 0;
+    for (entries) |entry| {
+        if (shouldListEntry(entry.uri)) {
+            count += 1;
+        }
+    }
+    return count;
+}
 
 fn freeEntriesOwned(allocator: std.mem.Allocator, entries: []ResourceEntry) void {
     for (entries) |entry| {
@@ -492,7 +519,9 @@ test "SnapshotStore publishes read-only hierarchy, selection, and entity snapsho
 
     const listed = try store.listAlloc(std.testing.allocator);
     defer freeResourceDescriptors(std.testing.allocator, listed);
-    try std.testing.expectEqual(@as(usize, 4), listed.len);
+    try std.testing.expectEqual(@as(usize, 2), listed.len);
+    try std.testing.expectEqualStrings("scene://hierarchy", listed[0].uri);
+    try std.testing.expectEqualStrings("selection://current", listed[1].uri);
 
     const selection = (try store.readAlloc(std.testing.allocator, "selection://current")).?;
     defer freeTextResourceContents(std.testing.allocator, selection);
@@ -502,4 +531,10 @@ test "SnapshotStore publishes read-only hierarchy, selection, and entity snapsho
     defer freeTextResourceContents(std.testing.allocator, entity);
     try std.testing.expect(std.mem.indexOf(u8, entity.text, "\"name\": \"Child\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, entity.text, "\"visible\": false") != null);
+}
+
+test "resource templates advertise dynamic entity snapshots" {
+    try std.testing.expectEqual(@as(usize, 1), resource_templates.len);
+    try std.testing.expectEqualStrings("entity://{id}", resource_templates[0].uriTemplate);
+    try std.testing.expectEqualStrings("application/json", resource_templates[0].mimeType.?);
 }
