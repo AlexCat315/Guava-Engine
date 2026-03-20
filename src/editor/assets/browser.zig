@@ -62,6 +62,16 @@ fn drawAssetDragPreview(
     }
     defer engine.ui.ImGui.endDragDropSource();
 
+    state.active_drag_payload = .{
+        .kind = if (std.mem.eql(u8, payload_type, state_mod.asset_model_drag_payload))
+            .asset_model
+        else if (std.mem.eql(u8, payload_type, state_mod.asset_material_drag_payload))
+            .asset_material
+        else
+            .asset_texture,
+        .asset_index = @intCast(payload_value),
+    };
+
     var preview_buffer: [384]u8 = undefined;
     const preview_text = std.fmt.bufPrint(
         &preview_buffer,

@@ -130,6 +130,21 @@ pub const PendingViewportDropSource = enum {
     place_actor,
 };
 
+pub const ActiveDragPayloadKind = enum {
+    entity,
+    asset_model,
+    asset_material,
+    asset_texture,
+    place_actor,
+};
+
+pub const ActiveDragPayload = struct {
+    kind: ActiveDragPayloadKind,
+    entity_id: ?engine.scene.EntityId = null,
+    asset_index: ?usize = null,
+    actor_kind: ?PlaceActorKind = null,
+};
+
 pub const PendingViewportDrop = struct {
     source_kind: PendingViewportDropSource,
     asset_index: ?usize = null,
@@ -165,6 +180,7 @@ pub const MaterialComponentClipboard = struct {
 
 pub const EditorState = struct {
     allocator: ?std.mem.Allocator = null,
+    ai_collaboration: ?*engine.mcp.collaboration.Store = null,
     editor_camera: ?engine.scene.EntityId = null,
     scene_camera: ?engine.scene.EntityId = null,
     inspector_name_entity: ?engine.scene.EntityId = null,
@@ -279,6 +295,7 @@ pub const EditorState = struct {
     viewport_extent: [2]f32 = .{ 1.0, 1.0 }, // 使用 1x1 作为安全默认值，防止除零错误
     viewport_selection_press_active: bool = false,
     viewport_selection_press_mouse: [2]f32 = .{ 0.0, 0.0 },
+    active_drag_payload: ?ActiveDragPayload = null,
     pending_viewport_drop: ?PendingViewportDrop = null,
 
     // Prefab 编辑器状态

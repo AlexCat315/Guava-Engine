@@ -1,4 +1,5 @@
 const std = @import("std");
+const collaboration_mod = @import("../collaboration.zig");
 const protocol = @import("../protocol.zig");
 const scene_mod = @import("../../scene/scene.zig");
 const components = @import("../../scene/components.zig");
@@ -15,13 +16,15 @@ pub const resource_templates = [_]protocol.ResourceTemplateDescriptor{
 
 pub const SnapshotStore = struct {
     allocator: std.mem.Allocator,
+    collaboration: ?*const collaboration_mod.Store = null,
     mutex: std.Thread.Mutex = .{},
     ready: bool = false,
     entries: std.ArrayList(ResourceEntry) = .empty,
 
-    pub fn init(allocator: std.mem.Allocator) SnapshotStore {
+    pub fn init(allocator: std.mem.Allocator, collaboration: ?*const collaboration_mod.Store) SnapshotStore {
         return .{
             .allocator = allocator,
+            .collaboration = collaboration,
             .entries = .empty,
         };
     }
@@ -91,7 +94,8 @@ pub const SnapshotStore = struct {
             resources.deinit(allocator);
         }
 
-        const listed_count = countListedResources(mutable.entries.items);
+        const listed_count = countListedResources(mutable.entries.items) +
+            @as(usize, if (mutable.collaboration != null) 3 else 0);
         try resources.ensureTotalCapacity(allocator, listed_count);
         for (mutable.entries.items) |entry| {
             if (!shouldListEntry(entry.uri)) {
@@ -105,6 +109,10 @@ pub const SnapshotStore = struct {
                 .mimeType = if (entry.mime_type) |mime_type| try allocator.dupe(u8, mime_type) else null,
                 .size = entry.text.len,
             });
+        }
+
+        if (mutable.collaboration) |_| {
+            try collaboration_mod.Store.appendResourceDescriptorsAlloc(allocator, &resources);
         }
 
         return try resources.toOwnedSlice(allocator);
@@ -125,6 +133,10 @@ pub const SnapshotStore = struct {
                 .mimeType = if (entry.mime_type) |mime_type| try allocator.dupe(u8, mime_type) else null,
                 .text = try allocator.dupe(u8, entry.text),
             };
+        }
+
+        if (mutable.collaboration) |collaboration| {
+            return try collaboration.readResourceAlloc(allocator, uri);
         }
 
         return null;
@@ -498,7 +510,7 @@ fn stringifyAlloc(allocator: std.mem.Allocator, value: anytype) ![]u8 {
 }
 
 test "SnapshotStore publishes read-only hierarchy, selection, and entity snapshots" {
-    var store = SnapshotStore.init(std.testing.allocator);
+    var store = SnapshotStore.init(std.testing.allocator, null);
     defer store.deinit();
 
     var world = scene_mod.World.init(std.testing.allocator, null);
@@ -531,6 +543,42 @@ test "SnapshotStore publishes read-only hierarchy, selection, and entity snapsho
     defer freeTextResourceContents(std.testing.allocator, entity);
     try std.testing.expect(std.mem.indexOf(u8, entity.text, "\"name\": \"Child\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, entity.text, "\"visible\": false") != null);
+}
+
+test "SnapshotStore exposes collaboration context and preview resources" {
+    var collaboration = collaboration_mod.Store.init(std.testing.allocator);
+    defer collaboration.deinit();
+
+    var store = SnapshotStore.init(std.testing.allocator, &collaboration);
+    defer store.deinit();
+
+    var world = scene_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+
+    try store.replaceFromSelection(&world, null, &.{});
+    try collaboration.updateContext(.{
+        .selected_entities = &.{},
+        .viewport_size = .{ 1920, 1080 },
+        .camera_transform = .{},
+        .camera_projection = .{},
+    });
+
+    const listed = try store.listAlloc(std.testing.allocator);
+    defer freeResourceDescriptors(std.testing.allocator, listed);
+    try std.testing.expectEqual(@as(usize, 5), listed.len);
+    try std.testing.expectEqualStrings("scene://hierarchy", listed[0].uri);
+    try std.testing.expectEqualStrings("selection://current", listed[1].uri);
+    try std.testing.expectEqualStrings("editor://context", listed[2].uri);
+    try std.testing.expectEqualStrings("editor://intent-log", listed[3].uri);
+    try std.testing.expectEqualStrings("preview://staged", listed[4].uri);
+
+    const context = (try store.readAlloc(std.testing.allocator, "editor://context")).?;
+    defer freeTextResourceContents(std.testing.allocator, context);
+    try std.testing.expect(std.mem.indexOf(u8, context.text, "\"viewport\"") != null);
+
+    const preview = (try store.readAlloc(std.testing.allocator, "preview://staged")).?;
+    defer freeTextResourceContents(std.testing.allocator, preview);
+    try std.testing.expect(std.mem.indexOf(u8, preview.text, "\"active\": false") != null);
 }
 
 test "resource templates advertise dynamic entity snapshots" {

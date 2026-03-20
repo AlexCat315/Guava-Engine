@@ -42,6 +42,11 @@ fn drawHierarchyDragPreview(state: *EditorState, entity: *const engine.scene.Ent
     }
     defer engine.ui.ImGui.endDragDropSource();
 
+    state.active_drag_payload = .{
+        .kind = .entity,
+        .entity_id = entity.id,
+    };
+
     var preview_buffer: [320]u8 = undefined;
     const preview_text = std.fmt.bufPrint(
         &preview_buffer,

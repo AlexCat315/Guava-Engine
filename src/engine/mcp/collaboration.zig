@@ -1,0 +1,1552 @@
+const std = @import("std");
+const command_mod = @import("../core/command.zig");
+const command_queue_mod = @import("../core/command_queue.zig");
+const core = @import("../core/layer.zig");
+const protocol = @import("protocol.zig");
+const scene_mod = @import("../scene/scene.zig");
+const components = @import("../scene/components.zig");
+const tools_mod = @import("tools.zig");
+
+pub const Error = error{
+    ToolNotFound,
+    InvalidArguments,
+    ShuttingDown,
+};
+
+pub const IntentSource = enum {
+    human,
+    ai,
+};
+
+pub const ManipulationMode = enum {
+    none,
+    translate,
+    rotate,
+    scale,
+};
+
+pub const TransformSpace = enum {
+    local,
+    world,
+};
+
+pub const CameraProjectionKind = enum {
+    perspective,
+    orthographic,
+};
+
+pub const DragPayloadKind = enum {
+    entity,
+    asset_model,
+    asset_material,
+    asset_texture,
+    place_actor,
+};
+
+pub const PendingViewportDropKind = enum {
+    asset,
+    place_actor,
+};
+
+pub const PreviewAction = enum {
+    created,
+    updated,
+    deleted,
+};
+
+fn InlineText(comptime max_len: usize) type {
+    return struct {
+        buffer: [max_len]u8 = [_]u8{0} ** max_len,
+        len: usize = 0,
+
+        const Self = @This();
+
+        fn clear(self: *Self) void {
+            self.len = 0;
+        }
+
+        pub fn set(self: *Self, value: []const u8) void {
+            self.len = @min(max_len, value.len);
+            if (self.len == 0) {
+                return;
+            }
+            @memcpy(self.buffer[0..self.len], value[0..self.len]);
+        }
+
+        pub fn slice(self: *const Self) []const u8 {
+            return self.buffer[0..self.len];
+        }
+    };
+}
+
+const ShortText = InlineText(48);
+const MediumText = InlineText(96);
+const LongText = InlineText(224);
+
+pub const CameraProjection = struct {
+    kind: CameraProjectionKind = .perspective,
+    fov_y_radians: f32 = 1.0471976,
+    orthographic_size: f32 = 10.0,
+    near_clip: f32 = 0.1,
+    far_clip: f32 = 1000.0,
+};
+
+pub const DragPayload = struct {
+    kind: DragPayloadKind,
+    entity_id: ?scene_mod.EntityId = null,
+    asset_name: MediumText = .{},
+    asset_path: LongText = .{},
+    actor_kind: ShortText = .{},
+};
+
+pub const SelectedAsset = struct {
+    kind: ShortText = .{},
+    id: MediumText = .{},
+    name: MediumText = .{},
+    path: LongText = .{},
+};
+
+pub const PendingViewportDrop = struct {
+    kind: PendingViewportDropKind,
+    asset_name: MediumText = .{},
+    actor_kind: ShortText = .{},
+    target_entity: ?scene_mod.EntityId = null,
+    pixel: [2]u32 = .{ 0, 0 },
+    has_pixel: bool = false,
+    world_position: [3]f32 = .{ 0.0, 0.0, 0.0 },
+    has_world_position: bool = false,
+};
+
+pub const UpdateContextArgs = struct {
+    primary_selection: ?scene_mod.EntityId = null,
+    selected_entities: []const scene_mod.EntityId,
+    manipulation_mode: ManipulationMode = .none,
+    manipulation_entity: ?scene_mod.EntityId = null,
+    transform_space: TransformSpace = .local,
+    viewport_size: [2]u32 = .{ 0, 0 },
+    viewport_hovered: bool = false,
+    viewport_focused: bool = false,
+    camera_transform: components.Transform = .{},
+    camera_projection: CameraProjection = .{},
+    viewport_center_ray: ?scene_mod.Ray = null,
+    drag_payload: ?DragPayload = null,
+    selected_asset: ?SelectedAsset = null,
+    pending_viewport_drop: ?PendingViewportDrop = null,
+};
+
+const IntentEntry = struct {
+    sequence: u64 = 0,
+    source: IntentSource = .human,
+    action: ShortText = .{},
+    detail: LongText = .{},
+};
+
+pub const CommandEntry = struct {
+    tool_name: []u8,
+    command: command_mod.Command,
+
+    pub fn deinit(self: *CommandEntry, allocator: std.mem.Allocator) void {
+        allocator.free(self.tool_name);
+        self.command.deinit(allocator);
+        self.* = undefined;
+    }
+};
+
+const StageCommandResult = struct {
+    tool_name: ShortText = .{},
+    changed: bool = false,
+    entity_id: ?scene_mod.EntityId = null,
+    err: ?command_mod.CommandError = null,
+};
+
+const PreviewEntity = struct {
+    entity_id: ?scene_mod.EntityId = null,
+    action: PreviewAction = .updated,
+    name: MediumText = .{},
+    world_transform: components.Transform = .{},
+    has_world_transform: bool = false,
+    visible: bool = true,
+    parent_id: ?scene_mod.EntityId = null,
+    has_mesh: bool = false,
+    has_light: bool = false,
+    has_camera: bool = false,
+    has_vfx: bool = false,
+    is_folder: bool = false,
+};
+
+const ContextSnapshot = struct {
+    revision: u64 = 0,
+    primary_selection: ?scene_mod.EntityId = null,
+    selected_entities: std.ArrayList(scene_mod.EntityId) = .empty,
+    manipulation_mode: ManipulationMode = .none,
+    manipulation_entity: ?scene_mod.EntityId = null,
+    transform_space: TransformSpace = .local,
+    viewport_size: [2]u32 = .{ 0, 0 },
+    viewport_hovered: bool = false,
+    viewport_focused: bool = false,
+    camera_transform: components.Transform = .{},
+    camera_projection: CameraProjection = .{},
+    viewport_center_ray: ?scene_mod.Ray = null,
+    drag_payload: ?DragPayload = null,
+    selected_asset: ?SelectedAsset = null,
+    pending_viewport_drop: ?PendingViewportDrop = null,
+
+    fn deinit(self: *ContextSnapshot, allocator: std.mem.Allocator) void {
+        self.selected_entities.deinit(allocator);
+        self.* = .{};
+        self.selected_entities = .empty;
+    }
+};
+
+const StagedTransaction = struct {
+    active: bool = false,
+    id: u64 = 0,
+    source: IntentSource = .ai,
+    label: MediumText = .{},
+    note: LongText = .{},
+    commands: std.ArrayList(CommandEntry) = .empty,
+    results: std.ArrayList(StageCommandResult) = .empty,
+    preview_entries: std.ArrayList(PreviewEntity) = .empty,
+    error_count: usize = 0,
+
+    fn clear(self: *StagedTransaction, allocator: std.mem.Allocator) void {
+        for (self.commands.items) |*entry| {
+            entry.deinit(allocator);
+        }
+        self.commands.clearRetainingCapacity();
+        self.results.clearRetainingCapacity();
+        self.preview_entries.clearRetainingCapacity();
+        self.active = false;
+        self.id = 0;
+        self.source = .ai;
+        self.label.clear();
+        self.note.clear();
+        self.error_count = 0;
+    }
+
+    fn deinit(self: *StagedTransaction, allocator: std.mem.Allocator) void {
+        self.clear(allocator);
+        self.commands.deinit(allocator);
+        self.results.deinit(allocator);
+        self.preview_entries.deinit(allocator);
+        self.* = undefined;
+    }
+};
+
+pub const StageRequest = struct {
+    source: IntentSource = .ai,
+    label: ?[]u8 = null,
+    note: ?[]u8 = null,
+    commands: std.ArrayList(CommandEntry) = .empty,
+
+    pub fn deinit(self: *StageRequest, allocator: std.mem.Allocator) void {
+        if (self.label) |label| {
+            allocator.free(label);
+        }
+        if (self.note) |note| {
+            allocator.free(note);
+        }
+        for (self.commands.items) |*entry| {
+            entry.deinit(allocator);
+        }
+        self.commands.deinit(allocator);
+        self.* = undefined;
+    }
+};
+
+pub const StageResult = struct {
+    transaction_id: u64 = 0,
+    command_count: usize = 0,
+    preview_count: usize = 0,
+    error_count: usize = 0,
+};
+
+pub const ApplyResult = struct {
+    had_transaction: bool = false,
+    transaction_id: ?u64 = null,
+    command_count: usize = 0,
+    changed_count: usize = 0,
+    error_count: usize = 0,
+};
+
+pub const DiscardResult = struct {
+    had_transaction: bool = false,
+    transaction_id: ?u64 = null,
+    command_count: usize = 0,
+};
+
+pub const CallResponse = struct {
+    tool_name: []u8,
+    outcome: union(enum) {
+        staged: StageResult,
+        applied: ApplyResult,
+        discarded: DiscardResult,
+    },
+
+    pub fn deinit(self: *CallResponse, allocator: std.mem.Allocator) void {
+        allocator.free(self.tool_name);
+        self.* = undefined;
+    }
+};
+
+pub const OverlayPreviewEntry = struct {
+    entity_id: ?scene_mod.EntityId = null,
+    action: PreviewAction = .updated,
+    name: MediumText = .{},
+    world_position: [3]f32 = .{ 0.0, 0.0, 0.0 },
+    has_world_position: bool = false,
+    visible: bool = true,
+};
+
+pub const OverlaySnapshot = struct {
+    pub const max_entries = 48;
+
+    active: bool = false,
+    transaction_id: u64 = 0,
+    source: IntentSource = .ai,
+    label: MediumText = .{},
+    note: LongText = .{},
+    command_count: usize = 0,
+    error_count: usize = 0,
+    preview_count: usize = 0,
+    visible_entry_count: usize = 0,
+    entries: [max_entries]OverlayPreviewEntry = [_]OverlayPreviewEntry{.{}} ** max_entries,
+};
+
+pub const Store = struct {
+    allocator: std.mem.Allocator,
+    mutex: std.Thread.Mutex = .{},
+    context: ContextSnapshot = .{},
+    intent_log: std.ArrayList(IntentEntry) = .empty,
+    staged: StagedTransaction = .{},
+    next_intent_sequence: u64 = 1,
+    next_transaction_id: u64 = 1,
+
+    pub fn init(allocator: std.mem.Allocator) Store {
+        return .{
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *Store) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.context.deinit(self.allocator);
+        self.intent_log.deinit(self.allocator);
+        self.staged.deinit(self.allocator);
+    }
+
+    pub fn updateContext(self: *Store, args: UpdateContextArgs) !void {
+        var selection_detail_buffer: [96]u8 = undefined;
+        const selection_changed = selectionChanged(self, args.primary_selection, args.selected_entities);
+        const drag_changed = dragPayloadChanged(self, args.drag_payload);
+        const old_drag = self.peekDragPayload();
+
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        try replaceEntitySlice(&self.context.selected_entities, self.allocator, args.selected_entities);
+        self.context.revision += 1;
+        self.context.primary_selection = args.primary_selection;
+        self.context.manipulation_mode = args.manipulation_mode;
+        self.context.manipulation_entity = args.manipulation_entity;
+        self.context.transform_space = args.transform_space;
+        self.context.viewport_size = args.viewport_size;
+        self.context.viewport_hovered = args.viewport_hovered;
+        self.context.viewport_focused = args.viewport_focused;
+        self.context.camera_transform = args.camera_transform;
+        self.context.camera_projection = args.camera_projection;
+        self.context.viewport_center_ray = args.viewport_center_ray;
+        self.context.drag_payload = args.drag_payload;
+        self.context.selected_asset = args.selected_asset;
+        self.context.pending_viewport_drop = args.pending_viewport_drop;
+
+        if (selection_changed) {
+            const detail = std.fmt.bufPrint(
+                &selection_detail_buffer,
+                "primary={any} count={d}",
+                .{ args.primary_selection, args.selected_entities.len },
+            ) catch "selection changed";
+            try self.pushIntentLocked(.human, "selection_changed", detail);
+        }
+
+        if (drag_changed) {
+            var drag_detail_buffer: [160]u8 = undefined;
+            const detail = if (args.drag_payload) |drag_payload|
+                formatDragDetail(&drag_detail_buffer, drag_payload)
+            else if (old_drag) |previous_drag|
+                formatDragEndedDetail(&drag_detail_buffer, previous_drag)
+            else
+                "drag clear";
+            try self.pushIntentLocked(.human, "drag_context", detail);
+        }
+    }
+
+    pub fn recordIntent(self: *Store, source: IntentSource, action: []const u8, detail: []const u8) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        try self.pushIntentLocked(source, action, detail);
+    }
+
+    pub fn stageOwnedTransaction(self: *Store, world: *const scene_mod.World, request: *StageRequest) !StageResult {
+        const mutable_world: *scene_mod.World = @constCast(world);
+        mutable_world.updateHierarchy();
+
+        const encoded_world = try scene_mod.serializeWorldAlloc(self.allocator, world);
+        defer self.allocator.free(encoded_world);
+
+        var preview_world = scene_mod.World.init(self.allocator, mutable_world.job_system);
+        defer preview_world.deinit();
+        try scene_mod.deserializeWorldFromSlice(self.allocator, &preview_world, encoded_world);
+        preview_world.updateHierarchy();
+
+        var preview_results = std.ArrayList(StageCommandResult).empty;
+        errdefer preview_results.deinit(self.allocator);
+
+        var preview_entries = std.ArrayList(PreviewEntity).empty;
+        errdefer preview_entries.deinit(self.allocator);
+
+        var error_count: usize = 0;
+        for (request.commands.items) |entry| {
+            const result = try command_queue_mod.executeOne(&preview_world, entry.command);
+            try preview_results.append(self.allocator, .{
+                .tool_name = textFromSlice(ShortText, entry.tool_name),
+                .changed = result.changed,
+                .entity_id = result.entity_id,
+                .err = result.err,
+            });
+            if (result.err != null) {
+                error_count += 1;
+            }
+            try updatePreviewEntries(&preview_entries, world, &preview_world, entry.command, result);
+        }
+
+        var stage_result = StageResult{};
+
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        self.staged.clear(self.allocator);
+        self.staged.active = true;
+        self.staged.id = self.next_transaction_id;
+        self.next_transaction_id += 1;
+        self.staged.source = request.source;
+        if (request.label) |label| {
+            self.staged.label.set(label);
+            self.allocator.free(label);
+            request.label = null;
+        }
+        if (request.note) |note| {
+            self.staged.note.set(note);
+            self.allocator.free(note);
+            request.note = null;
+        }
+        self.staged.commands = request.commands;
+        request.commands = .empty;
+        self.staged.results = preview_results;
+        preview_results = .empty;
+        self.staged.preview_entries = preview_entries;
+        preview_entries = .empty;
+        self.staged.error_count = error_count;
+
+        stage_result = .{
+            .transaction_id = self.staged.id,
+            .command_count = self.staged.commands.items.len,
+            .preview_count = self.staged.preview_entries.items.len,
+            .error_count = self.staged.error_count,
+        };
+
+        var detail_buffer: [160]u8 = undefined;
+        const detail = std.fmt.bufPrint(
+            &detail_buffer,
+            "id={d} commands={d} preview={d} errors={d}",
+            .{ stage_result.transaction_id, stage_result.command_count, stage_result.preview_count, stage_result.error_count },
+        ) catch "staged transaction";
+        self.pushIntentLocked(request.source, "staged_transaction", detail) catch {};
+
+        return stage_result;
+    }
+
+    pub fn applyStagedTransaction(self: *Store, world: *scene_mod.World, source: IntentSource) !ApplyResult {
+        var staged_id: ?u64 = null;
+        var local_commands = std.ArrayList(CommandEntry).empty;
+        defer {
+            for (local_commands.items) |*entry| {
+                entry.deinit(self.allocator);
+            }
+            local_commands.deinit(self.allocator);
+        }
+
+        self.mutex.lock();
+        if (!self.staged.active) {
+            self.mutex.unlock();
+            return .{};
+        }
+
+        staged_id = self.staged.id;
+        try cloneCommandEntriesInto(&local_commands, self.allocator, self.staged.commands.items);
+        const command_count = self.staged.commands.items.len;
+        self.mutex.unlock();
+
+        var changed_count: usize = 0;
+        var error_count: usize = 0;
+        for (local_commands.items) |entry| {
+            const result = try command_queue_mod.executeOne(world, entry.command);
+            if (result.changed) {
+                changed_count += 1;
+            }
+            if (result.err != null) {
+                error_count += 1;
+            }
+        }
+        world.updateHierarchy();
+
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.staged.active and self.staged.id == staged_id.?) {
+            self.staged.clear(self.allocator);
+        }
+
+        var detail_buffer: [160]u8 = undefined;
+        const detail = std.fmt.bufPrint(
+            &detail_buffer,
+            "id={d} commands={d} changed={d} errors={d}",
+            .{ staged_id.?, command_count, changed_count, error_count },
+        ) catch "applied staged transaction";
+        self.pushIntentLocked(source, "applied_transaction", detail) catch {};
+
+        return .{
+            .had_transaction = true,
+            .transaction_id = staged_id,
+            .command_count = command_count,
+            .changed_count = changed_count,
+            .error_count = error_count,
+        };
+    }
+
+    pub fn discardStagedTransaction(self: *Store, source: IntentSource) DiscardResult {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (!self.staged.active) {
+            return .{};
+        }
+
+        const result = DiscardResult{
+            .had_transaction = true,
+            .transaction_id = self.staged.id,
+            .command_count = self.staged.commands.items.len,
+        };
+        self.staged.clear(self.allocator);
+
+        var detail_buffer: [128]u8 = undefined;
+        const detail = std.fmt.bufPrint(
+            &detail_buffer,
+            "id={any} commands={d}",
+            .{ result.transaction_id, result.command_count },
+        ) catch "discarded staged transaction";
+        self.pushIntentLocked(source, "discarded_transaction", detail) catch {};
+
+        return result;
+    }
+
+    pub fn overlaySnapshot(self: *const Store) OverlaySnapshot {
+        const mutable: *Store = @constCast(self);
+        mutable.mutex.lock();
+        defer mutable.mutex.unlock();
+
+        var snapshot = OverlaySnapshot{};
+        if (!mutable.staged.active) {
+            return snapshot;
+        }
+
+        snapshot.active = true;
+        snapshot.transaction_id = mutable.staged.id;
+        snapshot.source = mutable.staged.source;
+        snapshot.label = mutable.staged.label;
+        snapshot.note = mutable.staged.note;
+        snapshot.command_count = mutable.staged.commands.items.len;
+        snapshot.error_count = mutable.staged.error_count;
+        snapshot.preview_count = mutable.staged.preview_entries.items.len;
+
+        for (mutable.staged.preview_entries.items, 0..) |entry, index| {
+            if (index >= OverlaySnapshot.max_entries) {
+                break;
+            }
+            snapshot.entries[index] = .{
+                .entity_id = entry.entity_id,
+                .action = entry.action,
+                .name = entry.name,
+                .world_position = entry.world_transform.translation,
+                .has_world_position = entry.has_world_transform,
+                .visible = entry.visible,
+            };
+            snapshot.visible_entry_count += 1;
+        }
+
+        return snapshot;
+    }
+
+    pub fn appendResourceDescriptorsAlloc(
+        allocator: std.mem.Allocator,
+        resources: *std.ArrayList(protocol.ResourceDescriptor),
+    ) !void {
+        for (collaboration_resource_specs) |spec| {
+            try resources.append(allocator, .{
+                .uri = try allocator.dupe(u8, spec.uri),
+                .name = try allocator.dupe(u8, spec.name),
+                .title = null,
+                .description = try allocator.dupe(u8, spec.description),
+                .mimeType = try allocator.dupe(u8, "application/json"),
+                .size = null,
+            });
+        }
+    }
+
+    pub fn readResourceAlloc(self: *const Store, allocator: std.mem.Allocator, uri: []const u8) !?protocol.TextResourceContents {
+        if (std.mem.eql(u8, uri, "editor://context")) {
+            const text = try self.buildContextJsonAlloc(allocator);
+            return .{
+                .uri = try allocator.dupe(u8, uri),
+                .mimeType = try allocator.dupe(u8, "application/json"),
+                .text = text,
+            };
+        }
+        if (std.mem.eql(u8, uri, "editor://intent-log")) {
+            const text = try self.buildIntentLogJsonAlloc(allocator);
+            return .{
+                .uri = try allocator.dupe(u8, uri),
+                .mimeType = try allocator.dupe(u8, "application/json"),
+                .text = text,
+            };
+        }
+        if (std.mem.eql(u8, uri, "preview://staged")) {
+            const text = try self.buildStagedPreviewJsonAlloc(allocator);
+            return .{
+                .uri = try allocator.dupe(u8, uri),
+                .mimeType = try allocator.dupe(u8, "application/json"),
+                .text = text,
+            };
+        }
+        return null;
+    }
+
+    fn buildContextJsonAlloc(self: *const Store, allocator: std.mem.Allocator) ![]u8 {
+        const mutable: *Store = @constCast(self);
+        mutable.mutex.lock();
+        defer mutable.mutex.unlock();
+
+        const RayView = struct {
+            origin: [3]f32,
+            direction: [3]f32,
+        };
+        const TransformView = struct {
+            translation: [3]f32,
+            rotation: [4]f32,
+            scale: [3]f32,
+        };
+        const ProjectionView = struct {
+            kind: []const u8,
+            fov_y_radians: ?f32 = null,
+            orthographic_size: ?f32 = null,
+            near_clip: f32,
+            far_clip: f32,
+        };
+        const DragView = struct {
+            kind: []const u8,
+            entity_id: ?scene_mod.EntityId = null,
+            asset_name: ?[]const u8 = null,
+            asset_path: ?[]const u8 = null,
+            actor_kind: ?[]const u8 = null,
+        };
+        const SelectedAssetView = struct {
+            kind: []const u8,
+            id: []const u8,
+            name: []const u8,
+            path: []const u8,
+        };
+        const PendingDropView = struct {
+            kind: []const u8,
+            asset_name: ?[]const u8 = null,
+            actor_kind: ?[]const u8 = null,
+            target_entity: ?scene_mod.EntityId = null,
+            pixel: ?[2]u32 = null,
+            world_position: ?[3]f32 = null,
+        };
+        const ContextView = struct {
+            revision: u64,
+            selection: struct {
+                primary: ?scene_mod.EntityId,
+                entities: []const scene_mod.EntityId,
+            },
+            manipulation: struct {
+                mode: []const u8,
+                entity_id: ?scene_mod.EntityId,
+                transform_space: []const u8,
+            },
+            viewport: struct {
+                size: [2]u32,
+                hovered: bool,
+                focused: bool,
+                center_ray: ?RayView,
+            },
+            camera: struct {
+                transform: TransformView,
+                projection: ProjectionView,
+            },
+            drag_payload: ?DragView = null,
+            selected_asset: ?SelectedAssetView = null,
+            pending_viewport_drop: ?PendingDropView = null,
+        };
+
+        const projection_view = switch (mutable.context.camera_projection.kind) {
+            .perspective => ProjectionView{
+                .kind = "perspective",
+                .fov_y_radians = mutable.context.camera_projection.fov_y_radians,
+                .near_clip = mutable.context.camera_projection.near_clip,
+                .far_clip = mutable.context.camera_projection.far_clip,
+            },
+            .orthographic => ProjectionView{
+                .kind = "orthographic",
+                .orthographic_size = mutable.context.camera_projection.orthographic_size,
+                .near_clip = mutable.context.camera_projection.near_clip,
+                .far_clip = mutable.context.camera_projection.far_clip,
+            },
+        };
+
+        const drag_payload = if (mutable.context.drag_payload) |drag| DragView{
+            .kind = @tagName(drag.kind),
+            .entity_id = drag.entity_id,
+            .asset_name = if (drag.asset_name.len > 0) drag.asset_name.slice() else null,
+            .asset_path = if (drag.asset_path.len > 0) drag.asset_path.slice() else null,
+            .actor_kind = if (drag.actor_kind.len > 0) drag.actor_kind.slice() else null,
+        } else null;
+
+        const selected_asset = if (mutable.context.selected_asset) |asset| SelectedAssetView{
+            .kind = asset.kind.slice(),
+            .id = asset.id.slice(),
+            .name = asset.name.slice(),
+            .path = asset.path.slice(),
+        } else null;
+
+        const pending_drop = if (mutable.context.pending_viewport_drop) |drop| PendingDropView{
+            .kind = @tagName(drop.kind),
+            .asset_name = if (drop.asset_name.len > 0) drop.asset_name.slice() else null,
+            .actor_kind = if (drop.actor_kind.len > 0) drop.actor_kind.slice() else null,
+            .target_entity = drop.target_entity,
+            .pixel = if (drop.has_pixel) drop.pixel else null,
+            .world_position = if (drop.has_world_position) drop.world_position else null,
+        } else null;
+
+        return stringifyAlloc(allocator, ContextView{
+            .revision = mutable.context.revision,
+            .selection = .{
+                .primary = mutable.context.primary_selection,
+                .entities = mutable.context.selected_entities.items,
+            },
+            .manipulation = .{
+                .mode = @tagName(mutable.context.manipulation_mode),
+                .entity_id = mutable.context.manipulation_entity,
+                .transform_space = @tagName(mutable.context.transform_space),
+            },
+            .viewport = .{
+                .size = mutable.context.viewport_size,
+                .hovered = mutable.context.viewport_hovered,
+                .focused = mutable.context.viewport_focused,
+                .center_ray = if (mutable.context.viewport_center_ray) |ray| RayView{
+                    .origin = ray.origin,
+                    .direction = ray.direction,
+                } else null,
+            },
+            .camera = .{
+                .transform = .{
+                    .translation = mutable.context.camera_transform.translation,
+                    .rotation = mutable.context.camera_transform.rotation,
+                    .scale = mutable.context.camera_transform.scale,
+                },
+                .projection = projection_view,
+            },
+            .drag_payload = drag_payload,
+            .selected_asset = selected_asset,
+            .pending_viewport_drop = pending_drop,
+        });
+    }
+
+    fn buildIntentLogJsonAlloc(self: *const Store, allocator: std.mem.Allocator) ![]u8 {
+        const mutable: *Store = @constCast(self);
+        mutable.mutex.lock();
+        defer mutable.mutex.unlock();
+
+        const IntentView = struct {
+            sequence: u64,
+            source: []const u8,
+            action: []const u8,
+            detail: []const u8,
+        };
+        const Payload = struct {
+            count: usize,
+            items: []const IntentView,
+        };
+
+        const items = try allocator.alloc(IntentView, mutable.intent_log.items.len);
+        defer allocator.free(items);
+
+        for (mutable.intent_log.items, 0..) |entry, index| {
+            items[index] = .{
+                .sequence = entry.sequence,
+                .source = @tagName(entry.source),
+                .action = entry.action.slice(),
+                .detail = entry.detail.slice(),
+            };
+        }
+
+        return stringifyAlloc(allocator, Payload{
+            .count = items.len,
+            .items = items,
+        });
+    }
+
+    fn buildStagedPreviewJsonAlloc(self: *const Store, allocator: std.mem.Allocator) ![]u8 {
+        const mutable: *Store = @constCast(self);
+        mutable.mutex.lock();
+        defer mutable.mutex.unlock();
+
+        const TransformView = struct {
+            translation: [3]f32,
+            rotation: [4]f32,
+            scale: [3]f32,
+        };
+        const CommandResultView = struct {
+            tool: []const u8,
+            changed: bool,
+            entity_id: ?scene_mod.EntityId,
+            command_error: ?[]const u8,
+        };
+        const PreviewEntryView = struct {
+            entity_id: ?scene_mod.EntityId,
+            action: []const u8,
+            name: []const u8,
+            world_transform: ?TransformView = null,
+            visible: bool,
+            parent_id: ?scene_mod.EntityId,
+            has_mesh: bool,
+            has_light: bool,
+            has_camera: bool,
+            has_vfx: bool,
+            is_folder: bool,
+        };
+        const Payload = struct {
+            active: bool,
+            transaction_id: ?u64 = null,
+            source: ?[]const u8 = null,
+            label: ?[]const u8 = null,
+            note: ?[]const u8 = null,
+            command_count: usize = 0,
+            error_count: usize = 0,
+            results: []const CommandResultView = &.{},
+            preview_entities: []const PreviewEntryView = &.{},
+        };
+
+        if (!mutable.staged.active) {
+            return stringifyAlloc(allocator, Payload{ .active = false });
+        }
+
+        const results = try allocator.alloc(CommandResultView, mutable.staged.results.items.len);
+        defer allocator.free(results);
+        for (mutable.staged.results.items, 0..) |entry, index| {
+            results[index] = .{
+                .tool = entry.tool_name.slice(),
+                .changed = entry.changed,
+                .entity_id = entry.entity_id,
+                .command_error = if (entry.err) |err| @tagName(err) else null,
+            };
+        }
+
+        const preview_entities = try allocator.alloc(PreviewEntryView, mutable.staged.preview_entries.items.len);
+        defer allocator.free(preview_entities);
+        for (mutable.staged.preview_entries.items, 0..) |entry, index| {
+            preview_entities[index] = .{
+                .entity_id = entry.entity_id,
+                .action = @tagName(entry.action),
+                .name = entry.name.slice(),
+                .world_transform = if (entry.has_world_transform) TransformView{
+                    .translation = entry.world_transform.translation,
+                    .rotation = entry.world_transform.rotation,
+                    .scale = entry.world_transform.scale,
+                } else null,
+                .visible = entry.visible,
+                .parent_id = entry.parent_id,
+                .has_mesh = entry.has_mesh,
+                .has_light = entry.has_light,
+                .has_camera = entry.has_camera,
+                .has_vfx = entry.has_vfx,
+                .is_folder = entry.is_folder,
+            };
+        }
+
+        return stringifyAlloc(allocator, Payload{
+            .active = true,
+            .transaction_id = mutable.staged.id,
+            .source = @tagName(mutable.staged.source),
+            .label = if (mutable.staged.label.len > 0) mutable.staged.label.slice() else null,
+            .note = if (mutable.staged.note.len > 0) mutable.staged.note.slice() else null,
+            .command_count = mutable.staged.commands.items.len,
+            .error_count = mutable.staged.error_count,
+            .results = results,
+            .preview_entities = preview_entities,
+        });
+    }
+
+    fn pushIntentLocked(self: *Store, source: IntentSource, action: []const u8, detail: []const u8) !void {
+        if (self.intent_log.items.len >= 64) {
+            _ = self.intent_log.orderedRemove(0);
+        }
+        try self.intent_log.append(self.allocator, .{
+            .sequence = self.next_intent_sequence,
+            .source = source,
+            .action = textFromSlice(ShortText, action),
+            .detail = textFromSlice(LongText, detail),
+        });
+        self.next_intent_sequence += 1;
+    }
+
+    fn peekDragPayload(self: *Store) ?DragPayload {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.context.drag_payload;
+    }
+};
+
+pub const Bridge = struct {
+    allocator: std.mem.Allocator,
+    store: *Store,
+    mutex: std.Thread.Mutex = .{},
+    condition: std.Thread.Condition = .{},
+    pending: ?PendingRequest = null,
+    response: ?CallResponse = null,
+    shutting_down: bool = false,
+
+    const PendingRequest = union(enum) {
+        stage: StagePending,
+        apply: []u8,
+        discard: []u8,
+
+        fn deinit(self: *PendingRequest, allocator: std.mem.Allocator) void {
+            switch (self.*) {
+                .stage => |*stage| stage.deinit(allocator),
+                .apply => |tool_name| allocator.free(tool_name),
+                .discard => |tool_name| allocator.free(tool_name),
+            }
+            self.* = undefined;
+        }
+    };
+
+    const StagePending = struct {
+        tool_name: []u8,
+        request: StageRequest,
+
+        fn deinit(self: *StagePending, allocator: std.mem.Allocator) void {
+            allocator.free(self.tool_name);
+            self.request.deinit(allocator);
+            self.* = undefined;
+        }
+    };
+
+    pub fn init(allocator: std.mem.Allocator, store: *Store) Bridge {
+        return .{
+            .allocator = allocator,
+            .store = store,
+        };
+    }
+
+    pub fn deinit(self: *Bridge) void {
+        self.shutdown();
+
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.pending) |*pending| {
+            pending.deinit(self.allocator);
+            self.pending = null;
+        }
+        if (self.response) |*response| {
+            response.deinit(self.allocator);
+            self.response = null;
+        }
+    }
+
+    pub fn shutdown(self: *Bridge) void {
+        self.mutex.lock();
+        self.shutting_down = true;
+        self.condition.broadcast();
+        self.mutex.unlock();
+    }
+
+    pub fn submitJson(self: *Bridge, tool_name: []const u8, arguments: ?std.json.Value) !CallResponse {
+        var request = try parsePendingRequestAlloc(self.allocator, tool_name, arguments);
+        errdefer request.deinit(self.allocator);
+
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        while ((self.pending != null or self.response != null) and !self.shutting_down) {
+            self.condition.wait(&self.mutex);
+        }
+        if (self.shutting_down) {
+            return error.ShuttingDown;
+        }
+
+        self.pending = request;
+        self.condition.broadcast();
+
+        while (self.response == null and !self.shutting_down) {
+            self.condition.wait(&self.mutex);
+        }
+        if (self.shutting_down and self.response == null) {
+            return error.ShuttingDown;
+        }
+
+        const response = self.response.?;
+        self.response = null;
+        self.condition.broadcast();
+        return response;
+    }
+
+    pub fn processPending(self: *Bridge, layer_context: *core.LayerContext) !bool {
+        self.mutex.lock();
+        if (self.pending == null or self.response != null) {
+            self.mutex.unlock();
+            return false;
+        }
+        var request = self.pending.?;
+        self.pending = null;
+        self.mutex.unlock();
+
+        var world_changed = false;
+        var response: CallResponse = undefined;
+        switch (request) {
+            .stage => |*stage_pending| {
+                const result = try self.store.stageOwnedTransaction(layer_context.world, &stage_pending.request);
+                response = .{
+                    .tool_name = stage_pending.tool_name,
+                    .outcome = .{ .staged = result },
+                };
+                stage_pending.request = .{};
+            },
+            .apply => |tool_name| {
+                const result = try self.store.applyStagedTransaction(layer_context.world, .ai);
+                response = .{
+                    .tool_name = tool_name,
+                    .outcome = .{ .applied = result },
+                };
+                world_changed = result.had_transaction;
+            },
+            .discard => |tool_name| {
+                const result = self.store.discardStagedTransaction(.ai);
+                response = .{
+                    .tool_name = tool_name,
+                    .outcome = .{ .discarded = result },
+                };
+            },
+        }
+
+        switch (request) {
+            .stage => |*stage_pending| {
+                stage_pending.request.commands = .empty;
+                request.deinit(self.allocator);
+            },
+            else => request.deinit(self.allocator),
+        }
+
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.response = response;
+        self.condition.broadcast();
+        return world_changed;
+    }
+};
+
+pub fn isToolName(tool_name: []const u8) bool {
+    return std.mem.eql(u8, tool_name, "stage_transaction") or
+        std.mem.eql(u8, tool_name, "apply_staged_transaction") or
+        std.mem.eql(u8, tool_name, "discard_staged_transaction");
+}
+
+pub fn buildSummaryAlloc(allocator: std.mem.Allocator, response: CallResponse) ![]u8 {
+    return switch (response.outcome) {
+        .staged => |result| std.fmt.allocPrint(
+            allocator,
+            "stage_transaction ok: id={d}, commands={d}, preview={d}, errors={d}",
+            .{ result.transaction_id, result.command_count, result.preview_count, result.error_count },
+        ),
+        .applied => |result| if (!result.had_transaction)
+            allocator.dupe(u8, "apply_staged_transaction ok: no staged transaction")
+        else
+            std.fmt.allocPrint(
+                allocator,
+                "apply_staged_transaction ok: id={d}, commands={d}, changed={d}, errors={d}",
+                .{ result.transaction_id.?, result.command_count, result.changed_count, result.error_count },
+            ),
+        .discarded => |result| if (!result.had_transaction)
+            allocator.dupe(u8, "discard_staged_transaction ok: no staged transaction")
+        else
+            std.fmt.allocPrint(
+                allocator,
+                "discard_staged_transaction ok: id={d}, commands={d}",
+                .{ result.transaction_id.?, result.command_count },
+            ),
+    };
+}
+
+const collaboration_resource_specs = [_]struct {
+    uri: []const u8,
+    name: []const u8,
+    description: []const u8,
+}{
+    .{
+        .uri = "editor://context",
+        .name = "Editor Context",
+        .description = "Selection, camera, drag payload, and viewport focus context injected into AI calls.",
+    },
+    .{
+        .uri = "editor://intent-log",
+        .name = "Editor Intent Log",
+        .description = "Recent human and AI intents captured from editor interaction and staged transactions.",
+    },
+    .{
+        .uri = "preview://staged",
+        .name = "Staged Preview",
+        .description = "Current ghost preview transaction with command results and projected staged entities.",
+    },
+};
+
+fn selectionChanged(self: *Store, primary_selection: ?scene_mod.EntityId, selected_entities: []const scene_mod.EntityId) bool {
+    self.mutex.lock();
+    defer self.mutex.unlock();
+    if (self.context.primary_selection != primary_selection) {
+        return true;
+    }
+    return !std.mem.eql(scene_mod.EntityId, self.context.selected_entities.items, selected_entities);
+}
+
+fn dragPayloadChanged(self: *Store, next: ?DragPayload) bool {
+    self.mutex.lock();
+    defer self.mutex.unlock();
+    return !dragPayloadEqual(self.context.drag_payload, next);
+}
+
+fn dragPayloadEqual(a: ?DragPayload, b: ?DragPayload) bool {
+    if (a == null and b == null) {
+        return true;
+    }
+    if (a == null or b == null) {
+        return false;
+    }
+
+    const left = a.?;
+    const right = b.?;
+    return left.kind == right.kind and
+        left.entity_id == right.entity_id and
+        std.mem.eql(u8, left.asset_name.slice(), right.asset_name.slice()) and
+        std.mem.eql(u8, left.asset_path.slice(), right.asset_path.slice()) and
+        std.mem.eql(u8, left.actor_kind.slice(), right.actor_kind.slice());
+}
+
+fn formatDragDetail(buffer: []u8, drag_payload: DragPayload) []const u8 {
+    return switch (drag_payload.kind) {
+        .entity => std.fmt.bufPrint(buffer, "entity:{any}", .{drag_payload.entity_id}) catch "entity drag",
+        .asset_model, .asset_material, .asset_texture => std.fmt.bufPrint(
+            buffer,
+            "{s}:{s}",
+            .{ @tagName(drag_payload.kind), drag_payload.asset_name.slice() },
+        ) catch "asset drag",
+        .place_actor => std.fmt.bufPrint(buffer, "place_actor:{s}", .{drag_payload.actor_kind.slice()}) catch "place actor drag",
+    };
+}
+
+fn formatDragEndedDetail(buffer: []u8, drag_payload: DragPayload) []const u8 {
+    return std.fmt.bufPrint(buffer, "end {s}", .{formatDragDetail(buffer[4..], drag_payload)}) catch "drag clear";
+}
+
+fn replaceEntitySlice(list: *std.ArrayList(scene_mod.EntityId), allocator: std.mem.Allocator, values: []const scene_mod.EntityId) !void {
+    list.clearRetainingCapacity();
+    try list.appendSlice(allocator, values);
+}
+
+fn textFromSlice(comptime T: type, value: []const u8) T {
+    var text: T = .{};
+    text.set(value);
+    return text;
+}
+
+pub fn makeDragPayload(
+    kind: DragPayloadKind,
+    entity_id: ?scene_mod.EntityId,
+    asset_name: []const u8,
+    asset_path: []const u8,
+    actor_kind: []const u8,
+) DragPayload {
+    return .{
+        .kind = kind,
+        .entity_id = entity_id,
+        .asset_name = textFromSlice(MediumText, asset_name),
+        .asset_path = textFromSlice(LongText, asset_path),
+        .actor_kind = textFromSlice(ShortText, actor_kind),
+    };
+}
+
+pub fn makeSelectedAsset(kind: []const u8, id: []const u8, name: []const u8, path: []const u8) SelectedAsset {
+    return .{
+        .kind = textFromSlice(ShortText, kind),
+        .id = textFromSlice(MediumText, id),
+        .name = textFromSlice(MediumText, name),
+        .path = textFromSlice(LongText, path),
+    };
+}
+
+pub fn makePendingViewportDrop(
+    kind: PendingViewportDropKind,
+    asset_name: []const u8,
+    actor_kind: []const u8,
+    target_entity: ?scene_mod.EntityId,
+    pixel: ?[2]u32,
+    world_position: ?[3]f32,
+) PendingViewportDrop {
+    var drop = PendingViewportDrop{
+        .kind = kind,
+        .asset_name = textFromSlice(MediumText, asset_name),
+        .actor_kind = textFromSlice(ShortText, actor_kind),
+        .target_entity = target_entity,
+    };
+    if (pixel) |pixel_value| {
+        drop.pixel = pixel_value;
+        drop.has_pixel = true;
+    }
+    if (world_position) |world_position_value| {
+        drop.world_position = world_position_value;
+        drop.has_world_position = true;
+    }
+    return drop;
+}
+
+fn cloneCommandEntryAlloc(allocator: std.mem.Allocator, entry: CommandEntry) !CommandEntry {
+    return .{
+        .tool_name = try allocator.dupe(u8, entry.tool_name),
+        .command = try cloneCommandAlloc(allocator, entry.command),
+    };
+}
+
+fn cloneCommandEntriesInto(
+    destination: *std.ArrayList(CommandEntry),
+    allocator: std.mem.Allocator,
+    source: []const CommandEntry,
+) !void {
+    try destination.ensureTotalCapacity(allocator, source.len);
+    for (source) |entry| {
+        try destination.append(allocator, try cloneCommandEntryAlloc(allocator, entry));
+    }
+}
+
+fn cloneCommandAlloc(allocator: std.mem.Allocator, command: command_mod.Command) !command_mod.Command {
+    return switch (command) {
+        .create_entity => |create| .{
+            .create_entity = .{
+                .name = try allocator.dupe(u8, create.name),
+                .parent = create.parent,
+                .local_transform = create.local_transform,
+                .camera = create.camera,
+                .mesh = create.mesh,
+                .material = create.material,
+                .light = create.light,
+                .vfx = create.vfx,
+                .visible = create.visible,
+                .editor_only = create.editor_only,
+                .is_folder = create.is_folder,
+            },
+        },
+        .delete_entity => |delete| .{ .delete_entity = delete },
+        .rename_entity => |rename| .{
+            .rename_entity = .{
+                .entity_id = rename.entity_id,
+                .name = try allocator.dupe(u8, rename.name),
+            },
+        },
+        .set_parent => |set_parent| .{ .set_parent = set_parent },
+        .set_local_transform => |set_transform| .{ .set_local_transform = set_transform },
+        .set_world_transform => |set_transform| .{ .set_world_transform = set_transform },
+        .set_visible => |set_visible| .{ .set_visible = set_visible },
+    };
+}
+
+fn previewActionForCommand(command: command_mod.Command) PreviewAction {
+    return switch (command) {
+        .create_entity => .created,
+        .delete_entity => .deleted,
+        else => .updated,
+    };
+}
+
+fn updatePreviewEntries(
+    entries: *std.ArrayList(PreviewEntity),
+    base_world: *const scene_mod.World,
+    preview_world: *scene_mod.World,
+    command: command_mod.Command,
+    result: command_mod.ExecutionResult,
+) !void {
+    if (result.entity_id == null) {
+        return;
+    }
+    if (!result.changed and command != .delete_entity and command != .create_entity) {
+        return;
+    }
+    if (result.err != null and command != .delete_entity) {
+        return;
+    }
+
+    const entity_id = result.entity_id.?;
+    const action = previewActionForCommand(command);
+
+    var preview_entry = PreviewEntity{
+        .entity_id = entity_id,
+        .action = action,
+    };
+
+    switch (action) {
+        .created, .updated => {
+            const entity = preview_world.getEntityConst(entity_id) orelse return;
+            preview_entry.name.set(entity.name);
+            if (preview_world.worldTransform(entity_id)) |transform| {
+                preview_entry.world_transform = transform;
+                preview_entry.has_world_transform = true;
+            }
+            preview_entry.visible = entity.visible;
+            preview_entry.parent_id = entity.parent;
+            preview_entry.has_mesh = entity.mesh != null;
+            preview_entry.has_light = entity.light != null;
+            preview_entry.has_camera = entity.camera != null;
+            preview_entry.has_vfx = entity.vfx != null;
+            preview_entry.is_folder = entity.is_folder;
+        },
+        .deleted => {
+            const entity = base_world.getEntityConst(entity_id) orelse return;
+            preview_entry.name.set(entity.name);
+            if (@constCast(base_world).worldTransform(entity_id)) |transform| {
+                preview_entry.world_transform = transform;
+                preview_entry.has_world_transform = true;
+            }
+            preview_entry.visible = entity.visible;
+            preview_entry.parent_id = entity.parent;
+            preview_entry.has_mesh = entity.mesh != null;
+            preview_entry.has_light = entity.light != null;
+            preview_entry.has_camera = entity.camera != null;
+            preview_entry.has_vfx = entity.vfx != null;
+            preview_entry.is_folder = entity.is_folder;
+        },
+    }
+
+    for (entries.items) |*existing| {
+        if (existing.entity_id != preview_entry.entity_id) {
+            continue;
+        }
+        if (existing.action == .created and preview_entry.action == .updated) {
+            preview_entry.action = .created;
+        }
+        existing.* = preview_entry;
+        return;
+    }
+
+    try entries.append(base_world.allocator, preview_entry);
+}
+
+fn parsePendingRequestAlloc(
+    allocator: std.mem.Allocator,
+    tool_name: []const u8,
+    arguments: ?std.json.Value,
+) !Bridge.PendingRequest {
+    if (std.mem.eql(u8, tool_name, "stage_transaction")) {
+        var stage_request = StageRequest{};
+        stage_request.commands = .empty;
+        errdefer stage_request.deinit(allocator);
+
+        const args = try requireObject(arguments);
+        if (optionalStringField(args, "label")) |label| {
+            stage_request.label = try allocator.dupe(u8, label);
+        }
+        if (optionalStringField(args, "note")) |note| {
+            stage_request.note = try allocator.dupe(u8, note);
+        }
+        if (optionalStringField(args, "source")) |source_text| {
+            stage_request.source = parseIntentSource(source_text) orelse return error.InvalidArguments;
+        }
+
+        const commands_value = args.get("commands") orelse args.get("operations") orelse return error.InvalidArguments;
+        const commands = switch (commands_value) {
+            .array => |array| array.items,
+            else => return error.InvalidArguments,
+        };
+        if (commands.len == 0) {
+            return error.InvalidArguments;
+        }
+        try stage_request.commands.ensureTotalCapacity(allocator, commands.len);
+
+        for (commands) |command_value| {
+            const command_object = switch (command_value) {
+                .object => |object| object,
+                else => return error.InvalidArguments,
+            };
+            const command_name = optionalStringField(command_object, "name") orelse return error.InvalidArguments;
+            const command_arguments = if (command_object.get("arguments")) |value| value else null;
+            const parsed = try tools_mod.parseToolCallAlloc(allocator, command_name, command_arguments);
+            try stage_request.commands.append(allocator, .{
+                .tool_name = parsed.tool_name,
+                .command = parsed.command,
+            });
+        }
+
+        return .{
+            .stage = .{
+                .tool_name = try allocator.dupe(u8, tool_name),
+                .request = stage_request,
+            },
+        };
+    }
+    if (std.mem.eql(u8, tool_name, "apply_staged_transaction")) {
+        return .{ .apply = try allocator.dupe(u8, tool_name) };
+    }
+    if (std.mem.eql(u8, tool_name, "discard_staged_transaction")) {
+        return .{ .discard = try allocator.dupe(u8, tool_name) };
+    }
+    return error.ToolNotFound;
+}
+
+fn requireObject(arguments: ?std.json.Value) Error!std.json.ObjectMap {
+    const value = arguments orelse return error.InvalidArguments;
+    return switch (value) {
+        .object => |object| object,
+        else => error.InvalidArguments,
+    };
+}
+
+fn optionalStringField(object: std.json.ObjectMap, field_name: []const u8) ?[]const u8 {
+    const value = object.get(field_name) orelse return null;
+    return switch (value) {
+        .string => |text| text,
+        .null => null,
+        else => null,
+    };
+}
+
+fn parseIntentSource(source_text: []const u8) ?IntentSource {
+    if (std.mem.eql(u8, source_text, "human")) {
+        return .human;
+    }
+    if (std.mem.eql(u8, source_text, "ai")) {
+        return .ai;
+    }
+    return null;
+}
+
+fn stringifyAlloc(allocator: std.mem.Allocator, value: anytype) ![]u8 {
+    var output = std.ArrayList(u8).empty;
+    defer output.deinit(allocator);
+
+    var writer = output.writer(allocator);
+    var adapter_buffer: [4096]u8 = undefined;
+    var writer_adapter = writer.adaptToNewApi(&adapter_buffer);
+    try std.json.Stringify.value(value, .{ .whitespace = .indent_2 }, &writer_adapter.new_interface);
+    try writer_adapter.new_interface.flush();
+    return try output.toOwnedSlice(allocator);
+}
+
+test "Store stages preview and applies it to the main world" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    var world = scene_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+
+    const original = try world.createEntity(.{ .name = "Original" });
+    world.updateHierarchy();
+
+    var request = StageRequest{
+        .source = .ai,
+        .label = try std.testing.allocator.dupe(u8, "Fence pass"),
+        .note = try std.testing.allocator.dupe(u8, "Preview before commit"),
+        .commands = .empty,
+    };
+    defer request.deinit(std.testing.allocator);
+
+    try request.commands.append(std.testing.allocator, .{
+        .tool_name = try std.testing.allocator.dupe(u8, "rename_entity"),
+        .command = .{
+            .rename_entity = .{
+                .entity_id = original,
+                .name = try std.testing.allocator.dupe(u8, "RenamedByAi"),
+            },
+        },
+    });
+    try request.commands.append(std.testing.allocator, .{
+        .tool_name = try std.testing.allocator.dupe(u8, "create_entity"),
+        .command = .{
+            .create_entity = .{
+                .name = try std.testing.allocator.dupe(u8, "GhostTree"),
+                .local_transform = .{
+                    .translation = .{ 3.0, 0.0, -2.0 },
+                },
+            },
+        },
+    });
+
+    const staged = try store.stageOwnedTransaction(&world, &request);
+    try std.testing.expectEqual(@as(usize, 2), staged.command_count);
+    try std.testing.expectEqual(@as(usize, 2), staged.preview_count);
+
+    const overlay = store.overlaySnapshot();
+    try std.testing.expect(overlay.active);
+    try std.testing.expectEqual(@as(usize, 2), overlay.command_count);
+
+    const applied = try store.applyStagedTransaction(&world, .human);
+    try std.testing.expect(applied.had_transaction);
+    try std.testing.expectEqual(@as(usize, 2), applied.command_count);
+    try std.testing.expectEqualStrings("RenamedByAi", world.getEntityConst(original).?.name);
+    try std.testing.expectEqual(@as(usize, 2), world.entities.items.len);
+
+    const staged_json = try store.readResourceAlloc(std.testing.allocator, "preview://staged");
+    defer if (staged_json) |content| {
+        std.testing.allocator.free(content.uri);
+        if (content.mimeType) |mime_type| std.testing.allocator.free(mime_type);
+        std.testing.allocator.free(content.text);
+    };
+    try std.testing.expect(std.mem.indexOf(u8, staged_json.?.text, "\"active\": false") != null);
+}
+
+test "Bridge parses staged transaction batches" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+    var bridge = Bridge.init(std.testing.allocator, &store);
+    defer bridge.deinit();
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator,
+        \\{
+        \\  "label": "Batch",
+        \\  "commands": [
+        \\    {
+        \\      "name": "rename_entity",
+        \\      "arguments": { "entity_id": 1, "name": "Actor" }
+        \\    }
+        \\  ]
+        \\}
+    , .{ .allocate = .alloc_always });
+    defer parsed.deinit();
+
+    var request = try parsePendingRequestAlloc(std.testing.allocator, "stage_transaction", parsed.value);
+    defer request.deinit(std.testing.allocator);
+
+    switch (request) {
+        .stage => |stage| {
+            try std.testing.expectEqual(@as(usize, 1), stage.request.commands.items.len);
+            try std.testing.expectEqualStrings("stage_transaction", stage.tool_name);
+            try std.testing.expectEqualStrings("rename_entity", stage.request.commands.items[0].tool_name);
+        },
+        else => return error.UnexpectedValue,
+    }
+}

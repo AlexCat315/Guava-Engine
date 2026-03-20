@@ -5,6 +5,7 @@ const vec3 = engine.math.vec3;
 const EditorState = @import("../core/state.zig").EditorState;
 const state_mod = @import("../core/state.zig");
 const utils = @import("../common/utils.zig");
+const ai_collaboration = @import("../ai_native/collaboration.zig");
 const history = @import("../actions/history.zig");
 const camera = @import("../interaction/camera.zig");
 const manipulation = @import("../interaction/manipulation.zig");
@@ -342,6 +343,7 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
         try drawViewportPlaybackOverlayWindow(state, layer_context);
         try drawViewportFpsOverlayWindow(state, layer_context);
         try drawViewportDebugOverlayWindow(state, layer_context);
+        try ai_collaboration.drawViewportCollaborationOverlay(state, layer_context);
         drawViewportViewCube(state, layer_context);
         logViewportStateChange(state, layer_context);
     } else {

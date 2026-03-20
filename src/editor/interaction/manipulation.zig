@@ -2,6 +2,7 @@ const std = @import("std");
 const engine = @import("guava");
 const vec3 = engine.math.vec3;
 const quat = engine.math.quat;
+const ai_collaboration = @import("../ai_native/collaboration.zig");
 const EditorState = @import("../core/state.zig").EditorState;
 const state_mod = @import("../core/state.zig");
 const utils = @import("../common/utils.zig");
@@ -158,6 +159,7 @@ pub fn beginManipulation(
     try syncManipulationTarget(state, layer_context);
     syncGizmoState(state, layer_context);
     try history.refreshWindowTitle(state, layer_context);
+    ai_collaboration.noteManipulationBegin(state);
 }
 
 pub fn selectTool(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -181,6 +183,7 @@ pub fn cancelManipulation(state: *EditorState, layer_context: *engine.core.Layer
         endManipulation(state);
         return;
     };
+    ai_collaboration.noteManipulationCancel(state, entity_id);
     _ = layer_context.world.setEntityWorldTransform(entity_id, state.manipulation_origin);
     endManipulation(state);
     syncGizmoState(state, layer_context);
@@ -195,6 +198,7 @@ fn commitManipulation(state: *EditorState, layer_context: *engine.core.LayerCont
         endManipulation(state);
         return;
     };
+    ai_collaboration.noteManipulationCommit(state, entity_id);
     state.manipulation_snapshot = null;
     state.manipulation_mode = .none;
     state.manipulation_axis = .free;

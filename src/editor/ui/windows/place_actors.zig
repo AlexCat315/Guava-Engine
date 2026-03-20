@@ -125,11 +125,22 @@ fn getEntriesForCategory(category: state_mod.PlaceActorCategory) []const PlaceAc
     };
 }
 
-fn drawPlaceActorDragPreview(kind: state_mod.PlaceActorKind, label: []const u8, description: []const u8, icon_texture: *engine.rhi.Texture) void {
+fn drawPlaceActorDragPreview(
+    state: *EditorState,
+    kind: state_mod.PlaceActorKind,
+    label: []const u8,
+    description: []const u8,
+    icon_texture: *engine.rhi.Texture,
+) void {
     if (!engine.ui.ImGui.beginDragDropSourceU64(state_mod.place_actor_drag_payload, @intFromEnum(kind))) {
         return;
     }
     defer engine.ui.ImGui.endDragDropSource();
+
+    state.active_drag_payload = .{
+        .kind = .place_actor,
+        .actor_kind = kind,
+    };
 
     var preview_buffer: [320]u8 = undefined;
     const preview_text = std.fmt.bufPrint(&preview_buffer, "{s}\n{s}", .{ label, description }) catch label;
@@ -283,7 +294,7 @@ fn drawPlaceActorEntry(
         }
 
         if (row_hovered) {
-            drawPlaceActorDragPreview(entry.kind, label, description, icon_texture);
+            drawPlaceActorDragPreview(state, entry.kind, label, description, icon_texture);
         }
 
         // Compact layout: icon on left, label on right

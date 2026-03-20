@@ -1,4 +1,5 @@
 const std = @import("std");
+const collaboration_mod = @import("collaboration.zig");
 const core = @import("../core/layer.zig");
 const protocol = @import("protocol.zig");
 const resources_mod = @import("resources/mod.zig");
@@ -9,6 +10,7 @@ const EmptyObject = struct {};
 pub const SyncLayer = struct {
     store: *resources_mod.SnapshotStore,
     tool_bridge: *tools_mod.Bridge,
+    collaboration_bridge: *collaboration_mod.Bridge,
     exit_requested: *std.atomic.Value(bool),
 
     pub fn asLayer(self: *SyncLayer) core.Layer {
@@ -35,6 +37,7 @@ pub const SyncLayer = struct {
         }
 
         try self.tool_bridge.processPending(layer_context, self.store);
+        _ = try self.collaboration_bridge.processPending(layer_context);
         try self.publish(layer_context);
     }
 
@@ -47,6 +50,7 @@ pub const SyncLayer = struct {
 pub fn spawn(
     store: *resources_mod.SnapshotStore,
     tool_bridge: *tools_mod.Bridge,
+    collaboration_bridge: *collaboration_mod.Bridge,
     exit_requested: *std.atomic.Value(bool),
 ) !std.Thread {
     const server = try std.heap.page_allocator.create(Server);
@@ -54,6 +58,7 @@ pub fn spawn(
     server.* = .{
         .store = store,
         .tool_bridge = tool_bridge,
+        .collaboration_bridge = collaboration_bridge,
         .exit_requested = exit_requested,
     };
 
@@ -63,6 +68,7 @@ pub fn spawn(
 const Server = struct {
     store: *resources_mod.SnapshotStore,
     tool_bridge: *tools_mod.Bridge,
+    collaboration_bridge: *collaboration_mod.Bridge,
     exit_requested: *std.atomic.Value(bool),
     initialized: bool = false,
     shutdown_received: bool = false,
@@ -178,7 +184,7 @@ const Server = struct {
                     .version = "0.1.0",
                 },
                 .instructions =
-                "Guava Engine MCP bridge with read snapshots and minimal write tools. Resources: scene://hierarchy, selection://current, entity://{id}. Tools: create_entity, delete_entity, rename_entity, set_parent, set_local_transform, set_world_transform, set_visible.",
+                "Guava Engine MCP bridge with scene snapshots, editor context injection, and staged ghost-preview transactions. Resources: scene://hierarchy, selection://current, entity://{id}, editor://context, editor://intent-log, preview://staged. Tools: create_entity, delete_entity, rename_entity, set_parent, set_local_transform, set_world_transform, set_visible, stage_transaction, apply_staged_transaction, discard_staged_transaction.",
             });
             return false;
         }
@@ -215,8 +221,38 @@ const Server = struct {
                 objectField(value, "arguments")
             else
                 null;
+            const arguments_value = if (arguments) |value| std.json.Value{ .object = value } else null;
 
-            var response = self.tool_bridge.submitJson(tool_name.?, if (arguments) |value| std.json.Value{ .object = value } else null) catch |err| switch (err) {
+            if (collaboration_mod.isToolName(tool_name.?)) {
+                var response = self.collaboration_bridge.submitJson(tool_name.?, arguments_value) catch |err| switch (err) {
+                    error.ToolNotFound => {
+                        try writeErrorResponse(stdout_file, id, protocol.ErrorCode.invalid_params, "Unknown tool.", .{
+                            .name = tool_name.?,
+                        });
+                        return false;
+                    },
+                    error.InvalidArguments => {
+                        try writeErrorResponse(stdout_file, id, protocol.ErrorCode.invalid_params, "Invalid collaboration tool arguments.", .{
+                            .name = tool_name.?,
+                        });
+                        return false;
+                    },
+                    error.ShuttingDown => {
+                        try writeErrorResponse(stdout_file, id, protocol.ErrorCode.internal_error, "Collaboration bridge is shutting down.", null);
+                        return false;
+                    },
+                    else => return err,
+                };
+                defer response.deinit(std.heap.page_allocator);
+
+                const summary = try collaboration_mod.buildSummaryAlloc(std.heap.page_allocator, response);
+                defer std.heap.page_allocator.free(summary);
+
+                try writeCollaborationToolResult(stdout_file, id, response, summary);
+                return false;
+            }
+
+            var response = self.tool_bridge.submitJson(tool_name.?, arguments_value) catch |err| switch (err) {
                 error.ToolNotFound => {
                     try writeErrorResponse(stdout_file, id, protocol.ErrorCode.invalid_params, "Unknown tool.", .{
                         .name = tool_name.?,
@@ -260,7 +296,7 @@ const Server = struct {
 
         if (std.mem.eql(u8, method, "prompts/list")) {
             try writeResult(stdout_file, id, .{
-                .prompts = &.{} ,
+                .prompts = &.{},
             });
             return false;
         }
@@ -350,6 +386,62 @@ fn objectField(value: std.json.Value, name: []const u8) ?std.json.ObjectMap {
         .null => null,
         else => null,
     };
+}
+
+fn appendResourceDescriptorsAlloc(
+    allocator: std.mem.Allocator,
+    list: *std.ArrayList(protocol.ResourceDescriptor),
+    descriptors: []const protocol.ResourceDescriptor,
+) !void {
+    try list.ensureTotalCapacity(allocator, list.items.len + descriptors.len);
+    for (descriptors) |descriptor| {
+        const copy = try copyResourceDescriptorAlloc(allocator, descriptor);
+        list.append(allocator, copy) catch |err| {
+            freeResourceDescriptorOwned(allocator, copy);
+            return err;
+        };
+    }
+}
+
+fn copyResourceDescriptorAlloc(
+    allocator: std.mem.Allocator,
+    descriptor: protocol.ResourceDescriptor,
+) !protocol.ResourceDescriptor {
+    var copy: protocol.ResourceDescriptor = .{
+        .uri = "",
+        .name = "",
+        .title = null,
+        .description = null,
+        .mimeType = null,
+        .size = descriptor.size,
+    };
+
+    copy.uri = try allocator.dupe(u8, descriptor.uri);
+    errdefer allocator.free(copy.uri);
+    copy.name = try allocator.dupe(u8, descriptor.name);
+    errdefer allocator.free(copy.name);
+    if (descriptor.title) |title| {
+        copy.title = try allocator.dupe(u8, title);
+        errdefer allocator.free(copy.title.?);
+    }
+    if (descriptor.description) |description| {
+        copy.description = try allocator.dupe(u8, description);
+        errdefer allocator.free(copy.description.?);
+    }
+    if (descriptor.mimeType) |mime_type| {
+        copy.mimeType = try allocator.dupe(u8, mime_type);
+        errdefer allocator.free(copy.mimeType.?);
+    }
+
+    return copy;
+}
+
+fn freeResourceDescriptorOwned(allocator: std.mem.Allocator, descriptor: protocol.ResourceDescriptor) void {
+    allocator.free(descriptor.uri);
+    allocator.free(descriptor.name);
+    if (descriptor.title) |title| allocator.free(title);
+    if (descriptor.description) |description| allocator.free(description);
+    if (descriptor.mimeType) |mime_type| allocator.free(mime_type);
 }
 
 fn writeToolList(stdout_file: *std.fs.File, id: std.json.Value) !void {
@@ -447,8 +539,105 @@ fn writeToolList(stdout_file: *std.fs.File, id: std.json.Value) !void {
                     .required = &.{ "entity_id", "visible" },
                 },
             },
+            .{
+                .name = "stage_transaction",
+                .description = "Stage a batch of entity tools into an isolated preview world and publish a ghost preview.",
+                .inputSchema = .{
+                    .@"type" = "object",
+                    .properties = .{
+                        .label = .{ .@"type" = "string" },
+                        .note = .{ .@"type" = "string" },
+                        .source = .{ .@"type" = "string" },
+                        .commands = .{ .@"type" = "array" },
+                        .operations = .{ .@"type" = "array" },
+                    },
+                    .required = &.{"commands"},
+                },
+            },
+            .{
+                .name = "apply_staged_transaction",
+                .description = "Commit the active staged transaction into the main world.",
+                .inputSchema = .{
+                    .@"type" = "object",
+                    .properties = .{},
+                    .required = &.{},
+                },
+            },
+            .{
+                .name = "discard_staged_transaction",
+                .description = "Discard the active staged transaction and clear the ghost preview.",
+                .inputSchema = .{
+                    .@"type" = "object",
+                    .properties = .{},
+                    .required = &.{},
+                },
+            },
         },
     });
+}
+
+fn writeCollaborationToolResult(
+    stdout_file: *std.fs.File,
+    id: std.json.Value,
+    response: collaboration_mod.CallResponse,
+    summary: []const u8,
+) !void {
+    switch (response.outcome) {
+        .staged => |result| {
+            try writeResult(stdout_file, id, .{
+                .content = &.{
+                    .{
+                        .type = "text",
+                        .text = summary,
+                    },
+                },
+                .structuredContent = .{
+                    .tool = response.tool_name,
+                    .transaction_id = result.transaction_id,
+                    .command_count = result.command_count,
+                    .preview_count = result.preview_count,
+                    .error_count = result.error_count,
+                },
+                .isError = false,
+            });
+        },
+        .applied => |result| {
+            try writeResult(stdout_file, id, .{
+                .content = &.{
+                    .{
+                        .type = "text",
+                        .text = summary,
+                    },
+                },
+                .structuredContent = .{
+                    .tool = response.tool_name,
+                    .had_transaction = result.had_transaction,
+                    .transaction_id = result.transaction_id,
+                    .command_count = result.command_count,
+                    .changed_count = result.changed_count,
+                    .error_count = result.error_count,
+                },
+                .isError = false,
+            });
+        },
+        .discarded => |result| {
+            try writeResult(stdout_file, id, .{
+                .content = &.{
+                    .{
+                        .type = "text",
+                        .text = summary,
+                    },
+                },
+                .structuredContent = .{
+                    .tool = response.tool_name,
+                    .had_transaction = result.had_transaction,
+                    .transaction_id = result.transaction_id,
+                    .command_count = result.command_count,
+                },
+                .isError = false,
+            });
+        },
+    }
 }
 
 fn writeResult(stdout_file: *std.fs.File, id: std.json.Value, result: anytype) !void {

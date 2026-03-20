@@ -2,6 +2,7 @@ const std = @import("std");
 const engine = @import("guava");
 const EditorState = @import("state.zig").EditorState;
 const utils = @import("../common/utils.zig");
+const ai_collaboration = @import("../ai_native/collaboration.zig");
 const camera = @import("../interaction/camera.zig");
 const manipulation = @import("../interaction/manipulation.zig");
 const viewport = @import("../ui/viewport.zig");
@@ -150,6 +151,7 @@ pub const EditorLayer = struct {
     fn onUpdate(context: *anyopaque, layer_context: *engine.core.LayerContext) !void {
         const self: *EditorLayer = @ptrCast(@alignCast(context));
 
+        ai_collaboration.beginFrame(&self.state);
         try vfx_runtime.update(layer_context);
         try history.pruneMissingSelection(&self.state, layer_context);
         utils.pruneFrozenEntities(&self.state, layer_context.world);
@@ -170,6 +172,9 @@ pub const EditorLayer = struct {
         camera.handleCameraControls(&self.state, layer_context);
         try viewport.handleViewportSelection(&self.state, layer_context);
         manipulation.syncGizmoState(&self.state, layer_context);
+        ai_collaboration.syncContext(&self.state, layer_context) catch |err| {
+            std.log.warn("failed to sync AI collaboration context: {s}", .{@errorName(err)});
+        };
 
         // Draw animation editor window if open
         if (self.state.animation_editor_open) {
