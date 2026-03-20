@@ -1,8 +1,9 @@
 const std = @import("std");
 const core = @import("../core/layer.zig");
-const scene_mod = @import("../scene/scene.zig");
 const protocol = @import("protocol.zig");
 const resources_mod = @import("resources/mod.zig");
+
+const EmptyObject = struct {};
 
 pub const SyncLayer = struct {
     store: *resources_mod.SnapshotStore,
@@ -40,15 +41,15 @@ pub const SyncLayer = struct {
     }
 };
 
-pub fn spawnDetached(store: *resources_mod.SnapshotStore, exit_requested: *std.atomic.Value(bool)) !void {
+pub fn spawn(store: *resources_mod.SnapshotStore, exit_requested: *std.atomic.Value(bool)) !std.Thread {
     const server = try std.heap.page_allocator.create(Server);
+    errdefer std.heap.page_allocator.destroy(server);
     server.* = .{
         .store = store,
         .exit_requested = exit_requested,
     };
 
-    const thread = try std.Thread.spawn(.{}, serverMain, .{server});
-    thread.detach();
+    return try std.Thread.spawn(.{}, serverMain, .{server});
 }
 
 const Server = struct {
@@ -149,6 +150,10 @@ const Server = struct {
         params: ?std.json.Value,
     ) !bool {
         if (std.mem.eql(u8, method, "initialize")) {
+            const ServerCapabilities = struct {
+                resources: EmptyObject = .{},
+                tools: EmptyObject = .{},
+            };
             const requested_protocol = if (params) |value|
                 stringField(value, "protocolVersion") orelse protocol.default_protocol_version
             else
@@ -157,10 +162,7 @@ const Server = struct {
 
             try writeResult(stdout_file, id, .{
                 .protocolVersion = requested_protocol,
-                .capabilities = .{
-                    .resources = .{},
-                    .tools = .{},
-                },
+                .capabilities = ServerCapabilities{},
                 .serverInfo = .{
                     .name = "guava-engine",
                     .title = "Guava Engine MCP",
@@ -173,18 +175,18 @@ const Server = struct {
         }
 
         if (std.mem.eql(u8, method, "ping")) {
-            try writeResult(stdout_file, id, .{});
+            try writeResult(stdout_file, id, EmptyObject{});
             return false;
         }
 
         if (std.mem.eql(u8, method, "shutdown")) {
             self.shutdown_received = true;
-            try writeResult(stdout_file, id, .{});
+            try writeResult(stdout_file, id, EmptyObject{});
             return false;
         }
 
         if (std.mem.eql(u8, method, "logging/setLevel")) {
-            try writeResult(stdout_file, id, .{});
+            try writeResult(stdout_file, id, EmptyObject{});
             return false;
         }
 
@@ -253,12 +255,13 @@ const Server = struct {
             if (self.exit_requested.load(.acquire)) {
                 return error.ShuttingDown;
             }
-            std.time.sleep(5 * std.time.ns_per_ms);
+            std.Thread.sleep(5 * std.time.ns_per_ms);
         }
     }
 };
 
 fn serverMain(server: *Server) void {
+    defer std.heap.page_allocator.destroy(server);
     server.run() catch |err| {
         std.log.err("mcp server failed: {s}", .{@errorName(err)});
         server.requestExit();
@@ -296,7 +299,7 @@ fn writeErrorResponse(
     const framed = try protocol.encodeMessageAlloc(std.heap.page_allocator, .{
         .jsonrpc = protocol.jsonrpc_version,
         .id = if (id) |request_id| request_id else std.json.Value{ .null = {} },
-        .error = .{
+        .@"error" = .{
             .code = code,
             .message = message,
             .data = data,

@@ -22,7 +22,6 @@ pub const SnapshotStore = struct {
         defer self.mutex.unlock();
         freeEntriesOwned(self.allocator, self.entries.items);
         self.entries.deinit(self.allocator);
-        self.* = undefined;
     }
 
     pub fn isReady(self: *const SnapshotStore) bool {
@@ -43,7 +42,10 @@ pub const SnapshotStore = struct {
         selected_entities: []const scene_mod.EntityId,
     ) !void {
         const next_entries = try buildResourceEntriesAlloc(self.allocator, world, primary_selection, selected_entities);
-        errdefer freeEntriesOwned(self.allocator, next_entries);
+        errdefer {
+            freeEntriesOwned(self.allocator, next_entries);
+            self.allocator.free(next_entries);
+        }
 
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -62,21 +64,37 @@ pub const SnapshotStore = struct {
         mutable.mutex.lock();
         defer mutable.mutex.unlock();
 
-        const resources = try allocator.alloc(protocol.ResourceDescriptor, mutable.entries.items.len);
-        errdefer freeResourceDescriptors(allocator, resources);
+        var resources = std.ArrayList(protocol.ResourceDescriptor).empty;
+        errdefer {
+            for (resources.items) |resource| {
+                allocator.free(resource.uri);
+                allocator.free(resource.name);
+                if (resource.title) |title| {
+                    allocator.free(title);
+                }
+                if (resource.description) |description| {
+                    allocator.free(description);
+                }
+                if (resource.mimeType) |mime_type| {
+                    allocator.free(mime_type);
+                }
+            }
+            resources.deinit(allocator);
+        }
 
-        for (mutable.entries.items, 0..) |entry, index| {
-            resources[index] = .{
+        try resources.ensureTotalCapacity(allocator, mutable.entries.items.len);
+        for (mutable.entries.items) |entry| {
+            try resources.append(allocator, .{
                 .uri = try allocator.dupe(u8, entry.uri),
                 .name = try allocator.dupe(u8, entry.name),
                 .title = if (entry.title) |title| try allocator.dupe(u8, title) else null,
                 .description = if (entry.description) |description| try allocator.dupe(u8, description) else null,
                 .mimeType = if (entry.mime_type) |mime_type| try allocator.dupe(u8, mime_type) else null,
                 .size = entry.text.len,
-            };
+            });
         }
 
-        return resources;
+        return try resources.toOwnedSlice(allocator);
     }
 
     pub fn readAlloc(self: *const SnapshotStore, allocator: std.mem.Allocator, uri: []const u8) !?protocol.TextResourceContents {
