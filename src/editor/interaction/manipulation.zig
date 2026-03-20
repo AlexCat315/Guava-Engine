@@ -152,6 +152,7 @@ pub fn beginManipulation(
     state.manipulation_mode = mode;
     state.manipulation_axis = .free;
     state.manipulation_entity = null;
+    state.manipulation_target = .main_world;
     state.manipulation_drag_active = false;
     state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
     state.manipulation_accumulated_delta = .{ 0.0, 0.0 }; // 重置累计偏移量
@@ -173,9 +174,11 @@ pub fn endManipulation(state: *EditorState) void {
     state.manipulation_mode = .none;
     state.manipulation_axis = .free;
     state.manipulation_entity = null;
+    state.manipulation_target = .main_world;
     state.manipulation_drag_active = false;
     state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
     state.manipulation_accumulated_delta = .{ 0.0, 0.0 };
+    state.manipulation_started_from_ui = false;
 }
 
 pub fn cancelManipulation(state: *EditorState, layer_context: *engine.core.LayerContext) void {
@@ -184,7 +187,10 @@ pub fn cancelManipulation(state: *EditorState, layer_context: *engine.core.Layer
         return;
     };
     ai_collaboration.noteManipulationCancel(state, entity_id);
-    _ = layer_context.world.setEntityWorldTransform(entity_id, state.manipulation_origin);
+    switch (state.manipulation_target) {
+        .main_world => _ = layer_context.world.setEntityWorldTransform(entity_id, state.manipulation_origin),
+        .staged_preview => ai_collaboration.cancelPreviewEntityTransform(state, layer_context, entity_id, state.manipulation_origin),
+    }
     endManipulation(state);
     syncGizmoState(state, layer_context);
 }
@@ -194,15 +200,30 @@ fn commitManipulation(state: *EditorState, layer_context: *engine.core.LayerCont
         endManipulation(state);
         return;
     };
+    ai_collaboration.noteManipulationCommit(state, entity_id);
+    if (state.manipulation_target == .staged_preview) {
+        const runtime = state.ai_preview_runtime orelse {
+            endManipulation(state);
+            return;
+        };
+        const transform = runtime.world.worldTransformConst(entity_id) orelse {
+            endManipulation(state);
+            return;
+        };
+        _ = try ai_collaboration.commitPreviewEntityTransform(state, layer_context, entity_id, transform);
+        endManipulation(state);
+        syncGizmoState(state, layer_context);
+        return;
+    }
     const before = state.manipulation_snapshot orelse {
         endManipulation(state);
         return;
     };
-    ai_collaboration.noteManipulationCommit(state, entity_id);
     state.manipulation_snapshot = null;
     state.manipulation_mode = .none;
     state.manipulation_axis = .free;
     state.manipulation_entity = null;
+    state.manipulation_target = .main_world;
     state.manipulation_drag_active = false;
     state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
     state.manipulation_accumulated_delta = .{ 0.0, 0.0 };
@@ -231,7 +252,15 @@ pub fn applyManipulation(state: *EditorState, layer_context: *engine.core.LayerC
 
         if (state.manipulation_drag_active) {
             if (state.manipulation_entity) |entity_id| {
-                if (state.manipulation_snapshot) |before| {
+                if (state.manipulation_target == .staged_preview) {
+                    if (state.ai_preview_runtime) |*runtime| {
+                        if (runtime.world.worldTransformConst(entity_id)) |transform| {
+                            _ = ai_collaboration.commitPreviewEntityTransform(state, layer_context, entity_id, transform) catch |err| {
+                                std.log.err("Failed to commit preview manipulation: {}", .{err});
+                            };
+                        }
+                    }
+                } else if (state.manipulation_snapshot) |before| {
                     state.manipulation_snapshot = null; // Prevent double free
                     history.recordEntityMutation(state, layer_context, before, &.{entity_id}) catch |err| {
                         std.log.err("Failed to commit manipulation history: {}", .{err});
@@ -262,7 +291,7 @@ pub fn applyManipulation(state: *EditorState, layer_context: *engine.core.LayerC
     }
 
     const entity_id = state.manipulation_entity orelse return;
-    const current_transform = layer_context.world.worldTransform(entity_id) orelse {
+    const current_transform = currentManipulationTransform(state, layer_context, entity_id) orelse {
         endManipulation(state);
         return;
     };
@@ -301,7 +330,15 @@ pub fn applyManipulation(state: *EditorState, layer_context: *engine.core.LayerC
         .scale => applyScale(state, &entity_transform),
     }
 
-    _ = layer_context.world.setEntityWorldTransform(entity_id, entity_transform);
+    switch (state.manipulation_target) {
+        .main_world => _ = layer_context.world.setEntityWorldTransform(entity_id, entity_transform),
+        .staged_preview => {
+            if (state.ai_preview_runtime) |*runtime| {
+                _ = runtime.world.setEntityWorldTransform(entity_id, entity_transform);
+                runtime.world.updateHierarchy();
+            }
+        },
+    }
 }
 
 pub fn applyTranslate(
@@ -450,6 +487,44 @@ fn syncManipulationTarget(state: *EditorState, layer_context: *engine.core.Layer
         return;
     }
 
+    const next = nextManipulationTarget(state, layer_context);
+
+    if (next.entity_id == state.manipulation_entity and next.target == state.manipulation_target) {
+        return;
+    }
+
+    clearManipulationSnapshot(state);
+    state.manipulation_entity = next.entity_id;
+    state.manipulation_target = next.target;
+    state.manipulation_drag_active = false;
+    state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
+    state.manipulation_accumulated_delta = .{ 0.0, 0.0 };
+
+    if (next.entity_id) |entity_id| {
+        state.manipulation_origin = currentManipulationTransform(state, layer_context, entity_id) orelse return;
+        if (next.target == .main_world) {
+            state.manipulation_snapshot = try history.captureEntitySnapshot(state, layer_context.world, entity_id);
+        }
+    }
+}
+
+const NextManipulationTarget = struct {
+    entity_id: ?engine.scene.EntityId = null,
+    target: state_mod.ManipulationTarget = .main_world,
+};
+
+fn nextManipulationTarget(state: *EditorState, layer_context: *engine.core.LayerContext) NextManipulationTarget {
+    if (state.ai_preview_selected_entity) |entity_id| {
+        if (state.ai_preview_runtime) |*runtime| {
+            if (runtime.world.hasEntity(entity_id)) {
+                return .{
+                    .entity_id = entity_id,
+                    .target = .staged_preview,
+                };
+            }
+        }
+    }
+
     const selected = layer_context.renderer.selectedEntity();
     const next_entity = blk: {
         const entity_id = selected orelse break :blk null;
@@ -461,21 +536,24 @@ fn syncManipulationTarget(state: *EditorState, layer_context: *engine.core.Layer
         }
         break :blk entity_id;
     };
+    return .{
+        .entity_id = next_entity,
+        .target = .main_world,
+    };
+}
 
-    if (next_entity == state.manipulation_entity) {
-        return;
-    }
-
-    clearManipulationSnapshot(state);
-    state.manipulation_entity = next_entity;
-    state.manipulation_drag_active = false;
-    state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
-    state.manipulation_accumulated_delta = .{ 0.0, 0.0 };
-
-    if (next_entity) |entity_id| {
-        state.manipulation_origin = layer_context.world.worldTransform(entity_id) orelse return;
-        state.manipulation_snapshot = try history.captureEntitySnapshot(state, layer_context.world, entity_id);
-    }
+fn currentManipulationTransform(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity_id: engine.scene.EntityId,
+) ?engine.scene.Transform {
+    return switch (state.manipulation_target) {
+        .main_world => layer_context.world.worldTransform(entity_id),
+        .staged_preview => if (state.ai_preview_runtime) |*runtime|
+            runtime.world.worldTransformConst(entity_id)
+        else
+            null,
+    };
 }
 
 fn manipulationAxisVector(space: TransformSpace, axis: state_mod.AxisConstraint, rotation: [4]f32) [3]f32 {

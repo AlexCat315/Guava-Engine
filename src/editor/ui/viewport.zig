@@ -624,6 +624,13 @@ pub fn handleViewportSelection(state: *EditorState, layer_context: *engine.core.
         const viewport_size = layer_context.renderer.sceneViewportSize();
         if (camera.activeCameraRayFromViewportPixel(state, layer_context, pixel, viewport_size)) |ray| {
             const mode = selectionUpdateModeForInput(input);
+            if (try ai_collaboration.trySelectPreviewEntity(state, layer_context, ray, mode)) {
+                viewport_log.info("preview selection hit mode={s}", .{@tagName(mode)});
+                return;
+            }
+            if (mode == .replace and state.ai_preview_selected_entity != null) {
+                ai_collaboration.clearPreviewSelectionState(state, layer_context);
+            }
             if (layer_context.world.raycastSurface(ray)) |hit| {
                 viewport_log.info("selection hit entity={d} mode={s}", .{ hit.entity_id, @tagName(mode) });
                 switch (mode) {

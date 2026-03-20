@@ -683,6 +683,8 @@ pub const Renderer = struct {
     selection_seeded: bool = false,
     /// 编辑器 Gizmo 状态
     editor_gizmo_state: EditorGizmoState = .{},
+    /// staged preview 的自定义 gizmo 目标
+    preview_gizmo_transform: ?components.Transform = null,
     /// 编辑器视口状态
     editor_viewport_state: EditorViewportState = .{},
     /// 待处理的选择回读请求
@@ -900,6 +902,7 @@ pub const Renderer = struct {
         self.scene_cache.deinit(&self.rhi);
         self.scene_cache = try mesh_pass_mod.MeshSceneCache.init(self.allocator, &self.rhi);
         self.preview_scene = null;
+        self.preview_gizmo_transform = null;
     }
 
     pub fn replaceSelection(self: *Renderer, entity: ?scene_mod.EntityId) !void {
@@ -919,6 +922,10 @@ pub const Renderer = struct {
 
     pub fn setEditorGizmoState(self: *Renderer, state: EditorGizmoState) void {
         self.editor_gizmo_state = state;
+    }
+
+    pub fn setPreviewGizmoTransform(self: *Renderer, transform: ?components.Transform) void {
+        self.preview_gizmo_transform = transform;
     }
 
     pub fn setEditorViewportState(self: *Renderer, state: EditorViewportState) void {
@@ -1366,19 +1373,23 @@ pub const Renderer = struct {
                     });
                     const gizmo_start = std.time.nanoTimestamp();
                     var gizmo_overlay_stats = mesh_pass_mod.DrawStats{};
-                    if (self.selection_history.primarySelection()) |selected_entity_id| {
-                        if (scene.worldTransformConst(selected_entity_id)) |selected_transform| {
-                            const gizmo_stats = self.gizmo_pass.draw(
-                                &self.rhi,
-                                frame,
-                                gizmo_pass,
-                                &prepared_scene,
-                                selected_transform,
-                                self.editor_gizmo_state,
-                            );
-                            gizmo_overlay_stats.add(gizmo_stats);
-                            draw_stats.add(gizmo_stats);
-                        }
+                    const gizmo_target_transform = if (self.preview_gizmo_transform) |preview_transform|
+                        preview_transform
+                    else if (self.selection_history.primarySelection()) |selected_entity_id|
+                        scene.worldTransformConst(selected_entity_id)
+                    else
+                        null;
+                    if (gizmo_target_transform) |selected_transform| {
+                        const gizmo_stats = self.gizmo_pass.draw(
+                            &self.rhi,
+                            frame,
+                            gizmo_pass,
+                            &prepared_scene,
+                            selected_transform,
+                            self.editor_gizmo_state,
+                        );
+                        gizmo_overlay_stats.add(gizmo_stats);
+                        draw_stats.add(gizmo_stats);
                     }
 
                     const debug_stats = try self.drawViewportDebugOverlays(frame, gizmo_pass, scene, &prepared_scene);
@@ -1726,6 +1737,7 @@ pub const Renderer = struct {
             return false;
         }
         return self.selection_history.primarySelection() != null or
+            self.preview_gizmo_transform != null or
             self.editor_viewport_state.show_grid or
             self.editor_viewport_state.show_bones or
             self.editor_viewport_state.show_collision;

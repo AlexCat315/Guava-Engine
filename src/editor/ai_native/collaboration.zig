@@ -26,6 +26,7 @@ pub fn syncContext(state: *EditorState, layer_context: *engine.core.LayerContext
     try store.updateContext(.{
         .primary_selection = layer_context.renderer.selectedEntity(),
         .selected_entities = layer_context.renderer.selectedEntities(),
+        .staged_preview_selection = state.ai_preview_selected_entity,
         .manipulation_mode = mapManipulationMode(state.manipulation_mode),
         .manipulation_entity = state.manipulation_entity,
         .transform_space = mapTransformSpace(state.transform_space),
@@ -44,22 +45,29 @@ pub fn syncContext(state: *EditorState, layer_context: *engine.core.LayerContext
 pub fn syncPreviewWorld(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const runtime = if (state.ai_preview_runtime) |*resolved| resolved else {
         layer_context.renderer.setPreviewScene(null);
+        layer_context.renderer.setPreviewGizmoTransform(null);
         return;
     };
 
     const store = state.ai_collaboration orelse {
         runtime.clear();
+        clearPreviewEntities(state);
         layer_context.renderer.setPreviewScene(null);
+        layer_context.renderer.setPreviewGizmoTransform(null);
         return;
     };
     const allocator = state.allocator orelse layer_context.world.allocator;
 
     var snapshot = try store.copyPreviewWorldSnapshotAlloc(allocator);
     defer snapshot.deinit(allocator);
+    const preview_entity_ids = try store.copyPreviewEntityIdsAlloc(allocator);
+    defer allocator.free(preview_entity_ids);
 
     if (!snapshot.active or snapshot.encoded_world == null) {
         runtime.clear();
+        clearPreviewEntities(state);
         layer_context.renderer.setPreviewScene(null);
+        layer_context.renderer.setPreviewGizmoTransform(null);
         return;
     }
 
@@ -69,9 +77,106 @@ pub fn syncPreviewWorld(state: *EditorState, layer_context: *engine.core.LayerCo
         runtime.transaction_id = snapshot.transaction_id;
     }
 
+    try replacePreviewEntities(state, allocator, preview_entity_ids);
+    if (state.ai_preview_selected_entity) |entity_id| {
+        if (!containsPreviewEntity(state, entity_id)) {
+            state.ai_preview_selected_entity = null;
+        }
+    }
+
     syncActiveCameraIntoPreview(state, layer_context, &runtime.world);
     runtime.world.updateHierarchy();
     layer_context.renderer.setPreviewScene(&runtime.world);
+    syncPreviewGizmoTransform(state, layer_context);
+}
+
+pub fn trySelectPreviewEntity(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    ray: engine.scene.Ray,
+    mode: engine.render.SelectionUpdateMode,
+) !bool {
+    const runtime = if (state.ai_preview_runtime) |*resolved| resolved else return false;
+    if (runtime.transaction_id == null or state.ai_preview_entities.items.len == 0) {
+        return false;
+    }
+
+    const allocator = state.allocator orelse layer_context.world.allocator;
+    const candidates = try runtime.world.queryRenderableRayBounds(allocator, ray.origin, ray.direction, 4096.0);
+    defer allocator.free(candidates);
+
+    var picked: ?engine.scene.EntityId = null;
+    for (candidates) |candidate| {
+        if (!containsPreviewEntity(state, candidate.id)) {
+            continue;
+        }
+        picked = candidate.id;
+        break;
+    }
+    if (picked == null) {
+        return false;
+    }
+
+    const next_selected = switch (mode) {
+        .replace => picked,
+        .toggle => if (state.ai_preview_selected_entity != null and state.ai_preview_selected_entity.? == picked.?)
+            null
+        else
+            picked,
+    };
+    state.ai_preview_selected_entity = next_selected;
+
+    if (next_selected) |entity_id| {
+        if (layer_context.world.hasEntity(entity_id)) {
+            try layer_context.renderer.replaceSelection(entity_id);
+        } else {
+            try layer_context.renderer.replaceSelection(null);
+        }
+    } else {
+        try layer_context.renderer.replaceSelection(null);
+    }
+
+    syncPreviewGizmoTransform(state, layer_context);
+    notePreviewSelection(state, next_selected);
+    return true;
+}
+
+pub fn commitPreviewEntityTransform(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity_id: engine.scene.EntityId,
+    transform: engine.scene.Transform,
+) !bool {
+    const runtime = if (state.ai_preview_runtime) |*resolved| resolved else return false;
+    const store = state.ai_collaboration orelse return false;
+    _ = runtime.world.setEntityWorldTransform(entity_id, transform);
+    runtime.world.updateHierarchy();
+    const changed = try store.updateStagedEntityWorldTransform(
+        state.allocator orelse layer_context.world.allocator,
+        entity_id,
+        transform,
+        .human,
+    );
+    syncPreviewGizmoTransform(state, layer_context);
+    return changed;
+}
+
+pub fn cancelPreviewEntityTransform(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity_id: engine.scene.EntityId,
+    transform: engine.scene.Transform,
+) void {
+    const runtime = if (state.ai_preview_runtime) |*resolved| resolved else return;
+    _ = runtime.world.setEntityWorldTransform(entity_id, transform);
+    runtime.world.updateHierarchy();
+    if (state.ai_preview_selected_entity != null and state.ai_preview_selected_entity.? == entity_id) {
+        syncPreviewGizmoTransform(state, layer_context);
+    }
+}
+
+pub fn clearPreviewSelectionState(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+    clearPreviewSelection(state, layer_context);
 }
 
 pub fn noteManipulationBegin(state: *EditorState) void {
@@ -83,8 +188,8 @@ pub fn noteManipulationCommit(state: *EditorState, entity_id: engine.scene.Entit
     var detail_buffer: [128]u8 = undefined;
     const detail = std.fmt.bufPrint(
         &detail_buffer,
-        "entity={d} mode={s}",
-        .{ entity_id, @tagName(mapManipulationMode(state.manipulation_mode)) },
+        "entity={d} mode={s} target={s}",
+        .{ entity_id, @tagName(mapManipulationMode(state.manipulation_mode)), @tagName(state.manipulation_target) },
     ) catch "manipulation commit";
     store.recordIntent(.human, "manipulation_commit", detail) catch |err| {
         std.log.warn("failed to record manipulation commit: {s}", .{@errorName(err)});
@@ -96,8 +201,8 @@ pub fn noteManipulationCancel(state: *EditorState, entity_id: ?engine.scene.Enti
     var detail_buffer: [128]u8 = undefined;
     const detail = std.fmt.bufPrint(
         &detail_buffer,
-        "entity={any} mode={s}",
-        .{ entity_id, @tagName(mapManipulationMode(state.manipulation_mode)) },
+        "entity={any} mode={s} target={s}",
+        .{ entity_id, @tagName(mapManipulationMode(state.manipulation_mode)), @tagName(state.manipulation_target) },
     ) catch "manipulation cancel";
     store.recordIntent(.human, "manipulation_cancel", detail) catch |err| {
         std.log.warn("failed to record manipulation cancel: {s}", .{@errorName(err)});
@@ -164,12 +269,23 @@ fn drawPreviewCard(
 
     if (engine.ui.ImGui.buttonEx("Apply Preview##ai_stage_apply", 136.0, 0.0)) {
         _ = try store.applyStagedTransaction(layer_context.world, .human);
+        clearPreviewSelection(state, layer_context);
         state.viewport_overlay_hovered = true;
     }
     engine.ui.ImGui.sameLine();
     if (engine.ui.ImGui.buttonEx("Discard##ai_stage_discard", 112.0, 0.0)) {
         _ = store.discardStagedTransaction(.human);
+        clearPreviewSelection(state, layer_context);
         state.viewport_overlay_hovered = true;
+    }
+
+    if (state.ai_preview_selected_entity) |selected_entity| {
+        if (previewEntityLabel(state, selected_entity)) |label| {
+            engine.ui.ImGui.separator();
+            var selected_buffer: [160]u8 = undefined;
+            const selected_text = std.fmt.bufPrint(&selected_buffer, "editing ghost: {s}  #{d}", .{ label, selected_entity }) catch "editing ghost";
+            engine.ui.ImGui.text(selected_text);
+        }
     }
 }
 
@@ -188,7 +304,11 @@ fn drawPreviewPins(
         }
         const screen_pos = worldPointToViewportScreen(state, layer_context, entry.world_position) orelse continue;
         const color = previewColor(entry.action, entry.visible);
-        draw_list.addCircleFilled(screen_pos, 5.5, color, 12);
+        const is_selected = entry.entity_id != null and state.ai_preview_selected_entity != null and entry.entity_id.? == state.ai_preview_selected_entity.?;
+        if (is_selected) {
+            draw_list.addCircleFilled(screen_pos, 8.5, engine.ui.ImGui.getColorU32(.{ 0.98, 0.98, 0.98, 0.92 }), 18);
+        }
+        draw_list.addCircleFilled(screen_pos, if (is_selected) 6.0 else 5.5, color, 12);
 
         if (index >= label_limit) {
             continue;
@@ -210,8 +330,8 @@ fn noteManipulationEvent(state: *EditorState, action: []const u8) void {
     var detail_buffer: [128]u8 = undefined;
     const detail = std.fmt.bufPrint(
         &detail_buffer,
-        "entity={any} mode={s}",
-        .{ state.manipulation_entity, @tagName(mapManipulationMode(state.manipulation_mode)) },
+        "entity={any} mode={s} target={s}",
+        .{ state.manipulation_entity, @tagName(mapManipulationMode(state.manipulation_mode)), @tagName(state.manipulation_target) },
     ) catch action;
     store.recordIntent(.human, action, detail) catch |err| {
         std.log.warn("failed to record manipulation intent: {s}", .{@errorName(err)});
@@ -236,6 +356,61 @@ fn syncActiveCameraIntoPreview(
     preview_entity.camera = source_camera;
     preview_world.markDirty(camera_id);
     _ = preview_world.setPrimaryCamera(camera_id);
+}
+
+fn clearPreviewSelection(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+    state.ai_preview_selected_entity = null;
+    layer_context.renderer.setPreviewGizmoTransform(null);
+}
+
+fn clearPreviewEntities(state: *EditorState) void {
+    state.ai_preview_entities.clearRetainingCapacity();
+    state.ai_preview_selected_entity = null;
+}
+
+fn replacePreviewEntities(state: *EditorState, allocator: std.mem.Allocator, entity_ids: []const engine.scene.EntityId) !void {
+    state.ai_preview_entities.clearRetainingCapacity();
+    try state.ai_preview_entities.appendSlice(allocator, entity_ids);
+}
+
+fn containsPreviewEntity(state: *const EditorState, entity_id: engine.scene.EntityId) bool {
+    for (state.ai_preview_entities.items) |preview_entity_id| {
+        if (preview_entity_id == entity_id) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn syncPreviewGizmoTransform(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+    const runtime = if (state.ai_preview_runtime) |*resolved| resolved else {
+        layer_context.renderer.setPreviewGizmoTransform(null);
+        return;
+    };
+    const entity_id = state.ai_preview_selected_entity orelse {
+        layer_context.renderer.setPreviewGizmoTransform(null);
+        return;
+    };
+    const transform = runtime.world.worldTransformConst(entity_id) orelse {
+        layer_context.renderer.setPreviewGizmoTransform(null);
+        return;
+    };
+    layer_context.renderer.setPreviewGizmoTransform(transform);
+}
+
+fn notePreviewSelection(state: *EditorState, entity_id: ?engine.scene.EntityId) void {
+    const store = state.ai_collaboration orelse return;
+    var detail_buffer: [128]u8 = undefined;
+    const detail = std.fmt.bufPrint(&detail_buffer, "entity={any}", .{entity_id}) catch "preview selection";
+    store.recordIntent(.human, "preview_selection_changed", detail) catch |err| {
+        std.log.warn("failed to record preview selection intent: {s}", .{@errorName(err)});
+    };
+}
+
+fn previewEntityLabel(state: *const EditorState, entity_id: engine.scene.EntityId) ?[]const u8 {
+    const runtime = state.ai_preview_runtime orelse return null;
+    const entity = runtime.world.getEntityConst(entity_id) orelse return null;
+    return entity.name;
 }
 
 fn buildDragPayload(state: *EditorState, layer_context: *engine.core.LayerContext) ?collaboration_mod.DragPayload {

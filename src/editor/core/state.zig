@@ -59,6 +59,11 @@ pub const TransformSpace = enum {
     world,
 };
 
+pub const ManipulationTarget = enum {
+    main_world,
+    staged_preview,
+};
+
 pub const HierarchyCategory = enum {
     all,
     cameras,
@@ -203,6 +208,8 @@ pub const EditorState = struct {
     allocator: ?std.mem.Allocator = null,
     ai_collaboration: ?*engine.mcp.collaboration.Store = null,
     ai_preview_runtime: ?AiPreviewRuntime = null,
+    ai_preview_entities: std.ArrayList(engine.scene.EntityId) = .empty,
+    ai_preview_selected_entity: ?engine.scene.EntityId = null,
     editor_camera: ?engine.scene.EntityId = null,
     scene_camera: ?engine.scene.EntityId = null,
     inspector_name_entity: ?engine.scene.EntityId = null,
@@ -249,6 +256,7 @@ pub const EditorState = struct {
     vfx_component_clipboard: ?engine.scene.Vfx = null,
     playback_state: PlaybackState = .stopped,
     transform_space: TransformSpace = .local,
+    manipulation_target: ManipulationTarget = .main_world,
     undo_stack: std.ArrayList(command_mod.EditorCommand) = .empty,
     redo_stack: std.ArrayList(command_mod.EditorCommand) = .empty,
     max_history_commands: usize = 64,
@@ -493,6 +501,9 @@ pub const EditorState = struct {
             runtime.deinit();
             self.ai_preview_runtime = null;
         }
+        self.ai_preview_entities.deinit(allocator);
+        self.ai_preview_entities = .empty;
+        self.ai_preview_selected_entity = null;
         self.clearOwnedClipboards();
         if (self.manipulation_snapshot) |*snapshot| {
             snapshot.deinit(allocator);

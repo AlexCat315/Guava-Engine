@@ -130,6 +130,9 @@ pub const EditorLayer = struct {
             self.state.frozen_entities = .empty;
             self.state.selection_locked_entities.deinit(allocator);
             self.state.selection_locked_entities = .empty;
+            self.state.ai_preview_entities.deinit(allocator);
+            self.state.ai_preview_entities = .empty;
+            self.state.ai_preview_selected_entity = null;
 
             // Cleanup animation editor state
             if (self.animation_editor_state) |*editor_state| {
@@ -184,6 +187,7 @@ pub const EditorLayer = struct {
         ai_collaboration.syncPreviewWorld(&self.state, layer_context) catch |err| {
             std.log.warn("failed to sync AI preview world: {s}", .{@errorName(err)});
             layer_context.renderer.setPreviewScene(null);
+            layer_context.renderer.setPreviewGizmoTransform(null);
         };
 
         // Draw animation editor window if open

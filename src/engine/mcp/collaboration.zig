@@ -120,6 +120,7 @@ pub const PendingViewportDrop = struct {
 pub const UpdateContextArgs = struct {
     primary_selection: ?scene_mod.EntityId = null,
     selected_entities: []const scene_mod.EntityId,
+    staged_preview_selection: ?scene_mod.EntityId = null,
     manipulation_mode: ManipulationMode = .none,
     manipulation_entity: ?scene_mod.EntityId = null,
     transform_space: TransformSpace = .local,
@@ -178,6 +179,7 @@ const ContextSnapshot = struct {
     revision: u64 = 0,
     primary_selection: ?scene_mod.EntityId = null,
     selected_entities: std.ArrayList(scene_mod.EntityId) = .empty,
+    staged_preview_selection: ?scene_mod.EntityId = null,
     manipulation_mode: ManipulationMode = .none,
     manipulation_entity: ?scene_mod.EntityId = null,
     transform_space: TransformSpace = .local,
@@ -366,6 +368,7 @@ pub const Store = struct {
         try replaceEntitySlice(&self.context.selected_entities, self.allocator, args.selected_entities);
         self.context.revision += 1;
         self.context.primary_selection = args.primary_selection;
+        self.context.staged_preview_selection = args.staged_preview_selection;
         self.context.manipulation_mode = args.manipulation_mode;
         self.context.manipulation_entity = args.manipulation_entity;
         self.context.transform_space = args.transform_space;
@@ -624,6 +627,93 @@ pub const Store = struct {
         };
     }
 
+    pub fn copyPreviewEntityIdsAlloc(self: *const Store, allocator: std.mem.Allocator) ![]scene_mod.EntityId {
+        const mutable: *Store = @constCast(self);
+        mutable.mutex.lock();
+        defer mutable.mutex.unlock();
+
+        var count: usize = 0;
+        for (mutable.staged.preview_entries.items) |entry| {
+            if (entry.entity_id != null and entry.action != .deleted) {
+                count += 1;
+            }
+        }
+
+        const ids = try allocator.alloc(scene_mod.EntityId, count);
+        var index: usize = 0;
+        for (mutable.staged.preview_entries.items) |entry| {
+            if (entry.entity_id) |entity_id| {
+                if (entry.action == .deleted) {
+                    continue;
+                }
+                ids[index] = entity_id;
+                index += 1;
+            }
+        }
+        return ids;
+    }
+
+    pub fn updateStagedEntityWorldTransform(
+        self: *Store,
+        allocator: std.mem.Allocator,
+        entity_id: scene_mod.EntityId,
+        transform: components.Transform,
+        source: IntentSource,
+    ) !bool {
+        var staged_id: u64 = 0;
+        var encoded_preview_world: []u8 = undefined;
+
+        self.mutex.lock();
+        if (!self.staged.active or self.staged.preview_world_snapshot == null) {
+            self.mutex.unlock();
+            return false;
+        }
+        staged_id = self.staged.id;
+        encoded_preview_world = try allocator.dupe(u8, self.staged.preview_world_snapshot.?);
+        self.mutex.unlock();
+        defer allocator.free(encoded_preview_world);
+
+        var preview_world = scene_mod.World.init(allocator, null);
+        defer preview_world.deinit();
+        try scene_mod.deserializeWorldFromSlice(allocator, &preview_world, encoded_preview_world);
+        preview_world.updateHierarchy();
+
+        const changed = preview_world.setEntityWorldTransform(entity_id, transform);
+        if (!changed) {
+            return preview_world.hasEntity(entity_id);
+        }
+        preview_world.updateHierarchy();
+
+        const next_snapshot = try scene_mod.serializeWorldAlloc(allocator, &preview_world);
+        errdefer allocator.free(next_snapshot);
+
+        const preview_entity = preview_world.getEntityConst(entity_id) orelse return false;
+        const world_transform = preview_world.worldTransformConst(entity_id) orelse preview_entity.local_transform;
+
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (!self.staged.active or self.staged.id != staged_id) {
+            allocator.free(next_snapshot);
+            return false;
+        }
+
+        if (self.staged.preview_world_snapshot) |existing| {
+            self.allocator.free(existing);
+        }
+        self.staged.preview_world_snapshot = next_snapshot;
+        try upsertStagedWorldTransformCommand(&self.staged.commands, self.allocator, entity_id, world_transform);
+        updatePreviewEntryTransform(&self.staged.preview_entries, entity_id, world_transform, preview_entity.visible);
+
+        var detail_buffer: [160]u8 = undefined;
+        const detail = std.fmt.bufPrint(
+            &detail_buffer,
+            "id={d} entity={d} world_transform=({d:.2},{d:.2},{d:.2})",
+            .{ staged_id, entity_id, world_transform.translation[0], world_transform.translation[1], world_transform.translation[2] },
+        ) catch "staged preview transform";
+        self.pushIntentLocked(source, "staged_preview_transform", detail) catch {};
+        return true;
+    }
+
     pub fn appendResourceDescriptorsAlloc(
         allocator: std.mem.Allocator,
         resources: *std.ArrayList(protocol.ResourceDescriptor),
@@ -715,6 +805,7 @@ pub const Store = struct {
             selection: struct {
                 primary: ?scene_mod.EntityId,
                 entities: []const scene_mod.EntityId,
+                staged_preview_primary: ?scene_mod.EntityId,
             },
             manipulation: struct {
                 mode: []const u8,
@@ -780,6 +871,7 @@ pub const Store = struct {
             .selection = .{
                 .primary = mutable.context.primary_selection,
                 .entities = mutable.context.selected_entities.items,
+                .staged_preview_primary = mutable.context.staged_preview_selection,
             },
             .manipulation = .{
                 .mode = @tagName(mutable.context.manipulation_mode),
@@ -1314,6 +1406,67 @@ fn cloneCommandAlloc(allocator: std.mem.Allocator, command: command_mod.Command)
     };
 }
 
+fn upsertStagedWorldTransformCommand(
+    commands: *std.ArrayList(CommandEntry),
+    allocator: std.mem.Allocator,
+    entity_id: scene_mod.EntityId,
+    transform: components.Transform,
+) !void {
+    var index = commands.items.len;
+    while (index > 0) {
+        index -= 1;
+        switch (commands.items[index].command) {
+            .set_world_transform => |*set_transform| {
+                if (set_transform.entity_id != entity_id) {
+                    continue;
+                }
+                set_transform.transform = transform;
+                return;
+            },
+            .set_local_transform => |*set_transform| {
+                if (set_transform.entity_id != entity_id) {
+                    continue;
+                }
+                commands.items[index].command = .{
+                    .set_world_transform = .{
+                        .entity_id = entity_id,
+                        .transform = transform,
+                    },
+                };
+                return;
+            },
+            else => {},
+        }
+    }
+
+    try commands.append(allocator, .{
+        .tool_name = try allocator.dupe(u8, "set_world_transform"),
+        .command = .{
+            .set_world_transform = .{
+                .entity_id = entity_id,
+                .transform = transform,
+            },
+        },
+    });
+}
+
+fn updatePreviewEntryTransform(
+    entries: *std.ArrayList(PreviewEntity),
+    entity_id: scene_mod.EntityId,
+    transform: components.Transform,
+    visible: bool,
+) void {
+    for (entries.items) |*entry| {
+        if (entry.entity_id != entity_id) {
+            continue;
+        }
+        entry.world_transform = transform;
+        entry.has_world_transform = true;
+        entry.visible = visible;
+        return;
+    }
+}
+
 fn previewActionForCommand(command: command_mod.Command) PreviewAction {
     return switch (command) {
         .create_entity => .created,
@@ -1561,6 +1714,53 @@ test "Store stages preview and applies it to the main world" {
         std.testing.allocator.free(content.text);
     };
     try std.testing.expect(std.mem.indexOf(u8, staged_json.?.text, "\"active\": false") != null);
+}
+
+test "Store updates staged preview transforms and replays them on apply" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    var world = scene_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+
+    const source_entity = try world.createEntity(.{
+        .name = "Mover",
+        .local_transform = .{
+            .translation = .{ 1.0, 0.0, 0.0 },
+        },
+    });
+    world.updateHierarchy();
+
+    var request = StageRequest{
+        .source = .ai,
+        .commands = .empty,
+    };
+    defer request.deinit(std.testing.allocator);
+
+    try request.commands.append(std.testing.allocator, .{
+        .tool_name = try std.testing.allocator.dupe(u8, "rename_entity"),
+        .command = .{
+            .rename_entity = .{
+                .entity_id = source_entity,
+                .name = try std.testing.allocator.dupe(u8, "MoverPreview"),
+            },
+        },
+    });
+
+    _ = try store.stageOwnedTransaction(&world, &request);
+    try std.testing.expect(try store.updateStagedEntityWorldTransform(
+        std.testing.allocator,
+        source_entity,
+        .{ .translation = .{ 6.0, 2.0, -3.0 } },
+        .human,
+    ));
+
+    const applied = try store.applyStagedTransaction(&world, .human);
+    try std.testing.expect(applied.had_transaction);
+    const transformed = world.worldTransformConst(source_entity).?;
+    try std.testing.expectApproxEqAbs(@as(f32, 6.0), transformed.translation[0], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 2.0), transformed.translation[1], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, -3.0), transformed.translation[2], 0.0001);
 }
 
 test "Bridge parses staged transaction batches" {
