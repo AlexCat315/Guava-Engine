@@ -207,6 +207,7 @@ const StagedTransaction = struct {
     commands: std.ArrayList(CommandEntry) = .empty,
     results: std.ArrayList(StageCommandResult) = .empty,
     preview_entries: std.ArrayList(PreviewEntity) = .empty,
+    preview_world_snapshot: ?[]u8 = null,
     error_count: usize = 0,
 
     fn clear(self: *StagedTransaction, allocator: std.mem.Allocator) void {
@@ -216,6 +217,10 @@ const StagedTransaction = struct {
         self.commands.clearRetainingCapacity();
         self.results.clearRetainingCapacity();
         self.preview_entries.clearRetainingCapacity();
+        if (self.preview_world_snapshot) |snapshot| {
+            allocator.free(snapshot);
+            self.preview_world_snapshot = null;
+        }
         self.active = false;
         self.id = 0;
         self.source = .ai;
@@ -311,6 +316,19 @@ pub const OverlaySnapshot = struct {
     preview_count: usize = 0,
     visible_entry_count: usize = 0,
     entries: [max_entries]OverlayPreviewEntry = [_]OverlayPreviewEntry{.{}} ** max_entries,
+};
+
+pub const PreviewWorldSnapshot = struct {
+    active: bool = false,
+    transaction_id: ?u64 = null,
+    encoded_world: ?[]u8 = null,
+
+    pub fn deinit(self: *PreviewWorldSnapshot, allocator: std.mem.Allocator) void {
+        if (self.encoded_world) |bytes| {
+            allocator.free(bytes);
+        }
+        self.* = undefined;
+    }
 };
 
 pub const Store = struct {
@@ -421,6 +439,8 @@ pub const Store = struct {
             try updatePreviewEntries(&preview_entries, world, &preview_world, entry.command, result);
         }
 
+        const preview_world_snapshot = try scene_mod.serializeWorldAlloc(self.allocator, &preview_world);
+
         var stage_result = StageResult{};
 
         self.mutex.lock();
@@ -447,6 +467,7 @@ pub const Store = struct {
         preview_results = .empty;
         self.staged.preview_entries = preview_entries;
         preview_entries = .empty;
+        self.staged.preview_world_snapshot = preview_world_snapshot;
         self.staged.error_count = error_count;
 
         stage_result = .{
@@ -585,6 +606,22 @@ pub const Store = struct {
         }
 
         return snapshot;
+    }
+
+    pub fn copyPreviewWorldSnapshotAlloc(self: *const Store, allocator: std.mem.Allocator) !PreviewWorldSnapshot {
+        const mutable: *Store = @constCast(self);
+        mutable.mutex.lock();
+        defer mutable.mutex.unlock();
+
+        if (!mutable.staged.active or mutable.staged.preview_world_snapshot == null) {
+            return .{};
+        }
+
+        return .{
+            .active = true,
+            .transaction_id = mutable.staged.id,
+            .encoded_world = try allocator.dupe(u8, mutable.staged.preview_world_snapshot.?),
+        };
     }
 
     pub fn appendResourceDescriptorsAlloc(
@@ -1503,6 +1540,13 @@ test "Store stages preview and applies it to the main world" {
     const overlay = store.overlaySnapshot();
     try std.testing.expect(overlay.active);
     try std.testing.expectEqual(@as(usize, 2), overlay.command_count);
+
+    var preview_snapshot = try store.copyPreviewWorldSnapshotAlloc(std.testing.allocator);
+    defer preview_snapshot.deinit(std.testing.allocator);
+    try std.testing.expect(preview_snapshot.active);
+    try std.testing.expectEqual(staged.transaction_id, preview_snapshot.transaction_id.?);
+    try std.testing.expect(preview_snapshot.encoded_world != null);
+    try std.testing.expect(preview_snapshot.encoded_world.?.len > 0);
 
     const applied = try store.applyStagedTransaction(&world, .human);
     try std.testing.expect(applied.had_transaction);

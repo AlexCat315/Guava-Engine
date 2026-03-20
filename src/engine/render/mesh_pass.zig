@@ -420,6 +420,88 @@ pub const MeshSceneCache = struct {
         };
     }
 
+    pub fn prepareOverlayScene(
+        self: *MeshSceneCache,
+        device: *rhi_mod.RhiDevice,
+        world: *const scene_mod.World,
+        render_world: *const scene_extraction.RenderWorld,
+        reference: *const PreparedScene,
+    ) !PreparedScene {
+        const frustum = frustum_mod.Frustum.fromViewProjection(reference.view_projection);
+        var opaque_meshes = std.ArrayList(DrawItem).empty;
+        defer opaque_meshes.deinit(self.allocator);
+        var transparent_meshes = std.ArrayList(DrawItem).empty;
+        defer transparent_meshes.deinit(self.allocator);
+
+        for (render_world.meshes.items) |render_mesh| {
+            if (world.worldBoundsConst(render_mesh.entity_id)) |bounds| {
+                if (!frustum.intersectsAABB(bounds)) {
+                    continue;
+                }
+            }
+
+            const mesh_component = render_mesh.mesh;
+            const mesh_handle = mesh_component.handle orelse continue;
+            const mesh = world.resources.mesh(mesh_handle) orelse continue;
+            if (mesh.primitive_type != .triangle_list) continue;
+
+            const gpu_mesh = try self.ensureMesh(device, mesh_handle, mesh);
+            const material_state = try self.resolveMaterial(device, world, render_mesh.material);
+
+            const draw_item = DrawItem{
+                .entity_id = render_mesh.entity_id,
+                .pickable = false,
+                .vertex_buffer = gpu_mesh.vertex_buffer,
+                .index_buffer = gpu_mesh.index_buffer,
+                .index_count = gpu_mesh.index_count,
+                .wireframe_index_buffer = gpu_mesh.wireframe_index_buffer,
+                .wireframe_index_count = gpu_mesh.wireframe_index_count,
+                .bind_group = material_state.bind_group,
+                .material_textures = material_state.material_textures,
+                .base_color_factor = material_state.base_color_factor,
+                .emissive_factor = material_state.emissive_factor,
+                .pbr_factors = material_state.pbr_factors,
+                .has_textures = material_state.has_textures,
+                .ibl_params = material_state.ibl_params,
+                .model = render_mesh.transform.toMatrix(),
+                .skinning_meta = buildSkinningState(world, render_mesh.entity_id, render_mesh.transform).meta,
+                .skin_matrices = buildSkinningState(world, render_mesh.entity_id, render_mesh.transform).matrices,
+            };
+
+            const is_transparent = if (render_mesh.material) |mat| mat.base_color_factor[3] < 1.0 else false;
+            if (is_transparent) {
+                try transparent_meshes.append(self.allocator, draw_item);
+            } else {
+                try opaque_meshes.append(self.allocator, draw_item);
+            }
+        }
+
+        return .{
+            .allocator = self.allocator,
+            .camera = reference.camera,
+            .view_matrix = reference.view_matrix,
+            .projection_matrix = reference.projection_matrix,
+            .view_projection = reference.view_projection,
+            .camera_world_position = reference.camera_world_position,
+            .lights = .{
+                .directional_lights = try self.allocator.alloc(DirectionalLightBlock, 0),
+                .point_lights = try self.allocator.alloc(PointLightBlock, 0),
+            },
+            .light_space_matrix = reference.light_space_matrix,
+            .shadow_map = reference.shadow_map,
+            .shadow_sampler = reference.shadow_sampler,
+            .texture_sampler = reference.texture_sampler,
+            .environment_map = reference.environment_map,
+            .irradiance_map = reference.irradiance_map,
+            .prefiltered_env_map = reference.prefiltered_env_map,
+            .brdf_lut = reference.brdf_lut,
+            .ambient_color = reference.ambient_color,
+            .opaque_meshes = try opaque_meshes.toOwnedSlice(self.allocator),
+            .transparent_meshes = try transparent_meshes.toOwnedSlice(self.allocator),
+            .debug = .{},
+        };
+    }
+
     pub fn defaultSelectionEntity(self: *MeshSceneCache, scene: *const scene_mod.Scene) ?scene_mod.EntityId {
         _ = self;
         if (scene.findEntityByName("Spinner")) |entity| {

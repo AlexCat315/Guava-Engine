@@ -41,6 +41,39 @@ pub fn syncContext(state: *EditorState, layer_context: *engine.core.LayerContext
     });
 }
 
+pub fn syncPreviewWorld(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const runtime = if (state.ai_preview_runtime) |*resolved| resolved else {
+        layer_context.renderer.setPreviewScene(null);
+        return;
+    };
+
+    const store = state.ai_collaboration orelse {
+        runtime.clear();
+        layer_context.renderer.setPreviewScene(null);
+        return;
+    };
+    const allocator = state.allocator orelse layer_context.world.allocator;
+
+    var snapshot = try store.copyPreviewWorldSnapshotAlloc(allocator);
+    defer snapshot.deinit(allocator);
+
+    if (!snapshot.active or snapshot.encoded_world == null) {
+        runtime.clear();
+        layer_context.renderer.setPreviewScene(null);
+        return;
+    }
+
+    if (runtime.transaction_id != snapshot.transaction_id) {
+        runtime.clear();
+        try engine.scene.deserializeWorldFromSlice(allocator, &runtime.world, snapshot.encoded_world.?);
+        runtime.transaction_id = snapshot.transaction_id;
+    }
+
+    syncActiveCameraIntoPreview(state, layer_context, &runtime.world);
+    runtime.world.updateHierarchy();
+    layer_context.renderer.setPreviewScene(&runtime.world);
+}
+
 pub fn noteManipulationBegin(state: *EditorState) void {
     noteManipulationEvent(state, "manipulation_begin");
 }
@@ -183,6 +216,26 @@ fn noteManipulationEvent(state: *EditorState, action: []const u8) void {
     store.recordIntent(.human, action, detail) catch |err| {
         std.log.warn("failed to record manipulation intent: {s}", .{@errorName(err)});
     };
+}
+
+fn syncActiveCameraIntoPreview(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    preview_world: *engine.scene.World,
+) void {
+    const active_camera_id = if (state.editor_camera_active)
+        state.editor_camera
+    else
+        layer_context.world.primaryCameraEntity();
+    const camera_id = active_camera_id orelse return;
+    const source_entity = layer_context.world.getEntityConst(camera_id) orelse return;
+    const source_camera = source_entity.camera orelse return;
+    const preview_entity = preview_world.getEntity(camera_id) orelse return;
+
+    preview_entity.local_transform = source_entity.local_transform;
+    preview_entity.camera = source_camera;
+    preview_world.markDirty(camera_id);
+    _ = preview_world.setPrimaryCamera(camera_id);
 }
 
 fn buildDragPayload(state: *EditorState, layer_context: *engine.core.LayerContext) ?collaboration_mod.DragPayload {

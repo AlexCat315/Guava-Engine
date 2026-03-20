@@ -391,6 +391,7 @@ const material_thumbnail_jobs_per_frame: usize = 2;
 const material_thumbnail_cache_limit: usize = 48;
 const selection_readback_bytes: u32 = 4;
 const material_thumbnail_clear_color = [4]f32{ 0.075, 0.08, 0.09, 1.0 };
+const ghost_preview_wire_color = [4]f32{ 0.28, 0.94, 0.62, 1.0 };
 const thumbnail_viewport_state = EditorViewportState{
     .render_mode = .textured,
     .show_grid = false,
@@ -646,10 +647,14 @@ pub const Renderer = struct {
     graph: graph_mod.RenderGraph,
     /// 场景缓存（优化场景数据访问）
     scene_cache: mesh_pass_mod.MeshSceneCache,
+    /// AI staged preview 场景缓存
+    preview_scene_cache: mesh_pass_mod.MeshSceneCache,
     /// 缩略图场景缓存
     thumbnail_scene_cache: mesh_pass_mod.MeshSceneCache,
     /// 渲染世界（提取的场景数据）
     render_world: scene_extraction.RenderWorld,
+    /// staged preview 渲染世界
+    preview_render_world: scene_extraction.RenderWorld,
     /// 缩略图渲染世界
     thumbnail_render_world: scene_extraction.RenderWorld,
     /// ID 拾取通道（用于编辑器选择）
@@ -694,6 +699,8 @@ pub const Renderer = struct {
     material_thumbnail_cache: std.StringHashMap(MaterialThumbnailCacheEntry) = undefined,
     /// 材质缩略图请求队列
     material_thumbnail_requests: std.ArrayList([]u8) = .empty,
+    /// 编辑器 staged preview scene
+    preview_scene: ?*const scene_mod.Scene = null,
 
     /// 初始化渲染器
     ///
@@ -731,8 +738,10 @@ pub const Renderer = struct {
             ),
             .graph = try graph_mod.RenderGraph.initDefault3D(allocator),
             .scene_cache = undefined,
+            .preview_scene_cache = undefined,
             .thumbnail_scene_cache = undefined,
             .render_world = scene_extraction.RenderWorld.init(allocator),
+            .preview_render_world = scene_extraction.RenderWorld.init(allocator),
             .thumbnail_render_world = scene_extraction.RenderWorld.init(allocator),
             .id_pass = undefined,
             .depth_prepass = undefined,
@@ -757,6 +766,9 @@ pub const Renderer = struct {
 
         renderer.scene_cache = try mesh_pass_mod.MeshSceneCache.init(allocator, &renderer.rhi);
         errdefer renderer.scene_cache.deinit(&renderer.rhi);
+
+        renderer.preview_scene_cache = try mesh_pass_mod.MeshSceneCache.init(allocator, &renderer.rhi);
+        errdefer renderer.preview_scene_cache.deinit(&renderer.rhi);
 
         renderer.thumbnail_scene_cache = try mesh_pass_mod.MeshSceneCache.init(allocator, &renderer.rhi);
         errdefer renderer.thumbnail_scene_cache.deinit(&renderer.rhi);
@@ -812,6 +824,7 @@ pub const Renderer = struct {
         self.releaseMaterialThumbnailCache();
         self.material_thumbnail_preview.deinit();
         self.thumbnail_scene_cache.deinit(&self.rhi);
+        self.preview_scene_cache.deinit(&self.rhi);
         self.tonemap_pass.deinit(&self.rhi);
         if (self.skybox_pass) |*pass| {
             pass.deinit(&self.rhi);
@@ -827,6 +840,7 @@ pub const Renderer = struct {
         self.id_pass.deinit(&self.rhi);
         self.scene_cache.deinit(&self.rhi);
         self.thumbnail_render_world.deinit();
+        self.preview_render_world.deinit();
         self.render_world.deinit();
         self.rhi.deinit();
         self.graph.deinit();
@@ -881,8 +895,11 @@ pub const Renderer = struct {
         self.releaseMaterialThumbnailRequests();
         self.releaseMaterialThumbnailCache();
         self.thumbnail_scene_cache.invalidateMaterialResources(&self.rhi);
+        self.preview_scene_cache.deinit(&self.rhi);
+        self.preview_scene_cache = try mesh_pass_mod.MeshSceneCache.init(self.allocator, &self.rhi);
         self.scene_cache.deinit(&self.rhi);
         self.scene_cache = try mesh_pass_mod.MeshSceneCache.init(self.allocator, &self.rhi);
+        self.preview_scene = null;
     }
 
     pub fn replaceSelection(self: *Renderer, entity: ?scene_mod.EntityId) !void {
@@ -941,6 +958,10 @@ pub const Renderer = struct {
             g_logged_postfx_state = state;
         }
         self.editor_viewport_state = state;
+    }
+
+    pub fn setPreviewScene(self: *Renderer, scene: ?*const scene_mod.Scene) void {
+        self.preview_scene = scene;
     }
 
     pub fn setSceneViewportSize(self: *Renderer, width: u32, height: u32) !void {
@@ -1171,7 +1192,10 @@ pub const Renderer = struct {
                 draw_stats.add(depth_stats);
 
                 const base_start = std.time.nanoTimestamp();
-                const base_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene, self.editor_viewport_state);
+                const base_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene, .{
+                    .render_mode = self.editor_viewport_state.render_mode,
+                    .target = if (viewport_active) .hdr else .ldr,
+                });
                 self.graph.recordPassStat(pass_stats, .base_pass, durationNs(base_start, std.time.nanoTimestamp()), base_stats.draw_calls, base_stats.triangles_drawn);
                 draw_stats.add(base_stats);
 
@@ -1264,6 +1288,52 @@ pub const Renderer = struct {
                         self.graph.recordPassStat(pass_stats, .post_process, durationNs(fxaa_start, std.time.nanoTimestamp()), fxaa_stats.draw_calls, fxaa_stats.triangles_drawn);
                         draw_stats.add(fxaa_stats);
                         self.rhi.endRenderPass(fxaa_render_pass);
+                    }
+                }
+
+                if (viewport_active and self.preview_scene != null) {
+                    const preview_frustum = frustum_mod.Frustum.fromViewProjection(prepared_scene.view_projection);
+                    _ = try scene_extraction.extractWorld(
+                        @constCast(self.preview_scene.?),
+                        &self.preview_render_world,
+                        null,
+                        &.{},
+                        preview_frustum,
+                    );
+                    var prepared_preview_scene = try self.preview_scene_cache.prepareOverlayScene(
+                        &self.rhi,
+                        self.preview_scene.?,
+                        &self.preview_render_world,
+                        &prepared_scene,
+                    );
+                    defer prepared_preview_scene.deinit();
+
+                    if (prepared_preview_scene.opaque_meshes.len > 0 or prepared_preview_scene.transparent_meshes.len > 0) {
+                        const preview_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
+                            .color = .{
+                                .target = scene_color_target,
+                                .load_op = .load,
+                                .store_op = .store,
+                            },
+                            .depth = .{
+                                .texture = self.scene_viewport.depth().?,
+                                .clear_depth = 1.0,
+                                .clear_stencil = 0,
+                                .load_op = .load,
+                                .store_op = .dont_care,
+                                .stencil_load_op = .dont_care,
+                                .stencil_store_op = .dont_care,
+                            },
+                        });
+                        const preview_start = std.time.nanoTimestamp();
+                        const preview_stats = try self.base_pass.draw(&self.rhi, frame, preview_pass, &prepared_preview_scene, .{
+                            .render_mode = .wireframe,
+                            .target = .ldr,
+                            .override_base_color = ghost_preview_wire_color,
+                        });
+                        self.graph.recordPassStat(pass_stats, .gizmo_overlay, durationNs(preview_start, std.time.nanoTimestamp()), preview_stats.draw_calls, preview_stats.triangles_drawn);
+                        draw_stats.add(preview_stats);
+                        self.rhi.endRenderPass(preview_pass);
                     }
                 }
 
@@ -1536,7 +1606,10 @@ pub const Renderer = struct {
 
             const depth_stats = self.depth_prepass.draw(&self.rhi, frame, render_pass, &prepared_scene);
             stats.add(depth_stats);
-            const base_stats = try self.base_pass.draw(&self.rhi, frame, render_pass, &prepared_scene, thumbnail_viewport_state);
+            const base_stats = try self.base_pass.draw(&self.rhi, frame, render_pass, &prepared_scene, .{
+                .render_mode = thumbnail_viewport_state.render_mode,
+                .target = .ldr,
+            });
             stats.add(base_stats);
             self.rhi.endRenderPass(render_pass);
 

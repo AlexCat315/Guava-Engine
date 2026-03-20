@@ -9,22 +9,41 @@ const render_log = std.log.scoped(.viewport_render);
 
 var g_logged_metal_binding_mode: bool = false;
 
+pub const DrawTarget = enum {
+    hdr,
+    ldr,
+};
+
+pub const DrawSettings = struct {
+    render_mode: render_types.EditorViewportRenderMode = .textured,
+    target: DrawTarget = .hdr,
+    override_base_color: ?[4]f32 = null,
+};
+
 pub const BasePass = struct {
-    fill_pipeline: ?rhi_mod.GraphicsPipeline = null,
-    wireframe_pipeline: ?rhi_mod.GraphicsPipeline = null,
+    fill_pipeline_hdr: ?rhi_mod.GraphicsPipeline = null,
+    fill_pipeline_ldr: ?rhi_mod.GraphicsPipeline = null,
+    wireframe_pipeline_hdr: ?rhi_mod.GraphicsPipeline = null,
+    wireframe_pipeline_ldr: ?rhi_mod.GraphicsPipeline = null,
     stages: ?shader_support.ProgramStages = null,
 
     pub fn init(device: *rhi_mod.RhiDevice) !BasePass {
         var pass = BasePass{};
-        try pass.createResources(device, .rgba16_float);
+        try pass.createResources(device);
         return pass;
     }
 
     pub fn deinit(self: *BasePass, device: *rhi_mod.RhiDevice) void {
-        if (self.wireframe_pipeline) |*pipeline| {
+        if (self.wireframe_pipeline_ldr) |*pipeline| {
             device.releaseGraphicsPipeline(pipeline);
         }
-        if (self.fill_pipeline) |*pipeline| {
+        if (self.wireframe_pipeline_hdr) |*pipeline| {
+            device.releaseGraphicsPipeline(pipeline);
+        }
+        if (self.fill_pipeline_ldr) |*pipeline| {
+            device.releaseGraphicsPipeline(pipeline);
+        }
+        if (self.fill_pipeline_hdr) |*pipeline| {
             device.releaseGraphicsPipeline(pipeline);
         }
         if (self.stages) |*stages| {
@@ -34,7 +53,10 @@ pub const BasePass = struct {
     }
 
     pub fn isReady(self: *const BasePass) bool {
-        return self.fill_pipeline != null and self.wireframe_pipeline != null;
+        return self.fill_pipeline_hdr != null and
+            self.fill_pipeline_ldr != null and
+            self.wireframe_pipeline_hdr != null and
+            self.wireframe_pipeline_ldr != null;
     }
 
     pub fn draw(
@@ -43,7 +65,7 @@ pub const BasePass = struct {
         frame: rhi_mod.Frame,
         pass: rhi_mod.RenderPass,
         prepared_scene: *const mesh_pass_mod.PreparedScene,
-        viewport_state: render_types.EditorViewportState,
+        settings: DrawSettings,
     ) !mesh_pass_mod.DrawStats {
         var stats = mesh_pass_mod.DrawStats{};
         if (!self.isReady()) {
@@ -55,11 +77,11 @@ pub const BasePass = struct {
             g_logged_metal_binding_mode = true;
         }
 
-        const pipeline = switch (viewport_state.render_mode) {
-            .wireframe => &self.wireframe_pipeline.?,
-            .textured, .unlit => &self.fill_pipeline.?,
+        const pipeline = switch (settings.render_mode) {
+            .wireframe => self.pipelineFor(settings.target, .wireframe),
+            .textured, .unlit => self.pipelineFor(settings.target, .fill),
         };
-        const is_wireframe = viewport_state.render_mode == .wireframe;
+        const is_wireframe = settings.render_mode == .wireframe;
         device.bindGraphicsPipeline(pass, pipeline);
 
         const main_light = if (prepared_scene.lights.directional_lights.len > 0)
@@ -136,13 +158,13 @@ pub const BasePass = struct {
                 .shadow_params = .{ 0.005, 0.0, 0.0, 0.0 }, // bias
                 .ibl_params = item.ibl_params,
             };
-            if (viewport_state.render_mode == .unlit) {
+            if (settings.render_mode == .unlit) {
                 fragment_uniforms.light_color_intensity = .{ 0.0, 0.0, 0.0, 0.0 };
                 fragment_uniforms.point_light_color_intensity = .{ 0.0, 0.0, 0.0, 0.0 };
                 fragment_uniforms.ambient_color = .{ 1.0, 1.0, 1.0, 1.0 };
                 fragment_uniforms.ibl_params = .{ 0.0, 0.0, 0.0, 0.0 };
             } else if (is_wireframe) {
-                fragment_uniforms.base_color_factor = .{ 0.08, 0.08, 0.08, 1.0 };
+                fragment_uniforms.base_color_factor = settings.override_base_color orelse .{ 0.08, 0.08, 0.08, 1.0 };
                 fragment_uniforms.emissive_factor = .{ 0.0, 0.0, 0.0, 0.0 };
                 fragment_uniforms.has_textures = .{ 0, 0, 0, 0 };
                 fragment_uniforms.light_color_intensity = .{ 0.0, 0.0, 0.0, 0.0 };
@@ -197,7 +219,7 @@ pub const BasePass = struct {
         return stats;
     }
 
-    fn createResources(self: *BasePass, device: *rhi_mod.RhiDevice, color_format: rhi_types.TextureFormat) !void {
+    fn createResources(self: *BasePass, device: *rhi_mod.RhiDevice) !void {
         self.stages = try shader_support.loadProgramStages(device, "mesh");
         errdefer if (self.stages) |*stages| {
             stages.deinit(device);
@@ -249,35 +271,57 @@ pub const BasePass = struct {
             },
         };
 
-        self.fill_pipeline = try device.createGraphicsPipeline(.{
-            .vertex_shader = &self.stages.?.vertex,
-            .fragment_shader = &self.stages.?.fragment,
-            .vertex_buffer_layouts = vertex_layouts[0..],
-            .vertex_attributes = vertex_attributes[0..],
-            .color_format = color_format,
-            .depth_format = .d32_float,
-            .primitive_type = .triangle_list,
-            .fill_mode = .fill,
-            .cull_mode = .back,
-            .front_face = .counter_clockwise,
-            .depth_compare = .less_or_equal,
-            .depth_test = true,
-            .depth_write = false,
-        });
-        errdefer if (self.fill_pipeline) |*pipeline| {
+        self.fill_pipeline_hdr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .rgba16_float, .fill);
+        errdefer if (self.fill_pipeline_hdr) |*pipeline| {
             device.releaseGraphicsPipeline(pipeline);
         };
+        self.fill_pipeline_ldr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .bgra8_unorm, .fill);
+        errdefer if (self.fill_pipeline_ldr) |*pipeline| {
+            device.releaseGraphicsPipeline(pipeline);
+        };
+        self.wireframe_pipeline_hdr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .rgba16_float, .wireframe);
+        errdefer if (self.wireframe_pipeline_hdr) |*pipeline| {
+            device.releaseGraphicsPipeline(pipeline);
+        };
+        self.wireframe_pipeline_ldr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .bgra8_unorm, .wireframe);
+    }
 
-        self.wireframe_pipeline = try device.createGraphicsPipeline(.{
+    const PipelineMode = enum {
+        fill,
+        wireframe,
+    };
+
+    fn pipelineFor(self: *BasePass, target: DrawTarget, mode: PipelineMode) *rhi_mod.GraphicsPipeline {
+        return switch (mode) {
+            .fill => switch (target) {
+                .hdr => &self.fill_pipeline_hdr.?,
+                .ldr => &self.fill_pipeline_ldr.?,
+            },
+            .wireframe => switch (target) {
+                .hdr => &self.wireframe_pipeline_hdr.?,
+                .ldr => &self.wireframe_pipeline_ldr.?,
+            },
+        };
+    }
+
+    fn createPipeline(
+        self: *BasePass,
+        device: *rhi_mod.RhiDevice,
+        vertex_layouts: []const rhi_mod.VertexBufferLayoutDesc,
+        vertex_attributes: []const rhi_mod.VertexAttributeDesc,
+        color_format: rhi_types.TextureFormat,
+        mode: PipelineMode,
+    ) !rhi_mod.GraphicsPipeline {
+        return device.createGraphicsPipeline(.{
             .vertex_shader = &self.stages.?.vertex,
             .fragment_shader = &self.stages.?.fragment,
-            .vertex_buffer_layouts = vertex_layouts[0..],
-            .vertex_attributes = vertex_attributes[0..],
+            .vertex_buffer_layouts = vertex_layouts,
+            .vertex_attributes = vertex_attributes,
             .color_format = color_format,
             .depth_format = .d32_float,
-            .primitive_type = .line_list,
+            .primitive_type = if (mode == .wireframe) .line_list else .triangle_list,
             .fill_mode = .fill,
-            .cull_mode = .none,
+            .cull_mode = if (mode == .wireframe) .none else .back,
             .front_face = .counter_clockwise,
             .depth_compare = .less_or_equal,
             .depth_test = true,

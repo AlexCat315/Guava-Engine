@@ -97,6 +97,7 @@ pub const EditorLayer = struct {
     fn onAttach(context: *anyopaque, layer_context: *engine.core.LayerContext) !void {
         const self: *EditorLayer = @ptrCast(@alignCast(context));
         self.state.allocator = layer_context.world.allocator;
+        self.state.ai_preview_runtime = .init(layer_context.world.allocator, layer_context.world.job_system);
         self.state.preview_device = layer_context.rhi();
         self.state.icon_device = layer_context.rhi();
         self.state.asset_registry = engine.assets.AssetRegistry.init(layer_context.world.allocator);
@@ -134,6 +135,11 @@ pub const EditorLayer = struct {
             if (self.animation_editor_state) |*editor_state| {
                 animation_editor.destroyAnimationEditorState(editor_state, allocator);
                 self.animation_editor_state = null;
+            }
+
+            if (self.state.ai_preview_runtime) |*runtime| {
+                runtime.deinit();
+                self.state.ai_preview_runtime = null;
             }
         }
 
@@ -174,6 +180,10 @@ pub const EditorLayer = struct {
         manipulation.syncGizmoState(&self.state, layer_context);
         ai_collaboration.syncContext(&self.state, layer_context) catch |err| {
             std.log.warn("failed to sync AI collaboration context: {s}", .{@errorName(err)});
+        };
+        ai_collaboration.syncPreviewWorld(&self.state, layer_context) catch |err| {
+            std.log.warn("failed to sync AI preview world: {s}", .{@errorName(err)});
+            layer_context.renderer.setPreviewScene(null);
         };
 
         // Draw animation editor window if open

@@ -178,9 +178,31 @@ pub const MaterialComponentClipboard = struct {
     }
 };
 
+pub const AiPreviewRuntime = struct {
+    world: engine.scene.World,
+    transaction_id: ?u64 = null,
+
+    pub fn init(allocator: std.mem.Allocator, job_system: anytype) AiPreviewRuntime {
+        return .{
+            .world = engine.scene.World.init(allocator, job_system),
+        };
+    }
+
+    pub fn clear(self: *AiPreviewRuntime) void {
+        self.world.clear();
+        self.transaction_id = null;
+    }
+
+    pub fn deinit(self: *AiPreviewRuntime) void {
+        self.world.deinit();
+        self.* = undefined;
+    }
+};
+
 pub const EditorState = struct {
     allocator: ?std.mem.Allocator = null,
     ai_collaboration: ?*engine.mcp.collaboration.Store = null,
+    ai_preview_runtime: ?AiPreviewRuntime = null,
     editor_camera: ?engine.scene.EntityId = null,
     scene_camera: ?engine.scene.EntityId = null,
     inspector_name_entity: ?engine.scene.EntityId = null,
@@ -467,6 +489,10 @@ pub const EditorState = struct {
 
     pub fn deinit(self: *EditorState) void {
         const allocator = self.allocator orelse return;
+        if (self.ai_preview_runtime) |*runtime| {
+            runtime.deinit();
+            self.ai_preview_runtime = null;
+        }
         self.clearOwnedClipboards();
         if (self.manipulation_snapshot) |*snapshot| {
             snapshot.deinit(allocator);
