@@ -46,6 +46,7 @@ pub fn syncPreviewWorld(state: *EditorState, layer_context: *engine.core.LayerCo
     const runtime = if (state.ai_preview_runtime) |*resolved| resolved else {
         layer_context.renderer.setPreviewScene(null);
         layer_context.renderer.setPreviewGizmoTransform(null);
+        layer_context.renderer.clearPreviewEntityFilter();
         return;
     };
 
@@ -54,6 +55,7 @@ pub fn syncPreviewWorld(state: *EditorState, layer_context: *engine.core.LayerCo
         clearPreviewEntities(state);
         layer_context.renderer.setPreviewScene(null);
         layer_context.renderer.setPreviewGizmoTransform(null);
+        layer_context.renderer.clearPreviewEntityFilter();
         return;
     };
     const allocator = state.allocator orelse layer_context.world.allocator;
@@ -68,6 +70,7 @@ pub fn syncPreviewWorld(state: *EditorState, layer_context: *engine.core.LayerCo
         clearPreviewEntities(state);
         layer_context.renderer.setPreviewScene(null);
         layer_context.renderer.setPreviewGizmoTransform(null);
+        layer_context.renderer.clearPreviewEntityFilter();
         return;
     }
 
@@ -87,6 +90,7 @@ pub fn syncPreviewWorld(state: *EditorState, layer_context: *engine.core.LayerCo
     syncActiveCameraIntoPreview(state, layer_context, &runtime.world);
     runtime.world.updateHierarchy();
     layer_context.renderer.setPreviewScene(&runtime.world);
+    try layer_context.renderer.setPreviewEntityFilter(state.ai_preview_entities.items);
     syncPreviewGizmoTransform(state, layer_context);
 }
 
@@ -107,10 +111,7 @@ pub fn trySelectPreviewEntity(
 
     var picked: ?engine.scene.EntityId = null;
     for (candidates) |candidate| {
-        if (!containsPreviewEntity(state, candidate.id)) {
-            continue;
-        }
-        picked = candidate.id;
+        picked = mapPreviewSelectableEntity(state, &runtime.world, candidate.id) orelse continue;
         break;
     }
     if (picked == null) {
@@ -139,6 +140,26 @@ pub fn trySelectPreviewEntity(
     syncPreviewGizmoTransform(state, layer_context);
     notePreviewSelection(state, next_selected);
     return true;
+}
+
+fn mapPreviewSelectableEntity(
+    state: *const EditorState,
+    preview_world: *const engine.scene.World,
+    entity_id: engine.scene.EntityId,
+) ?engine.scene.EntityId {
+    var current_id: ?engine.scene.EntityId = entity_id;
+    var guard: usize = 0;
+    while (current_id) |resolved_id| : (guard += 1) {
+        if (guard > preview_world.entities.items.len) {
+            return null;
+        }
+        if (containsPreviewEntity(state, resolved_id)) {
+            return resolved_id;
+        }
+        const entity = preview_world.getEntityConst(resolved_id) orelse return null;
+        current_id = entity.parent;
+    }
+    return null;
 }
 
 pub fn commitPreviewEntityTransform(

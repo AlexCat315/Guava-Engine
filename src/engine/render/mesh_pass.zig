@@ -46,7 +46,7 @@ pub const VertexUniforms = extern struct {
 pub const BasePassUniforms = extern struct {
     base_color_factor: [4]f32,
     emissive_factor: [4]f32, // w is intensity
-    pbr_factors: [4]f32, // x: metallic, y: roughness, z: alpha_cutoff, w: unused
+    pbr_factors: [4]f32, // x: metallic, y: roughness, z: alpha_cutoff, w: output alpha multiplier
     has_textures: [4]u32, // x: base_color, y: metallic_roughness, z: normal, w: occlusion
     camera_world_position: [4]f32,
     light_direction: [4]f32,
@@ -55,8 +55,8 @@ pub const BasePassUniforms = extern struct {
     point_light_position_radius: [4]f32,
     point_light_color_intensity: [4]f32,
     ambient_color: [4]f32,
-    shadow_params: [4]f32, // x: bias, y: unused, z: unused, w: unused
-    ibl_params: [4]f32, // x: use_ibl (0/1), y: ibl_intensity, z: unused, w: unused
+    shadow_params: [4]f32, // x: bias, yzw: preview tint color
+    ibl_params: [4]f32, // x: use_ibl (0/1), y: ibl_intensity, z: preview tint strength, w: unused
 };
 
 pub const DrawItem = struct {
@@ -75,6 +75,7 @@ pub const DrawItem = struct {
     has_textures: [4]u32,
     ibl_params: [4]f32,
     model: [16]f32,
+    world_position: [3]f32,
     skinning_meta: [4]u32,
     skin_matrices: [max_skin_joints][16]f32,
 };
@@ -317,38 +318,10 @@ pub const MeshSceneCache = struct {
         const view_projection = math.mul(projection_matrix, view_matrix);
         const frustum = frustum_mod.Frustum.fromViewProjection(view_projection);
 
-        var directional_lights = std.ArrayList(DirectionalLightBlock).empty;
-        defer directional_lights.deinit(self.allocator);
-        var point_lights = std.ArrayList(PointLightBlock).empty;
-        defer point_lights.deinit(self.allocator);
-
-        for (render_world.lights.directional.items) |render_light| {
-            const light = render_light.light;
-            const world_transform = render_light.transform;
-            const direction = quat.rotateVec3(world_transform.rotation, .{ 0.0, 0.0, -1.0 });
-            try directional_lights.append(self.allocator, .{
-                .direction = direction,
-                .color = light.color,
-                .intensity = light.intensity,
-            });
-        }
-
-        for (render_world.lights.point.items) |render_light| {
-            const light = render_light.light;
-            const world_transform = render_light.transform;
-            // Frustum Culling for point lights (using range as radius)
-            const light_bounds = @import("../math/aabb.zig").AABB{
-                .min = .{ world_transform.translation[0] - light.range, world_transform.translation[1] - light.range, world_transform.translation[2] - light.range },
-                .max = .{ world_transform.translation[0] + light.range, world_transform.translation[1] + light.range, world_transform.translation[2] + light.range },
-            };
-            if (!frustum.intersectsAABB(light_bounds)) continue;
-
-            try point_lights.append(self.allocator, .{
-                .position = world_transform.translation,
-                .color = light.color,
-                .intensity = light.intensity,
-                .range = light.range,
-            });
+        const lights = try self.collectPreparedLights(render_world, frustum);
+        errdefer {
+            self.allocator.free(lights.directional_lights);
+            self.allocator.free(lights.point_lights);
         }
 
         var opaque_meshes = std.ArrayList(DrawItem).empty;
@@ -356,42 +329,17 @@ pub const MeshSceneCache = struct {
         var transparent_meshes = std.ArrayList(DrawItem).empty;
         defer transparent_meshes.deinit(self.allocator);
 
-        for (render_world.meshes.items) |render_mesh| {
-            const mesh_component = render_mesh.mesh;
-            const mesh_handle = mesh_component.handle orelse continue;
-            const mesh = world.resources.mesh(mesh_handle) orelse continue;
-            if (mesh.primitive_type != .triangle_list) continue;
-
-            const gpu_mesh = try self.ensureMesh(device, mesh_handle, mesh);
-            const material_state = try self.resolveMaterial(device, world, render_mesh.material);
-
-            const draw_item = DrawItem{
-                .entity_id = render_mesh.entity_id,
-                .pickable = true,
-                .vertex_buffer = gpu_mesh.vertex_buffer,
-                .index_buffer = gpu_mesh.index_buffer,
-                .index_count = gpu_mesh.index_count,
-                .wireframe_index_buffer = gpu_mesh.wireframe_index_buffer,
-                .wireframe_index_count = gpu_mesh.wireframe_index_count,
-                .bind_group = material_state.bind_group,
-                .material_textures = material_state.material_textures,
-                .base_color_factor = material_state.base_color_factor,
-                .emissive_factor = material_state.emissive_factor,
-                .pbr_factors = material_state.pbr_factors,
-                .has_textures = material_state.has_textures,
-                .ibl_params = material_state.ibl_params,
-                .model = render_mesh.transform.toMatrix(),
-                .skinning_meta = buildSkinningState(world, render_mesh.entity_id, render_mesh.transform).meta,
-                .skin_matrices = buildSkinningState(world, render_mesh.entity_id, render_mesh.transform).matrices,
-            };
-
-            const is_transparent = if (render_mesh.material) |mat| mat.base_color_factor[3] < 1.0 else false;
-            if (is_transparent) {
-                try transparent_meshes.append(self.allocator, draw_item);
-            } else {
-                try opaque_meshes.append(self.allocator, draw_item);
-            }
-        }
+        try self.appendPreparedMeshes(
+            device,
+            world,
+            render_world,
+            true,
+            frustum,
+            null,
+            &opaque_meshes,
+            &transparent_meshes,
+        );
+        sortTransparentMeshes(transparent_meshes.items, camera_block.transform.translation);
 
         return .{
             .allocator = self.allocator,
@@ -405,10 +353,7 @@ pub const MeshSceneCache = struct {
                 camera_block.transform.translation[2],
                 1.0,
             },
-            .lights = .{
-                .directional_lights = try directional_lights.toOwnedSlice(self.allocator),
-                .point_lights = try point_lights.toOwnedSlice(self.allocator),
-            },
+            .lights = lights,
             .light_space_matrix = math.identity(),
             .shadow_map = null,
             .shadow_sampler = null,
@@ -420,61 +365,40 @@ pub const MeshSceneCache = struct {
         };
     }
 
-    pub fn prepareOverlayScene(
+    pub fn preparePreviewScene(
         self: *MeshSceneCache,
         device: *rhi_mod.RhiDevice,
         world: *const scene_mod.World,
         render_world: *const scene_extraction.RenderWorld,
         reference: *const PreparedScene,
+        preview_roots: []const scene_mod.EntityId,
     ) !PreparedScene {
         const frustum = frustum_mod.Frustum.fromViewProjection(reference.view_projection);
+        const lights = try self.collectPreparedLights(render_world, frustum);
+        errdefer {
+            self.allocator.free(lights.directional_lights);
+            self.allocator.free(lights.point_lights);
+        }
         var opaque_meshes = std.ArrayList(DrawItem).empty;
         defer opaque_meshes.deinit(self.allocator);
         var transparent_meshes = std.ArrayList(DrawItem).empty;
         defer transparent_meshes.deinit(self.allocator);
 
-        for (render_world.meshes.items) |render_mesh| {
-            if (world.worldBoundsConst(render_mesh.entity_id)) |bounds| {
-                if (!frustum.intersectsAABB(bounds)) {
-                    continue;
-                }
-            }
-
-            const mesh_component = render_mesh.mesh;
-            const mesh_handle = mesh_component.handle orelse continue;
-            const mesh = world.resources.mesh(mesh_handle) orelse continue;
-            if (mesh.primitive_type != .triangle_list) continue;
-
-            const gpu_mesh = try self.ensureMesh(device, mesh_handle, mesh);
-            const material_state = try self.resolveMaterial(device, world, render_mesh.material);
-
-            const draw_item = DrawItem{
-                .entity_id = render_mesh.entity_id,
-                .pickable = false,
-                .vertex_buffer = gpu_mesh.vertex_buffer,
-                .index_buffer = gpu_mesh.index_buffer,
-                .index_count = gpu_mesh.index_count,
-                .wireframe_index_buffer = gpu_mesh.wireframe_index_buffer,
-                .wireframe_index_count = gpu_mesh.wireframe_index_count,
-                .bind_group = material_state.bind_group,
-                .material_textures = material_state.material_textures,
-                .base_color_factor = material_state.base_color_factor,
-                .emissive_factor = material_state.emissive_factor,
-                .pbr_factors = material_state.pbr_factors,
-                .has_textures = material_state.has_textures,
-                .ibl_params = material_state.ibl_params,
-                .model = render_mesh.transform.toMatrix(),
-                .skinning_meta = buildSkinningState(world, render_mesh.entity_id, render_mesh.transform).meta,
-                .skin_matrices = buildSkinningState(world, render_mesh.entity_id, render_mesh.transform).matrices,
-            };
-
-            const is_transparent = if (render_mesh.material) |mat| mat.base_color_factor[3] < 1.0 else false;
-            if (is_transparent) {
-                try transparent_meshes.append(self.allocator, draw_item);
-            } else {
-                try opaque_meshes.append(self.allocator, draw_item);
-            }
-        }
+        try self.appendPreparedMeshes(
+            device,
+            world,
+            render_world,
+            false,
+            frustum,
+            preview_roots,
+            &opaque_meshes,
+            &transparent_meshes,
+        );
+        sortTransparentMeshes(transparent_meshes.items, .{
+            reference.camera_world_position[0],
+            reference.camera_world_position[1],
+            reference.camera_world_position[2],
+        });
 
         return .{
             .allocator = self.allocator,
@@ -483,10 +407,7 @@ pub const MeshSceneCache = struct {
             .projection_matrix = reference.projection_matrix,
             .view_projection = reference.view_projection,
             .camera_world_position = reference.camera_world_position,
-            .lights = .{
-                .directional_lights = try self.allocator.alloc(DirectionalLightBlock, 0),
-                .point_lights = try self.allocator.alloc(PointLightBlock, 0),
-            },
+            .lights = lights,
             .light_space_matrix = reference.light_space_matrix,
             .shadow_map = reference.shadow_map,
             .shadow_sampler = reference.shadow_sampler,
@@ -814,7 +735,161 @@ pub const MeshSceneCache = struct {
         }
         return state;
     }
+
+    fn collectPreparedLights(
+        self: *MeshSceneCache,
+        render_world: *const scene_extraction.RenderWorld,
+        frustum: frustum_mod.Frustum,
+    ) !LightBlock {
+        var directional_lights = std.ArrayList(DirectionalLightBlock).empty;
+        defer directional_lights.deinit(self.allocator);
+        var point_lights = std.ArrayList(PointLightBlock).empty;
+        defer point_lights.deinit(self.allocator);
+
+        for (render_world.lights.directional.items) |render_light| {
+            const light = render_light.light;
+            const world_transform = render_light.transform;
+            const direction = quat.rotateVec3(world_transform.rotation, .{ 0.0, 0.0, -1.0 });
+            try directional_lights.append(self.allocator, .{
+                .direction = direction,
+                .color = light.color,
+                .intensity = light.intensity,
+            });
+        }
+
+        for (render_world.lights.point.items) |render_light| {
+            const light = render_light.light;
+            const world_transform = render_light.transform;
+            const light_bounds = @import("../math/aabb.zig").AABB{
+                .min = .{
+                    world_transform.translation[0] - light.range,
+                    world_transform.translation[1] - light.range,
+                    world_transform.translation[2] - light.range,
+                },
+                .max = .{
+                    world_transform.translation[0] + light.range,
+                    world_transform.translation[1] + light.range,
+                    world_transform.translation[2] + light.range,
+                },
+            };
+            if (!frustum.intersectsAABB(light_bounds)) continue;
+
+            try point_lights.append(self.allocator, .{
+                .position = world_transform.translation,
+                .color = light.color,
+                .intensity = light.intensity,
+                .range = light.range,
+            });
+        }
+
+        return .{
+            .directional_lights = try directional_lights.toOwnedSlice(self.allocator),
+            .point_lights = try point_lights.toOwnedSlice(self.allocator),
+        };
+    }
+
+    fn appendPreparedMeshes(
+        self: *MeshSceneCache,
+        device: *rhi_mod.RhiDevice,
+        world: *const scene_mod.World,
+        render_world: *const scene_extraction.RenderWorld,
+        pickable: bool,
+        frustum: frustum_mod.Frustum,
+        preview_roots: ?[]const scene_mod.EntityId,
+        opaque_meshes: *std.ArrayList(DrawItem),
+        transparent_meshes: *std.ArrayList(DrawItem),
+    ) !void {
+        for (render_world.meshes.items) |render_mesh| {
+            if (preview_roots) |roots| {
+                if (!entityMatchesPreviewRoots(world, render_mesh.entity_id, roots)) {
+                    continue;
+                }
+            }
+            if (world.worldBoundsConst(render_mesh.entity_id)) |bounds| {
+                if (!frustum.intersectsAABB(bounds)) {
+                    continue;
+                }
+            }
+
+            const mesh_component = render_mesh.mesh;
+            const mesh_handle = mesh_component.handle orelse continue;
+            const mesh = world.resources.mesh(mesh_handle) orelse continue;
+            if (mesh.primitive_type != .triangle_list) continue;
+
+            const gpu_mesh = try self.ensureMesh(device, mesh_handle, mesh);
+            const material_state = try self.resolveMaterial(device, world, render_mesh.material);
+            const skinning_state = buildSkinningState(world, render_mesh.entity_id, render_mesh.transform);
+
+            const draw_item = DrawItem{
+                .entity_id = render_mesh.entity_id,
+                .pickable = pickable,
+                .vertex_buffer = gpu_mesh.vertex_buffer,
+                .index_buffer = gpu_mesh.index_buffer,
+                .index_count = gpu_mesh.index_count,
+                .wireframe_index_buffer = gpu_mesh.wireframe_index_buffer,
+                .wireframe_index_count = gpu_mesh.wireframe_index_count,
+                .bind_group = material_state.bind_group,
+                .material_textures = material_state.material_textures,
+                .base_color_factor = material_state.base_color_factor,
+                .emissive_factor = material_state.emissive_factor,
+                .pbr_factors = material_state.pbr_factors,
+                .has_textures = material_state.has_textures,
+                .ibl_params = material_state.ibl_params,
+                .model = render_mesh.transform.toMatrix(),
+                .world_position = render_mesh.transform.translation,
+                .skinning_meta = skinning_state.meta,
+                .skin_matrices = skinning_state.matrices,
+            };
+
+            if (isTransparentMaterial(material_state)) {
+                try transparent_meshes.append(self.allocator, draw_item);
+            } else {
+                try opaque_meshes.append(self.allocator, draw_item);
+            }
+        }
+    }
 };
+
+fn isTransparentMaterial(material_state: MaterialState) bool {
+    return material_state.base_color_factor[3] < 0.999;
+}
+
+fn entityMatchesPreviewRoots(
+    world: *const scene_mod.World,
+    entity_id: scene_mod.EntityId,
+    preview_roots: []const scene_mod.EntityId,
+) bool {
+    var current_id: ?scene_mod.EntityId = entity_id;
+    var guard: usize = 0;
+    while (current_id) |resolved_id| : (guard += 1) {
+        if (guard > world.entities.items.len) {
+            return false;
+        }
+        for (preview_roots) |root_id| {
+            if (root_id == resolved_id) {
+                return true;
+            }
+        }
+        const entity = world.getEntityConst(resolved_id) orelse return false;
+        current_id = entity.parent;
+    }
+    return false;
+}
+
+fn sortTransparentMeshes(items: []DrawItem, camera_position: [3]f32) void {
+    std.sort.heap(DrawItem, items, camera_position, lessThanTransparentDistance);
+}
+
+fn lessThanTransparentDistance(camera_position: [3]f32, a: DrawItem, b: DrawItem) bool {
+    return distanceSquared(camera_position, a.world_position) > distanceSquared(camera_position, b.world_position);
+}
+
+fn distanceSquared(a: [3]f32, b: [3]f32) f32 {
+    const dx = a[0] - b[0];
+    const dy = a[1] - b[1];
+    const dz = a[2] - b[2];
+    return dx * dx + dy * dy + dz * dz;
+}
 
 fn buildSkinningState(
     world: *const scene_mod.World,

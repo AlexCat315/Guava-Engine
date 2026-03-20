@@ -193,6 +193,13 @@ fn buildSceneExtractionFrustum(
     return frustum_mod.Frustum.fromViewProjection(view_projection);
 }
 
+fn previewRenderMode(render_mode: types.EditorViewportRenderMode) types.EditorViewportRenderMode {
+    return switch (render_mode) {
+        .wireframe => .textured,
+        else => render_mode,
+    };
+}
+
 const SceneViewportState = struct {
     width: u32 = 0,
     height: u32 = 0,
@@ -391,7 +398,8 @@ const material_thumbnail_jobs_per_frame: usize = 2;
 const material_thumbnail_cache_limit: usize = 48;
 const selection_readback_bytes: u32 = 4;
 const material_thumbnail_clear_color = [4]f32{ 0.075, 0.08, 0.09, 1.0 };
-const ghost_preview_wire_color = [4]f32{ 0.28, 0.94, 0.62, 1.0 };
+const ghost_preview_tint_color = [4]f32{ 0.28, 0.94, 0.62, 0.42 };
+const ghost_preview_tint_strength: f32 = 0.45;
 const thumbnail_viewport_state = EditorViewportState{
     .render_mode = .textured,
     .show_grid = false,
@@ -685,6 +693,8 @@ pub const Renderer = struct {
     editor_gizmo_state: EditorGizmoState = .{},
     /// staged preview 的自定义 gizmo 目标
     preview_gizmo_transform: ?components.Transform = null,
+    /// staged preview 根实体过滤列表
+    preview_entity_filter: std.ArrayList(scene_mod.EntityId) = .empty,
     /// 编辑器视口状态
     editor_viewport_state: EditorViewportState = .{},
     /// 待处理的选择回读请求
@@ -821,6 +831,7 @@ pub const Renderer = struct {
         self.releaseInFlightSelectionBatches();
         self.pending_selection_readbacks.deinit(self.allocator);
         self.selection_history.deinit();
+        self.preview_entity_filter.deinit(self.allocator);
         self.scene_viewport.deinit(&self.rhi);
         self.releaseMaterialThumbnailRequests();
         self.releaseMaterialThumbnailCache();
@@ -903,6 +914,7 @@ pub const Renderer = struct {
         self.scene_cache = try mesh_pass_mod.MeshSceneCache.init(self.allocator, &self.rhi);
         self.preview_scene = null;
         self.preview_gizmo_transform = null;
+        self.preview_entity_filter.clearRetainingCapacity();
     }
 
     pub fn replaceSelection(self: *Renderer, entity: ?scene_mod.EntityId) !void {
@@ -926,6 +938,15 @@ pub const Renderer = struct {
 
     pub fn setPreviewGizmoTransform(self: *Renderer, transform: ?components.Transform) void {
         self.preview_gizmo_transform = transform;
+    }
+
+    pub fn setPreviewEntityFilter(self: *Renderer, entity_ids: []const scene_mod.EntityId) !void {
+        self.preview_entity_filter.clearRetainingCapacity();
+        try self.preview_entity_filter.appendSlice(self.allocator, entity_ids);
+    }
+
+    pub fn clearPreviewEntityFilter(self: *Renderer) void {
+        self.preview_entity_filter.clearRetainingCapacity();
     }
 
     pub fn setEditorViewportState(self: *Renderer, state: EditorViewportState) void {
@@ -1123,6 +1144,30 @@ pub const Renderer = struct {
                 prepared_scene.shadow_sampler = &self.shadow_map.sampler.?;
                 try resolveEnvironmentTextures(self, scene, &prepared_scene);
 
+                var prepared_preview_scene: mesh_pass_mod.PreparedScene = undefined;
+                var has_prepared_preview_scene = false;
+                defer if (has_prepared_preview_scene) {
+                    prepared_preview_scene.deinit();
+                };
+                if (viewport_active and self.preview_scene != null and self.preview_entity_filter.items.len > 0) {
+                    const preview_frustum = frustum_mod.Frustum.fromViewProjection(prepared_scene.view_projection);
+                    _ = try scene_extraction.extractWorld(
+                        @constCast(self.preview_scene.?),
+                        &self.preview_render_world,
+                        null,
+                        &.{},
+                        preview_frustum,
+                    );
+                    prepared_preview_scene = try self.preview_scene_cache.preparePreviewScene(
+                        &self.rhi,
+                        self.preview_scene.?,
+                        &self.preview_render_world,
+                        &prepared_scene,
+                        self.preview_entity_filter.items,
+                    );
+                    has_prepared_preview_scene = true;
+                }
+
                 const scene_color_target: rhi_mod.ColorTarget = if (viewport_active)
                     .{ .texture = self.scene_viewport.color().? }
                 else
@@ -1198,13 +1243,14 @@ pub const Renderer = struct {
                 self.graph.recordPassStat(pass_stats, .depth_prepass, durationNs(depth_start, std.time.nanoTimestamp()), depth_stats.draw_calls, depth_stats.triangles_drawn);
                 draw_stats.add(depth_stats);
 
-                const base_start = std.time.nanoTimestamp();
-                const base_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene, .{
+                const opaque_start = std.time.nanoTimestamp();
+                const opaque_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene, .{
                     .render_mode = self.editor_viewport_state.render_mode,
                     .target = if (viewport_active) .hdr else .ldr,
+                    .phase = .opaque_pass,
                 });
-                self.graph.recordPassStat(pass_stats, .base_pass, durationNs(base_start, std.time.nanoTimestamp()), base_stats.draw_calls, base_stats.triangles_drawn);
-                draw_stats.add(base_stats);
+                self.graph.recordPassStat(pass_stats, .base_pass, durationNs(opaque_start, std.time.nanoTimestamp()), opaque_stats.draw_calls, opaque_stats.triangles_drawn);
+                draw_stats.add(opaque_stats);
 
                 if (self.skybox_pass) |*skybox_pass| {
                     if (skybox_pass.isReady() and prepared_scene.environment_map != null) {
@@ -1214,6 +1260,44 @@ pub const Renderer = struct {
                         draw_stats.draw_calls += 1;
                         draw_stats.triangles_drawn += 1;
                     }
+                }
+
+                if (has_prepared_preview_scene) {
+                    const preview_opaque_start = std.time.nanoTimestamp();
+                    const preview_opaque_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_preview_scene, .{
+                        .render_mode = previewRenderMode(self.editor_viewport_state.render_mode),
+                        .target = .hdr,
+                        .phase = .opaque_pass,
+                        .blend_opaque = true,
+                        .alpha_multiplier = ghost_preview_tint_color[3],
+                        .preview_tint_strength = ghost_preview_tint_strength,
+                        .override_base_color = ghost_preview_tint_color,
+                    });
+                    self.graph.recordPassStat(pass_stats, .base_pass, durationNs(preview_opaque_start, std.time.nanoTimestamp()), preview_opaque_stats.draw_calls, preview_opaque_stats.triangles_drawn);
+                    draw_stats.add(preview_opaque_stats);
+                }
+
+                const transparent_start = std.time.nanoTimestamp();
+                const transparent_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene, .{
+                    .render_mode = self.editor_viewport_state.render_mode,
+                    .target = if (viewport_active) .hdr else .ldr,
+                    .phase = .transparent_pass,
+                });
+                self.graph.recordPassStat(pass_stats, .transparent, durationNs(transparent_start, std.time.nanoTimestamp()), transparent_stats.draw_calls, transparent_stats.triangles_drawn);
+                draw_stats.add(transparent_stats);
+
+                if (has_prepared_preview_scene) {
+                    const preview_transparent_start = std.time.nanoTimestamp();
+                    const preview_transparent_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_preview_scene, .{
+                        .render_mode = previewRenderMode(self.editor_viewport_state.render_mode),
+                        .target = .hdr,
+                        .phase = .transparent_pass,
+                        .alpha_multiplier = ghost_preview_tint_color[3],
+                        .preview_tint_strength = ghost_preview_tint_strength,
+                        .override_base_color = ghost_preview_tint_color,
+                    });
+                    self.graph.recordPassStat(pass_stats, .transparent, durationNs(preview_transparent_start, std.time.nanoTimestamp()), preview_transparent_stats.draw_calls, preview_transparent_stats.triangles_drawn);
+                    draw_stats.add(preview_transparent_stats);
                 }
 
                 self.rhi.endRenderPass(scene_pass);
@@ -1295,52 +1379,6 @@ pub const Renderer = struct {
                         self.graph.recordPassStat(pass_stats, .post_process, durationNs(fxaa_start, std.time.nanoTimestamp()), fxaa_stats.draw_calls, fxaa_stats.triangles_drawn);
                         draw_stats.add(fxaa_stats);
                         self.rhi.endRenderPass(fxaa_render_pass);
-                    }
-                }
-
-                if (viewport_active and self.preview_scene != null) {
-                    const preview_frustum = frustum_mod.Frustum.fromViewProjection(prepared_scene.view_projection);
-                    _ = try scene_extraction.extractWorld(
-                        @constCast(self.preview_scene.?),
-                        &self.preview_render_world,
-                        null,
-                        &.{},
-                        preview_frustum,
-                    );
-                    var prepared_preview_scene = try self.preview_scene_cache.prepareOverlayScene(
-                        &self.rhi,
-                        self.preview_scene.?,
-                        &self.preview_render_world,
-                        &prepared_scene,
-                    );
-                    defer prepared_preview_scene.deinit();
-
-                    if (prepared_preview_scene.opaque_meshes.len > 0 or prepared_preview_scene.transparent_meshes.len > 0) {
-                        const preview_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
-                            .color = .{
-                                .target = scene_color_target,
-                                .load_op = .load,
-                                .store_op = .store,
-                            },
-                            .depth = .{
-                                .texture = self.scene_viewport.depth().?,
-                                .clear_depth = 1.0,
-                                .clear_stencil = 0,
-                                .load_op = .load,
-                                .store_op = .dont_care,
-                                .stencil_load_op = .dont_care,
-                                .stencil_store_op = .dont_care,
-                            },
-                        });
-                        const preview_start = std.time.nanoTimestamp();
-                        const preview_stats = try self.base_pass.draw(&self.rhi, frame, preview_pass, &prepared_preview_scene, .{
-                            .render_mode = .wireframe,
-                            .target = .ldr,
-                            .override_base_color = ghost_preview_wire_color,
-                        });
-                        self.graph.recordPassStat(pass_stats, .gizmo_overlay, durationNs(preview_start, std.time.nanoTimestamp()), preview_stats.draw_calls, preview_stats.triangles_drawn);
-                        draw_stats.add(preview_stats);
-                        self.rhi.endRenderPass(preview_pass);
                     }
                 }
 

@@ -98,6 +98,7 @@ pub const GraphicsPipelineDesc = struct {
     vertex_buffer_layouts: []const VertexBufferLayoutDesc,
     vertex_attributes: []const VertexAttributeDesc,
     color_format: ?types.TextureFormat = null,
+    blend_state: ?types.ColorTargetBlendState = null,
     depth_format: ?types.TextureFormat = .d32_float,
     primitive_type: types.PrimitiveType = .triangle_list,
     fill_mode: types.FillMode = .fill,
@@ -733,6 +734,9 @@ pub const RhiDevice = struct {
 
         if (desc.color_format) |color_format| {
             color_target.format = textureFormatToSdl(color_format);
+            if (desc.blend_state) |blend_state| {
+                color_target.blend_state = colorTargetBlendStateToSdl(blend_state);
+            }
             create_info.target_info.color_target_descriptions = &color_target;
             create_info.target_info.num_color_targets = 1;
         } else {
@@ -1532,6 +1536,51 @@ fn compareOpToSdl(compare: types.CompareOp) sdl.SDL_GPUCompareOp {
         .greater_or_equal => sdl.SDL_GPU_COMPAREOP_GREATER_OR_EQUAL,
         .always => sdl.SDL_GPU_COMPAREOP_ALWAYS,
     };
+}
+
+fn blendFactorToSdl(factor: types.BlendFactor) sdl.SDL_GPUBlendFactor {
+    return switch (factor) {
+        .zero => sdl.SDL_GPU_BLENDFACTOR_ZERO,
+        .one => sdl.SDL_GPU_BLENDFACTOR_ONE,
+        .src_color => sdl.SDL_GPU_BLENDFACTOR_SRC_COLOR,
+        .one_minus_src_color => sdl.SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_COLOR,
+        .dst_color => sdl.SDL_GPU_BLENDFACTOR_DST_COLOR,
+        .one_minus_dst_color => sdl.SDL_GPU_BLENDFACTOR_ONE_MINUS_DST_COLOR,
+        .src_alpha => sdl.SDL_GPU_BLENDFACTOR_SRC_ALPHA,
+        .one_minus_src_alpha => sdl.SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+        .dst_alpha => sdl.SDL_GPU_BLENDFACTOR_DST_ALPHA,
+        .one_minus_dst_alpha => sdl.SDL_GPU_BLENDFACTOR_ONE_MINUS_DST_ALPHA,
+        .constant_color => sdl.SDL_GPU_BLENDFACTOR_CONSTANT_COLOR,
+        .one_minus_constant_color => sdl.SDL_GPU_BLENDFACTOR_ONE_MINUS_CONSTANT_COLOR,
+        .src_alpha_saturate => sdl.SDL_GPU_BLENDFACTOR_SRC_ALPHA_SATURATE,
+    };
+}
+
+fn blendOpToSdl(op: types.BlendOp) sdl.SDL_GPUBlendOp {
+    return switch (op) {
+        .add => sdl.SDL_GPU_BLENDOP_ADD,
+        .subtract => sdl.SDL_GPU_BLENDOP_SUBTRACT,
+        .reverse_subtract => sdl.SDL_GPU_BLENDOP_REVERSE_SUBTRACT,
+        .min => sdl.SDL_GPU_BLENDOP_MIN,
+        .max => sdl.SDL_GPU_BLENDOP_MAX,
+    };
+}
+
+fn colorTargetBlendStateToSdl(blend_state: types.ColorTargetBlendState) sdl.SDL_GPUColorTargetBlendState {
+    var result = std.mem.zeroes(sdl.SDL_GPUColorTargetBlendState);
+    result.src_color_blendfactor = blendFactorToSdl(blend_state.src_color_blendfactor);
+    result.dst_color_blendfactor = blendFactorToSdl(blend_state.dst_color_blendfactor);
+    result.color_blend_op = blendOpToSdl(blend_state.color_blend_op);
+    result.src_alpha_blendfactor = blendFactorToSdl(blend_state.src_alpha_blendfactor);
+    result.dst_alpha_blendfactor = blendFactorToSdl(blend_state.dst_alpha_blendfactor);
+    result.alpha_blend_op = blendOpToSdl(blend_state.alpha_blend_op);
+    result.color_write_mask = sdl.SDL_GPU_COLORCOMPONENT_R |
+        sdl.SDL_GPU_COLORCOMPONENT_G |
+        sdl.SDL_GPU_COLORCOMPONENT_B |
+        sdl.SDL_GPU_COLORCOMPONENT_A;
+    result.enable_blend = blend_state.enable_blend;
+    result.enable_color_write_mask = false;
+    return result;
 }
 
 fn indexElementSizeToSdl(index_size: types.IndexElementSize) sdl.SDL_GPUIndexElementSize {

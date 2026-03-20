@@ -14,15 +14,29 @@ pub const DrawTarget = enum {
     ldr,
 };
 
+pub const DrawPhase = enum {
+    opaque_pass,
+    transparent_pass,
+    all,
+};
+
 pub const DrawSettings = struct {
     render_mode: render_types.EditorViewportRenderMode = .textured,
     target: DrawTarget = .hdr,
+    phase: DrawPhase = .all,
+    blend_opaque: bool = false,
+    alpha_multiplier: f32 = 1.0,
+    preview_tint_strength: f32 = 0.0,
     override_base_color: ?[4]f32 = null,
 };
 
 pub const BasePass = struct {
     fill_pipeline_hdr: ?rhi_mod.GraphicsPipeline = null,
     fill_pipeline_ldr: ?rhi_mod.GraphicsPipeline = null,
+    ghost_fill_pipeline_hdr: ?rhi_mod.GraphicsPipeline = null,
+    ghost_fill_pipeline_ldr: ?rhi_mod.GraphicsPipeline = null,
+    transparent_fill_pipeline_hdr: ?rhi_mod.GraphicsPipeline = null,
+    transparent_fill_pipeline_ldr: ?rhi_mod.GraphicsPipeline = null,
     wireframe_pipeline_hdr: ?rhi_mod.GraphicsPipeline = null,
     wireframe_pipeline_ldr: ?rhi_mod.GraphicsPipeline = null,
     stages: ?shader_support.ProgramStages = null,
@@ -40,6 +54,18 @@ pub const BasePass = struct {
         if (self.wireframe_pipeline_hdr) |*pipeline| {
             device.releaseGraphicsPipeline(pipeline);
         }
+        if (self.ghost_fill_pipeline_ldr) |*pipeline| {
+            device.releaseGraphicsPipeline(pipeline);
+        }
+        if (self.ghost_fill_pipeline_hdr) |*pipeline| {
+            device.releaseGraphicsPipeline(pipeline);
+        }
+        if (self.transparent_fill_pipeline_ldr) |*pipeline| {
+            device.releaseGraphicsPipeline(pipeline);
+        }
+        if (self.transparent_fill_pipeline_hdr) |*pipeline| {
+            device.releaseGraphicsPipeline(pipeline);
+        }
         if (self.fill_pipeline_ldr) |*pipeline| {
             device.releaseGraphicsPipeline(pipeline);
         }
@@ -55,6 +81,10 @@ pub const BasePass = struct {
     pub fn isReady(self: *const BasePass) bool {
         return self.fill_pipeline_hdr != null and
             self.fill_pipeline_ldr != null and
+            self.ghost_fill_pipeline_hdr != null and
+            self.ghost_fill_pipeline_ldr != null and
+            self.transparent_fill_pipeline_hdr != null and
+            self.transparent_fill_pipeline_ldr != null and
             self.wireframe_pipeline_hdr != null and
             self.wireframe_pipeline_ldr != null;
     }
@@ -77,12 +107,19 @@ pub const BasePass = struct {
             g_logged_metal_binding_mode = true;
         }
 
-        const pipeline = switch (settings.render_mode) {
-            .wireframe => self.pipelineFor(settings.target, .wireframe),
-            .textured, .unlit => self.pipelineFor(settings.target, .fill),
-        };
         const is_wireframe = settings.render_mode == .wireframe;
-        device.bindGraphicsPipeline(pass, pipeline);
+        const opaque_pipeline = switch (settings.render_mode) {
+            .wireframe => self.pipelineFor(settings.target, .wireframe, false),
+            .textured, .unlit => self.pipelineFor(
+                settings.target,
+                if (settings.blend_opaque) .ghost_fill else .fill,
+                false,
+            ),
+        };
+        const transparent_pipeline = if (is_wireframe)
+            opaque_pipeline
+        else
+            self.pipelineFor(settings.target, .fill, true);
 
         const main_light = if (prepared_scene.lights.directional_lights.len > 0)
             prepared_scene.lights.directional_lights[0]
@@ -136,42 +173,107 @@ pub const BasePass = struct {
             }
         }
 
-        for (prepared_scene.opaque_meshes) |item| {
+        switch (settings.phase) {
+            .opaque_pass => {
+                device.bindGraphicsPipeline(pass, opaque_pipeline);
+                stats.add(try self.drawMeshList(
+                    device,
+                    frame,
+                    pass,
+                    prepared_scene,
+                    prepared_scene.opaque_meshes,
+                    settings,
+                    main_light,
+                    point_light,
+                    use_metal_combined_bindings,
+                    false,
+                ));
+            },
+            .transparent_pass => {
+                device.bindGraphicsPipeline(pass, transparent_pipeline);
+                stats.add(try self.drawMeshList(
+                    device,
+                    frame,
+                    pass,
+                    prepared_scene,
+                    prepared_scene.transparent_meshes,
+                    settings,
+                    main_light,
+                    point_light,
+                    use_metal_combined_bindings,
+                    true,
+                ));
+            },
+            .all => {
+                if (prepared_scene.opaque_meshes.len > 0) {
+                    device.bindGraphicsPipeline(pass, opaque_pipeline);
+                    stats.add(try self.drawMeshList(
+                        device,
+                        frame,
+                        pass,
+                        prepared_scene,
+                        prepared_scene.opaque_meshes,
+                        settings,
+                        main_light,
+                        point_light,
+                        use_metal_combined_bindings,
+                        false,
+                    ));
+                }
+                if (prepared_scene.transparent_meshes.len > 0) {
+                    if (transparent_pipeline != opaque_pipeline) {
+                        device.bindGraphicsPipeline(pass, transparent_pipeline);
+                    }
+                    stats.add(try self.drawMeshList(
+                        device,
+                        frame,
+                        pass,
+                        prepared_scene,
+                        prepared_scene.transparent_meshes,
+                        settings,
+                        main_light,
+                        point_light,
+                        use_metal_combined_bindings,
+                        true,
+                    ));
+                }
+            },
+        }
+
+        return stats;
+    }
+
+    fn drawMeshList(
+        self: *BasePass,
+        device: *rhi_mod.RhiDevice,
+        frame: rhi_mod.Frame,
+        pass: rhi_mod.RenderPass,
+        prepared_scene: *const mesh_pass_mod.PreparedScene,
+        items: []const mesh_pass_mod.DrawItem,
+        settings: DrawSettings,
+        main_light: mesh_pass_mod.DirectionalLightBlock,
+        point_light: mesh_pass_mod.PointLightBlock,
+        use_metal_combined_bindings: bool,
+        transparent_pass: bool,
+    ) !mesh_pass_mod.DrawStats {
+        var stats = mesh_pass_mod.DrawStats{};
+        const is_wireframe = settings.render_mode == .wireframe;
+
+        for (items) |item| {
             var vertex_uniforms = mesh_pass_mod.VertexUniforms{
                 .view_projection = prepared_scene.view_projection,
                 .model = item.model,
                 .skinning_meta = item.skinning_meta,
                 .skin_matrices = item.skin_matrices,
             };
-            var fragment_uniforms = mesh_pass_mod.BasePassUniforms{
-                .base_color_factor = item.base_color_factor,
-                .emissive_factor = item.emissive_factor,
-                .pbr_factors = item.pbr_factors,
-                .has_textures = item.has_textures,
-                .camera_world_position = prepared_scene.camera_world_position,
-                .light_direction = .{ main_light.direction[0], main_light.direction[1], main_light.direction[2], 0.0 },
-                .light_color_intensity = .{ main_light.color[0], main_light.color[1], main_light.color[2], main_light.intensity },
-                .light_space_matrix = prepared_scene.light_space_matrix,
-                .point_light_position_radius = .{ point_light.position[0], point_light.position[1], point_light.position[2], point_light.range },
-                .point_light_color_intensity = .{ point_light.color[0], point_light.color[1], point_light.color[2], point_light.intensity },
-                .ambient_color = prepared_scene.ambient_color,
-                .shadow_params = .{ 0.005, 0.0, 0.0, 0.0 }, // bias
-                .ibl_params = item.ibl_params,
-            };
-            if (settings.render_mode == .unlit) {
-                fragment_uniforms.light_color_intensity = .{ 0.0, 0.0, 0.0, 0.0 };
-                fragment_uniforms.point_light_color_intensity = .{ 0.0, 0.0, 0.0, 0.0 };
-                fragment_uniforms.ambient_color = .{ 1.0, 1.0, 1.0, 1.0 };
-                fragment_uniforms.ibl_params = .{ 0.0, 0.0, 0.0, 0.0 };
-            } else if (is_wireframe) {
-                fragment_uniforms.base_color_factor = settings.override_base_color orelse .{ 0.08, 0.08, 0.08, 1.0 };
-                fragment_uniforms.emissive_factor = .{ 0.0, 0.0, 0.0, 0.0 };
-                fragment_uniforms.has_textures = .{ 0, 0, 0, 0 };
-                fragment_uniforms.light_color_intensity = .{ 0.0, 0.0, 0.0, 0.0 };
-                fragment_uniforms.point_light_color_intensity = .{ 0.0, 0.0, 0.0, 0.0 };
-                fragment_uniforms.ambient_color = .{ 1.0, 1.0, 1.0, 1.0 };
-                fragment_uniforms.ibl_params = .{ 0.0, 0.0, 0.0, 0.0 };
-            }
+            var fragment_uniforms = self.makeFragmentUniforms(
+                item,
+                prepared_scene,
+                settings,
+                main_light,
+                point_light,
+                transparent_pass,
+            );
 
             device.bindVertexBuffer(pass, 0, &item.vertex_buffer, 0);
             const draw_index_buffer = if (is_wireframe) &item.wireframe_index_buffer else &item.index_buffer;
@@ -217,6 +319,64 @@ pub const BasePass = struct {
         }
 
         return stats;
+    }
+
+    fn makeFragmentUniforms(
+        self: *BasePass,
+        item: mesh_pass_mod.DrawItem,
+        prepared_scene: *const mesh_pass_mod.PreparedScene,
+        settings: DrawSettings,
+        main_light: mesh_pass_mod.DirectionalLightBlock,
+        point_light: mesh_pass_mod.PointLightBlock,
+        transparent_pass: bool,
+    ) mesh_pass_mod.BasePassUniforms {
+        _ = self;
+        var fragment_uniforms = mesh_pass_mod.BasePassUniforms{
+            .base_color_factor = item.base_color_factor,
+            .emissive_factor = item.emissive_factor,
+            .pbr_factors = item.pbr_factors,
+            .has_textures = item.has_textures,
+            .camera_world_position = prepared_scene.camera_world_position,
+            .light_direction = .{ main_light.direction[0], main_light.direction[1], main_light.direction[2], 0.0 },
+            .light_color_intensity = .{ main_light.color[0], main_light.color[1], main_light.color[2], main_light.intensity },
+            .light_space_matrix = prepared_scene.light_space_matrix,
+            .point_light_position_radius = .{ point_light.position[0], point_light.position[1], point_light.position[2], point_light.range },
+            .point_light_color_intensity = .{ point_light.color[0], point_light.color[1], point_light.color[2], point_light.intensity },
+            .ambient_color = prepared_scene.ambient_color,
+            .shadow_params = .{ 0.005, 0.0, 0.0, 0.0 }, // bias
+            .ibl_params = item.ibl_params,
+        };
+
+        if (settings.render_mode == .unlit) {
+            fragment_uniforms.light_color_intensity = .{ 0.0, 0.0, 0.0, 0.0 };
+            fragment_uniforms.point_light_color_intensity = .{ 0.0, 0.0, 0.0, 0.0 };
+            fragment_uniforms.ambient_color = .{ 1.0, 1.0, 1.0, 1.0 };
+            fragment_uniforms.ibl_params = .{ 0.0, 0.0, 0.0, 0.0 };
+        } else if (settings.render_mode == .wireframe) {
+            fragment_uniforms.base_color_factor = settings.override_base_color orelse .{ 0.08, 0.08, 0.08, 1.0 };
+            fragment_uniforms.emissive_factor = .{ 0.0, 0.0, 0.0, 0.0 };
+            fragment_uniforms.has_textures = .{ 0, 0, 0, 0 };
+            fragment_uniforms.light_color_intensity = .{ 0.0, 0.0, 0.0, 0.0 };
+            fragment_uniforms.point_light_color_intensity = .{ 0.0, 0.0, 0.0, 0.0 };
+            fragment_uniforms.ambient_color = .{ 1.0, 1.0, 1.0, 1.0 };
+            fragment_uniforms.ibl_params = .{ 0.0, 0.0, 0.0, 0.0 };
+        }
+
+        fragment_uniforms.pbr_factors[3] = settings.alpha_multiplier;
+        if (settings.render_mode != .wireframe) {
+            if (settings.override_base_color) |preview_tint| {
+                fragment_uniforms.shadow_params[1] = preview_tint[0];
+                fragment_uniforms.shadow_params[2] = preview_tint[1];
+                fragment_uniforms.shadow_params[3] = preview_tint[2];
+                fragment_uniforms.ibl_params[2] = settings.preview_tint_strength;
+            }
+        }
+
+        if (transparent_pass or (settings.render_mode == .wireframe and fragment_uniforms.base_color_factor[3] < 1.0)) {
+            fragment_uniforms.pbr_factors[2] = 0.0;
+        }
+
+        return fragment_uniforms;
     }
 
     fn createResources(self: *BasePass, device: *rhi_mod.RhiDevice) !void {
@@ -271,31 +431,52 @@ pub const BasePass = struct {
             },
         };
 
-        self.fill_pipeline_hdr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .rgba16_float, .fill);
+        self.fill_pipeline_hdr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .rgba16_float, .fill, false, true);
         errdefer if (self.fill_pipeline_hdr) |*pipeline| {
             device.releaseGraphicsPipeline(pipeline);
         };
-        self.fill_pipeline_ldr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .bgra8_unorm, .fill);
+        self.fill_pipeline_ldr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .bgra8_unorm, .fill, false, true);
         errdefer if (self.fill_pipeline_ldr) |*pipeline| {
             device.releaseGraphicsPipeline(pipeline);
         };
-        self.wireframe_pipeline_hdr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .rgba16_float, .wireframe);
+        self.ghost_fill_pipeline_hdr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .rgba16_float, .ghost_fill, true, true);
+        errdefer if (self.ghost_fill_pipeline_hdr) |*pipeline| {
+            device.releaseGraphicsPipeline(pipeline);
+        };
+        self.ghost_fill_pipeline_ldr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .bgra8_unorm, .ghost_fill, true, true);
+        errdefer if (self.ghost_fill_pipeline_ldr) |*pipeline| {
+            device.releaseGraphicsPipeline(pipeline);
+        };
+        self.transparent_fill_pipeline_hdr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .rgba16_float, .fill, true, false);
+        errdefer if (self.transparent_fill_pipeline_hdr) |*pipeline| {
+            device.releaseGraphicsPipeline(pipeline);
+        };
+        self.transparent_fill_pipeline_ldr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .bgra8_unorm, .fill, true, false);
+        errdefer if (self.transparent_fill_pipeline_ldr) |*pipeline| {
+            device.releaseGraphicsPipeline(pipeline);
+        };
+        self.wireframe_pipeline_hdr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .rgba16_float, .wireframe, true, false);
         errdefer if (self.wireframe_pipeline_hdr) |*pipeline| {
             device.releaseGraphicsPipeline(pipeline);
         };
-        self.wireframe_pipeline_ldr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .bgra8_unorm, .wireframe);
+        self.wireframe_pipeline_ldr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .bgra8_unorm, .wireframe, true, false);
     }
 
     const PipelineMode = enum {
         fill,
+        ghost_fill,
         wireframe,
     };
 
-    fn pipelineFor(self: *BasePass, target: DrawTarget, mode: PipelineMode) *rhi_mod.GraphicsPipeline {
+    fn pipelineFor(self: *BasePass, target: DrawTarget, mode: PipelineMode, transparent: bool) *rhi_mod.GraphicsPipeline {
         return switch (mode) {
             .fill => switch (target) {
-                .hdr => &self.fill_pipeline_hdr.?,
-                .ldr => &self.fill_pipeline_ldr.?,
+                .hdr => if (transparent) &self.transparent_fill_pipeline_hdr.? else &self.fill_pipeline_hdr.?,
+                .ldr => if (transparent) &self.transparent_fill_pipeline_ldr.? else &self.fill_pipeline_ldr.?,
+            },
+            .ghost_fill => switch (target) {
+                .hdr => &self.ghost_fill_pipeline_hdr.?,
+                .ldr => &self.ghost_fill_pipeline_ldr.?,
             },
             .wireframe => switch (target) {
                 .hdr => &self.wireframe_pipeline_hdr.?,
@@ -311,6 +492,8 @@ pub const BasePass = struct {
         vertex_attributes: []const rhi_mod.VertexAttributeDesc,
         color_format: rhi_types.TextureFormat,
         mode: PipelineMode,
+        enable_blend: bool,
+        depth_write: bool,
     ) !rhi_mod.GraphicsPipeline {
         return device.createGraphicsPipeline(.{
             .vertex_shader = &self.stages.?.vertex,
@@ -318,6 +501,12 @@ pub const BasePass = struct {
             .vertex_buffer_layouts = vertex_layouts,
             .vertex_attributes = vertex_attributes,
             .color_format = color_format,
+            .blend_state = if (enable_blend)
+                @as(?rhi_types.ColorTargetBlendState, .{
+                    .enable_blend = true,
+                })
+            else
+                null,
             .depth_format = .d32_float,
             .primitive_type = if (mode == .wireframe) .line_list else .triangle_list,
             .fill_mode = .fill,
@@ -325,7 +514,7 @@ pub const BasePass = struct {
             .front_face = .counter_clockwise,
             .depth_compare = .less_or_equal,
             .depth_test = true,
-            .depth_write = false,
+            .depth_write = depth_write,
         });
     }
 };

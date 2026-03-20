@@ -65,6 +65,40 @@ pub const CompareOp = enum {
     always,
 };
 
+pub const BlendFactor = enum {
+    zero,
+    one,
+    src_color,
+    one_minus_src_color,
+    dst_color,
+    one_minus_dst_color,
+    src_alpha,
+    one_minus_src_alpha,
+    dst_alpha,
+    one_minus_dst_alpha,
+    constant_color,
+    one_minus_constant_color,
+    src_alpha_saturate,
+};
+
+pub const BlendOp = enum {
+    add,
+    subtract,
+    reverse_subtract,
+    min,
+    max,
+};
+
+pub const ColorTargetBlendState = struct {
+    src_color_blendfactor: BlendFactor = .src_alpha,
+    dst_color_blendfactor: BlendFactor = .one_minus_src_alpha,
+    color_blend_op: BlendOp = .add,
+    src_alpha_blendfactor: BlendFactor = .one,
+    dst_alpha_blendfactor: BlendFactor = .one_minus_src_alpha,
+    alpha_blend_op: BlendOp = .add,
+    enable_blend: bool = false,
+};
+
 pub const SamplerFilter = enum {
     nearest,
     linear,
