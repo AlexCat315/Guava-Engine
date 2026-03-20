@@ -2,11 +2,13 @@ const std = @import("std");
 const core = @import("../core/layer.zig");
 const protocol = @import("protocol.zig");
 const resources_mod = @import("resources/mod.zig");
+const tools_mod = @import("tools.zig");
 
 const EmptyObject = struct {};
 
 pub const SyncLayer = struct {
     store: *resources_mod.SnapshotStore,
+    tool_bridge: *tools_mod.Bridge,
     exit_requested: *std.atomic.Value(bool),
 
     pub fn asLayer(self: *SyncLayer) core.Layer {
@@ -32,6 +34,7 @@ pub const SyncLayer = struct {
             return;
         }
 
+        try self.tool_bridge.processPending(layer_context, self.store);
         try self.publish(layer_context);
     }
 
@@ -41,11 +44,16 @@ pub const SyncLayer = struct {
     }
 };
 
-pub fn spawn(store: *resources_mod.SnapshotStore, exit_requested: *std.atomic.Value(bool)) !std.Thread {
+pub fn spawn(
+    store: *resources_mod.SnapshotStore,
+    tool_bridge: *tools_mod.Bridge,
+    exit_requested: *std.atomic.Value(bool),
+) !std.Thread {
     const server = try std.heap.page_allocator.create(Server);
     errdefer std.heap.page_allocator.destroy(server);
     server.* = .{
         .store = store,
+        .tool_bridge = tool_bridge,
         .exit_requested = exit_requested,
     };
 
@@ -54,6 +62,7 @@ pub fn spawn(store: *resources_mod.SnapshotStore, exit_requested: *std.atomic.Va
 
 const Server = struct {
     store: *resources_mod.SnapshotStore,
+    tool_bridge: *tools_mod.Bridge,
     exit_requested: *std.atomic.Value(bool),
     initialized: bool = false,
     shutdown_received: bool = false,
@@ -169,7 +178,7 @@ const Server = struct {
                     .version = "0.1.0",
                 },
                 .instructions =
-                "Read-only Week 1 MCP bridge for Guava Engine. Available resources: scene://hierarchy, selection://current, entity://{id}. Tools are intentionally empty in this phase.",
+                "Guava Engine MCP bridge with read snapshots and minimal write tools. Resources: scene://hierarchy, selection://current, entity://{id}. Tools: create_entity, delete_entity, rename_entity, set_parent, set_local_transform, set_world_transform, set_visible.",
             });
             return false;
         }
@@ -191,8 +200,60 @@ const Server = struct {
         }
 
         if (std.mem.eql(u8, method, "tools/list")) {
+            try writeToolList(stdout_file, id);
+            return false;
+        }
+
+        if (std.mem.eql(u8, method, "tools/call")) {
+            const tool_name = if (params) |value| stringField(value, "name") else null;
+            if (tool_name == null) {
+                try writeErrorResponse(stdout_file, id, protocol.ErrorCode.invalid_params, "tools/call requires params.name.", null);
+                return false;
+            }
+
+            const arguments = if (params) |value|
+                objectField(value, "arguments")
+            else
+                null;
+
+            var response = self.tool_bridge.submitJson(tool_name.?, if (arguments) |value| std.json.Value{ .object = value } else null) catch |err| switch (err) {
+                error.ToolNotFound => {
+                    try writeErrorResponse(stdout_file, id, protocol.ErrorCode.invalid_params, "Unknown tool.", .{
+                        .name = tool_name.?,
+                    });
+                    return false;
+                },
+                error.InvalidArguments => {
+                    try writeErrorResponse(stdout_file, id, protocol.ErrorCode.invalid_params, "Invalid tool arguments.", .{
+                        .name = tool_name.?,
+                    });
+                    return false;
+                },
+                error.ShuttingDown => {
+                    try writeErrorResponse(stdout_file, id, protocol.ErrorCode.internal_error, "Tool bridge is shutting down.", null);
+                    return false;
+                },
+                else => return err,
+            };
+            defer response.deinit(std.heap.page_allocator);
+
+            const summary = try tools_mod.buildSummaryAlloc(std.heap.page_allocator, response);
+            defer std.heap.page_allocator.free(summary);
+
             try writeResult(stdout_file, id, .{
-                .tools = &.{} ,
+                .content = &.{
+                    .{
+                        .type = "text",
+                        .text = summary,
+                    },
+                },
+                .structuredContent = .{
+                    .tool = response.tool_name,
+                    .changed = response.result.changed,
+                    .entity_id = response.result.entity_id,
+                    .command_error = if (response.result.err) |err| @tagName(err) else null,
+                },
+                .isError = response.result.err != null,
             });
             return false;
         }
@@ -277,6 +338,117 @@ fn stringField(value: std.json.Value, name: []const u8) ?[]const u8 {
         .string => |text| text,
         else => null,
     };
+}
+
+fn objectField(value: std.json.Value, name: []const u8) ?std.json.ObjectMap {
+    if (value != .object) {
+        return null;
+    }
+    const field = value.object.get(name) orelse return null;
+    return switch (field) {
+        .object => |object| object,
+        .null => null,
+        else => null,
+    };
+}
+
+fn writeToolList(stdout_file: *std.fs.File, id: std.json.Value) !void {
+    try writeResult(stdout_file, id, .{
+        .tools = &.{
+            .{
+                .name = "create_entity",
+                .description = "Create an entity with optional parent, transform, visibility, and common scene components.",
+                .inputSchema = .{
+                    .@"type" = "object",
+                    .properties = .{
+                        .name = .{ .@"type" = "string" },
+                        .parent = .{ .@"type" = "integer" },
+                        .local_transform = .{ .@"type" = "object" },
+                        .camera = .{ .@"type" = "object" },
+                        .mesh = .{ .@"type" = "object" },
+                        .material = .{ .@"type" = "object" },
+                        .light = .{ .@"type" = "object" },
+                        .vfx = .{ .@"type" = "object" },
+                        .visible = .{ .@"type" = "boolean" },
+                        .editor_only = .{ .@"type" = "boolean" },
+                        .is_folder = .{ .@"type" = "boolean" },
+                    },
+                    .required = &.{"name"},
+                },
+            },
+            .{
+                .name = "delete_entity",
+                .description = "Delete an entity by id.",
+                .inputSchema = .{
+                    .@"type" = "object",
+                    .properties = .{
+                        .entity_id = .{ .@"type" = "integer" },
+                    },
+                    .required = &.{"entity_id"},
+                },
+            },
+            .{
+                .name = "rename_entity",
+                .description = "Rename an entity by id.",
+                .inputSchema = .{
+                    .@"type" = "object",
+                    .properties = .{
+                        .entity_id = .{ .@"type" = "integer" },
+                        .name = .{ .@"type" = "string" },
+                    },
+                    .required = &.{ "entity_id", "name" },
+                },
+            },
+            .{
+                .name = "set_parent",
+                .description = "Set or clear an entity parent.",
+                .inputSchema = .{
+                    .@"type" = "object",
+                    .properties = .{
+                        .entity_id = .{ .@"type" = "integer" },
+                        .parent_id = .{ .@"type" = "integer" },
+                    },
+                    .required = &.{"entity_id"},
+                },
+            },
+            .{
+                .name = "set_local_transform",
+                .description = "Set the local transform of an entity.",
+                .inputSchema = .{
+                    .@"type" = "object",
+                    .properties = .{
+                        .entity_id = .{ .@"type" = "integer" },
+                        .transform = .{ .@"type" = "object" },
+                    },
+                    .required = &.{ "entity_id", "transform" },
+                },
+            },
+            .{
+                .name = "set_world_transform",
+                .description = "Set the world transform of an entity.",
+                .inputSchema = .{
+                    .@"type" = "object",
+                    .properties = .{
+                        .entity_id = .{ .@"type" = "integer" },
+                        .transform = .{ .@"type" = "object" },
+                    },
+                    .required = &.{ "entity_id", "transform" },
+                },
+            },
+            .{
+                .name = "set_visible",
+                .description = "Set entity visibility.",
+                .inputSchema = .{
+                    .@"type" = "object",
+                    .properties = .{
+                        .entity_id = .{ .@"type" = "integer" },
+                        .visible = .{ .@"type" = "boolean" },
+                    },
+                    .required = &.{ "entity_id", "visible" },
+                },
+            },
+        },
+    });
 }
 
 fn writeResult(stdout_file: *std.fs.File, id: std.json.Value, result: anytype) !void {

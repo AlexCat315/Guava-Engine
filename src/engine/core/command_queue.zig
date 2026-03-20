@@ -260,6 +260,10 @@ fn executeCommand(world: *scene_mod.World, command: command_mod.Command) !comman
     };
 }
 
+pub fn executeOne(world: *scene_mod.World, command: command_mod.Command) !command_mod.ExecutionResult {
+    return try executeCommand(world, command);
+}
+
 fn mapWorldError(err: anyerror) command_mod.CommandError {
     return switch (err) {
         error.ParentNotFound => .parent_not_found,
