@@ -1459,6 +1459,11 @@ pub const World = struct {
         return binding.graph;
     }
 
+    pub fn animatorGraphMutable(self: *World, animator_entity_id: EntityId) ?*animation_graph_mod.AnimationGraph {
+        const binding = self.findAnimatorGraphBinding(animator_entity_id) orelse return null;
+        return binding.graph;
+    }
+
     pub fn animatorGraphInstance(self: *World, animator_entity_id: EntityId) ?*animation_graph_mod.AnimationGraphInstance {
         const binding = self.findAnimatorGraphBinding(animator_entity_id) orelse return null;
         return &binding.instance;
