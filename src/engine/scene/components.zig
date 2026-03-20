@@ -415,8 +415,6 @@ pub const ScriptLanguage = enum(u8) {
     zig,
     /// C# 语言
     csharp,
-    /// Lua 语言
-    lua,
     /// WebAssembly 语言
     wasm,
 };

@@ -32,7 +32,6 @@ pub const ScriptRuntime = runtime.ScriptRuntime;
 pub const ScriptVM = vm_interface.ScriptVM;
 pub const ZigVM = vm.ZigVM;
 pub const CSharpVM = vm.CSharpVM;
-pub const LuaVM = vm.LuaVM;
 pub const WasmVM = vm.WasmVM;
 pub const WasmCompileResult = wasm_compiler.CompileResult;
 
