@@ -1197,10 +1197,22 @@ pub const World = struct {
         path: []const u8,
         root_transform: components.Transform,
         callback: ?*const fn (report: gltf_import.ImportReport) void = null,
+
+        fn deinit(self: *AsyncImportContext) void {
+            self.world.allocator.free(self.path);
+            self.world.allocator.destroy(self);
+        }
     };
+
+    fn asyncImportCleanup(context: ?*anyopaque) void {
+        const ctx: *AsyncImportContext = @ptrCast(@alignCast(context));
+        ctx.deinit();
+    }
 
     fn asyncImportTask(context: ?*anyopaque) void {
         const ctx: *AsyncImportContext = @ptrCast(@alignCast(context));
+        defer ctx.deinit();
+
         const report = ctx.world.importGltfStaticModel(ctx.path, ctx.root_transform) catch |err| {
             std.log.err("Async GLTF import failed: {s}, error: {}", .{ ctx.path, err });
             return;
@@ -1208,8 +1220,6 @@ pub const World = struct {
         if (ctx.callback) |cb| {
             cb(report);
         }
-        ctx.world.allocator.free(ctx.path);
-        ctx.world.allocator.destroy(ctx);
     }
 
     pub fn importGltfAsync(
@@ -1227,7 +1237,7 @@ pub const World = struct {
             .callback = callback,
         };
 
-        return job_system.enqueue(asyncImportTask, ctx, .normal);
+        return job_system.enqueueWithCleanup(asyncImportTask, ctx, asyncImportCleanup, .normal);
     }
 
     pub fn importGltfStaticModelInstance(

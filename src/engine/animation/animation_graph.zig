@@ -626,7 +626,16 @@ fn parameterValueAsBool(value: AnimationGraphInstance.ParameterValue) bool {
 
 fn parameterValueAsInt(value: AnimationGraphInstance.ParameterValue) i32 {
     return switch (value) {
-        .float => |float_value| @as(i32, @intFromFloat(float_value)),
+        .float => |float_value| {
+            if (!std.math.isFinite(float_value)) {
+                return 0;
+            }
+
+            const min_value = @as(f32, @floatFromInt(std.math.minInt(i32)));
+            const max_value = @as(f32, @floatFromInt(std.math.maxInt(i32)));
+            const clamped = std.math.clamp(float_value, min_value, max_value);
+            return @as(i32, @intFromFloat(clamped));
+        },
         .bool => |bool_value| if (bool_value) 1 else 0,
         .int => |int_value| int_value,
     };
