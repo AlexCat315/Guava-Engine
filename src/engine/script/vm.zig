@@ -388,59 +388,6 @@ pub const CSharpVM = struct {
     fn callDestroyStub(_: *CSharpVM, _: *types.ScriptInstance, _: *context.ScriptContext) types.ScriptError!void {}
 };
 
-/// Lua 虚拟机存根 - 当前构建不包含 Lua 运行时
-pub const LuaVM = struct {
-    allocator: std.mem.Allocator,
-    error_msg: []u8 = &.{},
-
-    pub fn init(allocator: std.mem.Allocator) LuaVM {
-        return .{ .allocator = allocator };
-    }
-
-    pub fn load(vm: *LuaVM, source: []const u8, language: types.ScriptLanguage) types.ScriptError!void {
-        _ = source;
-        if (language != .lua) {
-            setOwnedMessage(vm.allocator, &vm.error_msg, "script language does not match LuaVM");
-            return types.ScriptError.InvalidLanguage;
-        }
-        setOwnedMessage(vm.allocator, &vm.error_msg, "Lua scripting is not available in this build");
-        return types.ScriptError.NotFound;
-    }
-
-    pub fn getError(vm: *LuaVM) []const u8 {
-        return vm.error_msg;
-    }
-
-    fn destroyContext(context_ptr: *anyopaque, allocator: std.mem.Allocator) void {
-        const vm = castContext(LuaVM, context_ptr);
-        clearOwnedMessage(vm.allocator, &vm.error_msg);
-        allocator.destroy(vm);
-    }
-
-    pub const script_vm_vtable: ScriptVM.VTable = .{
-        .load = luaLoadBridge,
-        .unload = luaUnloadBridge,
-        .createInstance = luaCreateInstanceBridge,
-        .destroyInstance = luaDestroyInstanceBridge,
-        .callInit = luaCallInitBridge,
-        .callUpdate = luaCallUpdateBridge,
-        .callDestroy = luaCallDestroyBridge,
-        .getError = luaGetErrorBridge,
-        .destroy = destroyContext,
-    };
-
-    fn unloadStub(vm: *LuaVM) void {
-        clearOwnedMessage(vm.allocator, &vm.error_msg);
-    }
-    fn createInstanceStub(_: *LuaVM, _: *context.ScriptContext) types.ScriptError!*types.ScriptInstance {
-        return types.ScriptError.NotFound;
-    }
-    fn destroyInstanceStub(_: *LuaVM, _: *types.ScriptInstance) void {}
-    fn callInitStub(_: *LuaVM, _: *types.ScriptInstance, _: *context.ScriptContext) types.ScriptError!void {}
-    fn callUpdateStub(_: *LuaVM, _: *types.ScriptInstance, _: *context.ScriptContext, _: f32) types.ScriptError!void {}
-    fn callDestroyStub(_: *LuaVM, _: *types.ScriptInstance, _: *context.ScriptContext) types.ScriptError!void {}
-};
-
 /// 获取指定语言的虚拟机
 pub fn createVM(language: types.ScriptLanguage, allocator: std.mem.Allocator) types.ScriptError!*ScriptVM {
     switch (language) {
@@ -465,18 +412,6 @@ pub fn createVM(language: types.ScriptLanguage, allocator: std.mem.Allocator) ty
             script_vm.* = .{
                 .context = vm,
                 .vtable = &CSharpVM.script_vm_vtable,
-            };
-            return script_vm;
-        },
-        .lua => {
-            const script_vm = try allocator.create(ScriptVM);
-            errdefer allocator.destroy(script_vm);
-            const vm = try allocator.create(LuaVM);
-            errdefer allocator.destroy(vm);
-            vm.* = LuaVM.init(allocator);
-            script_vm.* = .{
-                .context = vm,
-                .vtable = &LuaVM.script_vm_vtable,
             };
             return script_vm;
         },
@@ -984,38 +919,6 @@ fn csharpCallDestroyBridge(context_ptr: *anyopaque, instance: *types.ScriptInsta
 
 fn csharpGetErrorBridge(context_ptr: *anyopaque) []const u8 {
     return CSharpVM.getError(castContext(CSharpVM, context_ptr));
-}
-
-fn luaLoadBridge(context_ptr: *anyopaque, source: []const u8, language: types.ScriptLanguage) types.ScriptError!void {
-    return LuaVM.load(castContext(LuaVM, context_ptr), source, language);
-}
-
-fn luaUnloadBridge(context_ptr: *anyopaque) void {
-    LuaVM.unloadStub(castContext(LuaVM, context_ptr));
-}
-
-fn luaCreateInstanceBridge(context_ptr: *anyopaque, ctx: *context.ScriptContext) types.ScriptError!*types.ScriptInstance {
-    return LuaVM.createInstanceStub(castContext(LuaVM, context_ptr), ctx);
-}
-
-fn luaDestroyInstanceBridge(context_ptr: *anyopaque, instance: *types.ScriptInstance) void {
-    LuaVM.destroyInstanceStub(castContext(LuaVM, context_ptr), instance);
-}
-
-fn luaCallInitBridge(context_ptr: *anyopaque, instance: *types.ScriptInstance, ctx: *context.ScriptContext) types.ScriptError!void {
-    return LuaVM.callInitStub(castContext(LuaVM, context_ptr), instance, ctx);
-}
-
-fn luaCallUpdateBridge(context_ptr: *anyopaque, instance: *types.ScriptInstance, ctx: *context.ScriptContext, dt: f32) types.ScriptError!void {
-    return LuaVM.callUpdateStub(castContext(LuaVM, context_ptr), instance, ctx, dt);
-}
-
-fn luaCallDestroyBridge(context_ptr: *anyopaque, instance: *types.ScriptInstance, ctx: *context.ScriptContext) types.ScriptError!void {
-    return LuaVM.callDestroyStub(castContext(LuaVM, context_ptr), instance, ctx);
-}
-
-fn luaGetErrorBridge(context_ptr: *anyopaque) []const u8 {
-    return LuaVM.getError(castContext(LuaVM, context_ptr));
 }
 
 test "zig vm rotate builtin updates entity rotation" {
