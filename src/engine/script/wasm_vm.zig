@@ -1,33 +1,35 @@
 const std = @import("std");
 const script_resource_mod = @import("../assets/script_resource.zig");
-const command_queue_mod = @import("../core/command_queue.zig");
 const components = @import("../scene/components.zig");
 const context = @import("./context.zig");
 const types = @import("./types.zig");
 const vm_interface = @import("./vm_interface.zig");
 
 const c = @cImport({
-    @cInclude("wasm3.h");
+    @cInclude("wasm_export.h");
 });
 
-extern fn guava_wasm_link_host_functions(module: c.IM3Module, userdata: ?*anyopaque) ?[*:0]const u8;
-extern fn guava_wasm_call_0(function: c.IM3Function) ?[*:0]const u8;
-extern fn guava_wasm_call_f32(function: c.IM3Function, value: f32) ?[*:0]const u8;
+extern fn guava_wamr_native_symbols() [*]c.NativeSymbol;
+extern fn guava_wamr_native_symbol_count() c_uint;
 
 const log = std.log.scoped(.wasm_vm);
 
+const runtime_state = struct {
+    var mutex: std.Thread.Mutex = .{};
+    var ref_count: usize = 0;
+    var initialized: bool = false;
+};
+
 pub const WasmVM = struct {
     allocator: std.mem.Allocator,
-    environment: c.IM3Environment = null,
     loaded_source: []u8 = &.{},
     loaded_bytecode: []u8 = &.{},
     error_msg: []u8 = &.{},
 
     pub fn init(allocator: std.mem.Allocator) !WasmVM {
-        const environment = c.m3_NewEnvironment() orelse return types.ScriptError.OutOfMemory;
+        try acquireRuntime();
         return .{
             .allocator = allocator,
-            .environment = environment,
         };
     }
 
@@ -75,47 +77,37 @@ pub const WasmVM = struct {
         try state.init(vm.allocator, vm.loaded_source, vm.loaded_bytecode);
         errdefer state.deinit();
 
-        state.runtime = c.m3_NewRuntime(vm.environment, 64 * 1024, state) orelse {
-            setOwnedMessage(vm.allocator, &vm.error_msg, "failed to create Wasm3 runtime");
-            return types.ScriptError.OutOfMemory;
-        };
+        var error_buffer = std.mem.zeroes([512]u8);
 
-        var module: c.IM3Module = null;
-        const parse_result = c.m3_ParseModule(
-            vm.environment,
-            &module,
+        state.module = c.wasm_runtime_load(
             state.bytecode.ptr,
             @as(u32, @intCast(state.bytecode.len)),
+            @ptrCast(&error_buffer),
+            error_buffer.len,
         );
-        if (parse_result != null) {
-            vm.captureRuntimeError(state, parse_result.?);
-            return types.ScriptError.LoadError;
-        }
-        state.module = module;
-
-        const link_result = guava_wasm_link_host_functions(state.module, state);
-        if (link_result != null) {
-            vm.captureRuntimeError(state, link_result.?);
+        if (state.module == null) {
+            vm.captureRuntimeError(state, std.mem.sliceTo(&error_buffer, 0));
             return types.ScriptError.LoadError;
         }
 
-        const load_result = c.m3_LoadModule(state.runtime, state.module);
-        if (load_result != null) {
-            vm.captureRuntimeError(state, load_result.?);
+        state.module_inst = c.wasm_runtime_instantiate(
+            state.module,
+            64 * 1024,
+            64 * 1024,
+            @ptrCast(&error_buffer),
+            error_buffer.len,
+        );
+        if (state.module_inst == null) {
+            vm.captureRuntimeError(state, std.mem.sliceTo(&error_buffer, 0));
             return types.ScriptError.LoadError;
         }
-        state.module_loaded = true;
 
-        const compile_result = c.m3_CompileModule(state.module);
-        if (compile_result != null) {
-            vm.captureRuntimeError(state, compile_result.?);
-            return types.ScriptError.LoadError;
-        }
+        c.wasm_runtime_set_custom_data(state.module_inst, state);
 
-        const start_result = c.m3_RunStart(state.module);
-        if (start_result != null) {
-            vm.captureRuntimeError(state, start_result.?);
-            return types.ScriptError.LoadError;
+        state.exec_env = c.wasm_runtime_create_exec_env(state.module_inst, 64 * 1024);
+        if (state.exec_env == null) {
+            vm.captureRuntimeError(state, "failed to create WAMR exec env");
+            return types.ScriptError.OutOfMemory;
         }
 
         state.on_init = findRequiredFunction(vm, state, "guava_on_init") catch return types.ScriptError.LoadError;
@@ -181,35 +173,37 @@ pub const WasmVM = struct {
             .on_destroy => state.on_destroy,
         };
 
-        const result = if (dt) |delta|
-            guava_wasm_call_f32(function, delta)
-        else
-            guava_wasm_call_0(function);
-        if (result != null) {
-            vm.captureRuntimeError(state, result.?);
+        c.wasm_runtime_clear_exception(state.module_inst);
+
+        const ok = if (dt) |delta| blk: {
+            var argv = [_]u32{@bitCast(delta)};
+            break :blk c.wasm_runtime_call_wasm(state.exec_env, function, argv.len, &argv);
+        } else c.wasm_runtime_call_wasm(state.exec_env, function, 0, null);
+
+        if (!ok) {
+            vm.captureRuntimeError(state, "wasm runtime trap");
             return err_tag;
         }
     }
 
-    fn captureRuntimeError(vm: *WasmVM, state: *WasmInstanceState, raw_result: [*:0]const u8) void {
+    fn captureRuntimeError(vm: *WasmVM, state: *WasmInstanceState, fallback: []const u8) void {
         if (state.last_panic_message.len != 0) {
             setOwnedMessage(vm.allocator, &vm.error_msg, state.last_panic_message);
             return;
         }
 
-        var info: c.M3ErrorInfo = undefined;
-        c.m3_GetErrorInfo(state.runtime, &info);
-
-        if (info.function != null and info.message != null) {
-            const function_name = std.mem.span(c.m3_GetFunctionName(info.function));
-            const message = std.mem.span(info.message);
-            const owned = std.fmt.allocPrint(vm.allocator, "{s}: {s}", .{ function_name, message }) catch return;
-            clearOwnedMessage(vm.allocator, &vm.error_msg);
-            vm.error_msg = owned;
-            return;
+        if (state.module_inst != null) {
+            const exception = c.wasm_runtime_get_exception(state.module_inst);
+            if (exception != null) {
+                const message = std.mem.span(exception);
+                if (message.len != 0) {
+                    setOwnedMessage(vm.allocator, &vm.error_msg, message);
+                    return;
+                }
+            }
         }
 
-        setOwnedMessage(vm.allocator, &vm.error_msg, std.mem.span(raw_result));
+        setOwnedMessage(vm.allocator, &vm.error_msg, fallback);
     }
 
     fn destroyContext(context_ptr: *anyopaque, allocator: std.mem.Allocator) void {
@@ -217,10 +211,7 @@ pub const WasmVM = struct {
         clearOwnedBytes(vm.allocator, &vm.loaded_source);
         clearOwnedBytes(vm.allocator, &vm.loaded_bytecode);
         clearOwnedMessage(vm.allocator, &vm.error_msg);
-        if (vm.environment != null) {
-            c.m3_FreeEnvironment(vm.environment);
-            vm.environment = null;
-        }
+        releaseRuntime();
         allocator.destroy(vm);
     }
 
@@ -239,12 +230,12 @@ pub const WasmVM = struct {
 
 const WasmInstanceState = struct {
     allocator: std.mem.Allocator,
-    runtime: c.IM3Runtime = null,
-    module: c.IM3Module = null,
-    module_loaded: bool = false,
-    on_init: c.IM3Function = null,
-    on_update: c.IM3Function = null,
-    on_destroy: c.IM3Function = null,
+    module: c.wasm_module_t = null,
+    module_inst: c.wasm_module_inst_t = null,
+    exec_env: c.wasm_exec_env_t = null,
+    on_init: c.wasm_function_inst_t = null,
+    on_update: c.wasm_function_inst_t = null,
+    on_destroy: c.wasm_function_inst_t = null,
     active_context: ?*context.ScriptContext = null,
     source: []u8 = &.{},
     bytecode: []u8 = &.{},
@@ -259,12 +250,17 @@ const WasmInstanceState = struct {
     }
 
     fn deinit(self: *WasmInstanceState) void {
-        if (self.runtime != null) {
-            c.m3_FreeRuntime(self.runtime);
-            self.runtime = null;
+        if (self.exec_env != null) {
+            c.wasm_runtime_destroy_exec_env(self.exec_env);
+            self.exec_env = null;
         }
-        if (!self.module_loaded and self.module != null) {
-            c.m3_FreeModule(self.module);
+        if (self.module_inst != null) {
+            c.wasm_runtime_deinstantiate(self.module_inst);
+            self.module_inst = null;
+        }
+        if (self.module != null) {
+            c.wasm_runtime_unload(self.module);
+            self.module = null;
         }
         clearOwnedBytes(self.allocator, &self.source);
         clearOwnedBytes(self.allocator, &self.bytecode);
@@ -273,11 +269,48 @@ const WasmInstanceState = struct {
     }
 };
 
-fn findRequiredFunction(vm: *WasmVM, state: *WasmInstanceState, name: [:0]const u8) !c.IM3Function {
-    var function: c.IM3Function = null;
-    const result = c.m3_FindFunction(&function, state.runtime, name.ptr);
-    if (result != null) {
-        vm.captureRuntimeError(state, result.?);
+fn acquireRuntime() !void {
+    runtime_state.mutex.lock();
+    defer runtime_state.mutex.unlock();
+
+    if (!runtime_state.initialized) {
+        var init_args = std.mem.zeroes(c.RuntimeInitArgs);
+        init_args.mem_alloc_type = c.Alloc_With_System_Allocator;
+        init_args.native_module_name = "env";
+        init_args.native_symbols = guava_wamr_native_symbols();
+        init_args.n_native_symbols = @as(u32, @intCast(guava_wamr_native_symbol_count()));
+        init_args.running_mode = c.Mode_Interp;
+
+        if (!c.wasm_runtime_full_init(&init_args)) {
+            return types.ScriptError.LoadError;
+        }
+        runtime_state.initialized = true;
+    }
+
+    runtime_state.ref_count += 1;
+}
+
+fn releaseRuntime() void {
+    runtime_state.mutex.lock();
+    defer runtime_state.mutex.unlock();
+
+    if (runtime_state.ref_count == 0) {
+        return;
+    }
+
+    runtime_state.ref_count -= 1;
+    if (runtime_state.ref_count == 0 and runtime_state.initialized) {
+        c.wasm_runtime_destroy();
+        runtime_state.initialized = false;
+    }
+}
+
+fn findRequiredFunction(vm: *WasmVM, state: *WasmInstanceState, name: [:0]const u8) !c.wasm_function_inst_t {
+    const function = c.wasm_runtime_lookup_function(state.module_inst, name.ptr);
+    if (function == null) {
+        const message = std.fmt.allocPrint(vm.allocator, "missing required wasm export: {s}", .{name}) catch return types.ScriptError.OutOfMemory;
+        defer vm.allocator.free(message);
+        vm.captureRuntimeError(state, message);
         return types.ScriptError.LoadError;
     }
     return function;

@@ -12,7 +12,7 @@ pub const EntityId = world_mod.EntityId;
 pub const ScriptLanguage = enum {
     zig, // 原生 Zig 脚本（编译执行）
     csharp, // C# 脚本（未来支持）
-    wasm, // Wasm3 后端（AI/native runtime）
+    wasm, // WAMR 后端（AI/native runtime）
 };
 
 /// 脚本实例的唯一标识

@@ -1,6 +1,6 @@
-#include "wasm3.h"
+#include "wasm_export.h"
 
-#include <stdio.h>
+#include <stddef.h>
 #include <stdint.h>
 
 extern uint32_t guava_wasm_host_get_entity_id(void *userdata);
@@ -26,114 +26,110 @@ extern uint32_t guava_wasm_host_set_local_scale(void *userdata, uint32_t entity_
 extern uint32_t guava_wasm_host_set_visible(void *userdata, uint32_t entity_id, uint32_t visible);
 extern void guava_wasm_host_report_panic(void *userdata, const uint8_t *ptr, uint32_t len);
 
-m3ApiRawFunction(guava_host_get_entity_id_raw) {
-    m3ApiReturnType(uint32_t)
-    m3ApiReturn(guava_wasm_host_get_entity_id(_ctx->userdata));
+static void *
+guava_get_userdata(wasm_exec_env_t exec_env) {
+    wasm_module_inst_t module_inst = get_module_inst(exec_env);
+    return wasm_runtime_get_custom_data(module_inst);
 }
 
-m3ApiRawFunction(guava_host_find_entity_by_name_raw) {
-    m3ApiReturnType(uint32_t)
-    m3ApiGetArgMem(const uint8_t *, ptr)
-    m3ApiGetArg(uint32_t, len)
-    m3ApiCheckMem(ptr, len)
-    m3ApiReturn(guava_wasm_host_find_entity_by_name(_ctx->userdata, ptr, len));
+static uint32_t
+host_get_entity_id(wasm_exec_env_t exec_env) {
+    return guava_wasm_host_get_entity_id(guava_get_userdata(exec_env));
 }
 
-m3ApiRawFunction(guava_host_log_raw) {
-    m3ApiGetArgMem(const uint8_t *, ptr)
-    m3ApiGetArg(uint32_t, len)
-    m3ApiCheckMem(ptr, len)
-    guava_wasm_host_log(_ctx->userdata, ptr, len);
-    m3ApiSuccess();
+static uint32_t
+host_find_entity_by_name(wasm_exec_env_t exec_env, const uint8_t *ptr, uint32_t len) {
+    return guava_wasm_host_find_entity_by_name(guava_get_userdata(exec_env), ptr, len);
 }
 
-m3ApiRawFunction(guava_host_set_local_transform_raw) {
-    m3ApiReturnType(uint32_t)
-    m3ApiGetArg(uint32_t, entity_id)
-    m3ApiGetArg(float, tx)
-    m3ApiGetArg(float, ty)
-    m3ApiGetArg(float, tz)
-    m3ApiGetArg(float, rx)
-    m3ApiGetArg(float, ry)
-    m3ApiGetArg(float, rz)
-    m3ApiGetArg(float, rw)
-    m3ApiGetArg(float, sx)
-    m3ApiGetArg(float, sy)
-    m3ApiGetArg(float, sz)
-    m3ApiReturn(guava_wasm_host_set_local_transform(_ctx->userdata, entity_id, tx, ty, tz, rx, ry, rz, rw, sx, sy, sz));
+static void
+host_log(wasm_exec_env_t exec_env, const uint8_t *ptr, uint32_t len) {
+    guava_wasm_host_log(guava_get_userdata(exec_env), ptr, len);
 }
 
-m3ApiRawFunction(guava_host_set_local_translation_raw) {
-    m3ApiReturnType(uint32_t)
-    m3ApiGetArg(uint32_t, entity_id)
-    m3ApiGetArg(float, tx)
-    m3ApiGetArg(float, ty)
-    m3ApiGetArg(float, tz)
-    m3ApiReturn(guava_wasm_host_set_local_translation(_ctx->userdata, entity_id, tx, ty, tz));
+static uint32_t
+host_set_local_transform(
+    wasm_exec_env_t exec_env,
+    uint32_t entity_id,
+    float tx,
+    float ty,
+    float tz,
+    float rx,
+    float ry,
+    float rz,
+    float rw,
+    float sx,
+    float sy,
+    float sz
+) {
+    return guava_wasm_host_set_local_transform(
+        guava_get_userdata(exec_env),
+        entity_id,
+        tx,
+        ty,
+        tz,
+        rx,
+        ry,
+        rz,
+        rw,
+        sx,
+        sy,
+        sz
+    );
 }
 
-m3ApiRawFunction(guava_host_set_local_rotation_raw) {
-    m3ApiReturnType(uint32_t)
-    m3ApiGetArg(uint32_t, entity_id)
-    m3ApiGetArg(float, rx)
-    m3ApiGetArg(float, ry)
-    m3ApiGetArg(float, rz)
-    m3ApiGetArg(float, rw)
-    m3ApiReturn(guava_wasm_host_set_local_rotation(_ctx->userdata, entity_id, rx, ry, rz, rw));
+static uint32_t
+host_set_local_translation(wasm_exec_env_t exec_env, uint32_t entity_id, float tx, float ty, float tz) {
+    return guava_wasm_host_set_local_translation(guava_get_userdata(exec_env), entity_id, tx, ty, tz);
 }
 
-m3ApiRawFunction(guava_host_set_local_scale_raw) {
-    m3ApiReturnType(uint32_t)
-    m3ApiGetArg(uint32_t, entity_id)
-    m3ApiGetArg(float, sx)
-    m3ApiGetArg(float, sy)
-    m3ApiGetArg(float, sz)
-    m3ApiReturn(guava_wasm_host_set_local_scale(_ctx->userdata, entity_id, sx, sy, sz));
+static uint32_t
+host_set_local_rotation(
+    wasm_exec_env_t exec_env,
+    uint32_t entity_id,
+    float rx,
+    float ry,
+    float rz,
+    float rw
+) {
+    return guava_wasm_host_set_local_rotation(guava_get_userdata(exec_env), entity_id, rx, ry, rz, rw);
 }
 
-m3ApiRawFunction(guava_host_set_visible_raw) {
-    m3ApiReturnType(uint32_t)
-    m3ApiGetArg(uint32_t, entity_id)
-    m3ApiGetArg(uint32_t, visible)
-    m3ApiReturn(guava_wasm_host_set_visible(_ctx->userdata, entity_id, visible));
+static uint32_t
+host_set_local_scale(wasm_exec_env_t exec_env, uint32_t entity_id, float sx, float sy, float sz) {
+    return guava_wasm_host_set_local_scale(guava_get_userdata(exec_env), entity_id, sx, sy, sz);
 }
 
-m3ApiRawFunction(guava_host_report_panic_raw) {
-    m3ApiGetArgMem(const uint8_t *, ptr)
-    m3ApiGetArg(uint32_t, len)
-    m3ApiCheckMem(ptr, len)
-    guava_wasm_host_report_panic(_ctx->userdata, ptr, len);
-    m3ApiSuccess();
+static uint32_t
+host_set_visible(wasm_exec_env_t exec_env, uint32_t entity_id, uint32_t visible) {
+    return guava_wasm_host_set_visible(guava_get_userdata(exec_env), entity_id, visible);
 }
 
-const char *guava_wasm_link_host_functions(IM3Module module, void *userdata) {
-    M3Result result = m3_LinkRawFunctionEx(module, "env", "host_get_entity_id", "i()", guava_host_get_entity_id_raw, userdata);
-    if (result) return result;
-    result = m3_LinkRawFunctionEx(module, "env", "host_find_entity_by_name", "i(*i)", guava_host_find_entity_by_name_raw, userdata);
-    if (result) return result;
-    result = m3_LinkRawFunctionEx(module, "env", "host_log", "v(*i)", guava_host_log_raw, userdata);
-    if (result) return result;
-    result = m3_LinkRawFunctionEx(module, "env", "host_set_local_transform", "i(iffffffffff)", guava_host_set_local_transform_raw, userdata);
-    if (result) return result;
-    result = m3_LinkRawFunctionEx(module, "env", "host_set_local_translation", "i(ifff)", guava_host_set_local_translation_raw, userdata);
-    if (result) return result;
-    result = m3_LinkRawFunctionEx(module, "env", "host_set_local_rotation", "i(iffff)", guava_host_set_local_rotation_raw, userdata);
-    if (result) return result;
-    result = m3_LinkRawFunctionEx(module, "env", "host_set_local_scale", "i(ifff)", guava_host_set_local_scale_raw, userdata);
-    if (result) return result;
-    result = m3_LinkRawFunctionEx(module, "env", "host_set_visible", "i(ii)", guava_host_set_visible_raw, userdata);
-    if (result) return result;
-    result = m3_LinkRawFunctionEx(module, "env", "host_report_panic", "v(*i)", guava_host_report_panic_raw, userdata);
-    return result;
+static void
+host_report_panic(wasm_exec_env_t exec_env, const uint8_t *ptr, uint32_t len) {
+    guava_wasm_host_report_panic(guava_get_userdata(exec_env), ptr, len);
 }
 
-const char *guava_wasm_call_0(IM3Function function) {
-    return m3_CallArgv(function, 0, NULL);
+#define GUAVA_NATIVE_SYMBOL_COUNT 9
+
+static NativeSymbol guava_native_symbols[GUAVA_NATIVE_SYMBOL_COUNT] = {
+    EXPORT_WASM_API_WITH_SIG(host_get_entity_id, "()i"),
+    EXPORT_WASM_API_WITH_SIG(host_find_entity_by_name, "(*~)i"),
+    EXPORT_WASM_API_WITH_SIG(host_log, "(*~)"),
+    EXPORT_WASM_API_WITH_SIG(host_set_local_transform, "(iffffffffff)i"),
+    EXPORT_WASM_API_WITH_SIG(host_set_local_translation, "(ifff)i"),
+    EXPORT_WASM_API_WITH_SIG(host_set_local_rotation, "(iffff)i"),
+    EXPORT_WASM_API_WITH_SIG(host_set_local_scale, "(ifff)i"),
+    EXPORT_WASM_API_WITH_SIG(host_set_visible, "(ii)i"),
+    EXPORT_WASM_API_WITH_SIG(host_report_panic, "(*~)"),
+};
+
+NativeSymbol *
+guava_wamr_native_symbols(void) {
+    return guava_native_symbols;
 }
 
-const char *guava_wasm_call_f32(IM3Function function, float value) {
-    char arg0[64];
-    snprintf(arg0, sizeof(arg0), "%.9g", value);
-    const char *argv[] = { arg0 };
-    return m3_CallArgv(function, 1, argv);
+uint32_t
+guava_wamr_native_symbol_count(void) {
+    return GUAVA_NATIVE_SYMBOL_COUNT;
 }
