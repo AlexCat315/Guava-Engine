@@ -1586,10 +1586,19 @@ fn parsePendingRequestAlloc(
             const command_name = optionalStringField(command_object, "name") orelse return error.InvalidArguments;
             const command_arguments = if (command_object.get("arguments")) |value| value else null;
             const parsed = try tools_mod.parseToolCallAlloc(allocator, command_name, command_arguments);
-            try stage_request.commands.append(allocator, .{
-                .tool_name = parsed.tool_name,
-                .command = parsed.command,
-            });
+            switch (parsed) {
+                .command => |command_request| {
+                    try stage_request.commands.append(allocator, .{
+                        .tool_name = command_request.tool_name,
+                        .command = command_request.command,
+                    });
+                },
+                else => {
+                    var owned = parsed;
+                    owned.deinit(allocator);
+                    return error.InvalidArguments;
+                },
+            }
         }
 
         return .{

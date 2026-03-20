@@ -417,6 +417,8 @@ pub const ScriptLanguage = enum(u8) {
     csharp,
     /// Lua 语言
     lua,
+    /// WebAssembly 语言
+    wasm,
 };
 
 /// 脚本组件 - 附加到实体上运行脚本逻辑

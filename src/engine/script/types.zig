@@ -12,6 +12,8 @@ pub const EntityId = world_mod.EntityId;
 pub const ScriptLanguage = enum {
     zig, // 原生 Zig 脚本（编译执行）
     csharp, // C# 脚本（未来支持）
+    lua, // Lua 脚本（未来支持）
+    wasm, // Wasm3 后端（AI/native runtime）
 };
 
 /// 脚本实例的唯一标识
@@ -93,6 +95,8 @@ pub const ScriptInstance = struct {
     user_data: ?*anyopaque = null,
     /// 用户数据大小
     user_data_size: usize = 0,
+    /// 语言后端自定义的用户数据标签
+    user_data_tag: u32 = 0,
     /// 当前状态
     state: ScriptInstanceState = .uninitialized,
     /// 最后错误信息
@@ -112,7 +116,7 @@ pub const ScriptSystemConfig = struct {
     /// 脚本搜索路径
     script_paths: []const []const u8 = &.{},
     /// 允许的语言
-    allowed_languages: []const ScriptLanguage = &.{.zig},
+    allowed_languages: []const ScriptLanguage = &.{ .zig, .wasm },
 };
 
 /// 脚本错误类型

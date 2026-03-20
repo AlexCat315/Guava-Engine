@@ -3,10 +3,12 @@ const handles = @import("../assets/handles.zig");
 const command_mod = @import("../core/command.zig");
 const command_queue_mod = @import("../core/command_queue.zig");
 const core = @import("../core/layer.zig");
+const script_resource_mod = @import("../assets/script_resource.zig");
 const protocol = @import("protocol.zig");
 const resources_mod = @import("resources/mod.zig");
 const scene_mod = @import("../scene/scene.zig");
 const components = @import("../scene/components.zig");
+const wasm_compiler = @import("../script/wasm_compiler.zig");
 
 pub const Error = error{
     ToolNotFound,
@@ -14,22 +16,73 @@ pub const Error = error{
     ShuttingDown,
 };
 
-pub const PendingRequest = struct {
+const CommandRequest = struct {
     tool_name: []u8,
     command: command_mod.Command,
 
-    fn deinit(self: *PendingRequest, allocator: std.mem.Allocator) void {
+    fn deinit(self: *CommandRequest, allocator: std.mem.Allocator) void {
         allocator.free(self.tool_name);
         self.command.deinit(allocator);
         self.* = undefined;
     }
 };
 
+const CompileScriptRequest = struct {
+    tool_name: []u8,
+    script_handle: ?handles.ScriptHandle = null,
+    entity_id: ?scene_mod.EntityId = null,
+    source: ?[]u8 = null,
+    source_path: ?[]u8 = null,
+    description: ?[]u8 = null,
+    enabled: bool = true,
+
+    fn deinit(self: *CompileScriptRequest, allocator: std.mem.Allocator) void {
+        allocator.free(self.tool_name);
+        if (self.source) |source| allocator.free(source);
+        if (self.source_path) |source_path| allocator.free(source_path);
+        if (self.description) |description| allocator.free(description);
+        self.* = undefined;
+    }
+};
+
+pub const PendingRequest = union(enum) {
+    command: CommandRequest,
+    compile_script: CompileScriptRequest,
+
+    pub fn deinit(self: *PendingRequest, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .command => |*command| command.deinit(allocator),
+            .compile_script => |*compile| compile.deinit(allocator),
+        }
+        self.* = undefined;
+    }
+};
+
+pub const ToolResult = struct {
+    kind: enum {
+        command,
+        compile_script,
+    } = .command,
+    changed: bool = false,
+    entity_id: ?scene_mod.EntityId = null,
+    script_handle: ?handles.ScriptHandle = null,
+    command_error: ?command_mod.CommandError = null,
+    script_error: ?[]u8 = null,
+    compiled: bool = false,
+    attached: bool = false,
+
+    fn deinit(self: *ToolResult, allocator: std.mem.Allocator) void {
+        if (self.script_error) |message| allocator.free(message);
+        self.* = undefined;
+    }
+};
+
 pub const CallResponse = struct {
     tool_name: []u8,
-    result: command_mod.ExecutionResult,
+    result: ToolResult,
 
     pub fn deinit(self: *CallResponse, allocator: std.mem.Allocator) void {
+        self.result.deinit(allocator);
         allocator.free(self.tool_name);
         self.* = undefined;
     }
@@ -112,11 +165,30 @@ pub const Bridge = struct {
         self.pending = null;
         self.mutex.unlock();
 
-        const result = command_queue_mod.executeOne(layer_context.world, request.command) catch |err| {
-            request.deinit(self.allocator);
-            return err;
+        const response_tool_name = try self.allocator.dupe(u8, switch (request) {
+            .command => |command_request| command_request.tool_name,
+            .compile_script => |compile_request| compile_request.tool_name,
+        });
+        errdefer self.allocator.free(response_tool_name);
+
+        const result = switch (request) {
+            .command => |command_request| blk: {
+                const execution = command_queue_mod.executeOne(layer_context.world, command_request.command) catch |err| {
+                    request.deinit(self.allocator);
+                    return err;
+                };
+                break :blk ToolResult{
+                    .kind = .command,
+                    .changed = execution.changed,
+                    .entity_id = execution.entity_id,
+                    .command_error = execution.err,
+                };
+            },
+            .compile_script => |compile_request| blk: {
+                break :blk try processCompileScriptRequest(self.allocator, layer_context, compile_request);
+            },
         };
-        request.command.deinit(self.allocator);
+        request.deinit(self.allocator);
 
         layer_context.world.updateHierarchy();
         try store.replaceFromRenderer(layer_context.world, layer_context.renderer);
@@ -124,7 +196,7 @@ pub const Bridge = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         self.response = .{
-            .tool_name = request.tool_name,
+            .tool_name = response_tool_name,
             .result = result,
         };
         self.condition.broadcast();
@@ -139,75 +211,103 @@ pub fn parseToolCallAlloc(
     const owned_tool_name = try allocator.dupe(u8, tool_name);
     errdefer allocator.free(owned_tool_name);
 
+    if (std.mem.eql(u8, tool_name, "compile_script")) {
+        return .{
+            .compile_script = .{
+                .tool_name = owned_tool_name,
+                .script_handle = try parseOptionalScriptHandle(arguments, "script_handle"),
+                .entity_id = try parseOptionalEntityId(arguments, "entity_id"),
+                .source = try parseOptionalStringAlloc(allocator, arguments, "source"),
+                .source_path = try parseOptionalStringAlloc(allocator, arguments, "source_path"),
+                .description = try parseOptionalStringAlloc(allocator, arguments, "description"),
+                .enabled = try parseBoolFromObject(try requireObject(arguments), "enabled", true),
+            },
+        };
+    }
+
     if (std.mem.eql(u8, tool_name, "create_entity")) {
         return .{
-            .tool_name = owned_tool_name,
             .command = .{
-                .create_entity = try parseCreateEntityAlloc(allocator, arguments),
+                .tool_name = owned_tool_name,
+                .command = .{
+                    .create_entity = try parseCreateEntityAlloc(allocator, arguments),
+                },
             },
         };
     }
     if (std.mem.eql(u8, tool_name, "delete_entity")) {
         return .{
-            .tool_name = owned_tool_name,
             .command = .{
-                .delete_entity = .{
-                    .entity_id = try parseRequiredEntityId(arguments, "entity_id"),
+                .tool_name = owned_tool_name,
+                .command = .{
+                    .delete_entity = .{
+                        .entity_id = try parseRequiredEntityId(arguments, "entity_id"),
+                    },
                 },
             },
         };
     }
     if (std.mem.eql(u8, tool_name, "rename_entity")) {
         return .{
-            .tool_name = owned_tool_name,
             .command = .{
-                .rename_entity = .{
-                    .entity_id = try parseRequiredEntityId(arguments, "entity_id"),
-                    .name = try parseRequiredStringAlloc(allocator, arguments, "name"),
+                .tool_name = owned_tool_name,
+                .command = .{
+                    .rename_entity = .{
+                        .entity_id = try parseRequiredEntityId(arguments, "entity_id"),
+                        .name = try parseRequiredStringAlloc(allocator, arguments, "name"),
+                    },
                 },
             },
         };
     }
     if (std.mem.eql(u8, tool_name, "set_parent")) {
         return .{
-            .tool_name = owned_tool_name,
             .command = .{
-                .set_parent = .{
-                    .entity_id = try parseRequiredEntityId(arguments, "entity_id"),
-                    .parent_id = try parseOptionalEntityId(arguments, "parent_id"),
+                .tool_name = owned_tool_name,
+                .command = .{
+                    .set_parent = .{
+                        .entity_id = try parseRequiredEntityId(arguments, "entity_id"),
+                        .parent_id = try parseOptionalEntityId(arguments, "parent_id"),
+                    },
                 },
             },
         };
     }
     if (std.mem.eql(u8, tool_name, "set_local_transform")) {
         return .{
-            .tool_name = owned_tool_name,
             .command = .{
-                .set_local_transform = .{
-                    .entity_id = try parseRequiredEntityId(arguments, "entity_id"),
-                    .transform = try parseRequiredTransform(arguments, "transform"),
+                .tool_name = owned_tool_name,
+                .command = .{
+                    .set_local_transform = .{
+                        .entity_id = try parseRequiredEntityId(arguments, "entity_id"),
+                        .transform = try parseRequiredTransform(arguments, "transform"),
+                    },
                 },
             },
         };
     }
     if (std.mem.eql(u8, tool_name, "set_world_transform")) {
         return .{
-            .tool_name = owned_tool_name,
             .command = .{
-                .set_world_transform = .{
-                    .entity_id = try parseRequiredEntityId(arguments, "entity_id"),
-                    .transform = try parseRequiredTransform(arguments, "transform"),
+                .tool_name = owned_tool_name,
+                .command = .{
+                    .set_world_transform = .{
+                        .entity_id = try parseRequiredEntityId(arguments, "entity_id"),
+                        .transform = try parseRequiredTransform(arguments, "transform"),
+                    },
                 },
             },
         };
     }
     if (std.mem.eql(u8, tool_name, "set_visible")) {
         return .{
-            .tool_name = owned_tool_name,
             .command = .{
-                .set_visible = .{
-                    .entity_id = try parseRequiredEntityId(arguments, "entity_id"),
-                    .visible = try parseRequiredBool(arguments, "visible"),
+                .tool_name = owned_tool_name,
+                .command = .{
+                    .set_visible = .{
+                        .entity_id = try parseRequiredEntityId(arguments, "entity_id"),
+                        .visible = try parseRequiredBool(arguments, "visible"),
+                    },
                 },
             },
         };
@@ -217,10 +317,26 @@ pub fn parseToolCallAlloc(
 }
 
 pub fn buildSummaryAlloc(allocator: std.mem.Allocator, response: CallResponse) ![]u8 {
-    if (response.result.err) |err| {
+    if (response.result.script_error) |message| {
+        return std.fmt.allocPrint(allocator, "{s} failed: {s}", .{
+            response.tool_name,
+            message,
+        });
+    }
+
+    if (response.result.command_error) |err| {
         return std.fmt.allocPrint(allocator, "{s} failed: {s}", .{
             response.tool_name,
             @tagName(err),
+        });
+    }
+
+    if (response.result.kind == .compile_script) {
+        return std.fmt.allocPrint(allocator, "{s} ok: script_handle={any}, compiled={}, attached={}", .{
+            response.tool_name,
+            response.result.script_handle,
+            response.result.compiled,
+            response.result.attached,
         });
     }
 
@@ -236,6 +352,182 @@ pub fn buildSummaryAlloc(allocator: std.mem.Allocator, response: CallResponse) !
         response.tool_name,
         response.result.changed,
     });
+}
+
+fn processCompileScriptRequest(
+    allocator: std.mem.Allocator,
+    layer_context: *core.LayerContext,
+    request: CompileScriptRequest,
+) !ToolResult {
+    const runtime = layer_context.script_runtime orelse return .{
+        .kind = .compile_script,
+        .script_error = try allocator.dupe(u8, "script runtime is not available in this context"),
+    };
+
+    runtime.bindWorld(layer_context.world);
+    if (layer_context.command_queue) |queue| {
+        runtime.bindCommandQueue(queue);
+    }
+
+    var source_bytes: []u8 = undefined;
+    var owns_source = false;
+    defer if (owns_source) allocator.free(source_bytes);
+
+    var resource: ?*script_resource_mod.ScriptResource = null;
+    if (request.script_handle) |handle| {
+        resource = layer_context.world.resources.scriptMutable(handle);
+    }
+
+    if (request.source) |source| {
+        source_bytes = source;
+    } else if (request.source_path) |source_path| {
+        source_bytes = try std.fs.cwd().readFileAlloc(allocator, source_path, 8 * 1024 * 1024);
+        owns_source = true;
+    } else if (resource) |existing_resource| {
+        source_bytes = try allocator.dupe(u8, existing_resource.source);
+        owns_source = true;
+    } else {
+        return .{
+            .kind = .compile_script,
+            .script_error = try allocator.dupe(u8, "compile_script requires source, source_path, or an existing script_handle"),
+        };
+    }
+
+    var compile_result = try wasm_compiler.compileZigSourceAlloc(allocator, .{
+        .source = source_bytes,
+        .script_name = if (request.description) |description| description else "ai_script",
+    });
+    defer compile_result.deinit(allocator);
+
+    switch (compile_result) {
+        .compile_error => |message| {
+            runtime.recordEvent(.{
+                .script_handle = request.script_handle,
+                .entity_id = request.entity_id,
+                .phase = .compile,
+                .severity = .@"error",
+                .message = message,
+            });
+            return .{
+                .kind = .compile_script,
+                .entity_id = request.entity_id,
+                .script_handle = request.script_handle,
+                .script_error = try allocator.dupe(u8, message),
+            };
+        },
+        .success => |artifact| {
+            const handle = if (request.script_handle) |existing_handle| blk: {
+                const existing_resource = resource orelse return .{
+                    .kind = .compile_script,
+                    .entity_id = request.entity_id,
+                    .script_handle = request.script_handle,
+                    .script_error = try allocator.dupe(u8, "script_handle does not exist"),
+                };
+                existing_resource.language = .wasm;
+                replaceOwnedSlice(allocator, &existing_resource.source, source_bytes) catch return error.OutOfMemory;
+                replaceOwnedSlice(allocator, &existing_resource.bytecode, artifact.bytecode) catch return error.OutOfMemory;
+                if (request.description) |description| {
+                    replaceOwnedSlice(allocator, &existing_resource.description, description) catch return error.OutOfMemory;
+                }
+                if (request.source_path) |source_path| {
+                    replaceOwnedSlice(allocator, &existing_resource.source_path, source_path) catch return error.OutOfMemory;
+                    existing_resource.last_modified = readFileMtime(source_path) catch existing_resource.last_modified;
+                } else {
+                    existing_resource.last_modified = std.time.microTimestamp();
+                }
+                break :blk existing_handle;
+            } else blk: {
+                const description = request.description orelse "AI Wasm Script";
+                const source_path = request.source_path orelse "";
+                const created_handle = try layer_context.world.resources.createScript(.{
+                    .source = source_bytes,
+                    .language = .wasm,
+                    .entry_fn = "guava_on_update",
+                    .description = description,
+                    .source_path = source_path,
+                });
+                const created_resource = layer_context.world.resources.scriptMutable(created_handle).?;
+                created_resource.bytecode = try allocator.dupe(u8, artifact.bytecode);
+                created_resource.last_modified = if (source_path.len != 0)
+                    readFileMtime(source_path) catch std.time.microTimestamp()
+                else
+                    std.time.microTimestamp();
+                break :blk created_handle;
+            };
+
+            if (request.source_path) |source_path| {
+                if (runtime.hot_reload) |*hr| {
+                    try hr.registerScript(source_path, handle);
+                }
+            }
+
+            if (request.script_handle != null) {
+                runtime.reloadScript(handle) catch {
+                    return .{
+                        .kind = .compile_script,
+                        .entity_id = request.entity_id,
+                        .script_handle = handle,
+                        .compiled = true,
+                        .script_error = try allocator.dupe(u8, runtime.getVM(.wasm).?.getError()),
+                    };
+                };
+            }
+
+            var attached = false;
+            if (request.entity_id) |entity_id| {
+                if (layer_context.world.getEntity(entity_id)) |entity| {
+                    const previous_parameters = if (entity.script) |existing_script| existing_script.parameters else &.{};
+                    entity.script = .{
+                        .script_handle = handle,
+                        .language = .wasm,
+                        .instance_id = null,
+                        .enabled = request.enabled,
+                        .parameters = previous_parameters,
+                    };
+                    runtime.reconcileWorld(layer_context.world);
+                    attached = true;
+                } else {
+                    return .{
+                        .kind = .compile_script,
+                        .changed = true,
+                        .entity_id = entity_id,
+                        .script_handle = handle,
+                        .compiled = true,
+                        .script_error = try allocator.dupe(u8, "entity_id does not exist"),
+                    };
+                }
+            }
+
+            runtime.recordEvent(.{
+                .script_handle = handle,
+                .entity_id = request.entity_id,
+                .phase = .compile,
+                .severity = .info,
+                .message = "compiled wasm script",
+            });
+
+            return .{
+                .kind = .compile_script,
+                .changed = true,
+                .entity_id = request.entity_id,
+                .script_handle = handle,
+                .compiled = true,
+                .attached = attached,
+            };
+        },
+    }
+}
+
+fn replaceOwnedSlice(allocator: std.mem.Allocator, target: *[]const u8, next: []const u8) !void {
+    allocator.free(target.*);
+    target.* = try allocator.dupe(u8, next);
+}
+
+fn readFileMtime(path: []const u8) !i128 {
+    const file = try std.fs.cwd().openFile(path, .{});
+    defer file.close();
+    const stat = try file.stat();
+    return stat.mtime;
 }
 
 fn parseCreateEntityAlloc(allocator: std.mem.Allocator, arguments: ?std.json.Value) !command_mod.Command.CreateEntity {
@@ -271,6 +563,14 @@ fn parseRequiredStringAlloc(
     return parseRequiredStringAllocFromObject(allocator, try requireObject(arguments), field_name);
 }
 
+fn parseOptionalStringAlloc(
+    allocator: std.mem.Allocator,
+    arguments: ?std.json.Value,
+    field_name: []const u8,
+) !?[]u8 {
+    return parseOptionalStringAllocFromObject(allocator, try requireObject(arguments), field_name);
+}
+
 fn parseRequiredStringAllocFromObject(
     allocator: std.mem.Allocator,
     object: std.json.ObjectMap,
@@ -283,8 +583,30 @@ fn parseRequiredStringAllocFromObject(
     };
 }
 
+fn parseOptionalStringAllocFromObject(
+    allocator: std.mem.Allocator,
+    object: std.json.ObjectMap,
+    field_name: []const u8,
+) !?[]u8 {
+    const value = object.get(field_name) orelse return null;
+    return switch (value) {
+        .null => null,
+        .string => |text| try allocator.dupe(u8, text),
+        else => error.InvalidArguments,
+    };
+}
+
 fn parseRequiredEntityId(arguments: ?std.json.Value, field_name: []const u8) !scene_mod.EntityId {
     return parseRequiredEntityIdFromObject(try requireObject(arguments), field_name);
+}
+
+fn parseOptionalScriptHandle(arguments: ?std.json.Value, field_name: []const u8) !?handles.ScriptHandle {
+    const object = try requireObject(arguments);
+    const value = object.get(field_name) orelse return null;
+    return switch (value) {
+        .null => null,
+        else => try parseScriptHandleValue(value),
+    };
 }
 
 fn parseRequiredEntityIdFromObject(object: std.json.ObjectMap, field_name: []const u8) !scene_mod.EntityId {
@@ -306,6 +628,17 @@ fn parseOptionalEntityIdFromObject(object: std.json.ObjectMap, field_name: []con
 
 fn parseRequiredBool(arguments: ?std.json.Value, field_name: []const u8) !bool {
     return parseRequiredBoolFromObject(try requireObject(arguments), field_name);
+}
+
+fn parseScriptHandleValue(value: std.json.Value) !handles.ScriptHandle {
+    const raw = switch (value) {
+        .integer => |integer| integer,
+        else => return error.InvalidArguments,
+    };
+    if (raw <= 0) {
+        return error.InvalidArguments;
+    }
+    return @enumFromInt(@as(u32, @intCast(raw)));
 }
 
 fn parseRequiredBoolFromObject(object: std.json.ObjectMap, field_name: []const u8) !bool {
@@ -591,16 +924,21 @@ test "parseToolCallAlloc parses create_entity with nested components" {
     );
     defer request.deinit(std.testing.allocator);
 
-    try std.testing.expectEqualStrings("create_entity", request.tool_name);
-    switch (request.command) {
-        .create_entity => |create| {
-            try std.testing.expectEqualStrings("McpLight", create.name);
-            try std.testing.expectEqual(@as(?scene_mod.EntityId, 4), create.parent);
-            try std.testing.expectApproxEqAbs(@as(f32, 3.0), create.local_transform.translation[2], 0.0001);
-            try std.testing.expect(!create.visible);
-            try std.testing.expect(create.light != null);
-            try std.testing.expectEqual(components.LightKind.spot, create.light.?.kind);
-            try std.testing.expectApproxEqAbs(@as(f32, 24.0), create.light.?.intensity, 0.0001);
+    switch (request) {
+        .command => |command_request| {
+            try std.testing.expectEqualStrings("create_entity", command_request.tool_name);
+            switch (command_request.command) {
+                .create_entity => |create| {
+                    try std.testing.expectEqualStrings("McpLight", create.name);
+                    try std.testing.expectEqual(@as(?scene_mod.EntityId, 4), create.parent);
+                    try std.testing.expectApproxEqAbs(@as(f32, 3.0), create.local_transform.translation[2], 0.0001);
+                    try std.testing.expect(!create.visible);
+                    try std.testing.expect(create.light != null);
+                    try std.testing.expectEqual(components.LightKind.spot, create.light.?.kind);
+                    try std.testing.expectApproxEqAbs(@as(f32, 24.0), create.light.?.intensity, 0.0001);
+                },
+                else => return error.UnexpectedCommandTag,
+            }
         },
         else => return error.UnexpectedCommandTag,
     }

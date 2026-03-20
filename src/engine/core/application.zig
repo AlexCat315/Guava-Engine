@@ -233,7 +233,7 @@ pub const Application = struct {
     /// 释放所有子系统占用的资源。
     /// 调用此方法后，应用程序不再可用。
     pub fn deinit(self: *Application) void {
-        self.script_runtime.bindWorld(&self.world);
+        self.bindRuntimeContext();
         self.script_runtime.callDestroyAll(&self.world);
         if (self.initialized) {
             self.detachLayers();
@@ -329,6 +329,7 @@ pub const Application = struct {
                 self.advancePhysics(delta_seconds);
                 // 更新脚本系统（传递时间和输入）
                 self.updateScripts(delta_seconds);
+                try self.applyPendingCommands();
             }
 
             // P1: Update hierarchy transforms and bounds once per frame
@@ -446,6 +447,7 @@ pub const Application = struct {
             .scene = &self.world,
             .renderer = &self.renderer,
             .command_queue = &self.command_queue,
+            .script_runtime = &self.script_runtime,
             .input = &self.input,
             .window = &self.window,
             .playback_controller = &self.playback_controller,
@@ -486,7 +488,7 @@ pub const Application = struct {
     ///
     /// 检查热重载，调用所有脚本的 OnUpdate 方法。
     fn updateScripts(self: *Application, delta_seconds: f32) void {
-        self.script_runtime.bindWorld(&self.world);
+        self.bindRuntimeContext();
 
         // 检查热重载
         self.script_runtime.checkHotReload();
@@ -514,6 +516,7 @@ pub const Application = struct {
                     .world = &self.world,
                     .instance = instance,
                     .allocator = self.allocator,
+                    .command_queue = &self.command_queue,
                     .input = &self.input,
                     .time = self.global_time,
                     .delta_time = delta_seconds,
@@ -522,6 +525,13 @@ pub const Application = struct {
 
                 vm.callUpdate(instance, &ctx, delta_seconds) catch |err| {
                     std.log.err("Script update error for entity {}: {}", .{ entity.id, err });
+                    self.script_runtime.recordEvent(.{
+                        .script_handle = instance.script_handle,
+                        .entity_id = entity.id,
+                        .phase = .update,
+                        .severity = .@"error",
+                        .message = vm.getError(),
+                    });
                     instance.state = .failed;
                 };
             }
@@ -539,7 +549,7 @@ pub const Application = struct {
     /// ## 返回
     /// 脚本资源句柄
     pub fn loadScript(self: *Application, path: []const u8) !handles.ScriptHandle {
-        self.script_runtime.bindWorld(&self.world);
+        self.bindRuntimeContext();
         const source = try std.fs.cwd().readFileAlloc(self.allocator, path, 1024 * 1024);
         defer self.allocator.free(source);
 
@@ -574,5 +584,10 @@ pub const Application = struct {
                 });
             }
         }
+    }
+
+    fn bindRuntimeContext(self: *Application) void {
+        self.script_runtime.bindWorld(&self.world);
+        self.script_runtime.bindCommandQueue(&self.command_queue);
     }
 };

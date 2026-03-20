@@ -1,5 +1,6 @@
 const std = @import("std");
 const components = @import("../scene/components.zig");
+const command_queue_mod = @import("../core/command_queue.zig");
 const world_mod = @import("../scene/world.zig");
 const types = @import("./types.zig");
 const input_mod = @import("../core/input.zig");
@@ -19,6 +20,8 @@ pub const ScriptContext = struct {
     instance: *types.ScriptInstance,
     /// 分配器
     allocator: std.mem.Allocator,
+    /// 引擎级命令队列（WASM backend 使用）
+    command_queue: ?*command_queue_mod.CommandQueue = null,
     /// 输入状态（可选）
     input: ?*const input_mod.InputState = null,
     /// 全局时间（秒）

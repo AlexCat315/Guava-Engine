@@ -1,6 +1,7 @@
 const std = @import("std");
 const collaboration_mod = @import("../collaboration.zig");
 const protocol = @import("../protocol.zig");
+const script_runtime_mod = @import("../../script/runtime.zig");
 const scene_mod = @import("../../scene/scene.zig");
 const components = @import("../../scene/components.zig");
 const render_mod = @import("../../render/renderer.zig");
@@ -17,14 +18,20 @@ pub const resource_templates = [_]protocol.ResourceTemplateDescriptor{
 pub const SnapshotStore = struct {
     allocator: std.mem.Allocator,
     collaboration: ?*const collaboration_mod.Store = null,
+    script_runtime: ?*const script_runtime_mod.ScriptRuntime = null,
     mutex: std.Thread.Mutex = .{},
     ready: bool = false,
     entries: std.ArrayList(ResourceEntry) = .empty,
 
-    pub fn init(allocator: std.mem.Allocator, collaboration: ?*const collaboration_mod.Store) SnapshotStore {
+    pub fn init(
+        allocator: std.mem.Allocator,
+        collaboration: ?*const collaboration_mod.Store,
+        script_runtime: ?*const script_runtime_mod.ScriptRuntime,
+    ) SnapshotStore {
         return .{
             .allocator = allocator,
             .collaboration = collaboration,
+            .script_runtime = script_runtime,
             .entries = .empty,
         };
     }
@@ -95,7 +102,8 @@ pub const SnapshotStore = struct {
         }
 
         const listed_count = countListedResources(mutable.entries.items) +
-            @as(usize, if (mutable.collaboration != null) 3 else 0);
+            @as(usize, if (mutable.collaboration != null) 3 else 0) +
+            @as(usize, if (mutable.script_runtime != null) 1 else 0);
         try resources.ensureTotalCapacity(allocator, listed_count);
         for (mutable.entries.items) |entry| {
             if (!shouldListEntry(entry.uri)) {
@@ -113,6 +121,16 @@ pub const SnapshotStore = struct {
 
         if (mutable.collaboration) |_| {
             try collaboration_mod.Store.appendResourceDescriptorsAlloc(allocator, &resources);
+        }
+        if (mutable.script_runtime != null) {
+            try resources.append(allocator, .{
+                .uri = try allocator.dupe(u8, "script://runtime-status"),
+                .name = try allocator.dupe(u8, "Script Runtime Status"),
+                .title = try allocator.dupe(u8, "Script Runtime Status"),
+                .description = try allocator.dupe(u8, "Recent compile, load, and runtime errors reported by the script system."),
+                .mimeType = try allocator.dupe(u8, "application/json"),
+                .size = null,
+            });
         }
 
         return try resources.toOwnedSlice(allocator);
@@ -137,6 +155,14 @@ pub const SnapshotStore = struct {
 
         if (mutable.collaboration) |collaboration| {
             return try collaboration.readResourceAlloc(allocator, uri);
+        }
+
+        if (mutable.script_runtime != null and std.mem.eql(u8, uri, "script://runtime-status")) {
+            return .{
+                .uri = try allocator.dupe(u8, "script://runtime-status"),
+                .mimeType = try allocator.dupe(u8, "application/json"),
+                .text = try mutable.script_runtime.?.buildStatusJsonAlloc(allocator),
+            };
         }
 
         return null;
@@ -510,7 +536,7 @@ fn stringifyAlloc(allocator: std.mem.Allocator, value: anytype) ![]u8 {
 }
 
 test "SnapshotStore publishes read-only hierarchy, selection, and entity snapshots" {
-    var store = SnapshotStore.init(std.testing.allocator, null);
+    var store = SnapshotStore.init(std.testing.allocator, null, null);
     defer store.deinit();
 
     var world = scene_mod.World.init(std.testing.allocator, null);
@@ -549,7 +575,7 @@ test "SnapshotStore exposes collaboration context and preview resources" {
     var collaboration = collaboration_mod.Store.init(std.testing.allocator);
     defer collaboration.deinit();
 
-    var store = SnapshotStore.init(std.testing.allocator, &collaboration);
+    var store = SnapshotStore.init(std.testing.allocator, &collaboration, null);
     defer store.deinit();
 
     var world = scene_mod.World.init(std.testing.allocator, null);

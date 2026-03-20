@@ -183,8 +183,7 @@ const Server = struct {
                     .title = "Guava Engine MCP",
                     .version = "0.1.0",
                 },
-                .instructions =
-                "Guava Engine MCP bridge with scene snapshots, editor context injection, and staged ghost-preview transactions. Resources: scene://hierarchy, selection://current, entity://{id}, editor://context, editor://intent-log, preview://staged. Tools: create_entity, delete_entity, rename_entity, set_parent, set_local_transform, set_world_transform, set_visible, stage_transaction, apply_staged_transaction, discard_staged_transaction.",
+                .instructions = "Guava Engine MCP bridge with scene snapshots, editor context injection, staged ghost-preview transactions, and a writable WASM script pipeline. Resources: scene://hierarchy, selection://current, entity://{id}, editor://context, editor://intent-log, preview://staged, script://runtime-status. Tools: create_entity, delete_entity, rename_entity, set_parent, set_local_transform, set_world_transform, set_visible, compile_script, stage_transaction, apply_staged_transaction, discard_staged_transaction.",
             });
             return false;
         }
@@ -287,9 +286,13 @@ const Server = struct {
                     .tool = response.tool_name,
                     .changed = response.result.changed,
                     .entity_id = response.result.entity_id,
-                    .command_error = if (response.result.err) |err| @tagName(err) else null,
+                    .script_handle = response.result.script_handle,
+                    .compiled = response.result.compiled,
+                    .attached = response.result.attached,
+                    .command_error = if (response.result.command_error) |err| @tagName(err) else null,
+                    .script_error = response.result.script_error,
                 },
-                .isError = response.result.err != null,
+                .isError = response.result.command_error != null or response.result.script_error != null,
             });
             return false;
         }
@@ -451,19 +454,19 @@ fn writeToolList(stdout_file: *std.fs.File, id: std.json.Value) !void {
                 .name = "create_entity",
                 .description = "Create an entity with optional parent, transform, visibility, and common scene components.",
                 .inputSchema = .{
-                    .@"type" = "object",
+                    .type = "object",
                     .properties = .{
-                        .name = .{ .@"type" = "string" },
-                        .parent = .{ .@"type" = "integer" },
-                        .local_transform = .{ .@"type" = "object" },
-                        .camera = .{ .@"type" = "object" },
-                        .mesh = .{ .@"type" = "object" },
-                        .material = .{ .@"type" = "object" },
-                        .light = .{ .@"type" = "object" },
-                        .vfx = .{ .@"type" = "object" },
-                        .visible = .{ .@"type" = "boolean" },
-                        .editor_only = .{ .@"type" = "boolean" },
-                        .is_folder = .{ .@"type" = "boolean" },
+                        .name = .{ .type = "string" },
+                        .parent = .{ .type = "integer" },
+                        .local_transform = .{ .type = "object" },
+                        .camera = .{ .type = "object" },
+                        .mesh = .{ .type = "object" },
+                        .material = .{ .type = "object" },
+                        .light = .{ .type = "object" },
+                        .vfx = .{ .type = "object" },
+                        .visible = .{ .type = "boolean" },
+                        .editor_only = .{ .type = "boolean" },
+                        .is_folder = .{ .type = "boolean" },
                     },
                     .required = &.{"name"},
                 },
@@ -472,9 +475,9 @@ fn writeToolList(stdout_file: *std.fs.File, id: std.json.Value) !void {
                 .name = "delete_entity",
                 .description = "Delete an entity by id.",
                 .inputSchema = .{
-                    .@"type" = "object",
+                    .type = "object",
                     .properties = .{
-                        .entity_id = .{ .@"type" = "integer" },
+                        .entity_id = .{ .type = "integer" },
                     },
                     .required = &.{"entity_id"},
                 },
@@ -483,10 +486,10 @@ fn writeToolList(stdout_file: *std.fs.File, id: std.json.Value) !void {
                 .name = "rename_entity",
                 .description = "Rename an entity by id.",
                 .inputSchema = .{
-                    .@"type" = "object",
+                    .type = "object",
                     .properties = .{
-                        .entity_id = .{ .@"type" = "integer" },
-                        .name = .{ .@"type" = "string" },
+                        .entity_id = .{ .type = "integer" },
+                        .name = .{ .type = "string" },
                     },
                     .required = &.{ "entity_id", "name" },
                 },
@@ -495,10 +498,10 @@ fn writeToolList(stdout_file: *std.fs.File, id: std.json.Value) !void {
                 .name = "set_parent",
                 .description = "Set or clear an entity parent.",
                 .inputSchema = .{
-                    .@"type" = "object",
+                    .type = "object",
                     .properties = .{
-                        .entity_id = .{ .@"type" = "integer" },
-                        .parent_id = .{ .@"type" = "integer" },
+                        .entity_id = .{ .type = "integer" },
+                        .parent_id = .{ .type = "integer" },
                     },
                     .required = &.{"entity_id"},
                 },
@@ -507,10 +510,10 @@ fn writeToolList(stdout_file: *std.fs.File, id: std.json.Value) !void {
                 .name = "set_local_transform",
                 .description = "Set the local transform of an entity.",
                 .inputSchema = .{
-                    .@"type" = "object",
+                    .type = "object",
                     .properties = .{
-                        .entity_id = .{ .@"type" = "integer" },
-                        .transform = .{ .@"type" = "object" },
+                        .entity_id = .{ .type = "integer" },
+                        .transform = .{ .type = "object" },
                     },
                     .required = &.{ "entity_id", "transform" },
                 },
@@ -519,10 +522,10 @@ fn writeToolList(stdout_file: *std.fs.File, id: std.json.Value) !void {
                 .name = "set_world_transform",
                 .description = "Set the world transform of an entity.",
                 .inputSchema = .{
-                    .@"type" = "object",
+                    .type = "object",
                     .properties = .{
-                        .entity_id = .{ .@"type" = "integer" },
-                        .transform = .{ .@"type" = "object" },
+                        .entity_id = .{ .type = "integer" },
+                        .transform = .{ .type = "object" },
                     },
                     .required = &.{ "entity_id", "transform" },
                 },
@@ -531,25 +534,41 @@ fn writeToolList(stdout_file: *std.fs.File, id: std.json.Value) !void {
                 .name = "set_visible",
                 .description = "Set entity visibility.",
                 .inputSchema = .{
-                    .@"type" = "object",
+                    .type = "object",
                     .properties = .{
-                        .entity_id = .{ .@"type" = "integer" },
-                        .visible = .{ .@"type" = "boolean" },
+                        .entity_id = .{ .type = "integer" },
+                        .visible = .{ .type = "boolean" },
                     },
                     .required = &.{ "entity_id", "visible" },
+                },
+            },
+            .{
+                .name = "compile_script",
+                .description = "Compile Zig source into a WASM script, optionally update an existing script resource, and optionally attach it to an entity.",
+                .inputSchema = .{
+                    .type = "object",
+                    .properties = .{
+                        .script_handle = .{ .type = "integer" },
+                        .entity_id = .{ .type = "integer" },
+                        .source = .{ .type = "string" },
+                        .source_path = .{ .type = "string" },
+                        .description = .{ .type = "string" },
+                        .enabled = .{ .type = "boolean" },
+                    },
+                    .required = &.{},
                 },
             },
             .{
                 .name = "stage_transaction",
                 .description = "Stage a batch of entity tools into an isolated preview world and publish a ghost preview.",
                 .inputSchema = .{
-                    .@"type" = "object",
+                    .type = "object",
                     .properties = .{
-                        .label = .{ .@"type" = "string" },
-                        .note = .{ .@"type" = "string" },
-                        .source = .{ .@"type" = "string" },
-                        .commands = .{ .@"type" = "array" },
-                        .operations = .{ .@"type" = "array" },
+                        .label = .{ .type = "string" },
+                        .note = .{ .type = "string" },
+                        .source = .{ .type = "string" },
+                        .commands = .{ .type = "array" },
+                        .operations = .{ .type = "array" },
                     },
                     .required = &.{"commands"},
                 },
@@ -558,7 +577,7 @@ fn writeToolList(stdout_file: *std.fs.File, id: std.json.Value) !void {
                 .name = "apply_staged_transaction",
                 .description = "Commit the active staged transaction into the main world.",
                 .inputSchema = .{
-                    .@"type" = "object",
+                    .type = "object",
                     .properties = .{},
                     .required = &.{},
                 },
@@ -567,7 +586,7 @@ fn writeToolList(stdout_file: *std.fs.File, id: std.json.Value) !void {
                 .name = "discard_staged_transaction",
                 .description = "Discard the active staged transaction and clear the ghost preview.",
                 .inputSchema = .{
-                    .@"type" = "object",
+                    .type = "object",
                     .properties = .{},
                     .required = &.{},
                 },

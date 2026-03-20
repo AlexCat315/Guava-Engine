@@ -105,6 +105,22 @@ pub const CommandQueue = struct {
         });
     }
 
+    pub fn latestPendingLocalTransform(self: *const CommandQueue, entity_id: scene_mod.EntityId) ?components_mod.Transform {
+        var index = self.commands.items.len;
+        while (index > 0) {
+            index -= 1;
+            switch (self.commands.items[index]) {
+                .set_local_transform => |set_transform| {
+                    if (set_transform.entity_id == entity_id) {
+                        return set_transform.transform;
+                    }
+                },
+                else => {},
+            }
+        }
+        return null;
+    }
+
     pub fn executeAll(self: *CommandQueue, world: *scene_mod.World) ![]command_mod.ExecutionResult {
         const command_count = self.commands.items.len;
         if (command_count == 0) {

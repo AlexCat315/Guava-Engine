@@ -1,8 +1,10 @@
 const std = @import("std");
+const command_queue_mod = @import("../core/command_queue.zig");
 const types = @import("./types.zig");
 const context = @import("./context.zig");
 const vm_mod = @import("./vm.zig");
 const hot_reload_mod = @import("./hot_reload.zig");
+const wasm_compiler = @import("./wasm_compiler.zig");
 const handles = @import("../assets/handles.zig");
 const components = @import("../scene/components.zig");
 const world_mod = @import("../scene/world.zig");
@@ -11,6 +13,37 @@ const log = std.log.scoped(.script_runtime);
 
 /// 脚本运行时 - 管理所有脚本实例
 pub const ScriptRuntime = struct {
+    pub const StatusSeverity = enum {
+        info,
+        warning,
+        @"error",
+    };
+
+    pub const StatusPhase = enum {
+        compile,
+        load,
+        init,
+        update,
+        destroy,
+    };
+
+    pub const StatusEvent = struct {
+        sequence: u64,
+        script_handle: ?handles.ScriptHandle = null,
+        entity_id: ?types.EntityId = null,
+        phase: StatusPhase,
+        severity: StatusSeverity,
+        message: []u8,
+    };
+
+    pub const EventDesc = struct {
+        script_handle: ?handles.ScriptHandle = null,
+        entity_id: ?types.EntityId = null,
+        phase: StatusPhase,
+        severity: StatusSeverity = .info,
+        message: []const u8,
+    };
+
     /// 配置
     config: types.ScriptSystemConfig,
     /// 实例表
@@ -23,12 +56,18 @@ pub const ScriptRuntime = struct {
     vms: std.AutoHashMap(types.ScriptLanguage, *vm_mod.ScriptVM),
     /// 当前绑定的世界
     world: ?*world_mod.World = null,
+    /// 当前绑定的命令队列
+    command_queue: ?*command_queue_mod.CommandQueue = null,
     /// 热重载管理器
     hot_reload: ?hot_reload_mod.HotReloadManager,
     /// 分配器
     allocator: std.mem.Allocator,
     /// 临时上下文（每帧复用）
     temp_context: ?*context.ScriptContext = null,
+    /// 可读脚本状态日志
+    status_events: std.ArrayList(StatusEvent),
+    status_mutex: std.Thread.Mutex = .{},
+    next_status_sequence: u64 = 1,
 
     pub fn init(allocator: std.mem.Allocator, config: types.ScriptSystemConfig) ScriptRuntime {
         return .{
@@ -41,6 +80,7 @@ pub const ScriptRuntime = struct {
                 hot_reload_mod.HotReloadManager.init(allocator, undefined)
             else
                 null,
+            .status_events = .empty,
         };
     }
 
@@ -62,6 +102,13 @@ pub const ScriptRuntime = struct {
             }
         }
         self.instances.deinit();
+
+        self.status_mutex.lock();
+        defer self.status_mutex.unlock();
+        for (self.status_events.items) |event| {
+            self.allocator.free(event.message);
+        }
+        self.status_events.deinit(self.allocator);
 
         // 销毁实体脚本列表
         var iter = self.entity_scripts.valueIterator();
@@ -87,6 +134,52 @@ pub const ScriptRuntime = struct {
 
     pub fn bindWorld(self: *ScriptRuntime, world: *world_mod.World) void {
         self.world = world;
+    }
+
+    pub fn bindCommandQueue(self: *ScriptRuntime, command_queue: *command_queue_mod.CommandQueue) void {
+        self.command_queue = command_queue;
+    }
+
+    pub fn recordEvent(self: *ScriptRuntime, desc: EventDesc) void {
+        const owned_message = self.allocator.dupe(u8, desc.message) catch return;
+        errdefer self.allocator.free(owned_message);
+
+        self.status_mutex.lock();
+        defer self.status_mutex.unlock();
+
+        if (self.status_events.items.len >= 64) {
+            const dropped = self.status_events.orderedRemove(0);
+            self.allocator.free(dropped.message);
+        }
+
+        self.status_events.append(self.allocator, .{
+            .sequence = self.next_status_sequence,
+            .script_handle = desc.script_handle,
+            .entity_id = desc.entity_id,
+            .phase = desc.phase,
+            .severity = desc.severity,
+            .message = owned_message,
+        }) catch {
+            self.allocator.free(owned_message);
+            return;
+        };
+        self.next_status_sequence += 1;
+    }
+
+    pub fn buildStatusJsonAlloc(self: *const ScriptRuntime, allocator: std.mem.Allocator) ![]u8 {
+        const mutable: *ScriptRuntime = @constCast(self);
+        mutable.status_mutex.lock();
+        defer mutable.status_mutex.unlock();
+
+        var out: std.io.Writer.Allocating = .init(allocator);
+        defer out.deinit();
+
+        try std.json.Stringify.value(.{
+            .event_count = mutable.status_events.items.len,
+            .events = mutable.status_events.items,
+        }, .{ .whitespace = .indent_2 }, &out.writer);
+        try out.writer.writeByte('\n');
+        return try allocator.dupe(u8, out.written());
     }
 
     /// 初始化 VM
@@ -191,14 +284,58 @@ pub const ScriptRuntime = struct {
             refreshed_mtime = readFileMtime(resource.source_path) catch resource.last_modified;
         }
 
-        const source = if (refreshed_source) |bytes| bytes else resource.source;
-        try vm.load(source, resource.language);
+        if (resource.language == .wasm) {
+            const source = if (refreshed_source) |bytes| bytes else resource.source;
+            var compile_result = try wasm_compiler.compileZigSourceAlloc(self.allocator, .{
+                .source = source,
+                .script_name = if (resource.description.len != 0) resource.description else "wasm_script",
+            });
+            defer compile_result.deinit(self.allocator);
 
-        if (refreshed_source) |bytes| {
+            switch (compile_result) {
+                .compile_error => |message| {
+                    self.recordEvent(.{
+                        .script_handle = handle,
+                        .phase = .compile,
+                        .severity = .@"error",
+                        .message = message,
+                    });
+                    return types.ScriptError.CompileError;
+                },
+                .success => |artifact| {
+                    if (refreshed_source) |bytes| {
+                        self.allocator.free(resource.source);
+                        resource.source = try self.allocator.dupe(u8, bytes);
+                        self.allocator.free(bytes);
+                        refreshed_source = null;
+                    }
+                    self.allocator.free(resource.bytecode);
+                    resource.bytecode = try self.allocator.dupe(u8, artifact.bytecode);
+                    resource.last_modified = refreshed_mtime;
+                },
+            }
+        } else if (refreshed_source) |bytes| {
             self.allocator.free(resource.source);
             resource.source = bytes;
             resource.last_modified = refreshed_mtime;
+            refreshed_source = null;
         }
+
+        vm.load(resource) catch |err| {
+            self.recordEvent(.{
+                .script_handle = handle,
+                .phase = .load,
+                .severity = .@"error",
+                .message = vm.getError(),
+            });
+            return err;
+        };
+        self.recordEvent(.{
+            .script_handle = handle,
+            .phase = if (resource.language == .wasm) .compile else .load,
+            .severity = .info,
+            .message = if (resource.language == .wasm) "recompiled wasm script" else "reloaded script source",
+        });
 
         for (world.entities.items) |*entity| {
             if (entity.script) |*script| {
@@ -330,9 +467,17 @@ pub const ScriptRuntime = struct {
                     .world = world,
                     .instance = instance,
                     .allocator = self.allocator,
+                    .command_queue = self.command_queue,
                 };
                 vm.callDestroy(instance, &ctx) catch |err| {
                     log.err("Script destroy error for entity {}: {}", .{ instance.entity_id, err });
+                    self.recordEvent(.{
+                        .script_handle = instance.script_handle,
+                        .entity_id = instance.entity_id,
+                        .phase = .destroy,
+                        .severity = .@"error",
+                        .message = vm.getError(),
+                    });
                 };
             }
         }
@@ -378,8 +523,15 @@ pub const ScriptRuntime = struct {
             return;
         };
 
-        vm.load(script_resource.source, script_resource.language) catch |err| {
+        vm.load(script_resource) catch |err| {
             log.err("Failed to load script for entity {}: {}", .{ entity.id, err });
+            self.recordEvent(.{
+                .script_handle = script_handle,
+                .entity_id = entity.id,
+                .phase = .load,
+                .severity = .@"error",
+                .message = vm.getError(),
+            });
             return;
         };
 
@@ -388,10 +540,18 @@ pub const ScriptRuntime = struct {
             .world = world,
             .instance = undefined,
             .allocator = self.allocator,
+            .command_queue = self.command_queue,
         };
 
         const instance = vm.createInstance(&ctx) catch |err| {
             log.err("Failed to create script instance for entity {}: {}", .{ entity.id, err });
+            self.recordEvent(.{
+                .script_handle = script_handle,
+                .entity_id = entity.id,
+                .phase = .load,
+                .severity = .@"error",
+                .message = vm.getError(),
+            });
             return;
         };
 
@@ -411,8 +571,23 @@ pub const ScriptRuntime = struct {
         script.instance_id = instance.id;
         vm.callInit(instance, &ctx) catch |err| {
             log.err("Script init error for entity {}: {}", .{ entity.id, err });
+            self.recordEvent(.{
+                .script_handle = script_handle,
+                .entity_id = entity.id,
+                .phase = .init,
+                .severity = .@"error",
+                .message = vm.getError(),
+            });
             instance.state = .failed;
+            return;
         };
+        self.recordEvent(.{
+            .script_handle = script_handle,
+            .entity_id = entity.id,
+            .phase = .init,
+            .severity = .info,
+            .message = "script instance initialized",
+        });
     }
 };
 

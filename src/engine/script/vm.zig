@@ -1,6 +1,9 @@
 const std = @import("std");
+const script_resource_mod = @import("../assets/script_resource.zig");
 const types = @import("./types.zig");
 const context = @import("./context.zig");
+const vm_interface = @import("./vm_interface.zig");
+const wasm_vm_mod = @import("./wasm_vm.zig");
 const components = @import("../scene/components.zig");
 const quat = @import("../math/quat.zig");
 const vec3 = @import("../math/vec3.zig");
@@ -41,19 +44,13 @@ const ScriptDefinition = struct {
     fps_jump_velocity: f32 = 5.0,
 };
 
-const ScriptStateHeader = struct {
-    kind: BuiltinKind,
-};
-
 const RotateState = struct {
-    header: ScriptStateHeader = .{ .kind = .rotate },
     axis: components.Vec3,
     speed_radians: f32,
     local_space: bool,
 };
 
 const PatrolState = struct {
-    header: ScriptStateHeader = .{ .kind = .patrol },
     speed: f32,
     waypoints: [8]components.Vec3,
     waypoint_count: u8,
@@ -66,7 +63,6 @@ const PatrolState = struct {
 };
 
 const FlyCameraState = struct {
-    header: ScriptStateHeader = .{ .kind = .fly_camera },
     move_speed: f32,
     mouse_sensitivity: f32,
     first_mouse: bool = true,
@@ -77,7 +73,6 @@ const FlyCameraState = struct {
 };
 
 const FpsControllerState = struct {
-    header: ScriptStateHeader = .{ .kind = .fps_controller },
     move_speed: f32,
     mouse_sensitivity: f32,
     gravity: f32,
@@ -91,78 +86,8 @@ const FpsControllerState = struct {
     yaw: f32 = -std.math.pi * 0.5,
 };
 
-/// 虚拟机接口 - 支持多种脚本语言
-pub const ScriptVM = struct {
-    context: *anyopaque,
-    /// 虚拟机类型
-    vtable: *const VTable,
-
-    pub const VTable = struct {
-        /// 加载脚本
-        load: *const fn (vm_context: *anyopaque, source: []const u8, language: types.ScriptLanguage) types.ScriptError!void,
-        /// 卸载脚本
-        unload: *const fn (vm_context: *anyopaque) void,
-        /// 创建实例
-        createInstance: *const fn (vm_context: *anyopaque, ctx: *context.ScriptContext) types.ScriptError!*types.ScriptInstance,
-        /// 销毁实例
-        destroyInstance: *const fn (vm_context: *anyopaque, instance: *types.ScriptInstance) void,
-        /// 调用初始化
-        callInit: *const fn (vm_context: *anyopaque, instance: *types.ScriptInstance, ctx: *context.ScriptContext) types.ScriptError!void,
-        /// 调用更新
-        callUpdate: *const fn (vm_context: *anyopaque, instance: *types.ScriptInstance, ctx: *context.ScriptContext, dt: f32) types.ScriptError!void,
-        /// 调用销毁
-        callDestroy: *const fn (vm_context: *anyopaque, instance: *types.ScriptInstance, ctx: *context.ScriptContext) types.ScriptError!void,
-        /// 获取错误信息
-        getError: *const fn (vm_context: *anyopaque) []const u8,
-        /// 销毁具体 VM 实例
-        destroy: *const fn (vm_context: *anyopaque, allocator: std.mem.Allocator) void,
-    };
-
-    /// 加载脚本
-    pub fn load(self: *ScriptVM, source: []const u8, language: types.ScriptLanguage) types.ScriptError!void {
-        return self.vtable.load(self.context, source, language);
-    }
-
-    /// 卸载脚本
-    pub fn unload(self: *ScriptVM) void {
-        self.vtable.unload(self.context);
-    }
-
-    /// 创建实例
-    pub fn createInstance(self: *ScriptVM, ctx: *context.ScriptContext) types.ScriptError!*types.ScriptInstance {
-        return self.vtable.createInstance(self.context, ctx);
-    }
-
-    /// 销毁实例
-    pub fn destroyInstance(self: *ScriptVM, instance: *types.ScriptInstance) void {
-        self.vtable.destroyInstance(self.context, instance);
-    }
-
-    /// 调用初始化
-    pub fn callInit(self: *ScriptVM, instance: *types.ScriptInstance, ctx: *context.ScriptContext) types.ScriptError!void {
-        return self.vtable.callInit(self.context, instance, ctx);
-    }
-
-    /// 调用更新
-    pub fn callUpdate(self: *ScriptVM, instance: *types.ScriptInstance, ctx: *context.ScriptContext, dt: f32) types.ScriptError!void {
-        return self.vtable.callUpdate(self.context, instance, ctx, dt);
-    }
-
-    /// 调用销毁
-    pub fn callDestroy(self: *ScriptVM, instance: *types.ScriptInstance, ctx: *context.ScriptContext) types.ScriptError!void {
-        return self.vtable.callDestroy(self.context, instance, ctx);
-    }
-
-    /// 获取错误信息
-    pub fn getError(self: *ScriptVM) []const u8 {
-        return self.vtable.getError(self.context);
-    }
-
-    pub fn deinit(self: *ScriptVM, allocator: std.mem.Allocator) void {
-        self.unload();
-        self.vtable.destroy(self.context, allocator);
-    }
-};
+pub const ScriptVM = vm_interface.ScriptVM;
+pub const WasmVM = wasm_vm_mod.WasmVM;
 
 /// Zig 原生虚拟机 - 使用内建脚本定义驱动运行时行为
 pub const ZigVM = struct {
@@ -181,14 +106,14 @@ pub const ZigVM = struct {
         };
     }
 
-    pub fn load(vm: *ZigVM, source: []const u8, language: types.ScriptLanguage) types.ScriptError!void {
-        if (language != .zig) {
+    pub fn load(vm: *ZigVM, resource: *const script_resource_mod.ScriptResource) types.ScriptError!void {
+        if (resource.language != .zig) {
             setOwnedMessage(vm.allocator, &vm.error_msg, "script language does not match ZigVM");
             return types.ScriptError.InvalidLanguage;
         }
 
-        vm.source = source;
-        vm.definition = parseScriptDefinition(source) catch |err| {
+        vm.source = resource.source;
+        vm.definition = parseScriptDefinition(resource.source) catch |err| {
             const message = switch (err) {
                 error.InvalidDirective => "invalid //!guava directive in Zig script",
                 error.UnsupportedBuiltinScript => "dynamic Zig compilation is unavailable; add //!guava builtin=rotate|patrol|fly_camera|fps_controller",
@@ -221,6 +146,7 @@ pub const ZigVM = struct {
             .entity_id = ctx.entity,
             .script_handle = undefined,
             .vtable = vtableForKind(vm.definition.kind),
+            .user_data_tag = @intFromEnum(vm.definition.kind),
             .state = .ready,
         };
 
@@ -279,8 +205,7 @@ pub const ZigVM = struct {
 
     pub fn destroyInstance(vm: *ZigVM, instance: *types.ScriptInstance) void {
         if (instance.user_data) |data| {
-            const header = castUserDataHeader(data);
-            switch (header.kind) {
+            switch (builtinKindFromTag(instance.user_data_tag)) {
                 .rotate => vm.allocator.destroy(castUserData(RotateState, data)),
                 .patrol => vm.allocator.destroy(castUserData(PatrolState, data)),
                 .fly_camera => vm.allocator.destroy(castUserData(FlyCameraState, data)),
@@ -294,18 +219,21 @@ pub const ZigVM = struct {
     }
 
     pub fn callInit(_: *ZigVM, instance: *types.ScriptInstance, ctx: *context.ScriptContext) types.ScriptError!void {
+        ctx.instance = instance;
         if (instance.vtable.onInit) |fn_ptr| {
             fn_ptr(ctx);
         }
     }
 
     pub fn callUpdate(_: *ZigVM, instance: *types.ScriptInstance, ctx: *context.ScriptContext, dt: f32) types.ScriptError!void {
+        ctx.instance = instance;
         if (instance.vtable.onUpdate) |fn_ptr| {
             fn_ptr(ctx, dt);
         }
     }
 
     pub fn callDestroy(_: *ZigVM, instance: *types.ScriptInstance, ctx: *context.ScriptContext) types.ScriptError!void {
+        ctx.instance = instance;
         if (instance.vtable.onDestroy) |fn_ptr| {
             fn_ptr(ctx);
         }
@@ -344,9 +272,8 @@ pub const CSharpVM = struct {
         return .{ .allocator = allocator };
     }
 
-    pub fn load(vm: *CSharpVM, source: []const u8, language: types.ScriptLanguage) types.ScriptError!void {
-        _ = source;
-        if (language != .csharp) {
+    pub fn load(vm: *CSharpVM, resource: *const script_resource_mod.ScriptResource) types.ScriptError!void {
+        if (resource.language != .csharp) {
             setOwnedMessage(vm.allocator, &vm.error_msg, "script language does not match CSharpVM");
             return types.ScriptError.InvalidLanguage;
         }
@@ -390,6 +317,60 @@ pub const CSharpVM = struct {
     fn callDestroyStub(_: *CSharpVM, _: *types.ScriptInstance, _: *context.ScriptContext) types.ScriptError!void {}
 };
 
+/// Lua 虚拟机存根 - 当前构建不包含 Lua 运行时
+pub const LuaVM = struct {
+    allocator: std.mem.Allocator,
+    error_msg: []u8 = &.{},
+
+    pub fn init(allocator: std.mem.Allocator) LuaVM {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn load(vm: *LuaVM, resource: *const script_resource_mod.ScriptResource) types.ScriptError!void {
+        if (resource.language != .lua) {
+            setOwnedMessage(vm.allocator, &vm.error_msg, "script language does not match LuaVM");
+            return types.ScriptError.InvalidLanguage;
+        }
+        setOwnedMessage(vm.allocator, &vm.error_msg, "Lua scripting is not available in this build");
+        return types.ScriptError.NotFound;
+    }
+
+    pub fn getError(vm: *LuaVM) []const u8 {
+        return vm.error_msg;
+    }
+
+    fn destroyContext(context_ptr: *anyopaque, allocator: std.mem.Allocator) void {
+        const vm = castContext(LuaVM, context_ptr);
+        clearOwnedMessage(vm.allocator, &vm.error_msg);
+        allocator.destroy(vm);
+    }
+
+    pub const script_vm_vtable: ScriptVM.VTable = .{
+        .load = luaLoadBridge,
+        .unload = luaUnloadBridge,
+        .createInstance = luaCreateInstanceBridge,
+        .destroyInstance = luaDestroyInstanceBridge,
+        .callInit = luaCallInitBridge,
+        .callUpdate = luaCallUpdateBridge,
+        .callDestroy = luaCallDestroyBridge,
+        .getError = luaGetErrorBridge,
+        .destroy = destroyContext,
+    };
+
+    fn unloadStub(vm: *LuaVM) void {
+        clearOwnedMessage(vm.allocator, &vm.error_msg);
+    }
+    fn createInstanceStub(_: *LuaVM, _: *context.ScriptContext) types.ScriptError!*types.ScriptInstance {
+        return types.ScriptError.NotFound;
+    }
+    fn destroyInstanceStub(vm: *LuaVM, instance: *types.ScriptInstance) void {
+        vm.allocator.destroy(instance);
+    }
+    fn callInitStub(_: *LuaVM, _: *types.ScriptInstance, _: *context.ScriptContext) types.ScriptError!void {}
+    fn callUpdateStub(_: *LuaVM, _: *types.ScriptInstance, _: *context.ScriptContext, _: f32) types.ScriptError!void {}
+    fn callDestroyStub(_: *LuaVM, _: *types.ScriptInstance, _: *context.ScriptContext) types.ScriptError!void {}
+};
+
 /// 获取指定语言的虚拟机
 pub fn createVM(language: types.ScriptLanguage, allocator: std.mem.Allocator) types.ScriptError!*ScriptVM {
     switch (language) {
@@ -414,6 +395,30 @@ pub fn createVM(language: types.ScriptLanguage, allocator: std.mem.Allocator) ty
             script_vm.* = .{
                 .context = vm,
                 .vtable = &CSharpVM.script_vm_vtable,
+            };
+            return script_vm;
+        },
+        .lua => {
+            const script_vm = try allocator.create(ScriptVM);
+            errdefer allocator.destroy(script_vm);
+            const vm = try allocator.create(LuaVM);
+            errdefer allocator.destroy(vm);
+            vm.* = LuaVM.init(allocator);
+            script_vm.* = .{
+                .context = vm,
+                .vtable = &LuaVM.script_vm_vtable,
+            };
+            return script_vm;
+        },
+        .wasm => {
+            const script_vm = try allocator.create(ScriptVM);
+            errdefer allocator.destroy(script_vm);
+            const vm = try allocator.create(WasmVM);
+            errdefer allocator.destroy(vm);
+            vm.* = try WasmVM.init(allocator);
+            script_vm.* = .{
+                .context = vm,
+                .vtable = &WasmVM.script_vm_vtable,
             };
             return script_vm;
         },
@@ -685,21 +690,32 @@ fn patrolOnUpdate(ctx: *context.ScriptContext, dt: f32) void {
     }
 
     const current_position = ctx.getPosition() orelse return;
-    const target = state.waypoints[state.current_waypoint];
-    const to_target = vec3.sub(target, current_position);
-    const distance = vec3.length(to_target);
+    var target = state.waypoints[state.current_waypoint];
+    var to_target = vec3.sub(target, current_position);
+    var distance = vec3.length(to_target);
 
-    if (distance <= state.arrival_threshold) {
+    while (distance <= state.arrival_threshold) {
         if (state.wait_at_waypoint) {
             state.wait_timer = state.wait_time;
+            return;
         }
 
+        const previous_waypoint = state.current_waypoint;
         if (state.current_waypoint + 1 < state.waypoint_count) {
             state.current_waypoint += 1;
         } else if (state.loop) {
             state.current_waypoint = 0;
+        } else {
+            return;
         }
-        return;
+
+        if (state.current_waypoint == previous_waypoint) {
+            return;
+        }
+
+        target = state.waypoints[state.current_waypoint];
+        to_target = vec3.sub(target, current_position);
+        distance = vec3.length(to_target);
     }
 
     const step = @min(state.speed * dt, distance);
@@ -828,21 +844,20 @@ fn updateLookAngles(
     pitch.* = std.math.clamp(pitch.* + delta_y * sensitivity, -std.math.pi * 0.49, std.math.pi * 0.49);
 }
 
-fn castUserDataHeader(data: *anyopaque) *ScriptStateHeader {
-    return @ptrCast(@alignCast(data));
-}
-
 fn castUserData(comptime T: type, data: *anyopaque) *T {
     return @ptrCast(@alignCast(data));
 }
 
 fn castInstanceState(comptime T: type, instance: *types.ScriptInstance) ?*T {
     const data = instance.user_data orelse return null;
-    const header = castUserDataHeader(data);
-    if (header.kind != builtinKindForState(T)) {
+    if (builtinKindFromTag(instance.user_data_tag) != builtinKindForState(T)) {
         return null;
     }
     return castUserData(T, data);
+}
+
+fn builtinKindFromTag(tag: u32) BuiltinKind {
+    return std.meta.intToEnum(BuiltinKind, tag) catch .none;
 }
 
 fn builtinKindForState(comptime T: type) BuiltinKind {
@@ -859,8 +874,8 @@ fn castContext(comptime T: type, context_ptr: *anyopaque) *T {
     return @ptrCast(@alignCast(context_ptr));
 }
 
-fn zigLoadBridge(context_ptr: *anyopaque, source: []const u8, language: types.ScriptLanguage) types.ScriptError!void {
-    return ZigVM.load(castContext(ZigVM, context_ptr), source, language);
+fn zigLoadBridge(context_ptr: *anyopaque, resource: *const script_resource_mod.ScriptResource) types.ScriptError!void {
+    return ZigVM.load(castContext(ZigVM, context_ptr), resource);
 }
 
 fn zigUnloadBridge(context_ptr: *anyopaque) void {
@@ -891,8 +906,8 @@ fn zigGetErrorBridge(context_ptr: *anyopaque) []const u8 {
     return ZigVM.getError(castContext(ZigVM, context_ptr));
 }
 
-fn csharpLoadBridge(context_ptr: *anyopaque, source: []const u8, language: types.ScriptLanguage) types.ScriptError!void {
-    return CSharpVM.load(castContext(CSharpVM, context_ptr), source, language);
+fn csharpLoadBridge(context_ptr: *anyopaque, resource: *const script_resource_mod.ScriptResource) types.ScriptError!void {
+    return CSharpVM.load(castContext(CSharpVM, context_ptr), resource);
 }
 
 fn csharpUnloadBridge(context_ptr: *anyopaque) void {
@@ -923,6 +938,38 @@ fn csharpGetErrorBridge(context_ptr: *anyopaque) []const u8 {
     return CSharpVM.getError(castContext(CSharpVM, context_ptr));
 }
 
+fn luaLoadBridge(context_ptr: *anyopaque, resource: *const script_resource_mod.ScriptResource) types.ScriptError!void {
+    return LuaVM.load(castContext(LuaVM, context_ptr), resource);
+}
+
+fn luaUnloadBridge(context_ptr: *anyopaque) void {
+    LuaVM.unloadStub(castContext(LuaVM, context_ptr));
+}
+
+fn luaCreateInstanceBridge(context_ptr: *anyopaque, ctx: *context.ScriptContext) types.ScriptError!*types.ScriptInstance {
+    return LuaVM.createInstanceStub(castContext(LuaVM, context_ptr), ctx);
+}
+
+fn luaDestroyInstanceBridge(context_ptr: *anyopaque, instance: *types.ScriptInstance) void {
+    LuaVM.destroyInstanceStub(castContext(LuaVM, context_ptr), instance);
+}
+
+fn luaCallInitBridge(context_ptr: *anyopaque, instance: *types.ScriptInstance, ctx: *context.ScriptContext) types.ScriptError!void {
+    return LuaVM.callInitStub(castContext(LuaVM, context_ptr), instance, ctx);
+}
+
+fn luaCallUpdateBridge(context_ptr: *anyopaque, instance: *types.ScriptInstance, ctx: *context.ScriptContext, dt: f32) types.ScriptError!void {
+    return LuaVM.callUpdateStub(castContext(LuaVM, context_ptr), instance, ctx, dt);
+}
+
+fn luaCallDestroyBridge(context_ptr: *anyopaque, instance: *types.ScriptInstance, ctx: *context.ScriptContext) types.ScriptError!void {
+    return LuaVM.callDestroyStub(castContext(LuaVM, context_ptr), instance, ctx);
+}
+
+fn luaGetErrorBridge(context_ptr: *anyopaque) []const u8 {
+    return LuaVM.getError(castContext(LuaVM, context_ptr));
+}
+
 test "zig vm rotate builtin updates entity rotation" {
     var world = world_mod.World.init(std.testing.allocator, null);
     defer world.deinit();
@@ -934,7 +981,11 @@ test "zig vm rotate builtin updates entity rotation" {
     var vm = ZigVM.init(std.testing.allocator);
     defer vm.unload();
 
-    try vm.load("//!guava builtin=rotate axis=y speed_deg=90 local=true\n", .zig);
+    const resource = script_resource_mod.ScriptResource{
+        .source = "//!guava builtin=rotate axis=y speed_deg=90 local=true\n",
+        .language = .zig,
+    };
+    try vm.load(&resource);
 
     var ctx = context.ScriptContext{
         .entity = entity_id,
@@ -950,8 +1001,8 @@ test "zig vm rotate builtin updates entity rotation" {
     try vm.callUpdate(instance, &ctx, 1.0);
 
     const rotated = world.getEntity(entity_id).?.local_transform.rotation;
-    try std.testing.expectApproxEqAbs(@as(f32, std.math.sqrt(0.5)), rotated[1], 0.0001);
-    try std.testing.expectApproxEqAbs(@as(f32, std.math.sqrt(0.5)), rotated[3], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), rotated[1], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), rotated[3], 0.0001);
 }
 
 test "zig vm patrol builtin moves toward next waypoint" {
@@ -966,7 +1017,11 @@ test "zig vm patrol builtin moves toward next waypoint" {
     var vm = ZigVM.init(std.testing.allocator);
     defer vm.unload();
 
-    try vm.load("//!guava builtin=patrol speed=2.0 waypoints=0,0,0;2,0,0\n", .zig);
+    const resource = script_resource_mod.ScriptResource{
+        .source = "//!guava builtin=patrol speed=2.0 waypoints=0,0,0;2,0,0\n",
+        .language = .zig,
+    };
+    try vm.load(&resource);
 
     var ctx = context.ScriptContext{
         .entity = entity_id,
@@ -989,6 +1044,10 @@ test "zig vm rejects source without builtin directive" {
     var vm = ZigVM.init(std.testing.allocator);
     defer vm.unload();
 
-    try std.testing.expectError(types.ScriptError.CompileError, vm.load("pub fn onUpdate() void {}", .zig));
+    const resource = script_resource_mod.ScriptResource{
+        .source = "pub fn onUpdate() void {}",
+        .language = .zig,
+    };
+    try std.testing.expectError(types.ScriptError.CompileError, vm.load(&resource));
     try std.testing.expect(vm.getError().len != 0);
 }

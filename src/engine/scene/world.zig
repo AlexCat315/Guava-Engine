@@ -502,6 +502,7 @@ pub const World = struct {
             .material = desc.material,
             .light = desc.light,
             .vfx = desc.vfx,
+            .script = desc.script,
             .visible = desc.visible,
             .editor_only = desc.editor_only,
             .is_folder = desc.is_folder,
