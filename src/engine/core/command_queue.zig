@@ -1,6 +1,7 @@
 const std = @import("std");
 const command_mod = @import("command.zig");
 const scene_mod = @import("../scene/scene.zig");
+const components_mod = @import("../scene/components.zig");
 
 pub const CommandQueue = struct {
     allocator: std.mem.Allocator,
@@ -66,7 +67,7 @@ pub const CommandQueue = struct {
         });
     }
 
-    pub fn enqueueSetLocalTransform(self: *CommandQueue, entity_id: scene_mod.EntityId, transform: scene_mod.Transform) !void {
+    pub fn enqueueSetLocalTransform(self: *CommandQueue, entity_id: scene_mod.EntityId, transform: components_mod.Transform) !void {
         if (self.tryCoalesceTransform(.set_local_transform, entity_id, transform)) {
             return;
         }
@@ -78,7 +79,7 @@ pub const CommandQueue = struct {
         });
     }
 
-    pub fn enqueueSetWorldTransform(self: *CommandQueue, entity_id: scene_mod.EntityId, transform: scene_mod.Transform) !void {
+    pub fn enqueueSetWorldTransform(self: *CommandQueue, entity_id: scene_mod.EntityId, transform: components_mod.Transform) !void {
         if (self.tryCoalesceTransform(.set_world_transform, entity_id, transform)) {
             return;
         }
@@ -121,7 +122,7 @@ pub const CommandQueue = struct {
         self: *CommandQueue,
         comptime tag: std.meta.Tag(command_mod.Command),
         entity_id: scene_mod.EntityId,
-        transform: scene_mod.Transform,
+        transform: components_mod.Transform,
     ) bool {
         if (self.commands.items.len == 0) {
             return false;

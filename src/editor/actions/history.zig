@@ -11,6 +11,11 @@ const content_browser = @import("../assets/browser.zig");
 const vfx_runtime = @import("../runtime/vfx.zig");
 const autosave_path = state_mod.autosave_path;
 
+pub fn executeQueuedCommands(layer_context: *engine.core.LayerContext) ![]engine.core.CommandExecutionResult {
+    const queue = layer_context.command_queue orelse return error.CommandQueueUnavailable;
+    return queue.executeAll(layer_context.world);
+}
+
 pub fn captureSnapshot(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const allocator = state.allocator orelse return;
     const before = state.history_world_snapshot orelse {
@@ -125,8 +130,19 @@ pub fn deleteEntities(
 
     manipulation.endManipulation(state);
     var changed = false;
-    for (roots.items) |entity_id| {
-        changed = layer_context.world.destroyEntity(entity_id) or changed;
+    if (layer_context.command_queue) |queue| {
+        for (roots.items) |entity_id| {
+            try queue.enqueueDeleteEntity(entity_id);
+        }
+        const results = try executeQueuedCommands(layer_context);
+        defer allocator.free(results);
+        for (results) |result| {
+            changed = changed or result.changed;
+        }
+    } else {
+        for (roots.items) |entity_id| {
+            changed = layer_context.world.destroyEntity(entity_id) or changed;
+        }
     }
     if (changed) {
         try layer_context.renderer.replaceSelection(null);

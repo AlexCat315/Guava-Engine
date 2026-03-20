@@ -267,8 +267,7 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
         if (entity.visible) .{ 41, 150, 112, 255 } else .{ 148, 158, 173, 255 },
         if (entity.visible) ui_icons.palettes.status_on else ui_icons.palettes.status_off,
     )) {
-        entity.visible = !entity.visible;
-        try history.captureSnapshot(state, layer_context);
+        _ = try setEntityVisibleViaCommandQueue(state, layer_context, entity_id, !entity.visible);
     }
     if (engine.ui.ImGui.isItemHovered()) {
         engine.ui.ImGui.setTooltip(if (entity.visible) "Visible - Click to hide" else "Hidden - Click to show");
@@ -350,7 +349,7 @@ pub fn parentSelection(state: *EditorState, layer_context: *engine.core.LayerCon
         if (state.editor_camera != null and entity_id == state.editor_camera.?) {
             continue;
         }
-        changed = (try layer_context.world.setParent(entity_id, parent_id)) or changed;
+        changed = (try reparentEntityViaCommandQueue(layer_context, entity_id, parent_id)) or changed;
     }
 
     if (changed) {
@@ -434,10 +433,7 @@ fn reparentEntities(
             continue;
         }
 
-        const changed = layer_context.world.setParent(entity_id, parent_id) catch |err| {
-            std.log.warn("failed to reparent entity {d}: {}", .{ entity_id, err });
-            continue;
-        };
+        const changed = try reparentEntityViaCommandQueue(layer_context, entity_id, parent_id);
         if (!changed) {
             continue;
         }
@@ -586,16 +582,98 @@ fn commitHierarchyRename(
     if (next_name.len == 0) {
         return;
     }
-    var before = try history.captureEntitySnapshot(state, layer_context.world, entity_id) orelse return;
-    const allocator = state.allocator orelse layer_context.world.allocator;
-    var before_owned = true;
-    defer if (before_owned) before.deinit(allocator);
-    if (try layer_context.world.renameEntity(entity_id, next_name)) {
+    if (try renameHierarchyEntityViaCommandQueue(state, layer_context, entity_id, next_name)) {
         utils.syncInspectorNameBuffer(state, layer_context);
+    }
+}
+
+fn renameHierarchyEntityViaCommandQueue(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity_id: engine.scene.EntityId,
+    next_name: []const u8,
+) !bool {
+    const allocator = state.allocator orelse layer_context.world.allocator;
+    if (layer_context.command_queue) |queue| {
+        var before = try history.captureEntitySnapshot(state, layer_context.world, entity_id) orelse return false;
+        var before_owned = true;
+        defer if (before_owned) before.deinit(allocator);
+
+        try queue.enqueueRenameEntity(entity_id, next_name);
+        const results = try history.executeQueuedCommands(layer_context);
+        defer allocator.free(results);
+        if (results.len == 0 or !results[0].changed) {
+            return false;
+        }
+
         try history.recordEntityMutation(state, layer_context, before, &.{entity_id});
         before_owned = false;
         try history.refreshWindowTitle(state, layer_context);
+        return true;
     }
+
+    if (try layer_context.world.renameEntity(entity_id, next_name)) {
+        try history.captureSnapshot(state, layer_context);
+        try history.refreshWindowTitle(state, layer_context);
+        return true;
+    }
+    return false;
+}
+
+fn setEntityVisibleViaCommandQueue(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity_id: engine.scene.EntityId,
+    visible: bool,
+) !bool {
+    const allocator = state.allocator orelse layer_context.world.allocator;
+    if (layer_context.command_queue) |queue| {
+        try queue.enqueueSetVisible(entity_id, visible);
+        const results = try history.executeQueuedCommands(layer_context);
+        defer allocator.free(results);
+        if (results.len == 0) {
+            return false;
+        }
+        if (results[0].changed) {
+            try history.captureSnapshot(state, layer_context);
+        }
+        return results[0].changed;
+    }
+
+    const entity = layer_context.world.getEntity(entity_id) orelse return false;
+    if (entity.visible == visible) {
+        return false;
+    }
+    entity.visible = visible;
+    try history.captureSnapshot(state, layer_context);
+    return true;
+}
+
+fn reparentEntityViaCommandQueue(
+    layer_context: *engine.core.LayerContext,
+    entity_id: engine.scene.EntityId,
+    parent_id: ?engine.scene.EntityId,
+) !bool {
+    if (layer_context.command_queue) |queue| {
+        const allocator = layer_context.world.allocator;
+        try queue.enqueueSetParent(entity_id, parent_id);
+        const results = try history.executeQueuedCommands(layer_context);
+        defer allocator.free(results);
+        if (results.len == 0) {
+            return false;
+        }
+        if (results[0].err) |err| {
+            std.log.warn("failed to reparent entity {d}: {s}", .{ entity_id, @tagName(err) });
+            return false;
+        }
+        return results[0].changed;
+    }
+
+    const changed = layer_context.world.setParent(entity_id, parent_id) catch |err| {
+        std.log.warn("failed to reparent entity {d}: {}", .{ entity_id, err });
+        return false;
+    };
+    return changed;
 }
 
 fn drawSceneWindowContextMenu(state: *EditorState, layer_context: *engine.core.LayerContext) !bool {
@@ -866,7 +944,7 @@ fn unparentEntities(
         if (state.editor_camera != null and entity_id == state.editor_camera.?) {
             continue;
         }
-        changed = (try layer_context.world.setParent(entity_id, null)) or changed;
+        changed = (try reparentEntityViaCommandQueue(layer_context, entity_id, null)) or changed;
     }
 
     if (changed) {

@@ -158,9 +158,8 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
         if (engine.ui.ImGui.isItemDeactivatedAfterEdit()) {
             const next_name = utils.zeroTerminatedSlice(state.inspector_name_buffer[0..]);
             if (next_name.len > 0) {
-                if (try layer_context.world.renameEntity(selected, next_name)) {
+                if (try renameEntityViaCommandQueue(state, layer_context, selected, next_name)) {
                     utils.syncInspectorNameBuffer(state, layer_context);
-                    try history.captureSnapshot(state, layer_context);
                     try history.refreshWindowTitle(state, layer_context);
                 }
             }
@@ -325,9 +324,11 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                     if (state.transform_space == .world) {
                         var updated = world_transform;
                         updated.translation = editable_translation;
-                        _ = layer_context.world.setEntityWorldTransform(selected, updated);
+                        try applyWorldTransformUpdate(state, layer_context, selected, updated);
                     } else {
-                        entity.local_transform.translation = editable_translation;
+                        var updated = entity.local_transform;
+                        updated.translation = editable_translation;
+                        try applyLocalTransformUpdate(state, layer_context, selected, updated);
                     }
                     if (translation_result.committed) {
                         try history.captureSnapshot(state, layer_context);
@@ -340,9 +341,11 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                     if (state.transform_space == .world) {
                         var updated = world_transform;
                         updated.rotation = engine.math.quat.fromEuler(editable_rotation);
-                        _ = layer_context.world.setEntityWorldTransform(selected, updated);
+                        try applyWorldTransformUpdate(state, layer_context, selected, updated);
                     } else {
-                        entity.local_transform.rotation = engine.math.quat.fromEuler(editable_rotation);
+                        var updated = entity.local_transform;
+                        updated.rotation = engine.math.quat.fromEuler(editable_rotation);
+                        try applyLocalTransformUpdate(state, layer_context, selected, updated);
                     }
                     if (rotation_result.committed) {
                         try history.captureSnapshot(state, layer_context);
@@ -360,9 +363,11 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                     if (state.transform_space == .world) {
                         var updated = world_transform;
                         updated.scale = editable_scale;
-                        _ = layer_context.world.setEntityWorldTransform(selected, updated);
+                        try applyWorldTransformUpdate(state, layer_context, selected, updated);
                     } else {
-                        entity.local_transform.scale = editable_scale;
+                        var updated = entity.local_transform;
+                        updated.scale = editable_scale;
+                        try applyLocalTransformUpdate(state, layer_context, selected, updated);
                     }
                     if (scale_result.committed) {
                         try history.captureSnapshot(state, layer_context);
@@ -1207,17 +1212,83 @@ fn resetTransformTarget(
         var updated = world_transform;
         applyResetToTransform(&updated, target);
         if (!transformsEqual(updated, world_transform)) {
-            _ = layer_context.world.setEntityWorldTransform(selected, updated);
+            try applyWorldTransformUpdate(state, layer_context, selected, updated);
             try history.captureSnapshot(state, layer_context);
         }
         return;
     }
 
-    const before = entity.local_transform;
-    applyResetToTransform(&entity.local_transform, target);
-    if (!transformsEqual(before, entity.local_transform)) {
+    var updated = entity.local_transform;
+    applyResetToTransform(&updated, target);
+    if (!transformsEqual(entity.local_transform, updated)) {
+        try applyLocalTransformUpdate(state, layer_context, selected, updated);
         try history.captureSnapshot(state, layer_context);
     }
+}
+
+fn renameEntityViaCommandQueue(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity_id: engine.scene.EntityId,
+    next_name: []const u8,
+) !bool {
+    if (layer_context.command_queue) |queue| {
+        var before = try history.captureEntitySnapshot(state, layer_context.world, entity_id) orelse return false;
+        const allocator = state.allocator orelse layer_context.world.allocator;
+        var before_owned = true;
+        defer if (before_owned) before.deinit(allocator);
+
+        try queue.enqueueRenameEntity(entity_id, next_name);
+        const results = try history.executeQueuedCommands(layer_context);
+        defer allocator.free(results);
+        if (results.len == 0 or !results[0].changed) {
+            return false;
+        }
+
+        try history.recordEntityMutation(state, layer_context, before, &.{entity_id});
+        before_owned = false;
+        return true;
+    }
+
+    if (try layer_context.world.renameEntity(entity_id, next_name)) {
+        try history.captureSnapshot(state, layer_context);
+        return true;
+    }
+    return false;
+}
+
+fn applyWorldTransformUpdate(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity_id: engine.scene.EntityId,
+    transform: engine.scene.Transform,
+) !void {
+    _ = state;
+    if (layer_context.command_queue) |queue| {
+        const allocator = layer_context.world.allocator;
+        try queue.enqueueSetWorldTransform(entity_id, transform);
+        const results = try history.executeQueuedCommands(layer_context);
+        defer allocator.free(results);
+        return;
+    }
+    _ = layer_context.world.setEntityWorldTransform(entity_id, transform);
+}
+
+fn applyLocalTransformUpdate(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity_id: engine.scene.EntityId,
+    transform: engine.scene.Transform,
+) !void {
+    _ = state;
+    if (layer_context.command_queue) |queue| {
+        const allocator = layer_context.world.allocator;
+        try queue.enqueueSetLocalTransform(entity_id, transform);
+        const results = try history.executeQueuedCommands(layer_context);
+        defer allocator.free(results);
+        return;
+    }
+    _ = layer_context.world.setEntityLocalTransform(entity_id, transform);
 }
 
 fn applyResetToTransform(transform: *engine.scene.Transform, target: TransformResetTarget) void {
