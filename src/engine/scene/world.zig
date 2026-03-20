@@ -30,6 +30,7 @@
 //! ```
 
 const std = @import("std");
+const animation_graph_mod = @import("../animation/animation_graph.zig");
 const assets_lib = @import("../assets/library.zig");
 const gltf_import = @import("../assets/gltf_import.zig");
 const raycast_mod = @import("raycast.zig");
@@ -66,6 +67,19 @@ const AnimatorBinding = struct {
     target_entities: []EntityId,
     /// 基础局部变换列表
     base_local_transforms: []components.Transform,
+};
+
+const AnimatorGraphBinding = struct {
+    animator_entity_id: EntityId,
+    graph: *animation_graph_mod.AnimationGraph,
+    instance: animation_graph_mod.AnimationGraphInstance,
+
+    fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        self.instance.deinit();
+        self.graph.deinit();
+        allocator.destroy(self.graph);
+        self.* = undefined;
+    }
 };
 
 /// 蒙皮网格绑定
@@ -359,6 +373,8 @@ pub const World = struct {
     renderable_sync_candidates: std.AutoHashMap(EntityId, void),
     /// 动画器绑定列表
     animator_bindings: std.ArrayList(AnimatorBinding) = .empty,
+    /// 动画图运行时绑定列表
+    animator_graph_bindings: std.ArrayList(AnimatorGraphBinding) = .empty,
     /// 蒙皮网格绑定列表
     skinned_mesh_bindings: std.ArrayList(SkinnedMeshBinding) = .empty,
     /// 是否需要完全同步可渲染物
@@ -420,6 +436,10 @@ pub const World = struct {
             self.allocator.free(binding.base_local_transforms);
         }
         self.animator_bindings.deinit(self.allocator);
+        for (self.animator_graph_bindings.items) |*binding| {
+            binding.deinit(self.allocator);
+        }
+        self.animator_graph_bindings.deinit(self.allocator);
         for (self.skinned_mesh_bindings.items) |binding| {
             self.allocator.free(binding.target_entities);
         }
@@ -442,6 +462,7 @@ pub const World = struct {
             self.dynamic_dirty_renderables = std.AutoHashMap(EntityId, void).init(self.allocator);
             self.renderable_sync_candidates = std.AutoHashMap(EntityId, void).init(self.allocator);
             self.animator_bindings = .empty;
+            self.animator_graph_bindings = .empty;
             self.skinned_mesh_bindings = .empty;
             self.renderable_full_sync_required = false;
         }
@@ -1378,6 +1399,92 @@ pub const World = struct {
         return null;
     }
 
+    pub const AnimatorGraphParameterError = error{
+        EntityNotFound,
+        GraphNotBound,
+        ParameterNotFound,
+    };
+
+    pub fn bindAnimatorGraph(
+        self: *World,
+        animator_entity_id: EntityId,
+        graph: *const animation_graph_mod.AnimationGraph,
+    ) !void {
+        const entity = self.getEntity(animator_entity_id) orelse return error.EntityNotFound;
+        if (entity.animator == null) {
+            return error.MissingAnimator;
+        }
+
+        const owned_graph = try self.allocator.create(animation_graph_mod.AnimationGraph);
+        errdefer self.allocator.destroy(owned_graph);
+        owned_graph.* = try graph.clone(self.allocator);
+        errdefer owned_graph.deinit();
+
+        var instance = try animation_graph_mod.AnimationGraphInstance.init(self.allocator, owned_graph);
+        errdefer instance.deinit();
+
+        if (self.findAnimatorGraphBinding(animator_entity_id)) |binding| {
+            binding.deinit(self.allocator);
+            binding.* = .{
+                .animator_entity_id = animator_entity_id,
+                .graph = owned_graph,
+                .instance = instance,
+            };
+        } else {
+            try self.animator_graph_bindings.append(self.allocator, .{
+                .animator_entity_id = animator_entity_id,
+                .graph = owned_graph,
+                .instance = instance,
+            });
+        }
+        entity.animator.?.playing = true;
+    }
+
+    pub fn clearAnimatorGraph(self: *World, animator_entity_id: EntityId) bool {
+        return self.removeAnimatorGraphBinding(animator_entity_id);
+    }
+
+    pub fn animatorGraph(self: *const World, animator_entity_id: EntityId) ?*const animation_graph_mod.AnimationGraph {
+        const binding = self.findAnimatorGraphBindingConst(animator_entity_id) orelse return null;
+        return binding.graph;
+    }
+
+    pub fn animatorGraphInstance(self: *World, animator_entity_id: EntityId) ?*animation_graph_mod.AnimationGraphInstance {
+        const binding = self.findAnimatorGraphBinding(animator_entity_id) orelse return null;
+        return &binding.instance;
+    }
+
+    pub fn animatorGraphInstanceConst(self: *const World, animator_entity_id: EntityId) ?*const animation_graph_mod.AnimationGraphInstance {
+        const binding = self.findAnimatorGraphBindingConst(animator_entity_id) orelse return null;
+        return &binding.instance;
+    }
+
+    pub fn setAnimatorGraphParameter(
+        self: *World,
+        animator_entity_id: EntityId,
+        parameter_index: u32,
+        value: animation_graph_mod.AnimationGraphInstance.ParameterValue,
+    ) AnimatorGraphParameterError!void {
+        _ = self.getEntityConst(animator_entity_id) orelse return error.EntityNotFound;
+        const instance = self.animatorGraphInstance(animator_entity_id) orelse return error.GraphNotBound;
+        if (parameter_index >= instance.parameters.items.len) {
+            return error.ParameterNotFound;
+        }
+        instance.setParameter(parameter_index, value);
+    }
+
+    pub fn setAnimatorGraphParameterByName(
+        self: *World,
+        animator_entity_id: EntityId,
+        name: []const u8,
+        value: animation_graph_mod.AnimationGraphInstance.ParameterValue,
+    ) AnimatorGraphParameterError!void {
+        _ = self.getEntityConst(animator_entity_id) orelse return error.EntityNotFound;
+        const graph = self.animatorGraph(animator_entity_id) orelse return error.GraphNotBound;
+        const parameter_index = graph.findParameter(name) orelse return error.ParameterNotFound;
+        try self.setAnimatorGraphParameter(animator_entity_id, parameter_index, value);
+    }
+
     pub fn bindSkinnedMeshTargets(self: *World, entity_id: EntityId, target_entities: []const EntityId) !void {
         if (!self.hasEntity(entity_id)) {
             return error.EntityNotFound;
@@ -1470,6 +1577,7 @@ pub const World = struct {
         _ = self.dynamic_dirty_renderables.remove(id);
         _ = self.renderable_sync_candidates.remove(id);
         self.removeAnimatorBinding(id);
+        _ = self.removeAnimatorGraphBinding(id);
         self.removeSkinnedMeshBinding(id);
 
         // Remove from parent's children list
@@ -1534,6 +1642,15 @@ pub const World = struct {
             .editor_only = source.editor_only,
             .is_folder = source.is_folder,
         });
+
+        if (self.findAnimatorGraphBindingConst(source_id)) |source_graph_binding| {
+            const source_graph = source_graph_binding.graph;
+            const source_instance = source_graph_binding.instance;
+            try self.bindAnimatorGraph(duplicate_id, source_graph);
+            if (self.findAnimatorGraphBinding(duplicate_id)) |duplicate_graph_binding| {
+                copyAnimatorGraphInstanceState(&duplicate_graph_binding.instance, &source_instance);
+            }
+        }
 
         for (child_ids.items) |child_id| {
             const child = self.getEntityConst(child_id) orelse continue;
@@ -2017,6 +2134,52 @@ pub const World = struct {
         }
     }
 
+    fn findAnimatorGraphBinding(self: *World, animator_entity_id: EntityId) ?*AnimatorGraphBinding {
+        for (self.animator_graph_bindings.items) |*binding| {
+            if (binding.animator_entity_id == animator_entity_id) {
+                return binding;
+            }
+        }
+        return null;
+    }
+
+    fn findAnimatorGraphBindingConst(self: *const World, animator_entity_id: EntityId) ?*const AnimatorGraphBinding {
+        for (self.animator_graph_bindings.items) |*binding| {
+            if (binding.animator_entity_id == animator_entity_id) {
+                return binding;
+            }
+        }
+        return null;
+    }
+
+    fn removeAnimatorGraphBinding(self: *World, animator_entity_id: EntityId) bool {
+        for (self.animator_graph_bindings.items, 0..) |*binding, index| {
+            if (binding.animator_entity_id != animator_entity_id) {
+                continue;
+            }
+            binding.deinit(self.allocator);
+            _ = self.animator_graph_bindings.swapRemove(index);
+            return true;
+        }
+        return false;
+    }
+
+    fn copyAnimatorGraphInstanceState(
+        target: *animation_graph_mod.AnimationGraphInstance,
+        source: *const animation_graph_mod.AnimationGraphInstance,
+    ) void {
+        target.current_state = source.current_state;
+        target.next_state = source.next_state;
+        target.transition_time = source.transition_time;
+        target.transition_duration = source.transition_duration;
+        target.state_time = source.state_time;
+
+        const parameter_count = @min(target.parameters.items.len, source.parameters.items.len);
+        for (0..parameter_count) |index| {
+            target.parameters.items[index] = source.parameters.items[index];
+        }
+    }
+
     fn removeSkinnedMeshBinding(self: *World, entity_id: EntityId) void {
         for (self.skinned_mesh_bindings.items, 0..) |binding, index| {
             if (binding.entity_id != entity_id) {
@@ -2458,6 +2621,43 @@ test "duplicateEntity copies subtrees and destroyEntity removes descendants" {
     try std.testing.expect(world.findEntityByName("RigRoot Copy") != null);
     try std.testing.expect(world.findEntityByName("RigChild Copy") != null);
     _ = child;
+}
+
+test "animator graph bindings duplicate with animator entities and are removed on destroy" {
+    var world = World.init(std.testing.allocator, null);
+    defer world.deinit();
+
+    const animator_id = try world.createEntity(.{
+        .name = "Rig",
+        .animator = .{},
+    });
+    const target_id = try world.createEntity(.{
+        .name = "RigBone",
+        .parent = animator_id,
+    });
+    try world.bindAnimatorTargets(animator_id, &.{target_id});
+
+    var graph = try animation_graph_mod.AnimationGraph.init(std.testing.allocator, "RigGraph");
+    defer graph.deinit();
+
+    _ = try graph.addState("Idle", null);
+    graph.default_state = 0;
+    try graph.addParameter("Speed", .float, .{ .float = 0.0 });
+
+    try world.bindAnimatorGraph(animator_id, &graph);
+    try world.setAnimatorGraphParameterByName(animator_id, "Speed", .{ .float = 1.0 });
+
+    const duplicate_id = try world.duplicateEntity(animator_id);
+    try std.testing.expect(world.animatorGraph(duplicate_id) != null);
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 1.0),
+        world.animatorGraphInstanceConst(duplicate_id).?.parameters.items[0].float,
+        0.0001,
+    );
+
+    try std.testing.expect(world.destroyEntity(animator_id));
+    try std.testing.expect(world.animatorGraph(animator_id) == null);
+    try std.testing.expect(world.animatorGraph(duplicate_id) != null);
 }
 
 test "folder entities preserve folder state through duplication" {

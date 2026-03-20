@@ -1,4 +1,5 @@
 const std = @import("std");
+const animation_graph_mod = @import("animation_graph.zig");
 const animation_clip_mod = @import("../assets/animation_clip_resource.zig");
 const handles = @import("../assets/handles.zig");
 const components = @import("../scene/components.zig");
@@ -48,8 +49,9 @@ pub fn update(world: *world_mod.World, delta_seconds: f32) void {
         const base_transforms = world.animatorBaseTransforms(entity_id) orelse continue;
 
         var next_animator = animator_value;
-        const pose_state = resolvePoseState(world, &next_animator, delta_seconds) orelse continue;
-        applyPose(world, targets, base_transforms, pose_state);
+        if (resolvePoseState(world, entity_id, &next_animator, delta_seconds)) |pose_state| {
+            applyPose(world, targets, base_transforms, pose_state);
+        }
         world.entities.items[entity_index].animator = next_animator;
     }
 }
@@ -60,6 +62,7 @@ pub fn playClip(
     clip_handle: handles.AnimationClipHandle,
     options: PlayClipOptions,
 ) PlayClipError!void {
+    _ = world.clearAnimatorGraph(animator_entity_id);
     const entity = world.getEntity(animator_entity_id) orelse return error.EntityNotFound;
     const animator = entity.animator orelse return error.MissingAnimator;
 
@@ -93,6 +96,18 @@ pub fn playClip(
 }
 
 fn resolvePoseState(
+    world: *world_mod.World,
+    animator_entity_id: world_mod.EntityId,
+    animator: *components.Animator,
+    delta_seconds: f32,
+) ?AnimatorPoseState {
+    if (world.animatorGraphInstance(animator_entity_id) != null) {
+        return resolveGraphPoseState(world, animator_entity_id, animator, delta_seconds);
+    }
+    return resolveClipPoseState(world, animator, delta_seconds);
+}
+
+fn resolveClipPoseState(
     world: *world_mod.World,
     animator: *components.Animator,
     delta_seconds: f32,
@@ -160,6 +175,34 @@ fn resolvePoseState(
     };
 }
 
+fn resolveGraphPoseState(
+    world: *world_mod.World,
+    animator_entity_id: world_mod.EntityId,
+    animator: *components.Animator,
+    delta_seconds: f32,
+) ?AnimatorPoseState {
+    const instance = world.animatorGraphInstance(animator_entity_id) orelse return null;
+    instance.update(delta_seconds * @max(animator.speed, 0.0));
+
+    const runtime = instance.runtimeClipBlend();
+    syncGraphAnimatorSnapshot(animator, runtime);
+    const runtime_blend = runtime orelse return null;
+
+    const primary = resolveGraphClipSample(world, runtime_blend.primary) orelse return null;
+    var pose_state = AnimatorPoseState{
+        .primary = primary,
+    };
+
+    if (runtime_blend.secondary) |secondary_state| {
+        if (resolveGraphClipSample(world, secondary_state)) |secondary| {
+            pose_state.secondary = secondary;
+            pose_state.blend_factor = runtime_blend.blend_factor;
+        }
+    }
+
+    return pose_state;
+}
+
 fn resolvePlaybackTime(animator: *components.Animator, duration: f32) f32 {
     const state = resolvePlaybackTimeState(animator.looping, animator.speed, &animator.time_seconds, duration);
     if (state.finished) {
@@ -197,6 +240,49 @@ fn wrapTime(time_seconds: f32, duration: f32) f32 {
         wrapped += duration;
     }
     return wrapped;
+}
+
+fn resolveGraphClipSample(
+    world: *world_mod.World,
+    runtime_state: animation_graph_mod.RuntimeClipState,
+) ?ClipSample {
+    const clip_handle = runtime_state.clip_handle orelse return null;
+    const clip = world.resources.animationClip(clip_handle) orelse return null;
+    return .{
+        .clip = clip,
+        .time = runtime_state.sample_time,
+    };
+}
+
+fn syncGraphAnimatorSnapshot(
+    animator: *components.Animator,
+    runtime: ?animation_graph_mod.RuntimeClipBlend,
+) void {
+    const runtime_blend = runtime orelse {
+        animator.default_clip_handle = null;
+        animator.time_seconds = 0.0;
+        animator.next_clip_handle = null;
+        animator.next_time_seconds = 0.0;
+        animator.blend_duration_seconds = 0.0;
+        animator.blend_time_seconds = 0.0;
+        animator.playing = false;
+        return;
+    };
+
+    animator.default_clip_handle = runtime_blend.primary.clip_handle;
+    animator.time_seconds = runtime_blend.primary.sample_time;
+    if (runtime_blend.secondary) |secondary| {
+        animator.next_clip_handle = secondary.clip_handle;
+        animator.next_time_seconds = secondary.sample_time;
+        animator.blend_duration_seconds = runtime_blend.transition_duration;
+        animator.blend_time_seconds = runtime_blend.transition_time;
+    } else {
+        animator.next_clip_handle = null;
+        animator.next_time_seconds = 0.0;
+        animator.blend_duration_seconds = 0.0;
+        animator.blend_time_seconds = 0.0;
+    }
+    animator.playing = true;
 }
 
 fn applyPose(
@@ -512,4 +598,123 @@ test "animator system cross-fades between clips" {
     try std.testing.expectEqual(@as(?handles.AnimationClipHandle, clip_b), animator.default_clip_handle);
     try std.testing.expectEqual(@as(?handles.AnimationClipHandle, null), animator.next_clip_handle);
     try std.testing.expectApproxEqAbs(@as(f32, 10.0), world.getEntityConst(target_id).?.local_transform.translation[0], 0.0001);
+}
+
+test "animator system evaluates bound animation graph transitions" {
+    var world = world_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+
+    const target_id = try world.createEntity(.{ .name = "GraphTarget" });
+    const clip_a = try world.resources.createAnimationClip(.{
+        .name = "Idle",
+        .duration = 1.0,
+        .translation_tracks = &.{
+            .{
+                .target_entity_index = 0,
+                .times = &.{ 0.0, 1.0 },
+                .values = &.{ .{ 0.0, 0.0, 0.0 }, .{ 0.0, 0.0, 0.0 } },
+            },
+        },
+    });
+    const clip_b = try world.resources.createAnimationClip(.{
+        .name = "Run",
+        .duration = 1.0,
+        .translation_tracks = &.{
+            .{
+                .target_entity_index = 0,
+                .times = &.{ 0.0, 1.0 },
+                .values = &.{ .{ 10.0, 0.0, 0.0 }, .{ 10.0, 0.0, 0.0 } },
+            },
+        },
+    });
+    const animator_id = try world.createEntity(.{
+        .name = "GraphAnimator",
+        .animator = .{},
+    });
+    try world.bindAnimatorTargets(animator_id, &.{target_id});
+
+    var graph = try animation_graph_mod.AnimationGraph.init(std.testing.allocator, "GraphAnimator");
+    defer graph.deinit();
+    const idle = try graph.addState("Idle", clip_a);
+    const run = try graph.addState("Run", clip_b);
+    graph.default_state = idle;
+    const conditions = [_]animation_graph_mod.TransitionCondition{
+        .{ .time_elapsed = 0.0 },
+    };
+    try graph.addTransition(idle, run, 0.2, &conditions);
+    try world.bindAnimatorGraph(animator_id, &graph);
+
+    update(&world, 0.1);
+    try std.testing.expectEqual(@as(?handles.AnimationClipHandle, clip_a), world.getEntityConst(animator_id).?.animator.?.default_clip_handle);
+    try std.testing.expectEqual(@as(?handles.AnimationClipHandle, clip_b), world.getEntityConst(animator_id).?.animator.?.next_clip_handle);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), world.getEntityConst(target_id).?.local_transform.translation[0], 0.0001);
+
+    update(&world, 0.1);
+    try std.testing.expectApproxEqAbs(@as(f32, 5.0), world.getEntityConst(target_id).?.local_transform.translation[0], 0.0001);
+
+    update(&world, 0.11);
+    const animator = world.getEntityConst(animator_id).?.animator.?;
+    try std.testing.expectEqual(@as(?handles.AnimationClipHandle, clip_b), animator.default_clip_handle);
+    try std.testing.expectEqual(@as(?handles.AnimationClipHandle, null), animator.next_clip_handle);
+    try std.testing.expectApproxEqAbs(@as(f32, 10.0), world.getEntityConst(target_id).?.local_transform.translation[0], 0.0001);
+}
+
+test "animator graph parameters drive transitions through animator update" {
+    var world = world_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+
+    const target_id = try world.createEntity(.{ .name = "GraphParamTarget" });
+    const clip_a = try world.resources.createAnimationClip(.{
+        .name = "Idle",
+        .duration = 1.0,
+        .translation_tracks = &.{
+            .{
+                .target_entity_index = 0,
+                .times = &.{ 0.0, 1.0 },
+                .values = &.{ .{ 0.0, 0.0, 0.0 }, .{ 0.0, 0.0, 0.0 } },
+            },
+        },
+    });
+    const clip_b = try world.resources.createAnimationClip(.{
+        .name = "Move",
+        .duration = 1.0,
+        .translation_tracks = &.{
+            .{
+                .target_entity_index = 0,
+                .times = &.{ 0.0, 1.0 },
+                .values = &.{ .{ 8.0, 0.0, 0.0 }, .{ 8.0, 0.0, 0.0 } },
+            },
+        },
+    });
+    const animator_id = try world.createEntity(.{
+        .name = "GraphParamAnimator",
+        .animator = .{},
+    });
+    try world.bindAnimatorTargets(animator_id, &.{target_id});
+
+    var graph = try animation_graph_mod.AnimationGraph.init(std.testing.allocator, "GraphParamAnimator");
+    defer graph.deinit();
+    const idle = try graph.addState("Idle", clip_a);
+    const run = try graph.addState("Run", clip_b);
+    graph.default_state = idle;
+    try graph.addParameter("Speed", .float, .{ .float = 0.0 });
+    const conditions = [_]animation_graph_mod.TransitionCondition{
+        .{
+            .parameter = .{
+                .name = try std.testing.allocator.dupe(u8, "Speed"),
+                .value = 0.5,
+                .comparison = .greater,
+            },
+        },
+    };
+    defer std.testing.allocator.free(conditions[0].parameter.name);
+    try graph.addTransition(idle, run, 0.2, &conditions);
+    try world.bindAnimatorGraph(animator_id, &graph);
+    try world.setAnimatorGraphParameterByName(animator_id, "Speed", .{ .float = 1.0 });
+
+    update(&world, 0.01);
+    try std.testing.expectEqual(@as(?handles.AnimationClipHandle, clip_b), world.getEntityConst(animator_id).?.animator.?.next_clip_handle);
+
+    update(&world, 0.1);
+    try std.testing.expectApproxEqAbs(@as(f32, 4.0), world.getEntityConst(target_id).?.local_transform.translation[0], 0.0001);
 }
