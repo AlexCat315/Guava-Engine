@@ -1793,7 +1793,7 @@ fn drawGraphTransitionsList(
             const previous_value = @max(transitionConditionNumericValue(previous_condition), 0.0);
             const previous_comparison = switch (previous_condition) {
                 .parameter => |parameter| parameter.comparison,
-                else => animation_graph_mod.TransitionCondition.parameter.comparison.greater,
+                else => .greater,
             };
             const parameter_name = switch (previous_condition) {
                 .parameter => |parameter| parameter.name,

@@ -513,7 +513,6 @@ pub fn recordCreatedEntities(
     selection_before: []const engine.scene.EntityId,
 ) !void {
     const allocator = state.allocator orelse layer_context.world.allocator;
-    _ = selection_before;
     if (entityListRequiresSceneSnapshot(layer_context.world, entity_ids)) {
         try captureSnapshot(state, layer_context);
         return;
