@@ -40,6 +40,7 @@ pub const BasePass = struct {
     wireframe_pipeline_hdr: ?rhi_mod.GraphicsPipeline = null,
     wireframe_pipeline_ldr: ?rhi_mod.GraphicsPipeline = null,
     stages: ?shader_support.ProgramStages = null,
+    wireframe_stages: ?shader_support.ProgramStages = null,
 
     pub fn init(device: *rhi_mod.RhiDevice) !BasePass {
         var pass = BasePass{};
@@ -73,6 +74,9 @@ pub const BasePass = struct {
             device.releaseGraphicsPipeline(pipeline);
         }
         if (self.stages) |*stages| {
+            stages.deinit(device);
+        }
+        if (self.wireframe_stages) |*stages| {
             stages.deinit(device);
         }
         self.* = undefined;
@@ -385,6 +389,11 @@ pub const BasePass = struct {
             stages.deinit(device);
         };
 
+        self.wireframe_stages = try shader_support.loadProgramStages(device, "wireframe");
+        errdefer if (self.wireframe_stages) |*stages| {
+            stages.deinit(device);
+        };
+
         const vertex_layouts = [_]rhi_mod.VertexBufferLayoutDesc{
             .{
                 .slot = 0,
@@ -495,9 +504,10 @@ pub const BasePass = struct {
         enable_blend: bool,
         depth_write: bool,
     ) !rhi_mod.GraphicsPipeline {
+        const shader_stages = if (mode == .wireframe) self.wireframe_stages.? else self.stages.?;
         return device.createGraphicsPipeline(.{
-            .vertex_shader = &self.stages.?.vertex,
-            .fragment_shader = &self.stages.?.fragment,
+            .vertex_shader = &shader_stages.vertex,
+            .fragment_shader = &shader_stages.fragment,
             .vertex_buffer_layouts = vertex_layouts,
             .vertex_attributes = vertex_attributes,
             .color_format = color_format,
