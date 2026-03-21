@@ -1,6 +1,7 @@
 const std = @import("std");
 const collaboration_mod = @import("../collaboration.zig");
 const protocol = @import("../protocol.zig");
+const editor_utility_runtime_mod = @import("../../script/editor_utility_runtime.zig");
 const script_runtime_mod = @import("../../script/runtime.zig");
 const scene_mod = @import("../../scene/scene.zig");
 const components = @import("../../scene/components.zig");
@@ -64,6 +65,7 @@ pub const SnapshotStore = struct {
     allocator: std.mem.Allocator,
     collaboration: ?*const collaboration_mod.Store = null,
     script_runtime: ?*const script_runtime_mod.ScriptRuntime = null,
+    editor_utility_runtime: ?*const editor_utility_runtime_mod.EditorUtilityRuntime = null,
     mutex: std.Thread.Mutex = .{},
     ready: bool = false,
     entries: std.ArrayList(ResourceEntry) = .empty,
@@ -72,11 +74,13 @@ pub const SnapshotStore = struct {
         allocator: std.mem.Allocator,
         collaboration: ?*const collaboration_mod.Store,
         script_runtime: ?*const script_runtime_mod.ScriptRuntime,
+        editor_utility_runtime: ?*const editor_utility_runtime_mod.EditorUtilityRuntime,
     ) SnapshotStore {
         return .{
             .allocator = allocator,
             .collaboration = collaboration,
             .script_runtime = script_runtime,
+            .editor_utility_runtime = editor_utility_runtime,
             .entries = .empty,
         };
     }
@@ -149,7 +153,8 @@ pub const SnapshotStore = struct {
         const listed_count = countListedResources(mutable.entries.items) +
             5 +
             @as(usize, if (mutable.collaboration != null) 3 else 0) +
-            @as(usize, if (mutable.script_runtime != null) 1 else 0);
+            @as(usize, if (mutable.script_runtime != null) 1 else 0) +
+            @as(usize, if (mutable.editor_utility_runtime != null) 1 else 0);
         try resources.ensureTotalCapacity(allocator, listed_count);
         for (mutable.entries.items) |entry| {
             if (!shouldListEntry(entry.uri)) {
@@ -180,6 +185,16 @@ pub const SnapshotStore = struct {
                 .name = try allocator.dupe(u8, "Script Runtime Status"),
                 .title = try allocator.dupe(u8, "Script Runtime Status"),
                 .description = try allocator.dupe(u8, "Recent compile, load, and runtime errors reported by the script system."),
+                .mimeType = try allocator.dupe(u8, "application/json"),
+                .size = null,
+            });
+        }
+        if (mutable.editor_utility_runtime != null) {
+            try resources.append(allocator, .{
+                .uri = try allocator.dupe(u8, "editor://utilities"),
+                .name = try allocator.dupe(u8, "Editor Utilities"),
+                .title = try allocator.dupe(u8, "Editor Utilities"),
+                .description = try allocator.dupe(u8, "Loaded editor utility panels, open state, and last runtime error."),
                 .mimeType = try allocator.dupe(u8, "application/json"),
                 .size = null,
             });
@@ -250,6 +265,13 @@ pub const SnapshotStore = struct {
                 .uri = try allocator.dupe(u8, "script://runtime-status"),
                 .mimeType = try allocator.dupe(u8, "application/json"),
                 .text = try mutable.script_runtime.?.buildStatusJsonAlloc(allocator),
+            };
+        }
+        if (mutable.editor_utility_runtime != null and std.mem.eql(u8, uri, "editor://utilities")) {
+            return .{
+                .uri = try allocator.dupe(u8, "editor://utilities"),
+                .mimeType = try allocator.dupe(u8, "application/json"),
+                .text = try mutable.editor_utility_runtime.?.buildStatusJsonAlloc(allocator),
             };
         }
 
@@ -1119,6 +1141,14 @@ fn buildToolsSchemaJsonAlloc(allocator: std.mem.Allocator) ![]u8 {
         .{ .name = "description", .type = "string", .description = "Optional human label for the compile request." },
         .{ .name = "enabled", .type = "bool", .description = "Whether the resulting script starts enabled." },
     };
+    const compile_editor_utility_properties = [_]PropertySchema{
+        .{ .name = "script_handle", .type = "script_handle", .description = "Optional existing utility script handle to replace." },
+        .{ .name = "source", .type = "string", .description = "Zig source to compile into an editor utility panel.", .required = true },
+        .{ .name = "source_path", .type = "string", .description = "Optional source path label shown in diagnostics." },
+        .{ .name = "description", .type = "string", .description = "Optional human label stored on the script resource." },
+        .{ .name = "utility_name", .type = "string", .description = "Panel title shown in the editor window tab." },
+        .{ .name = "open", .type = "bool", .description = "Whether the utility window should start open." },
+    };
     const stage_transaction_properties = [_]PropertySchema{
         .{ .name = "commands", .type = "Command[]", .description = "Ordered staged commands to preview before apply.", .required = true },
         .{ .name = "label", .type = "string", .description = "Human-readable preview label." },
@@ -1143,6 +1173,7 @@ fn buildToolsSchemaJsonAlloc(allocator: std.mem.Allocator) ![]u8 {
             .{ .name = "set_visible", .description = "Update entity visibility.", .properties = &set_visible_properties },
             .{ .name = "query_entities", .description = "Run a paged entity query with optional radius filtering.", .properties = &query_entities_properties },
             .{ .name = "compile_script", .description = "Compile Zig source to WASM and attach or reload it.", .properties = &compile_script_properties },
+            .{ .name = "compile_editor_utility", .description = "Compile Zig source to a WASM-powered editor utility panel.", .properties = &compile_editor_utility_properties },
             .{ .name = "stage_transaction", .description = "Preview a staged command batch without committing it to the main world.", .properties = &stage_transaction_properties },
             .{ .name = "apply_staged_transaction", .description = "Commit the current staged transaction into the main world.", .properties = &apply_preview_properties },
             .{ .name = "discard_staged_transaction", .description = "Discard the current staged transaction preview.", .properties = &discard_preview_properties },

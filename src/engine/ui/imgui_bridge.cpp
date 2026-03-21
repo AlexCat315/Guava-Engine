@@ -308,6 +308,8 @@ void build_default_dock_layout() {
   ImGui::DockBuilderDockWindow("Details###details_panel", dock_details);
   ImGui::DockBuilderDockWindow("Content Browser###content_browser_panel",
                                dock_bottom);
+  ImGui::DockBuilderDockWindow("AI Utilities###editor_utilities_panel",
+                               dock_bottom);
   ImGui::DockBuilderFinish(g_dockspace_id);
 }
 
@@ -348,6 +350,8 @@ void build_animation_dock_layout() {
   ImGui::DockBuilderDockWindow("Scene###scene_panel", dock_scene);
   ImGui::DockBuilderDockWindow("Details###details_panel", dock_details);
   ImGui::DockBuilderDockWindow("Content Browser###content_browser_panel",
+                               dock_bottom);
+  ImGui::DockBuilderDockWindow("AI Utilities###editor_utilities_panel",
                                dock_bottom);
   ImGui::DockBuilderFinish(g_dockspace_id);
 }

@@ -183,7 +183,7 @@ const Server = struct {
                     .title = "Guava Engine MCP",
                     .version = "0.1.0",
                 },
-                .instructions = "Guava Engine MCP bridge with scene snapshots, component schema contracts, editor context injection, staged ghost-preview transactions, paged entity queries, and a writable WASM script pipeline. Resources: scene://hierarchy, selection://current, entity://{id}, schema://components, editor://context, editor://intent-log, preview://staged, script://runtime-status. Tools: create_entity, delete_entity, rename_entity, set_parent, set_local_transform, set_world_transform, set_visible, query_entities, compile_script, stage_transaction, apply_staged_transaction, discard_staged_transaction.",
+                .instructions = "Guava Engine MCP bridge with scene snapshots, component schema contracts, editor context injection, staged ghost-preview transactions, paged entity queries, and writable WASM pipelines for both scene scripts and editor utilities. Resources: scene://hierarchy, selection://current, entity://{id}, schema://components, editor://context, editor://intent-log, preview://staged, script://runtime-status, editor://utilities. Tools: create_entity, delete_entity, rename_entity, set_parent, set_local_transform, set_world_transform, set_visible, query_entities, compile_script, compile_editor_utility, stage_transaction, apply_staged_transaction, discard_staged_transaction.",
             });
             return false;
         }
@@ -598,6 +598,22 @@ fn writeToolList(stdout_file: *std.fs.File, id: std.json.Value) !void {
                         .source_path = .{ .type = "string" },
                         .description = .{ .type = "string" },
                         .enabled = .{ .type = "boolean" },
+                    },
+                    .required = &.{},
+                },
+            },
+            .{
+                .name = "compile_editor_utility",
+                .description = "Compile Zig source into a WASM-powered editor utility panel and register it with the editor UI.",
+                .inputSchema = .{
+                    .type = "object",
+                    .properties = .{
+                        .script_handle = .{ .type = "integer" },
+                        .source = .{ .type = "string" },
+                        .source_path = .{ .type = "string" },
+                        .description = .{ .type = "string" },
+                        .utility_name = .{ .type = "string" },
+                        .open = .{ .type = "boolean" },
                     },
                     .required = &.{},
                 },

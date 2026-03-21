@@ -10,6 +10,16 @@ const AABB = @import("../math/aabb.zig").AABB;
 /// 实体类型别名
 pub const EntityId = world_mod.EntityId;
 
+pub const EditorSelectionApi = struct {
+    context: *anyopaque,
+    select_entity: *const fn (context: *anyopaque, entity_id: EntityId, additive: bool) void,
+    clear_selection: *const fn (context: *anyopaque) void,
+};
+
+pub const EditorUiState = struct {
+    last_item_changed: bool = false,
+};
+
 /// 脚本执行上下文 - 脚本运行时可用的 API
 pub const ScriptContext = struct {
     /// 关联的实体 ID
@@ -30,6 +40,12 @@ pub const ScriptContext = struct {
     delta_time: f32 = 0.0,
     /// 时间缩放
     time_scale: f32 = 1.0,
+    /// 编辑器当前选择集（Editor Utility UI 使用）
+    editor_selection: []const EntityId = &.{},
+    /// 编辑器选择回调（Editor Utility UI 使用）
+    editor_selection_api: ?EditorSelectionApi = null,
+    /// 编辑器 ImGui 控件瞬时状态（Editor Utility UI 使用）
+    editor_ui_state: ?*EditorUiState = null,
 
     /// 获取实体的名称
     pub fn getName(self: *ScriptContext) []const u8 {
@@ -184,6 +200,29 @@ pub const ScriptContext = struct {
     /// 打印错误
     pub fn logError(self: *ScriptContext, message: []const u8) void {
         std.log.err("[Script:{d}] {s}", .{ self.entity, message });
+    }
+
+    pub fn selectedEntityCount(self: *const ScriptContext) usize {
+        return self.editor_selection.len;
+    }
+
+    pub fn selectedEntity(self: *const ScriptContext, index: usize) ?EntityId {
+        if (index >= self.editor_selection.len) {
+            return null;
+        }
+        return self.editor_selection[index];
+    }
+
+    pub fn selectEntity(self: *ScriptContext, entity_id: EntityId, additive: bool) void {
+        if (self.editor_selection_api) |api| {
+            api.select_entity(api.context, entity_id, additive);
+        }
+    }
+
+    pub fn clearSelection(self: *ScriptContext) void {
+        if (self.editor_selection_api) |api| {
+            api.clear_selection(api.context);
+        }
     }
 
     /// 获取用户数据指针

@@ -30,13 +30,19 @@ pub const Artifact = struct {
 pub const CompileOptions = struct {
     source: []const u8,
     script_name: []const u8 = "ai_script",
+    mode: CompileMode = .behavior_script,
+};
+
+pub const CompileMode = enum {
+    behavior_script,
+    editor_utility,
 };
 
 pub fn compileZigSourceAlloc(
     allocator: std.mem.Allocator,
     options: CompileOptions,
 ) !CompileResult {
-    const wrapper_source = try buildWrapperSourceAlloc(allocator, options.source);
+    const wrapper_source = try buildWrapperSourceAlloc(allocator, options);
     errdefer allocator.free(wrapper_source);
 
     const cache_dir_path = "zig-cache/guava/wasm_scripts";
@@ -109,7 +115,14 @@ pub fn compileZigSourceAlloc(
     };
 }
 
-fn buildWrapperSourceAlloc(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+fn buildWrapperSourceAlloc(allocator: std.mem.Allocator, options: CompileOptions) ![]u8 {
+    return switch (options.mode) {
+        .behavior_script => buildBehaviorWrapperSourceAlloc(allocator, options.source),
+        .editor_utility => buildEditorUtilityWrapperSourceAlloc(allocator, options.source),
+    };
+}
+
+fn buildBehaviorWrapperSourceAlloc(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.concat(allocator, u8, &.{
         \\const std = @import("std");
         \\
@@ -361,6 +374,359 @@ fn buildWrapperSourceAlloc(allocator: std.mem.Allocator, source: []const u8) ![]
         \\}
         \\
         \\export fn guava_on_update(dt: f32) void {
+        \\    if (@hasDecl(user, "onUpdate")) {
+        \\        user.onUpdate(dt);
+        \\    }
+        \\}
+        \\
+        \\export fn guava_on_destroy() void {
+        \\    if (@hasDecl(user, "onDestroy")) {
+        \\        user.onDestroy();
+        \\    }
+        \\}
+        \\
+    });
+}
+
+fn buildEditorUtilityWrapperSourceAlloc(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    return try std.mem.concat(allocator, u8, &.{
+        \\const std = @import("std");
+        \\
+        \\extern "env" fn host_get_entity_id() u32;
+        \\extern "env" fn host_find_entity_by_name(ptr: [*]const u8, len: u32) u32;
+        \\extern "env" fn host_log(ptr: [*]const u8, len: u32) void;
+        \\extern "env" fn host_set_local_transform(entity_id: u32, tx: f32, ty: f32, tz: f32, rx: f32, ry: f32, rz: f32, rw: f32, sx: f32, sy: f32, sz: f32) u32;
+        \\extern "env" fn host_set_local_translation(entity_id: u32, tx: f32, ty: f32, tz: f32) u32;
+        \\extern "env" fn host_set_local_rotation(entity_id: u32, rx: f32, ry: f32, rz: f32, rw: f32) u32;
+        \\extern "env" fn host_set_local_scale(entity_id: u32, sx: f32, sy: f32, sz: f32) u32;
+        \\extern "env" fn host_set_visible(entity_id: u32, visible: u32) u32;
+        \\extern "env" fn host_report_panic(ptr: [*]const u8, len: u32) void;
+        \\extern "env" fn host_get_selection_count() u32;
+        \\extern "env" fn host_get_selection_entity(index: u32) u32;
+        \\extern "env" fn host_select_entity(entity_id: u32, additive: u32) void;
+        \\extern "env" fn host_clear_selection() void;
+        \\extern "env" fn host_ui_last_item_changed() u32;
+        \\extern "env" fn host_ui_text(ptr: [*]const u8, len: u32) void;
+        \\extern "env" fn host_ui_text_wrapped(ptr: [*]const u8, len: u32) void;
+        \\extern "env" fn host_ui_separator() void;
+        \\extern "env" fn host_ui_same_line() void;
+        \\extern "env" fn host_ui_button(ptr: [*]const u8, len: u32) u32;
+        \\extern "env" fn host_ui_checkbox(ptr: [*]const u8, len: u32, value: u32) u32;
+        \\extern "env" fn host_ui_drag_float_bits(ptr: [*]const u8, len: u32, current_bits: u32, speed: f32, min_value: f32, max_value: f32) u32;
+        \\extern "env" fn host_ui_set_next_item_width(width: f32) void;
+        \\
+        \\pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, _: ?usize) noreturn {
+        \\    host_report_panic(msg.ptr, @as(u32, @intCast(msg.len)));
+        \\    unreachable;
+        \\}
+        \\
+        \\pub const GuavaApi = struct {
+        \\    pub const Transform = struct {
+        \\        translation: [3]f32 = .{ 0.0, 0.0, 0.0 },
+        \\        rotation: [4]f32 = .{ 0.0, 0.0, 0.0, 1.0 },
+        \\        scale: [3]f32 = .{ 1.0, 1.0, 1.0 },
+        \\    };
+        \\
+        \\    pub fn entityId() u32 {
+        \\        return host_get_entity_id();
+        \\    }
+        \\
+        \\    pub fn findEntityByName(name: []const u8) ?u32 {
+        \\        const found = host_find_entity_by_name(name.ptr, @as(u32, @intCast(name.len)));
+        \\        return if (found == 0) null else found;
+        \\    }
+        \\
+        \\    pub fn log(message: []const u8) void {
+        \\        host_log(message.ptr, @as(u32, @intCast(message.len)));
+        \\    }
+        \\
+        \\    pub fn setLocalTransform(entity_id: u32, transform: Transform) bool {
+        \\        return host_set_local_transform(
+        \\            entity_id,
+        \\            transform.translation[0],
+        \\            transform.translation[1],
+        \\            transform.translation[2],
+        \\            transform.rotation[0],
+        \\            transform.rotation[1],
+        \\            transform.rotation[2],
+        \\            transform.rotation[3],
+        \\            transform.scale[0],
+        \\            transform.scale[1],
+        \\            transform.scale[2],
+        \\        ) != 0;
+        \\    }
+        \\
+        \\    pub fn setPosition(position: [3]f32) bool {
+        \\        return setEntityPosition(entityId(), position);
+        \\    }
+        \\
+        \\    pub fn setEntityPosition(entity_id: u32, position: [3]f32) bool {
+        \\        return host_set_local_translation(entity_id, position[0], position[1], position[2]) != 0;
+        \\    }
+        \\
+        \\    pub fn setRotation(rotation: [4]f32) bool {
+        \\        return setEntityRotation(entityId(), rotation);
+        \\    }
+        \\
+        \\    pub fn setEntityRotation(entity_id: u32, rotation: [4]f32) bool {
+        \\        return host_set_local_rotation(entity_id, rotation[0], rotation[1], rotation[2], rotation[3]) != 0;
+        \\    }
+        \\
+        \\    pub fn setScale(scale: [3]f32) bool {
+        \\        return setEntityScale(entityId(), scale);
+        \\    }
+        \\
+        \\    pub fn setEntityScale(entity_id: u32, scale: [3]f32) bool {
+        \\        return host_set_local_scale(entity_id, scale[0], scale[1], scale[2]) != 0;
+        \\    }
+        \\
+        \\    pub fn setVisible(visible: bool) bool {
+        \\        return setEntityVisible(entityId(), visible);
+        \\    }
+        \\
+        \\    pub fn setEntityVisible(entity_id: u32, visible: bool) bool {
+        \\        return host_set_visible(entity_id, if (visible) 1 else 0) != 0;
+        \\    }
+        \\};
+        \\
+        \\pub const GuavaEditorApi = struct {
+        \\    pub fn selectionCount() u32 {
+        \\        return host_get_selection_count();
+        \\    }
+        \\
+        \\    pub fn selectionEntity(index: u32) ?u32 {
+        \\        const entity_id = host_get_selection_entity(index);
+        \\        return if (entity_id == 0) null else entity_id;
+        \\    }
+        \\
+        \\    pub fn selectEntity(entity_id: u32) void {
+        \\        host_select_entity(entity_id, 0);
+        \\    }
+        \\
+        \\    pub fn addSelection(entity_id: u32) void {
+        \\        host_select_entity(entity_id, 1);
+        \\    }
+        \\
+        \\    pub fn clearSelection() void {
+        \\        host_clear_selection();
+        \\    }
+        \\
+        \\    pub fn text(message: []const u8) void {
+        \\        host_ui_text(message.ptr, @as(u32, @intCast(message.len)));
+        \\    }
+        \\
+        \\    pub fn textWrapped(message: []const u8) void {
+        \\        host_ui_text_wrapped(message.ptr, @as(u32, @intCast(message.len)));
+        \\    }
+        \\
+        \\    pub fn separator() void {
+        \\        host_ui_separator();
+        \\    }
+        \\
+        \\    pub fn sameLine() void {
+        \\        host_ui_same_line();
+        \\    }
+        \\
+        \\    pub fn setNextItemWidth(width: f32) void {
+        \\        host_ui_set_next_item_width(width);
+        \\    }
+        \\
+        \\    pub fn button(label: []const u8) bool {
+        \\        return host_ui_button(label.ptr, @as(u32, @intCast(label.len))) != 0;
+        \\    }
+        \\
+        \\    pub fn checkbox(label: []const u8, value: *bool) bool {
+        \\        const next_value = host_ui_checkbox(label.ptr, @as(u32, @intCast(label.len)), if (value.*) 1 else 0);
+        \\        const changed = host_ui_last_item_changed() != 0;
+        \\        value.* = next_value != 0;
+        \\        return changed;
+        \\    }
+        \\
+        \\    pub fn dragFloat(label: []const u8, value: *f32, speed: f32, min_value: f32, max_value: f32) bool {
+        \\        const next_bits = host_ui_drag_float_bits(
+        \\            label.ptr,
+        \\            @as(u32, @intCast(label.len)),
+        \\            @bitCast(value.*),
+        \\            speed,
+        \\            min_value,
+        \\            max_value,
+        \\        );
+        \\        const changed = host_ui_last_item_changed() != 0;
+        \\        value.* = @bitCast(next_bits);
+        \\        return changed;
+        \\    }
+        \\};
+        \\
+        \\const user = struct {
+        \\    const guava = GuavaApi;
+        \\    const editor = GuavaEditorApi;
+        \\
+        ,
+        source,
+        \\
+        \\};
+        \\
+        \\const GuavaParamKind = enum(u8) {
+        \\    float = 1,
+        \\    boolean = 2,
+        \\    integer = 3,
+        \\};
+        \\
+        \\fn guavaSupportedParamKind(comptime decl_name: []const u8) ?GuavaParamKind {
+        \\    const pointer_type = @TypeOf(&@field(user, decl_name));
+        \\    const pointer_info = @typeInfo(pointer_type);
+        \\    if (pointer_info != .pointer or pointer_info.pointer.is_const) {
+        \\        return null;
+        \\    }
+        \\    const child = pointer_info.pointer.child;
+        \\    return if (child == f32)
+        \\        .float
+        \\    else if (child == bool)
+        \\        .boolean
+        \\    else if (child == i32)
+        \\        .integer
+        \\    else
+        \\        null;
+        \\}
+        \\
+        \\fn guavaParamCount() comptime_int {
+        \\    var count: comptime_int = 0;
+        \\    inline for (comptime std.meta.declarations(user)) |decl| {
+        \\        if (guavaSupportedParamKind(decl.name) != null) {
+        \\            count += 1;
+        \\        }
+        \\    }
+        \\    return count;
+        \\}
+        \\
+        \\const guava_param_count_value = guavaParamCount();
+        \\
+        \\fn guavaParamName(comptime index: usize) []const u8 {
+        \\    var current: comptime_int = 0;
+        \\    inline for (comptime std.meta.declarations(user)) |decl| {
+        \\        if (guavaSupportedParamKind(decl.name) != null) {
+        \\            if (current == index) {
+        \\                return decl.name;
+        \\            }
+        \\            current += 1;
+        \\        }
+        \\    }
+        \\    unreachable;
+        \\}
+        \\
+        \\fn guavaParamKindAt(comptime index: usize) GuavaParamKind {
+        \\    var current: comptime_int = 0;
+        \\    inline for (comptime std.meta.declarations(user)) |decl| {
+        \\        if (guavaSupportedParamKind(decl.name)) |kind| {
+        \\            if (current == index) {
+        \\                return kind;
+        \\            }
+        \\            current += 1;
+        \\        }
+        \\    }
+        \\    unreachable;
+        \\}
+        \\
+        \\export fn guava_param_count() u32 {
+        \\    return guava_param_count_value;
+        \\}
+        \\
+        \\export fn guava_param_name_ptr(index: u32) u32 {
+        \\    inline for (0..guava_param_count_value) |param_index| {
+        \\        if (index == param_index) {
+        \\            return @as(u32, @intCast(@intFromPtr(guavaParamName(param_index).ptr)));
+        \\        }
+        \\    }
+        \\    return 0;
+        \\}
+        \\
+        \\export fn guava_param_name_len(index: u32) u32 {
+        \\    inline for (0..guava_param_count_value) |param_index| {
+        \\        if (index == param_index) {
+        \\            return @as(u32, @intCast(guavaParamName(param_index).len));
+        \\        }
+        \\    }
+        \\    return 0;
+        \\}
+        \\
+        \\export fn guava_param_kind(index: u32) u32 {
+        \\    inline for (0..guava_param_count_value) |param_index| {
+        \\        if (index == param_index) {
+        \\            return @intFromEnum(guavaParamKindAt(param_index));
+        \\        }
+        \\    }
+        \\    return 0;
+        \\}
+        \\
+        \\export fn guava_param_get_f32(index: u32) f32 {
+        \\    inline for (0..guava_param_count_value) |param_index| {
+        \\        if (index == param_index and guavaParamKindAt(param_index) == .float) {
+        \\            return @field(user, guavaParamName(param_index));
+        \\        }
+        \\    }
+        \\    return 0.0;
+        \\}
+        \\
+        \\export fn guava_param_set_f32(index: u32, value: f32) u32 {
+        \\    inline for (0..guava_param_count_value) |param_index| {
+        \\        if (index == param_index and guavaParamKindAt(param_index) == .float) {
+        \\            @field(user, guavaParamName(param_index)) = value;
+        \\            return 1;
+        \\        }
+        \\    }
+        \\    return 0;
+        \\}
+        \\
+        \\export fn guava_param_get_bool(index: u32) u32 {
+        \\    inline for (0..guava_param_count_value) |param_index| {
+        \\        if (index == param_index and guavaParamKindAt(param_index) == .boolean) {
+        \\            return if (@field(user, guavaParamName(param_index))) 1 else 0;
+        \\        }
+        \\    }
+        \\    return 0;
+        \\}
+        \\
+        \\export fn guava_param_set_bool(index: u32, value: u32) u32 {
+        \\    inline for (0..guava_param_count_value) |param_index| {
+        \\        if (index == param_index and guavaParamKindAt(param_index) == .boolean) {
+        \\            @field(user, guavaParamName(param_index)) = value != 0;
+        \\            return 1;
+        \\        }
+        \\    }
+        \\    return 0;
+        \\}
+        \\
+        \\export fn guava_param_get_i32(index: u32) i32 {
+        \\    inline for (0..guava_param_count_value) |param_index| {
+        \\        if (index == param_index and guavaParamKindAt(param_index) == .integer) {
+        \\            return @field(user, guavaParamName(param_index));
+        \\        }
+        \\    }
+        \\    return 0;
+        \\}
+        \\
+        \\export fn guava_param_set_i32(index: u32, value: i32) u32 {
+        \\    inline for (0..guava_param_count_value) |param_index| {
+        \\        if (index == param_index and guavaParamKindAt(param_index) == .integer) {
+        \\            @field(user, guavaParamName(param_index)) = value;
+        \\            return 1;
+        \\        }
+        \\    }
+        \\    return 0;
+        \\}
+        \\
+        \\export fn guava_on_init() void {
+        \\    if (@hasDecl(user, "onInit")) {
+        \\        user.onInit();
+        \\    }
+        \\}
+        \\
+        \\export fn guava_on_update(dt: f32) void {
+        \\    if (@hasDecl(user, "draw")) {
+        \\        _ = dt;
+        \\        user.draw();
+        \\        return;
+        \\    }
         \\    if (@hasDecl(user, "onUpdate")) {
         \\        user.onUpdate(dt);
         \\    }

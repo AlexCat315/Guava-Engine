@@ -43,6 +43,7 @@
 const std = @import("std");
 const animator_system = @import("../animation/animator_system.zig");
 const physics_system = @import("../physics/system.zig");
+const editor_utility_runtime_mod = @import("../script/editor_utility_runtime.zig");
 const script_system = @import("../script/script.zig");
 const handles = @import("../assets/handles.zig");
 const layer_mod = @import("layer.zig");
@@ -151,6 +152,8 @@ pub const Application = struct {
     job_system: *job_system_mod.JobSystem,
     /// 脚本运行时
     script_runtime: script_system.ScriptRuntime,
+    /// 编辑器 Utility 运行时
+    editor_utility_runtime: editor_utility_runtime_mod.EditorUtilityRuntime,
     /// 输入状态
     input: input_mod.InputState = .{},
     /// 播放控制器（用于暂停/步进）
@@ -222,6 +225,7 @@ pub const Application = struct {
             .world = world,
             .job_system = job_system,
             .script_runtime = script_runtime,
+            .editor_utility_runtime = editor_utility_runtime_mod.EditorUtilityRuntime.init(allocator),
             .layers = layer_stack_mod.LayerStack.init(allocator),
             .input = .{},
             .timer = timer,
@@ -239,6 +243,7 @@ pub const Application = struct {
             self.detachLayers();
         }
         self.layers.deinit();
+        self.editor_utility_runtime.deinit();
         self.script_runtime.deinit();
         physics_system.deinitWorld(&self.world);
         self.world.deinit();
@@ -448,6 +453,7 @@ pub const Application = struct {
             .renderer = &self.renderer,
             .command_queue = &self.command_queue,
             .script_runtime = &self.script_runtime,
+            .editor_utility_runtime = &self.editor_utility_runtime,
             .input = &self.input,
             .window = &self.window,
             .playback_controller = &self.playback_controller,

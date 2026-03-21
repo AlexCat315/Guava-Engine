@@ -13,6 +13,7 @@ const history = @import("../actions/history.zig");
 const vfx_runtime = @import("../runtime/vfx.zig");
 const layout = @import("../ui/layout.zig");
 const animation_editor = @import("../ui/windows/animation_editor.zig");
+const editor_utilities = @import("../ui/windows/editor_utilities.zig");
 const prefab_browser = @import("../ui/windows/prefab_browser.zig");
 
 fn initEditorStyle() void {
@@ -199,6 +200,16 @@ pub const EditorLayer = struct {
 
         if (self.state.prefab_browser_open) {
             try prefab_browser.drawPrefabBrowserWindow(&self.state, layer_context);
+        }
+
+        if (layer_context.editor_utility_runtime) |utility_runtime| {
+            if (utility_runtime.takeHostOpenRequest()) {
+                self.state.editor_utilities_open = true;
+            }
+        }
+
+        if (self.state.editor_utilities_open) {
+            try editor_utilities.drawEditorUtilitiesWindow(&self.state, layer_context);
         }
     }
 };

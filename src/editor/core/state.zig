@@ -291,6 +291,7 @@ pub const EditorState = struct {
     settings_open: bool = false,
     render_settings_open: bool = false,
     material_editor_open: bool = false,
+    editor_utilities_open: bool = false,
     animation_editor_open: bool = false,
     layout_template_name_buffer: [128]u8 = [_]u8{0} ** 128,
     layout_templates: std.ArrayList(LayoutTemplateEntry) = .empty,

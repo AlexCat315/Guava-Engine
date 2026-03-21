@@ -46,6 +46,25 @@ const CompileScriptRequest = struct {
     }
 };
 
+const CompileEditorUtilityRequest = struct {
+    tool_name: []u8,
+    script_handle: ?handles.ScriptHandle = null,
+    source: ?[]u8 = null,
+    source_path: ?[]u8 = null,
+    description: ?[]u8 = null,
+    utility_name: ?[]u8 = null,
+    open: bool = true,
+
+    fn deinit(self: *CompileEditorUtilityRequest, allocator: std.mem.Allocator) void {
+        allocator.free(self.tool_name);
+        if (self.source) |source| allocator.free(source);
+        if (self.source_path) |source_path| allocator.free(source_path);
+        if (self.description) |description| allocator.free(description);
+        if (self.utility_name) |utility_name| allocator.free(utility_name);
+        self.* = undefined;
+    }
+};
+
 const QueryRequest = struct {
     tool_name: []u8,
     id: ?scene_mod.EntityId = null,
@@ -85,12 +104,14 @@ const QueryRequest = struct {
 pub const PendingRequest = union(enum) {
     command: CommandRequest,
     compile_script: CompileScriptRequest,
+    compile_editor_utility: CompileEditorUtilityRequest,
     query_entities: QueryRequest,
 
     pub fn deinit(self: *PendingRequest, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .command => |*command| command.deinit(allocator),
             .compile_script => |*compile| compile.deinit(allocator),
+            .compile_editor_utility => |*compile| compile.deinit(allocator),
             .query_entities => |*query| query.deinit(allocator),
         }
         self.* = undefined;
@@ -101,6 +122,7 @@ pub const ToolResult = struct {
     kind: enum {
         command,
         compile_script,
+        compile_editor_utility,
         query,
     } = .command,
     changed: bool = false,
@@ -110,6 +132,7 @@ pub const ToolResult = struct {
     script_error: ?[]u8 = null,
     compiled: bool = false,
     attached: bool = false,
+    utility_registered: bool = false,
     query_result: ?query_engine.ResultSet = null,
 
     fn deinit(self: *ToolResult, allocator: std.mem.Allocator) void {
@@ -210,6 +233,7 @@ pub const Bridge = struct {
         const response_tool_name = try self.allocator.dupe(u8, switch (request) {
             .command => |command_request| command_request.tool_name,
             .compile_script => |compile_request| compile_request.tool_name,
+            .compile_editor_utility => |compile_request| compile_request.tool_name,
             .query_entities => |query_request| query_request.tool_name,
         });
         errdefer self.allocator.free(response_tool_name);
@@ -229,6 +253,9 @@ pub const Bridge = struct {
             },
             .compile_script => |compile_request| blk: {
                 break :blk try processCompileScriptRequest(self.allocator, layer_context, compile_request);
+            },
+            .compile_editor_utility => |compile_request| blk: {
+                break :blk try processCompileEditorUtilityRequest(self.allocator, layer_context, compile_request);
             },
             .query_entities => |query_request| blk: {
                 break :blk ToolResult{
@@ -270,6 +297,20 @@ pub fn parseToolCallAlloc(
                 .source_path = try parseOptionalStringAlloc(allocator, arguments, "source_path"),
                 .description = try parseOptionalStringAlloc(allocator, arguments, "description"),
                 .enabled = try parseBoolFromObject(try requireObject(arguments), "enabled", true),
+            },
+        };
+    }
+
+    if (std.mem.eql(u8, tool_name, "compile_editor_utility")) {
+        return .{
+            .compile_editor_utility = .{
+                .tool_name = owned_tool_name,
+                .script_handle = try parseOptionalScriptHandle(arguments, "script_handle"),
+                .source = try parseOptionalStringAlloc(allocator, arguments, "source"),
+                .source_path = try parseOptionalStringAlloc(allocator, arguments, "source_path"),
+                .description = try parseOptionalStringAlloc(allocator, arguments, "description"),
+                .utility_name = try parseOptionalStringAlloc(allocator, arguments, "utility_name"),
+                .open = try parseBoolFromObject(try requireObject(arguments), "open", true),
             },
         };
     }
@@ -392,6 +433,15 @@ pub fn buildSummaryAlloc(allocator: std.mem.Allocator, response: CallResponse) !
             response.result.script_handle,
             response.result.compiled,
             response.result.attached,
+        });
+    }
+
+    if (response.result.kind == .compile_editor_utility) {
+        return std.fmt.allocPrint(allocator, "{s} ok: script_handle={any}, compiled={}, registered={}", .{
+            response.tool_name,
+            response.result.script_handle,
+            response.result.compiled,
+            response.result.utility_registered,
         });
     }
 
@@ -589,6 +639,157 @@ fn processCompileScriptRequest(
     }
 }
 
+fn processCompileEditorUtilityRequest(
+    allocator: std.mem.Allocator,
+    layer_context: *core.LayerContext,
+    request: CompileEditorUtilityRequest,
+) !ToolResult {
+    const utility_runtime = layer_context.editor_utility_runtime orelse return .{
+        .kind = .compile_editor_utility,
+        .script_error = try allocator.dupe(u8, "editor utility runtime is not available in this context"),
+    };
+
+    var source_bytes: []u8 = undefined;
+    var owns_source = false;
+    defer if (owns_source) allocator.free(source_bytes);
+
+    var resource: ?*script_resource_mod.ScriptResource = null;
+    if (request.script_handle) |handle| {
+        resource = layer_context.world.resources.scriptMutable(handle);
+    }
+
+    if (request.source) |source| {
+        source_bytes = source;
+    } else if (request.source_path) |source_path| {
+        source_bytes = try std.fs.cwd().readFileAlloc(allocator, source_path, 8 * 1024 * 1024);
+        owns_source = true;
+    } else if (resource) |existing_resource| {
+        source_bytes = try allocator.dupe(u8, existing_resource.source);
+        owns_source = true;
+    } else {
+        return .{
+            .kind = .compile_editor_utility,
+            .script_error = try allocator.dupe(u8, "compile_editor_utility requires source, source_path, or an existing script_handle"),
+        };
+    }
+
+    var compile_result = try wasm_compiler.compileZigSourceAlloc(allocator, .{
+        .source = source_bytes,
+        .script_name = if (request.utility_name) |utility_name| utility_name else "editor_utility",
+        .mode = .editor_utility,
+    });
+    defer compile_result.deinit(allocator);
+
+    switch (compile_result) {
+        .compile_error => |message| {
+            if (layer_context.script_runtime) |script_runtime| {
+                script_runtime.recordEvent(.{
+                    .script_handle = request.script_handle,
+                    .phase = .compile,
+                    .severity = .@"error",
+                    .message = message,
+                });
+            }
+            return .{
+                .kind = .compile_editor_utility,
+                .script_handle = request.script_handle,
+                .script_error = try allocator.dupe(u8, message),
+            };
+        },
+        .success => |artifact| {
+            const utility_name = try resolveEditorUtilityNameAlloc(
+                allocator,
+                request.utility_name,
+                request.description,
+                request.source_path,
+                resource,
+            );
+            defer allocator.free(utility_name);
+
+            const handle = if (request.script_handle) |existing_handle| blk: {
+                const existing_resource = resource orelse return .{
+                    .kind = .compile_editor_utility,
+                    .script_handle = request.script_handle,
+                    .script_error = try allocator.dupe(u8, "script_handle does not exist"),
+                };
+                existing_resource.language = .wasm;
+                existing_resource.entry_fn = "guava_on_update";
+                replaceOwnedSlice(allocator, &existing_resource.source, source_bytes) catch return error.OutOfMemory;
+                replaceOwnedSlice(allocator, &existing_resource.bytecode, artifact.bytecode) catch return error.OutOfMemory;
+                replaceOwnedSlice(allocator, &existing_resource.user_data, artifact.parameter_schema) catch return error.OutOfMemory;
+                replaceOwnedSlice(allocator, &existing_resource.description, utility_name) catch return error.OutOfMemory;
+                if (request.source_path) |source_path| {
+                    replaceOwnedSlice(allocator, &existing_resource.source_path, source_path) catch return error.OutOfMemory;
+                    existing_resource.last_modified = readFileMtime(source_path) catch existing_resource.last_modified;
+                } else {
+                    existing_resource.last_modified = std.time.microTimestamp();
+                }
+                break :blk existing_handle;
+            } else blk: {
+                const created_handle = try layer_context.world.resources.createScript(.{
+                    .source = source_bytes,
+                    .language = .wasm,
+                    .entry_fn = "guava_on_update",
+                    .description = utility_name,
+                    .source_path = request.source_path orelse "",
+                });
+                const created_resource = layer_context.world.resources.scriptMutable(created_handle).?;
+                created_resource.bytecode = try allocator.dupe(u8, artifact.bytecode);
+                allocator.free(created_resource.user_data);
+                created_resource.user_data = try allocator.dupe(u8, artifact.parameter_schema);
+                created_resource.last_modified = if (request.source_path) |source_path|
+                    readFileMtime(source_path) catch std.time.microTimestamp()
+                else
+                    std.time.microTimestamp();
+                break :blk created_handle;
+            };
+
+            try utility_runtime.upsertCompiled(
+                layer_context.world,
+                layer_context.command_queue,
+                handle,
+                utility_name,
+                request.open,
+            );
+
+            const registration_error = try utility_runtime.lastErrorAlloc(allocator, handle);
+            errdefer if (registration_error) |message| allocator.free(message);
+
+            if (layer_context.script_runtime) |script_runtime| {
+                const event_message = if (registration_error) |message|
+                    message
+                else
+                    "compiled editor utility";
+                script_runtime.recordEvent(.{
+                    .script_handle = handle,
+                    .phase = .compile,
+                    .severity = if (registration_error != null) .warning else .info,
+                    .message = event_message,
+                });
+            }
+
+            if (registration_error) |message| {
+                return .{
+                    .kind = .compile_editor_utility,
+                    .changed = true,
+                    .script_handle = handle,
+                    .compiled = true,
+                    .utility_registered = false,
+                    .script_error = message,
+                };
+            }
+
+            return .{
+                .kind = .compile_editor_utility,
+                .changed = true,
+                .script_handle = handle,
+                .compiled = true,
+                .utility_registered = true,
+            };
+        },
+    }
+}
+
 fn replaceOwnedSlice(allocator: std.mem.Allocator, target: *[]const u8, next: []const u8) !void {
     allocator.free(target.*);
     target.* = try allocator.dupe(u8, next);
@@ -599,6 +800,33 @@ fn readFileMtime(path: []const u8) !i128 {
     defer file.close();
     const stat = try file.stat();
     return stat.mtime;
+}
+
+fn resolveEditorUtilityNameAlloc(
+    allocator: std.mem.Allocator,
+    requested_name: ?[]const u8,
+    description: ?[]const u8,
+    source_path: ?[]const u8,
+    existing_resource: ?*const script_resource_mod.ScriptResource,
+) ![]u8 {
+    if (requested_name) |value| {
+        return try allocator.dupe(u8, value);
+    }
+    if (description) |value| {
+        return try allocator.dupe(u8, value);
+    }
+    if (source_path) |value| {
+        return try allocator.dupe(u8, std.fs.path.stem(value));
+    }
+    if (existing_resource) |resource| {
+        if (resource.description.len != 0) {
+            return try allocator.dupe(u8, resource.description);
+        }
+        if (resource.source_path.len != 0) {
+            return try allocator.dupe(u8, std.fs.path.stem(resource.source_path));
+        }
+    }
+    return try allocator.dupe(u8, "AI Utility");
 }
 
 fn parseCreateEntityAlloc(allocator: std.mem.Allocator, arguments: ?std.json.Value) !command_mod.Command.CreateEntity {

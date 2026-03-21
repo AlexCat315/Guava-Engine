@@ -1,6 +1,7 @@
 const std = @import("std");
 const script_resource_mod = @import("../assets/script_resource.zig");
 const components = @import("../scene/components.zig");
+const ui = @import("../ui/imgui.zig");
 const context = @import("./context.zig");
 const parameter_reflection = @import("./parameter_reflection.zig");
 const types = @import("./types.zig");
@@ -576,6 +577,20 @@ fn activeContext(userdata: ?*anyopaque) ?*context.ScriptContext {
     return state.active_context;
 }
 
+fn setLastItemChanged(userdata: ?*anyopaque, changed: bool) void {
+    const ctx = activeContext(userdata) orelse return;
+    if (ctx.editor_ui_state) |ui_state| {
+        ui_state.last_item_changed = changed;
+    }
+}
+
+fn selectionEntity(ctx: *const context.ScriptContext, index: usize) ?types.EntityId {
+    if (index >= ctx.editor_selection.len) {
+        return null;
+    }
+    return ctx.editor_selection[index];
+}
+
 fn resolveLocalTransform(ctx: *context.ScriptContext, entity_id: types.EntityId) ?components.Transform {
     if (ctx.command_queue) |queue| {
         if (queue.latestPendingLocalTransform(entity_id)) |pending| {
@@ -693,6 +708,87 @@ pub export fn guava_wasm_host_report_panic(userdata: ?*anyopaque, ptr: [*]const 
     replaceOwnedBytes(state.allocator, &state.last_panic_message, ptr[0..len]) catch {
         log.err("failed to capture guest panic message", .{});
     };
+}
+
+pub export fn guava_wasm_host_get_selection_count(userdata: ?*anyopaque) u32 {
+    const ctx = activeContext(userdata) orelse return 0;
+    return @intCast(ctx.editor_selection.len);
+}
+
+pub export fn guava_wasm_host_get_selection_entity(userdata: ?*anyopaque, index: u32) u32 {
+    const ctx = activeContext(userdata) orelse return 0;
+    const entity_id = selectionEntity(ctx, index) orelse return 0;
+    return @intCast(entity_id);
+}
+
+pub export fn guava_wasm_host_select_entity(userdata: ?*anyopaque, entity_id_raw: u32, additive_raw: u32) void {
+    const ctx = activeContext(userdata) orelse return;
+    if (ctx.editor_selection_api) |api| {
+        api.select_entity(api.context, @intCast(entity_id_raw), additive_raw != 0);
+    }
+}
+
+pub export fn guava_wasm_host_clear_selection(userdata: ?*anyopaque) void {
+    const ctx = activeContext(userdata) orelse return;
+    if (ctx.editor_selection_api) |api| {
+        api.clear_selection(api.context);
+    }
+}
+
+pub export fn guava_wasm_host_ui_last_item_changed(userdata: ?*anyopaque) u32 {
+    const ctx = activeContext(userdata) orelse return 0;
+    if (ctx.editor_ui_state) |ui_state| {
+        return if (ui_state.last_item_changed) 1 else 0;
+    }
+    return 0;
+}
+
+pub export fn guava_wasm_host_ui_text(_: ?*anyopaque, ptr: [*]const u8, len: u32) void {
+    ui.ImGui.text(ptr[0..len]);
+}
+
+pub export fn guava_wasm_host_ui_text_wrapped(_: ?*anyopaque, ptr: [*]const u8, len: u32) void {
+    ui.ImGui.textWrapped(ptr[0..len]);
+}
+
+pub export fn guava_wasm_host_ui_separator(_: ?*anyopaque) void {
+    ui.ImGui.separator();
+}
+
+pub export fn guava_wasm_host_ui_same_line(_: ?*anyopaque) void {
+    ui.ImGui.sameLine();
+}
+
+pub export fn guava_wasm_host_ui_button(userdata: ?*anyopaque, ptr: [*]const u8, len: u32) u32 {
+    const clicked = ui.ImGui.button(ptr[0..len]);
+    setLastItemChanged(userdata, clicked);
+    return if (clicked) 1 else 0;
+}
+
+pub export fn guava_wasm_host_ui_checkbox(userdata: ?*anyopaque, ptr: [*]const u8, len: u32, value_raw: u32) u32 {
+    var value = value_raw != 0;
+    const changed = ui.ImGui.checkbox(ptr[0..len], &value);
+    setLastItemChanged(userdata, changed);
+    return if (value) 1 else 0;
+}
+
+pub export fn guava_wasm_host_ui_drag_float_bits(
+    userdata: ?*anyopaque,
+    ptr: [*]const u8,
+    len: u32,
+    current_bits: u32,
+    speed: f32,
+    min_value: f32,
+    max_value: f32,
+) u32 {
+    var value: f32 = @bitCast(current_bits);
+    const changed = ui.ImGui.dragFloat(ptr[0..len], &value, speed, min_value, max_value);
+    setLastItemChanged(userdata, changed);
+    return @bitCast(value);
+}
+
+pub export fn guava_wasm_host_ui_set_next_item_width(_: ?*anyopaque, width: f32) void {
+    ui.ImGui.setNextItemWidth(width);
 }
 
 fn castContext(comptime T: type, context_ptr: *anyopaque) *T {
