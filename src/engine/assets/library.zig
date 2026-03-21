@@ -288,6 +288,11 @@ pub const ResourceLibrary = struct {
         return self.asset_registry.records.items[record_index].id;
     }
 
+    pub fn scriptAssetId(self: *const ResourceLibrary, handle: handles.ScriptHandle) ?[]const u8 {
+        const record_index = self.script_records.get(handle) orelse return null;
+        return self.asset_registry.records.items[record_index].id;
+    }
+
     pub fn meshHandleByAssetId(self: *const ResourceLibrary, asset_id: []const u8) ?handles.MeshHandle {
         return self.mesh_handles_by_asset_id.get(asset_id);
     }
@@ -310,6 +315,10 @@ pub const ResourceLibrary = struct {
 
     pub fn animationClipHandleByAssetId(self: *const ResourceLibrary, asset_id: []const u8) ?handles.AnimationClipHandle {
         return self.animation_clip_handles_by_asset_id.get(asset_id);
+    }
+
+    pub fn scriptHandleByAssetId(self: *const ResourceLibrary, asset_id: []const u8) ?handles.ScriptHandle {
+        return self.script_handles_by_asset_id.get(asset_id);
     }
 
     pub fn bindMeshAssetRecord(self: *ResourceLibrary, handle: handles.MeshHandle, record: registry_mod.AssetRecord) ![]const u8 {
@@ -363,6 +372,15 @@ pub const ResourceLibrary = struct {
         const resolved = try self.asset_registry.upsertOwned(record);
         try self.animation_clip_records.put(handle, indexForRecord(self, resolved.id).?);
         try bindHandleByAssetId(self.allocator, handles.AnimationClipHandle, &self.animation_clip_handles_by_asset_id, handle, resolved.id, previous_id);
+        return resolved.id;
+    }
+
+    pub fn bindScriptAssetRecord(self: *ResourceLibrary, handle: handles.ScriptHandle, record: registry_mod.AssetRecord) ![]const u8 {
+        const previous_id = if (self.scriptAssetId(handle)) |value| try self.allocator.dupe(u8, value) else null;
+        defer if (previous_id) |value| self.allocator.free(value);
+        const resolved = try self.asset_registry.upsertOwned(record);
+        try self.script_records.put(handle, indexForRecord(self, resolved.id).?);
+        try bindHandleByAssetId(self.allocator, handles.ScriptHandle, &self.script_handles_by_asset_id, handle, resolved.id, previous_id);
         return resolved.id;
     }
 

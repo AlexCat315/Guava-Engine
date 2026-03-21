@@ -28,6 +28,8 @@ pub const ScriptResourceDesc = struct {
     entry_fn: []const u8 = "main",
     description: []const u8 = "",
     source_path: []const u8 = "",
+    last_modified: i128 = 0,
+    bytecode: []const u8 = &.{},
     user_data: []const u8 = &.{},
 };
 
@@ -39,7 +41,8 @@ pub fn clone(allocator: std.mem.Allocator, desc: ScriptResourceDesc) !ScriptReso
         .entry_fn = try allocator.dupe(u8, desc.entry_fn),
         .description = try allocator.dupe(u8, desc.description),
         .source_path = try allocator.dupe(u8, desc.source_path),
-        .bytecode = &.{},
+        .last_modified = desc.last_modified,
+        .bytecode = try allocator.dupe(u8, desc.bytecode),
         .user_data = try allocator.dupe(u8, desc.user_data),
     };
 }

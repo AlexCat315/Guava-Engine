@@ -14,6 +14,7 @@ pub const AssetType = enum {
     skeleton,
     skin,
     animation_clip,
+    script,
 
     pub fn fromPath(path: []const u8) ?AssetType {
         if (std.mem.endsWith(u8, path, ".guava_scene")) {
@@ -42,6 +43,7 @@ pub const AssetType = enum {
             .skeleton => "embedded-skeleton-v1",
             .skin => "embedded-skin-v1",
             .animation_clip => "embedded-animation-clip-v1",
+            .script => "embedded-script-v1",
         };
     }
 
@@ -56,6 +58,7 @@ pub const AssetType = enum {
             .skeleton => 1,
             .skin => 1,
             .animation_clip => 1,
+            .script => 1,
         };
     }
 };

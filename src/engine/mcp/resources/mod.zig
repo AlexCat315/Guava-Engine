@@ -848,6 +848,7 @@ fn buildSceneSchemaJsonAlloc(allocator: std.mem.Allocator) ![]u8 {
         .{ .name = "skeletons", .type = "SkeletonRecord[]", .description = "Optional skeleton resources." },
         .{ .name = "skins", .type = "SkinRecord[]", .description = "Optional skin resources." },
         .{ .name = "animation_clips", .type = "AnimationClipRecord[]", .description = "Optional animation clips." },
+        .{ .name = "scripts", .type = "ScriptRecord[]", .description = "Embedded script resources referenced by the scene." },
         .{ .name = "entities", .type = "EntityRecord[]", .description = "Flat entity array with parent indices.", .required = true },
     };
     const material_record_fields = [_]FieldSchema{
@@ -866,6 +867,23 @@ fn buildSceneSchemaJsonAlloc(allocator: std.mem.Allocator) ![]u8 {
         .{ .name = "shading", .type = "ShadingModel", .description = "Material shading model override." },
         .{ .name = "base_color_factor", .type = "Vec4", .description = "RGBA multiplier encoded as an array." },
     };
+    const script_record_fields = [_]FieldSchema{
+        .{ .name = "asset_id", .type = "string", .description = "Stable script asset id.", .required = true },
+        .{ .name = "language", .type = "ScriptLanguage", .description = "Script language enum.", .required = true },
+        .{ .name = "entry_fn", .type = "string", .description = "Script entry function name.", .required = true },
+        .{ .name = "description", .type = "string", .description = "Human readable script description." },
+        .{ .name = "source_path", .type = "string", .description = "Original source path when available." },
+        .{ .name = "last_modified", .type = "i128", .description = "Last observed source mtime." },
+        .{ .name = "source", .type = "string", .description = "Script source text.", .required = true },
+        .{ .name = "bytecode_hex", .type = "string", .description = "Compiled bytecode encoded as lowercase hex." },
+        .{ .name = "user_data", .type = "string", .description = "Script metadata payload, currently used for reflected parameter schema." },
+    };
+    const script_component_fields = [_]FieldSchema{
+        .{ .name = "asset_id", .type = "string|null", .description = "Optional referenced script asset id." },
+        .{ .name = "language", .type = "ScriptLanguage", .description = "Script language enum.", .required = true },
+        .{ .name = "enabled", .type = "bool", .description = "Whether the script starts enabled." },
+        .{ .name = "parameters", .type = "string", .description = "Serialized script parameter payload string." },
+    };
     const entity_record_fields = [_]FieldSchema{
         .{ .name = "name", .type = "string", .description = "Entity display name.", .required = true },
         .{ .name = "parent", .type = "u32|null", .description = "Parent entity index or null for a root." },
@@ -877,7 +895,7 @@ fn buildSceneSchemaJsonAlloc(allocator: std.mem.Allocator) ![]u8 {
         .{ .name = "material", .type = "MaterialComponentRecord|null", .description = "Optional material component record." },
         .{ .name = "light", .type = "Light|null", .description = "Optional light payload." },
         .{ .name = "vfx", .type = "Vfx|null", .description = "Optional VFX payload." },
-        .{ .name = "script", .type = "Script|null", .description = "Optional script payload." },
+        .{ .name = "script", .type = "ScriptComponentRecord|null", .description = "Optional script component payload." },
         .{ .name = "visible", .type = "bool", .description = "Entity visibility flag." },
         .{ .name = "editor_only", .type = "bool", .description = "Editor-only flag." },
         .{ .name = "is_folder", .type = "bool", .description = "Hierarchy folder flag." },
@@ -890,13 +908,16 @@ fn buildSceneSchemaJsonAlloc(allocator: std.mem.Allocator) ![]u8 {
             "This resource documents the stable JSON surface, not every private helper struct in scene_io.zig.",
             "Vec2, Vec3, Vec4, and Quat values remain JSON arrays, matching schema://components.",
             "EntityRecord uses flat storage with parent indices instead of recursive children arrays.",
+            "Script bytecode is persisted as lowercase hex so scenes can reload WASM resources without recompilation.",
         },
         .root = &scene_fields,
         .sections = &.{
             .{ .name = "SceneFile", .description = "Top-level scene document.", .fields = &scene_fields },
             .{ .name = "MaterialRecord", .description = "Serialized material asset record.", .fields = &material_record_fields },
+            .{ .name = "ScriptRecord", .description = "Serialized script resource row.", .fields = &script_record_fields },
             .{ .name = "MeshComponentRecord", .description = "Serialized mesh component payload inside EntityRecord.", .fields = &mesh_component_fields },
             .{ .name = "MaterialComponentRecord", .description = "Serialized material component payload inside EntityRecord.", .fields = &material_component_fields },
+            .{ .name = "ScriptComponentRecord", .description = "Serialized script component payload inside EntityRecord.", .fields = &script_component_fields },
             .{ .name = "EntityRecord", .description = "Flat entity row in the scene file.", .fields = &entity_record_fields },
         },
     });
@@ -939,10 +960,17 @@ fn buildPrefabSchemaJsonAlloc(allocator: std.mem.Allocator) ![]u8 {
         .{ .name = "local_transform", .type = "Transform", .description = "Local transform with array vectors." },
         .{ .name = "mesh", .type = "MeshComponentRecord|null", .description = "Optional mesh component payload." },
         .{ .name = "material", .type = "MaterialComponentRecord|null", .description = "Optional material component payload." },
+        .{ .name = "script", .type = "ScriptComponentRecord|null", .description = "Optional script component payload." },
         .{ .name = "visible", .type = "bool", .description = "Visibility flag." },
         .{ .name = "editor_only", .type = "bool", .description = "Editor-only flag." },
         .{ .name = "is_folder", .type = "bool", .description = "Hierarchy folder flag." },
         .{ .name = "nested_prefab_id", .type = "string|null", .description = "Optional nested prefab reference." },
+    };
+    const script_component_fields = [_]FieldSchema{
+        .{ .name = "asset_id", .type = "string|null", .description = "Optional referenced script asset id." },
+        .{ .name = "language", .type = "ScriptLanguage", .description = "Script language enum.", .required = true },
+        .{ .name = "enabled", .type = "bool", .description = "Whether the script starts enabled." },
+        .{ .name = "parameters", .type = "string", .description = "Serialized script parameter payload string." },
     };
     const override_mask_fields = [_]FieldSchema{
         .{ .name = "local_transform", .type = "bool", .description = "Whether local transform override is active." },
@@ -965,10 +993,12 @@ fn buildPrefabSchemaJsonAlloc(allocator: std.mem.Allocator) ![]u8 {
             "Prefab files use flat entity storage keyed by prefab_entity_id.",
             "OverrideMask is a runtime-facing contract for instance overrides and should stay aligned with prefab instance editing.",
             "Vector fields remain array encoded, matching schema://components.",
+            "Prefab script payloads preserve asset ids and parameter strings, but script resources themselves are still resolved through the target world asset library.",
         },
         .root = &prefab_fields,
         .sections = &.{
             .{ .name = "PrefabFile", .description = "Top-level prefab document.", .fields = &prefab_fields },
+            .{ .name = "ScriptComponentRecord", .description = "Serialized script component payload inside a prefab entity row.", .fields = &script_component_fields },
             .{ .name = "PrefabEntityRecord", .description = "Serialized entity row inside a prefab file.", .fields = &prefab_entity_fields },
             .{ .name = "OverrideMask", .description = "Prefab instance override flags.", .fields = &override_mask_fields },
         },

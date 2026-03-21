@@ -106,6 +106,13 @@ const MaterialComponentRecord = struct {
     base_color_factor: [4]f32 = .{ 1.0, 1.0, 1.0, 1.0 },
 };
 
+const ScriptComponentRecord = struct {
+    asset_id: ?[]const u8 = null,
+    language: components.ScriptLanguage = .zig,
+    enabled: bool = true,
+    parameters: []const u8 = "",
+};
+
 /// Prefab 中的实体记录
 const PrefabEntityRecord = struct {
     /// 实体在原始 Prefab 中的唯一标识 (用于实例化时映射)
@@ -122,6 +129,7 @@ const PrefabEntityRecord = struct {
     material: ?MaterialComponentRecord = null,
     light: ?components.Light = null,
     vfx: ?components.Vfx = null,
+    script: ?ScriptComponentRecord = null,
     visible: bool = true,
     editor_only: bool = false,
     is_folder: bool = false,
@@ -184,6 +192,7 @@ pub const PrefabEntityData = struct {
     parent: ?u32 = null,
     mesh_asset_id: ?[]u8 = null,
     material_asset_id: ?[]u8 = null,
+    script_asset_id: ?[]u8 = null,
     local_transform: components.Transform = .{},
     camera: ?components.Camera = null,
     mesh: ?components.Mesh = null,
@@ -207,6 +216,7 @@ pub const PrefabEntityData = struct {
         allocator.free(self.name);
         if (self.mesh_asset_id) |asset_id| allocator.free(asset_id);
         if (self.material_asset_id) |asset_id| allocator.free(asset_id);
+        if (self.script_asset_id) |asset_id| allocator.free(asset_id);
         if (self.script) |script| {
             freeScriptParameters(allocator, script.parameters);
         }
@@ -413,6 +423,16 @@ pub fn createPrefabFromEntities(
                     null
             else
                 null,
+            .script_asset_id = if (entity.script) |script|
+                if (script.script_handle) |handle|
+                    if (world.resources.scriptAssetId(handle)) |asset_id|
+                        try allocator.dupe(u8, asset_id)
+                    else
+                        null
+                else
+                    null
+            else
+                null,
             .local_transform = entity.local_transform,
             .camera = entity.camera,
             .mesh = entity.mesh,
@@ -457,7 +477,7 @@ pub fn instantiatePrefab(
     defer entity_id_map.deinit();
 
     // 创建实体
-    for (prefab.entities) |prefab_entity| {
+    for (prefab.entities) |*prefab_entity| {
         // 构建 EntityDesc
         var desc = world_mod.EntityDesc{
             .name = if (options.name_prefix) |prefix|
@@ -477,6 +497,7 @@ pub fn instantiatePrefab(
         desc.material = prefab_entity.material;
         desc.light = prefab_entity.light;
         desc.vfx = prefab_entity.vfx;
+        desc.script = resolvePrefabScript(world, prefab_entity);
         desc.visible = prefab_entity.visible;
         desc.editor_only = prefab_entity.editor_only;
         desc.is_folder = prefab_entity.is_folder;
@@ -578,6 +599,12 @@ fn buildPrefabFile(allocator: std.mem.Allocator, prefab: *const PrefabResource) 
             } else null,
             .light = entity.light,
             .vfx = entity.vfx,
+            .script = if (entity.script) |script| .{
+                .asset_id = entity.script_asset_id,
+                .language = script.language,
+                .enabled = script.enabled,
+                .parameters = script.parameters,
+            } else null,
             .visible = entity.visible,
             .editor_only = entity.editor_only,
             .is_folder = entity.is_folder,
@@ -641,6 +668,13 @@ fn deserializePrefabV1FromSlice(
                     null
             else
                 null,
+            .script_asset_id = if (record.script) |script|
+                if (script.asset_id) |asset_id|
+                    try allocator.dupe(u8, asset_id)
+                else
+                    null
+            else
+                null,
             .local_transform = record.local_transform,
             .camera = record.camera,
             .mesh = if (record.mesh) |mesh| .{
@@ -658,6 +692,12 @@ fn deserializePrefabV1FromSlice(
             } else null,
             .light = record.light,
             .vfx = record.vfx,
+            .script = if (record.script) |script| .{
+                .script_handle = null,
+                .language = script.language,
+                .enabled = script.enabled,
+                .parameters = if (script.parameters.len != 0) try allocator.dupe(u8, script.parameters) else &.{},
+            } else null,
             .visible = record.visible,
             .editor_only = record.editor_only,
             .is_folder = record.is_folder,
@@ -749,6 +789,7 @@ const ComponentChangeList = struct {
     rigidbody_changed: bool = false,
     collider_changed: bool = false,
     vfx_changed: bool = false,
+    script_changed: bool = false,
 };
 
 fn detectEntityDiff(
@@ -812,6 +853,12 @@ fn detectEntityDiff(
         diff.component_changes.vfx_changed = true;
         diff.has_changes = true;
     }
+    if (!equalOrNull(old_entity.script, new_entity.script) or
+        !equalStringOrNull(old_entity.script_asset_id, new_entity.script_asset_id))
+    {
+        diff.component_changes.script_changed = true;
+        diff.has_changes = true;
+    }
 
     return diff;
 }
@@ -820,6 +867,12 @@ fn equalOrNull(a: anytype, b: @TypeOf(a)) bool {
     if (a == null and b == null) return true;
     if (a == null or b == null) return false;
     return std.meta.eql(a.?, b.?);
+}
+
+fn equalStringOrNull(a: ?[]const u8, b: ?[]const u8) bool {
+    if (a == null and b == null) return true;
+    if (a == null or b == null) return false;
+    return std.mem.eql(u8, a.?, b.?);
 }
 
 // ============================================================================
@@ -954,6 +1007,13 @@ test "Prefab save-load-resave is byte stable" {
         .name = try allocator.dupe(u8, "Robot"),
         .local_transform = .{ .translation = .{ 0.0, 1.0, 0.0 } },
         .mesh = .{ .handle = null, .primitive = .cube },
+        .script_asset_id = try allocator.dupe(u8, "script://robot/patrol"),
+        .script = .{
+            .script_handle = null,
+            .language = .wasm,
+            .enabled = true,
+            .parameters = try allocator.dupe(u8, "{\"speed\":3.0}\n"),
+        },
         .visible = true,
     };
     entity_data[1] = .{
@@ -977,6 +1037,62 @@ test "Prefab save-load-resave is byte stable" {
     defer allocator.free(second);
 
     try std.testing.expectEqualStrings(first, second);
+}
+
+test "instantiatePrefab resolves script asset ids into live handles" {
+    const allocator = std.testing.allocator;
+
+    var world = world_mod.World.init(allocator, null);
+    defer world.deinit();
+
+    const script_handle = try world.resources.createScript(.{
+        .source = "pub fn onUpdate(dt: f32) void { _ = dt; }\n",
+        .language = .wasm,
+        .description = "Prefab Logic",
+        .source_path = "assets/scripts/prefab_logic.zig",
+        .bytecode = &.{ 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00 },
+        .user_data = "{\"version\":1,\"parameters\":[]}\n",
+    });
+    _ = try world.resources.bindScriptAssetRecord(script_handle, .{
+        .id = try allocator.dupe(u8, "script://prefab/logic"),
+        .type = .script,
+        .source_path = try allocator.dupe(u8, "assets/scripts/prefab_logic.zig"),
+        .source_hash = try asset_registry.hashStringAlloc(allocator, "prefab-logic"),
+        .import_settings_hash = try asset_registry.defaultImportSettingsHashAlloc(allocator, .script),
+        .import_version = asset_registry.AssetType.script.importVersion(),
+        .dependency_ids = try allocator.alloc([]u8, 0),
+        .outputs = try allocator.alloc(asset_registry.AssetOutput, 0),
+        .metadata = .{
+            .display_name = try allocator.dupe(u8, "Prefab Logic"),
+            .importer = try allocator.dupe(u8, asset_registry.AssetType.script.importerName()),
+            .source_extension = try allocator.dupe(u8, ".zig"),
+        },
+    });
+
+    var prefab = PrefabResource.init(allocator, "prefab://test/logic/v1", "LogicActor");
+    defer prefab.deinit();
+
+    var entity_data = try allocator.alloc(PrefabEntityData, 1);
+    entity_data[0] = .{
+        .prefab_entity_id = 0,
+        .name = try allocator.dupe(u8, "LogicActor"),
+        .script_asset_id = try allocator.dupe(u8, "script://prefab/logic"),
+        .script = .{
+            .script_handle = null,
+            .language = .wasm,
+            .enabled = true,
+            .parameters = try allocator.dupe(u8, "{\"speed\":5.0}\n"),
+        },
+        .visible = true,
+    };
+    prefab.entities = entity_data;
+
+    const root_id = try instantiatePrefab(allocator, &world, &prefab, .{});
+    const root = world.getEntityConst(root_id).?;
+    try std.testing.expect(root.script != null);
+    try std.testing.expectEqual(script_handle, root.script.?.script_handle.?);
+    try std.testing.expectEqual(components.ScriptLanguage.wasm, root.script.?.language);
+    try std.testing.expectEqualStrings("{\"speed\":5.0}\n", root.script.?.parameters);
 }
 
 test "Prefab 实例化" {
@@ -1164,6 +1280,12 @@ pub fn updatePrefabInstance(
         if (entity_diff.component_changes.vfx_changed and !(overrides != null and overrides.?.override_mask.vfx)) {
             entity.vfx = prefab_entity.vfx;
         }
+        if (entity_diff.component_changes.script_changed and !(overrides != null and overrides.?.override_mask.script)) {
+            if (entity.script) |script| {
+                freeScriptParameters(world.allocator, script.parameters);
+            }
+            entity.script = try cloneScriptComponent(world.allocator, resolvePrefabScript(world, prefab_entity));
+        }
     }
 
     // 2. 添加新实体
@@ -1194,6 +1316,7 @@ pub fn updatePrefabInstance(
         desc.sphere_collider = prefab_entity.sphere_collider;
         desc.mesh_collider = prefab_entity.mesh_collider;
         desc.vfx = prefab_entity.vfx;
+        desc.script = resolvePrefabScript(world, prefab_entity);
         desc.visible = prefab_entity.visible;
 
         const new_entity_id = try world.createEntity(desc);
@@ -1234,6 +1357,17 @@ fn resolvePrefabMaterial(world: *world_mod.World, prefab_entity: *const PrefabEn
         }
     }
     return material;
+}
+
+fn resolvePrefabScript(world: *world_mod.World, prefab_entity: *const PrefabEntityData) ?components.Script {
+    var script = prefab_entity.script orelse return null;
+    if (script.script_handle == null) {
+        if (prefab_entity.script_asset_id) |asset_id| {
+            script.script_handle = world.resources.scriptHandleByAssetId(asset_id);
+        }
+    }
+    script.instance_id = null;
+    return script;
 }
 
 /// 根据 prefab_entity_id 查找实体

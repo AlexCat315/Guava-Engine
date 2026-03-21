@@ -3,6 +3,7 @@ const asset_registry = @import("../assets/registry.zig");
 const assets_handles = @import("../assets/handles.zig");
 const mesh_mod = @import("../assets/mesh_resource.zig");
 const rhi_types = @import("../rhi/types.zig");
+const script_types = @import("../script/types.zig");
 const components = @import("components.zig");
 const world_mod = @import("world.zig");
 
@@ -22,6 +23,7 @@ const SceneFile = struct {
     skeletons: []SkeletonRecord = &.{},
     skins: []SkinRecord = &.{},
     animation_clips: []AnimationClipRecord = &.{},
+    scripts: []ScriptRecord = &.{},
     entities: []EntityRecord,
 };
 
@@ -94,6 +96,18 @@ const AnimationClipRecord = struct {
     scale_tracks: []const AnimationClipVec3TrackRecord = &.{},
 };
 
+const ScriptRecord = struct {
+    asset_id: []const u8,
+    language: components.ScriptLanguage,
+    entry_fn: []const u8 = "main",
+    description: []const u8 = "",
+    source_path: []const u8 = "",
+    last_modified: i128 = 0,
+    source: []const u8,
+    bytecode_hex: []const u8 = "",
+    user_data: []const u8 = "",
+};
+
 const MeshComponentRecord = struct {
     asset_id: ?[]const u8 = null,
     primitive: components.Primitive = .custom,
@@ -110,6 +124,13 @@ const MaterialComponentRecord = struct {
     asset_id: ?[]const u8 = null,
     shading: components.ShadingModel = .pbr_metallic_roughness,
     base_color_factor: [4]f32 = .{ 1.0, 1.0, 1.0, 1.0 },
+};
+
+const ScriptComponentRecord = struct {
+    asset_id: ?[]const u8 = null,
+    language: components.ScriptLanguage = .zig,
+    enabled: bool = true,
+    parameters: []const u8 = "",
 };
 
 const AnimatorComponentRecord = struct {
@@ -258,6 +279,7 @@ const EntityRecord = struct {
     material: ?MaterialComponentRecord = null,
     light: ?components.Light = null,
     vfx: ?components.Vfx = null,
+    script: ?ScriptComponentRecord = null,
     visible: bool = true,
     editor_only: bool = false,
     is_folder: bool = false,
@@ -346,6 +368,11 @@ const AnimationClipBinding = struct {
     handle: assets_handles.AnimationClipHandle,
 };
 
+const ScriptBinding = struct {
+    asset_id: []const u8,
+    handle: assets_handles.ScriptHandle,
+};
+
 pub fn serializeWorldAlloc(allocator: std.mem.Allocator, world: *const world_mod.World) ![]u8 {
     var arena_state = std.heap.ArenaAllocator.init(allocator);
     defer arena_state.deinit();
@@ -419,6 +446,8 @@ fn buildSceneFile(allocator: std.mem.Allocator, world: *const world_mod.World) !
     defer skin_records.deinit(allocator);
     var animation_clip_records = std.ArrayList(AnimationClipRecord).empty;
     defer animation_clip_records.deinit(allocator);
+    var script_records = std.ArrayList(ScriptRecord).empty;
+    defer script_records.deinit(allocator);
     var asset_records = std.ArrayList(asset_registry.AssetRecord).empty;
     defer asset_records.deinit(allocator);
     var entity_records = std.ArrayList(EntityRecord).empty;
@@ -436,6 +465,8 @@ fn buildSceneFile(allocator: std.mem.Allocator, world: *const world_mod.World) !
     defer skin_asset_ids.deinit();
     var animation_clip_asset_ids = std.AutoHashMap(assets_handles.AnimationClipHandle, []const u8).init(allocator);
     defer animation_clip_asset_ids.deinit();
+    var script_asset_ids = std.AutoHashMap(assets_handles.ScriptHandle, []const u8).init(allocator);
+    defer script_asset_ids.deinit();
     var entity_indices = std.AutoHashMap(world_mod.EntityId, u32).init(allocator);
     defer entity_indices.deinit();
 
@@ -610,6 +641,26 @@ fn buildSceneFile(allocator: std.mem.Allocator, world: *const world_mod.World) !
         else
             null;
 
+        const script_component = if (entity.script) |script|
+            ScriptComponentRecord{
+                .asset_id = if (script.script_handle) |script_handle|
+                    try ensureScriptRecord(
+                        allocator,
+                        world,
+                        script_handle,
+                        &script_asset_ids,
+                        &script_records,
+                        &asset_records,
+                    )
+                else
+                    null,
+                .language = script.language,
+                .enabled = script.enabled,
+                .parameters = script.parameters,
+            }
+        else
+            null;
+
         try entity_records.append(allocator, .{
             .name = entity.name,
             .parent = if (entity.parent) |parent_id| entity_indices.get(parent_id) else null,
@@ -646,6 +697,7 @@ fn buildSceneFile(allocator: std.mem.Allocator, world: *const world_mod.World) !
             .material = material_component,
             .light = entity.light,
             .vfx = entity.vfx,
+            .script = script_component,
             .visible = entity.visible,
             .editor_only = entity.editor_only,
             .is_folder = entity.is_folder,
@@ -661,6 +713,7 @@ fn buildSceneFile(allocator: std.mem.Allocator, world: *const world_mod.World) !
         skeleton_records.items,
         skin_records.items,
         animation_clip_records.items,
+        script_records.items,
     );
 
     return .{
@@ -672,6 +725,7 @@ fn buildSceneFile(allocator: std.mem.Allocator, world: *const world_mod.World) !
         .skeletons = try skeleton_records.toOwnedSlice(allocator),
         .skins = try skin_records.toOwnedSlice(allocator),
         .animation_clips = try animation_clip_records.toOwnedSlice(allocator),
+        .scripts = try script_records.toOwnedSlice(allocator),
         .entities = try entity_records.toOwnedSlice(allocator),
     };
 }
@@ -839,6 +893,41 @@ fn deserializeWorldV4FromSlice(allocator: std.mem.Allocator, world: *world_mod.W
         });
     }
 
+    var script_bindings = std.ArrayList(ScriptBinding).empty;
+    defer script_bindings.deinit(allocator);
+    for (scene.scripts) |script| {
+        const handle = if (world.resources.scriptHandleByAssetId(script.asset_id)) |existing|
+            existing
+        else blk: {
+            const decoded_bytecode = try decodeHexAlloc(allocator, script.bytecode_hex);
+            defer allocator.free(decoded_bytecode);
+
+            const created = try world.resources.createScript(.{
+                .source = script.source,
+                .language = scriptResourceLanguage(script.language),
+                .entry_fn = script.entry_fn,
+                .description = script.description,
+                .source_path = script.source_path,
+                .last_modified = script.last_modified,
+                .bytecode = decoded_bytecode,
+                .user_data = script.user_data,
+            });
+            try bindScriptAssetFromScene(
+                allocator,
+                world,
+                &scene,
+                script.asset_id,
+                if (script.description.len != 0) script.description else script.entry_fn,
+                created,
+            );
+            break :blk created;
+        };
+        try script_bindings.append(allocator, .{
+            .asset_id = script.asset_id,
+            .handle = handle,
+        });
+    }
+
     const entity_ids = try allocator.alloc(world_mod.EntityId, scene.entities.len);
     defer allocator.free(entity_ids);
 
@@ -946,6 +1035,18 @@ fn deserializeWorldV4FromSlice(allocator: std.mem.Allocator, world: *world_mod.W
                 null,
             .light = entity.light,
             .vfx = entity.vfx,
+            .script = if (entity.script) |script_component|
+                .{
+                    .script_handle = if (script_component.asset_id) |script_asset_id|
+                        findScriptHandle(script_bindings.items, script_asset_id) orelse return error.ScriptAssetNotFound
+                    else
+                        null,
+                    .language = script_component.language,
+                    .enabled = script_component.enabled,
+                    .parameters = script_component.parameters,
+                }
+            else
+                null,
             .visible = entity.visible,
             .editor_only = entity.editor_only,
             .is_folder = entity.is_folder,
@@ -1310,6 +1411,37 @@ fn ensureAnimationClipRecord(
     return asset_id;
 }
 
+fn ensureScriptRecord(
+    allocator: std.mem.Allocator,
+    world: *const world_mod.World,
+    handle: assets_handles.ScriptHandle,
+    script_asset_ids: *std.AutoHashMap(assets_handles.ScriptHandle, []const u8),
+    script_records: *std.ArrayList(ScriptRecord),
+    asset_records: *std.ArrayList(asset_registry.AssetRecord),
+) ![]const u8 {
+    if (script_asset_ids.get(handle)) |asset_id| {
+        return asset_id;
+    }
+
+    const script = world.resources.script(handle) orelse return error.ScriptNotFound;
+    const asset_record = try ensureScriptAssetRecord(allocator, world, handle, script);
+    const asset_id = try ensureSceneAssetRecord(asset_records, allocator, asset_record);
+
+    try script_records.append(allocator, .{
+        .asset_id = asset_id,
+        .language = scriptComponentLanguage(script.language),
+        .entry_fn = script.entry_fn,
+        .description = script.description,
+        .source_path = script.source_path,
+        .last_modified = script.last_modified,
+        .source = script.source,
+        .bytecode_hex = try encodeHexAlloc(allocator, script.bytecode),
+        .user_data = script.user_data,
+    });
+    try script_asset_ids.put(handle, asset_id);
+    return asset_id;
+}
+
 fn ensureSceneAssetRecord(
     asset_records: *std.ArrayList(asset_registry.AssetRecord),
     allocator: std.mem.Allocator,
@@ -1414,6 +1546,21 @@ fn ensureAnimationClipAssetRecord(
         return makeEmbeddedAnimationClipAssetRecord(allocator, clip, asset_id);
     }
     return makeEmbeddedAnimationClipAssetRecord(allocator, clip, null);
+}
+
+fn ensureScriptAssetRecord(
+    allocator: std.mem.Allocator,
+    world: *const world_mod.World,
+    handle: assets_handles.ScriptHandle,
+    script: *const @import("../assets/script_resource.zig").ScriptResource,
+) !asset_registry.AssetRecord {
+    if (world.resources.scriptAssetId(handle)) |asset_id| {
+        if (world.resources.assetRecordById(asset_id)) |record| {
+            return try record.clone(allocator);
+        }
+        return makeEmbeddedScriptAssetRecord(allocator, script, asset_id);
+    }
+    return makeEmbeddedScriptAssetRecord(allocator, script, null);
 }
 
 fn makeEmbeddedMeshAssetRecord(
@@ -1532,6 +1679,47 @@ fn makeEmbeddedMaterialAssetRecord(
             .display_name = try allocator.dupe(u8, material.name),
             .importer = try allocator.dupe(u8, asset_registry.AssetType.material.importerName()),
             .source_extension = try allocator.dupe(u8, ""),
+        },
+    };
+}
+
+fn makeEmbeddedScriptAssetRecord(
+    allocator: std.mem.Allocator,
+    script: *const @import("../assets/script_resource.zig").ScriptResource,
+    forced_asset_id: ?[]const u8,
+) !asset_registry.AssetRecord {
+    const source_hash = try asset_registry.hashBytesAlloc(allocator, script.source);
+    defer allocator.free(source_hash);
+    const bytecode_hash = try asset_registry.hashBytesAlloc(allocator, script.bytecode);
+    defer allocator.free(bytecode_hash);
+    const user_data_hash = try asset_registry.hashBytesAlloc(allocator, script.user_data);
+    defer allocator.free(user_data_hash);
+
+    const asset_id = if (forced_asset_id) |id|
+        try allocator.dupe(u8, id)
+    else
+        try asset_registry.makeDerivedAssetIdAlloc(allocator, "guava.scene.script.v1", &.{
+            @tagName(script.language),
+            script.entry_fn,
+            source_hash,
+            bytecode_hash,
+            user_data_hash,
+            script.source_path,
+        });
+
+    return .{
+        .id = asset_id,
+        .type = .script,
+        .source_path = try std.fmt.allocPrint(allocator, "scene://embedded/scripts/{s}", .{script.entry_fn}),
+        .source_hash = try allocator.dupe(u8, source_hash),
+        .import_settings_hash = try asset_registry.defaultImportSettingsHashAlloc(allocator, .script),
+        .import_version = asset_registry.AssetType.script.importVersion(),
+        .dependency_ids = try allocator.alloc([]u8, 0),
+        .outputs = try allocator.alloc(asset_registry.AssetOutput, 0),
+        .metadata = .{
+            .display_name = try allocator.dupe(u8, if (script.description.len != 0) script.description else script.entry_fn),
+            .importer = try allocator.dupe(u8, asset_registry.AssetType.script.importerName()),
+            .source_extension = try allocator.dupe(u8, scriptSourceExtension(script)),
         },
     };
 }
@@ -1967,6 +2155,28 @@ fn hashAnimationClipAlloc(
     return hexLowerAlloc(allocator, digest[0..16]);
 }
 
+fn scriptSourceExtension(script: *const @import("../assets/script_resource.zig").ScriptResource) []const u8 {
+    if (script.source_path.len != 0) {
+        const ext = std.fs.path.extension(script.source_path);
+        if (ext.len != 0) {
+            return ext;
+        }
+    }
+    return switch (script.language) {
+        .zig => ".zig",
+        .csharp => ".cs",
+        .wasm => ".zig",
+    };
+}
+
+fn scriptResourceLanguage(language: components.ScriptLanguage) script_types.ScriptLanguage {
+    return @enumFromInt(@intFromEnum(language));
+}
+
+fn scriptComponentLanguage(language: script_types.ScriptLanguage) components.ScriptLanguage {
+    return @enumFromInt(@intFromEnum(language));
+}
+
 fn bindTextureAssetFromScene(
     allocator: std.mem.Allocator,
     world: *world_mod.World,
@@ -2057,6 +2267,21 @@ fn bindAnimationClipAssetFromScene(
     _ = try world.resources.bindAnimationClipAssetRecord(handle, record);
 }
 
+fn bindScriptAssetFromScene(
+    allocator: std.mem.Allocator,
+    world: *world_mod.World,
+    scene: *const SceneFile,
+    asset_id: []const u8,
+    fallback_name: []const u8,
+    handle: assets_handles.ScriptHandle,
+) !void {
+    const record = if (findAssetRecord(scene.asset_records, asset_id)) |asset_record|
+        try asset_record.clone(allocator)
+    else
+        try fallbackSceneAssetRecord(allocator, asset_id, .script, fallback_name);
+    _ = try world.resources.bindScriptAssetRecord(handle, record);
+}
+
 fn fallbackSceneAssetRecord(
     allocator: std.mem.Allocator,
     asset_id: []const u8,
@@ -2143,6 +2368,15 @@ fn findAnimationClipHandle(bindings: []const AnimationClipBinding, asset_id: []c
     return null;
 }
 
+fn findScriptHandle(bindings: []const ScriptBinding, asset_id: []const u8) ?assets_handles.ScriptHandle {
+    for (bindings) |binding| {
+        if (std.mem.eql(u8, binding.asset_id, asset_id)) {
+            return binding.handle;
+        }
+    }
+    return null;
+}
+
 fn makeSceneIdAlloc(
     allocator: std.mem.Allocator,
     entities: []const EntityRecord,
@@ -2152,6 +2386,7 @@ fn makeSceneIdAlloc(
     skeletons: []const SkeletonRecord,
     skins: []const SkinRecord,
     animation_clips: []const AnimationClipRecord,
+    scripts: []const ScriptRecord,
 ) ![]u8 {
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
     for (entities) |entity| {
@@ -2174,6 +2409,12 @@ fn makeSceneIdAlloc(
         if (entity.animation_graph) |graph| {
             hasher.update(graph.name);
         }
+        if (entity.script) |script| {
+            hasher.update(script.asset_id orelse "none");
+            hasher.update(@tagName(script.language));
+            hasher.update(if (script.enabled) "1" else "0");
+            hasher.update(script.parameters);
+        }
     }
     for (meshes) |mesh| hasher.update(mesh.asset_id);
     for (materials) |material| hasher.update(material.asset_id);
@@ -2181,6 +2422,7 @@ fn makeSceneIdAlloc(
     for (skeletons) |skeleton| hasher.update(skeleton.asset_id);
     for (skins) |skin| hasher.update(skin.asset_id);
     for (animation_clips) |clip| hasher.update(clip.asset_id);
+    for (scripts) |script| hasher.update(script.asset_id);
 
     var digest: [32]u8 = undefined;
     hasher.final(&digest);
@@ -2326,9 +2568,31 @@ test "scene save-load-resave is byte stable" {
     defer world.deinit();
 
     try world.bootstrap3D();
+    const script_handle = try world.resources.createScript(.{
+        .source =
+            \\pub var speed: f32 = 2.0;
+            \\pub fn onUpdate(dt: f32) void {
+            \\    _ = dt;
+            \\}
+            \\
+        ,
+        .language = .wasm,
+        .entry_fn = "main",
+        .description = "Scene Patrol",
+        .source_path = "assets/scripts/scene_patrol.zig",
+        .last_modified = 123456789,
+        .bytecode = &.{ 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00 },
+        .user_data = "{\"version\":1,\"parameters\":[]}\n",
+    });
     const root = try world.createEntity(.{
         .name = "SceneRoot",
         .local_transform = .{ .translation = .{ 1.0, 2.0, 3.0 } },
+        .script = .{
+            .script_handle = script_handle,
+            .language = .wasm,
+            .enabled = true,
+            .parameters = "{\"speed\":6.5}\n",
+        },
     });
     _ = try world.createEntity(.{
         .name = "SceneChild",
@@ -2343,6 +2607,19 @@ test "scene save-load-resave is byte stable" {
     defer loaded.deinit();
     try loadWorldFromPath(std.testing.allocator, &loaded, "assets/scenes/test.guava_scene");
     try saveWorldToPath(std.testing.allocator, &loaded, "assets/scenes/test_resaved.guava_scene");
+
+    const loaded_root = loaded.findEntityByName("SceneRoot").?;
+    try std.testing.expect(loaded_root.script != null);
+    try std.testing.expectEqualStrings("{\"speed\":6.5}\n", loaded_root.script.?.parameters);
+    try std.testing.expect(loaded_root.script.?.script_handle != null);
+    const loaded_script = loaded.resources.script(loaded_root.script.?.script_handle.?).?;
+    try std.testing.expectEqual(script_types.ScriptLanguage.wasm, loaded_script.language);
+    try std.testing.expectEqualStrings("Scene Patrol", loaded_script.description);
+    try std.testing.expectEqualStrings("assets/scripts/scene_patrol.zig", loaded_script.source_path);
+    try std.testing.expectEqual(@as(i128, 123456789), loaded_script.last_modified);
+    try std.testing.expectEqualStrings("{\"version\":1,\"parameters\":[]}\n", loaded_script.user_data);
+    try std.testing.expectEqualSlices(u8, &.{ 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00 }, loaded_script.bytecode);
+    try std.testing.expect(loaded.resources.scriptAssetId(loaded_root.script.?.script_handle.?) != null);
 
     const first = try std.fs.cwd().readFileAlloc(std.testing.allocator, "assets/scenes/test.guava_scene", 4 * 1024 * 1024);
     defer std.testing.allocator.free(first);
