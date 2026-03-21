@@ -327,6 +327,13 @@ pub const Window = struct {
         return .{ x, y };
     }
 
+    /// 启用/禁用相对鼠标模式。
+    /// 相对模式下光标隐藏并锁定，鼠标增量不受屏幕边缘限制。
+    /// 用于摄像机拖拽（轨道/自由视角），防止移动到屏幕边缘后卡住。
+    pub fn setRelativeMouseMode(self: *Window, enabled: bool) void {
+        _ = sdl.SDL_SetWindowRelativeMouseMode(self.handle, enabled);
+    }
+
     pub fn minimize(self: *Window) !void {
         if (!sdl.SDL_MinimizeWindow(self.handle)) {
             std.log.err("SDL_MinimizeWindow failed: {s}", .{lastError()});

@@ -70,8 +70,14 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
             },
         );
     }
+    const prev_drag_active = state.camera_drag_active;
     if (!is_camera_drag_input) {
         state.camera_drag_active = false;
+    }
+    // 拖拽状态转变时切换相对鼠标模式：
+    // 开始拖拽→锁定光标，鼠标增量不受屏幕边缘限制，摄像机可连续旋转/平移任意距离。
+    if (state.camera_drag_active != prev_drag_active) {
+        layer_context.window.setRelativeMouseMode(state.camera_drag_active);
     }
 
     const camera_id = state.editor_camera orelse return;

@@ -180,6 +180,7 @@ fn buildSceneExtractionFrustum(
     width: u32,
     height: u32,
 ) ?frustum_mod.Frustum {
+    if (width == 0 or height == 0) return null;
     const camera_id = world.primaryCameraEntity() orelse return null;
     const camera_entity = world.getEntityConst(camera_id) orelse return null;
     const camera_component = camera_entity.camera orelse return null;
@@ -189,7 +190,6 @@ fn buildSceneExtractionFrustum(
         .camera = camera_component,
         .is_primary = camera_component.is_primary,
     };
-    // 主场景现在在 extraction 阶段就拿到主相机视锥，避免 mesh pass 重复扫 mesh。
     const view_projection = scene_cache.calculateViewProjection(camera_block, width, height);
     return frustum_mod.Frustum.fromViewProjection(view_projection);
 }

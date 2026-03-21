@@ -56,6 +56,22 @@ pub fn update(world: *world_mod.World, delta_seconds: f32) void {
     }
 }
 
+/// 在编辑器中按指定时间点采样并预览动画，不推进动画系统时间。
+/// 用于动画编辑器的 Play/Pause 和时间轴拖拽预览。
+pub fn sampleEntityAtTime(
+    world: *world_mod.World,
+    entity_id: world_mod.EntityId,
+    clip_handle: handles.AnimationClipHandle,
+    time: f32,
+) void {
+    const clip = world.resources.animationClip(clip_handle) orelse return;
+    const targets = world.animatorTargets(entity_id) orelse return;
+    const base_transforms = world.animatorBaseTransforms(entity_id) orelse return;
+    applyPose(world, targets, base_transforms, .{
+        .primary = .{ .clip = clip, .time = time },
+    });
+}
+
 pub fn playClip(
     world: *world_mod.World,
     animator_entity_id: world_mod.EntityId,
