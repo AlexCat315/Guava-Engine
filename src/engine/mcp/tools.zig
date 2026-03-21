@@ -70,10 +70,16 @@ const QueryRequest = struct {
     id: ?scene_mod.EntityId = null,
     name_contains: ?[]u8 = null,
     has_component: ?[]u8 = null,
+    has_components: ?[][]u8 = null,
     parent_id: ?scene_mod.EntityId = null,
     visible: ?bool = null,
     origin: ?components.Vec3 = null,
     radius: ?f32 = null,
+    is_dynamic: ?bool = null,
+    is_root: ?bool = null,
+    has_collider: ?bool = null,
+    has_rigidbody: ?bool = null,
+    sort_by: ?query_engine.Filter.SortBy = null,
     limit: usize = 50,
     offset: usize = 0,
     count_only: bool = false,
@@ -82,6 +88,10 @@ const QueryRequest = struct {
         allocator.free(self.tool_name);
         if (self.name_contains) |name_contains| allocator.free(name_contains);
         if (self.has_component) |has_component| allocator.free(has_component);
+        if (self.has_components) |has_components| {
+            for (has_components) |comp| allocator.free(comp);
+            allocator.free(has_components);
+        }
         self.* = undefined;
     }
 
@@ -90,10 +100,16 @@ const QueryRequest = struct {
             .id = self.id,
             .name_contains = self.name_contains,
             .has_component = self.has_component,
+            .has_components = self.has_components,
             .parent_id = self.parent_id,
             .visible = self.visible,
             .origin = self.origin,
             .radius = self.radius,
+            .is_dynamic = self.is_dynamic,
+            .is_root = self.is_root,
+            .has_collider = self.has_collider,
+            .has_rigidbody = self.has_rigidbody,
+            .sort_by = self.sort_by,
             .limit = self.limit,
             .offset = self.offset,
             .count_only = self.count_only,
@@ -864,6 +880,31 @@ fn parseQueryRequestAlloc(
         }
     }
 
+    var has_components: ?[][]u8 = null;
+    if (args.get("has_components")) |components_val| {
+        const arr = switch (components_val) {
+            .array => |a| a,
+            else => return error.InvalidArguments,
+        };
+        const components_list = try allocator.alloc([]u8, arr.items.len);
+        errdefer allocator.free(components_list);
+        for (arr.items, 0..) |item, i| {
+            const str = switch (item) {
+                .string => |s| s,
+                else => return error.InvalidArguments,
+            };
+            if (!query_engine.isComponentNameSupported(str)) {
+                return error.InvalidArguments;
+            }
+            components_list[i] = try allocator.dupe(u8, str);
+        }
+        has_components = components_list;
+    }
+    errdefer if (has_components) |list| {
+        for (list) |comp| allocator.free(comp);
+        allocator.free(list);
+    };
+
     const has_origin = args.get("origin") != null;
     const has_radius = args.get("radius") != null;
     if (has_origin != has_radius) {
@@ -880,15 +921,40 @@ fn parseQueryRequestAlloc(
         break :blk value;
     } else null;
 
+    var sort_by: ?query_engine.Filter.SortBy = null;
+    if (args.get("sort_by")) |sort_val| {
+        const sort_str = switch (sort_val) {
+            .string => |s| s,
+            else => return error.InvalidArguments,
+        };
+        if (std.mem.eql(u8, sort_str, "distance")) {
+            sort_by = .distance;
+        } else if (std.mem.eql(u8, sort_str, "name_asc")) {
+            sort_by = .name_asc;
+        } else if (std.mem.eql(u8, sort_str, "name_desc")) {
+            sort_by = .name_desc;
+        } else if (std.mem.eql(u8, sort_str, "id_asc")) {
+            sort_by = .id_asc;
+        } else {
+            return error.InvalidArguments;
+        }
+    }
+
     return .{
         .tool_name = owned_tool_name,
         .id = id,
         .name_contains = name_contains,
         .has_component = has_component,
+        .has_components = has_components,
         .parent_id = try parseOptionalEntityIdFromObject(args, "parent_id"),
         .visible = try parseOptionalBoolFromObject(args, "visible"),
         .origin = origin,
         .radius = radius,
+        .is_dynamic = try parseOptionalBoolFromObject(args, "is_dynamic"),
+        .is_root = try parseOptionalBoolFromObject(args, "is_root"),
+        .has_collider = try parseOptionalBoolFromObject(args, "has_collider"),
+        .has_rigidbody = try parseOptionalBoolFromObject(args, "has_rigidbody"),
+        .sort_by = sort_by,
         .limit = try parseUsizeFromObject(args, "limit", 50),
         .offset = try parseUsizeFromObject(args, "offset", 0),
         .count_only = try parseBoolFromObject(args, "count_only", false),

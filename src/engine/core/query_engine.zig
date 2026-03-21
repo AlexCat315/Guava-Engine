@@ -8,13 +8,26 @@ pub const Filter = struct {
     id: ?EntityId = null,
     name_contains: ?[]const u8 = null,
     has_component: ?[]const u8 = null,
+    has_components: ?[]const []const u8 = null,
     parent_id: ?EntityId = null,
     visible: ?bool = null,
     origin: ?components.Vec3 = null,
     radius: ?f32 = null,
+    is_dynamic: ?bool = null,
+    is_root: ?bool = null,
+    has_collider: ?bool = null,
+    has_rigidbody: ?bool = null,
+    sort_by: ?SortBy = null,
     limit: usize = 50,
     offset: usize = 0,
     count_only: bool = false,
+
+    pub const SortBy = enum {
+        distance,
+        name_asc,
+        name_desc,
+        id_asc,
+    };
 
     pub fn normalized(self: Filter) Filter {
         var copy = self;
@@ -101,6 +114,10 @@ pub fn queryAlloc(
         });
     }
 
+    if (filter.sort_by) |sort_by| {
+        sortItems(items.items, sort_by, filter.origin);
+    }
+
     return .{
         .total = total,
         .offset = filter.offset,
@@ -130,6 +147,11 @@ fn matchesEntity(
     if (filter.has_component) |component_name| {
         if (!entityHasComponent(entity, component_name)) return false;
     }
+    if (filter.has_components) |component_names| {
+        for (component_names) |component_name| {
+            if (!entityHasComponent(entity, component_name)) return false;
+        }
+    }
     if (filter.parent_id) |parent_id| {
         if (entity.parent != parent_id) return false;
     }
@@ -140,6 +162,27 @@ fn matchesEntity(
         const radius = filter.radius orelse return false;
         const resolved_distance = distance orelse distanceBetween(filter.origin.?, world_translation);
         if (resolved_distance > radius) return false;
+    }
+    if (filter.is_dynamic) |dynamic| {
+        const has_rigidbody = entity.rigidbody != null;
+        if (dynamic) {
+            if (!has_rigidbody) return false;
+        } else {
+            if (has_rigidbody) return false;
+        }
+    }
+    if (filter.is_root) |root| {
+        const is_root_entity = entity.parent == null;
+        if (root != is_root_entity) return false;
+    }
+    if (filter.has_collider) |has_collider| {
+        const has_any_collider = entity.box_collider != null or
+            entity.sphere_collider != null or
+            entity.mesh_collider != null;
+        if (has_collider != has_any_collider) return false;
+    }
+    if (filter.has_rigidbody) |has_rb| {
+        if (has_rb != (entity.rigidbody != null)) return false;
     }
     return true;
 }
@@ -226,6 +269,42 @@ fn componentTag(name: []const u8) ?ComponentTag {
     if (std.mem.eql(u8, name, "vfx")) return .vfx;
     if (std.mem.eql(u8, name, "script")) return .script;
     return null;
+}
+
+fn sortItems(items: []ResultItem, sort_by: Filter.SortBy, origin: ?components.Vec3) void {
+    switch (sort_by) {
+        .distance => {
+            if (origin == null) return;
+            std.sort.block(ResultItem, items, origin.?, struct {
+                fn lessThan(ctx: components.Vec3, a: ResultItem, b: ResultItem) bool {
+                    const dist_a = a.distance orelse distanceBetween(ctx, a.world_translation);
+                    const dist_b = b.distance orelse distanceBetween(ctx, b.world_translation);
+                    return dist_a < dist_b;
+                }
+            }.lessThan);
+        },
+        .name_asc => {
+            std.sort.block(ResultItem, items, {}, struct {
+                fn lessThan(_: void, a: ResultItem, b: ResultItem) bool {
+                    return std.mem.order(u8, a.name, b.name) == .lt;
+                }
+            }.lessThan);
+        },
+        .name_desc => {
+            std.sort.block(ResultItem, items, {}, struct {
+                fn lessThan(_: void, a: ResultItem, b: ResultItem) bool {
+                    return std.mem.order(u8, a.name, b.name) == .gt;
+                }
+            }.lessThan);
+        },
+        .id_asc => {
+            std.sort.block(ResultItem, items, {}, struct {
+                fn lessThan(_: void, a: ResultItem, b: ResultItem) bool {
+                    return a.id < b.id;
+                }
+            }.lessThan);
+        },
+    }
 }
 
 test "QueryEngine filters by component and paginates results" {
