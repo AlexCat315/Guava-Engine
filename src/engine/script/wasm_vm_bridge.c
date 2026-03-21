@@ -25,6 +25,17 @@ extern uint32_t guava_wasm_host_set_local_rotation(void *userdata, uint32_t enti
 extern uint32_t guava_wasm_host_set_local_scale(void *userdata, uint32_t entity_id, float sx, float sy, float sz);
 extern uint32_t guava_wasm_host_set_visible(void *userdata, uint32_t entity_id, uint32_t visible);
 extern void guava_wasm_host_report_panic(void *userdata, const uint8_t *ptr, uint32_t len);
+extern void guava_wasm_host_report_panic_with_location(
+    void *userdata,
+    const uint8_t *msg_ptr,
+    uint32_t msg_len,
+    const uint8_t *file_ptr,
+    uint32_t file_len,
+    const uint8_t *func_ptr,
+    uint32_t func_len,
+    uint32_t line,
+    uint32_t column
+);
 extern uint32_t guava_wasm_host_get_selection_count(void *userdata);
 extern uint32_t guava_wasm_host_get_selection_entity(void *userdata, uint32_t index);
 extern void guava_wasm_host_select_entity(void *userdata, uint32_t entity_id, uint32_t additive);
@@ -141,6 +152,31 @@ host_set_visible(wasm_exec_env_t exec_env, uint32_t entity_id, uint32_t visible)
 static void
 host_report_panic(wasm_exec_env_t exec_env, const uint8_t *ptr, uint32_t len) {
     guava_wasm_host_report_panic(guava_get_userdata(exec_env), ptr, len);
+}
+
+static void
+host_report_panic_with_location(
+    wasm_exec_env_t exec_env,
+    const uint8_t *msg_ptr,
+    uint32_t msg_len,
+    const uint8_t *file_ptr,
+    uint32_t file_len,
+    const uint8_t *func_ptr,
+    uint32_t func_len,
+    uint32_t line,
+    uint32_t column
+) {
+    guava_wasm_host_report_panic_with_location(
+        guava_get_userdata(exec_env),
+        msg_ptr,
+        msg_len,
+        file_ptr,
+        file_len,
+        func_ptr,
+        func_len,
+        line,
+        column
+    );
 }
 
 static uint32_t
@@ -316,7 +352,7 @@ host_ui_set_tooltip(wasm_exec_env_t exec_env, const uint8_t *ptr, uint32_t len) 
     guava_wasm_host_ui_set_tooltip(guava_get_userdata(exec_env), ptr, len);
 }
 
-#define GUAVA_NATIVE_SYMBOL_COUNT 34
+#define GUAVA_NATIVE_SYMBOL_COUNT 35
 
 static NativeSymbol guava_native_symbols[GUAVA_NATIVE_SYMBOL_COUNT] = {
     EXPORT_WASM_API_WITH_SIG(host_get_entity_id, "()i"),
@@ -328,6 +364,7 @@ static NativeSymbol guava_native_symbols[GUAVA_NATIVE_SYMBOL_COUNT] = {
     EXPORT_WASM_API_WITH_SIG(host_set_local_scale, "(ifff)i"),
     EXPORT_WASM_API_WITH_SIG(host_set_visible, "(ii)i"),
     EXPORT_WASM_API_WITH_SIG(host_report_panic, "(*~)"),
+    EXPORT_WASM_API_WITH_SIG(host_report_panic_with_location, "(*~*~*~ii)"),
     EXPORT_WASM_API_WITH_SIG(host_get_selection_count, "()i"),
     EXPORT_WASM_API_WITH_SIG(host_get_selection_entity, "(i)i"),
     EXPORT_WASM_API_WITH_SIG(host_select_entity, "(ii)"),

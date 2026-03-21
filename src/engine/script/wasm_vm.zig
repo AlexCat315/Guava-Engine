@@ -191,7 +191,26 @@ pub const WasmVM = struct {
 
     fn captureRuntimeError(vm: *WasmVM, state: *WasmInstanceState, fallback: []const u8) void {
         if (state.last_panic_message.len != 0) {
-            setOwnedMessage(vm.allocator, &vm.error_msg, state.last_panic_message);
+            if (state.last_panic_file.len > 0) {
+                const formatted = std.fmt.allocPrint(
+                    vm.allocator,
+                    "{s} at {s}:{d}:{d} (in {s})",
+                    .{
+                        state.last_panic_message,
+                        state.last_panic_file,
+                        state.last_panic_line,
+                        state.last_panic_column,
+                        state.last_panic_function,
+                    },
+                ) catch {
+                    setOwnedMessage(vm.allocator, &vm.error_msg, state.last_panic_message);
+                    return;
+                };
+                setOwnedMessage(vm.allocator, &vm.error_msg, formatted);
+                vm.allocator.free(formatted);
+            } else {
+                setOwnedMessage(vm.allocator, &vm.error_msg, state.last_panic_message);
+            }
             return;
         }
 
@@ -253,6 +272,10 @@ const WasmInstanceState = struct {
     source: []u8 = &.{},
     bytecode: []u8 = &.{},
     last_panic_message: []u8 = &.{},
+    last_panic_file: []u8 = &.{},
+    last_panic_function: []u8 = &.{},
+    last_panic_line: u32 = 0,
+    last_panic_column: u32 = 0,
 
     fn init(self: *WasmInstanceState, allocator: std.mem.Allocator, source: []const u8, bytecode: []const u8) !void {
         self.* = .{
@@ -278,6 +301,8 @@ const WasmInstanceState = struct {
         clearOwnedBytes(self.allocator, &self.source);
         clearOwnedBytes(self.allocator, &self.bytecode);
         clearOwnedMessage(self.allocator, &self.last_panic_message);
+        clearOwnedMessage(self.allocator, &self.last_panic_file);
+        clearOwnedMessage(self.allocator, &self.last_panic_function);
         self.* = undefined;
     }
 };
@@ -708,6 +733,25 @@ pub export fn guava_wasm_host_report_panic(userdata: ?*anyopaque, ptr: [*]const 
     replaceOwnedBytes(state.allocator, &state.last_panic_message, ptr[0..len]) catch {
         log.err("failed to capture guest panic message", .{});
     };
+}
+
+pub export fn guava_wasm_host_report_panic_with_location(
+    userdata: ?*anyopaque,
+    msg_ptr: [*]const u8,
+    msg_len: u32,
+    file_ptr: [*]const u8,
+    file_len: u32,
+    func_ptr: [*]const u8,
+    func_len: u32,
+    line: u32,
+    column: u32,
+) void {
+    const state: *WasmInstanceState = @ptrCast(@alignCast(userdata orelse return));
+    replaceOwnedBytes(state.allocator, &state.last_panic_message, msg_ptr[0..msg_len]) catch {};
+    replaceOwnedBytes(state.allocator, &state.last_panic_file, file_ptr[0..file_len]) catch {};
+    replaceOwnedBytes(state.allocator, &state.last_panic_function, func_ptr[0..func_len]) catch {};
+    state.last_panic_line = line;
+    state.last_panic_column = column;
 }
 
 pub export fn guava_wasm_host_get_selection_count(userdata: ?*anyopaque) u32 {

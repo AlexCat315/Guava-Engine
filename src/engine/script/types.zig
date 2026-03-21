@@ -100,6 +100,8 @@ pub const ScriptInstance = struct {
     state: ScriptInstanceState = .uninitialized,
     /// 最后错误信息
     last_error: []u8 = &.{},
+    /// 最后错误位置
+    last_error_location: SourceLocation = .{},
     /// 初始化顺序（用于同实体多脚本排序）
     init_order: u32 = 0,
 };
@@ -127,4 +129,37 @@ pub const ScriptError = error{
     NotFound,
     InvalidLanguage,
     OutOfMemory,
+};
+
+/// 脚本源码位置 - 用于错误定位
+pub const SourceLocation = struct {
+    /// 文件名（Guest 端源文件路径）
+    file: []const u8 = &.{},
+    /// 函数名
+    function: []const u8 = &.{},
+    /// 行号（1-indexed）
+    line: u32 = 0,
+    /// 列号（1-indexed）
+    column: u32 = 0,
+
+    pub fn format(
+        self: SourceLocation,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = fmt;
+        _ = options;
+        if (self.file.len > 0) {
+            try writer.print("{s}", .{self.file});
+            if (self.line > 0) {
+                try writer.print(":{}", .{self.line});
+                if (self.column > 0) {
+                    try writer.print(":{}", .{self.column});
+                }
+            }
+        } else {
+            try writer.writeAll("<unknown>");
+        }
+    }
 };
