@@ -6,6 +6,7 @@ const components_mod = @import("../scene/components.zig");
 pub const CommandQueue = struct {
     allocator: std.mem.Allocator,
     commands: std.ArrayList(command_mod.Command) = .empty,
+    max_pending: usize = 1000,
 
     pub fn init(allocator: std.mem.Allocator) CommandQueue {
         return .{
@@ -15,22 +16,28 @@ pub const CommandQueue = struct {
     }
 
     pub fn deinit(self: *CommandQueue) void {
-        self.clear();
+        for (self.commands.items) |*cmd| {
+            cmd.deinit(self.allocator);
+        }
         self.commands.deinit(self.allocator);
     }
 
-    pub fn clear(self: *CommandQueue) void {
-        for (self.commands.items) |*command| {
-            command.deinit(self.allocator);
-        }
-        self.commands.clearRetainingCapacity();
+    pub fn setMaxPending(self: *CommandQueue, max: usize) void {
+        self.max_pending = max;
     }
 
     pub fn len(self: *const CommandQueue) usize {
         return self.commands.items.len;
     }
 
+    pub fn isFull(self: *const CommandQueue) bool {
+        return self.commands.items.len >= self.max_pending;
+    }
+
     pub fn enqueueCreateEntity(self: *CommandQueue, spec: command_mod.CreateEntitySpec) !void {
+        if (self.isFull()) {
+            return error.QueueFull;
+        }
         try self.commands.append(self.allocator, .{
             .create_entity = .{
                 .name = try self.allocator.dupe(u8, spec.name),
@@ -49,12 +56,18 @@ pub const CommandQueue = struct {
     }
 
     pub fn enqueueDeleteEntity(self: *CommandQueue, entity_id: scene_mod.EntityId) !void {
+        if (self.isFull()) {
+            return error.QueueFull;
+        }
         try self.commands.append(self.allocator, .{
             .delete_entity = .{ .entity_id = entity_id },
         });
     }
 
     pub fn enqueueRenameEntity(self: *CommandQueue, entity_id: scene_mod.EntityId, name: []const u8) !void {
+        if (self.isFull()) {
+            return error.QueueFull;
+        }
         try self.commands.append(self.allocator, .{
             .rename_entity = .{
                 .entity_id = entity_id,
@@ -64,6 +77,9 @@ pub const CommandQueue = struct {
     }
 
     pub fn enqueueSetParent(self: *CommandQueue, entity_id: scene_mod.EntityId, parent_id: ?scene_mod.EntityId) !void {
+        if (self.isFull()) {
+            return error.QueueFull;
+        }
         try self.commands.append(self.allocator, .{
             .set_parent = .{
                 .entity_id = entity_id,
@@ -73,6 +89,9 @@ pub const CommandQueue = struct {
     }
 
     pub fn enqueueSetLocalTransform(self: *CommandQueue, entity_id: scene_mod.EntityId, transform: components_mod.Transform) !void {
+        if (self.isFull()) {
+            return error.QueueFull;
+        }
         if (self.tryCoalesceTransform(.set_local_transform, entity_id, transform)) {
             return;
         }
@@ -85,6 +104,9 @@ pub const CommandQueue = struct {
     }
 
     pub fn enqueueSetWorldTransform(self: *CommandQueue, entity_id: scene_mod.EntityId, transform: components_mod.Transform) !void {
+        if (self.isFull()) {
+            return error.QueueFull;
+        }
         if (self.tryCoalesceTransform(.set_world_transform, entity_id, transform)) {
             return;
         }
@@ -97,6 +119,9 @@ pub const CommandQueue = struct {
     }
 
     pub fn enqueueSetVisible(self: *CommandQueue, entity_id: scene_mod.EntityId, visible: bool) !void {
+        if (self.isFull()) {
+            return error.QueueFull;
+        }
         try self.commands.append(self.allocator, .{
             .set_visible = .{
                 .entity_id = entity_id,

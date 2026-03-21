@@ -7,6 +7,7 @@ const command_queue_mod = @import("command_queue.zig");
 const editor_utility_runtime_mod = @import("../script/editor_utility_runtime.zig");
 const script_runtime_mod = @import("../script/runtime.zig");
 const window_mod = @import("../platform/window.zig");
+const physics_mod = @import("../physics/system.zig");
 
 pub const PlaybackState = enum {
     stopped,
@@ -52,6 +53,7 @@ pub const LayerContext = struct {
     input: *input_mod.InputState,
     window: *window_mod.Window,
     playback_controller: *PlaybackController,
+    physics_state: *physics_mod.PhysicsState,
     frame_index: usize,
     delta_seconds: f32,
 

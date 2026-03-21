@@ -294,6 +294,10 @@ const SceneViewportState = struct {
             .format = .d32_float,
             .usage = rhi_types.TextureUsage.depth_stencil_target,
         });
+        errdefer if (self.depth_texture) |*texture| {
+            device.releaseTexture(texture);
+            self.depth_texture = null;
+        };
 
         self.width = width;
         self.height = height;
@@ -1036,7 +1040,7 @@ pub const Renderer = struct {
         return &entry.target.color_texture;
     }
 
-    pub fn drawFrame(self: *Renderer, scene: *scene_mod.Scene) !FrameReport {
+    pub fn drawFrame(self: *Renderer, scene: *scene_mod.Scene, physics_state_opt: ?*physics_mod.PhysicsState) !FrameReport {
         try self.resolveSelectionReadbacks();
 
         const pass_stats = try self.graph.allocatePassStats(self.allocator);
@@ -1430,7 +1434,7 @@ pub const Renderer = struct {
                         draw_stats.add(gizmo_stats);
                     }
 
-                    const debug_stats = try self.drawViewportDebugOverlays(frame, gizmo_pass, scene, &prepared_scene);
+                    const debug_stats = try self.drawViewportDebugOverlays(frame, gizmo_pass, scene, &prepared_scene, physics_state_opt);
                     gizmo_overlay_stats.add(debug_stats);
                     draw_stats.add(debug_stats);
                     self.graph.recordPassStat(pass_stats, .gizmo_overlay, durationNs(gizmo_start, std.time.nanoTimestamp()), gizmo_overlay_stats.draw_calls, gizmo_overlay_stats.triangles_drawn);
@@ -1787,6 +1791,7 @@ pub const Renderer = struct {
         pass: rhi_mod.RenderPass,
         scene: *scene_mod.Scene,
         prepared_scene: *const mesh_pass_mod.PreparedScene,
+        physics_state_opt: ?*physics_mod.PhysicsState,
     ) !mesh_pass_mod.DrawStats {
         var stats = mesh_pass_mod.DrawStats{};
 
@@ -1827,7 +1832,7 @@ pub const Renderer = struct {
             var trigger_lines = std.ArrayList(gizmo_pass_mod.WorldLineVertex).empty;
             defer trigger_lines.deinit(self.allocator);
 
-            try appendCollisionLines(self.allocator, scene, prepared_scene, &solid_lines, &trigger_lines);
+            try appendCollisionLines(self.allocator, scene, prepared_scene, &solid_lines, &trigger_lines, physics_state_opt);
 
             var collision_stats = mesh_pass_mod.DrawStats{};
             if (solid_lines.items.len > 0) {
@@ -1891,9 +1896,13 @@ pub const Renderer = struct {
         prepared_scene: *const mesh_pass_mod.PreparedScene,
         solid_lines: *std.ArrayList(gizmo_pass_mod.WorldLineVertex),
         trigger_lines: *std.ArrayList(gizmo_pass_mod.WorldLineVertex),
+        physics_state_opt: ?*physics_mod.PhysicsState,
     ) !void {
         // 优先使用物理调试信息绘制真实的 collider 形状
-        const debug_shapes = try physics_mod.collectDebugShapes(scene, allocator);
+        const debug_shapes = if (physics_state_opt) |ps|
+            try ps.collectDebugShapes(scene, allocator)
+        else
+            &[0]physics_mod.PhysicsDebugInfo{};
         defer allocator.free(debug_shapes);
 
         if (debug_shapes.len > 0) {

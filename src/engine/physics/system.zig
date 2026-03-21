@@ -9,7 +9,6 @@ const EntityId = scene_mod.EntityId;
 
 const physics_log = std.log.scoped(.physics);
 const epsilon: f32 = 0.0001;
-const jolt_state_allocator = std.heap.page_allocator;
 
 pub const TriggerEvent = struct {
     entity_a: EntityId,
@@ -44,8 +43,6 @@ pub const PhysicsDebugInfo = struct {
     is_trigger: bool,
 };
 
-var g_physics_debug_info: std.ArrayListUnmanaged(PhysicsDebugInfo) = .empty;
-
 const PhysicsEvent = union(enum) {
     entity_created: EntityId,
     entity_destroyed: EntityId,
@@ -58,17 +55,671 @@ const PhysicsEvent = union(enum) {
     transform_changed: EntityId,
 };
 
-const PhysicsBodyHandle = struct {
-    body_id: u32,
-    cached_desc: JoltBodyDesc,
+// ─────────────────────────────────────────────────────────────────────────────
+// PhysicsState: encapsulates all mutable physics state (no more global vars)
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub const PhysicsState = struct {
+    allocator: std.mem.Allocator,
+
+    /// Debug visualization scratch buffer (reused across frames)
+    debug_info: std.ArrayListUnmanaged(PhysicsDebugInfo) = .empty,
+
+    /// Event queue: World mutations → Jolt sync
+    event_queue: std.ArrayListUnmanaged(PhysicsEvent) = .empty,
+    event_mutex: std.Thread.Mutex = .{},
+
+    /// Trigger events from Jolt callback
+    trigger_queue: std.ArrayListUnmanaged(TriggerEvent) = .empty,
+    trigger_mutex: std.Thread.Mutex = .{},
+    trigger_callback: ?*const fn (TriggerEvent) void = null,
+
+    /// Log deduplication flags
+    logged_config: bool = false,
+    logged_jolt_backend: bool = false,
+    logged_jolt_fallback: bool = false,
+    last_snapshot: ?StepSnapshot = null,
+
+    /// Jolt world state cache (keyed by @intFromPtr(world))
+    jolt_world_states: std.AutoHashMapUnmanaged(usize, JoltWorldState) = .empty,
+    jolt_world_states_mutex: std.Thread.Mutex = .{},
+
+    /// Tracks which worlds have been initialized for Jolt
+    jolt_initialized_for_world: std.AutoHashMapUnmanaged(usize, bool) = .empty,
+    jolt_initialized_mutex: std.Thread.Mutex = .{},
+
+    pub fn init(allocator: std.mem.Allocator) PhysicsState {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *PhysicsState) void {
+        self.event_mutex.lock();
+        defer self.event_mutex.unlock();
+        self.event_queue.deinit(self.allocator);
+
+        self.trigger_mutex.lock();
+        defer self.trigger_mutex.unlock();
+        self.trigger_queue.deinit(self.allocator);
+
+        self.jolt_world_states_mutex.lock();
+        defer self.jolt_world_states_mutex.unlock();
+        // Destroy all remaining Jolt contexts
+        var it = self.jolt_world_states.valueIterator();
+        while (it.next()) |state| {
+            guava_jolt_context_destroy(state.context);
+        }
+        self.jolt_world_states.deinit(self.allocator);
+
+        self.jolt_initialized_mutex.lock();
+        defer self.jolt_initialized_mutex.unlock();
+        self.jolt_initialized_for_world.deinit(self.allocator);
+
+        self.debug_info.deinit(self.allocator);
+    }
+
+    pub fn setTriggerCallback(self: *PhysicsState, callback: ?*const fn (TriggerEvent) void) void {
+        self.trigger_callback = callback;
+    }
+
+    pub fn pollTriggerEvents(self: *PhysicsState) []const TriggerEvent {
+        self.trigger_mutex.lock();
+        defer self.trigger_mutex.unlock();
+        return self.trigger_queue.items;
+    }
+
+    pub fn clearTriggerEvents(self: *PhysicsState) void {
+        self.trigger_mutex.lock();
+        defer self.trigger_mutex.unlock();
+        self.trigger_queue.clearRetainingCapacity();
+    }
+
+    pub fn collectDebugShapes(self: *PhysicsState, world: *scene_mod.World, allocator: std.mem.Allocator) ![]PhysicsDebugInfo {
+        self.debug_info.clearRetainingCapacity();
+
+        for (world.entities.items) |entity| {
+            if (!hasAnyCollider(&entity)) continue;
+
+            const world_transform = entity.world_transform_cache;
+            const is_trigger = isTriggerOnly(&entity);
+
+            if (entity.box_collider) |collider| {
+                const center = vec3.add(
+                    world_transform.translation,
+                    vec3.mul(world_transform.scale, collider.center),
+                );
+                const half_extents = vec3.mul(world_transform.scale, collider.half_extents);
+
+                try self.debug_info.append(allocator, .{
+                    .entity_id = entity.id,
+                    .shape = .{ .box = .{
+                        .center = center,
+                        .half_extents = half_extents,
+                    } },
+                    .is_trigger = is_trigger,
+                });
+            }
+
+            if (entity.sphere_collider) |collider| {
+                const center = vec3.add(
+                    world_transform.translation,
+                    vec3.mul(world_transform.scale, collider.center),
+                );
+                const radius = maxComponent(world_transform.scale) * collider.radius;
+
+                try self.debug_info.append(allocator, .{
+                    .entity_id = entity.id,
+                    .shape = .{ .sphere = .{
+                        .center = center,
+                        .radius = radius,
+                    } },
+                    .is_trigger = is_trigger,
+                });
+            }
+        }
+
+        return self.debug_info.items;
+    }
+
+    pub fn enqueuePhysicsEvent(self: *PhysicsState, event: PhysicsEvent) void {
+        self.event_mutex.lock();
+        defer self.event_mutex.unlock();
+        self.event_queue.append(self.allocator, event) catch return;
+    }
+
+    pub fn deinitWorld(self: *PhysicsState, world: *scene_mod.World) void {
+        self.event_mutex.lock();
+        self.event_queue.clearRetainingCapacity();
+        self.event_mutex.unlock();
+
+        self.releaseJoltWorldState(@intFromPtr(world));
+    }
+
+    pub fn step(self: *PhysicsState, world: *scene_mod.World, delta_seconds: f32, config: Config) StepStats {
+        if (!config.enabled or delta_seconds <= epsilon) {
+            self.releaseJoltWorldState(@intFromPtr(world));
+            return .{};
+        }
+
+        self.logConfigOnce(config);
+        return switch (config.backend) {
+            .builtin => blk: {
+                self.releaseJoltWorldState(@intFromPtr(world));
+                break :blk stepBuiltin(world, delta_seconds, config);
+            },
+            .jolt => self.stepJolt(world, delta_seconds, config),
+        };
+    }
+
+    pub fn raycast(self: *PhysicsState, world: *scene_mod.World, query: RayQuery, filter: QueryFilter) ?RaycastHit {
+        if (query.max_distance < 0.0) {
+            return null;
+        }
+
+        const direction_length = vec3.length(query.direction);
+        if (direction_length <= epsilon) {
+            return null;
+        }
+
+        world.updateHierarchy();
+        const normalized_direction = vec3.scale(query.direction, 1.0 / direction_length);
+
+        if (self.joltRaycast(world, query.origin, normalized_direction, query.max_distance, filter)) |maybe_hit| {
+            return maybe_hit;
+        }
+
+        return raycastBuiltin(world, query.origin, normalized_direction, query.max_distance, filter);
+    }
+
+    pub fn overlapAabb(
+        self: *PhysicsState,
+        world: *scene_mod.World,
+        allocator: std.mem.Allocator,
+        query_bounds: AABB,
+        filter: QueryFilter,
+    ) ![]OverlapHit {
+        if (!query_bounds.isValid()) {
+            return allocator.alloc(OverlapHit, 0);
+        }
+
+        world.updateHierarchy();
+
+        if (try self.joltOverlapAabb(world, allocator, query_bounds, filter)) |hits| {
+            return hits;
+        }
+
+        return overlapAabbBuiltin(world, allocator, query_bounds, filter);
+    }
+
+    pub fn sweepAabb(
+        self: *PhysicsState,
+        world: *scene_mod.World,
+        query_bounds: AABB,
+        translation: components.Vec3,
+        filter: QueryFilter,
+    ) ?SweepHit {
+        if (!query_bounds.isValid()) {
+            return null;
+        }
+
+        const travel_distance = vec3.length(translation);
+        if (travel_distance <= epsilon) {
+            return null;
+        }
+
+        world.updateHierarchy();
+
+        if (self.joltSweepAabb(world, query_bounds, translation, filter)) |maybe_hit| {
+            return maybe_hit;
+        }
+
+        return sweepAabbBuiltin(world, query_bounds, translation, travel_distance, filter);
+    }
+
+    // ── Internal methods (prefixed with ps- to distinguish from free helpers) ──
+
+    fn stepJolt(self: *PhysicsState, world: *scene_mod.World, delta_seconds: f32, config: Config) StepStats {
+        if (!self.logged_jolt_backend) {
+            physics_log.info("physics backend jolt active (persistent body cache)", .{});
+            self.logged_jolt_backend = true;
+        }
+
+        world.updateHierarchy();
+
+        var stats = StepStats{};
+        countBodies(world, &stats);
+
+        const limits = effectiveJoltBackendLimits(config, stats.dynamic_bodies + stats.static_bodies);
+        const jolt_config = buildJoltStepConfig(config, delta_seconds, limits);
+        const context = self.ensureJoltWorldContext(world, &jolt_config, limits) orelse
+            return self.stepJoltFallback(world, delta_seconds, config, stats);
+
+        self.processPhysicsEvents(world, context, config);
+        self.ensureJoltInitializedForWorld(world, context, config);
+
+        var body_states = std.ArrayList(JoltBodyState).empty;
+        defer body_states.deinit(world.allocator);
+        body_states.resize(world.allocator, stats.dynamic_bodies + stats.static_bodies) catch return self.stepJoltFallback(world, delta_seconds, config, stats);
+
+        var jolt_stats = JoltStepStats{
+            .dynamic_bodies = 0,
+            .static_bodies = 0,
+            .contacts_resolved = 0,
+            .state_count = 0,
+            .success = 0,
+            .reserved0 = 0,
+            .reserved1 = 0,
+        };
+
+        // Set threadlocal so C export callback can reach us
+        g_active_state = self;
+        const success = guava_jolt_context_step_incremental(
+            context,
+            delta_seconds,
+            config.jolt_collision_steps,
+            body_states.items.ptr,
+            body_states.items.len,
+            &jolt_stats,
+        );
+        g_active_state = null;
+
+        if (!success or jolt_stats.success == 0) {
+            self.releaseJoltWorldState(@intFromPtr(world));
+            return self.stepJoltFallback(world, delta_seconds, config, stats);
+        }
+
+        applyJoltBodyStates(world, body_states.items[0..@min(body_states.items.len, @as(usize, @intCast(jolt_stats.state_count)))]);
+        world.updateHierarchy();
+
+        stats.dynamic_bodies = jolt_stats.dynamic_bodies;
+        stats.static_bodies = jolt_stats.static_bodies;
+        stats.contacts_resolved = jolt_stats.contacts_resolved;
+        self.maybeLogStepSnapshot(stats);
+        return stats;
+    }
+
+    fn stepJoltFallback(self: *PhysicsState, world: *scene_mod.World, delta_seconds: f32, config: Config, fallback_counts: StepStats) StepStats {
+        if (!config.allow_builtin_fallback) {
+            std.debug.print("JOLT FALLBACK: success=0\n", .{});
+            self.maybeLogStepSnapshot(fallback_counts);
+            return fallback_counts;
+        }
+
+        if (!self.logged_jolt_fallback) {
+            physics_log.warn("jolt backend failed; falling back to builtin solver", .{});
+            self.logged_jolt_fallback = true;
+        }
+        return stepBuiltin(world, delta_seconds, config);
+    }
+
+    fn processPhysicsEvents(self: *PhysicsState, world: *scene_mod.World, context: *JoltContext, config: Config) void {
+        self.event_mutex.lock();
+        defer self.event_mutex.unlock();
+
+        for (self.event_queue.items) |event| {
+            switch (event) {
+                .entity_created => |entity_id| {
+                    if (world.getEntityConst(entity_id)) |entity| {
+                        if (buildJoltBodyDesc(world, entity, config)) |desc| {
+                            _ = guava_jolt_context_add_or_update_body(context, &desc, 0.0);
+                        }
+                    }
+                },
+                .entity_destroyed => |entity_id| {
+                    _ = guava_jolt_context_remove_body(context, entity_id);
+                    _ = guava_jolt_context_remove_constraint(context, entity_id);
+                },
+                .rigidbody_added, .collider_added => |entity_id| {
+                    if (world.getEntityConst(entity_id)) |entity| {
+                        if (buildJoltBodyDesc(world, entity, config)) |desc| {
+                            _ = guava_jolt_context_add_or_update_body(context, &desc, 0.0);
+                        }
+                    }
+                },
+                .rigidbody_removed, .collider_removed => |entity_id| {
+                    _ = guava_jolt_context_remove_body(context, entity_id);
+                },
+                .constraint_added => |entity_id| {
+                    if (world.getEntityConst(entity_id)) |entity| {
+                        if (entity.constraint) |constraint| {
+                            if (buildJoltConstraintDesc(world, entity, constraint)) |desc| {
+                                _ = guava_jolt_context_add_or_update_constraint(context, &desc);
+                            }
+                        }
+                    }
+                },
+                .constraint_removed => |entity_id| {
+                    _ = guava_jolt_context_remove_constraint(context, entity_id);
+                },
+                .transform_changed => |entity_id| {
+                    if (world.getEntityConst(entity_id)) |entity| {
+                        if (entity.rigidbody != null or hasAnyCollider(entity)) {
+                            if (buildJoltBodyDesc(world, entity, config)) |desc| {
+                                _ = guava_jolt_context_add_or_update_body(context, &desc, 0.0);
+                            }
+                        }
+                    }
+                },
+            }
+        }
+
+        self.event_queue.clearRetainingCapacity();
+    }
+
+    fn ensureJoltInitializedForWorld(self: *PhysicsState, world: *scene_mod.World, context: *JoltContext, config: Config) void {
+        self.jolt_initialized_mutex.lock();
+        defer self.jolt_initialized_mutex.unlock();
+
+        const key = @intFromPtr(world);
+        if (self.jolt_initialized_for_world.contains(key)) {
+            return;
+        }
+
+        for (world.entities.items) |*entity| {
+            if (entity.rigidbody == null and !hasAnyCollider(entity)) {
+                continue;
+            }
+            if (buildJoltBodyDesc(world, entity, config)) |desc| {
+                _ = guava_jolt_context_add_or_update_body(context, &desc, 0.0);
+            }
+        }
+
+        self.jolt_initialized_for_world.put(self.allocator, key, true) catch {};
+    }
+
+    fn ensureJoltWorldContext(
+        self: *PhysicsState,
+        world: *scene_mod.World,
+        create_config: *const JoltStepConfig,
+        limits: JoltBackendLimits,
+    ) ?*JoltContext {
+        const key = @intFromPtr(world);
+        self.jolt_world_states_mutex.lock();
+        defer self.jolt_world_states_mutex.unlock();
+
+        if (self.jolt_world_states.getPtr(key)) |state| {
+            if (state.limits.eql(limits)) {
+                return state.context;
+            }
+
+            guava_jolt_context_destroy(state.context);
+            const replacement = guava_jolt_context_create(create_config) orelse {
+                _ = self.jolt_world_states.remove(key);
+                return null;
+            };
+            state.* = .{
+                .context = replacement,
+                .limits = limits,
+            };
+            return replacement;
+        }
+
+        const context = guava_jolt_context_create(create_config) orelse return null;
+        self.jolt_world_states.put(self.allocator, key, .{
+            .context = context,
+            .limits = limits,
+        }) catch {
+            guava_jolt_context_destroy(context);
+            return null;
+        };
+        return context;
+    }
+
+    fn ensureJoltQueryContext(
+        self: *PhysicsState,
+        world: *scene_mod.World,
+        body_count: usize,
+    ) ?*JoltContext {
+        const query_config = Config{};
+        const limits = effectiveJoltBackendLimits(query_config, body_count);
+        const create_config = buildJoltStepConfig(query_config, 0.0, limits);
+
+        const key = @intFromPtr(world);
+        self.jolt_world_states_mutex.lock();
+        defer self.jolt_world_states_mutex.unlock();
+
+        if (self.jolt_world_states.getPtr(key)) |state| {
+            if (joltBackendLimitsCover(state.limits, limits)) {
+                return state.context;
+            }
+
+            guava_jolt_context_destroy(state.context);
+            const replacement = guava_jolt_context_create(&create_config) orelse {
+                _ = self.jolt_world_states.remove(key);
+                return null;
+            };
+            state.* = .{
+                .context = replacement,
+                .limits = limits,
+            };
+            return replacement;
+        }
+
+        const context = guava_jolt_context_create(&create_config) orelse return null;
+        self.jolt_world_states.put(self.allocator, key, .{
+            .context = context,
+            .limits = limits,
+        }) catch {
+            guava_jolt_context_destroy(context);
+            return null;
+        };
+        return context;
+    }
+
+    fn releaseJoltWorldState(self: *PhysicsState, key: usize) void {
+        self.jolt_world_states_mutex.lock();
+        defer self.jolt_world_states_mutex.unlock();
+
+        if (self.jolt_world_states.fetchRemove(key)) |removed| {
+            guava_jolt_context_destroy(removed.value.context);
+        }
+
+        self.jolt_initialized_mutex.lock();
+        defer self.jolt_initialized_mutex.unlock();
+        _ = self.jolt_initialized_for_world.fetchRemove(key);
+    }
+
+    fn joltRaycast(
+        self: *PhysicsState,
+        world: *scene_mod.World,
+        origin: components.Vec3,
+        normalized_direction: components.Vec3,
+        max_distance: f32,
+        filter: QueryFilter,
+    ) ??RaycastHit {
+        const body_count = countQueryableBodies(world);
+        const context = self.ensureJoltQueryContext(world, body_count) orelse return null;
+        if (!syncJoltQuerySnapshot(world, context, body_count)) {
+            return null;
+        }
+
+        var raw_hit: JoltRaycastHit = std.mem.zeroes(JoltRaycastHit);
+        const query = JoltRayQuery{
+            .origin = origin,
+            .direction = normalized_direction,
+            .max_distance = max_distance,
+        };
+        const query_filter = joltQueryFilter(filter);
+        if (!guava_jolt_context_raycast(context, &query, &query_filter, &raw_hit)) {
+            return null;
+        }
+
+        if (raw_hit.entity_id == 0) {
+            return @as(?RaycastHit, null);
+        }
+
+        return makeRaycastHit(world, raw_hit);
+    }
+
+    fn joltOverlapAabb(
+        self: *PhysicsState,
+        world: *scene_mod.World,
+        allocator: std.mem.Allocator,
+        query_bounds: AABB,
+        filter: QueryFilter,
+    ) !?[]OverlapHit {
+        const body_count = countQueryableBodies(world);
+        const context = self.ensureJoltQueryContext(world, body_count) orelse return null;
+        if (!syncJoltQuerySnapshot(world, context, body_count)) {
+            return null;
+        }
+
+        if (body_count == 0) {
+            return try allocator.alloc(OverlapHit, 0);
+        }
+
+        const center = query_bounds.centroid();
+        const half_extents = queryHalfExtents(query_bounds);
+        const query_filter = joltQueryFilter(filter);
+
+        var raw_hits = try allocator.alloc(JoltOverlapHit, body_count);
+        defer allocator.free(raw_hits);
+
+        var raw_hit_count: usize = 0;
+        if (!guava_jolt_context_overlap_aabb(
+            context,
+            &center,
+            &half_extents,
+            &query_filter,
+            raw_hits.ptr,
+            raw_hits.len,
+            &raw_hit_count,
+        )) {
+            return null;
+        }
+
+        var hits = std.ArrayList(OverlapHit).empty;
+        errdefer hits.deinit(allocator);
+
+        for (raw_hits[0..@min(raw_hit_count, raw_hits.len)]) |raw_hit| {
+            const hit = makeOverlapHit(world, raw_hit) orelse continue;
+            try hits.append(allocator, hit);
+        }
+
+        return try hits.toOwnedSlice(allocator);
+    }
+
+    fn joltSweepAabb(
+        self: *PhysicsState,
+        world: *scene_mod.World,
+        query_bounds: AABB,
+        translation: components.Vec3,
+        filter: QueryFilter,
+    ) ??SweepHit {
+        const body_count = countQueryableBodies(world);
+        const context = self.ensureJoltQueryContext(world, body_count) orelse return null;
+        if (!syncJoltQuerySnapshot(world, context, body_count)) {
+            return null;
+        }
+
+        var raw_hit: JoltSweepHit = std.mem.zeroes(JoltSweepHit);
+        const center = query_bounds.centroid();
+        const half_extents = queryHalfExtents(query_bounds);
+        const query_filter = joltQueryFilter(filter);
+
+        if (!guava_jolt_context_sweep_aabb(
+            context,
+            &center,
+            &half_extents,
+            &translation,
+            &query_filter,
+            &raw_hit,
+        )) {
+            return null;
+        }
+
+        if (raw_hit.entity_id == 0) {
+            return @as(?SweepHit, null);
+        }
+
+        return makeSweepHit(world, raw_hit);
+    }
+
+    fn logConfigOnce(self: *PhysicsState, config: Config) void {
+        if (self.logged_config) {
+            return;
+        }
+
+        physics_log.info(
+            "physics config enabled backend={s} fixed_dt={d:.5} gravity=({d:.2},{d:.2},{d:.2}) max_substeps={d}",
+            .{
+                @tagName(config.backend),
+                config.fixed_timestep_seconds,
+                config.gravity[0],
+                config.gravity[1],
+                config.gravity[2],
+                config.max_substeps_per_frame,
+            },
+        );
+        self.logged_config = true;
+    }
+
+    fn maybeLogStepSnapshot(self: *PhysicsState, stats: StepStats) void {
+        const snapshot = StepSnapshot{
+            .dynamic_bodies = stats.dynamic_bodies,
+            .static_bodies = stats.static_bodies,
+            .contacts_resolved = stats.contacts_resolved,
+        };
+
+        if (self.last_snapshot) |previous| {
+            if (previous.dynamic_bodies == snapshot.dynamic_bodies and
+                previous.static_bodies == snapshot.static_bodies and
+                previous.contacts_resolved == snapshot.contacts_resolved)
+            {
+                return;
+            }
+        }
+
+        physics_log.info(
+            "physics step active dynamic={d} static={d} contacts={d}",
+            .{ snapshot.dynamic_bodies, snapshot.static_bodies, snapshot.contacts_resolved },
+        );
+        self.last_snapshot = snapshot;
+    }
 };
 
-var g_physics_event_queue: std.ArrayListUnmanaged(PhysicsEvent) = .empty;
-var g_physics_event_mutex: std.Thread.Mutex = .{};
-var g_trigger_event_queue: std.ArrayListUnmanaged(TriggerEvent) = .empty;
-var g_trigger_event_mutex: std.Thread.Mutex = .{};
-var g_trigger_callback: ?*const fn (TriggerEvent) void = null;
+// ─────────────────────────────────────────────────────────────────────────────
+// Pure helper functions (no global state dependency)
+// ─────────────────────────────────────────────────────────────────────────────
 
+fn buildJoltStepConfig(config: Config, delta_seconds: f32, limits: JoltBackendLimits) JoltStepConfig {
+    return .{
+        .delta_seconds = delta_seconds,
+        .gravity = config.gravity,
+        .collision_steps = @max(config.jolt_collision_steps, 1),
+        .temp_allocator_size_bytes = limits.temp_allocator_size_bytes,
+        .max_bodies = limits.max_bodies,
+        .num_body_mutexes = limits.num_body_mutexes,
+        .max_body_pairs = limits.max_body_pairs,
+        .max_contact_constraints = limits.max_contact_constraints,
+    };
+}
+
+fn effectiveJoltBackendLimits(config: Config, body_count: usize) JoltBackendLimits {
+    const max_u32 = std.math.maxInt(u32);
+    const body_count_u32 = @as(u32, @intCast(@min(body_count, max_u32)));
+    const body_count_plus_padding = saturatingAddU32(body_count_u32, 16);
+    const estimated_pairs = saturatingAddU32(saturatingMulU32(body_count_u32, 4), 16);
+    const estimated_contacts = saturatingAddU32(saturatingMulU32(body_count_u32, 8), 16);
+    return .{
+        .temp_allocator_size_bytes = @max(config.jolt_temp_allocator_size_bytes, 1024 * 1024),
+        .max_bodies = @max(config.jolt_max_bodies, body_count_plus_padding),
+        .num_body_mutexes = config.jolt_num_body_mutexes,
+        .max_body_pairs = @max(config.jolt_max_body_pairs, estimated_pairs),
+        .max_contact_constraints = @max(config.jolt_max_contact_constraints, estimated_contacts),
+    };
+}
+
+fn joltBackendLimitsCover(existing: JoltBackendLimits, required: JoltBackendLimits) bool {
+    return existing.temp_allocator_size_bytes >= required.temp_allocator_size_bytes and
+        existing.max_bodies >= required.max_bodies and
+        existing.num_body_mutexes >= required.num_body_mutexes and
+        existing.max_body_pairs >= required.max_body_pairs and
+        existing.max_contact_constraints >= required.max_contact_constraints;
+}
+
+/// Thread-local pointer used by the C export `GuavaJoltEnqueueTriggerEvent`.
+/// Set during `stepJolt` and cleared immediately after.
+threadlocal var g_active_state: ?*PhysicsState = null;
 const jolt_flag_has_box: u32 = 1 << 0;
 const jolt_flag_has_sphere: u32 = 1 << 1;
 const jolt_flag_has_mesh_proxy: u32 = 1 << 2;
@@ -290,8 +941,9 @@ export fn GuavaJoltEnqueueTriggerEvent(event: *const extern struct {
     entity_b: u64,
     kind: u8,
 }) void {
-    g_trigger_event_mutex.lock();
-    defer g_trigger_event_mutex.unlock();
+    const state = g_active_state orelse return;
+    state.trigger_mutex.lock();
+    defer state.trigger_mutex.unlock();
 
     const trigger_event = TriggerEvent{
         .entity_a = event.entity_a,
@@ -299,19 +951,12 @@ export fn GuavaJoltEnqueueTriggerEvent(event: *const extern struct {
         .kind = @enumFromInt(event.kind),
     };
 
-    g_trigger_event_queue.append(jolt_state_allocator, trigger_event) catch return;
+    state.trigger_queue.append(state.allocator, trigger_event) catch return;
 
-    if (g_trigger_callback) |callback| {
+    if (state.trigger_callback) |callback| {
         callback(trigger_event);
     }
 }
-
-var g_logged_config = false;
-var g_logged_jolt_backend = false;
-var g_logged_jolt_fallback = false;
-var g_last_snapshot: ?StepSnapshot = null;
-var g_jolt_world_states: std.AutoHashMapUnmanaged(usize, JoltWorldState) = .empty;
-var g_jolt_world_states_mutex: std.Thread.Mutex = .{};
 
 pub const Backend = enum {
     jolt,
@@ -384,69 +1029,6 @@ pub fn aabbFromCenterHalfExtents(center: components.Vec3, half_extents: componen
         .min = vec3.sub(center, half_extents),
         .max = vec3.add(center, half_extents),
     };
-}
-
-pub fn raycast(world: *scene_mod.World, query: RayQuery, filter: QueryFilter) ?RaycastHit {
-    if (query.max_distance < 0.0) {
-        return null;
-    }
-
-    const direction_length = vec3.length(query.direction);
-    if (direction_length <= epsilon) {
-        return null;
-    }
-
-    world.updateHierarchy();
-    const normalized_direction = vec3.scale(query.direction, 1.0 / direction_length);
-
-    if (joltRaycast(world, query.origin, normalized_direction, query.max_distance, filter)) |maybe_hit| {
-        return maybe_hit;
-    }
-
-    return raycastBuiltin(world, query.origin, normalized_direction, query.max_distance, filter);
-}
-
-pub fn overlapAabb(
-    world: *scene_mod.World,
-    allocator: std.mem.Allocator,
-    query_bounds: AABB,
-    filter: QueryFilter,
-) ![]OverlapHit {
-    if (!query_bounds.isValid()) {
-        return allocator.alloc(OverlapHit, 0);
-    }
-
-    world.updateHierarchy();
-
-    if (try joltOverlapAabb(world, allocator, query_bounds, filter)) |hits| {
-        return hits;
-    }
-
-    return overlapAabbBuiltin(world, allocator, query_bounds, filter);
-}
-
-pub fn sweepAabb(
-    world: *scene_mod.World,
-    query_bounds: AABB,
-    translation: components.Vec3,
-    filter: QueryFilter,
-) ?SweepHit {
-    if (!query_bounds.isValid()) {
-        return null;
-    }
-
-    const travel_distance = vec3.length(translation);
-    if (travel_distance <= epsilon) {
-        return null;
-    }
-
-    world.updateHierarchy();
-
-    if (joltSweepAabb(world, query_bounds, translation, filter)) |maybe_hit| {
-        return maybe_hit;
-    }
-
-    return sweepAabbBuiltin(world, query_bounds, translation, travel_distance, filter);
 }
 
 fn raycastBuiltin(
@@ -544,110 +1126,6 @@ fn sweepAabbBuiltin(
     return best_hit;
 }
 
-pub fn initPhysicsEvents() void {
-    g_physics_event_queue = .{};
-    g_trigger_event_queue = .{};
-    g_trigger_callback = null;
-}
-
-pub fn deinitPhysicsEvents() void {
-    g_physics_event_queue.deinit(jolt_state_allocator);
-    g_trigger_event_queue.deinit(jolt_state_allocator);
-}
-
-pub fn setTriggerCallback(callback: ?*const fn (TriggerEvent) void) void {
-    g_trigger_callback = callback;
-}
-
-pub fn pollTriggerEvents() []const TriggerEvent {
-    g_trigger_event_mutex.lock();
-    defer g_trigger_event_mutex.unlock();
-    return g_trigger_event_queue.items;
-}
-
-pub fn clearTriggerEvents() void {
-    g_trigger_event_mutex.lock();
-    defer g_trigger_event_mutex.unlock();
-    g_trigger_event_queue.clearRetainingCapacity();
-}
-
-pub fn collectDebugShapes(world: *scene_mod.World, allocator: std.mem.Allocator) ![]PhysicsDebugInfo {
-    g_physics_debug_info.clearRetainingCapacity();
-
-    for (world.entities.items) |entity| {
-        if (!hasAnyCollider(&entity)) continue;
-
-        const world_transform = entity.world_transform_cache;
-        const is_trigger = isTriggerOnly(&entity);
-
-        if (entity.box_collider) |collider| {
-            const center = vec3.add(
-                world_transform.translation,
-                vec3.mul(world_transform.scale, collider.center),
-            );
-            const half_extents = vec3.mul(world_transform.scale, collider.half_extents);
-
-            try g_physics_debug_info.append(allocator, .{
-                .entity_id = entity.id,
-                .shape = .{ .box = .{
-                    .center = center,
-                    .half_extents = half_extents,
-                } },
-                .is_trigger = is_trigger,
-            });
-        }
-
-        if (entity.sphere_collider) |collider| {
-            const center = vec3.add(
-                world_transform.translation,
-                vec3.mul(world_transform.scale, collider.center),
-            );
-            const radius = maxComponent(world_transform.scale) * collider.radius;
-
-            try g_physics_debug_info.append(allocator, .{
-                .entity_id = entity.id,
-                .shape = .{ .sphere = .{
-                    .center = center,
-                    .radius = radius,
-                } },
-                .is_trigger = is_trigger,
-            });
-        }
-    }
-
-    return g_physics_debug_info.items;
-}
-
-pub fn enqueuePhysicsEvent(event: PhysicsEvent) void {
-    g_physics_event_mutex.lock();
-    defer g_physics_event_mutex.unlock();
-    g_physics_event_queue.append(jolt_state_allocator, event) catch return;
-}
-
-pub fn deinitWorld(world: *scene_mod.World) void {
-    g_physics_event_mutex.lock();
-    g_physics_event_queue.clearRetainingCapacity();
-    g_physics_event_mutex.unlock();
-
-    releaseJoltWorldState(@intFromPtr(world));
-}
-
-pub fn step(world: *scene_mod.World, delta_seconds: f32, config: Config) StepStats {
-    if (!config.enabled or delta_seconds <= epsilon) {
-        releaseJoltWorldState(@intFromPtr(world));
-        return .{};
-    }
-
-    logConfigOnce(config);
-    return switch (config.backend) {
-        .builtin => blk: {
-            releaseJoltWorldState(@intFromPtr(world));
-            break :blk stepBuiltin(world, delta_seconds, config);
-        },
-        .jolt => stepJolt(world, delta_seconds, config),
-    };
-}
-
 fn stepBuiltin(world: *scene_mod.World, delta_seconds: f32, config: Config) StepStats {
     var stats = StepStats{};
     world.updateHierarchy();
@@ -659,395 +1137,7 @@ fn stepBuiltin(world: *scene_mod.World, delta_seconds: f32, config: Config) Step
     stats.contacts_resolved = resolveStaticContacts(world, config);
     world.updateHierarchy();
 
-    maybeLogStepSnapshot(stats);
     return stats;
-}
-
-fn stepJolt(world: *scene_mod.World, delta_seconds: f32, config: Config) StepStats {
-    if (!g_logged_jolt_backend) {
-        physics_log.info("physics backend jolt active (persistent body cache)", .{});
-        g_logged_jolt_backend = true;
-    }
-
-    world.updateHierarchy();
-
-    var stats = StepStats{};
-    countBodies(world, &stats);
-
-    const limits = effectiveJoltBackendLimits(config, stats.dynamic_bodies + stats.static_bodies);
-    const jolt_config = buildJoltStepConfig(config, delta_seconds, limits);
-    const context = ensureJoltWorldContext(world, &jolt_config, limits) orelse
-        return stepJoltFallback(world, delta_seconds, config, stats);
-
-    processPhysicsEvents(world, context, config);
-    ensureJoltInitializedForWorld(world, context, config);
-
-    var body_states = std.ArrayList(JoltBodyState).empty;
-    defer body_states.deinit(world.allocator);
-    body_states.resize(world.allocator, stats.dynamic_bodies + stats.static_bodies) catch return stepJoltFallback(world, delta_seconds, config, stats);
-
-    var jolt_stats = JoltStepStats{
-        .dynamic_bodies = 0,
-        .static_bodies = 0,
-        .contacts_resolved = 0,
-        .state_count = 0,
-        .success = 0,
-        .reserved0 = 0,
-        .reserved1 = 0,
-    };
-
-    const success = guava_jolt_context_step_incremental(
-        context,
-        delta_seconds,
-        config.jolt_collision_steps,
-        body_states.items.ptr,
-        body_states.items.len,
-        &jolt_stats,
-    );
-    if (!success or jolt_stats.success == 0) {
-        releaseJoltWorldState(@intFromPtr(world));
-        return stepJoltFallback(world, delta_seconds, config, stats);
-    }
-
-    applyJoltBodyStates(world, body_states.items[0..@min(body_states.items.len, @as(usize, @intCast(jolt_stats.state_count)))]);
-    world.updateHierarchy();
-
-    stats.dynamic_bodies = jolt_stats.dynamic_bodies;
-    stats.static_bodies = jolt_stats.static_bodies;
-    stats.contacts_resolved = jolt_stats.contacts_resolved;
-    maybeLogStepSnapshot(stats);
-    return stats;
-}
-
-fn processPhysicsEvents(world: *scene_mod.World, context: *JoltContext, config: Config) void {
-    g_physics_event_mutex.lock();
-    defer g_physics_event_mutex.unlock();
-
-    for (g_physics_event_queue.items) |event| {
-        switch (event) {
-            .entity_created => |entity_id| {
-                if (world.getEntityConst(entity_id)) |entity| {
-                    if (buildJoltBodyDesc(world, entity, config)) |desc| {
-                        _ = guava_jolt_context_add_or_update_body(context, &desc, 0.0);
-                    }
-                }
-            },
-            .entity_destroyed => |entity_id| {
-                _ = guava_jolt_context_remove_body(context, entity_id);
-                _ = guava_jolt_context_remove_constraint(context, entity_id);
-            },
-            .rigidbody_added, .collider_added => |entity_id| {
-                if (world.getEntityConst(entity_id)) |entity| {
-                    if (buildJoltBodyDesc(world, entity, config)) |desc| {
-                        _ = guava_jolt_context_add_or_update_body(context, &desc, 0.0);
-                    }
-                }
-            },
-            .rigidbody_removed, .collider_removed => |entity_id| {
-                _ = guava_jolt_context_remove_body(context, entity_id);
-            },
-            .constraint_added => |entity_id| {
-                if (world.getEntityConst(entity_id)) |entity| {
-                    if (entity.constraint) |constraint| {
-                        if (buildJoltConstraintDesc(world, entity, constraint)) |desc| {
-                            _ = guava_jolt_context_add_or_update_constraint(context, &desc);
-                        }
-                    }
-                }
-            },
-            .constraint_removed => |entity_id| {
-                _ = guava_jolt_context_remove_constraint(context, entity_id);
-            },
-            .transform_changed => |entity_id| {
-                if (world.getEntityConst(entity_id)) |entity| {
-                    if (entity.rigidbody != null or hasAnyCollider(entity)) {
-                        if (buildJoltBodyDesc(world, entity, config)) |desc| {
-                            _ = guava_jolt_context_add_or_update_body(context, &desc, 0.0);
-                        }
-                    }
-                }
-            },
-        }
-    }
-
-    g_physics_event_queue.clearRetainingCapacity();
-}
-
-fn ensureJoltInitializedForWorld(world: *scene_mod.World, context: *JoltContext, config: Config) void {
-    g_jolt_initialized_mutex.lock();
-    defer g_jolt_initialized_mutex.unlock();
-
-    const key = @intFromPtr(world);
-    if (g_jolt_initialized_for_world.contains(key)) {
-        return;
-    }
-
-    for (world.entities.items) |*entity| {
-        if (entity.rigidbody == null and !hasAnyCollider(entity)) {
-            continue;
-        }
-        if (buildJoltBodyDesc(world, entity, config)) |desc| {
-            _ = guava_jolt_context_add_or_update_body(context, &desc, 0.0);
-        }
-    }
-
-    g_jolt_initialized_for_world.put(jolt_state_allocator, key, true) catch {};
-}
-
-fn stepJoltFallback(world: *scene_mod.World, delta_seconds: f32, config: Config, fallback_counts: StepStats) StepStats {
-    if (!config.allow_builtin_fallback) {
-        std.debug.print("JOLT FALLBACK: success=0\n", .{});
-        maybeLogStepSnapshot(fallback_counts);
-        return fallback_counts;
-    }
-
-    if (!g_logged_jolt_fallback) {
-        physics_log.warn("jolt backend failed; falling back to builtin solver", .{});
-        g_logged_jolt_fallback = true;
-    }
-    return stepBuiltin(world, delta_seconds, config);
-}
-
-fn buildJoltStepConfig(config: Config, delta_seconds: f32, limits: JoltBackendLimits) JoltStepConfig {
-    return .{
-        .delta_seconds = delta_seconds,
-        .gravity = config.gravity,
-        .collision_steps = @max(config.jolt_collision_steps, 1),
-        .temp_allocator_size_bytes = limits.temp_allocator_size_bytes,
-        .max_bodies = limits.max_bodies,
-        .num_body_mutexes = limits.num_body_mutexes,
-        .max_body_pairs = limits.max_body_pairs,
-        .max_contact_constraints = limits.max_contact_constraints,
-    };
-}
-
-fn effectiveJoltBackendLimits(config: Config, body_count: usize) JoltBackendLimits {
-    const max_u32 = std.math.maxInt(u32);
-    const body_count_u32 = @as(u32, @intCast(@min(body_count, max_u32)));
-    const body_count_plus_padding = saturatingAddU32(body_count_u32, 16);
-    const estimated_pairs = saturatingAddU32(saturatingMulU32(body_count_u32, 4), 16);
-    const estimated_contacts = saturatingAddU32(saturatingMulU32(body_count_u32, 8), 16);
-    return .{
-        .temp_allocator_size_bytes = @max(config.jolt_temp_allocator_size_bytes, 1024 * 1024),
-        .max_bodies = @max(config.jolt_max_bodies, body_count_plus_padding),
-        .num_body_mutexes = config.jolt_num_body_mutexes,
-        .max_body_pairs = @max(config.jolt_max_body_pairs, estimated_pairs),
-        .max_contact_constraints = @max(config.jolt_max_contact_constraints, estimated_contacts),
-    };
-}
-
-fn ensureJoltWorldContext(
-    world: *scene_mod.World,
-    create_config: *const JoltStepConfig,
-    limits: JoltBackendLimits,
-) ?*JoltContext {
-    const key = @intFromPtr(world);
-    g_jolt_world_states_mutex.lock();
-    defer g_jolt_world_states_mutex.unlock();
-
-    if (g_jolt_world_states.getPtr(key)) |state| {
-        if (state.limits.eql(limits)) {
-            return state.context;
-        }
-
-        guava_jolt_context_destroy(state.context);
-        const replacement = guava_jolt_context_create(create_config) orelse {
-            _ = g_jolt_world_states.remove(key);
-            return null;
-        };
-        state.* = .{
-            .context = replacement,
-            .limits = limits,
-        };
-        return replacement;
-    }
-
-    const context = guava_jolt_context_create(create_config) orelse return null;
-    g_jolt_world_states.put(jolt_state_allocator, key, .{
-        .context = context,
-        .limits = limits,
-    }) catch {
-        guava_jolt_context_destroy(context);
-        return null;
-    };
-    return context;
-}
-
-fn joltBackendLimitsCover(existing: JoltBackendLimits, required: JoltBackendLimits) bool {
-    return existing.temp_allocator_size_bytes >= required.temp_allocator_size_bytes and
-        existing.max_bodies >= required.max_bodies and
-        existing.num_body_mutexes >= required.num_body_mutexes and
-        existing.max_body_pairs >= required.max_body_pairs and
-        existing.max_contact_constraints >= required.max_contact_constraints;
-}
-
-fn ensureJoltQueryContext(
-    world: *scene_mod.World,
-    body_count: usize,
-) ?*JoltContext {
-    const query_config = Config{};
-    const limits = effectiveJoltBackendLimits(query_config, body_count);
-    const create_config = buildJoltStepConfig(query_config, 0.0, limits);
-
-    const key = @intFromPtr(world);
-    g_jolt_world_states_mutex.lock();
-    defer g_jolt_world_states_mutex.unlock();
-
-    if (g_jolt_world_states.getPtr(key)) |state| {
-        if (joltBackendLimitsCover(state.limits, limits)) {
-            return state.context;
-        }
-
-        guava_jolt_context_destroy(state.context);
-        const replacement = guava_jolt_context_create(&create_config) orelse {
-            _ = g_jolt_world_states.remove(key);
-            return null;
-        };
-        state.* = .{
-            .context = replacement,
-            .limits = limits,
-        };
-        return replacement;
-    }
-
-    const context = guava_jolt_context_create(&create_config) orelse return null;
-    g_jolt_world_states.put(jolt_state_allocator, key, .{
-        .context = context,
-        .limits = limits,
-    }) catch {
-        guava_jolt_context_destroy(context);
-        return null;
-    };
-    return context;
-}
-
-var g_jolt_initialized_for_world: std.AutoHashMapUnmanaged(usize, bool) = .empty;
-var g_jolt_initialized_mutex: std.Thread.Mutex = .{};
-
-fn releaseJoltWorldState(key: usize) void {
-    g_jolt_world_states_mutex.lock();
-    defer g_jolt_world_states_mutex.unlock();
-
-    if (g_jolt_world_states.fetchRemove(key)) |removed| {
-        guava_jolt_context_destroy(removed.value.context);
-    }
-
-    g_jolt_initialized_mutex.lock();
-    defer g_jolt_initialized_mutex.unlock();
-    _ = g_jolt_initialized_for_world.fetchRemove(key);
-}
-
-fn joltRaycast(
-    world: *scene_mod.World,
-    origin: components.Vec3,
-    normalized_direction: components.Vec3,
-    max_distance: f32,
-    filter: QueryFilter,
-) ??RaycastHit {
-    const body_count = countQueryableBodies(world);
-    const context = ensureJoltQueryContext(world, body_count) orelse return null;
-    if (!syncJoltQuerySnapshot(world, context, body_count)) {
-        return null;
-    }
-
-    var raw_hit: JoltRaycastHit = std.mem.zeroes(JoltRaycastHit);
-    const query = JoltRayQuery{
-        .origin = origin,
-        .direction = normalized_direction,
-        .max_distance = max_distance,
-    };
-    const query_filter = joltQueryFilter(filter);
-    if (!guava_jolt_context_raycast(context, &query, &query_filter, &raw_hit)) {
-        return null;
-    }
-
-    if (raw_hit.entity_id == 0) {
-        return @as(?RaycastHit, null);
-    }
-
-    return makeRaycastHit(world, raw_hit);
-}
-
-fn joltOverlapAabb(
-    world: *scene_mod.World,
-    allocator: std.mem.Allocator,
-    query_bounds: AABB,
-    filter: QueryFilter,
-) !?[]OverlapHit {
-    const body_count = countQueryableBodies(world);
-    const context = ensureJoltQueryContext(world, body_count) orelse return null;
-    if (!syncJoltQuerySnapshot(world, context, body_count)) {
-        return null;
-    }
-
-    if (body_count == 0) {
-        return try allocator.alloc(OverlapHit, 0);
-    }
-
-    const center = query_bounds.centroid();
-    const half_extents = queryHalfExtents(query_bounds);
-    const query_filter = joltQueryFilter(filter);
-
-    var raw_hits = try allocator.alloc(JoltOverlapHit, body_count);
-    defer allocator.free(raw_hits);
-
-    var raw_hit_count: usize = 0;
-    if (!guava_jolt_context_overlap_aabb(
-        context,
-        &center,
-        &half_extents,
-        &query_filter,
-        raw_hits.ptr,
-        raw_hits.len,
-        &raw_hit_count,
-    )) {
-        return null;
-    }
-
-    var hits = std.ArrayList(OverlapHit).empty;
-    errdefer hits.deinit(allocator);
-
-    for (raw_hits[0..@min(raw_hit_count, raw_hits.len)]) |raw_hit| {
-        const hit = makeOverlapHit(world, raw_hit) orelse continue;
-        try hits.append(allocator, hit);
-    }
-
-    return try hits.toOwnedSlice(allocator);
-}
-
-fn joltSweepAabb(
-    world: *scene_mod.World,
-    query_bounds: AABB,
-    translation: components.Vec3,
-    filter: QueryFilter,
-) ??SweepHit {
-    const body_count = countQueryableBodies(world);
-    const context = ensureJoltQueryContext(world, body_count) orelse return null;
-    if (!syncJoltQuerySnapshot(world, context, body_count)) {
-        return null;
-    }
-
-    var raw_hit: JoltSweepHit = std.mem.zeroes(JoltSweepHit);
-    const center = query_bounds.centroid();
-    const half_extents = queryHalfExtents(query_bounds);
-    const query_filter = joltQueryFilter(filter);
-
-    if (!guava_jolt_context_sweep_aabb(
-        context,
-        &center,
-        &half_extents,
-        &translation,
-        &query_filter,
-        &raw_hit,
-    )) {
-        return null;
-    }
-
-    if (raw_hit.entity_id == 0) {
-        return @as(?SweepHit, null);
-    }
-
-    return makeSweepHit(world, raw_hit);
 }
 
 fn countQueryableBodies(world: *const scene_mod.World) usize {
@@ -1720,48 +1810,6 @@ fn zeroVelocityOnResolvedAxes(velocity: components.Vec3, translation: components
     return result;
 }
 
-fn logConfigOnce(config: Config) void {
-    if (g_logged_config) {
-        return;
-    }
-
-    physics_log.info(
-        "physics config enabled backend={s} fixed_dt={d:.5} gravity=({d:.2},{d:.2},{d:.2}) max_substeps={d}",
-        .{
-            @tagName(config.backend),
-            config.fixed_timestep_seconds,
-            config.gravity[0],
-            config.gravity[1],
-            config.gravity[2],
-            config.max_substeps_per_frame,
-        },
-    );
-    g_logged_config = true;
-}
-
-fn maybeLogStepSnapshot(stats: StepStats) void {
-    const snapshot = StepSnapshot{
-        .dynamic_bodies = stats.dynamic_bodies,
-        .static_bodies = stats.static_bodies,
-        .contacts_resolved = stats.contacts_resolved,
-    };
-
-    if (g_last_snapshot) |previous| {
-        if (previous.dynamic_bodies == snapshot.dynamic_bodies and
-            previous.static_bodies == snapshot.static_bodies and
-            previous.contacts_resolved == snapshot.contacts_resolved)
-        {
-            return;
-        }
-    }
-
-    physics_log.info(
-        "physics step active dynamic={d} static={d} contacts={d}",
-        .{ snapshot.dynamic_bodies, snapshot.static_bodies, snapshot.contacts_resolved },
-    );
-    g_last_snapshot = snapshot;
-}
-
 fn absVec3(value: components.Vec3) components.Vec3 {
     return .{ @abs(value[0]), @abs(value[1]), @abs(value[2]) };
 }
@@ -1791,7 +1839,9 @@ fn saturatingMulU32(lhs: u32, rhs: u32) u32 {
 fn runGroundContactScenario(config: Config) !void {
     var world = scene_mod.World.init(std.testing.allocator, null);
     defer world.deinit();
-    defer deinitWorld(&world);
+
+    var physics = PhysicsState.init(std.testing.allocator);
+    defer physics.deinit();
 
     _ = try world.createEntity(.{
         .name = "Ground",
@@ -1812,7 +1862,7 @@ fn runGroundContactScenario(config: Config) !void {
 
     var step_index: usize = 0;
     while (step_index < 180) : (step_index += 1) {
-        _ = step(&world, 1.0 / 60.0, config);
+        _ = physics.step(&world, 1.0 / 60.0, config);
     }
     world.updateHierarchy();
 
@@ -1824,7 +1874,9 @@ fn runGroundContactScenario(config: Config) !void {
 fn runKinematicWallScenario(config: Config) !void {
     var world = scene_mod.World.init(std.testing.allocator, null);
     defer world.deinit();
-    defer deinitWorld(&world);
+
+    var physics = PhysicsState.init(std.testing.allocator);
+    defer physics.deinit();
 
     _ = try world.createEntity(.{
         .name = "Wall",
@@ -1847,7 +1899,7 @@ fn runKinematicWallScenario(config: Config) !void {
 
     var step_index: usize = 0;
     while (step_index < 30) : (step_index += 1) {
-        _ = step(&world, 1.0 / 60.0, config);
+        _ = physics.step(&world, 1.0 / 60.0, config);
     }
     world.updateHierarchy();
 
@@ -1883,7 +1935,9 @@ test "physics jolt step preserves kinematic bodies as static colliders" {
 test "physics builtin sphere collider integration" {
     var world = scene_mod.World.init(std.testing.allocator, null);
     defer world.deinit();
-    defer deinitWorld(&world);
+
+    var physics = PhysicsState.init(std.testing.allocator);
+    defer physics.deinit();
 
     _ = try world.createEntity(.{
         .name = "Ground",
@@ -1904,7 +1958,7 @@ test "physics builtin sphere collider integration" {
 
     var step_index: usize = 0;
     while (step_index < 120) : (step_index += 1) {
-        _ = step(&world, 1.0 / 60.0, .{ .backend = .builtin });
+        _ = physics.step(&world, 1.0 / 60.0, .{ .backend = .builtin });
     }
     world.updateHierarchy();
 
@@ -1916,7 +1970,6 @@ test "physics builtin sphere collider integration" {
 test "physics builtin angular velocity initialization" {
     var world = scene_mod.World.init(std.testing.allocator, null);
     defer world.deinit();
-    defer deinitWorld(&world);
 
     const body_id = try world.createEntity(.{
         .name = "Body",
@@ -1935,7 +1988,9 @@ test "physics builtin angular velocity initialization" {
 test "physics builtin multiple body stacking" {
     var world = scene_mod.World.init(std.testing.allocator, null);
     defer world.deinit();
-    defer deinitWorld(&world);
+
+    var physics = PhysicsState.init(std.testing.allocator);
+    defer physics.deinit();
 
     _ = try world.createEntity(.{
         .name = "Ground",
@@ -1959,11 +2014,11 @@ test "physics builtin multiple body stacking" {
 
     var step_index: usize = 0;
     while (step_index < 180) : (step_index += 1) {
-        _ = step(&world, 1.0 / 60.0, .{ .backend = .builtin });
+        _ = physics.step(&world, 1.0 / 60.0, .{ .backend = .builtin });
     }
     world.updateHierarchy();
 
-    const stats = step(&world, 1.0 / 60.0, .{ .backend = .builtin });
+    const stats = physics.step(&world, 1.0 / 60.0, .{ .backend = .builtin });
     try std.testing.expectEqual(@as(usize, 1), stats.static_bodies);
     try std.testing.expectEqual(@as(usize, 2), stats.dynamic_bodies);
 }
@@ -1971,7 +2026,9 @@ test "physics builtin multiple body stacking" {
 test "physics trigger event detection" {
     var world = scene_mod.World.init(std.testing.allocator, null);
     defer world.deinit();
-    defer deinitWorld(&world);
+
+    var physics = PhysicsState.init(std.testing.allocator);
+    defer physics.deinit();
 
     _ = try world.createEntity(.{
         .name = "Trigger",
@@ -1989,27 +2046,25 @@ test "physics trigger event detection" {
         .local_transform = .{ .translation = .{ 0.0, 3.0, 0.0 } },
     });
 
-    initPhysicsEvents();
-
     var step_index: usize = 0;
     while (step_index < 60) : (step_index += 1) {
-        _ = step(&world, 1.0 / 60.0, .{ .backend = .builtin });
+        _ = physics.step(&world, 1.0 / 60.0, .{ .backend = .builtin });
     }
 
-    clearTriggerEvents();
-    _ = step(&world, 1.0 / 60.0, .{ .backend = .builtin });
+    physics.clearTriggerEvents();
+    _ = physics.step(&world, 1.0 / 60.0, .{ .backend = .builtin });
 
     world.updateHierarchy();
     const body = world.getEntityConst(body_id).?;
     try std.testing.expect(body.world_transform_cache.translation[1] < 2.0);
-
-    deinitPhysicsEvents();
 }
 
 test "physics raycast returns nearest collider hit" {
     var world = scene_mod.World.init(std.testing.allocator, null);
     defer world.deinit();
-    defer deinitWorld(&world);
+
+    var physics = PhysicsState.init(std.testing.allocator);
+    defer physics.deinit();
 
     const front = try world.createEntity(.{
         .name = "Front",
@@ -2028,7 +2083,7 @@ test "physics raycast returns nearest collider hit" {
         },
     });
 
-    const hit = raycast(&world, .{
+    const hit = physics.raycast(&world, .{
         .origin = .{ 0.0, 0.0, -2.0 },
         .direction = .{ 0.0, 0.0, 1.0 },
         .max_distance = 10.0,
@@ -2042,7 +2097,9 @@ test "physics raycast returns nearest collider hit" {
 test "physics overlap excludes triggers by default" {
     var world = scene_mod.World.init(std.testing.allocator, null);
     defer world.deinit();
-    defer deinitWorld(&world);
+
+    var physics = PhysicsState.init(std.testing.allocator);
+    defer physics.deinit();
 
     const solid = try world.createEntity(.{
         .name = "Solid",
@@ -2067,12 +2124,12 @@ test "physics overlap excludes triggers by default" {
         .max = .{ 1.0, 1.0, 1.0 },
     };
 
-    const default_hits = try overlapAabb(&world, std.testing.allocator, query_bounds, .{});
+    const default_hits = try physics.overlapAabb(&world, std.testing.allocator, query_bounds, .{});
     defer std.testing.allocator.free(default_hits);
     try std.testing.expectEqual(@as(usize, 1), default_hits.len);
     try std.testing.expectEqual(solid, default_hits[0].entity_id);
 
-    const filtered_hits = try overlapAabb(&world, std.testing.allocator, query_bounds, .{
+    const filtered_hits = try physics.overlapAabb(&world, std.testing.allocator, query_bounds, .{
         .include_triggers = true,
         .layer_group_mask = 0b0010,
     });
@@ -2085,7 +2142,9 @@ test "physics overlap excludes triggers by default" {
 test "physics sweep aabb reports first blocking collider" {
     var world = scene_mod.World.init(std.testing.allocator, null);
     defer world.deinit();
-    defer deinitWorld(&world);
+
+    var physics = PhysicsState.init(std.testing.allocator);
+    defer physics.deinit();
 
     const wall = try world.createEntity(.{
         .name = "Wall",
@@ -2096,7 +2155,7 @@ test "physics sweep aabb reports first blocking collider" {
         },
     });
 
-    const hit = sweepAabb(&world, .{
+    const hit = physics.sweepAabb(&world, .{
         .min = .{ -0.5, -0.5, -0.5 },
         .max = .{ 0.5, 0.5, 0.5 },
     }, .{ 5.0, 0.0, 0.0 }, .{}) orelse return error.TestExpectedNonNull;
@@ -2112,7 +2171,9 @@ test "physics native queries avoid rotated box AABB false positives" {
 
     var world = scene_mod.World.init(std.testing.allocator, null);
     defer world.deinit();
-    defer deinitWorld(&world);
+
+    var physics = PhysicsState.init(std.testing.allocator);
+    defer physics.deinit();
 
     _ = try world.createEntity(.{
         .name = "RotatedThinBox",
@@ -2123,13 +2184,13 @@ test "physics native queries avoid rotated box AABB false positives" {
         },
     });
 
-    try std.testing.expect(raycast(&world, .{
+    try std.testing.expect(physics.raycast(&world, .{
         .origin = .{ 0.7, -0.7, -2.0 },
         .direction = .{ 0.0, 0.0, 1.0 },
         .max_distance = 10.0,
     }, .{}) == null);
 
-    const hits = try overlapAabb(
+    const hits = try physics.overlapAabb(
         &world,
         std.testing.allocator,
         aabbFromCenterHalfExtents(.{ 0.7, -0.7, 0.0 }, .{ 0.05, 0.05, 0.05 }),

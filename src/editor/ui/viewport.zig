@@ -881,7 +881,7 @@ fn calculateSpawnTransformFromPixel(
                 }
             }
 
-            if (engine.physics.raycast(layer_context.world, .{
+            if (layer_context.physics_state.raycast(layer_context.world, .{
                 .origin = ray.origin,
                 .direction = ray.direction,
                 .max_distance = 2048.0,
@@ -923,7 +923,7 @@ fn physicsAwareSpawnTransform(
     ray: engine.scene.Ray,
     half_extents: [3]f32,
 ) !?engine.scene.Transform {
-    const surface_hit = engine.physics.raycast(layer_context.world, .{
+    const surface_hit = layer_context.physics_state.raycast(layer_context.world, .{
         .origin = ray.origin,
         .direction = ray.direction,
         .max_distance = 2048.0,
@@ -932,7 +932,7 @@ fn physicsAwareSpawnTransform(
     const sweep_start = vec3.add(ray.origin, vec3.scale(ray.direction, 0.05));
     const sweep_distance = @max(surface_hit.distance - 0.05, 0.0) + vec3.length(half_extents) + 0.5;
     const sweep_bounds = engine.physics.aabbFromCenterHalfExtents(sweep_start, half_extents);
-    const sweep_hit = engine.physics.sweepAabb(
+    const sweep_hit = layer_context.physics_state.sweepAabb(
         layer_context.world,
         sweep_bounds,
         vec3.scale(ray.direction, sweep_distance),
@@ -941,7 +941,7 @@ fn physicsAwareSpawnTransform(
 
     const candidate_translation = vec3.add(sweep_start, vec3.scale(ray.direction, sweep_hit.distance));
     const candidate_bounds = engine.physics.aabbFromCenterHalfExtents(candidate_translation, half_extents);
-    const overlaps = try engine.physics.overlapAabb(
+    const overlaps = try layer_context.physics_state.overlapAabb(
         layer_context.world,
         layer_context.world.allocator,
         candidate_bounds,

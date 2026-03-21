@@ -168,6 +168,8 @@ pub const Application = struct {
     time_scale: f32 = 1.0,
     /// 物理时间累积器
     physics_accumulator_seconds: f32 = 0.0,
+    /// 物理状态实例（替代全局变量）
+    physics_state: physics_system.PhysicsState,
 
     /// 初始化应用程序
     ///
@@ -229,6 +231,7 @@ pub const Application = struct {
             .layers = layer_stack_mod.LayerStack.init(allocator),
             .input = .{},
             .timer = timer,
+            .physics_state = physics_system.PhysicsState.init(allocator),
         };
     }
 
@@ -236,6 +239,21 @@ pub const Application = struct {
     ///
     /// 释放所有子系统占用的资源。
     /// 调用此方法后，应用程序不再可用。
+    ///
+    /// ## 销毁顺序说明
+    ///
+    /// 资源销毁顺序至关重要，必须遵循以下依赖关系：
+    /// 1. **Layer/Script 层** - 先销毁应用层和脚本，避免它们访问正在销毁的系统
+    /// 2. **Physics 系统** - 物理世界必须在 World 资源之前销毁
+    /// 3. **World (Resources)** - World 包含 ResourceLibrary，持有 GPU 纹理/网格等资源
+    /// 4. **Renderer (Device)** - Renderer 拥有 RhiDevice，必须在 World 资源释放后销毁
+    /// 5. **Window** - 窗口在 Renderer 之后销毁
+    /// 6. **JobSystem** - 作业系统最后销毁
+    ///
+    /// 关键依赖：`Renderer.deinit()` 必须在 `World.deinit()` **之前**调用，因为：
+    /// - World 的 ResourceLibrary 持有 GPU 纹理/网格资源
+    /// - Renderer 的 RhiDevice 必须在这些资源释放前保持有效
+    /// - 如果先销毁 World，ResourceLibrary 释放 GPU 资源时 RhiDevice 可能已被销毁
     pub fn deinit(self: *Application) void {
         self.bindRuntimeContext();
         self.script_runtime.callDestroyAll(&self.world);
@@ -245,10 +263,11 @@ pub const Application = struct {
         self.layers.deinit();
         self.editor_utility_runtime.deinit();
         self.script_runtime.deinit();
-        physics_system.deinitWorld(&self.world);
+        self.renderer.deinit();
+        self.physics_state.deinitWorld(&self.world);
+        self.physics_state.deinit();
         self.world.deinit();
         self.command_queue.deinit();
-        self.renderer.deinit();
         self.window.deinit();
         self.job_system.deinit();
     }
@@ -353,7 +372,7 @@ pub const Application = struct {
                 self.playback_controller.consumeAdvance();
             }
 
-            last_frame = try self.renderer.drawFrame(&self.world);
+            last_frame = try self.renderer.drawFrame(&self.world, &self.physics_state);
         }
 
         const summary = self.world.summary();
@@ -457,6 +476,7 @@ pub const Application = struct {
             .input = &self.input,
             .window = &self.window,
             .playback_controller = &self.playback_controller,
+            .physics_state = &self.physics_state,
             .frame_index = frame_index,
             .delta_seconds = delta_seconds,
         };
@@ -479,7 +499,7 @@ pub const Application = struct {
         while (self.physics_accumulator_seconds + 0.000001 >= self.config.physics.fixed_timestep_seconds and
             substeps < self.config.physics.max_substeps_per_frame) : (substeps += 1)
         {
-            _ = physics_system.step(&self.world, self.config.physics.fixed_timestep_seconds, self.config.physics);
+            _ = self.physics_state.step(&self.world, self.config.physics.fixed_timestep_seconds, self.config.physics);
             self.physics_accumulator_seconds -= self.config.physics.fixed_timestep_seconds;
         }
 
