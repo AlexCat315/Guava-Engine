@@ -17,7 +17,7 @@ const CookedTexture = struct {
     import_version: u32 = current_texture_cache_version,
     width: u32,
     height: u32,
-    format: rhi_types.TextureFormat = .bgra8_unorm,
+    format: rhi_types.TextureFormat = .rgba8_unorm,
     pixels_hex: []const u8,
 };
 
@@ -119,12 +119,14 @@ fn cookTextureRecord(allocator: std.mem.Allocator, record: *const registry_mod.A
     var width: u32 = 0;
     var height: u32 = 0;
     var pixels_hex: []u8 = undefined;
-    var format: rhi_types.TextureFormat = .bgra8_unorm;
+    var format: rhi_types.TextureFormat = .rgba8_unorm;
     defer allocator.free(pixels_hex);
 
     if (std.mem.endsWith(u8, record.source_path, ".svg")) {
         var rasterized = try svg_decoder.rasterizeBgra8(allocator, record.source_path, .{});
         defer rasterized.deinit();
+        // rasterizeBgra8 outputs BGRA; swizzle to RGBA to match rgba8_unorm format.
+        swizzleBgraToRgba(rasterized.pixels);
         width = rasterized.width;
         height = rasterized.height;
         pixels_hex = try encodeHexAlloc(allocator, rasterized.pixels);
@@ -168,7 +170,8 @@ fn cookTextureRecord(allocator: std.mem.Allocator, record: *const registry_mod.A
 
         var decoded = try image_decoder.decodeRgba8(allocator, encoded);
         defer decoded.deinit();
-        swizzleRgbaToBgra(decoded.pixels);
+        // Use RGBA format directly — no channel swizzle needed.
+        // bgra8_unorm on Metal returns bytes in BGRA semantic order causing R↔B swap in shaders.
         width = decoded.width;
         height = decoded.height;
         pixels_hex = try encodeHexAlloc(allocator, decoded.pixels);
@@ -294,6 +297,9 @@ fn swizzleRgbaToBgra(bytes: []u8) void {
         bytes[index + 2] = r;
     }
 }
+
+// BGRA→RGBA is the same byte swap (R↔B), re-use the above implementation.
+const swizzleBgraToRgba = swizzleRgbaToBgra;
 
 test "texture cache is created deterministically" {
     var temp_dir = std.testing.tmpDir(.{});

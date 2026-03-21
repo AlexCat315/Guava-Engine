@@ -1419,6 +1419,7 @@ fn storeOpToSdl(op: StoreOp) sdl.SDL_GPUStoreOp {
 
 fn textureFormatToSdl(format: types.TextureFormat) sdl.SDL_GPUTextureFormat {
     return switch (format) {
+        .rgba8_unorm => sdl.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
         .bgra8_unorm => sdl.SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
         .bgra8_unorm_srgb => sdl.SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB,
         .rgba16_float => sdl.SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT,
@@ -1432,6 +1433,7 @@ fn textureFormatToSdl(format: types.TextureFormat) sdl.SDL_GPUTextureFormat {
 
 fn textureFormatFromSdl(format: sdl.SDL_GPUTextureFormat) types.TextureFormat {
     return switch (format) {
+        sdl.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM => .rgba8_unorm,
         sdl.SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM => .bgra8_unorm,
         sdl.SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB => .bgra8_unorm_srgb,
         sdl.SDL_GPU_TEXTUREFORMAT_D24_UNORM => .d24_unorm,
