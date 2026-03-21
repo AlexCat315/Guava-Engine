@@ -75,8 +75,7 @@ fn drawPrefabToolbar(
 
     gui.sameLine();
 
-    if (gui.button("Save All")) {
-    }
+    if (gui.button("Save All")) {}
 
     gui.sameLine();
 
@@ -127,10 +126,8 @@ fn drawPrefabList(
         }
 
         if (gui.beginPopupContextItem()) {
-            if (gui.selectable("Delete Prefab", false)) {
-            }
-            if (gui.selectable("Duplicate Prefab", false)) {
-            }
+            if (gui.selectable("Delete Prefab", false)) {}
+            if (gui.selectable("Duplicate Prefab", false)) {}
             gui.endPopup();
         }
     }
@@ -142,7 +139,7 @@ fn drawPrefabDetails(
     prefab: *const PrefabResource,
 ) void {
     _ = state;
-    _ = editor_state;
+    // _ = editor_state;
 
     if (layout.beginInspectorPropertyTable("prefab_details", 0.34)) {
         defer layout.endInspectorPropertyTable();
