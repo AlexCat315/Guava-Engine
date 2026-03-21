@@ -744,30 +744,30 @@ pub export fn guava_wasm_host_ui_last_item_changed(userdata: ?*anyopaque) u32 {
 }
 
 pub export fn guava_wasm_host_ui_text(_: ?*anyopaque, ptr: [*]const u8, len: u32) void {
-    ui.ImGui.text(ptr[0..len]);
+    ui.text(ptr[0..len]);
 }
 
 pub export fn guava_wasm_host_ui_text_wrapped(_: ?*anyopaque, ptr: [*]const u8, len: u32) void {
-    ui.ImGui.textWrapped(ptr[0..len]);
+    ui.textWrapped(ptr[0..len]);
 }
 
 pub export fn guava_wasm_host_ui_separator(_: ?*anyopaque) void {
-    ui.ImGui.separator();
+    ui.separator();
 }
 
 pub export fn guava_wasm_host_ui_same_line(_: ?*anyopaque) void {
-    ui.ImGui.sameLine();
+    ui.sameLine();
 }
 
 pub export fn guava_wasm_host_ui_button(userdata: ?*anyopaque, ptr: [*]const u8, len: u32) u32 {
-    const clicked = ui.ImGui.button(ptr[0..len]);
+    const clicked = ui.button(ptr[0..len]);
     setLastItemChanged(userdata, clicked);
     return if (clicked) 1 else 0;
 }
 
 pub export fn guava_wasm_host_ui_checkbox(userdata: ?*anyopaque, ptr: [*]const u8, len: u32, value_raw: u32) u32 {
     var value = value_raw != 0;
-    const changed = ui.ImGui.checkbox(ptr[0..len], &value);
+    const changed = ui.checkbox(ptr[0..len], &value);
     setLastItemChanged(userdata, changed);
     return if (value) 1 else 0;
 }
@@ -782,13 +782,13 @@ pub export fn guava_wasm_host_ui_drag_float_bits(
     max_value: f32,
 ) u32 {
     var value: f32 = @bitCast(current_bits);
-    const changed = ui.ImGui.dragFloat(ptr[0..len], &value, speed, min_value, max_value);
+    const changed = ui.dragFloat(ptr[0..len], &value, speed, min_value, max_value);
     setLastItemChanged(userdata, changed);
     return @bitCast(value);
 }
 
 pub export fn guava_wasm_host_ui_set_next_item_width(_: ?*anyopaque, width: f32) void {
-    ui.ImGui.setNextItemWidth(width);
+    ui.setNextItemWidth(width);
 }
 
 fn castContext(comptime T: type, context_ptr: *anyopaque) *T {

@@ -232,7 +232,7 @@ pub const EditorUtilityRuntime = struct {
                 entry.last_error
             else
                 "Editor utility is not loaded.";
-            ui.ImGui.textWrapped(message);
+            ui.textWrapped(message);
             return;
         }
 
@@ -255,15 +255,15 @@ pub const EditorUtilityRuntime = struct {
             entry.status = .update_error;
             replaceOwnedSlice(self.allocator, &entry.last_error, entry.vm.?.getError()) catch {};
             if (entry.last_error.len != 0) {
-                ui.ImGui.separator();
-                ui.ImGui.textWrapped(entry.last_error);
+                ui.separator();
+                ui.textWrapped(entry.last_error);
             }
             return;
         };
 
         if (entry.last_error.len != 0 and entry.status == .ready) {
-            ui.ImGui.separator();
-            ui.ImGui.textWrapped(entry.last_error);
+            ui.separator();
+            ui.textWrapped(entry.last_error);
         }
     }
 };
