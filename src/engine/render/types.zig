@@ -32,6 +32,12 @@ pub const EditorViewportState = struct {
     bloom_enabled: bool = false,
     bloom_threshold: f32 = 1.0,
     bloom_intensity: f32 = 0.35,
+    // SSAO 环境光遮蔽
+    ssao_enabled: bool = false,
+    ssao_radius: f32 = 0.5,
+    ssao_bias: f32 = 0.025,
+    ssao_intensity: f32 = 1.0,
+    ssao_power: f32 = 2.0,
     // Color Grading 先走参数级 MVP，LUT 后续单独补。
     color_grading_enabled: bool = false,
     color_grading_saturation: f32 = 1.0,
