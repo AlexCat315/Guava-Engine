@@ -268,6 +268,21 @@ pub const StaticBoundsBvh = struct {
         return try candidates.toOwnedSlice(allocator);
     }
 
+    pub fn queryAabbCandidates(
+        self: *const StaticBoundsBvh,
+        allocator: std.mem.Allocator,
+        query_bounds: AABB,
+    ) ![]ItemId {
+        var candidates = std.ArrayList(ItemId).empty;
+        errdefer candidates.deinit(allocator);
+
+        if (self.root_index) |root_index| {
+            try self.collectAabbCandidatesRecursive(allocator, root_index, query_bounds, &candidates);
+        }
+        try self.collectPendingAabbCandidates(allocator, query_bounds, &candidates);
+        return try candidates.toOwnedSlice(allocator);
+    }
+
     fn buildNode(self: *StaticBoundsBvh, start: usize, end: usize, parent: ?u32) !u32 {
         var node_bounds = AABB.empty();
         for (self.items.items[start..end]) |item| {
@@ -818,6 +833,49 @@ pub const StaticBoundsBvh = struct {
     ) !void {
         for (self.pending_additions.items) |item| {
             if (frustum.intersectsAABB(item.bounds)) {
+                try candidates.append(allocator, item.id);
+            }
+        }
+    }
+
+    fn collectAabbCandidatesRecursive(
+        self: *const StaticBoundsBvh,
+        allocator: std.mem.Allocator,
+        node_index: u32,
+        query_bounds: AABB,
+        candidates: *std.ArrayList(ItemId),
+    ) !void {
+        const node = self.nodes.items[node_index];
+        if (!node.bounds.intersects(query_bounds)) {
+            return;
+        }
+
+        if (node.isLeaf()) {
+            const start: usize = node.start;
+            const end = start + node.count;
+            for (self.items.items[start..end]) |item| {
+                if (self.pending_removals.contains(item.id)) {
+                    continue;
+                }
+                if (item.bounds.intersects(query_bounds)) {
+                    try candidates.append(allocator, item.id);
+                }
+            }
+            return;
+        }
+
+        try self.collectAabbCandidatesRecursive(allocator, node.left.?, query_bounds, candidates);
+        try self.collectAabbCandidatesRecursive(allocator, node.right.?, query_bounds, candidates);
+    }
+
+    fn collectPendingAabbCandidates(
+        self: *const StaticBoundsBvh,
+        allocator: std.mem.Allocator,
+        query_bounds: AABB,
+        candidates: *std.ArrayList(ItemId),
+    ) !void {
+        for (self.pending_additions.items) |item| {
+            if (item.bounds.intersects(query_bounds)) {
                 try candidates.append(allocator, item.id);
             }
         }

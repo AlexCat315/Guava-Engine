@@ -1934,35 +1934,6 @@ extern "C" uint32_t guava_imgui_draw_view_cube(const float view[16], float x,
     }
   }
 
-  int draw_order[6] = {0, 1, 2, 3, 4, 5};
-  std::sort(draw_order, draw_order + 6, [&](int lhs, int rhs) {
-    float lhs_depth = 0.0f;
-    float rhs_depth = 0.0f;
-    for (int corner = 0; corner < 4; ++corner) {
-      lhs_depth += rotated_vertices[faces[lhs].corners[corner]].z;
-      rhs_depth += rotated_vertices[faces[rhs].corners[corner]].z;
-    }
-    return lhs_depth < rhs_depth;
-  });
-
-  if (hovered_face == GUAVA_IMGUI_VIEW_CUBE_NONE && hovered) {
-    for (int order_index = 5; order_index >= 0; --order_index) {
-      const ViewCubeFaceInfo &face = faces[draw_order[order_index]];
-      const ViewCubePoint3 rotated_normal = rotate_by_view(view, face.normal);
-      if (rotated_normal.z <= 0.0f) {
-        continue;
-      }
-      ViewCubePoint2 polygon[4];
-      for (int corner = 0; corner < 4; ++corner) {
-        polygon[corner] = projected_vertices[face.corners[corner]];
-      }
-      if (point_in_quad(polygon, mouse)) {
-        hovered_face = face.id;
-        break;
-      }
-    }
-  }
-
   if (ImGui::IsItemActivated()) {
     storage->SetInt(pressed_target_key, static_cast<int>(hovered_face));
     storage->SetBool(dragged_key, false);
@@ -1995,7 +1966,7 @@ extern "C" uint32_t guava_imgui_draw_view_cube(const float view[16], float x,
     const bool axis_hovered = hovered_face == handle.id;
     draw_list->AddLine(center, handle.center,
                        scale_color(handle.color, axis_hovered ? 0.72f : 0.54f),
-                       axis_hovered ? 1.9f : 1.4f);
+                       axis_hovered ? 2.4f : 1.8f);
     draw_list->AddCircleFilled(
         handle.center, handle.radius,
         IM_COL32(204, 210, 220, axis_hovered ? 210 : 168), 20);
@@ -2005,62 +1976,14 @@ extern "C" uint32_t guava_imgui_draw_view_cube(const float view[16], float x,
         axis_hovered ? 1.5f : 1.1f);
   }
 
-  for (int order_index = 0; order_index < 6; ++order_index) {
-    const ViewCubeFaceInfo &face = faces[draw_order[order_index]];
-    const ViewCubePoint3 rotated_normal = rotate_by_view(view, face.normal);
-    if (rotated_normal.z <= 0.0f) {
-      continue;
-    }
-
-    ViewCubePoint2 polygon[4];
-    ImVec2 polygon_imgui[4];
-    ImVec2 label_center(0.0f, 0.0f);
-    float min_x = projected_vertices[face.corners[0]].x;
-    float max_x = min_x;
-    float min_y = projected_vertices[face.corners[0]].y;
-    float max_y = min_y;
-    for (int corner = 0; corner < 4; ++corner) {
-      polygon[corner] = projected_vertices[face.corners[corner]];
-      polygon_imgui[corner] = to_imvec2(polygon[corner]);
-      label_center.x += polygon_imgui[corner].x;
-      label_center.y += polygon_imgui[corner].y;
-      min_x = (std::min)(min_x, polygon_imgui[corner].x);
-      max_x = (std::max)(max_x, polygon_imgui[corner].x);
-      min_y = (std::min)(min_y, polygon_imgui[corner].y);
-      max_y = (std::max)(max_y, polygon_imgui[corner].y);
-    }
-    label_center.x *= 0.25f;
-    label_center.y *= 0.25f;
-
-    const bool face_hovered = hovered_face == face.id;
-    const float lighting =
-        0.76f + rotated_normal.z * 0.28f + (face_hovered ? 0.22f : 0.0f);
-    const ImU32 fill = scale_color(face.color, lighting);
-    draw_list->AddConvexPolyFilled(polygon_imgui, 4, fill);
-    draw_list->AddPolyline(polygon_imgui, 4,
-                           IM_COL32(240, 243, 248, face_hovered ? 224 : 132),
-                           ImDrawFlags_Closed, face_hovered ? 1.7f : 1.1f);
-
-    const float font_size = (std::max)(10.0f, (std::min)(12.5f, size * 0.105f));
-    const ImVec2 label_size = ImGui::CalcTextSize(face.label);
-    if ((max_x - min_x) >= label_size.x + 8.0f &&
-        (max_y - min_y) >= font_size + 6.0f) {
-      draw_list->AddText(ImGui::GetFont(), font_size,
-                         ImVec2(label_center.x - label_size.x * 0.5f,
-                                label_center.y - font_size * 0.5f),
-                         IM_COL32(246, 248, 252, face_hovered ? 252 : 228),
-                         face.label);
-    }
-  }
-
   for (int index = 0; index < 6; ++index) {
     const ViewCubeAxisHandle &handle = axis_handles[index];
     if (handle.depth < 0.0f) {
       continue;
     }
     const bool axis_hovered = hovered_face == handle.id;
-    const float line_thickness = handle.positive ? (axis_hovered ? 2.4f : 1.9f)
-                                                 : (axis_hovered ? 1.9f : 1.4f);
+    const float line_thickness = handle.positive ? (axis_hovered ? 3.2f : 2.6f)
+                                                 : (axis_hovered ? 2.4f : 1.8f);
     draw_list->AddLine(center, handle.center,
                        scale_color(handle.color, axis_hovered ? 1.08f : 0.82f),
                        line_thickness);

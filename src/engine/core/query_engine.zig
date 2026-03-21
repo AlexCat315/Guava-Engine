@@ -1,6 +1,8 @@
 const std = @import("std");
 const components = @import("../scene/components.zig");
 const world_mod = @import("../scene/world.zig");
+const spatial_index_mod = @import("../scene/spatial_index.zig");
+const aabb_mod = @import("../math/aabb.zig");
 
 pub const EntityId = world_mod.EntityId;
 
@@ -85,10 +87,16 @@ pub const ResultSet = struct {
     }
 };
 
+pub const SpatialIndices = struct {
+    static_bvh: ?*const spatial_index_mod.StaticBoundsBvh = null,
+    dynamic_bvh: ?*const spatial_index_mod.StaticBoundsBvh = null,
+};
+
 pub fn queryAlloc(
     allocator: std.mem.Allocator,
     world: *const world_mod.World,
     filter_in: Filter,
+    spatial: SpatialIndices,
 ) !ResultSet {
     const filter = filter_in.normalized();
 
@@ -100,34 +108,80 @@ pub fn queryAlloc(
     }
 
     var total: usize = 0;
-    for (world.entities.items) |entity| {
-        const world_translation = entityWorldTranslation(world, entity.id, entity.local_transform.translation);
-        const distance = if (filter.origin) |origin| distanceBetween(origin, world_translation) else null;
-        if (!matchesEntity(&entity, filter, world_translation, distance)) {
-            continue;
+
+    const use_bvh = filter.aabb_min != null and filter.aabb_max != null and
+        (spatial.static_bvh != null or spatial.dynamic_bvh != null);
+
+    if (use_bvh) {
+        const min_v = filter.aabb_min.?;
+        const max_v = filter.aabb_max.?;
+        const query_bounds = aabb_mod.AABB{
+            .min = min_v,
+            .max = max_v,
+        };
+
+        var candidate_set = std.AutoHashMap(EntityId, void).init(allocator);
+        defer candidate_set.deinit();
+
+        if (spatial.static_bvh) |bvh| {
+            const candidates = try bvh.queryAabbCandidates(allocator, query_bounds);
+            defer allocator.free(candidates);
+            for (candidates) |id| {
+                try candidate_set.put(id, {});
+            }
+        }
+        if (spatial.dynamic_bvh) |bvh| {
+            const candidates = try bvh.queryAabbCandidates(allocator, query_bounds);
+            defer allocator.free(candidates);
+            for (candidates) |id| {
+                try candidate_set.put(id, {});
+            }
         }
 
-        total += 1;
-        if (filter.count_only) {
-            continue;
-        }
-        if (total <= filter.offset) {
-            continue;
-        }
-        if (items.items.len >= filter.limit) {
-            continue;
-        }
+        for (world.entities.items) |entity| {
+            if (!candidate_set.contains(entity.id)) continue;
+            const world_translation = entityWorldTranslation(world, entity.id, entity.local_transform.translation);
+            const distance = if (filter.origin) |origin| distanceBetween(origin, world_translation) else null;
+            if (!matchesEntity(&entity, filter, world_translation, distance)) continue;
 
-        items.appendAssumeCapacity(.{
-            .id = entity.id,
-            .name = entity.name,
-            .parent_id = entity.parent,
-            .visible = entity.visible,
-            .editor_only = entity.editor_only,
-            .is_folder = entity.is_folder,
-            .world_translation = world_translation,
-            .distance = distance,
-        });
+            total += 1;
+            if (filter.count_only) continue;
+            if (total <= filter.offset) continue;
+            if (items.items.len >= filter.limit) continue;
+
+            items.appendAssumeCapacity(.{
+                .id = entity.id,
+                .name = entity.name,
+                .parent_id = entity.parent,
+                .visible = entity.visible,
+                .editor_only = entity.editor_only,
+                .is_folder = entity.is_folder,
+                .world_translation = world_translation,
+                .distance = distance,
+            });
+        }
+    } else {
+        for (world.entities.items) |entity| {
+            const world_translation = entityWorldTranslation(world, entity.id, entity.local_transform.translation);
+            const distance = if (filter.origin) |origin| distanceBetween(origin, world_translation) else null;
+            if (!matchesEntity(&entity, filter, world_translation, distance)) continue;
+
+            total += 1;
+            if (filter.count_only) continue;
+            if (total <= filter.offset) continue;
+            if (items.items.len >= filter.limit) continue;
+
+            items.appendAssumeCapacity(.{
+                .id = entity.id,
+                .name = entity.name,
+                .parent_id = entity.parent,
+                .visible = entity.visible,
+                .editor_only = entity.editor_only,
+                .is_folder = entity.is_folder,
+                .world_translation = world_translation,
+                .distance = distance,
+            });
+        }
     }
 
     if (filter.sort_by) |sort_by| {
@@ -343,7 +397,7 @@ test "QueryEngine filters by component and paginates results" {
         .has_component = "mesh",
         .limit = 1,
         .offset = 0,
-    });
+    }, .{});
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(usize, 2), result.total);
@@ -373,7 +427,7 @@ test "QueryEngine supports radius filters and count_only mode" {
         .origin = .{ 0.0, 0.0, 0.0 },
         .radius = 2.0,
         .count_only = true,
-    });
+    }, .{});
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(usize, 1), result.total);
@@ -400,7 +454,7 @@ test "QueryEngine supports AABB filters" {
         .aabb_max = .{ 10.0, 10.0, 10.0 },
         .limit = 10,
         .offset = 0,
-    });
+    }, .{});
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(usize, 1), result.total);

@@ -26,7 +26,7 @@ pub const AssetType = enum {
         if (std.mem.endsWith(u8, path, ".png") or std.mem.endsWith(u8, path, ".jpg") or std.mem.endsWith(u8, path, ".jpeg") or std.mem.endsWith(u8, path, ".svg")) {
             return .texture;
         }
-        if (std.mem.endsWith(u8, path, ".glsl") or std.mem.endsWith(u8, path, ".spv") or std.mem.endsWith(u8, path, ".json")) {
+        if (std.mem.endsWith(u8, path, ".glsl") or std.mem.endsWith(u8, path, ".spv")) {
             return .shader;
         }
         return null;

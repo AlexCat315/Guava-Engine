@@ -2,6 +2,7 @@ const std = @import("std");
 const engine = @import("guava");
 const gui = @import("../../gui.zig");
 const EditorState = @import("../../../core/state.zig").EditorState;
+const sdl = engine.platform.sdl.c;
 
 const max_entries = 256;
 const max_scope_len = 48;
@@ -67,7 +68,7 @@ fn writeToLogFile(level: std.log.Level, scope: []const u8, message: []const u8) 
 
     if (g_log_file) |file| {
         const level_str = levelLabel(level);
-        
+
         // 使用简单的 writeAll 而不是 writer
         file.writeAll("[") catch {};
         file.writeAll(level_str) catch {};
@@ -76,7 +77,7 @@ fn writeToLogFile(level: std.log.Level, scope: []const u8, message: []const u8) 
         file.writeAll(": ") catch {};
         file.writeAll(message) catch {};
         file.writeAll("\n") catch {};
-        
+
         // 刷新文件缓冲区
         file.sync() catch {};
     }
@@ -202,7 +203,7 @@ pub fn drawConsolePanel(state: *EditorState) !void {
 
         while (displayed_count < max_entries and cursor != end) {
             const entry = g_entries[cursor];
-            
+
             if (shouldDisplayEntry(state, entry.level)) {
                 gui.pushStyleColor(.text, levelColor(entry.level));
                 defer gui.popStyleColor(1);
@@ -213,11 +214,19 @@ pub fn drawConsolePanel(state: *EditorState) !void {
                     "[{s}] {s}: {s}",
                     .{ levelLabel(entry.level), entry.scopeText(), entry.messageText() },
                 ) catch continue;
-                
-                gui.textWrapped(line);
+
+                _ = gui.selectable(line, false, false, 0.0, 0.0);
+                var popup_id_buf: [32]u8 = undefined;
+                const popup_id = std.fmt.bufPrint(&popup_id_buf, "##console_ctx_{d}", .{displayed_count}) catch continue;
+                if (gui.beginPopupContextItem(popup_id)) {
+                    if (gui.menuItem(state.text(.copy), null, false, true)) {
+                        copyTextToClipboard(line);
+                    }
+                    gui.endPopup();
+                }
                 displayed_count += 1;
             }
-            
+
             cursor = (cursor + 1) % max_entries;
         }
     }
@@ -290,4 +299,12 @@ fn levelLabel(level: std.log.Level) []const u8 {
         .info => "INF",
         .debug => "DBG",
     };
+}
+
+fn copyTextToClipboard(text: []const u8) void {
+    var buf: [512 + 1]u8 = undefined;
+    const len = @min(text.len, buf.len - 1);
+    @memcpy(buf[0..len], text[0..len]);
+    buf[len] = 0;
+    _ = sdl.SDL_SetClipboardText(&buf);
 }

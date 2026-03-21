@@ -40,6 +40,12 @@ pub const AABB = struct {
         return self.min[0] <= self.max[0] and self.min[1] <= self.max[1] and self.min[2] <= self.max[2];
     }
 
+    pub fn intersects(self: AABB, other: AABB) bool {
+        return self.min[0] <= other.max[0] and self.max[0] >= other.min[0] and
+            self.min[1] <= other.max[1] and self.max[1] >= other.min[1] and
+            self.min[2] <= other.max[2] and self.max[2] >= other.min[2];
+    }
+
     pub fn centroid(self: AABB) [3]f32 {
         return .{
             (self.min[0] + self.max[0]) * 0.5,

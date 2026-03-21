@@ -280,7 +280,10 @@ pub const Bridge = struct {
             .query_entities => |query_request| blk: {
                 break :blk ToolResult{
                     .kind = .query,
-                    .query_result = try query_engine.queryAlloc(self.allocator, layer_context.world, query_request.filter()),
+                    .query_result = try query_engine.queryAlloc(self.allocator, layer_context.world, query_request.filter(), .{
+                        .static_bvh = &layer_context.world.renderable_spatial_index,
+                        .dynamic_bvh = &layer_context.world.dynamic_renderable_spatial_index,
+                    }),
                 };
             },
         };

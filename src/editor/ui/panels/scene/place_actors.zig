@@ -18,9 +18,9 @@ const PlaceActorEntry = struct {
 };
 
 const category_button_height: f32 = 28.0;
-const place_actor_row_height: f32 = 32.0;
-const place_actor_card_rounding: f32 = 3.0;
-const place_actor_list_icon_size: f32 = 18.0;
+const place_actor_row_height: f32 = 44.0;
+const place_actor_card_rounding: f32 = 5.0;
+const place_actor_list_icon_size: f32 = 24.0;
 const place_actor_card_icon_tint = [4]u8{ 210, 215, 220, 255 };
 const place_actor_card_text_muted = [4]f32{ 0.55, 0.58, 0.62, 1.0 };
 const place_actor_drag_preview_icon_size: f32 = 22.0;
@@ -274,21 +274,22 @@ fn drawPlaceActorEntry(
     );
 
     {
-        // Compact list row (like hierarchy)
         const row_width = @max(gui.contentRegionAvail()[0], 1.0);
         var row_button_id_buffer: [72]u8 = undefined;
         const row_button_id = try std.fmt.bufPrint(&row_button_id_buffer, "##place_actor_row_{d}", .{@intFromEnum(entry.kind)});
+
         gui.pushStyleColor(.button, place_actor_card_idle.button);
         gui.pushStyleColor(.button_hovered, place_actor_card_idle.hovered);
         gui.pushStyleColor(.button_active, place_actor_card_active.button);
-        gui.pushStyleVarVec2(.frame_padding, .{ 4.0, 2.0 });
+        gui.pushStyleVarVec2(.frame_padding, .{ 6.0, 4.0 });
         gui.pushStyleVarFloat(.frame_rounding, place_actor_card_rounding);
+
+        const start_pos = gui.cursorScreenPos();
         const row_clicked = gui.buttonEx(row_button_id, row_width, place_actor_row_height);
         const row_hovered = gui.isItemHovered();
-        defer {
-            gui.popStyleVar(2);
-            gui.popStyleColor(3);
-        }
+
+        gui.popStyleVar(2);
+        gui.popStyleColor(3);
 
         if (row_clicked) {
             try triggerPlaceActorEntry(state, layer_context, entry.kind);
@@ -298,10 +299,23 @@ fn drawPlaceActorEntry(
             drawPlaceActorDragPreview(state, entry.kind, label, description, icon_texture);
         }
 
-        // Compact layout: icon on left, label on right
+        // Overlay: icon vertically centered on the left
+        const icon_x = start_pos[0] + 8.0;
+        const icon_y = start_pos[1] + (place_actor_row_height - place_actor_list_icon_size) * 0.5;
+        gui.setCursorScreenPos(.{ icon_x, icon_y });
         gui.image(icon_texture, place_actor_list_icon_size, place_actor_list_icon_size);
-        gui.sameLine();
+
+        // Overlay: label on top-right of icon
+        const text_x = icon_x + place_actor_list_icon_size + 8.0;
+        gui.setCursorScreenPos(.{ text_x, start_pos[1] + 5.0 });
         gui.text(label);
+
+        // Overlay: description below label in muted color
+        gui.setCursorScreenPos(.{ text_x, start_pos[1] + 22.0 });
+        gui.textColored(place_actor_card_text_muted, description);
+
+        // Restore cursor to after the row
+        gui.setCursorScreenPos(.{ start_pos[0], start_pos[1] + place_actor_row_height + 2.0 });
     }
 }
 
