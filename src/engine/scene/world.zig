@@ -400,6 +400,10 @@ pub const World = struct {
     transform_set: sparse_set_mod.SparseSet(components.Transform),
     /// Rigidbody 组件稀疏集（热路径组件，O(1) 访问）
     rigidbody_set: sparse_set_mod.SparseSet(components.Rigidbody),
+    /// BoxCollider 组件稀疏集（热路径组件，O(1) 访问）
+    box_collider_set: sparse_set_mod.SparseSet(components.BoxCollider),
+    /// SphereCollider 组件稀疏集（热路径组件，O(1) 访问）
+    sphere_collider_set: sparse_set_mod.SparseSet(components.SphereCollider),
 
     /// 初始化世界
     ///
@@ -425,6 +429,8 @@ pub const World = struct {
             .renderable_sync_candidates = std.AutoHashMap(EntityId, void).init(allocator),
             .transform_set = sparse_set_mod.SparseSet(components.Transform).initNoFail(allocator, 1024),
             .rigidbody_set = sparse_set_mod.SparseSet(components.Rigidbody).initNoFail(allocator, 256),
+            .box_collider_set = sparse_set_mod.SparseSet(components.BoxCollider).initNoFail(allocator, 256),
+            .sphere_collider_set = sparse_set_mod.SparseSet(components.SphereCollider).initNoFail(allocator, 256),
         };
     }
 
@@ -471,6 +477,8 @@ pub const World = struct {
         self.prefab_library.deinit();
         self.transform_set.deinit(self.allocator);
         self.rigidbody_set.deinit(self.allocator);
+        self.box_collider_set.deinit(self.allocator);
+        self.sphere_collider_set.deinit(self.allocator);
         if (reinitialize) {
             self.entities = .empty;
             self.id_to_index = std.AutoHashMap(EntityId, usize).init(self.allocator);
@@ -492,6 +500,8 @@ pub const World = struct {
             self.renderable_full_sync_required = false;
             self.transform_set = sparse_set_mod.SparseSet(components.Transform).initNoFail(self.allocator, 1024);
             self.rigidbody_set = sparse_set_mod.SparseSet(components.Rigidbody).initNoFail(self.allocator, 256);
+            self.box_collider_set = sparse_set_mod.SparseSet(components.BoxCollider).initNoFail(self.allocator, 256);
+            self.sphere_collider_set = sparse_set_mod.SparseSet(components.SphereCollider).initNoFail(self.allocator, 256);
         }
     }
 
@@ -549,6 +559,12 @@ pub const World = struct {
         self.transform_set.insert(id, desc.local_transform) catch {};
         if (desc.rigidbody) |rb| {
             self.rigidbody_set.insert(id, rb) catch {};
+        }
+        if (desc.box_collider) |bc| {
+            self.box_collider_set.insert(id, bc) catch {};
+        }
+        if (desc.sphere_collider) |sc| {
+            self.sphere_collider_set.insert(id, sc) catch {};
         }
 
         if (desc.parent) |parent_id| {
@@ -795,6 +811,68 @@ pub const World = struct {
 
     pub fn hasRigidbody(self: *const World, id: EntityId) bool {
         return self.rigidbody_set.contains(id) or (self.getEntityConst(id) != null and self.getEntityConst(id).?.rigidbody != null);
+    }
+
+    pub fn getBoxCollider(self: *const World, id: EntityId) ?components.BoxCollider {
+        if (self.box_collider_set.get(id)) |bc| {
+            return bc.*;
+        }
+        const entity = self.getEntityConst(id) orelse return null;
+        return entity.box_collider;
+    }
+
+    pub fn getBoxColliderPtr(self: *World, id: EntityId) ?*components.BoxCollider {
+        if (self.box_collider_set.getPtr(id)) |bc| {
+            return bc;
+        }
+        const entity = self.getEntity(id) orelse return null;
+        return &entity.box_collider;
+    }
+
+    pub fn setBoxCollider(self: *World, id: EntityId, box_collider: components.BoxCollider) bool {
+        const entity = self.getEntity(id) orelse return false;
+        entity.box_collider = box_collider;
+        if (self.box_collider_set.getPtr(id)) |bc| {
+            bc.* = box_collider;
+        } else {
+            self.box_collider_set.insert(id, box_collider) catch {};
+        }
+        return true;
+    }
+
+    pub fn hasBoxCollider(self: *const World, id: EntityId) bool {
+        return self.box_collider_set.contains(id) or (self.getEntityConst(id) != null and self.getEntityConst(id).?.box_collider != null);
+    }
+
+    pub fn getSphereCollider(self: *const World, id: EntityId) ?components.SphereCollider {
+        if (self.sphere_collider_set.get(id)) |sc| {
+            return sc.*;
+        }
+        const entity = self.getEntityConst(id) orelse return null;
+        return entity.sphere_collider;
+    }
+
+    pub fn getSphereColliderPtr(self: *World, id: EntityId) ?*components.SphereCollider {
+        if (self.sphere_collider_set.getPtr(id)) |sc| {
+            return sc;
+        }
+        const entity = self.getEntity(id) orelse return null;
+        return &entity.sphere_collider;
+    }
+
+    pub fn setSphereCollider(self: *World, id: EntityId, sphere_collider: components.SphereCollider) bool {
+        const entity = self.getEntity(id) orelse return false;
+        entity.sphere_collider = sphere_collider;
+        if (self.sphere_collider_set.getPtr(id)) |sc| {
+            sc.* = sphere_collider;
+        } else {
+            self.sphere_collider_set.insert(id, sphere_collider) catch {};
+        }
+        return true;
+    }
+
+    pub fn hasSphereCollider(self: *const World, id: EntityId) bool {
+        return self.sphere_collider_set.contains(id) or (self.getEntityConst(id) != null and self.getEntityConst(id).?.sphere_collider != null);
     }
 
     pub fn renameEntity(self: *World, id: EntityId, new_name: []const u8) !bool {
