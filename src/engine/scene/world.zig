@@ -505,12 +505,43 @@ pub const World = struct {
         }
     }
 
+    /// Creates a new entity with an automatically-generated unique ID.
+    ///
+    /// Parameters:
+    /// - `desc`: EntityDesc with name, parent, transform, and component data.
+    ///
+    /// Returns: Unique EntityId for subsequent lookups and manipulation.
+    ///
+    /// Errors:
+    /// - error.ParentNotFound: desc.parent is set but parent entity does not exist.
+    ///
+    /// Memory ownership: Caller is responsible for allocating desc.name; World assumes
+    /// ownership and will free it on deinit() or when entity is deleted.
+    ///
+    /// Thread-safety: NOT thread-safe. Must be called from main thread only.
     pub fn createEntity(self: *World, desc: EntityDesc) !EntityId {
         const id = self.next_id;
         self.next_id += 1;
         return self.createEntityWithId(id, desc);
     }
 
+    /// Creates a new entity with a specific ID.
+    ///
+    /// Parameters:
+    /// - `id`: Explicit EntityId to use. If already taken, returns error.EntityIdConflict.
+    /// - `desc`: EntityDesc with name, parent, transform, and component data.
+    ///
+    /// Returns: The provided EntityId on success.
+    ///
+    /// Errors:
+    /// - error.ParentNotFound: desc.parent is set but parent entity does not exist.
+    /// - error.EntityIdConflict: id is already in use by another entity.
+    ///
+    /// Memory ownership: Caller is responsible for allocating desc.name; World assumes
+    /// ownership and will free it on deinit() or when entity is deleted. All components
+    /// in desc are deep-copied into the entity.
+    ///
+    /// Thread-safety: NOT thread-safe. Must be called from main thread only.
     pub fn createEntityWithId(self: *World, id: EntityId, desc: EntityDesc) !EntityId {
         if (desc.parent) |parent_id| {
             if (!self.hasEntity(parent_id)) {
@@ -583,11 +614,37 @@ pub const World = struct {
         return id;
     }
 
+    /// Retrieves a mutable reference to an entity by ID.
+    ///
+    /// Parameters:
+    /// - `id`: EntityId to look up.
+    ///
+    /// Returns: Mutable pointer to Entity, or null if not found.
+    ///
+    /// Warnings:
+    /// - Caller must not hold this pointer across calls to createEntity, deleteEntity, or updateHierarchy,
+    ///   as internal allocations may relocate the entity array.
+    /// - NOT thread-safe. Multiple threads must not modify the same entity simultaneously.
+    ///   Use getEntityConst() for read-only access in other threads.
+    ///
+    /// Usage: Typically used to mutate entity transform, parent, or add components.
     pub fn getEntity(self: *World, id: EntityId) ?*Entity {
         const index = self.id_to_index.get(id) orelse return null;
         return &self.entities.items[index];
     }
 
+    /// Retrieves a const reference to an entity by ID.
+    ///
+    /// Parameters:
+    /// - `id`: EntityId to look up.
+    ///
+    /// Returns: Const pointer to Entity, or null if not found.
+    ///
+    /// Thread-safety: Thread-safe for concurrent reads from different threads.
+    /// Safe to call while other threads iterate or read other entities,
+    /// but not safe if World.createEntity or World.deleteEntity is called concurrently.
+    ///
+    /// Usage: Use this instead of getEntity() for read-only access, esp. in parallel queries.
     pub fn getEntityConst(self: *const World, id: EntityId) ?*const Entity {
         const index = self.id_to_index.get(id) orelse return null;
         return &self.entities.items[index];
@@ -602,6 +659,21 @@ pub const World = struct {
         return entity.parent;
     }
 
+    /// Marks an entity and all descendants as dirty, triggering hierarchy recalculation.
+    ///
+    /// Parameters:
+    /// - `id`: EntityId of entity to mark dirty.
+    ///
+    /// Side-effects:
+    /// - Recursively marks all child entities dirty via DFS.
+    /// - If entity has renderable (mesh/vfx), queues spatial index update.
+    /// - If entity is cached in dynamic_renderables, flushes steady_query_count.
+    /// - All dirty entities will be processed by updateHierarchy().
+    ///
+    /// Usage: Call after modifying local_transform, parent, or other cached properties.
+    /// Note: updateHierarchy() must be called after to propagate changes to world transforms.
+    ///
+    /// Thread-safety: NOT thread-safe. Must be called from main thread only.
     pub fn markDirty(self: *World, id: EntityId) void {
         const entity = self.getEntity(id) orelse return;
         if (entity.mesh != null or entity.skinned_mesh != null or entity.vfx != null) {
@@ -627,6 +699,22 @@ pub const World = struct {
         }
     }
 
+    /// Recalculates all entity world transforms and bounds after hierarchy changes.
+    ///
+    /// This is a three-pass algorithm:
+    /// 1. **Transform Pass**: Traverses root entities and recursively updates world transforms
+    ///    by combining parent world matrix with local TRS. Only traverses entities marked dirty.
+    /// 2. **Bounds Pass**: Calculates world-space AABB for each entity based on mesh geometry
+    ///    or children bounds. Propagates up the hierarchy.
+    /// 3. **Spatial Pass**: Syncs dirty renderables with spatial index (BVH) for culling.
+    ///    Refits dynamic renderables after bounds change.
+    ///
+    /// Performance: O(n) where n = number of dirty entities. If no entities are dirty, early-exits.
+    ///
+    /// Call frequency: Typically called once per frame before rendering.
+    /// Must be called if any entity's local_transform or parent relationship changed.
+    ///
+    /// Thread-safety: NOT thread-safe. Must be called from main thread only.
     pub fn updateHierarchy(self: *World) void {
         const mat4 = @import("../math/mat4.zig");
 

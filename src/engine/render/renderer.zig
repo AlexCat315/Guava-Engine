@@ -355,6 +355,10 @@ const SceneViewportState = struct {
 };
 
 const ShadowMapState = struct {
+    /// Shadow map resolution (2048x2048 as a trade-off between visual quality and GPU memory budget).
+    /// Chosen to minimize temporal aliasing on moving shadows while keeping VRAM usage reasonable (~16 MB for d32_float).
+    /// Higher values (4096+) improve shadow quality but impact performance on lower-end GPUs.
+    /// Lower values (1024-) degrade quality, especially visible on large shadow-casting objects.
     size: u32 = 2048,
     depth_texture: ?rhi_mod.Texture = null,
     sampler: ?rhi_mod.Sampler = null,
@@ -398,8 +402,18 @@ const ShadowMapState = struct {
     }
 };
 
+/// Material preview thumbnail resolution (128x128 pixels). Trade-off between visual fidelity (larger = better detail)
+/// and texture cache pressure (smaller = more cached thumbnails in VRAM). Value is quadratically dependent on memory:
+/// 128^2 * 4 bytes (RGBA8) = 65 KB per thumbnail vs 256^2 * 4 = 262 KB. See material_thumbnail_cache_limit.
 const material_thumbnail_dimension: u32 = 128;
+
+/// Number of material thumbnails to process per frame. Limits GPU submission time for thumbnail generation.
+/// Chosen to amortize CPU-GPU sync cost while keeping per-frame overhead low (~2ms GPU time typical).
+/// Increase if UI remains responsive; decrease if frame time budget is tight.
 const material_thumbnail_jobs_per_frame: usize = 2;
+
+/// Maximum number of cached material thumbnails kept in VRAM. Once exceeded, LRU eviction removes oldest.
+/// 48 * 128^2 * 4 bytes = ~3 MB VRAM. Adjust based on available VRAM and material palette size.
 const material_thumbnail_cache_limit: usize = 48;
 const selection_readback_bytes: u32 = 4;
 const material_thumbnail_clear_color = [4]f32{ 0.075, 0.08, 0.09, 1.0 };
@@ -1041,6 +1055,27 @@ pub const Renderer = struct {
         return &entry.target.color_texture;
     }
 
+    /// Renders a complete frame: processes scene data, executes render graph passes, and returns statistics.
+    ///
+    /// Parameters:
+    /// - `scene`: Scene snapshot containing visible entities, lights, and cameras.
+    /// - `physics_state_opt`: Optional physics state for collision geometry rendering (debug visualization).
+    ///
+    /// Returns: FrameReport with per-pass statistics (execution time, draw calls, triangles),
+    /// scene snapshot, and GPU runtime info (backend, total VRAM).
+    ///
+    /// Side-effects:
+    /// - Submits GPU work to RHI device (non-blocking from CPU perspective).
+    /// - Updates material thumbnail cache (processes material_thumbnail_jobs_per_frame thumbnails).
+    /// - Processes selection readbacks from previous frame (object picking for editor).
+    /// - May trigger async resource compilations (shaders, pipelines) on first use.
+    ///
+    /// Errors:
+    /// - Most errors are logged and result in a degraded frame (e.g., failed to compile shader).
+    /// - Returning error means GPU submission failed; caller should skip present or retry next frame.
+    ///
+    /// Thread-safety: NOT thread-safe. Must be called from render thread (typically main thread).
+    /// Scene pointer must remain valid until GPU work completes (typically 1-2 frames later).
     pub fn drawFrame(self: *Renderer, scene: *scene_mod.Scene, physics_state_opt: ?*physics_mod.PhysicsState) !FrameReport {
         try self.resolveSelectionReadbacks();
 
@@ -1438,6 +1473,24 @@ pub const Renderer = struct {
         return result;
     }
 
+    /// Downloads the final rendered frame from GPU to CPU as RGBA8 pixels.
+    ///
+    /// Parameters:
+    /// - `allocator`: Allocator for returned pixel buffer. Caller owns and must free the slice.
+    ///
+    /// Returns: []u8 pixel data in RGBA8 format (4 bytes per pixel), row-major layout.
+    /// Slice length = (width * height * 4) bytes. Caller must call allocator.free(result).
+    ///
+    /// Errors:
+    /// - error.TextureNotFound: No offscreen render target (viewport not yet rendered).
+    /// - error.CommandBufferAcquireFailed: GPU submission failed (GPU device lost?).
+    /// - error.OutOfMemory: Allocation failed.
+    ///
+    /// Performance: Blocks CPU waiting for GPU readback. Do NOT call every frame in tight loops.
+    /// Typical use: Screenshot export, video recording (async), debugging visualization.
+    /// GPU-CPU sync point: GPU must complete rendering before transfer buffer becomes visible.
+    ///
+    /// Thread-safety: NOT thread-safe. Must be called from render thread.
     pub fn downloadFinalFrameAlloc(self: *Renderer, allocator: std.mem.Allocator) ![]u8 {
         const texture = self.scene_viewport.color_texture orelse return error.TextureNotFound;
         const width = texture.desc.width;
@@ -2112,7 +2165,8 @@ fn findSceneEnvironmentAssetId(resources: *const assets_lib.ResourceLibrary) ?[]
 fn isLikelyEnvironmentPath(path: []const u8) bool {
     return containsIgnoreCase(path, "sky") or
         containsIgnoreCase(path, "env") or
-        containsIgnoreCase(path, "ibl");
+        containsIgnoreCase(path, "ibl") or
+        containsIgnoreCase(path, "ticknock");
 }
 
 fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
