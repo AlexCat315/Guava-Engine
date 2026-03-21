@@ -107,6 +107,10 @@ pub const EditorLayer = struct {
 
         initEditorStyle();
 
+        // Force textured startup viewport so imported model textures are visible immediately.
+        self.state.viewport_render_mode = .textured;
+        self.state.viewport_debug_overlay = false;
+
         self.state.dock_layout_initialized = false;
         self.state.scene_camera = layer_context.world.primaryCameraEntity();
 

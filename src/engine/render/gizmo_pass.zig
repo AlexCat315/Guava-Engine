@@ -307,22 +307,13 @@ pub const GizmoPass = struct {
         stats: *mesh_pass_mod.DrawStats,
     ) void {
         const mode: EditorGizmoMode = if (active) .translate else .idle;
-        const d: f32 = 0.012;
         const x_color = axisColor(.x, constrained_axis, mode);
         const y_color = axisColor(.y, constrained_axis, mode);
         const z_color = axisColor(.z, constrained_axis, mode);
-        const offsets = [_][3]f32{ .{ 0, 0, 0 }, .{ 0, d, 0 }, .{ 0, -d, 0 }, .{ 0, 0, d }, .{ 0, 0, -d } };
-        for (offsets) |off| {
-            const t = [3]f32{
-                translation[0] + off[0] * gizmo_scale,
-                translation[1] + off[1] * gizmo_scale,
-                translation[2] + off[2] * gizmo_scale,
-            };
-            const model = composeModelMatrix(t, rotation, .{ gizmo_scale, gizmo_scale, gizmo_scale }, .{ 0.0, 0.0, 0.0 });
-            self.drawShape(device, frame, pass, self.translate_arrow_vertex_buffer.?, 0, 6, view_projection, model, x_color, stats);
-            self.drawShape(device, frame, pass, self.translate_arrow_vertex_buffer.?, 6, 6, view_projection, model, y_color, stats);
-            self.drawShape(device, frame, pass, self.translate_arrow_vertex_buffer.?, 12, 6, view_projection, model, z_color, stats);
-        }
+        const model = composeModelMatrix(translation, rotation, .{ gizmo_scale, gizmo_scale, gizmo_scale }, .{ 0.0, 0.0, 0.0 });
+        self.drawShape(device, frame, pass, self.translate_arrow_vertex_buffer.?, 0, 6, view_projection, model, x_color, stats);
+        self.drawShape(device, frame, pass, self.translate_arrow_vertex_buffer.?, 6, 6, view_projection, model, y_color, stats);
+        self.drawShape(device, frame, pass, self.translate_arrow_vertex_buffer.?, 12, 6, view_projection, model, z_color, stats);
     }
 
     fn drawScaleAxes(
@@ -337,22 +328,13 @@ pub const GizmoPass = struct {
         constrained_axis: EditorGizmoAxis,
         stats: *mesh_pass_mod.DrawStats,
     ) void {
-        const d: f32 = 0.012;
         const x_color = axisColor(.x, constrained_axis, .scale);
         const y_color = axisColor(.y, constrained_axis, .scale);
         const z_color = axisColor(.z, constrained_axis, .scale);
-        const offsets = [_][3]f32{ .{ 0, 0, 0 }, .{ 0, d, 0 }, .{ 0, -d, 0 }, .{ 0, 0, d }, .{ 0, 0, -d } };
-        for (offsets) |off| {
-            const t = [3]f32{
-                translation[0] + off[0] * gizmo_scale,
-                translation[1] + off[1] * gizmo_scale,
-                translation[2] + off[2] * gizmo_scale,
-            };
-            const model = composeModelMatrix(t, rotation, .{ gizmo_scale, gizmo_scale, gizmo_scale }, .{ 0.0, 0.0, 0.0 });
-            self.drawShape(device, frame, pass, self.axis_vertex_buffer.?, 0, 2, view_projection, model, x_color, stats);
-            self.drawShape(device, frame, pass, self.axis_vertex_buffer.?, 2, 2, view_projection, model, y_color, stats);
-            self.drawShape(device, frame, pass, self.axis_vertex_buffer.?, 4, 2, view_projection, model, z_color, stats);
-        }
+        const model = composeModelMatrix(translation, rotation, .{ gizmo_scale, gizmo_scale, gizmo_scale }, .{ 0.0, 0.0, 0.0 });
+        self.drawShape(device, frame, pass, self.axis_vertex_buffer.?, 0, 2, view_projection, model, x_color, stats);
+        self.drawShape(device, frame, pass, self.axis_vertex_buffer.?, 2, 2, view_projection, model, y_color, stats);
+        self.drawShape(device, frame, pass, self.axis_vertex_buffer.?, 4, 2, view_projection, model, z_color, stats);
     }
 
     fn drawRotateRings(
@@ -367,25 +349,16 @@ pub const GizmoPass = struct {
         constrained_axis: EditorGizmoAxis,
         stats: *mesh_pass_mod.DrawStats,
     ) void {
-        const d: f32 = 0.012;
         const x_color = axisColor(.x, constrained_axis, .rotate);
         const y_color = axisColor(.y, constrained_axis, .rotate);
         const z_color = axisColor(.z, constrained_axis, .rotate);
-        const offsets = [_][3]f32{ .{ 0, 0, 0 }, .{ 0, d, 0 }, .{ 0, -d, 0 }, .{ 0, 0, d }, .{ 0, 0, -d } };
-        for (offsets) |off| {
-            const t = [3]f32{
-                translation[0] + off[0] * gizmo_scale,
-                translation[1] + off[1] * gizmo_scale,
-                translation[2] + off[2] * gizmo_scale,
-            };
-            const x_model = composeModelMatrix(t, rotation, .{ gizmo_scale, gizmo_scale, gizmo_scale }, .{ 0.0, std.math.pi * 0.5, 0.0 });
-            const y_model = composeModelMatrix(t, rotation, .{ gizmo_scale, gizmo_scale, gizmo_scale }, .{ std.math.pi * 0.5, 0.0, 0.0 });
-            const z_model = composeModelMatrix(t, rotation, .{ gizmo_scale, gizmo_scale, gizmo_scale }, .{ 0.0, 0.0, 0.0 });
+        const x_model = composeModelMatrix(translation, rotation, .{ gizmo_scale, gizmo_scale, gizmo_scale }, .{ 0.0, std.math.pi * 0.5, 0.0 });
+        const y_model = composeModelMatrix(translation, rotation, .{ gizmo_scale, gizmo_scale, gizmo_scale }, .{ std.math.pi * 0.5, 0.0, 0.0 });
+        const z_model = composeModelMatrix(translation, rotation, .{ gizmo_scale, gizmo_scale, gizmo_scale }, .{ 0.0, 0.0, 0.0 });
 
-            self.drawShape(device, frame, pass, self.ring_vertex_buffer.?, 0, ring_vertices.len, view_projection, x_model, x_color, stats);
-            self.drawShape(device, frame, pass, self.ring_vertex_buffer.?, 0, ring_vertices.len, view_projection, y_model, y_color, stats);
-            self.drawShape(device, frame, pass, self.ring_vertex_buffer.?, 0, ring_vertices.len, view_projection, z_model, z_color, stats);
-        }
+        self.drawShape(device, frame, pass, self.ring_vertex_buffer.?, 0, ring_vertices.len, view_projection, x_model, x_color, stats);
+        self.drawShape(device, frame, pass, self.ring_vertex_buffer.?, 0, ring_vertices.len, view_projection, y_model, y_color, stats);
+        self.drawShape(device, frame, pass, self.ring_vertex_buffer.?, 0, ring_vertices.len, view_projection, z_model, z_color, stats);
     }
 
     fn drawScaleBox(
