@@ -68,7 +68,7 @@ pub const DrawItem = struct {
     wireframe_index_buffer: rhi_mod.Buffer,
     wireframe_index_count: u32,
     bind_group: rhi_mod.BindGroup,
-    material_textures: [4]*const rhi_mod.Texture,
+    material_textures: [5]*const rhi_mod.Texture, // [0]=base_color [1]=mr [2]=normal [3]=occlusion [4]=emissive
     base_color_factor: [4]f32,
     emissive_factor: [4]f32,
     pbr_factors: [4]f32,
@@ -180,7 +180,7 @@ const CachedMaterial = struct {
 
 const MaterialState = struct {
     bind_group: rhi_mod.BindGroup,
-    material_textures: [4]*const rhi_mod.Texture,
+    material_textures: [5]*const rhi_mod.Texture, // [0]=base_color [1]=mr [2]=normal [3]=occlusion [4]=emissive
     base_color_factor: [4]f32,
     emissive_factor: [4]f32,
     pbr_factors: [4]f32,
@@ -694,6 +694,7 @@ pub const MeshSceneCache = struct {
                 &self.fallback_texture.?,
                 &self.fallback_texture.?,
                 &self.fallback_texture.?,
+                &self.fallback_texture.?,
             },
             .base_color_factor = [4]f32{ 1.0, 1.0, 1.0, 1.0 },
             .emissive_factor = .{ 0.0, 0.0, 0.0, 0.0 },
@@ -728,6 +729,7 @@ pub const MeshSceneCache = struct {
             if (material.metallic_roughness_texture) |h| try self.ensureTexture(device, h, scene.resources.texture(h).?) else &self.fallback_texture.?,
             if (material.normal_texture) |h| try self.ensureTexture(device, h, scene.resources.texture(h).?) else &self.fallback_texture.?,
             if (material.occlusion_texture) |h| try self.ensureTexture(device, h, scene.resources.texture(h).?) else &self.fallback_texture.?,
+            if (material.emissive_texture) |h| try self.ensureTexture(device, h, scene.resources.texture(h).?) else &self.fallback_texture.?,
         };
 
         if (try self.ensureMaterial(device, material_handle, material, scene)) |bind_group| {

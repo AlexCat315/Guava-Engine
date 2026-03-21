@@ -289,16 +289,16 @@ pub const BasePass = struct {
                 const environment_map = prepared_scene.environment_map orelse return error.TextureNotFound;
 
                 const combined_bindings = [_]rhi_mod.TextureSamplerBinding{
-                    .{ .texture = item.material_textures[0], .sampler = texture_sampler },
-                    .{ .texture = item.material_textures[1], .sampler = texture_sampler },
-                    .{ .texture = item.material_textures[2], .sampler = texture_sampler },
-                    .{ .texture = shadow_texture, .sampler = shadow_sampler },
-                    .{ .texture = item.material_textures[3], .sampler = texture_sampler },
-                    .{ .texture = irradiance_map, .sampler = texture_sampler },
-                    .{ .texture = prefiltered_env_map, .sampler = texture_sampler },
-                    .{ .texture = brdf_lut, .sampler = texture_sampler },
-                    .{ .texture = item.material_textures[0], .sampler = texture_sampler },
-                    .{ .texture = environment_map, .sampler = texture_sampler },
+                    .{ .texture = item.material_textures[0], .sampler = texture_sampler }, // binding 0: u_base_color_map
+                    .{ .texture = item.material_textures[1], .sampler = texture_sampler }, // binding 1: u_metallic_roughness_map
+                    .{ .texture = item.material_textures[2], .sampler = texture_sampler }, // binding 2: u_normal_map
+                    .{ .texture = item.material_textures[3], .sampler = texture_sampler }, // binding 3: u_occlusion_map
+                    .{ .texture = item.material_textures[4], .sampler = texture_sampler }, // binding 4: u_emissive_map
+                    .{ .texture = shadow_texture, .sampler = shadow_sampler }, // binding 5: u_shadow_map (sampler2DShadow)
+                    .{ .texture = irradiance_map, .sampler = texture_sampler }, // binding 6: u_irradiance_map
+                    .{ .texture = prefiltered_env_map, .sampler = texture_sampler }, // binding 7: u_prefiltered_env_map
+                    .{ .texture = brdf_lut, .sampler = texture_sampler }, // binding 8: u_brdf_lut
+                    .{ .texture = environment_map, .sampler = texture_sampler }, // binding 9: u_environment_map
                 };
                 var combined_bg = try device.createBindGroup(.{
                     .stage = .fragment,
