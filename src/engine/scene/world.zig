@@ -398,6 +398,8 @@ pub const World = struct {
     renderable_full_sync_required: bool = false,
     /// Transform 组件稀疏集（热路径组件，O(1) 访问）
     transform_set: sparse_set_mod.SparseSet(components.Transform),
+    /// Rigidbody 组件稀疏集（热路径组件，O(1) 访问）
+    rigidbody_set: sparse_set_mod.SparseSet(components.Rigidbody),
 
     /// 初始化世界
     ///
@@ -422,6 +424,7 @@ pub const World = struct {
             .dynamic_dirty_renderables = std.AutoHashMap(EntityId, void).init(allocator),
             .renderable_sync_candidates = std.AutoHashMap(EntityId, void).init(allocator),
             .transform_set = sparse_set_mod.SparseSet(components.Transform).initNoFail(allocator, 1024),
+            .rigidbody_set = sparse_set_mod.SparseSet(components.Rigidbody).initNoFail(allocator, 256),
         };
     }
 
@@ -467,6 +470,7 @@ pub const World = struct {
         self.resources.deinit();
         self.prefab_library.deinit();
         self.transform_set.deinit(self.allocator);
+        self.rigidbody_set.deinit(self.allocator);
         if (reinitialize) {
             self.entities = .empty;
             self.id_to_index = std.AutoHashMap(EntityId, usize).init(self.allocator);
@@ -487,6 +491,7 @@ pub const World = struct {
             self.skinned_mesh_bindings = .empty;
             self.renderable_full_sync_required = false;
             self.transform_set = sparse_set_mod.SparseSet(components.Transform).initNoFail(self.allocator, 1024);
+            self.rigidbody_set = sparse_set_mod.SparseSet(components.Rigidbody).initNoFail(self.allocator, 256);
         }
     }
 
@@ -542,6 +547,9 @@ pub const World = struct {
 
         try self.id_to_index.put(id, index);
         self.transform_set.insert(id, desc.local_transform) catch {};
+        if (desc.rigidbody) |rb| {
+            self.rigidbody_set.insert(id, rb) catch {};
+        }
 
         if (desc.parent) |parent_id| {
             if (self.getEntity(parent_id)) |parent| {
@@ -756,6 +764,37 @@ pub const World = struct {
         }
         self.markDirty(id);
         return true;
+    }
+
+    pub fn getRigidbody(self: *const World, id: EntityId) ?components.Rigidbody {
+        if (self.rigidbody_set.get(id)) |rb| {
+            return rb.*;
+        }
+        const entity = self.getEntityConst(id) orelse return null;
+        return entity.rigidbody;
+    }
+
+    pub fn getRigidbodyPtr(self: *World, id: EntityId) ?*components.Rigidbody {
+        if (self.rigidbody_set.getPtr(id)) |rb| {
+            return rb;
+        }
+        const entity = self.getEntity(id) orelse return null;
+        return &entity.rigidbody;
+    }
+
+    pub fn setRigidbody(self: *World, id: EntityId, rigidbody: components.Rigidbody) bool {
+        const entity = self.getEntity(id) orelse return false;
+        entity.rigidbody = rigidbody;
+        if (self.rigidbody_set.getPtr(id)) |rb| {
+            rb.* = rigidbody;
+        } else {
+            self.rigidbody_set.insert(id, rigidbody) catch {};
+        }
+        return true;
+    }
+
+    pub fn hasRigidbody(self: *const World, id: EntityId) bool {
+        return self.rigidbody_set.contains(id) or (self.getEntityConst(id) != null and self.getEntityConst(id).?.rigidbody != null);
     }
 
     pub fn renameEntity(self: *World, id: EntityId, new_name: []const u8) !bool {
