@@ -316,6 +316,7 @@ fn drawPlaceActorEntry(
 
         // Restore cursor to after the row
         gui.setCursorScreenPos(.{ start_pos[0], start_pos[1] + place_actor_row_height + 2.0 });
+        gui.dummy(0.0, 0.0);
     }
 }
 

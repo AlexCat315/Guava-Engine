@@ -33,6 +33,11 @@ pub const ScriptHandle = enum(u32) {
     _,
 };
 
+pub const AudioClipHandle = enum(u32) {
+    invalid = 0,
+    _,
+};
+
 pub fn isValid(handle: anytype) bool {
     return @intFromEnum(handle) != 0;
 }
@@ -66,5 +71,9 @@ pub fn animationClipHandle(index: usize) AnimationClipHandle {
 }
 
 pub fn scriptHandle(index: usize) ScriptHandle {
+    return @enumFromInt(index + 1);
+}
+
+pub fn audioClipHandle(index: usize) AudioClipHandle {
     return @enumFromInt(index + 1);
 }

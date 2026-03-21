@@ -352,7 +352,26 @@ host_ui_set_tooltip(wasm_exec_env_t exec_env, const uint8_t *ptr, uint32_t len) 
     guava_wasm_host_ui_set_tooltip(guava_get_userdata(exec_env), ptr, len);
 }
 
-#define GUAVA_NATIVE_SYMBOL_COUNT 35
+extern uint32_t guava_wasm_host_audio_play(void *userdata, uint32_t entity_id);
+extern void guava_wasm_host_audio_stop(void *userdata, uint32_t entity_id);
+extern void guava_wasm_host_audio_set_volume(void *userdata, uint32_t entity_id, float volume);
+
+static uint32_t
+host_audio_play(wasm_exec_env_t exec_env, uint32_t entity_id) {
+    return guava_wasm_host_audio_play(guava_get_userdata(exec_env), entity_id);
+}
+
+static void
+host_audio_stop(wasm_exec_env_t exec_env, uint32_t entity_id) {
+    guava_wasm_host_audio_stop(guava_get_userdata(exec_env), entity_id);
+}
+
+static void
+host_audio_set_volume(wasm_exec_env_t exec_env, uint32_t entity_id, float volume) {
+    guava_wasm_host_audio_set_volume(guava_get_userdata(exec_env), entity_id, volume);
+}
+
+#define GUAVA_NATIVE_SYMBOL_COUNT 38
 
 static NativeSymbol guava_native_symbols[GUAVA_NATIVE_SYMBOL_COUNT] = {
     EXPORT_WASM_API_WITH_SIG(host_get_entity_id, "()i"),
@@ -390,6 +409,9 @@ static NativeSymbol guava_native_symbols[GUAVA_NATIVE_SYMBOL_COUNT] = {
     EXPORT_WASM_API_WITH_SIG(host_ui_is_item_clicked, "()i"),
     EXPORT_WASM_API_WITH_SIG(host_ui_is_item_hovered, "()i"),
     EXPORT_WASM_API_WITH_SIG(host_ui_set_tooltip, "(*~)"),
+    EXPORT_WASM_API_WITH_SIG(host_audio_play, "(i)i"),
+    EXPORT_WASM_API_WITH_SIG(host_audio_stop, "(i)"),
+    EXPORT_WASM_API_WITH_SIG(host_audio_set_volume, "(if)"),
 };
 
 NativeSymbol *

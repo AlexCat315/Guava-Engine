@@ -116,7 +116,7 @@ pub fn drawAiChatPanel(state: *EditorState) !void {
     state.ai_chat_open = open;
     if (!open) return;
 
-    // Connection status indicator
+    // Connection status indicator with settings toggle
     const is_connected = state.ai_collaboration != null;
     if (is_connected) {
         gui.pushStyleColor(.text, .{ 0.3, 0.8, 0.4, 1.0 });
@@ -126,6 +126,37 @@ pub fn drawAiChatPanel(state: *EditorState) !void {
         gui.text(state.text(.ai_chat_disconnected));
     }
     gui.popStyleColor(1);
+    gui.sameLine();
+    {
+        const avail_x = gui.contentRegionAvail()[0];
+        if (avail_x > 80.0) {
+            gui.dummy(avail_x - 70.0, 1.0);
+            gui.sameLine();
+        }
+        if (gui.buttonEx("Settings", 60.0, 0.0)) {
+            state.ai_provider_settings_open = !state.ai_provider_settings_open;
+        }
+    }
+
+    // AI Provider settings (collapsible)
+    if (state.ai_provider_settings_open) {
+        gui.separator();
+        _ = gui.beginChild("ai_provider_settings", 0.0, 120.0, true);
+        defer gui.endChild();
+
+        gui.text("AI Provider");
+        gui.setNextItemWidth(-1.0);
+        _ = gui.inputTextWithHint("##ai_provider_name", "Provider name (e.g. OpenAI, Anthropic)", &state.ai_provider_name_buffer);
+
+        gui.text("Endpoint");
+        gui.setNextItemWidth(-1.0);
+        _ = gui.inputTextWithHint("##ai_provider_endpoint", "https://api.openai.com/v1", &state.ai_provider_endpoint_buffer);
+
+        gui.text("Model");
+        gui.setNextItemWidth(-1.0);
+        _ = gui.inputTextWithHint("##ai_provider_model", "gpt-4o / claude-sonnet-4-20250514", &state.ai_provider_model_buffer);
+    }
+
     gui.separator();
 
     // Message area

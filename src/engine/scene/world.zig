@@ -176,6 +176,10 @@ pub const Entity = struct {
     vfx: ?components.Vfx = null,
     /// 脚本组件
     script: ?components.Script = null,
+    /// 音频源组件
+    audio_source: ?components.AudioSource = null,
+    /// 音频监听器组件
+    audio_listener: ?components.AudioListener = null,
     /// 是否可见
     visible: bool = true,
     /// 是否仅在编辑器中显示
@@ -283,6 +287,10 @@ pub const EntityDesc = struct {
     vfx: ?components.Vfx = null,
     /// 脚本组件
     script: ?components.Script = null,
+    /// 音频源组件
+    audio_source: ?components.AudioSource = null,
+    /// 音频监听器组件
+    audio_listener: ?components.AudioListener = null,
     /// 是否可见
     visible: bool = true,
     /// 是否仅在编辑器中显示
@@ -571,6 +579,8 @@ pub const World = struct {
             .light = desc.light,
             .vfx = desc.vfx,
             .script = try cloneScriptComponent(self.allocator, desc.script),
+            .audio_source = desc.audio_source,
+            .audio_listener = desc.audio_listener,
             .visible = desc.visible,
             .editor_only = desc.editor_only,
             .is_folder = desc.is_folder,

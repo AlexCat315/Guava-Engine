@@ -98,12 +98,6 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
         if (gui.menuItem(state.text(.material_editor), null, state.material_editor_open, true)) {
             state.material_editor_open = !state.material_editor_open;
         }
-        if (gui.menuItem("AI Utilities", null, state.editor_utilities_open, true)) {
-            state.editor_utilities_open = !state.editor_utilities_open;
-        }
-        if (gui.menuItem(state.text(.ai_chat), null, state.ai_chat_open, true)) {
-            state.ai_chat_open = !state.ai_chat_open;
-        }
         if (gui.menuItem(state.text(.animation_editor), null, state.animation_editor_open, true)) {
             state.animation_editor_open = !state.animation_editor_open;
         }
@@ -146,6 +140,15 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
 
     if (gui.beginMenu(state.text(.help))) {
         defer gui.endMenu();
+
+        if (gui.menuItem(state.text(.ai_chat), "Ctrl+Shift+I", state.ai_chat_open, true)) {
+            state.ai_chat_open = !state.ai_chat_open;
+        }
+        if (gui.menuItem("AI Utilities", null, state.editor_utilities_open, true)) {
+            state.editor_utilities_open = !state.editor_utilities_open;
+        }
+        gui.separator();
+
         for (i18n.available_languages) |language| {
             const locale_info = i18n.locale(language);
             if (gui.menuItem(locale_info.native_name, null, state.language == language, true)) {

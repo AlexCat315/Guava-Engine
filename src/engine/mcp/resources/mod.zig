@@ -6,6 +6,7 @@ const script_runtime_mod = @import("../../script/runtime.zig");
 const scene_mod = @import("../../scene/scene.zig");
 const components = @import("../../scene/components.zig");
 const render_mod = @import("../../render/renderer.zig");
+const audio_mod = @import("../../audio/mod.zig");
 
 pub const resource_templates = [_]protocol.ResourceTemplateDescriptor{
     .{
@@ -200,6 +201,15 @@ pub const SnapshotStore = struct {
             });
         }
 
+        try resources.append(allocator, .{
+            .uri = try allocator.dupe(u8, "audio://mixer-status"),
+            .name = try allocator.dupe(u8, "Audio Mixer Status"),
+            .title = try allocator.dupe(u8, "Audio Mixer Status"),
+            .description = try allocator.dupe(u8, "Current audio mixer state: master/music/sfx volumes, active voice count."),
+            .mimeType = try allocator.dupe(u8, "application/json"),
+            .size = null,
+        });
+
         return try resources.toOwnedSlice(allocator);
     }
 
@@ -272,6 +282,25 @@ pub const SnapshotStore = struct {
                 .uri = try allocator.dupe(u8, "editor://utilities"),
                 .mimeType = try allocator.dupe(u8, "application/json"),
                 .text = try mutable.editor_utility_runtime.?.buildStatusJsonAlloc(allocator),
+            };
+        }
+
+        if (std.mem.eql(u8, uri, "audio://mixer-status")) {
+            const status = if (audio_mod.get() catch null) |runtime| runtime.getMixerStatus() else audio_mod.MixerStatus{
+                .master_volume = 0,
+                .music_volume = 0,
+                .sfx_volume = 0,
+                .active_voices = 0,
+                .music_playing = 0,
+                .sfx_playing = 0,
+            };
+            var out: std.io.Writer.Allocating = .init(allocator);
+            defer out.deinit();
+            try std.json.Stringify.value(status, .{}, &out.writer);
+            return .{
+                .uri = try allocator.dupe(u8, "audio://mixer-status"),
+                .mimeType = try allocator.dupe(u8, "application/json"),
+                .text = try allocator.dupe(u8, out.written()),
             };
         }
 

@@ -473,3 +473,38 @@ pub fn defaultVfx(kind: VfxKind) Vfx {
         },
     };
 }
+
+/// 音频源组件
+///
+/// 使实体成为音频播放源。支持 2D 或 3D 空间音效。
+pub const AudioSource = struct {
+    /// 音频剪辑资源句柄
+    clip_handle: ?handles.AudioClipHandle = null,
+    /// 音量（0.0 - 1.0）
+    volume: f32 = 1.0,
+    /// 是否启用 3D 空间音效
+    spatial: bool = false,
+    /// 是否循环播放
+    looping: bool = false,
+    /// 是否在启动时自动播放
+    play_on_awake: bool = true,
+    /// 3D 音效最小距离（仅在 spatial=true 时有效）
+    min_distance: f32 = 1.0,
+    /// 3D 音效最大距离（仅在 spatial=true 时有效）
+    max_distance: f32 = 100.0,
+    /// 多普勒因子（0.0 禁用多普勒，1.0 正常）
+    doppler_factor: f32 = 1.0,
+    /// 运行时语音句柄（不序列化）
+    _voice_handle: ?u32 = null,
+    /// 是否正在播放
+    _is_playing: bool = false,
+};
+
+/// 音频监听器组件
+///
+/// 定义 3D 音效的监听点（通常附加到相机）。
+/// 场景中应最多有一个活跃的音频监听器。
+pub const AudioListener = struct {
+    /// 是否启用此监听器
+    enabled: bool = true,
+};

@@ -25,6 +25,7 @@ pub const paths = struct {
         pub const settings = "assets/ui/icons/heroicons/24/solid/cog-6-tooth.svg";
         pub const transform_global = "assets/ui/icons/filled/globe.svg";
         pub const transform_local = "assets/ui/icons/heroicons/24/solid/cube.svg";
+        pub const ai_chat = "assets/ui/icons/filled/sparkle.svg";
     };
 
     pub const viewport = struct {

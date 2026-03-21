@@ -57,6 +57,7 @@ const imgui_mod = @import("../ui/imgui.zig");
 const window_mod = @import("../platform/window.zig");
 const scene_mod = @import("../scene/scene.zig");
 const job_system_mod = @import("job_system.zig");
+const audio_mod = @import("../audio/mod.zig");
 
 /// 应用程序配置
 ///
@@ -215,6 +216,12 @@ pub const Application = struct {
         var script_runtime = script_system.ScriptRuntime.init(allocator, config.script);
         try script_runtime.initVMs();
 
+        // 初始化音频运行时
+        _ = audio_mod.AudioRuntime.init(allocator) catch |err| blk: {
+            std.log.warn("audio: Failed to initialize audio system: {s}", .{@errorName(err)});
+            break :blk @as(?*audio_mod.AudioRuntime, null);
+        };
+
         const timer = try std.time.Timer.start();
 
         return .{
@@ -263,6 +270,9 @@ pub const Application = struct {
         self.layers.deinit();
         self.editor_utility_runtime.deinit();
         self.script_runtime.deinit();
+        if (audio_mod.get() catch null) |audio_runtime| {
+            audio_runtime.deinit();
+        }
         self.renderer.deinit();
         self.physics_state.deinitWorld(&self.world);
         self.physics_state.deinit();
@@ -351,6 +361,10 @@ pub const Application = struct {
             if (should_advance_simulation) {
                 animator_system.update(&self.world, delta_seconds);
                 self.advancePhysics(delta_seconds);
+                // 更新音频系统（3D 位置/监听器）
+                if (audio_mod.get() catch null) |audio_runtime| {
+                    audio_runtime.updateFromWorld(&self.world);
+                }
                 // 更新脚本系统（传递时间和输入）
                 self.updateScripts(delta_seconds);
                 try self.applyPendingCommands();

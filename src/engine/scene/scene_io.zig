@@ -133,6 +133,20 @@ const ScriptComponentRecord = struct {
     parameters: []const u8 = "",
 };
 
+const AudioSourceComponentRecord = struct {
+    volume: f32 = 1.0,
+    spatial: bool = false,
+    looping: bool = false,
+    play_on_awake: bool = true,
+    min_distance: f32 = 1.0,
+    max_distance: f32 = 100.0,
+    doppler_factor: f32 = 1.0,
+};
+
+const AudioListenerComponentRecord = struct {
+    enabled: bool = true,
+};
+
 const AnimatorComponentRecord = struct {
     skeleton_asset_id: ?[]const u8 = null,
     default_clip_asset_id: ?[]const u8 = null,
@@ -280,6 +294,8 @@ const EntityRecord = struct {
     light: ?components.Light = null,
     vfx: ?components.Vfx = null,
     script: ?ScriptComponentRecord = null,
+    audio_source: ?AudioSourceComponentRecord = null,
+    audio_listener: ?AudioListenerComponentRecord = null,
     visible: bool = true,
     editor_only: bool = false,
     is_folder: bool = false,
@@ -698,6 +714,18 @@ fn buildSceneFile(allocator: std.mem.Allocator, world: *const world_mod.World) !
             .light = entity.light,
             .vfx = entity.vfx,
             .script = script_component,
+            .audio_source = if (entity.audio_source) |as| AudioSourceComponentRecord{
+                .volume = as.volume,
+                .spatial = as.spatial,
+                .looping = as.looping,
+                .play_on_awake = as.play_on_awake,
+                .min_distance = as.min_distance,
+                .max_distance = as.max_distance,
+                .doppler_factor = as.doppler_factor,
+            } else null,
+            .audio_listener = if (entity.audio_listener) |al| AudioListenerComponentRecord{
+                .enabled = al.enabled,
+            } else null,
             .visible = entity.visible,
             .editor_only = entity.editor_only,
             .is_folder = entity.is_folder,
@@ -1044,6 +1072,24 @@ fn deserializeWorldV4FromSlice(allocator: std.mem.Allocator, world: *world_mod.W
                     .language = script_component.language,
                     .enabled = script_component.enabled,
                     .parameters = script_component.parameters,
+                }
+            else
+                null,
+            .audio_source = if (entity.audio_source) |as_rec|
+                .{
+                    .volume = as_rec.volume,
+                    .spatial = as_rec.spatial,
+                    .looping = as_rec.looping,
+                    .play_on_awake = as_rec.play_on_awake,
+                    .min_distance = as_rec.min_distance,
+                    .max_distance = as_rec.max_distance,
+                    .doppler_factor = as_rec.doppler_factor,
+                }
+            else
+                null,
+            .audio_listener = if (entity.audio_listener) |al_rec|
+                .{
+                    .enabled = al_rec.enabled,
                 }
             else
                 null,
@@ -2570,11 +2616,11 @@ test "scene save-load-resave is byte stable" {
     try world.bootstrap3D();
     const script_handle = try world.resources.createScript(.{
         .source =
-            \\pub var speed: f32 = 2.0;
-            \\pub fn onUpdate(dt: f32) void {
-            \\    _ = dt;
-            \\}
-            \\
+        \\pub var speed: f32 = 2.0;
+        \\pub fn onUpdate(dt: f32) void {
+        \\    _ = dt;
+        \\}
+        \\
         ,
         .language = .wasm,
         .entry_fn = "main",

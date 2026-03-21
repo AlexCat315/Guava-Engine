@@ -916,6 +916,44 @@ pub export fn guava_wasm_host_ui_set_tooltip(_: ?*anyopaque, ptr: [*]const u8, l
     ui.setTooltip(ptr[0..len]);
 }
 
+pub export fn guava_wasm_host_audio_play(userdata: ?*anyopaque, entity_id_raw: u32) u32 {
+    const ctx = activeContext(userdata) orelse return 0;
+    const entity_id: @import("../scene/scene.zig").EntityId = @as(u64, entity_id_raw);
+    const entity = ctx.world.getEntity(entity_id) orelse return 0;
+    const audio_src = &(entity.audio_source orelse return 0);
+    const audio_runtime = @import("../audio/mod.zig").get() catch return 0;
+    const clip_handle = @intFromEnum(audio_src.clip_handle orelse return 0);
+    if (audio_src.spatial) {
+        const pos = entity.local_transform.translation;
+        audio_src._voice_handle = audio_runtime.playClip3d(clip_handle, pos, audio_src.volume, audio_src.looping) catch return 0;
+    } else {
+        audio_src._voice_handle = audio_runtime.playClip2d(clip_handle, audio_src.volume, audio_src.looping) catch return 0;
+    }
+    audio_src._is_playing = true;
+    return 1;
+}
+
+pub export fn guava_wasm_host_audio_stop(userdata: ?*anyopaque, entity_id_raw: u32) void {
+    const ctx = activeContext(userdata) orelse return;
+    const entity_id: @import("../scene/scene.zig").EntityId = @as(u64, entity_id_raw);
+    const entity = ctx.world.getEntity(entity_id) orelse return;
+    const audio_src = &(entity.audio_source orelse return);
+    const audio_runtime = @import("../audio/mod.zig").get() catch return;
+    if (audio_src._voice_handle) |vh| {
+        audio_runtime.stopVoice(vh);
+    }
+    audio_src._voice_handle = null;
+    audio_src._is_playing = false;
+}
+
+pub export fn guava_wasm_host_audio_set_volume(userdata: ?*anyopaque, entity_id_raw: u32, volume: f32) void {
+    const ctx = activeContext(userdata) orelse return;
+    const entity_id: @import("../scene/scene.zig").EntityId = @as(u64, entity_id_raw);
+    const entity = ctx.world.getEntity(entity_id) orelse return;
+    const audio_src = &(entity.audio_source orelse return);
+    audio_src.volume = @max(0.0, @min(1.0, volume));
+}
+
 fn castContext(comptime T: type, context_ptr: *anyopaque) *T {
     return @ptrCast(@alignCast(context_ptr));
 }

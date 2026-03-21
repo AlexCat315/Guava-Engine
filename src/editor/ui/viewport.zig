@@ -135,9 +135,17 @@ fn drawViewportToolbarStrip(state: *EditorState, layer_context: *engine.core.Lay
         const filter_width = std.math.clamp(width * 0.18, 148.0, 228.0);
         const category_width = 72.0;
         const space_width = 72.0;
-        const options_width = 28.0 + 10.0 + filter_width + 8.0 + category_width + 8.0 + space_width;
+        const options_width = 28.0 + 10.0 + 28.0 + 10.0 + filter_width + 8.0 + category_width + 8.0 + space_width;
         gui.sameLine();
         gui.dummy(@max(gui.contentRegionAvail()[0] - options_width, 10.0), 1.0);
+        gui.sameLine();
+        // AI Chat toggle button
+        if (try drawToolbarIconButton(state, layer_context, "toolbar_ai_chat", ui_icons.paths.toolbar.ai_chat, state.ai_chat_open)) {
+            state.ai_chat_open = !state.ai_chat_open;
+        }
+        if (gui.isItemHovered()) {
+            gui.setTooltip(state.text(.ai_chat));
+        }
         gui.sameLine();
         try drawViewportToolbarOptions(state, layer_context, filter_width, category_width, space_width);
         return;

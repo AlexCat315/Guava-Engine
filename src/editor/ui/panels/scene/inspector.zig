@@ -920,6 +920,106 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
         }
     }
 
+    if (entity.audio_source) |*audio_src| {
+        if (inspectorSectionMatches(filter, state.text(.audio_source)) and gui.collapsingHeader(state.text(.audio_source), filter.len != 0)) {
+            beginInspectorSectionBody();
+            defer endInspectorSectionBody();
+            gui.dummy(0.0, 4.0);
+
+            if (beginInspectorPropertyGrid("audio_source_properties")) {
+                defer endInspectorPropertyGrid();
+
+                var volume = audio_src.volume;
+                if (drawInspectorFloatRow(state.text(.audio_volume), "##audio_volume", &volume, 0.01, 0.0, 1.0)) {
+                    audio_src.volume = volume;
+                    if (gui.isItemDeactivatedAfterEdit()) {
+                        try history.captureSnapshot(state, layer_context);
+                    }
+                }
+
+                var spatial = audio_src.spatial;
+                if (drawInspectorCheckboxRow(state.text(.audio_spatial), "##audio_spatial", &spatial)) {
+                    audio_src.spatial = spatial;
+                    try history.captureSnapshot(state, layer_context);
+                }
+
+                var looping = audio_src.looping;
+                if (drawInspectorCheckboxRow(state.text(.audio_looping), "##audio_looping", &looping)) {
+                    audio_src.looping = looping;
+                    try history.captureSnapshot(state, layer_context);
+                }
+
+                var play_on_awake = audio_src.play_on_awake;
+                if (drawInspectorCheckboxRow(state.text(.audio_play_on_awake), "##audio_play_on_awake", &play_on_awake)) {
+                    audio_src.play_on_awake = play_on_awake;
+                    try history.captureSnapshot(state, layer_context);
+                }
+
+                if (audio_src.spatial) {
+                    var min_dist = audio_src.min_distance;
+                    if (drawInspectorFloatRow(state.text(.audio_min_distance), "##audio_min_dist", &min_dist, 0.1, 0.0, 1000.0)) {
+                        audio_src.min_distance = min_dist;
+                        if (gui.isItemDeactivatedAfterEdit()) {
+                            try history.captureSnapshot(state, layer_context);
+                        }
+                    }
+
+                    var max_dist = audio_src.max_distance;
+                    if (drawInspectorFloatRow(state.text(.audio_max_distance), "##audio_max_dist", &max_dist, 0.1, 0.0, 10000.0)) {
+                        audio_src.max_distance = max_dist;
+                        if (gui.isItemDeactivatedAfterEdit()) {
+                            try history.captureSnapshot(state, layer_context);
+                        }
+                    }
+
+                    var doppler = audio_src.doppler_factor;
+                    if (drawInspectorFloatRow(state.text(.audio_doppler_factor), "##audio_doppler", &doppler, 0.01, 0.0, 5.0)) {
+                        audio_src.doppler_factor = doppler;
+                        if (gui.isItemDeactivatedAfterEdit()) {
+                            try history.captureSnapshot(state, layer_context);
+                        }
+                    }
+                }
+            }
+
+            if (gui.beginPopupContextItem("audio_source_context")) {
+                defer gui.endPopup();
+                if (gui.menuItem(state.text(.remove_audio_source_component), null, false, true)) {
+                    entity.audio_source = null;
+                    try history.captureSnapshot(state, layer_context);
+                    return;
+                }
+            }
+        }
+    }
+
+    if (entity.audio_listener) |*audio_lst| {
+        if (inspectorSectionMatches(filter, state.text(.audio_listener)) and gui.collapsingHeader(state.text(.audio_listener), filter.len != 0)) {
+            beginInspectorSectionBody();
+            defer endInspectorSectionBody();
+            gui.dummy(0.0, 4.0);
+
+            if (beginInspectorPropertyGrid("audio_listener_properties")) {
+                defer endInspectorPropertyGrid();
+
+                var enabled = audio_lst.enabled;
+                if (drawInspectorCheckboxRow(state.text(.audio_listener_enabled), "##audio_listener_enabled", &enabled)) {
+                    audio_lst.enabled = enabled;
+                    try history.captureSnapshot(state, layer_context);
+                }
+            }
+
+            if (gui.beginPopupContextItem("audio_listener_context")) {
+                defer gui.endPopup();
+                if (gui.menuItem(state.text(.remove_audio_listener_component), null, false, true)) {
+                    entity.audio_listener = null;
+                    try history.captureSnapshot(state, layer_context);
+                    return;
+                }
+            }
+        }
+    }
+
     if (inspectorSectionMatches(filter, state.text(.actions)) and gui.collapsingHeader(state.text(.actions), filter.len != 0)) {
         beginInspectorSectionBody();
         defer endInspectorSectionBody();
@@ -961,7 +1061,7 @@ fn drawAddComponentControls(
     selected: engine.scene.EntityId,
     entity: *engine.scene.Entity,
 ) !bool {
-    const has_missing_component = entity.mesh == null or entity.material == null or entity.camera == null or entity.light == null or entity.vfx == null;
+    const has_missing_component = entity.mesh == null or entity.material == null or entity.camera == null or entity.light == null or entity.vfx == null or entity.audio_source == null or entity.audio_listener == null;
     if (!has_missing_component) {
         gui.text(state.text(.none));
         return false;
@@ -1021,6 +1121,18 @@ fn drawAddComponentControls(
             try setVfxComponent(state, layer_context, selected, entity, .orbit);
             return true;
         }
+    }
+
+    if (entity.audio_source == null and gui.menuItem(state.text(.add_audio_source_component), null, false, true)) {
+        entity.audio_source = .{};
+        try history.captureSnapshot(state, layer_context);
+        return true;
+    }
+
+    if (entity.audio_listener == null and gui.menuItem(state.text(.add_audio_listener_component), null, false, true)) {
+        entity.audio_listener = .{};
+        try history.captureSnapshot(state, layer_context);
+        return true;
     }
 
     return false;

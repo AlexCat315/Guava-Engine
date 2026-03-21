@@ -317,6 +317,22 @@ pub const MessageId = enum {
     visibility,
     visible,
 
+    // Audio
+    audio_source,
+    audio_listener,
+    audio_volume,
+    audio_spatial,
+    audio_looping,
+    audio_play_on_awake,
+    audio_min_distance,
+    audio_max_distance,
+    audio_doppler_factor,
+    audio_listener_enabled,
+    add_audio_source_component,
+    remove_audio_source_component,
+    add_audio_listener_component,
+    remove_audio_listener_component,
+
     // AI Chat
     ai_chat,
     ai_chat_send,
