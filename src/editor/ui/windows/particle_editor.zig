@@ -13,6 +13,15 @@ pub const ParticleEditorState = struct {
     show_emission_curve: bool = false,
     show_color_gradient: bool = false,
     show_size_curve: bool = false,
+    curve_preview_t: f32 = 0.0,
+    emission_curve_start: f32 = 1.0,
+    emission_curve_mid: f32 = 1.0,
+    emission_curve_end: f32 = 1.0,
+    size_curve_start: f32 = 1.0,
+    size_curve_mid: f32 = 1.0,
+    size_curve_end: f32 = 1.0,
+    color_gradient_start: [3]f32 = .{ 1.0, 1.0, 1.0 },
+    color_gradient_end: [3]f32 = .{ 1.0, 1.0, 1.0 },
     simulation_speed: f32 = 1.0,
     auto_reset: bool = true,
     reset_timer: f32 = 0.0,
@@ -41,7 +50,7 @@ pub fn drawParticleEditor(
             engine.ui.ImGui.separator();
             drawParticleParameters(vfx);
             engine.ui.ImGui.separator();
-            drawParticleCurves(editor_state);
+            drawParticleCurves(vfx, editor_state);
         } else {
             engine.ui.ImGui.text("Select a VFX entity or create a new particle system");
             if (engine.ui.ImGui.button("Create Particle System")) {
@@ -172,22 +181,62 @@ fn drawParticleParameters(vfx: *Vfx) void {
     }
 }
 
-fn drawParticleCurves(editor_state: *ParticleEditorState) void {
-    engine.ui.ImGui.text("Advanced Curves (TODO)");
+fn drawParticleCurves(vfx: *Vfx, editor_state: *ParticleEditorState) void {
+    engine.ui.ImGui.text("Advanced Curves");
     engine.ui.ImGui.separator();
+
+    _ = engine.ui.ImGui.dragFloat("Preview Lifetime T", &editor_state.curve_preview_t, 0.01, 0.0, 1.0);
 
     if (engine.ui.ImGui.collapsingHeader("Emission Curve", false)) {
         editor_state.show_emission_curve = true;
-        engine.ui.ImGui.text("Emission rate over lifetime curve editor");
+        _ = engine.ui.ImGui.dragFloat("Start##emission", &editor_state.emission_curve_start, 0.01, 0.0, 5.0);
+        _ = engine.ui.ImGui.dragFloat("Mid##emission", &editor_state.emission_curve_mid, 0.01, 0.0, 5.0);
+        _ = engine.ui.ImGui.dragFloat("End##emission", &editor_state.emission_curve_end, 0.01, 0.0, 5.0);
+
+        const t = editor_state.curve_preview_t;
+        const sampled_multiplier = if (t < 0.5)
+            std.math.lerp(editor_state.emission_curve_start, editor_state.emission_curve_mid, t * 2.0)
+        else
+            std.math.lerp(editor_state.emission_curve_mid, editor_state.emission_curve_end, (t - 0.5) * 2.0);
+        var info_buf: [128]u8 = undefined;
+        const info = std.fmt.bufPrint(&info_buf, "Sampled Rate: {d:.2}/s", .{vfx.emission_rate * sampled_multiplier}) catch "";
+        engine.ui.ImGui.text(info);
     }
 
     if (engine.ui.ImGui.collapsingHeader("Color Gradient", false)) {
         editor_state.show_color_gradient = true;
-        engine.ui.ImGui.text("Color transition over particle lifetime");
+        _ = engine.ui.ImGui.colorEdit3("Start Color", &editor_state.color_gradient_start, .{});
+        _ = engine.ui.ImGui.colorEdit3("End Color", &editor_state.color_gradient_end, .{});
+
+        const t = editor_state.curve_preview_t;
+        var sampled = [3]f32{
+            std.math.lerp(editor_state.color_gradient_start[0], editor_state.color_gradient_end[0], t),
+            std.math.lerp(editor_state.color_gradient_start[1], editor_state.color_gradient_end[1], t),
+            std.math.lerp(editor_state.color_gradient_start[2], editor_state.color_gradient_end[2], t),
+        };
+        _ = engine.ui.ImGui.colorEdit3("Sampled##color_preview", &sampled, .{});
+        if (engine.ui.ImGui.button("Apply Sampled To Base Color")) {
+            vfx.color = sampled;
+        }
     }
 
     if (engine.ui.ImGui.collapsingHeader("Size Curve", false)) {
         editor_state.show_size_curve = true;
-        engine.ui.ImGui.text("Particle size over lifetime curve");
+        _ = engine.ui.ImGui.dragFloat("Start##size", &editor_state.size_curve_start, 0.01, 0.01, 5.0);
+        _ = engine.ui.ImGui.dragFloat("Mid##size", &editor_state.size_curve_mid, 0.01, 0.01, 5.0);
+        _ = engine.ui.ImGui.dragFloat("End##size", &editor_state.size_curve_end, 0.01, 0.01, 5.0);
+
+        const t = editor_state.curve_preview_t;
+        const sampled_multiplier = if (t < 0.5)
+            std.math.lerp(editor_state.size_curve_start, editor_state.size_curve_mid, t * 2.0)
+        else
+            std.math.lerp(editor_state.size_curve_mid, editor_state.size_curve_end, (t - 0.5) * 2.0);
+        var size_buf: [128]u8 = undefined;
+        const sampled_size = @max(vfx.size * sampled_multiplier, 0.01);
+        const size_text = std.fmt.bufPrint(&size_buf, "Sampled Size: {d:.3}", .{sampled_size}) catch "";
+        engine.ui.ImGui.text(size_text);
+        if (engine.ui.ImGui.button("Apply Sampled To Base Size")) {
+            vfx.size = sampled_size;
+        }
     }
 }

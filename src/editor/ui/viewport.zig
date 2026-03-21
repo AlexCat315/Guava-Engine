@@ -17,6 +17,7 @@ const menu_bar = @import("menu_bar.zig");
 const render_settings = @import("windows/render_settings.zig");
 const settings = @import("windows/settings.zig");
 const material_editor = @import("windows/material_editor.zig");
+const viewport_status = @import("windows/viewport_status.zig");
 const ui_icons = @import("icons.zig");
 const layout = @import("layout.zig");
 const PlaybackState = @import("../core/state.zig").PlaybackState;
@@ -305,6 +306,7 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
     const content_size = engine.ui.ImGui.contentRegionAvail();
     state.viewport_origin = engine.ui.ImGui.cursorScreenPos();
     state.viewport_extent = .{ content_size[0], content_size[1] };
+    const window_hovered = engine.ui.ImGui.isWindowHovered();
     state.viewport_focused = engine.ui.ImGui.isWindowFocused();
     if (!layer_context.input.isMouseDown(.left)) {
         state.manipulation_started_from_ui = false;
@@ -315,7 +317,7 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
     // Use ImGui mouse coordinates so hover/mouse hit-testing stays in the same space
     // as the docked viewport item on HiDPI platforms.
     var mouse_pos = effectiveViewportMousePos(layer_context);
-    state.viewport_hovered = isPointInViewportRect(mouse_pos, state.viewport_origin, state.viewport_extent);
+    state.viewport_hovered = window_hovered and isPointInViewportRect(mouse_pos, state.viewport_origin, state.viewport_extent);
 
     const drawable_size = utils.viewportDrawableSize(layer_context.window, state.viewport_extent);
     try layer_context.renderer.setSceneViewportSize(drawable_size[0], drawable_size[1]);
@@ -334,7 +336,7 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
             @max(image_max[1] - image_min[1], 0.0),
         };
         mouse_pos = effectiveViewportMousePos(layer_context);
-        state.viewport_hovered = isPointInViewportRect(mouse_pos, state.viewport_origin, state.viewport_extent);
+        state.viewport_hovered = engine.ui.ImGui.isItemHovered() and isPointInViewportRect(mouse_pos, state.viewport_origin, state.viewport_extent);
         state.viewport_has_image = true;
 
         // Draw overlays (positioned absolutely, won't affect layout)
@@ -451,15 +453,15 @@ pub fn drawStatusBarWindow(state: *EditorState, layer_context: *engine.core.Laye
         "/";
 
     var compact_path_buffer: [160]u8 = undefined;
-    const compact_path = compactStatusPath(
+    const compact_path = viewport_status.compactStatusPath(
         &compact_path_buffer,
         selected_path,
-        statusPathCharacterBudget(window_width),
+        viewport_status.statusPathCharacterBudget(window_width),
     );
 
     var metrics_buffer: [320]u8 = undefined;
     var metrics_stream = std.io.fixedBufferStream(&metrics_buffer);
-    try buildStatusMetricsText(
+    try viewport_status.buildStatusMetricsText(
         metrics_stream.writer(),
         state,
         selection_count,
@@ -473,7 +475,7 @@ pub fn drawStatusBarWindow(state: *EditorState, layer_context: *engine.core.Laye
 
     var context_buffer: [384]u8 = undefined;
     var context_stream = std.io.fixedBufferStream(&context_buffer);
-    try buildStatusContextText(
+    try viewport_status.buildStatusContextText(
         context_stream.writer(),
         state,
         compact_path,
@@ -499,85 +501,6 @@ pub fn drawStatusBarWindow(state: *EditorState, layer_context: *engine.core.Laye
         engine.ui.ImGui.alignTextToFramePadding();
         engine.ui.ImGui.text(metrics_text);
     }
-}
-
-fn buildStatusMetricsText(
-    writer: anytype,
-    state: *const EditorState,
-    selection_count: usize,
-    fps: f32,
-    save_status: []const u8,
-    backend_text: []const u8,
-    memory_text: []const u8,
-    window_width: f32,
-) !void {
-    var first = true;
-
-    var selection_buffer: [24]u8 = undefined;
-    const selection_text = try std.fmt.bufPrint(&selection_buffer, "{d}", .{selection_count});
-    try appendStatusSegment(writer, &first, state.text(.selection_count), selection_text);
-
-    if (state.fps_display_mode == .status_bar) {
-        var fps_buffer: [32]u8 = undefined;
-        const fps_text = try std.fmt.bufPrint(&fps_buffer, "{d:.1}", .{fps});
-        try appendStatusSegment(writer, &first, state.text(.fps), fps_text);
-    }
-
-    try appendStatusSegment(writer, &first, state.text(.save_status), save_status);
-    if (window_width >= 980.0) {
-        try appendStatusSegment(writer, &first, state.text(.backend), backend_text);
-    }
-    if (window_width >= 1180.0) {
-        try appendStatusSegment(writer, &first, state.text(.memory), memory_text);
-    }
-}
-
-fn buildStatusContextText(
-    writer: anytype,
-    state: *const EditorState,
-    selected_path: []const u8,
-    camera_text: []const u8,
-    mode_text: []const u8,
-    space_text: []const u8,
-    window_width: f32,
-) !void {
-    var first = true;
-    try appendStatusSegment(writer, &first, state.text(.selected_path), selected_path);
-    if (window_width >= 820.0) {
-        try appendStatusSegment(writer, &first, state.text(.camera), camera_text);
-    }
-    if (window_width >= 980.0) {
-        try appendStatusSegment(writer, &first, state.text(.mode), mode_text);
-    }
-    if (window_width >= 1120.0) {
-        try appendStatusSegment(writer, &first, state.text(.coordinate_space), space_text);
-    }
-}
-
-fn appendStatusSegment(writer: anytype, first: *bool, label: []const u8, value: []const u8) !void {
-    if (!first.*) {
-        try writer.writeAll("  |  ");
-    }
-    first.* = false;
-    try writer.print("{s}: {s}", .{ label, value });
-}
-
-fn statusPathCharacterBudget(window_width: f32) usize {
-    if (window_width < 720.0) return 18;
-    if (window_width < 960.0) return 28;
-    if (window_width < 1280.0) return 42;
-    return 60;
-}
-
-fn compactStatusPath(buffer: []u8, path: []const u8, max_chars: usize) []const u8 {
-    if (path.len <= max_chars or buffer.len == 0) {
-        return path;
-    }
-
-    const clamped_chars = @max(max_chars, 4);
-    const tail_len = @min(path.len, clamped_chars - 3);
-    const written = std.fmt.bufPrint(buffer, "...{s}", .{path[path.len - tail_len ..]}) catch return path;
-    return written;
 }
 
 pub fn handleViewportSelection(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -1141,10 +1064,12 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
     );
     defer engine.ui.ImGui.endWindow();
 
-    // 检查鼠标是否在UI上按下，设置标志防止事件穿透
+    // Overlay hover should always block viewport world interactions.
     const input = layer_context.input;
-    const mouse_pressed_on_ui = engine.ui.ImGui.isItemHovered() and input.wasMousePressed(.left);
-    if (mouse_pressed_on_ui) {
+    if (engine.ui.ImGui.isWindowHovered()) {
+        state.viewport_overlay_hovered = true;
+    }
+    if (engine.ui.ImGui.isWindowHovered() and input.wasMousePressed(.left)) {
         state.manipulation_started_from_ui = true;
     }
 
@@ -1160,8 +1085,7 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
     if (engine.ui.ImGui.isItemHovered() or (state.manipulation_started_from_ui and input.isMouseDown(.left))) state.viewport_overlay_hovered = true;
 
     engine.ui.ImGui.sameLine();
-    const mouse_pressed_on_ui2 = engine.ui.ImGui.isItemHovered() and input.wasMousePressed(.left);
-    if (mouse_pressed_on_ui2) {
+    if (engine.ui.ImGui.isWindowHovered() and input.wasMousePressed(.left)) {
         state.manipulation_started_from_ui = true;
     }
 
@@ -1177,8 +1101,7 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
     if (engine.ui.ImGui.isItemHovered() or (state.manipulation_started_from_ui and input.isMouseDown(.left))) state.viewport_overlay_hovered = true;
 
     engine.ui.ImGui.sameLine();
-    const mouse_pressed_on_ui3 = engine.ui.ImGui.isItemHovered() and input.wasMousePressed(.left);
-    if (mouse_pressed_on_ui3) {
+    if (engine.ui.ImGui.isWindowHovered() and input.wasMousePressed(.left)) {
         state.manipulation_started_from_ui = true;
     }
 

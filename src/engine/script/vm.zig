@@ -306,15 +306,25 @@ pub const CSharpVM = struct {
     fn unloadStub(vm: *CSharpVM) void {
         clearOwnedMessage(vm.allocator, &vm.error_msg);
     }
-    fn createInstanceStub(_: *CSharpVM, _: *context.ScriptContext) types.ScriptError!*types.ScriptInstance {
+    fn createInstanceStub(vm: *CSharpVM, _: *context.ScriptContext) types.ScriptError!*types.ScriptInstance {
+        setOwnedMessage(vm.allocator, &vm.error_msg, "C# scripting is not available in this build");
         return types.ScriptError.NotFound;
     }
     fn destroyInstanceStub(vm: *CSharpVM, instance: *types.ScriptInstance) void {
         vm.allocator.destroy(instance);
     }
-    fn callInitStub(_: *CSharpVM, _: *types.ScriptInstance, _: *context.ScriptContext) types.ScriptError!void {}
-    fn callUpdateStub(_: *CSharpVM, _: *types.ScriptInstance, _: *context.ScriptContext, _: f32) types.ScriptError!void {}
-    fn callDestroyStub(_: *CSharpVM, _: *types.ScriptInstance, _: *context.ScriptContext) types.ScriptError!void {}
+    fn callInitStub(vm: *CSharpVM, _: *types.ScriptInstance, _: *context.ScriptContext) types.ScriptError!void {
+        setOwnedMessage(vm.allocator, &vm.error_msg, "C# scripting is not available in this build");
+        return types.ScriptError.NotFound;
+    }
+    fn callUpdateStub(vm: *CSharpVM, _: *types.ScriptInstance, _: *context.ScriptContext, _: f32) types.ScriptError!void {
+        setOwnedMessage(vm.allocator, &vm.error_msg, "C# scripting is not available in this build");
+        return types.ScriptError.NotFound;
+    }
+    fn callDestroyStub(vm: *CSharpVM, _: *types.ScriptInstance, _: *context.ScriptContext) types.ScriptError!void {
+        setOwnedMessage(vm.allocator, &vm.error_msg, "C# scripting is not available in this build");
+        return types.ScriptError.NotFound;
+    }
 };
 
 /// 获取指定语言的虚拟机

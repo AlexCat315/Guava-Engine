@@ -299,7 +299,7 @@ pub fn applyManipulation(state: *EditorState, layer_context: *engine.core.LayerC
     // 3. Prevent starting a drag if outside viewport or using alt (camera),
     //    but allow continuing a drag even if mouse leaves viewport
     if (!state.manipulation_drag_active) {
-        if (!state.viewport_has_image or !state.viewport_hovered or state.viewport_overlay_hovered or input.modifiers.alt) {
+        if (!state.viewport_has_image or !state.viewport_hovered or !state.viewport_focused or state.viewport_overlay_hovered or input.modifiers.alt) {
             return;
         }
     }

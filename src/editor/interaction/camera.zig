@@ -12,13 +12,19 @@ pub const ViewPreset = state_mod.ViewportViewPreset;
 
 pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.LayerContext) void {
     const input = layer_context.input;
-    const selection_mode = state.manipulation_mode == .none;
-    const is_hovering_viewport = state.viewport_hovered and !state.viewport_overlay_hovered;
+    const can_capture_viewport = state.viewport_has_image and
+        state.viewport_hovered and
+        state.viewport_focused and
+        !state.viewport_overlay_hovered and
+        !engine.ui.ImGui.wantsTextInput();
 
-    // In selection mode, use DCC-style orbit/pan gestures.
-    const is_camera_drag_input = input.isMouseDown(.right) or
-        input.isMouseDown(.middle) or
-        (input.isMouseDown(.left) and selection_mode);
+    // DCC ergonomics:
+    // Alt+LMB orbit, MMB pan, Alt+RMB dolly, RMB freelook+WASDQE move.
+    const orbit_active = input.modifiers.alt and input.isMouseDown(.left);
+    const pan_active = input.isMouseDown(.middle);
+    const dolly_active = input.modifiers.alt and input.isMouseDown(.right);
+    const freelook_active = !input.modifiers.alt and input.isMouseDown(.right);
+    const is_camera_drag_input = orbit_active or pan_active or dolly_active or freelook_active;
 
     if (state.view_cube_transition_active and is_camera_drag_input) {
         state.view_cube_transition_active = false;
@@ -29,31 +35,35 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
         return;
     }
 
-    const mouse_pressed = input.wasMousePressed(.right) or input.wasMousePressed(.middle) or (input.wasMousePressed(.left) and selection_mode);
+    const mouse_pressed = input.wasMousePressed(.right) or input.wasMousePressed(.middle) or
+        (input.modifiers.alt and input.wasMousePressed(.left));
     if (mouse_pressed) {
         viewport_log.info(
-            "camera press selection_mode={} hovered={} overlay_hovered={} has_image={} ui_lock={} l={} r={} m={}",
+            "camera press capture={} hovered={} focused={} overlay_hovered={} has_image={} ui_lock={} alt={} l={} r={} m={}",
             .{
-                selection_mode,
+                can_capture_viewport,
                 state.viewport_hovered,
+                state.viewport_focused,
                 state.viewport_overlay_hovered,
                 state.viewport_has_image,
                 state.manipulation_started_from_ui,
+                input.modifiers.alt,
                 input.wasMousePressed(.left),
                 input.wasMousePressed(.right),
                 input.wasMousePressed(.middle),
             },
         );
     }
-    if (mouse_pressed and selection_mode and is_hovering_viewport) {
+    if (mouse_pressed and can_capture_viewport) {
         state.camera_drag_active = true;
         viewport_log.info("camera drag activated", .{});
-    } else if (mouse_pressed and (!selection_mode or !is_hovering_viewport)) {
+    } else if (mouse_pressed and !can_capture_viewport) {
         viewport_log.warn(
-            "camera drag blocked selection_mode={} hovered={} overlay_hovered={} manipulation_mode={s}",
+            "camera drag blocked capture={} hovered={} focused={} overlay_hovered={} manipulation_mode={s}",
             .{
-                selection_mode,
+                can_capture_viewport,
                 state.viewport_hovered,
+                state.viewport_focused,
                 state.viewport_overlay_hovered,
                 @tagName(state.manipulation_mode),
             },
@@ -67,8 +77,8 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
     const camera = layer_context.world.getEntity(camera_id) orelse return;
     var camera_transform_changed = false;
 
-    if (state.camera_drag_active and selection_mode) {
-        if (input.isMouseDown(.left)) {
+    if (state.camera_drag_active) {
+        if (orbit_active) {
             state.yaw -= input.mouse_delta[0] * state.orbit_sensitivity;
             state.pitch = utils.clampPitch(state.pitch - input.mouse_delta[1] * state.orbit_sensitivity);
             if (@abs(input.mouse_delta[0]) > 0.0001 or @abs(input.mouse_delta[1]) > 0.0001) {
@@ -85,41 +95,64 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
             camera_transform_changed = true;
         }
 
-        if (input.isMouseDown(.right)) {
+        if (pan_active) {
             const right = vec3.rightFromYaw(state.yaw);
             const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
             const up = vec3.normalize(vec3.cross(right, forward));
-            const pan_scale = @max(state.orbit_distance, 1.0) * state.pan_sensitivity * 0.05;
+            const pan_factors = panSpeedFactors(state.viewport_extent);
             const pan = vec3.add(
-                vec3.scale(right, -input.mouse_delta[0] * pan_scale),
-                vec3.scale(up, input.mouse_delta[1] * pan_scale),
+                vec3.scale(right, -input.mouse_delta[0] * pan_factors[0] * state.orbit_distance * state.pan_sensitivity),
+                vec3.scale(up, input.mouse_delta[1] * pan_factors[1] * state.orbit_distance * state.pan_sensitivity),
             );
             camera.local_transform.translation = vec3.add(camera.local_transform.translation, pan);
             state.focus_pivot = vec3.add(state.focus_pivot, pan);
             camera_transform_changed = true;
         }
 
-        if (input.isMouseDown(.middle)) {
+        if (dolly_active) {
+            const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
+            const dolly_step = -input.mouse_delta[1] * state.wheel_speed * 0.01 * zoomSpeed(state.orbit_distance);
+            camera.local_transform.translation = vec3.add(camera.local_transform.translation, vec3.scale(forward, dolly_step));
+            state.orbit_distance = utils.clampDistance(vec3.length(vec3.sub(state.focus_pivot, camera.local_transform.translation)));
+            camera_transform_changed = true;
+        }
+
+        if (freelook_active) {
+            state.yaw -= input.mouse_delta[0] * state.look_sensitivity;
+            state.pitch = utils.clampPitch(state.pitch - input.mouse_delta[1] * state.look_sensitivity);
             const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
             const right = vec3.rightFromYaw(state.yaw);
             const up = vec3.normalize(vec3.cross(right, forward));
-            const pan_scale = @max(state.orbit_distance, 1.0) * state.pan_sensitivity * 0.05;
-            const pan = vec3.add(
-                vec3.scale(right, -input.mouse_delta[0] * pan_scale),
-                vec3.scale(up, input.mouse_delta[1] * pan_scale),
-            );
-            camera.local_transform.translation = vec3.add(camera.local_transform.translation, pan);
-            state.focus_pivot = vec3.add(state.focus_pivot, pan);
+
+            var move_direction = [3]f32{ 0.0, 0.0, 0.0 };
+            if (input.isKeyDown(.w)) move_direction = vec3.add(move_direction, forward);
+            if (input.isKeyDown(.s)) move_direction = vec3.sub(move_direction, forward);
+            if (input.isKeyDown(.d)) move_direction = vec3.add(move_direction, right);
+            if (input.isKeyDown(.a)) move_direction = vec3.sub(move_direction, right);
+            if (input.isKeyDown(.e)) move_direction = vec3.add(move_direction, up);
+            if (input.isKeyDown(.q)) move_direction = vec3.sub(move_direction, up);
+
+            if (vec3.length(move_direction) > 0.0001) {
+                const normalized_move = vec3.normalize(move_direction);
+                const speed_multiplier: f32 = if (input.modifiers.shift) state.camera_boost_multiplier else 1.0;
+                const movement_step = moveSpeed(state, layer_context.delta_seconds) * speed_multiplier;
+                const translation_delta = vec3.scale(normalized_move, movement_step);
+                camera.local_transform.translation = vec3.add(camera.local_transform.translation, translation_delta);
+                state.focus_pivot = vec3.add(state.focus_pivot, translation_delta);
+            }
+
+            camera.local_transform.rotation = quat.fromEuler(.{ state.pitch, state.yaw, 0.0 });
+            state.viewport_view_preset = .custom;
             camera_transform_changed = true;
         }
     }
 
-    // Always process zoom if hovering viewport (no need to click)
-    if (state.viewport_hovered and !state.viewport_overlay_hovered) {
+    // Always process wheel zoom/pan on hovered+focused viewport.
+    if (can_capture_viewport) {
         if (@abs(input.mouse_wheel[1]) > 0.001) {
             viewport_log.info("viewport wheel zoom delta_y={d:.3} orbit_distance={d:.3}", .{ input.mouse_wheel[1], state.orbit_distance });
             const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
-            const zoom_step = input.mouse_wheel[1] * state.wheel_speed * @max(state.orbit_distance * 0.2, 0.8);
+            const zoom_step = input.mouse_wheel[1] * state.wheel_speed * 0.08 * zoomSpeed(state.orbit_distance);
             camera.local_transform.translation = vec3.add(camera.local_transform.translation, vec3.scale(forward, zoom_step));
             state.orbit_distance = utils.clampDistance(vec3.length(vec3.sub(state.focus_pivot, camera.local_transform.translation)));
             camera_transform_changed = true;
@@ -136,7 +169,7 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
         if (@abs(input.mouse_wheel[0]) > 0.001) {
             viewport_log.info("viewport wheel pan delta_x={d:.3}", .{input.mouse_wheel[0]});
             const right = vec3.rightFromYaw(state.yaw);
-            const pan_step = input.mouse_wheel[0] * state.wheel_speed * @max(state.orbit_distance * 0.3, 1.0);
+            const pan_step = input.mouse_wheel[0] * state.wheel_speed * zoomSpeed(state.orbit_distance) * 0.05;
             const pan = vec3.scale(right, pan_step);
             camera.local_transform.translation = vec3.add(camera.local_transform.translation, pan);
             state.focus_pivot = vec3.add(state.focus_pivot, pan);
@@ -529,6 +562,20 @@ fn normalize(vector: [3]f32) [3]f32 {
         vector[1] / len,
         vector[2] / len,
     };
+}
+
+fn panSpeedFactors(viewport_extent: [2]f32) [2]f32 {
+    const width_k = @min(viewport_extent[0] / 1000.0, 2.4);
+    const height_k = @min(viewport_extent[1] / 1000.0, 2.4);
+
+    const x_factor = 0.0366 * (width_k * width_k) - 0.1778 * width_k + 0.3021;
+    const y_factor = 0.0366 * (height_k * height_k) - 0.1778 * height_k + 0.3021;
+    return .{ x_factor, y_factor };
+}
+
+fn zoomSpeed(distance: f32) f32 {
+    const scaled = @max(distance * 0.2, 0.0);
+    return @min(scaled * scaled, 100.0);
 }
 
 test "focus distance grows with bounding radius" {
