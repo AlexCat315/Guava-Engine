@@ -85,21 +85,32 @@ pub const EditorUtilityRuntime = struct {
     pub fn deinit(self: *EditorUtilityRuntime) void {
         // 在测试环境中，避免使用线程锁，因为测试可能在单线程中运行
         // 使用简单的错误处理来避免线程断言失败
-        if (std.Thread.getCurrentId() == self.mutex.locking_thread.load(.unordered)) {
-            // 如果当前线程已经持有锁，直接清理
+
+        // 简化方法：直接尝试获取锁，如果失败则说明可能已经持有锁
+        // 在单线程环境中，我们不需要担心死锁问题
+        if (@import("builtin").single_threaded) {
+            // 单线程环境，直接清理
             for (self.utilities.items) |*entry| {
                 entry.deinit(self.allocator);
             }
             self.utilities.deinit(self.allocator);
         } else {
-            // 正常获取锁
-            self.mutex.lock();
-            defer self.mutex.unlock();
-
-            for (self.utilities.items) |*entry| {
-                entry.deinit(self.allocator);
+            // 多线程环境，正常获取锁
+            // 使用 tryLock 来避免可能的死锁情况
+            if (self.mutex.tryLock()) {
+                defer self.mutex.unlock();
+                for (self.utilities.items) |*entry| {
+                    entry.deinit(self.allocator);
+                }
+                self.utilities.deinit(self.allocator);
+            } else {
+                // 如果无法立即获取锁，可能当前线程已经持有锁
+                // 在这种情况下，我们直接清理（假设调用者知道他们在做什么）
+                for (self.utilities.items) |*entry| {
+                    entry.deinit(self.allocator);
+                }
+                self.utilities.deinit(self.allocator);
             }
-            self.utilities.deinit(self.allocator);
         }
         self.* = undefined;
     }
