@@ -5,6 +5,7 @@ pub const AnimationNodeType = enum {
     state,
     blend_space_1d,
     blend_space_2d,
+    blend_tree,
     layer,
 };
 
@@ -97,6 +98,91 @@ pub const BlendSpace2D = struct {
         }
 
         return self.points[closest_index].clip_handle;
+    }
+};
+
+pub const BlendTreeNode = struct {
+    name: []u8,
+    clip_handle: ?handles.AnimationClipHandle,
+    position: [2]f32,
+    speed: f32 = 1.0,
+
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        self.* = undefined;
+    }
+};
+
+pub const BlendTree = struct {
+    name: []u8,
+    nodes: []BlendTreeNode,
+    parameter_x: []u8,
+    parameter_y: ?[]u8,
+    blend_type: BlendType,
+
+    pub const BlendType = enum { simple_1d, simple_2d, additive };
+
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        for (self.nodes) |*node| {
+            node.deinit(allocator);
+        }
+        allocator.free(self.nodes);
+        allocator.free(self.parameter_x);
+        if (self.parameter_y) |py| {
+            allocator.free(py);
+        }
+        self.* = undefined;
+    }
+
+    pub fn sample(self: *const @This(), param_x: f32, param_y: f32) ?handles.AnimationClipHandle {
+        if (self.nodes.len == 0) return null;
+        if (self.nodes.len == 1) return self.nodes[0].clip_handle;
+
+        switch (self.blend_type) {
+            .simple_1d => {
+                var lower_index: usize = 0;
+                var upper_index: usize = 0;
+
+                for (self.nodes, 0..) |node, i| {
+                    if (param_x >= node.position[0]) {
+                        lower_index = i;
+                    }
+                    if (param_x <= node.position[0] and upper_index == 0) {
+                        upper_index = i;
+                    }
+                }
+
+                if (lower_index == upper_index) {
+                    return self.nodes[lower_index].clip_handle;
+                }
+
+                const lower = self.nodes[lower_index];
+                const upper = self.nodes[upper_index];
+                const t = if (upper.position[0] - lower.position[0] < 0.001) 0.0 else (param_x - lower.position[0]) / (upper.position[0] - lower.position[0]);
+
+                return if (t < 0.5) lower.clip_handle else upper.clip_handle;
+            },
+            .simple_2d => {
+                var closest_index: usize = 0;
+                var closest_distance_sq: f32 = std.math.floatMax(f32);
+
+                for (self.nodes, 0..) |node, i| {
+                    const dx = param_x - node.position[0];
+                    const dy = param_y - node.position[1];
+                    const dist_sq = dx * dx + dy * dy;
+                    if (dist_sq < closest_distance_sq) {
+                        closest_distance_sq = dist_sq;
+                        closest_index = i;
+                    }
+                }
+
+                return self.nodes[closest_index].clip_handle;
+            },
+            .additive => {
+                return self.nodes[0].clip_handle;
+            },
+        }
     }
 };
 
@@ -208,6 +294,7 @@ pub const AnimationGraph = struct {
     states: std.ArrayList(AnimationState),
     blend_spaces_1d: std.ArrayList(BlendSpace1D),
     blend_spaces_2d: std.ArrayList(BlendSpace2D),
+    blend_trees: std.ArrayList(BlendTree),
     transitions: std.ArrayList(Transition),
     parameters: std.ArrayList(Parameter),
     default_state: ?u32 = null,
@@ -219,6 +306,7 @@ pub const AnimationGraph = struct {
             .states = .empty,
             .blend_spaces_1d = .empty,
             .blend_spaces_2d = .empty,
+            .blend_trees = .empty,
             .transitions = .empty,
             .parameters = .empty,
         };
@@ -243,6 +331,11 @@ pub const AnimationGraph = struct {
             blend_space.deinit(allocator);
         }
         self.blend_spaces_2d.deinit(allocator);
+
+        for (self.blend_trees.items) |*blend_tree| {
+            blend_tree.deinit(allocator);
+        }
+        self.blend_trees.deinit(allocator);
 
         for (self.transitions.items) |*transition| {
             transition.deinit(allocator);
@@ -347,6 +440,45 @@ pub const AnimationGraph = struct {
 
         try self.blend_spaces_2d.append(allocator, blend_space);
         return @as(u32, @intCast(self.blend_spaces_2d.items.len - 1));
+    }
+
+    pub fn addBlendTree(
+        self: *@This(),
+        name: []const u8,
+        nodes: []const BlendTreeNode,
+        parameter_x: []const u8,
+        parameter_y: ?[]const u8,
+        blend_type: BlendTree.BlendType,
+    ) !u32 {
+        const allocator = self.allocator;
+
+        var owned_nodes = try allocator.alloc(BlendTreeNode, nodes.len);
+        errdefer allocator.free(owned_nodes);
+        for (nodes, 0..) |node, i| {
+            owned_nodes[i] = .{
+                .name = try allocator.dupe(u8, node.name),
+                .clip_handle = node.clip_handle,
+                .position = node.position,
+                .speed = node.speed,
+            };
+        }
+        errdefer {
+            for (owned_nodes) |*node| {
+                node.deinit(allocator);
+            }
+            allocator.free(owned_nodes);
+        }
+
+        const blend_tree = BlendTree{
+            .name = try allocator.dupe(u8, name),
+            .nodes = owned_nodes,
+            .parameter_x = try allocator.dupe(u8, parameter_x),
+            .parameter_y = if (parameter_y) |py| try allocator.dupe(u8, py) else null,
+            .blend_type = blend_type,
+        };
+
+        try self.blend_trees.append(allocator, blend_tree);
+        return @as(u32, @intCast(self.blend_trees.items.len - 1));
     }
 
     pub fn addTransition(self: *@This(), from_state: u32, to_state: u32, duration: f32, conditions: []const TransitionCondition) !void {
