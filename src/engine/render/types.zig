@@ -52,6 +52,15 @@ pub const EditorViewportState = struct {
     taa_motion_blur_scale: f32 = 1.0,
     taa_feedback_min: f32 = 0.88,
     taa_feedback_max: f32 = 0.97,
+    // DOF 景深
+    dof_enabled: bool = false,
+    dof_focus_distance: f32 = 10.0,
+    dof_focus_range: f32 = 5.0,
+    dof_blur_radius: f32 = 10.0,
+    dof_bokeh_radius: f32 = 5.0,
+    dof_near_blur: f32 = 0.0,
+    dof_far_blur: f32 = 100.0,
+    dof_quality: u32 = 4,
     // Color Grading 先走参数级 MVP，LUT 后续单独补。
     color_grading_enabled: bool = false,
     color_grading_saturation: f32 = 1.0,
