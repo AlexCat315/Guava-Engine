@@ -61,6 +61,10 @@ pub const EditorViewportState = struct {
     dof_near_blur: f32 = 0.0,
     dof_far_blur: f32 = 100.0,
     dof_quality: u32 = 4,
+    // Omni Shadow 点光阴影
+    omni_shadow_enabled: bool = false,
+    omni_shadow_resolution: u32 = 512,
+    omni_shadow_far_plane: f32 = 100.0,
     // Color Grading 先走参数级 MVP，LUT 后续单独补。
     color_grading_enabled: bool = false,
     color_grading_saturation: f32 = 1.0,
