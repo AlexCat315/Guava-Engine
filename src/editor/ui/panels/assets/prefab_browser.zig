@@ -1,7 +1,8 @@
 const std = @import("std");
 const engine = @import("guava");
-const EditorState = @import("../../core/state.zig").EditorState;
-const layout = @import("../layout.zig");
+const gui = @import("../../gui.zig");
+const EditorState = @import("../../../core/state.zig").EditorState;
+const layout = @import("../../layout.zig");
 const prefab_mod = engine.scene.prefab;
 const quat = engine.math.quat;
 
@@ -21,9 +22,9 @@ pub fn drawPrefabBrowserWindow(state: *EditorState, layer_context: *engine.core.
     var title_buffer: [80]u8 = undefined;
     const title = try state.windowLabel(&title_buffer, .prefab_browser, "prefab_browser_popup");
     var open = state.prefab_browser_open;
-    _ = engine.ui.ImGui.beginWindowFlagsOpen(title, &open, engine.ui.ImGui.WindowFlags.no_docking);
+    _ = gui.beginWindowFlagsOpen(title, &open, gui.WindowFlags.no_docking);
     state.prefab_browser_open = open;
-    defer engine.ui.ImGui.endWindow();
+    defer gui.endWindow();
 
     if (!open) {
         return;
@@ -33,26 +34,26 @@ pub fn drawPrefabBrowserWindow(state: *EditorState, layer_context: *engine.core.
     defer layout.endSectionBody();
 
     // 搜索框
-    _ = engine.ui.ImGui.inputText("##search", &state.prefab_browser_search_buffer);
+    _ = gui.inputText("##search", &state.prefab_browser_search_buffer);
 
-    engine.ui.ImGui.separator();
+    gui.separator();
 
     // 获取所有 Prefab
     const prefab_count = layer_context.world.prefab_library.prefabs.count();
     if (prefab_count == 0) {
-        engine.ui.ImGui.text(state.text(.no_prefabs_available));
-        engine.ui.ImGui.separator();
+        gui.text(state.text(.no_prefabs_available));
+        gui.separator();
 
         // 创建新 Prefab 按钮
-        if (engine.ui.ImGui.button(browserText(state, .create_prefab))) {
+        if (gui.button(browserText(state, .create_prefab))) {
             try createPrefabFromSelection(state, layer_context);
         }
         return;
     }
 
     // Prefab 列表
-    if (engine.ui.ImGui.beginChild("prefab_list", 0.0, engine.ui.ImGui.contentRegionAvail()[1] * 0.6, false)) {
-        defer engine.ui.ImGui.endChild();
+    if (gui.beginChild("prefab_list", 0.0, gui.contentRegionAvail()[1] * 0.6, false)) {
+        defer gui.endChild();
 
         var it = layer_context.world.prefab_library.prefabs.iterator();
         const search_text = trimmedBuffer(&state.prefab_browser_search_buffer);
@@ -72,7 +73,7 @@ pub fn drawPrefabBrowserWindow(state: *EditorState, layer_context: *engine.core.
                 std.mem.eql(u8, state.selected_prefab_id.?, prefab_id);
 
             // 显示 Prefab 行
-            if (engine.ui.ImGui.selectable(
+            if (gui.selectable(
                 prefab.name,
                 is_selected,
                 false,
@@ -83,10 +84,10 @@ pub fn drawPrefabBrowserWindow(state: *EditorState, layer_context: *engine.core.
             }
 
             // 右键上下文菜单
-            if (engine.ui.ImGui.beginPopupContextItem("prefab_context")) {
-                defer engine.ui.ImGui.endPopup();
+            if (gui.beginPopupContextItem("prefab_context")) {
+                defer gui.endPopup();
 
-                if (engine.ui.ImGui.menuItem(browserText(state, .instantiate_prefab), null, false, true)) {
+                if (gui.menuItem(browserText(state, .instantiate_prefab), null, false, true)) {
                     _ = try layer_context.world.instantiatePrefab(prefab_id, .{
                         .name_prefix = "Instance",
                         .transform = .{
@@ -97,13 +98,13 @@ pub fn drawPrefabBrowserWindow(state: *EditorState, layer_context: *engine.core.
                     });
                 }
 
-                if (engine.ui.ImGui.menuItem(browserText(state, .save_prefab), null, false, true)) {
+                if (gui.menuItem(browserText(state, .save_prefab), null, false, true)) {
                     try savePrefabWithDefaultPath(state, layer_context, prefab_id);
                 }
 
-                engine.ui.ImGui.separator();
+                gui.separator();
 
-                if (engine.ui.ImGui.menuItem(browserText(state, .delete_prefab), null, false, true)) {
+                if (gui.menuItem(browserText(state, .delete_prefab), null, false, true)) {
                     try deletePrefab(state, layer_context, prefab_id);
                     return;
                 }
@@ -111,18 +112,18 @@ pub fn drawPrefabBrowserWindow(state: *EditorState, layer_context: *engine.core.
         }
     }
 
-    engine.ui.ImGui.separator();
+    gui.separator();
 
     // 选中 Prefab 的操作按钮
     if (state.selected_prefab_id) |selected_id| {
-        engine.ui.ImGui.text(browserText(state, .selected_prefab));
-        engine.ui.ImGui.sameLine();
-        engine.ui.ImGui.text(selected_id);
+        gui.text(browserText(state, .selected_prefab));
+        gui.sameLine();
+        gui.text(selected_id);
 
-        engine.ui.ImGui.separator();
+        gui.separator();
 
         // 实例化按钮
-        if (engine.ui.ImGui.button(browserText(state, .instantiate))) {
+        if (gui.button(browserText(state, .instantiate))) {
             _ = try layer_context.world.instantiatePrefab(selected_id, .{
                 .name_prefix = "Instance",
                 .transform = .{
@@ -133,29 +134,29 @@ pub fn drawPrefabBrowserWindow(state: *EditorState, layer_context: *engine.core.
             });
         }
 
-        engine.ui.ImGui.sameLine();
+        gui.sameLine();
 
         // 编辑按钮
-        if (engine.ui.ImGui.button(browserText(state, .edit_prefab))) {
+        if (gui.button(browserText(state, .edit_prefab))) {
             try state.setEditingPrefabId(selected_id);
         }
 
         // 保存按钮
-        engine.ui.ImGui.sameLine();
-        if (engine.ui.ImGui.button(browserText(state, .save_prefab))) {
+        gui.sameLine();
+        if (gui.button(browserText(state, .save_prefab))) {
             try savePrefabWithDefaultPath(state, layer_context, selected_id);
         }
     }
 
     // 底部操作栏
-    engine.ui.ImGui.separator();
-    if (engine.ui.ImGui.button(browserText(state, .create_prefab))) {
+    gui.separator();
+    if (gui.button(browserText(state, .create_prefab))) {
         try createPrefabFromSelection(state, layer_context);
     }
 
-    engine.ui.ImGui.sameLine();
+    gui.sameLine();
 
-    if (engine.ui.ImGui.button(browserText(state, .refresh_prefabs))) {
+    if (gui.button(browserText(state, .refresh_prefabs))) {
         try refreshPrefabsFromDisk(state, layer_context);
     }
 }
@@ -221,7 +222,7 @@ pub fn drawPrefabOverrideEditor(
 
     if (entity.prefab_instance_override == null) {
         // 没有覆盖，显示"添加覆盖"按钮
-        if (engine.ui.ImGui.button(state.text(.add_override))) {
+        if (gui.button(state.text(.add_override))) {
             // 创建新的覆盖数据
             const override = prefab_mod.PrefabInstanceOverride{
                 .prefab_id = try state.allocator.dupe(u8, "prefab://unknown"),
@@ -236,23 +237,23 @@ pub fn drawPrefabOverrideEditor(
 
     const override = entity.prefab_instance_override.?;
 
-    engine.ui.ImGui.text(state.text(.prefab_override));
-    engine.ui.ImGui.text(override.prefab_id);
+    gui.text(state.text(.prefab_override));
+    gui.text(override.prefab_id);
 
-    engine.ui.ImGui.separator();
+    gui.separator();
 
     // 变换覆盖
-    if (engine.ui.ImGui.collapsingHeader(state.text(.transform), .{})) {
-        const transform_changed = engine.ui.ImGui.dragFloat3(
+    if (gui.collapsingHeader(state.text(.transform), .{})) {
+        const transform_changed = gui.dragFloat3(
             state.text(.translation),
             &entity.local_transform.translation,
             0.1,
         );
 
         var rotation = quat.toEuler(entity.local_transform.rotation);
-        const rotation_changed = engine.ui.ImGui.dragFloat3(state.text(.rotation), &rotation, 0.1);
+        const rotation_changed = gui.dragFloat3(state.text(.rotation), &rotation, 0.1);
 
-        const scale_changed = engine.ui.ImGui.dragFloat3(
+        const scale_changed = gui.dragFloat3(
             state.text(.scale),
             &entity.local_transform.scale,
             0.1,
@@ -269,8 +270,8 @@ pub fn drawPrefabOverrideEditor(
     }
 
     // 可见性覆盖
-    if (engine.ui.ImGui.collapsingHeader(state.text(.visibility), .{})) {
-        const visible_changed = engine.ui.ImGui.checkbox(
+    if (gui.collapsingHeader(state.text(.visibility), .{})) {
+        const visible_changed = gui.checkbox(
             state.text(.visible),
             &entity.visible,
         );
@@ -281,10 +282,10 @@ pub fn drawPrefabOverrideEditor(
         }
     }
 
-    engine.ui.ImGui.separator();
+    gui.separator();
 
     // 恢复覆盖按钮
-    if (engine.ui.ImGui.button(state.text(.revert_override))) {
+    if (gui.button(state.text(.revert_override))) {
         try layer_context.world.revertPrefabOverride(entity_id);
     }
 }

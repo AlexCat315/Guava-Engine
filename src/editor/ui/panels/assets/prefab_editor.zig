@@ -1,6 +1,7 @@
 const std = @import("std");
 const engine = @import("guava");
-const layout = @import("../layout.zig");
+const gui = @import("../../gui.zig");
+const layout = @import("../../layout.zig");
 
 const EntityId = engine.scene.EntityId;
 const PrefabResource = engine.scene.PrefabResource;
@@ -31,33 +32,33 @@ pub fn drawPrefabEditor(
     _ = layer_context;
     const world = state.world orelse return;
 
-    if (engine.ui.ImGui.begin("Prefab Library")) {
-        defer engine.ui.ImGui.end();
+    if (gui.begin("Prefab Library")) {
+        defer gui.end();
 
         drawPrefabToolbar(state, editor_state);
 
-        engine.ui.ImGui.separator();
+        gui.separator();
 
-        const left_pane_width = engine.ui.ImGui.getContentRegionAvail().x * 0.3;
-        _ = engine.ui.ImGui.beginChild("prefab_list", left_pane_width, -1.0, true);
-        defer engine.ui.ImGui.endChild();
+        const left_pane_width = gui.getContentRegionAvail().x * 0.3;
+        _ = gui.beginChild("prefab_list", left_pane_width, -1.0, true);
+        defer gui.endChild();
 
         drawPrefabList(state, editor_state);
     }
 
-    engine.ui.ImGui.sameLine();
+    gui.sameLine();
 
-    if (engine.ui.ImGui.begin("Prefab Details")) {
-        defer engine.ui.ImGui.end();
+    if (gui.begin("Prefab Details")) {
+        defer gui.end();
 
         if (editor_state.selected_prefab_id) |prefab_id| {
             if (world.prefab_library.getPrefab(prefab_id)) |prefab| {
                 drawPrefabDetails(state, editor_state, prefab);
             } else {
-                engine.ui.ImGui.textWrapped("Prefab not found");
+                gui.textWrapped("Prefab not found");
             }
         } else {
-            engine.ui.ImGui.textWrapped("Select a prefab from the library");
+            gui.textWrapped("Select a prefab from the library");
         }
     }
 }
@@ -68,20 +69,20 @@ fn drawPrefabToolbar(
 ) void {
     _ = state;
 
-    if (engine.ui.ImGui.button("Create Prefab")) {
+    if (gui.button("Create Prefab")) {
         editor_state.show_create_dialog = true;
     }
 
-    engine.ui.ImGui.sameLine();
+    gui.sameLine();
 
-    if (engine.ui.ImGui.button("Save All")) {
+    if (gui.button("Save All")) {
     }
 
-    engine.ui.ImGui.sameLine();
+    gui.sameLine();
 
-    engine.ui.ImGui.text("Search:");
-    engine.ui.ImGui.sameLine();
-    _ = engine.ui.ImGui.inputText("##prefab_search", &editor_state.search_filter, 128, .{}, null, null);
+    gui.text("Search:");
+    gui.sameLine();
+    _ = gui.inputText("##prefab_search", &editor_state.search_filter, 128, .{}, null, null);
 }
 
 fn drawPrefabList(
@@ -118,19 +119,19 @@ fn drawPrefabList(
         var name_buf: [256]u8 = undefined;
         const display_name = std.fmt.bufPrint(&name_buf, "{s}##{s}", .{ prefab.name, prefab_id }) catch continue;
 
-        if (engine.ui.ImGui.selectable(display_name, is_selected)) {
+        if (gui.selectable(display_name, is_selected)) {
             if (editor_state.selected_prefab_id) |old_id| {
                 state.allocator.free(old_id);
             }
             editor_state.selected_prefab_id = state.allocator.dupe(u8, prefab_id) catch null;
         }
 
-        if (engine.ui.ImGui.beginPopupContextItem()) {
-            if (engine.ui.ImGui.selectable("Delete Prefab", false)) {
+        if (gui.beginPopupContextItem()) {
+            if (gui.selectable("Delete Prefab", false)) {
             }
-            if (engine.ui.ImGui.selectable("Duplicate Prefab", false)) {
+            if (gui.selectable("Duplicate Prefab", false)) {
             }
-            engine.ui.ImGui.endPopup();
+            gui.endPopup();
         }
     }
 }
@@ -147,30 +148,30 @@ fn drawPrefabDetails(
         defer layout.endInspectorPropertyTable();
 
         layout.drawInspectorPropertyRow("ID", null);
-        engine.ui.ImGui.textWrapped(prefab.id);
+        gui.textWrapped(prefab.id);
 
         layout.drawInspectorPropertyRow("Name", null);
-        engine.ui.ImGui.textWrapped(prefab.name);
+        gui.textWrapped(prefab.name);
 
         layout.drawInspectorPropertyRow("Version", null);
-        engine.ui.ImGui.text("{}", .{prefab.version});
+        gui.text("{}", .{prefab.version});
 
         layout.drawInspectorPropertyRow("Entities", null);
-        engine.ui.ImGui.text("{}", .{prefab.entities.len});
+        gui.text("{}", .{prefab.entities.len});
 
         layout.drawInspectorPropertyRow("Source Path", null);
         if (prefab.source_path) |path| {
-            engine.ui.ImGui.textWrapped(path);
+            gui.textWrapped(path);
         } else {
-            engine.ui.ImGui.textColored(.{ 0.5, 0.5, 0.5, 1.0 }, "Not saved");
+            gui.textColored(.{ 0.5, 0.5, 0.5, 1.0 }, "Not saved");
         }
     }
 
-    engine.ui.ImGui.separator();
-    engine.ui.ImGui.text("Entity List:");
-    engine.ui.ImGui.separator();
+    gui.separator();
+    gui.text("Entity List:");
+    gui.separator();
 
-    if (engine.ui.ImGui.beginChild("prefab_entity_list", -1.0, -1.0, true)) {
+    if (gui.beginChild("prefab_entity_list", -1.0, -1.0, true)) {
         for (prefab.entities, 0..) |entity, index| {
             const is_selected = editor_state.selected_entity_index != null and
                 editor_state.selected_entity_index.? == index;
@@ -178,10 +179,10 @@ fn drawPrefabDetails(
             var name_buf: [256]u8 = undefined;
             const display_name = std.fmt.bufPrint(&name_buf, "{s}##{}", .{ entity.name, index }) catch continue;
 
-            if (engine.ui.ImGui.selectable(display_name, is_selected)) {
+            if (gui.selectable(display_name, is_selected)) {
                 editor_state.selected_entity_index = index;
             }
         }
     }
-    engine.ui.ImGui.endChild();
+    gui.endChild();
 }

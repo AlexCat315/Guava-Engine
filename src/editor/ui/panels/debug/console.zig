@@ -1,6 +1,7 @@
 const std = @import("std");
 const engine = @import("guava");
-const EditorState = @import("../../core/state.zig").EditorState;
+const gui = @import("../../gui.zig");
+const EditorState = @import("../../../core/state.zig").EditorState;
 
 const max_entries = 256;
 const max_scope_len = 48;
@@ -155,13 +156,13 @@ pub fn snapshot(buffer: []Entry) usize {
 }
 
 pub fn drawConsolePanel(state: *EditorState) !void {
-    const width = engine.ui.ImGui.contentRegionAvail()[0];
+    const width = gui.contentRegionAvail()[0];
     const clear_width = if (width >= 520.0) 82.0 else width;
-    if (engine.ui.ImGui.buttonEx(state.text(.clear), clear_width, 0.0)) {
+    if (gui.buttonEx(state.text(.clear), clear_width, 0.0)) {
         clear();
     }
     if (width >= 520.0) {
-        engine.ui.ImGui.sameLine();
+        gui.sameLine();
     }
 
     const toggle_columns: usize = if (width >= 520.0)
@@ -172,23 +173,23 @@ pub fn drawConsolePanel(state: *EditorState) !void {
         1;
     var toggle_index: usize = 0;
     beginResponsiveToggle(toggle_index, toggle_columns);
-    _ = engine.ui.ImGui.checkbox(state.text(.errors), &state.console_show_errors);
+    _ = gui.checkbox(state.text(.errors), &state.console_show_errors);
     toggle_index += 1;
     beginResponsiveToggle(toggle_index, toggle_columns);
-    _ = engine.ui.ImGui.checkbox(state.text(.warnings), &state.console_show_warnings);
+    _ = gui.checkbox(state.text(.warnings), &state.console_show_warnings);
     toggle_index += 1;
     beginResponsiveToggle(toggle_index, toggle_columns);
-    _ = engine.ui.ImGui.checkbox(state.text(.info), &state.console_show_info);
+    _ = gui.checkbox(state.text(.info), &state.console_show_info);
     toggle_index += 1;
     beginResponsiveToggle(toggle_index, toggle_columns);
-    _ = engine.ui.ImGui.checkbox(state.text(.debug), &state.console_show_debug);
+    _ = gui.checkbox(state.text(.debug), &state.console_show_debug);
     toggle_index += 1;
     beginResponsiveToggle(toggle_index, toggle_columns);
-    _ = engine.ui.ImGui.checkbox(state.text(.auto_scroll), &state.console_auto_scroll);
-    engine.ui.ImGui.separator();
+    _ = gui.checkbox(state.text(.auto_scroll), &state.console_auto_scroll);
+    gui.separator();
 
-    _ = engine.ui.ImGui.beginChild("console_messages", 0.0, 0.0, true);
-    defer engine.ui.ImGui.endChild();
+    _ = gui.beginChild("console_messages", 0.0, 0.0, true);
+    defer gui.endChild();
 
     // 直接读取环形缓冲区，而不是使用 snapshot
     g_mutex.lock();
@@ -203,8 +204,8 @@ pub fn drawConsolePanel(state: *EditorState) !void {
             const entry = g_entries[cursor];
             
             if (shouldDisplayEntry(state, entry.level)) {
-                engine.ui.ImGui.pushStyleColor(.text, levelColor(entry.level));
-                defer engine.ui.ImGui.popStyleColor(1);
+                gui.pushStyleColor(.text, levelColor(entry.level));
+                defer gui.popStyleColor(1);
 
                 var line_buffer: [512]u8 = undefined;
                 const line = std.fmt.bufPrint(
@@ -213,7 +214,7 @@ pub fn drawConsolePanel(state: *EditorState) !void {
                     .{ levelLabel(entry.level), entry.scopeText(), entry.messageText() },
                 ) catch continue;
                 
-                engine.ui.ImGui.textWrapped(line);
+                gui.textWrapped(line);
                 displayed_count += 1;
             }
             
@@ -222,7 +223,7 @@ pub fn drawConsolePanel(state: *EditorState) !void {
     }
 
     if (state.console_auto_scroll) {
-        engine.ui.ImGui.setScrollHereY(1.0);
+        gui.setScrollHereY(1.0);
     }
 }
 
@@ -231,9 +232,9 @@ fn beginResponsiveToggle(index: usize, columns: usize) void {
         return;
     }
     if (index % columns == 0) {
-        engine.ui.ImGui.dummy(0.0, 4.0);
+        gui.dummy(0.0, 4.0);
     } else {
-        engine.ui.ImGui.sameLine();
+        gui.sameLine();
     }
 }
 

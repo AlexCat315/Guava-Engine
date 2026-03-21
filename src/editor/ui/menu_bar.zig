@@ -1,137 +1,141 @@
 const std = @import("std");
 const engine = @import("guava");
+const gui = @import("gui.zig");
 const EditorState = @import("../core/state.zig").EditorState;
 const history = @import("../actions/history.zig");
 const camera = @import("../interaction/camera.zig");
 const content_browser = @import("../assets/browser.zig");
-const scene_hierarchy = @import("windows/scene_hierarchy.zig");
+const scene_hierarchy = @import("panels/scene/scene_hierarchy.zig");
 const layout = @import("layout.zig");
 const i18n = @import("../i18n/mod.zig");
 
 pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
-    if (!engine.ui.ImGui.beginMainMenuBar()) {
+    if (!gui.beginMainMenuBar()) {
         return;
     }
-    defer engine.ui.ImGui.endMainMenuBar();
+    defer gui.endMainMenuBar();
 
     const native_titlebar_controls = layer_context.window.hasNativeTitlebarControls();
     if (native_titlebar_controls and layer_context.window.titlebarLeadingInset() > 0.0) {
-        engine.ui.ImGui.dummy(layer_context.window.titlebarLeadingInset(), 1.0);
-        engine.ui.ImGui.sameLine();
+        gui.dummy(layer_context.window.titlebarLeadingInset(), 1.0);
+        gui.sameLine();
     }
 
-    if (engine.ui.ImGui.beginMenu(state.text(.file))) {
-        defer engine.ui.ImGui.endMenu();
-        if (engine.ui.ImGui.menuItem(state.text(.new_scene), "Ctrl+N", false, true)) {
+    if (gui.beginMenu(state.text(.file))) {
+        defer gui.endMenu();
+        if (gui.menuItem(state.text(.new_scene), "Ctrl+N", false, true)) {
             try history.newScene(state, layer_context);
         }
-        engine.ui.ImGui.separator();
-        if (engine.ui.ImGui.menuItem(state.text(.save_scene), "Ctrl+S", false, true)) {
+        gui.separator();
+        if (gui.menuItem(state.text(.save_scene), "Ctrl+S", false, true)) {
             history.saveScene(state, layer_context);
         }
-        if (engine.ui.ImGui.menuItem(state.text(.load_scene), "Ctrl+O", false, true)) {
+        if (gui.menuItem(state.text(.load_scene), "Ctrl+O", false, true)) {
             try history.loadScene(state, layer_context);
         }
     }
 
-    if (engine.ui.ImGui.beginMenu(state.text(.assets_menu))) {
-        defer engine.ui.ImGui.endMenu();
+    if (gui.beginMenu(state.text(.assets_menu))) {
+        defer gui.endMenu();
         const can_instantiate = content_browser.selectedAssetCanLoadScene(state) or content_browser.selectedAssetCanImportModel(state);
-        if (engine.ui.ImGui.menuItem(state.text(.instantiate_slash_load), null, false, can_instantiate)) {
+        if (gui.menuItem(state.text(.instantiate_slash_load), null, false, can_instantiate)) {
             try content_browser.instantiateSelectedAsset(state, layer_context);
         }
-        if (engine.ui.ImGui.menuItem(state.text(.refresh), null, false, true)) {
+        if (gui.menuItem(state.text(.refresh), null, false, true)) {
             try content_browser.refreshAssetBrowser(state, layer_context);
         }
     }
 
-    if (engine.ui.ImGui.beginMenu(state.text(.edit))) {
-        defer engine.ui.ImGui.endMenu();
-        if (engine.ui.ImGui.menuItem(state.text(.undo), "Ctrl+Z", false, true)) {
+    if (gui.beginMenu(state.text(.edit))) {
+        defer gui.endMenu();
+        if (gui.menuItem(state.text(.undo), "Ctrl+Z", false, true)) {
             try history.undo(state, layer_context);
         }
-        if (engine.ui.ImGui.menuItem(state.text(.redo), "Ctrl+Y", false, true)) {
+        if (gui.menuItem(state.text(.redo), "Ctrl+Y", false, true)) {
             try history.redo(state, layer_context);
         }
-        engine.ui.ImGui.separator();
+        gui.separator();
         const has_selection = layer_context.renderer.selectedEntity() != null;
-        if (engine.ui.ImGui.menuItem(state.text(.duplicate), "Ctrl+D", false, has_selection)) {
+        if (gui.menuItem(state.text(.duplicate), "Ctrl+D", false, has_selection)) {
             try history.duplicateSelection(state, layer_context);
         }
-        if (engine.ui.ImGui.menuItem(state.text(.delete), "Del", false, has_selection)) {
+        if (gui.menuItem(state.text(.delete), "Del", false, has_selection)) {
             try history.deleteSelection(state, layer_context);
         }
-        if (engine.ui.ImGui.menuItem(state.text(.parent_to_active), "P", false, layer_context.renderer.selectedEntities().len > 1)) {
+        if (gui.menuItem(state.text(.parent_to_active), "P", false, layer_context.renderer.selectedEntities().len > 1)) {
             try scene_hierarchy.parentSelection(state, layer_context);
         }
-        if (engine.ui.ImGui.menuItem(state.text(.unparent), "Shift+P", false, has_selection)) {
+        if (gui.menuItem(state.text(.unparent), "Shift+P", false, has_selection)) {
             try scene_hierarchy.unparentSelection(state, layer_context);
         }
     }
 
-    if (engine.ui.ImGui.beginMenu(state.text(.rendering))) {
-        defer engine.ui.ImGui.endMenu();
-        if (engine.ui.ImGui.menuItem(state.text(.editor_camera_mode), null, state.editor_camera_active, true) and !state.editor_camera_active) {
+    if (gui.beginMenu(state.text(.rendering))) {
+        defer gui.endMenu();
+        if (gui.menuItem(state.text(.editor_camera_mode), null, state.editor_camera_active, true) and !state.editor_camera_active) {
             camera.toggleCameraMode(state, layer_context);
         }
-        if (engine.ui.ImGui.menuItem(state.text(.scene_camera_mode), null, !state.editor_camera_active, true) and state.editor_camera_active) {
+        if (gui.menuItem(state.text(.scene_camera_mode), null, !state.editor_camera_active, true) and state.editor_camera_active) {
             camera.toggleCameraMode(state, layer_context);
         }
-        if (engine.ui.ImGui.menuItem(state.text(.focus), "F", false, layer_context.renderer.selectedEntity() != null)) {
+        if (gui.menuItem(state.text(.focus), "F", false, layer_context.renderer.selectedEntity() != null)) {
             camera.focusSelection(state, layer_context);
         }
-        engine.ui.ImGui.separator();
-        if (engine.ui.ImGui.menuItem(state.text(.translation_snap), "Ctrl+Shift+T", false, true)) {
+        gui.separator();
+        if (gui.menuItem(state.text(.translation_snap), "Ctrl+Shift+T", false, true)) {
             state.translation_snap_enabled = !state.translation_snap_enabled;
         }
-        if (engine.ui.ImGui.menuItem(state.text(.rotation_snap), "Ctrl+Shift+R", false, true)) {
+        if (gui.menuItem(state.text(.rotation_snap), "Ctrl+Shift+R", false, true)) {
             state.rotation_snap_enabled = !state.rotation_snap_enabled;
         }
-        if (engine.ui.ImGui.menuItem(state.text(.scale_snap), "Ctrl+Shift+S", false, true)) {
+        if (gui.menuItem(state.text(.scale_snap), "Ctrl+Shift+S", false, true)) {
             state.scale_snap_enabled = !state.scale_snap_enabled;
         }
     }
 
-    if (engine.ui.ImGui.beginMenu(state.text(.window))) {
-        defer engine.ui.ImGui.endMenu();
-        if (engine.ui.ImGui.menuItem(state.text(.material_editor), null, state.material_editor_open, true)) {
+    if (gui.beginMenu(state.text(.window))) {
+        defer gui.endMenu();
+        if (gui.menuItem(state.text(.material_editor), null, state.material_editor_open, true)) {
             state.material_editor_open = !state.material_editor_open;
         }
-        if (engine.ui.ImGui.menuItem("AI Utilities", null, state.editor_utilities_open, true)) {
+        if (gui.menuItem("AI Utilities", null, state.editor_utilities_open, true)) {
             state.editor_utilities_open = !state.editor_utilities_open;
         }
-        if (engine.ui.ImGui.menuItem(state.text(.animation_editor), null, state.animation_editor_open, true)) {
+        if (gui.menuItem(state.text(.ai_chat), null, state.ai_chat_open, true)) {
+            state.ai_chat_open = !state.ai_chat_open;
+        }
+        if (gui.menuItem(state.text(.animation_editor), null, state.animation_editor_open, true)) {
             state.animation_editor_open = !state.animation_editor_open;
         }
-        if (engine.ui.ImGui.menuItem(state.text(.prefab_browser), null, state.prefab_browser_open, true)) {
+        if (gui.menuItem(state.text(.prefab_browser), null, state.prefab_browser_open, true)) {
             state.prefab_browser_open = !state.prefab_browser_open;
         }
-        if (engine.ui.ImGui.menuItem(state.text(.settings), null, state.settings_open, true)) {
+        if (gui.menuItem(state.text(.settings), null, state.settings_open, true)) {
             state.settings_open = !state.settings_open;
         }
-        if (engine.ui.ImGui.beginMenu(state.text(.layout))) {
-            defer engine.ui.ImGui.endMenu();
-            if (engine.ui.ImGui.menuItem(state.text(.save_current_layout), null, false, true)) {
-                engine.ui.ImGui.saveLayout();
+        if (gui.beginMenu(state.text(.layout))) {
+            defer gui.endMenu();
+            if (gui.menuItem(state.text(.save_current_layout), null, false, true)) {
+                gui.saveLayout();
             }
-            if (engine.ui.ImGui.menuItem(state.text(.load_default_layout), null, false, true)) {
+            if (gui.menuItem(state.text(.load_default_layout), null, false, true)) {
                 layout.resetDockLayout(state);
             }
-            if (engine.ui.ImGui.menuItem(state.text(.load_animation_layout), null, false, true)) {
+            if (gui.menuItem(state.text(.load_animation_layout), null, false, true)) {
                 layout.loadAnimationDockLayout(state);
             }
-            if (engine.ui.ImGui.menuItem(state.text(.reset_dock_layout), null, false, true)) {
+            if (gui.menuItem(state.text(.reset_dock_layout), null, false, true)) {
                 layout.resetDockLayout(state);
             }
-            engine.ui.ImGui.separator();
+            gui.separator();
             try layout.ensureLayoutTemplatesLoaded(state);
-            if (engine.ui.ImGui.beginMenu(state.text(.layout_templates))) {
-                defer engine.ui.ImGui.endMenu();
+            if (gui.beginMenu(state.text(.layout_templates))) {
+                defer gui.endMenu();
                 if (state.layout_templates.items.len == 0) {
-                    _ = engine.ui.ImGui.menuItem(state.text(.no_saved_layout_templates), null, false, false);
+                    _ = gui.menuItem(state.text(.no_saved_layout_templates), null, false, false);
                 } else {
                     for (state.layout_templates.items) |entry| {
-                        if (engine.ui.ImGui.menuItem(entry.name, null, false, true)) {
+                        if (gui.menuItem(entry.name, null, false, true)) {
                             _ = layout.loadUserLayoutTemplate(state, entry.path);
                         }
                     }
@@ -140,11 +144,11 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
         }
     }
 
-    if (engine.ui.ImGui.beginMenu(state.text(.help))) {
-        defer engine.ui.ImGui.endMenu();
+    if (gui.beginMenu(state.text(.help))) {
+        defer gui.endMenu();
         for (i18n.available_languages) |language| {
             const locale_info = i18n.locale(language);
-            if (engine.ui.ImGui.menuItem(locale_info.native_name, null, state.language == language, true)) {
+            if (gui.menuItem(locale_info.native_name, null, state.language == language, true)) {
                 state.language = language;
             }
         }
@@ -154,12 +158,12 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
         layer_context.window.titlebarTrailingInset()
     else
         114.0;
-    const available = engine.ui.ImGui.contentRegionAvail();
+    const available = gui.contentRegionAvail();
     const drag_width = @max(available[0] - trailing_button_reserve, 48.0);
 
-    engine.ui.ImGui.sameLine();
-    _ = engine.ui.ImGui.invisibleButton("top_bar_drag_region", drag_width, 22.0);
-    if (engine.ui.ImGui.isItemActive() and layer_context.input.wasMousePressed(.left)) {
+    gui.sameLine();
+    _ = gui.invisibleButton("top_bar_drag_region", drag_width, 22.0);
+    if (gui.isItemActive() and layer_context.input.wasMousePressed(.left)) {
         try beginTopBarDrag(state, layer_context);
     }
 
@@ -176,14 +180,14 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
     }
 
     if (!native_titlebar_controls) {
-        engine.ui.ImGui.sameLine();
-        if (engine.ui.ImGui.windowControlButton(.minimize, false)) {
+        gui.sameLine();
+        if (gui.windowControlButton(.minimize, false)) {
             state.top_bar_drag_active = false;
             try layer_context.window.minimize();
         }
 
-        engine.ui.ImGui.sameLine();
-        if (engine.ui.ImGui.windowControlButton(.maximize, layer_context.window.isMaximized())) {
+        gui.sameLine();
+        if (gui.windowControlButton(.maximize, layer_context.window.isMaximized())) {
             state.top_bar_drag_active = false;
             if (layer_context.window.isMaximized()) {
                 try layer_context.window.restore();
@@ -192,8 +196,8 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
             }
         }
 
-        engine.ui.ImGui.sameLine();
-        if (engine.ui.ImGui.windowControlButton(.close, false)) {
+        gui.sameLine();
+        if (gui.windowControlButton(.close, false)) {
             state.top_bar_drag_active = false;
             layer_context.window.requestClose();
         }

@@ -1,5 +1,6 @@
 const std = @import("std");
 const engine = @import("guava");
+const gui = @import("gui.zig");
 
 pub const ViewportLayout = enum {
     single,
@@ -149,17 +150,17 @@ pub const MultiViewportState = struct {
 };
 
 pub fn drawViewportLayoutSelector(state: *MultiViewportState) void {
-    if (engine.ui.ImGui.beginCombo("Layout", layoutName(state.layout), .{})) {
-        defer engine.ui.ImGui.endCombo();
+    if (gui.beginCombo("Layout", layoutName(state.layout), .{})) {
+        defer gui.endCombo();
 
         const layouts = [_]ViewportLayout{ .single, .horizontal_split, .vertical_split, .four_way };
         for (layouts) |layout| {
             const is_selected = state.layout == layout;
-            if (engine.ui.ImGui.selectable(layoutName(layout), is_selected)) {
+            if (gui.selectable(layoutName(layout), is_selected)) {
                 state.setLayout(layout);
             }
             if (is_selected) {
-                engine.ui.ImGui.setItemDefaultFocus();
+                gui.setItemDefaultFocus();
             }
         }
     }

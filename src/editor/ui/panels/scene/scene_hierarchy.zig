@@ -1,14 +1,15 @@
 const std = @import("std");
 const engine = @import("guava");
-const EditorState = @import("../../core/state.zig").EditorState;
-const state_mod = @import("../../core/state.zig");
-const utils = @import("../../common/utils.zig");
-const history = @import("../../actions/history.zig");
-const content_browser = @import("../../assets/browser.zig");
+const gui = @import("../../gui.zig");
+const EditorState = @import("../../../core/state.zig").EditorState;
+const state_mod = @import("../../../core/state.zig");
+const utils = @import("../../../common/utils.zig");
+const history = @import("../../../actions/history.zig");
+const content_browser = @import("../../../assets/browser.zig");
 const inspector = @import("inspector.zig");
-const camera = @import("../../interaction/camera.zig");
-const ui_icons = @import("../icons.zig");
-const layout = @import("../layout.zig");
+const camera = @import("../../../interaction/camera.zig");
+const ui_icons = @import("../../icons.zig");
+const layout = @import("../../layout.zig");
 const prefab_mod = @import("guava").scene.prefab;
 
 const hierarchy_row_icon_size: f32 = 16.0;
@@ -37,10 +38,10 @@ fn entityDragPreviewTypeLabel(state: *const EditorState, entity: *const engine.s
 }
 
 fn drawHierarchyDragPreview(state: *EditorState, entity: *const engine.scene.Entity, icon_texture: *engine.rhi.Texture) void {
-    if (!engine.ui.ImGui.beginDragDropSourceU64(state_mod.entity_drag_payload, entity.id)) {
+    if (!gui.beginDragDropSourceU64(state_mod.entity_drag_payload, entity.id)) {
         return;
     }
-    defer engine.ui.ImGui.endDragDropSource();
+    defer gui.endDragDropSource();
 
     state.active_drag_payload = .{
         .kind = .entity,
@@ -54,16 +55,16 @@ fn drawHierarchyDragPreview(state: *EditorState, entity: *const engine.scene.Ent
         .{ entity.name, entityDragPreviewTypeLabel(state, entity) },
     ) catch entity.name;
 
-    engine.ui.ImGui.image(icon_texture, hierarchy_drag_preview_icon_size, hierarchy_drag_preview_icon_size);
-    engine.ui.ImGui.sameLine();
-    engine.ui.ImGui.text(preview_text);
+    gui.image(icon_texture, hierarchy_drag_preview_icon_size, hierarchy_drag_preview_icon_size);
+    gui.sameLine();
+    gui.text(preview_text);
 }
 
 pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     var title_buffer: [80]u8 = undefined;
     const title = try state.windowLabel(&title_buffer, .scene, "scene_panel");
-    _ = engine.ui.ImGui.beginWindow(title);
-    defer engine.ui.ImGui.endWindow();
+    _ = gui.beginWindow(title);
+    defer gui.endWindow();
 
     syncHierarchyRenameState(state, layer_context);
 
@@ -72,61 +73,61 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
     const selection_count_text = try std.fmt.bufPrint(&selection_count_buffer, "{d}", .{layer_context.renderer.selectedEntities().len});
 
     // 采用更精致、低调的筛选区域布局
-    const controls_width = engine.ui.ImGui.contentRegionAvail()[0];
+    const controls_width = gui.contentRegionAvail()[0];
     const show_full_ui = controls_width >= 280.0;
 
     if (show_full_ui) {
-        engine.ui.ImGui.setNextItemWidth(controls_width * 0.45);
-        _ = engine.ui.ImGui.inputTextWithHint("##scene_filter", state.text(.scene_filter), state.scene_filter_buffer[0..]);
-        engine.ui.ImGui.sameLineEx(0.0, 8.0);
+        gui.setNextItemWidth(controls_width * 0.45);
+        _ = gui.inputTextWithHint("##scene_filter", state.text(.scene_filter), state.scene_filter_buffer[0..]);
+        gui.sameLineEx(0.0, 8.0);
 
-        engine.ui.ImGui.pushStyleColor(.text, .{ 0.55, 0.58, 0.62, 1.0 });
-        engine.ui.ImGui.text(selection_count_text);
-        engine.ui.ImGui.popStyleColor(1);
-        if (engine.ui.ImGui.isItemHovered()) {
-            engine.ui.ImGui.setTooltip(state.text(.selection_count));
+        gui.pushStyleColor(.text, .{ 0.55, 0.58, 0.62, 1.0 });
+        gui.text(selection_count_text);
+        gui.popStyleColor(1);
+        if (gui.isItemHovered()) {
+            gui.setTooltip(state.text(.selection_count));
         }
 
-        engine.ui.ImGui.sameLineEx(controls_width - 72.0, 0.0);
-        if (engine.ui.ImGui.buttonEx(state.text(.scene_root), 34.0, 0.0)) {
+        gui.sameLineEx(controls_width - 72.0, 0.0);
+        if (gui.buttonEx(state.text(.scene_root), 34.0, 0.0)) {
             try unparentSelection(state, layer_context);
         }
-        if (engine.ui.ImGui.isItemHovered()) engine.ui.ImGui.setTooltip(state.text(.scene_root));
+        if (gui.isItemHovered()) gui.setTooltip(state.text(.scene_root));
 
-        engine.ui.ImGui.sameLineEx(controls_width - 34.0, 4.0);
-        if (engine.ui.ImGui.buttonEx(state.text(.rename), 34.0, 0.0)) {
+        gui.sameLineEx(controls_width - 34.0, 4.0);
+        if (gui.buttonEx(state.text(.rename), 34.0, 0.0)) {
             try beginSelectedHierarchyRename(state, layer_context);
         }
-        if (engine.ui.ImGui.isItemHovered()) engine.ui.ImGui.setTooltip(state.text(.rename));
+        if (gui.isItemHovered()) gui.setTooltip(state.text(.rename));
     } else {
-        engine.ui.ImGui.setNextItemWidth(-1.0);
-        _ = engine.ui.ImGui.inputTextWithHint("##scene_filter", state.text(.scene_filter), state.scene_filter_buffer[0..]);
+        gui.setNextItemWidth(-1.0);
+        _ = gui.inputTextWithHint("##scene_filter", state.text(.scene_filter), state.scene_filter_buffer[0..]);
     }
 
-    engine.ui.ImGui.dummy(0.0, 4.0);
+    gui.dummy(0.0, 4.0);
     layout.endSectionBody();
     var dropped_root: u64 = 0;
-    if (engine.ui.ImGui.acceptDragDropPayloadU64(state_mod.entity_drag_payload, &dropped_root)) {
+    if (gui.acceptDragDropPayloadU64(state_mod.entity_drag_payload, &dropped_root)) {
         _ = try handleHierarchyEntityDrop(state, layer_context, dropped_root, null);
     }
     var dropped_model: u64 = 0;
-    if (engine.ui.ImGui.acceptDragDropPayloadU64(state_mod.asset_model_drag_payload, &dropped_model)) {
+    if (gui.acceptDragDropPayloadU64(state_mod.asset_model_drag_payload, &dropped_model)) {
         const asset_index: usize = @intCast(dropped_model);
         if (asset_index < state.asset_entries.items.len and state.asset_entries.items[asset_index].kind == .model) {
             try history.importModelPath(state, layer_context, state.asset_entries.items[asset_index].path);
         }
     }
-    engine.ui.ImGui.dummy(0.0, 4.0);
-    engine.ui.ImGui.separator();
-    engine.ui.ImGui.dummy(0.0, 4.0);
+    gui.dummy(0.0, 4.0);
+    gui.separator();
+    gui.dummy(0.0, 4.0);
 
-    if (!engine.ui.ImGui.beginTable("scene_tree_table", 4)) {
+    if (!gui.beginTable("scene_tree_table", 4)) {
         return;
     }
-    engine.ui.ImGui.tableSetupColumn(state.text(.name), true, 1.0);
-    engine.ui.ImGui.tableSetupColumn("##scene_visible", false, hierarchy_status_column_width);
-    engine.ui.ImGui.tableSetupColumn("##scene_frozen", false, hierarchy_status_column_width);
-    engine.ui.ImGui.tableSetupColumn("##scene_locked", false, hierarchy_status_column_width);
+    gui.tableSetupColumn(state.text(.name), true, 1.0);
+    gui.tableSetupColumn("##scene_visible", false, hierarchy_status_column_width);
+    gui.tableSetupColumn("##scene_frozen", false, hierarchy_status_column_width);
+    gui.tableSetupColumn("##scene_locked", false, hierarchy_status_column_width);
 
     for (layer_context.world.entities.items) |entity| {
         if (entity.editor_only or entity.parent != null) {
@@ -140,7 +141,7 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
             else => return err,
         };
     }
-    engine.ui.ImGui.endTable();
+    gui.endTable();
 
     if (try drawSceneWindowContextMenu(state, layer_context)) {
         return;
@@ -177,9 +178,9 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
             .{ 100, 105, 115, 255 },
     );
 
-    engine.ui.ImGui.tableNextRow();
-    engine.ui.ImGui.tableNextColumn();
-    const tree_result = engine.ui.ImGui.treeNodeEntity(
+    gui.tableNextRow();
+    gui.tableNextColumn();
+    const tree_result = gui.treeNodeEntity(
         entity_id,
         entity.name,
         icon_texture,
@@ -214,20 +215,20 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
     if (!is_locked and !is_frozen and !rename_active) {
         drawHierarchyDragPreview(state, entity, icon_texture);
         var dropped_child: u64 = 0;
-        if (engine.ui.ImGui.acceptDragDropPayloadU64(state_mod.entity_drag_payload, &dropped_child)) {
+        if (gui.acceptDragDropPayloadU64(state_mod.entity_drag_payload, &dropped_child)) {
             if (try handleHierarchyEntityDrop(state, layer_context, dropped_child, entity_id)) {
                 return error.HierarchyMutated;
             }
         }
         var dropped_material: u64 = 0;
-        if (engine.ui.ImGui.acceptDragDropPayloadU64(state_mod.asset_material_drag_payload, &dropped_material)) {
+        if (gui.acceptDragDropPayloadU64(state_mod.asset_material_drag_payload, &dropped_material)) {
             const asset_index: usize = @intCast(dropped_material);
             if (asset_index < state.asset_entries.items.len and state.asset_entries.items[asset_index].kind == .material) {
                 _ = try content_browser.applyMaterialAssetToEntity(state, layer_context, &state.asset_entries.items[asset_index], entity_id);
             }
         }
         var dropped_texture: u64 = 0;
-        if (engine.ui.ImGui.acceptDragDropPayloadU64(state_mod.asset_texture_drag_payload, &dropped_texture)) {
+        if (gui.acceptDragDropPayloadU64(state_mod.asset_texture_drag_payload, &dropped_texture)) {
             const asset_index: usize = @intCast(dropped_texture);
             if (asset_index < state.asset_entries.items.len and state.asset_entries.items[asset_index].kind == .texture) {
                 if (entity.material == null) {
@@ -248,8 +249,8 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
 
     var popup_id_buffer: [48]u8 = undefined;
     const popup_id = try std.fmt.bufPrint(&popup_id_buffer, "{d}_context", .{entity_id});
-    if (engine.ui.ImGui.beginPopupContextItem(popup_id)) {
-        defer engine.ui.ImGui.endPopup();
+    if (gui.beginPopupContextItem(popup_id)) {
+        defer gui.endPopup();
         if (!is_selected and !is_frozen) {
             try layer_context.renderer.replaceSelection(entity_id);
             utils.syncInspectorNameBuffer(state, layer_context);
@@ -260,7 +261,7 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
     }
 
     // Always show status buttons for better accessibility and discoverability
-    engine.ui.ImGui.tableNextColumn();
+    gui.tableNextColumn();
     var visibility_button_id_buffer: [48]u8 = undefined;
     const visibility_button_id = try std.fmt.bufPrint(&visibility_button_id_buffer, "{d}_visibility", .{entity_id});
     if (try drawHierarchyStatusIconButton(
@@ -274,21 +275,21 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
     )) {
         _ = try setEntityVisibleViaCommandQueue(state, layer_context, entity_id, !entity.visible);
     }
-    if (engine.ui.ImGui.isItemHovered()) {
-        engine.ui.ImGui.setTooltip(if (entity.visible) "Visible - Click to hide" else "Hidden - Click to show");
+    if (gui.isItemHovered()) {
+        gui.setTooltip(if (entity.visible) "Visible - Click to hide" else "Hidden - Click to show");
     }
 
-    engine.ui.ImGui.tableNextColumn();
+    gui.tableNextColumn();
     var freeze_button_id_buffer: [40]u8 = undefined;
     const freeze_button_id = try std.fmt.bufPrint(&freeze_button_id_buffer, "{d}_freeze", .{entity_id});
     if (try drawFreezeToggleButton(freeze_button_id, is_frozen)) {
         try setFrozenForEntities(state, layer_context, &.{entity_id}, !is_frozen);
     }
-    if (engine.ui.ImGui.isItemHovered()) {
-        engine.ui.ImGui.setTooltip(if (is_frozen) "Frozen - Click to unfreeze" else "Unfrozen - Click to freeze");
+    if (gui.isItemHovered()) {
+        gui.setTooltip(if (is_frozen) "Frozen - Click to unfreeze" else "Unfrozen - Click to freeze");
     }
 
-    engine.ui.ImGui.tableNextColumn();
+    gui.tableNextColumn();
     var lock_button_id_buffer: [40]u8 = undefined;
     const lock_button_id = try std.fmt.bufPrint(&lock_button_id_buffer, "{d}_lock", .{entity_id});
     if (try drawHierarchyStatusIconButton(
@@ -302,8 +303,8 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
     )) {
         try setLockedForEntities(state, layer_context, &.{entity_id}, !is_locked);
     }
-    if (engine.ui.ImGui.isItemHovered()) {
-        engine.ui.ImGui.setTooltip(if (is_locked) "Locked - Click to unlock" else "Unlocked - Click to lock");
+    if (gui.isItemHovered()) {
+        gui.setTooltip(if (is_locked) "Locked - Click to unlock" else "Unlocked - Click to lock");
     }
 
     if (rename_active and tree_result.rename_finished) {
@@ -326,7 +327,7 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
                 else => return err,
             };
         }
-        engine.ui.ImGui.treePop();
+        gui.treePop();
     }
 }
 
@@ -682,54 +683,54 @@ fn reparentEntityViaCommandQueue(
 }
 
 fn drawSceneWindowContextMenu(state: *EditorState, layer_context: *engine.core.LayerContext) !bool {
-    if (!engine.ui.ImGui.beginPopupContextWindow("scene_tree_window_context", false)) {
+    if (!gui.beginPopupContextWindow("scene_tree_window_context", false)) {
         return false;
     }
-    defer engine.ui.ImGui.endPopup();
+    defer gui.endPopup();
 
-    if (engine.ui.ImGui.beginMenu(state.text(.create))) {
-        defer engine.ui.ImGui.endMenu();
-        if (engine.ui.ImGui.menuItem(state.text(.folder), null, false, true)) {
+    if (gui.beginMenu(state.text(.create))) {
+        defer gui.endMenu();
+        if (gui.menuItem(state.text(.folder), null, false, true)) {
             try createFolderEntity(state, layer_context);
             return true;
         }
-        if (engine.ui.ImGui.menuItem(state.text(.empty), null, false, true)) {
+        if (gui.menuItem(state.text(.empty), null, false, true)) {
             try history.spawnEmptyEntity(state, layer_context);
             return true;
         }
-        if (engine.ui.ImGui.menuItem(state.text(.camera), null, false, true)) {
+        if (gui.menuItem(state.text(.camera), null, false, true)) {
             try history.spawnCameraEntity(state, layer_context);
             return true;
         }
-        if (engine.ui.ImGui.menuItem(state.text(.cube), null, false, true)) {
+        if (gui.menuItem(state.text(.cube), null, false, true)) {
             try history.spawnPrimitive(state, layer_context, .cube);
             return true;
         }
-        if (engine.ui.ImGui.menuItem(state.text(.sphere), null, false, true)) {
+        if (gui.menuItem(state.text(.sphere), null, false, true)) {
             try history.spawnPrimitive(state, layer_context, .sphere);
             return true;
         }
-        if (engine.ui.ImGui.menuItem(state.text(.plane), null, false, true)) {
+        if (gui.menuItem(state.text(.plane), null, false, true)) {
             try history.spawnPrimitive(state, layer_context, .plane);
             return true;
         }
-        if (engine.ui.ImGui.menuItem(state.text(.point_light), null, false, true)) {
+        if (gui.menuItem(state.text(.point_light), null, false, true)) {
             try history.spawnPointLight(state, layer_context);
             return true;
         }
-        if (engine.ui.ImGui.menuItem(state.text(.spot_light), null, false, true)) {
+        if (gui.menuItem(state.text(.spot_light), null, false, true)) {
             try history.spawnSpotLightAt(state, layer_context, .{});
             return true;
         }
-        if (engine.ui.ImGui.menuItem(state.text(.directional_light), null, false, true)) {
+        if (gui.menuItem(state.text(.directional_light), null, false, true)) {
             try history.spawnDirectionalLightAt(state, layer_context, .{});
             return true;
         }
-        if (engine.ui.ImGui.menuItem(state.text(.vfx_fountain), null, false, true)) {
+        if (gui.menuItem(state.text(.vfx_fountain), null, false, true)) {
             try history.spawnVfxEntity(state, layer_context, .fountain);
             return true;
         }
-        if (engine.ui.ImGui.menuItem(state.text(.vfx_orbit), null, false, true)) {
+        if (gui.menuItem(state.text(.vfx_orbit), null, false, true)) {
             try history.spawnVfxEntity(state, layer_context, .orbit);
             return true;
         }
@@ -758,36 +759,36 @@ fn drawHierarchyNodeContextMenu(
     const is_prefab_instance = entity.prefab_instance_override != null;
     const is_prefab_child = entity.prefab_entity_id != null and !is_prefab_instance;
 
-    if (engine.ui.ImGui.menuItem(state.text(.rename), null, false, can_rename)) {
+    if (gui.menuItem(state.text(.rename), null, false, can_rename)) {
         beginHierarchyRename(state, layer_context.world, entity_id);
         return false;
     }
-    if (engine.ui.ImGui.menuItem(state.text(.duplicate), null, false, true)) {
+    if (gui.menuItem(state.text(.duplicate), null, false, true)) {
         try history.duplicateEntities(state, layer_context, targets);
         return true;
-    } else if (engine.ui.ImGui.menuItem(state.text(.delete), null, false, true)) {
+    } else if (gui.menuItem(state.text(.delete), null, false, true)) {
         try history.deleteEntities(state, layer_context, targets);
         return true;
     }
-    engine.ui.ImGui.separator();
+    gui.separator();
 
     // Prefab 相关菜单
     if (is_prefab_instance or is_prefab_child) {
-        if (engine.ui.ImGui.beginMenu(state.text(.prefab))) {
-            defer engine.ui.ImGui.endMenu();
+        if (gui.beginMenu(state.text(.prefab))) {
+            defer gui.endMenu();
 
             if (is_prefab_instance) {
                 // Prefab 实例根实体的选项
-                if (engine.ui.ImGui.menuItem(state.text(.update_prefab_instance), null, false, true)) {
+                if (gui.menuItem(state.text(.update_prefab_instance), null, false, true)) {
                     if (entity.prefab_instance_override) |override| {
                         _ = try layer_context.world.updateAllPrefabInstances(override.prefab_id);
                     }
                 }
-                if (engine.ui.ImGui.menuItem(state.text(.break_prefab_connection), null, false, true)) {
+                if (gui.menuItem(state.text(.break_prefab_connection), null, false, true)) {
                     try breakPrefabConnection(state, layer_context, entity_id);
                     return true;
                 }
-                if (engine.ui.ImGui.menuItem(state.text(.select_prefab_asset), null, false, true)) {
+                if (gui.menuItem(state.text(.select_prefab_asset), null, false, true)) {
                     if (entity.prefab_instance_override) |override| {
                         try state.setSelectedPrefabId(override.prefab_id);
                         state.prefab_browser_open = true;
@@ -795,19 +796,19 @@ fn drawHierarchyNodeContextMenu(
                 }
             } else if (is_prefab_child) {
                 // Prefab 子实体的选项
-                if (engine.ui.ImGui.menuItem(state.text(.add_override), null, false, true)) {
+                if (gui.menuItem(state.text(.add_override), null, false, true)) {
                     try addPrefabOverride(state, layer_context, entity_id);
                 }
-                if (engine.ui.ImGui.menuItem(state.text(.revert_override), null, false, entity.prefab_instance_override != null)) {
+                if (gui.menuItem(state.text(.revert_override), null, false, entity.prefab_instance_override != null)) {
                     try layer_context.world.revertPrefabOverride(entity_id);
                 }
             }
         }
-        engine.ui.ImGui.separator();
+        gui.separator();
     } else {
         // 普通实体可以转换为 Prefab 实例
-        if (engine.ui.ImGui.beginMenu(state.text(.convert_to_prefab))) {
-            defer engine.ui.ImGui.endMenu();
+        if (gui.beginMenu(state.text(.convert_to_prefab))) {
+            defer gui.endMenu();
 
             // 显示可用的 Prefab 列表
             var it = layer_context.world.prefab_library.prefabs.iterator();
@@ -815,28 +816,28 @@ fn drawHierarchyNodeContextMenu(
                 const prefab_id = entry.key_ptr.*;
                 const prefab = entry.value_ptr.*;
 
-                if (engine.ui.ImGui.menuItem(prefab.name, null, false, true)) {
+                if (gui.menuItem(prefab.name, null, false, true)) {
                     try convertToPrefabInstance(state, layer_context, entity_id, prefab_id);
                     return true;
                 }
             }
 
             if (layer_context.world.prefab_library.prefabs.count() == 0) {
-                _ = engine.ui.ImGui.menuItem(state.text(.no_prefabs_available), null, false, false);
+                _ = gui.menuItem(state.text(.no_prefabs_available), null, false, false);
             }
         }
-        engine.ui.ImGui.separator();
+        gui.separator();
     }
 
-    if (engine.ui.ImGui.menuItem(state.text(if (all_frozen) .unfreeze else .freeze), null, false, true)) {
+    if (gui.menuItem(state.text(if (all_frozen) .unfreeze else .freeze), null, false, true)) {
         try setFrozenForEntities(state, layer_context, targets, !all_frozen);
         return false;
     }
-    if (engine.ui.ImGui.menuItem(state.text(if (all_locked) .unlock else .lock), null, false, true)) {
+    if (gui.menuItem(state.text(if (all_locked) .unlock else .lock), null, false, true)) {
         try setLockedForEntities(state, layer_context, targets, !all_locked);
         return false;
     }
-    if (engine.ui.ImGui.menuItem(state.text(.unparent), null, false, has_parent)) {
+    if (gui.menuItem(state.text(.unparent), null, false, has_parent)) {
         try unparentEntities(state, layer_context, targets);
         return true;
     }
@@ -1024,19 +1025,19 @@ fn anyEntityHasParent(world: *const engine.scene.World, entity_ids: []const engi
 }
 
 fn drawFreezeToggleButton(id: []const u8, active: bool) !bool {
-    engine.ui.ImGui.pushStyleColor(.text, if (active) .{ 0.34, 0.90, 0.60, 1.0 } else .{ 0.55, 0.58, 0.62, 1.0 });
-    engine.ui.ImGui.pushStyleColor(.button, if (active) .{ 0.13, 0.45, 0.28, 0.82 } else .{ 0.16, 0.17, 0.19, 0.54 });
-    engine.ui.ImGui.pushStyleColor(.button_hovered, if (active) .{ 0.18, 0.55, 0.35, 0.92 } else .{ 0.21, 0.23, 0.27, 0.74 });
-    engine.ui.ImGui.pushStyleColor(.button_active, if (active) .{ 0.10, 0.35, 0.22, 0.96 } else .{ 0.18, 0.20, 0.24, 0.86 });
-    engine.ui.ImGui.pushStyleVarVec2(.frame_padding, .{ 0.0, 0.0 });
-    engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, ui_icons.regular_icon_button_rounding);
+    gui.pushStyleColor(.text, if (active) .{ 0.34, 0.90, 0.60, 1.0 } else .{ 0.55, 0.58, 0.62, 1.0 });
+    gui.pushStyleColor(.button, if (active) .{ 0.13, 0.45, 0.28, 0.82 } else .{ 0.16, 0.17, 0.19, 0.54 });
+    gui.pushStyleColor(.button_hovered, if (active) .{ 0.18, 0.55, 0.35, 0.92 } else .{ 0.21, 0.23, 0.27, 0.74 });
+    gui.pushStyleColor(.button_active, if (active) .{ 0.10, 0.35, 0.22, 0.96 } else .{ 0.18, 0.20, 0.24, 0.86 });
+    gui.pushStyleVarVec2(.frame_padding, .{ 0.0, 0.0 });
+    gui.pushStyleVarFloat(.frame_rounding, ui_icons.regular_icon_button_rounding);
     defer {
-        engine.ui.ImGui.popStyleVar(2);
-        engine.ui.ImGui.popStyleColor(4);
+        gui.popStyleVar(2);
+        gui.popStyleColor(4);
     }
     var label_buffer: [64]u8 = undefined;
     const label = try std.fmt.bufPrint(&label_buffer, "F##{s}", .{id});
-    return engine.ui.ImGui.buttonEx(label, hierarchy_status_button_extent, hierarchy_status_button_extent);
+    return gui.buttonEx(label, hierarchy_status_button_extent, hierarchy_status_button_extent);
 }
 
 fn drawHierarchyStatusIconButton(
@@ -1049,16 +1050,16 @@ fn drawHierarchyStatusIconButton(
     palette: ui_icons.ButtonPalette,
 ) !bool {
     const texture = try ui_icons.ensureTintedIconTexture(state, layer_context, path, size, tint);
-    engine.ui.ImGui.pushStyleColor(.button, palette.button);
-    engine.ui.ImGui.pushStyleColor(.button_hovered, palette.hovered);
-    engine.ui.ImGui.pushStyleColor(.button_active, palette.active);
-    engine.ui.ImGui.pushStyleVarVec2(.frame_padding, ui_icons.regular_icon_button_padding);
-    engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, ui_icons.regular_icon_button_rounding);
+    gui.pushStyleColor(.button, palette.button);
+    gui.pushStyleColor(.button_hovered, palette.hovered);
+    gui.pushStyleColor(.button_active, palette.active);
+    gui.pushStyleVarVec2(.frame_padding, ui_icons.regular_icon_button_padding);
+    gui.pushStyleVarFloat(.frame_rounding, ui_icons.regular_icon_button_rounding);
     defer {
-        engine.ui.ImGui.popStyleVar(2);
-        engine.ui.ImGui.popStyleColor(3);
+        gui.popStyleVar(2);
+        gui.popStyleColor(3);
     }
-    return engine.ui.ImGui.imageButton(id, texture, size, size, .{ 0.0, 0.0, 0.0, 0.0 }, .{ 1.0, 1.0, 1.0, 1.0 });
+    return gui.imageButton(id, texture, size, size, .{ 0.0, 0.0, 0.0, 0.0 }, .{ 1.0, 1.0, 1.0, 1.0 });
 }
 
 fn createFolderEntity(state: *EditorState, layer_context: *engine.core.LayerContext) !void {

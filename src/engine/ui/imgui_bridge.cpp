@@ -2115,3 +2115,77 @@ extern "C" uint32_t guava_imgui_draw_view_cube(const float view[16], float x,
   ImGui::PopID();
   return result;
 }
+
+// ── Extended widget API ──
+
+bool guava_imgui_drag_float4(const char *label, size_t label_len,
+                             float value[4], float speed, float min_value,
+                             float max_value) {
+  char buf[256];
+  size_t n = label_len < sizeof(buf) - 1 ? label_len : sizeof(buf) - 1;
+  memcpy(buf, label, n);
+  buf[n] = '\0';
+  return ImGui::DragFloat4(buf, value, speed, min_value, max_value);
+}
+
+bool guava_imgui_drag_int(const char *label, size_t label_len, int *value,
+                          float speed, int min_value, int max_value) {
+  char buf[256];
+  size_t n = label_len < sizeof(buf) - 1 ? label_len : sizeof(buf) - 1;
+  memcpy(buf, label, n);
+  buf[n] = '\0';
+  return ImGui::DragInt(buf, value, speed, min_value, max_value);
+}
+
+bool guava_imgui_color_edit3(const char *label, size_t label_len,
+                             float color[3]) {
+  char buf[256];
+  size_t n = label_len < sizeof(buf) - 1 ? label_len : sizeof(buf) - 1;
+  memcpy(buf, label, n);
+  buf[n] = '\0';
+  return ImGui::ColorEdit3(buf, color);
+}
+
+bool guava_imgui_color_edit4(const char *label, size_t label_len,
+                             float color[4]) {
+  char buf[256];
+  size_t n = label_len < sizeof(buf) - 1 ? label_len : sizeof(buf) - 1;
+  memcpy(buf, label, n);
+  buf[n] = '\0';
+  return ImGui::ColorEdit4(buf, color);
+}
+
+void guava_imgui_text_colored(float r, float g, float b, float a,
+                              const char *text, size_t text_len) {
+  ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(r, g, b, a));
+  ImGui::TextUnformatted(text, text + text_len);
+  ImGui::PopStyleColor();
+}
+
+void guava_imgui_begin_group(void) { ImGui::BeginGroup(); }
+
+void guava_imgui_end_group(void) { ImGui::EndGroup(); }
+
+void guava_imgui_set_item_default_focus(void) { ImGui::SetItemDefaultFocus(); }
+
+void guava_imgui_set_cursor_screen_pos(float x, float y) {
+  ImGui::SetCursorScreenPos(ImVec2(x, y));
+}
+
+bool guava_imgui_is_mouse_double_clicked(int button) {
+  return ImGui::IsMouseDoubleClicked(static_cast<ImGuiMouseButton>(button));
+}
+
+bool guava_imgui_is_mouse_dragging(int button) {
+  return ImGui::IsMouseDragging(static_cast<ImGuiMouseButton>(button));
+}
+
+void guava_imgui_get_mouse_drag_delta(int button, float out_value[2]) {
+  ImVec2 d = ImGui::GetMouseDragDelta(static_cast<ImGuiMouseButton>(button));
+  out_value[0] = d.x;
+  out_value[1] = d.y;
+}
+
+void guava_imgui_reset_mouse_drag_delta(int button) {
+  ImGui::ResetMouseDragDelta(static_cast<ImGuiMouseButton>(button));
+}

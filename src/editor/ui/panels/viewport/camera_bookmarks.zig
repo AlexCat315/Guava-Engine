@@ -1,5 +1,6 @@
 const std = @import("std");
 const engine = @import("guava");
+const gui = @import("../../gui.zig");
 
 pub const CameraBookmark = struct {
     name: [64]u8,
@@ -93,10 +94,10 @@ pub const CameraBookmarkManager = struct {
 };
 
 pub fn drawCameraBookmarkPanel(manager: *CameraBookmarkManager, current_position: [3]f32, current_target: [3]f32, current_pitch: f32, current_yaw: f32, current_distance: f32, current_fov: f32, current_orthographic: bool, on_apply: *const fn (usize) void) void {
-    if (engine.ui.ImGui.begin("Camera Bookmarks")) {
-        defer engine.ui.ImGui.end();
+    if (gui.begin("Camera Bookmarks")) {
+        defer gui.end();
 
-        if (engine.ui.ImGui.button("Add Current View")) {
+        if (gui.button("Add Current View")) {
             const bookmark = CameraBookmark.init(
                 "Bookmark",
                 current_position,
@@ -110,10 +111,10 @@ pub fn drawCameraBookmarkPanel(manager: *CameraBookmarkManager, current_position
             _ = manager.addBookmark(bookmark) catch {};
         }
 
-        engine.ui.ImGui.separator();
+        gui.separator();
 
         if (manager.bookmarks.items.len == 0) {
-            engine.ui.ImGui.text("No bookmarks saved");
+            gui.text("No bookmarks saved");
         } else {
             var i: usize = 0;
             while (i < manager.bookmarks.items.len) : (i += 1) {
@@ -124,25 +125,25 @@ pub fn drawCameraBookmarkPanel(manager: *CameraBookmarkManager, current_position
                 var name_buf: [128]u8 = undefined;
                 const display_name = std.fmt.bufPrint(&name_buf, "{s}##{}", .{ bookmark.getName(), i }) catch continue;
 
-                if (engine.ui.ImGui.selectable(display_name, is_selected)) {
+                if (gui.selectable(display_name, is_selected)) {
                     manager.selected_index = i;
                 }
 
-                if (engine.ui.ImGui.beginPopupContextItem()) {
-                    if (engine.ui.ImGui.selectable("Apply", false)) {
+                if (gui.beginPopupContextItem()) {
+                    if (gui.selectable("Apply", false)) {
                         on_apply(i);
                     }
-                    if (engine.ui.ImGui.selectable("Rename", false)) {
+                    if (gui.selectable("Rename", false)) {
                     }
-                    if (engine.ui.ImGui.selectable("Delete", false)) {
+                    if (gui.selectable("Delete", false)) {
                         _ = manager.removeBookmark(i);
                         i -= 1;
                         if (i < 0) i = 0;
                     }
-                    engine.ui.ImGui.endPopup();
+                    gui.endPopup();
                 }
 
-                if (engine.ui.ImGui.isItemHovered() and engine.ui.ImGui.isMouseDoubleClicked(.left)) {
+                if (gui.isItemHovered() and gui.isMouseDoubleClicked(.left)) {
                     on_apply(i);
                 }
             }

@@ -1,5 +1,5 @@
 const std = @import("std");
-const EditorState = @import("../../core/state.zig").EditorState;
+const EditorState = @import("../../../core/state.zig").EditorState;
 
 pub fn buildStatusMetricsText(
     writer: anytype,

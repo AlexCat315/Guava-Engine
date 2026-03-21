@@ -1,5 +1,6 @@
 const std = @import("std");
 const engine = @import("guava");
+const gui = @import("../ui/gui.zig");
 const vec3 = engine.math.vec3;
 const quat = engine.math.quat;
 const ai_collaboration = @import("../ai_native/collaboration.zig");
@@ -8,7 +9,7 @@ const state_mod = @import("../core/state.zig");
 const utils = @import("../common/utils.zig");
 const camera = @import("camera.zig");
 const history = @import("../actions/history.zig");
-const scene_hierarchy = @import("../ui/windows/scene_hierarchy.zig");
+const scene_hierarchy = @import("../ui/panels/scene/scene_hierarchy.zig");
 
 const ManipulationMode = state_mod.ManipulationMode;
 const TransformSpace = state_mod.TransformSpace;
@@ -16,7 +17,7 @@ const TransformSpace = state_mod.TransformSpace;
 pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const input = layer_context.input;
 
-    if (engine.ui.ImGui.wantsTextInput()) {
+    if (gui.wantsTextInput()) {
         return;
     }
 

@@ -1,6 +1,7 @@
 const std = @import("std");
 const engine = @import("guava");
-const layout = @import("../layout.zig");
+const gui = @import("../../gui.zig");
+const layout = @import("../../layout.zig");
 
 const ScriptResource = engine.assets.ScriptResource;
 const ScriptLanguage = engine.script.ScriptLanguage;
@@ -108,20 +109,20 @@ pub fn drawScriptEditor(
 ) void {
     _ = layer_context;
 
-    if (engine.ui.ImGui.begin("Script Editor")) {
-        defer engine.ui.ImGui.end();
+    if (gui.begin("Script Editor")) {
+        defer gui.end();
 
         drawScriptToolbar(state, editor_state);
 
-        engine.ui.ImGui.separator();
+        gui.separator();
 
-        const content_region = engine.ui.ImGui.contentRegionAvail();
+        const content_region = gui.contentRegionAvail();
         const editor_height = if (editor_state.show_console) content_region[1] * 0.7 else content_region[1];
 
         drawScriptSourceArea(state, editor_state, editor_height);
 
         if (editor_state.show_console) {
-            engine.ui.ImGui.separator();
+            gui.separator();
             drawConsolePanel(editor_state);
         }
     }
@@ -130,45 +131,45 @@ pub fn drawScriptEditor(
 fn drawScriptToolbar(state: *engine.AppState, editor_state: *ScriptEditorState) void {
     _ = state;
 
-    if (engine.ui.ImGui.button("New")) {
+    if (gui.button("New")) {
         editor_state.source_buffer.clearRetainingCapacity();
         editor_state.is_modified = false;
     }
-    engine.ui.ImGui.sameLine();
+    gui.sameLine();
 
-    if (engine.ui.ImGui.button("Open")) {
+    if (gui.button("Open")) {
     }
-    engine.ui.ImGui.sameLine();
+    gui.sameLine();
 
-    if (engine.ui.ImGui.button("Save")) {
+    if (gui.button("Save")) {
         editor_state.is_modified = false;
     }
-    engine.ui.ImGui.sameLine();
+    gui.sameLine();
 
     if (editor_state.is_modified) {
-        engine.ui.ImGui.textColored(.{ 1.0, 0.5, 0.0, 1.0 }, "*");
-        engine.ui.ImGui.sameLine();
+        gui.textColored(.{ 1.0, 0.5, 0.0, 1.0 }, "*");
+        gui.sameLine();
     }
 
-    engine.ui.ImGui.text("Language:");
-    engine.ui.ImGui.sameLine();
-    engine.ui.ImGui.text("Zig");
+    gui.text("Language:");
+    gui.sameLine();
+    gui.text("Zig");
 
-    engine.ui.ImGui.sameLine();
-    engine.ui.ImGui.dummy(20.0, 1.0);
-    engine.ui.ImGui.sameLine();
+    gui.sameLine();
+    gui.dummy(20.0, 1.0);
+    gui.sameLine();
 
-    if (engine.ui.ImGui.button("Find")) {
+    if (gui.button("Find")) {
         editor_state.show_find_panel = !editor_state.show_find_panel;
     }
-    engine.ui.ImGui.sameLine();
+    gui.sameLine();
 
-    if (engine.ui.ImGui.button(if (editor_state.show_console) "Hide Console" else "Show Console")) {
+    if (gui.button(if (editor_state.show_console) "Hide Console" else "Show Console")) {
         editor_state.show_console = !editor_state.show_console;
     }
-    engine.ui.ImGui.sameLine();
+    gui.sameLine();
 
-    if (engine.ui.ImGui.button(if (editor_state.is_debugging) "Stop" else "Debug")) {
+    if (gui.button(if (editor_state.is_debugging) "Stop" else "Debug")) {
         editor_state.is_debugging = !editor_state.is_debugging;
     }
 }
@@ -178,10 +179,10 @@ fn drawScriptSourceArea(state: *engine.AppState, editor_state: *ScriptEditorStat
 
     if (editor_state.show_find_panel) {
         drawFindPanel(editor_state);
-        engine.ui.ImGui.separator();
+        gui.separator();
     }
 
-    if (engine.ui.ImGui.beginChild("source_area", -1.0, height, true)) {
+    if (gui.beginChild("source_area", -1.0, height, true)) {
         const line_count = countLines(editor_state.source_buffer.items);
         var line_buf: [16]u8 = undefined;
 
@@ -193,86 +194,86 @@ fn drawScriptSourceArea(state: *engine.AppState, editor_state: *ScriptEditorStat
             const is_current_debug = editor_state.current_debug_line != null and editor_state.current_debug_line.? == line_num;
 
             if (editor_state.show_line_numbers) {
-                engine.ui.ImGui.beginGroup();
-                defer engine.ui.ImGui.endGroup();
+                gui.beginGroup();
+                defer gui.endGroup();
 
                 const line_str = std.fmt.bufPrint(&line_buf, "{d: >4}", .{line_num}) catch "";
                 if (is_breakpoint) {
-                    engine.ui.ImGui.pushStyleColor(.text, .{ 1.0, 0.0, 0.0, 1.0 });
+                    gui.pushStyleColor(.text, .{ 1.0, 0.0, 0.0, 1.0 });
                 }
-                engine.ui.ImGui.text(line_str);
+                gui.text(line_str);
                 if (is_breakpoint) {
-                    engine.ui.ImGui.popStyleColor(1);
+                    gui.popStyleColor(1);
                 }
-                engine.ui.ImGui.sameLine();
+                gui.sameLine();
             }
 
             if (is_current_debug) {
-                engine.ui.ImGui.pushStyleColor(.child_bg, .{ 0.2, 0.3, 0.5, 0.5 });
+                gui.pushStyleColor(.child_bg, .{ 0.2, 0.3, 0.5, 0.5 });
             }
 
             const line_text = getLine(editor_state.source_buffer.items, line_num);
-            engine.ui.ImGui.textWrapped(line_text);
+            gui.textWrapped(line_text);
 
             if (is_current_debug) {
-                engine.ui.ImGui.popStyleColor(1);
+                gui.popStyleColor(1);
             }
         }
     }
-    engine.ui.ImGui.endChild();
+    gui.endChild();
 
-    if (engine.ui.ImGui.beginPopupContextWindow()) {
-        if (engine.ui.ImGui.selectable("Toggle Breakpoint", false)) {
+    if (gui.beginPopupContextWindow()) {
+        if (gui.selectable("Toggle Breakpoint", false)) {
             editor_state.toggleBreakpoint(editor_state.cursor_line) catch {};
         }
-        if (engine.ui.ImGui.selectable("Run to Cursor", false)) {
+        if (gui.selectable("Run to Cursor", false)) {
             editor_state.current_debug_line = editor_state.cursor_line;
         }
-        engine.ui.ImGui.endPopup();
+        gui.endPopup();
     }
 }
 
 fn drawFindPanel(editor_state: *ScriptEditorState) void {
-    engine.ui.ImGui.text("Find:");
-    engine.ui.ImGui.sameLine();
-    _ = engine.ui.ImGui.inputText("##find", &editor_state.find_buffer, 256, .{}, null, null);
-    engine.ui.ImGui.sameLine();
+    gui.text("Find:");
+    gui.sameLine();
+    _ = gui.inputText("##find", &editor_state.find_buffer, 256, .{}, null, null);
+    gui.sameLine();
 
-    engine.ui.ImGui.text("Replace:");
-    engine.ui.ImGui.sameLine();
-    _ = engine.ui.ImGui.inputText("##replace", &editor_state.replace_buffer, 256, .{}, null, null);
-    engine.ui.ImGui.sameLine();
+    gui.text("Replace:");
+    gui.sameLine();
+    _ = gui.inputText("##replace", &editor_state.replace_buffer, 256, .{}, null, null);
+    gui.sameLine();
 
-    if (engine.ui.ImGui.button("Find Next")) {
+    if (gui.button("Find Next")) {
         const find_str = std.mem.sliceTo(&editor_state.find_buffer, 0);
         if (std.mem.indexOf(u8, editor_state.source_buffer.items, find_str)) |pos| {
             _ = pos;
         }
     }
-    engine.ui.ImGui.sameLine();
+    gui.sameLine();
 
-    if (engine.ui.ImGui.button("Replace")) {
+    if (gui.button("Replace")) {
     }
-    engine.ui.ImGui.sameLine();
+    gui.sameLine();
 
-    if (engine.ui.ImGui.button("Replace All")) {
+    if (gui.button("Replace All")) {
     }
 }
 
 fn drawConsolePanel(editor_state: *ScriptEditorState) void {
-    if (engine.ui.ImGui.beginChild("console", -1.0, -1.0, true)) {
-        engine.ui.ImGui.text("Console Output:");
-        engine.ui.ImGui.separator();
+    if (gui.beginChild("console", -1.0, -1.0, true)) {
+        gui.text("Console Output:");
+        gui.separator();
 
         if (editor_state.console_output.items.len > 0) {
-            engine.ui.ImGui.textWrapped(editor_state.console_output.items);
+            gui.textWrapped(editor_state.console_output.items);
         } else {
-            engine.ui.ImGui.textColored(.{ 0.5, 0.5, 0.5, 1.0 }, "No output");
+            gui.textColored(.{ 0.5, 0.5, 0.5, 1.0 }, "No output");
         }
     }
-    engine.ui.ImGui.endChild();
+    gui.endChild();
 
-    if (engine.ui.ImGui.button("Clear")) {
+    if (gui.button("Clear")) {
         editor_state.clearConsole();
     }
 }

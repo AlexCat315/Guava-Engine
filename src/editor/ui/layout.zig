@@ -1,5 +1,6 @@
 const std = @import("std");
 const engine = @import("guava");
+const gui = @import("gui.zig");
 const EditorState = @import("../core/state.zig").EditorState;
 const state_mod = @import("../core/state.zig");
 
@@ -9,11 +10,11 @@ pub const default_row_spacing: f32 = 8.0;
 const layout_template_extension = ".ini";
 
 pub fn beginSectionBody() void {
-    engine.ui.ImGui.indent(default_section_padding);
+    gui.indent(default_section_padding);
 }
 
 pub fn endSectionBody() void {
-    engine.ui.ImGui.unindent(default_section_padding);
+    gui.unindent(default_section_padding);
 }
 
 pub fn responsiveButtonColumns(button_count: usize, min_button_width: f32) usize {
@@ -22,7 +23,7 @@ pub fn responsiveButtonColumns(button_count: usize, min_button_width: f32) usize
         const required_width =
             min_button_width * @as(f32, @floatFromInt(columns)) +
             default_item_spacing * @as(f32, @floatFromInt(columns - 1));
-        if (engine.ui.ImGui.contentRegionAvail()[0] >= required_width) {
+        if (gui.contentRegionAvail()[0] >= required_width) {
             return columns;
         }
     }
@@ -32,7 +33,7 @@ pub fn responsiveButtonColumns(button_count: usize, min_button_width: f32) usize
 pub fn responsiveButtonWidth(columns: usize) f32 {
     const total_spacing = default_item_spacing * @as(f32, @floatFromInt(columns -| 1));
     return @max(
-        (engine.ui.ImGui.contentRegionAvail()[0] - total_spacing) / @as(f32, @floatFromInt(columns)),
+        (gui.contentRegionAvail()[0] - total_spacing) / @as(f32, @floatFromInt(columns)),
         1.0,
     );
 }
@@ -42,63 +43,63 @@ pub fn advanceResponsiveRow(index: usize, columns: usize) void {
         return;
     }
     if (index % columns == 0) {
-        engine.ui.ImGui.dummy(0.0, default_row_spacing);
+        gui.dummy(0.0, default_row_spacing);
     } else {
-        engine.ui.ImGui.sameLine();
+        gui.sameLine();
     }
 }
 
 pub fn drawResponsivePropertyLabel(label: []const u8, min_control_width: f32) bool {
-    const total_width = engine.ui.ImGui.contentRegionAvail()[0];
+    const total_width = gui.contentRegionAvail()[0];
     const label_width = std.math.clamp(total_width * 0.34, 86.0, 142.0);
-    engine.ui.ImGui.alignTextToFramePadding();
-    engine.ui.ImGui.text(label);
+    gui.alignTextToFramePadding();
+    gui.text(label);
     if (total_width < label_width + min_control_width) {
         return false;
     }
-    engine.ui.ImGui.sameLineEx(label_width, default_item_spacing);
+    gui.sameLineEx(label_width, default_item_spacing);
     return true;
 }
 
 pub fn beginInspectorPropertyTable(id: []const u8, label_width_ratio: f32) bool {
-    const available_width = engine.ui.ImGui.contentRegionAvail()[0];
+    const available_width = gui.contentRegionAvail()[0];
     const label_width = available_width * label_width_ratio;
-    if (engine.ui.ImGui.beginTable(id, 2)) {
-        engine.ui.ImGui.tableSetupColumn("##property_label", false, label_width);
-        engine.ui.ImGui.tableSetupColumn("##property_value", true, 1.0);
+    if (gui.beginTable(id, 2)) {
+        gui.tableSetupColumn("##property_label", false, label_width);
+        gui.tableSetupColumn("##property_value", true, 1.0);
         return true;
     }
     return false;
 }
 
 pub fn endInspectorPropertyTable() void {
-    engine.ui.ImGui.endTable();
+    gui.endTable();
 }
 
 pub fn drawInspectorPropertyRow(label: []const u8, label_color: ?[4]f32) void {
-    engine.ui.ImGui.tableNextRow();
-    engine.ui.ImGui.tableNextColumn();
+    gui.tableNextRow();
+    gui.tableNextColumn();
     const default_dimmed = [4]f32{ 0.64, 0.68, 0.74, 1.0 }; // Slightly brighter dimmed label
     if (label_color) |color| {
-        engine.ui.ImGui.pushStyleColor(.text, color);
-        defer engine.ui.ImGui.popStyleColor(1);
+        gui.pushStyleColor(.text, color);
+        defer gui.popStyleColor(1);
     } else {
-        engine.ui.ImGui.pushStyleColor(.text, default_dimmed);
-        defer engine.ui.ImGui.popStyleColor(1);
+        gui.pushStyleColor(.text, default_dimmed);
+        defer gui.popStyleColor(1);
     }
-    engine.ui.ImGui.alignTextToFramePadding();
-    engine.ui.ImGui.text(label);
-    engine.ui.ImGui.tableNextColumn();
-    engine.ui.ImGui.setNextItemWidth(-1.0);
+    gui.alignTextToFramePadding();
+    gui.text(label);
+    gui.tableNextColumn();
+    gui.setNextItemWidth(-1.0);
 }
 
 pub fn resetDockLayout(state: *EditorState) void {
-    engine.ui.ImGui.resetDefaultLayout();
+    gui.resetDefaultLayout();
     state.dock_layout_initialized = true;
 }
 
 pub fn loadAnimationDockLayout(state: *EditorState) void {
-    engine.ui.ImGui.loadAnimationLayout();
+    gui.loadAnimationLayout();
     state.dock_layout_initialized = true;
 }
 
@@ -155,7 +156,7 @@ pub fn saveUserLayoutTemplate(state: *EditorState, raw_name: []const u8) !bool {
 
     const path = try layoutTemplatePathAlloc(allocator, stem);
     defer allocator.free(path);
-    if (!engine.ui.ImGui.saveLayoutToPath(path)) {
+    if (!gui.saveLayoutToPath(path)) {
         return false;
     }
     try refreshLayoutTemplates(state);
@@ -163,7 +164,7 @@ pub fn saveUserLayoutTemplate(state: *EditorState, raw_name: []const u8) !bool {
 }
 
 pub fn loadUserLayoutTemplate(state: *EditorState, path: []const u8) bool {
-    if (!engine.ui.ImGui.loadLayoutFromPath(path)) {
+    if (!gui.loadLayoutFromPath(path)) {
         return false;
     }
     state.dock_layout_initialized = true;
@@ -195,7 +196,7 @@ fn clearLayoutTemplates(state: *EditorState) void {
 }
 
 fn layoutTemplatesDirectoryAlloc(allocator: std.mem.Allocator) ![]u8 {
-    const pref_path = try engine.ui.ImGui.editorPrefPathAlloc(allocator);
+    const pref_path = try gui.editorPrefPathAlloc(allocator);
     defer allocator.free(pref_path);
     return std.fs.path.join(allocator, &.{ pref_path, "layouts" });
 }

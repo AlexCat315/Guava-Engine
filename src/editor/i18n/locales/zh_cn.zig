@@ -308,7 +308,7 @@ pub const locale = types.LocaleInfo{
         .scale_tool = "缩放 (R)",
         .global = "全局",
         .local = "局部",
-        
+
         // Prefab 相关
         .prefab = "预制体",
         .prefab_browser = "预制体浏览器",
@@ -323,5 +323,14 @@ pub const locale = types.LocaleInfo{
         .prefab_override = "预制体覆盖",
         .visibility = "可见性",
         .visible = "可见",
+
+        // AI 对话
+        .ai_chat = "AI 助手",
+        .ai_chat_send = "发送",
+        .ai_chat_input_hint = "让 AI 修改场景...",
+        .ai_chat_empty = "开始与 AI 助手对话。它可以帮你创建实体、修改场景等。",
+        .ai_chat_thinking = "思考中...",
+        .ai_chat_connected = "已连接",
+        .ai_chat_disconnected = "未连接",
     }),
 };

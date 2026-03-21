@@ -1,5 +1,6 @@
 const std = @import("std");
 const engine = @import("guava");
+const gui = @import("gui.zig");
 
 const EditorState = @import("../core/state.zig").EditorState;
 const icon_cache = @import("icon_cache.zig");
@@ -153,14 +154,14 @@ pub fn drawIconButton(
 ) !bool {
     const texture = try ensureTintedIconTexture(state, layer_context, path, size, tint);
     const padding = if (size >= 28.0) regular_icon_button_padding else compact_icon_button_padding;
-    engine.ui.ImGui.pushStyleColor(.button, palette.button);
-    engine.ui.ImGui.pushStyleColor(.button_hovered, palette.hovered);
-    engine.ui.ImGui.pushStyleColor(.button_active, palette.active);
-    engine.ui.ImGui.pushStyleVarVec2(.frame_padding, padding);
-    engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, if (size >= 28.0) regular_icon_button_rounding else compact_icon_button_rounding);
+    gui.pushStyleColor(.button, palette.button);
+    gui.pushStyleColor(.button_hovered, palette.hovered);
+    gui.pushStyleColor(.button_active, palette.active);
+    gui.pushStyleVarVec2(.frame_padding, padding);
+    gui.pushStyleVarFloat(.frame_rounding, if (size >= 28.0) regular_icon_button_rounding else compact_icon_button_rounding);
     defer {
-        engine.ui.ImGui.popStyleVar(2);
-        engine.ui.ImGui.popStyleColor(3);
+        gui.popStyleVar(2);
+        gui.popStyleColor(3);
     }
-    return engine.ui.ImGui.imageButton(id, texture, size, size, .{ 0.0, 0.0, 0.0, 0.0 }, .{ 1.0, 1.0, 1.0, 1.0 });
+    return gui.imageButton(id, texture, size, size, .{ 0.0, 0.0, 0.0, 0.0 }, .{ 1.0, 1.0, 1.0, 1.0 });
 }

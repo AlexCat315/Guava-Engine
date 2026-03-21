@@ -243,6 +243,27 @@ void guava_imgui_image(SDL_GPUTexture *texture, float width, float height);
 uint32_t guava_imgui_draw_view_cube(const float view[16], float x, float y,
                                     float size, float out_drag_delta[2]);
 
+// ── Extended widget API ──
+bool guava_imgui_drag_float4(const char *label, size_t label_len,
+                             float value[4], float speed, float min_value,
+                             float max_value);
+bool guava_imgui_drag_int(const char *label, size_t label_len, int *value,
+                          float speed, int min_value, int max_value);
+bool guava_imgui_color_edit3(const char *label, size_t label_len,
+                             float color[3]);
+bool guava_imgui_color_edit4(const char *label, size_t label_len,
+                             float color[4]);
+void guava_imgui_text_colored(float r, float g, float b, float a,
+                              const char *text, size_t text_len);
+void guava_imgui_begin_group(void);
+void guava_imgui_end_group(void);
+void guava_imgui_set_item_default_focus(void);
+void guava_imgui_set_cursor_screen_pos(float x, float y);
+bool guava_imgui_is_mouse_double_clicked(int button);
+bool guava_imgui_is_mouse_dragging(int button);
+void guava_imgui_get_mouse_drag_delta(int button, float out_value[2]);
+void guava_imgui_reset_mouse_drag_delta(int button);
+
 #ifdef __cplusplus
 }
 #endif

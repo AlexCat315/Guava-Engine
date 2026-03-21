@@ -1,5 +1,6 @@
 const std = @import("std");
 const engine = @import("guava");
+const gui = @import("../../gui.zig");
 
 pub const ViewportLayout = enum {
     single,
@@ -163,17 +164,17 @@ pub const MultiViewportState = struct {
 };
 
 pub fn drawMultiViewportSelector(state: *MultiViewportState) void {
-    if (engine.ui.ImGui.beginCombo("##viewport_layout", MultiViewportState.layoutName(state.layout), .{})) {
-        defer engine.ui.ImGui.endCombo();
+    if (gui.beginCombo("##viewport_layout", MultiViewportState.layoutName(state.layout), .{})) {
+        defer gui.endCombo();
 
         const layouts = [_]ViewportLayout{ .single, .horizontal_split, .vertical_split, .four_way };
         for (layouts) |layout| {
             const is_selected = state.layout == layout;
-            if (engine.ui.ImGui.selectable(MultiViewportState.layoutName(layout), is_selected)) {
+            if (gui.selectable(MultiViewportState.layoutName(layout), is_selected)) {
                 state.setLayout(layout);
             }
             if (is_selected) {
-                engine.ui.ImGui.setItemDefaultFocus();
+                gui.setItemDefaultFocus();
             }
         }
     }
@@ -181,22 +182,22 @@ pub fn drawMultiViewportSelector(state: *MultiViewportState) void {
 
 pub fn drawMultiViewportToolbar(state: *MultiViewportState) void {
     drawMultiViewportSelector(state);
-    engine.ui.ImGui.sameLine();
-    engine.ui.ImGui.text("Split:");
-    engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.button("1")) {
+    gui.sameLine();
+    gui.text("Split:");
+    gui.sameLine();
+    if (gui.button("1")) {
         state.setLayout(.single);
     }
-    engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.button("2H")) {
+    gui.sameLine();
+    if (gui.button("2H")) {
         state.setLayout(.horizontal_split);
     }
-    engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.button("2V")) {
+    gui.sameLine();
+    if (gui.button("2V")) {
         state.setLayout(.vertical_split);
     }
-    engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.button("4")) {
+    gui.sameLine();
+    if (gui.button("4")) {
         state.setLayout(.four_way);
     }
 }

@@ -1,6 +1,8 @@
 const std = @import("std");
 const engine = @import("guava");
-const layout = @import("../layout.zig");
+const gui = @import("../../gui.zig");
+const layout = @import("../../layout.zig");
+const props = @import("../../properties.zig");
 
 const EditorViewportState = engine.render.EditorViewportState;
 
@@ -133,31 +135,31 @@ pub fn drawPostProcessPipelineEditor(
 ) void {
     _ = layer_context;
 
-    if (engine.ui.ImGui.begin("Post Process Pipeline")) {
-        defer engine.ui.ImGui.end();
+    if (gui.begin("Post Process Pipeline")) {
+        defer gui.end();
 
         drawPipelineToolbar(state, editor_state);
 
-        engine.ui.ImGui.separator();
+        gui.separator();
 
-        const content_region = engine.ui.ImGui.contentRegionAvail();
+        const content_region = gui.contentRegionAvail();
         const graph_width = if (editor_state.show_preview) content_region[0] * editor_state.preview_split else content_region[0];
 
-        if (engine.ui.ImGui.beginChild("pipeline_graph", graph_width, -1.0, true)) {
+        if (gui.beginChild("pipeline_graph", graph_width, -1.0, true)) {
             drawPipelineGraph(editor_state);
         }
-        engine.ui.ImGui.endChild();
+        gui.endChild();
 
         if (editor_state.show_preview) {
-            engine.ui.ImGui.sameLine();
-            if (engine.ui.ImGui.beginChild("pipeline_preview", -1.0, -1.0, true)) {
+            gui.sameLine();
+            if (gui.beginChild("pipeline_preview", -1.0, -1.0, true)) {
                 drawPreviewPanel(viewport_state);
             }
-            engine.ui.ImGui.endChild();
+            gui.endChild();
         }
 
         if (editor_state.getSelectedNode()) |node| {
-            engine.ui.ImGui.separator();
+            gui.separator();
             drawEffectParameters(viewport_state, node);
         }
     }
@@ -166,12 +168,12 @@ pub fn drawPostProcessPipelineEditor(
 fn drawPipelineToolbar(state: *engine.AppState, editor_state: *PostProcessPipelineEditorState) void {
     _ = state;
 
-    if (engine.ui.ImGui.button("Add Effect")) {
-        engine.ui.ImGui.openPopup("add_effect_popup");
+    if (gui.button("Add Effect")) {
+        gui.openPopup("add_effect_popup");
     }
 
-    if (engine.ui.ImGui.beginPopup("add_effect_popup")) {
-        defer engine.ui.ImGui.endPopup();
+    if (gui.beginPopup("add_effect_popup")) {
+        defer gui.endPopup();
 
         const effects = [_]PostProcessEffect{
             .bloom,
@@ -186,16 +188,16 @@ fn drawPipelineToolbar(state: *engine.AppState, editor_state: *PostProcessPipeli
         for (effects) |effect| {
             var name_buf: [32]u8 = undefined;
             const name = std.fmt.bufPrint(&name_buf, "{s}", .{@tagName(effect)}) catch continue;
-            if (engine.ui.ImGui.selectable(name, false)) {
+            if (gui.selectable(name, false)) {
                 const x = @as(f32, @floatFromInt(editor_state.nodes.items.len)) * 200.0;
                 _ = editor_state.addNode(effect, x, 100.0) catch {};
             }
         }
     }
 
-    engine.ui.ImGui.sameLine();
+    gui.sameLine();
 
-    if (engine.ui.ImGui.button("Clear All")) {
+    if (gui.button("Clear All")) {
         for (editor_state.nodes.items) |*node| {
             node.deinit();
         }
@@ -203,24 +205,24 @@ fn drawPipelineToolbar(state: *engine.AppState, editor_state: *PostProcessPipeli
         editor_state.selected_node_index = null;
     }
 
-    engine.ui.ImGui.sameLine();
+    gui.sameLine();
 
-    engine.ui.ImGui.text("Preview:");
-    engine.ui.ImGui.sameLine();
-    _ = engine.ui.ImGui.checkbox("##show_preview", &editor_state.show_preview);
+    gui.text("Preview:");
+    gui.sameLine();
+    _ = gui.checkbox("##show_preview", &editor_state.show_preview);
 
-    engine.ui.ImGui.sameLine();
+    gui.sameLine();
 
-    engine.ui.ImGui.text("Nodes:");
-    engine.ui.ImGui.sameLine();
-    engine.ui.ImGui.text("{}", .{editor_state.nodes.items.len});
+    gui.text("Nodes:");
+    gui.sameLine();
+    gui.text("{}", .{editor_state.nodes.items.len});
 }
 
 fn drawPipelineGraph(editor_state: *PostProcessPipelineEditorState) void {
-    const canvas_pos = engine.ui.ImGui.cursorScreenPos();
-    const canvas_size = engine.ui.ImGui.contentRegionAvail();
+    const canvas_pos = gui.cursorScreenPos();
+    const canvas_size = gui.contentRegionAvail();
 
-    engine.ui.ImGui.invisibleButton("canvas", canvas_size[0], canvas_size[1], .{
+    gui.invisibleButton("canvas", canvas_size[0], canvas_size[1], .{
         .mouse_button_left = true,
         .mouse_button_right = true,
     });
@@ -233,124 +235,97 @@ fn drawPipelineGraph(editor_state: *PostProcessPipelineEditorState) void {
             canvas_pos[1] + node.position[1] + editor_state.view_pan[1],
         };
 
-        engine.ui.ImGui.setCursorScreenPos(node_pos);
+        gui.setCursorScreenPos(node_pos);
 
         const node_width: f32 = 120.0;
         const node_height: f32 = 60.0;
 
         const color = node.getColor();
-        engine.ui.ImGui.pushStyleColor(.child_bg, if (is_selected) .{ color[0] * 0.8, color[1] * 0.8, color[2] * 0.8, 1.0 } else color);
-        defer engine.ui.ImGui.popStyleColor(1);
+        gui.pushStyleColor(.child_bg, if (is_selected) .{ color[0] * 0.8, color[1] * 0.8, color[2] * 0.8, 1.0 } else color);
+        defer gui.popStyleColor(1);
 
         var name_buf: [64]u8 = undefined;
         const node_name = std.fmt.bufPrint(&name_buf, "{s}##node_{}", .{ node.getName(), index }) catch continue;
 
-        if (engine.ui.ImGui.beginChild(node_name, node_width, node_height, true)) {
-            engine.ui.ImGui.text(node.getName());
+        if (gui.beginChild(node_name, node_width, node_height, true)) {
+            gui.text(node.getName());
 
-            engine.ui.ImGui.text("Enabled:");
-            engine.ui.ImGui.sameLine();
-            _ = engine.ui.ImGui.checkbox("##enabled", &node.enabled);
+            gui.text("Enabled:");
+            gui.sameLine();
+            _ = gui.checkbox("##enabled", &node.enabled);
         }
-        engine.ui.ImGui.endChild();
+        gui.endChild();
 
-        if (engine.ui.ImGui.isItemClicked()) {
+        if (gui.isItemClicked()) {
             editor_state.selected_node_index = index;
         }
 
-        if (engine.ui.ImGui.isItemActive() and engine.ui.ImGui.isMouseDragging(.left)) {
-            const drag_delta = engine.ui.ImGui.mouseDragDelta(.left);
+        if (gui.isItemActive() and gui.isMouseDragging(.left)) {
+            const drag_delta = gui.mouseDragDelta(.left);
             node.position[0] += drag_delta[0];
             node.position[1] += drag_delta[1];
-            engine.ui.ImGui.resetMouseDragDelta(.left);
+            gui.resetMouseDragDelta(.left);
         }
     }
 }
 
 fn drawPreviewPanel(viewport_state: *EditorViewportState) void {
-    engine.ui.ImGui.text("Preview");
-    engine.ui.ImGui.separator();
+    gui.text("Preview");
+    gui.separator();
 
-    if (layout.beginInspectorPropertyTable("preview_settings", 0.34)) {
-        defer layout.endInspectorPropertyTable();
+    if (props.beginPropertyGrid("preview_settings")) {
+        defer props.endPropertyGrid();
 
-        layout.drawInspectorPropertyRow("Bloom", null);
-        _ = engine.ui.ImGui.checkbox("##bloom_enabled", &viewport_state.bloom_enabled);
-
-        layout.drawInspectorPropertyRow("FXAA", null);
-        _ = engine.ui.ImGui.checkbox("##fxaa_enabled", &viewport_state.fxaa_enabled);
-
-        layout.drawInspectorPropertyRow("SSAO", null);
-        _ = engine.ui.ImGui.checkbox("##ssao_enabled", &viewport_state.ssao_enabled);
-
-        layout.drawInspectorPropertyRow("SSR", null);
-        _ = engine.ui.ImGui.checkbox("##ssr_enabled", &viewport_state.ssr_enabled);
-
-        layout.drawInspectorPropertyRow("TAA", null);
-        _ = engine.ui.ImGui.checkbox("##taa_enabled", &viewport_state.taa_enabled);
-
-        layout.drawInspectorPropertyRow("DOF", null);
-        _ = engine.ui.ImGui.checkbox("##dof_enabled", &viewport_state.dof_enabled);
+        _ = props.boolean("Bloom", &viewport_state.bloom_enabled);
+        _ = props.boolean("FXAA", &viewport_state.fxaa_enabled);
+        _ = props.boolean("SSAO", &viewport_state.ssao_enabled);
+        _ = props.boolean("SSR", &viewport_state.ssr_enabled);
+        _ = props.boolean("TAA", &viewport_state.taa_enabled);
+        _ = props.boolean("DOF", &viewport_state.dof_enabled);
     }
 }
 
 fn drawEffectParameters(viewport_state: *EditorViewportState, node: *PostProcessEffectNode) void {
-    engine.ui.ImGui.text("Effect Parameters");
-    engine.ui.ImGui.separator();
+    gui.text("Effect Parameters");
+    gui.separator();
 
     if (!node.enabled) {
-        engine.ui.ImGui.textColored(.{ 0.5, 0.5, 0.5, 1.0 }, "Effect disabled");
+        gui.textColored(.{ 0.5, 0.5, 0.5, 1.0 }, "Effect disabled");
         return;
     }
 
-    if (layout.beginInspectorPropertyTable("effect_params", 0.34)) {
-        defer layout.endInspectorPropertyTable();
+    if (props.beginPropertyGrid("effect_params")) {
+        defer props.endPropertyGrid();
 
         switch (node.effect) {
             .bloom => {
-                layout.drawInspectorPropertyRow("Threshold", null);
-                _ = engine.ui.ImGui.dragFloat("##bloom_threshold", &viewport_state.bloom_threshold, 0.1, 0.0, 10.0);
-                layout.drawInspectorPropertyRow("Intensity", null);
-                _ = engine.ui.ImGui.dragFloat("##bloom_intensity", &viewport_state.bloom_intensity, 0.1, 0.0, 5.0);
-                layout.drawInspectorPropertyRow("Radius", null);
-                _ = engine.ui.ImGui.dragFloat("##bloom_radius", &viewport_state.bloom_radius, 0.1, 0.0, 10.0);
+                _ = props.float("Threshold", &viewport_state.bloom_threshold, 0.1, 0.0, 10.0);
+                _ = props.float("Intensity", &viewport_state.bloom_intensity, 0.1, 0.0, 5.0);
+                _ = props.float("Radius", &viewport_state.bloom_radius, 0.1, 0.0, 10.0);
             },
             .ssao => {
-                layout.drawInspectorPropertyRow("Radius", null);
-                _ = engine.ui.ImGui.dragFloat("##ssao_radius", &viewport_state.ssao_radius, 0.1, 0.0, 5.0);
-                layout.drawInspectorPropertyRow("Bias", null);
-                _ = engine.ui.ImGui.dragFloat("##ssao_bias", &viewport_state.ssao_bias, 0.01, 0.0, 1.0);
-                layout.drawInspectorPropertyRow("Intensity", null);
-                _ = engine.ui.ImGui.dragFloat("##ssao_intensity", &viewport_state.ssao_intensity, 0.1, 0.0, 5.0);
-                layout.drawInspectorPropertyRow("Power", null);
-                _ = engine.ui.ImGui.dragFloat("##ssao_power", &viewport_state.ssao_power, 0.1, 0.0, 10.0);
+                _ = props.float("Radius", &viewport_state.ssao_radius, 0.1, 0.0, 5.0);
+                _ = props.float("Bias", &viewport_state.ssao_bias, 0.01, 0.0, 1.0);
+                _ = props.float("Intensity", &viewport_state.ssao_intensity, 0.1, 0.0, 5.0);
+                _ = props.float("Power", &viewport_state.ssao_power, 0.1, 0.0, 10.0);
             },
             .ssr => {
-                layout.drawInspectorPropertyRow("Intensity", null);
-                _ = engine.ui.ImGui.dragFloat("##ssr_intensity", &viewport_state.ssr_intensity, 0.1, 0.0, 2.0);
-                layout.drawInspectorPropertyRow("Ray Step", null);
-                _ = engine.ui.ImGui.dragFloat("##ssr_ray_step", &viewport_state.ssr_ray_step, 0.01, 0.01, 1.0);
-                layout.drawInspectorPropertyRow("Max Distance", null);
-                _ = engine.ui.ImGui.dragFloat("##ssr_ray_max_distance", &viewport_state.ssr_ray_max_distance, 1.0, 10.0, 500.0);
+                _ = props.float("Intensity", &viewport_state.ssr_intensity, 0.1, 0.0, 2.0);
+                _ = props.float("Ray Step", &viewport_state.ssr_ray_step, 0.01, 0.01, 1.0);
+                _ = props.float("Max Distance", &viewport_state.ssr_ray_max_distance, 1.0, 10.0, 500.0);
             },
             .taa => {
-                layout.drawInspectorPropertyRow("Blend Factor", null);
-                _ = engine.ui.ImGui.dragFloat("##taa_blend_factor", &viewport_state.taa_blend_factor, 0.01, 0.0, 1.0);
-                layout.drawInspectorPropertyRow("Feedback Min", null);
-                _ = engine.ui.ImGui.dragFloat("##taa_feedback_min", &viewport_state.taa_feedback_min, 0.01, 0.0, 1.0);
-                layout.drawInspectorPropertyRow("Feedback Max", null);
-                _ = engine.ui.ImGui.dragFloat("##taa_feedback_max", &viewport_state.taa_feedback_max, 0.01, 0.0, 1.0);
+                _ = props.float("Blend Factor", &viewport_state.taa_blend_factor, 0.01, 0.0, 1.0);
+                _ = props.float("Feedback Min", &viewport_state.taa_feedback_min, 0.01, 0.0, 1.0);
+                _ = props.float("Feedback Max", &viewport_state.taa_feedback_max, 0.01, 0.0, 1.0);
             },
             .dof => {
-                layout.drawInspectorPropertyRow("Focus Distance", null);
-                _ = engine.ui.ImGui.dragFloat("##dof_focus_distance", &viewport_state.dof_focus_distance, 1.0, 0.0, 100.0);
-                layout.drawInspectorPropertyRow("Focus Range", null);
-                _ = engine.ui.ImGui.dragFloat("##dof_focus_range", &viewport_state.dof_focus_range, 0.5, 0.0, 50.0);
-                layout.drawInspectorPropertyRow("Blur Radius", null);
-                _ = engine.ui.ImGui.dragFloat("##dof_blur_radius", &viewport_state.dof_blur_radius, 1.0, 0.0, 50.0);
+                _ = props.float("Focus Distance", &viewport_state.dof_focus_distance, 1.0, 0.0, 100.0);
+                _ = props.float("Focus Range", &viewport_state.dof_focus_range, 0.5, 0.0, 50.0);
+                _ = props.float("Blur Radius", &viewport_state.dof_blur_radius, 1.0, 0.0, 50.0);
             },
             .fxaa, .color_grading => {
-                engine.ui.ImGui.text("No additional parameters");
+                gui.text("No additional parameters");
             },
         }
     }

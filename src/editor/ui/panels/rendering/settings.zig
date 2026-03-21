@@ -1,35 +1,36 @@
 const std = @import("std");
 const engine = @import("guava");
-const EditorState = @import("../../core/state.zig").EditorState;
-const FpsDisplayMode = @import("../../core/state.zig").FpsDisplayMode;
-const i18n = @import("../../i18n/mod.zig");
-const icon_cache = @import("../icon_cache.zig");
-const ui_icons = @import("../icons.zig");
-const layout = @import("../layout.zig");
+const gui = @import("../../gui.zig");
+const EditorState = @import("../../../core/state.zig").EditorState;
+const FpsDisplayMode = @import("../../../core/state.zig").FpsDisplayMode;
+const i18n = @import("../../../i18n/mod.zig");
+const icon_cache = @import("../../icon_cache.zig");
+const ui_icons = @import("../../icons.zig");
+const layout = @import("../../layout.zig");
 
 const debug_icon_path = ui_icons.paths.hierarchy.mesh;
 const debug_icon_tint = [4]u8{ 196, 224, 255, 255 };
 
 fn drawSettingsChoiceButton(label: []const u8, active: bool, width: f32) bool {
-    engine.ui.ImGui.pushStyleColor(.button, if (active) .{ 0.13, 0.45, 0.28, 0.82 } else .{ 0.16, 0.17, 0.19, 0.54 });
-    engine.ui.ImGui.pushStyleColor(.button_hovered, if (active) .{ 0.18, 0.55, 0.35, 0.92 } else .{ 0.21, 0.23, 0.27, 0.74 });
-    engine.ui.ImGui.pushStyleColor(.button_active, if (active) .{ 0.10, 0.35, 0.22, 0.96 } else .{ 0.18, 0.20, 0.24, 0.86 });
-    defer engine.ui.ImGui.popStyleColor(3);
-    return engine.ui.ImGui.buttonEx(label, width, 0.0);
+    gui.pushStyleColor(.button, if (active) .{ 0.13, 0.45, 0.28, 0.82 } else .{ 0.16, 0.17, 0.19, 0.54 });
+    gui.pushStyleColor(.button_hovered, if (active) .{ 0.18, 0.55, 0.35, 0.92 } else .{ 0.21, 0.23, 0.27, 0.74 });
+    gui.pushStyleColor(.button_active, if (active) .{ 0.10, 0.35, 0.22, 0.96 } else .{ 0.18, 0.20, 0.24, 0.86 });
+    defer gui.popStyleColor(3);
+    return gui.buttonEx(label, width, 0.0);
 }
 
 pub fn drawSettingsWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     var title_buffer: [80]u8 = undefined;
     const title = try state.windowLabel(&title_buffer, .settings, "settings_popup");
     var open = state.settings_open;
-    _ = engine.ui.ImGui.beginWindowFlagsOpen(title, &open, engine.ui.ImGui.WindowFlags.no_docking);
+    _ = gui.beginWindowFlagsOpen(title, &open, gui.WindowFlags.no_docking);
     state.settings_open = open;
-    defer engine.ui.ImGui.endWindow();
+    defer gui.endWindow();
     layout.beginSectionBody();
     defer layout.endSectionBody();
 
-    engine.ui.ImGui.labelText(state.text(.language), state.languageInfo().native_name);
-    const content_width = engine.ui.ImGui.contentRegionAvail()[0];
+    gui.labelText(state.text(.language), state.languageInfo().native_name);
+    const content_width = gui.contentRegionAvail()[0];
     const language_count = i18n.available_languages.len;
     const language_columns: usize = if (content_width >= 88.0 * @as(f32, @floatFromInt(language_count)) + 8.0 * @as(f32, @floatFromInt(language_count -| 1)))
         language_count
@@ -46,15 +47,15 @@ pub fn drawSettingsWindow(state: *EditorState, layer_context: *engine.core.Layer
         if (index > 0) {
             layout.advanceResponsiveRow(index, language_columns);
         }
-        if (engine.ui.ImGui.buttonEx(locale_info.native_name, language_button_width, 0.0)) {
+        if (gui.buttonEx(locale_info.native_name, language_button_width, 0.0)) {
             state.language = language;
         }
     }
 
-    engine.ui.ImGui.dummy(0.0, 6.0);
-    engine.ui.ImGui.separator();
-    engine.ui.ImGui.dummy(0.0, 6.0);
-    engine.ui.ImGui.text(state.text(.fps));
+    gui.dummy(0.0, 6.0);
+    gui.separator();
+    gui.dummy(0.0, 6.0);
+    gui.text(state.text(.fps));
     const fps_options = [_]struct {
         label: []const u8,
         mode: FpsDisplayMode,
@@ -74,24 +75,24 @@ pub fn drawSettingsWindow(state: *EditorState, layer_context: *engine.core.Layer
         }
     }
 
-    engine.ui.ImGui.dummy(0.0, 6.0);
-    _ = engine.ui.ImGui.checkbox(state.text(.viewport_debug_overlay), &state.viewport_debug_overlay);
+    gui.dummy(0.0, 6.0);
+    _ = gui.checkbox(state.text(.viewport_debug_overlay), &state.viewport_debug_overlay);
 
-    engine.ui.ImGui.dummy(0.0, 6.0);
-    if (engine.ui.ImGui.buttonEx(state.text(.reset_dock_layout), engine.ui.ImGui.contentRegionAvail()[0], 0.0)) {
+    gui.dummy(0.0, 6.0);
+    if (gui.buttonEx(state.text(.reset_dock_layout), gui.contentRegionAvail()[0], 0.0)) {
         layout.resetDockLayout(state);
     }
 
-    engine.ui.ImGui.dummy(0.0, 6.0);
-    engine.ui.ImGui.separator();
-    engine.ui.ImGui.dummy(0.0, 6.0);
-    engine.ui.ImGui.text(state.text(.layout_templates));
-    _ = engine.ui.ImGui.inputTextWithHint(
+    gui.dummy(0.0, 6.0);
+    gui.separator();
+    gui.dummy(0.0, 6.0);
+    gui.text(state.text(.layout_templates));
+    _ = gui.inputTextWithHint(
         "##layout_template_name",
         state.text(.template_name),
         state.layout_template_name_buffer[0..],
     );
-    if (engine.ui.ImGui.buttonEx(state.text(.save_as_template), engine.ui.ImGui.contentRegionAvail()[0], 0.0)) {
+    if (gui.buttonEx(state.text(.save_as_template), gui.contentRegionAvail()[0], 0.0)) {
         const template_name = std.mem.sliceTo(state.layout_template_name_buffer[0..], 0);
         if (try layout.saveUserLayoutTemplate(state, template_name)) {
             @memset(state.layout_template_name_buffer[0..], 0);
@@ -100,25 +101,25 @@ pub fn drawSettingsWindow(state: *EditorState, layer_context: *engine.core.Layer
 
     try layout.ensureLayoutTemplatesLoaded(state);
     if (state.layout_templates.items.len == 0) {
-        engine.ui.ImGui.textWrapped(state.text(.no_saved_layout_templates));
+        gui.textWrapped(state.text(.no_saved_layout_templates));
     } else {
         for (state.layout_templates.items, 0..) |entry, index| {
-            engine.ui.ImGui.pushIdU64(index);
-            defer engine.ui.ImGui.popId();
+            gui.pushIdU64(index);
+            defer gui.popId();
 
-            engine.ui.ImGui.text(entry.name);
-            engine.ui.ImGui.sameLineEx(160.0, 10.0);
+            gui.text(entry.name);
+            gui.sameLineEx(160.0, 10.0);
 
             var load_label_buffer: [96]u8 = undefined;
             const load_label = try std.fmt.bufPrint(&load_label_buffer, "{s}##load_template_{d}", .{ state.text(.load_template), index });
-            if (engine.ui.ImGui.buttonEx(load_label, 92.0, 0.0)) {
+            if (gui.buttonEx(load_label, 92.0, 0.0)) {
                 _ = layout.loadUserLayoutTemplate(state, entry.path);
             }
-            engine.ui.ImGui.sameLine();
+            gui.sameLine();
 
             var delete_label_buffer: [96]u8 = undefined;
             const delete_label = try std.fmt.bufPrint(&delete_label_buffer, "{s}##delete_template_{d}", .{ state.text(.delete_template), index });
-            if (engine.ui.ImGui.buttonEx(delete_label, 92.0, 0.0)) {
+            if (gui.buttonEx(delete_label, 92.0, 0.0)) {
                 _ = try layout.deleteUserLayoutTemplate(state, index);
                 break;
             }
@@ -126,12 +127,12 @@ pub fn drawSettingsWindow(state: *EditorState, layer_context: *engine.core.Layer
     }
 
     const debug_icon = try icon_cache.ensureIconTexture(state, layer_context, debug_icon_path, 28, 28, debug_icon_tint);
-    engine.ui.ImGui.text("SVG icon preview");
-    engine.ui.ImGui.image(debug_icon, 28.0, 28.0);
+    gui.text("SVG icon preview");
+    gui.image(debug_icon, 28.0, 28.0);
 
     const viewport_size = layer_context.renderer.sceneViewportSize();
     var viewport_buffer: [64]u8 = undefined;
     const viewport_text = try std.fmt.bufPrint(&viewport_buffer, "{d} x {d}", .{ viewport_size[0], viewport_size[1] });
-    engine.ui.ImGui.labelText(state.text(.viewport_size), viewport_text);
-    engine.ui.ImGui.textWrapped(state.text(.the_dock_layout_uses_stable_panel_ids_now_so_language_switching_no_longer_breaks_docking));
+    gui.labelText(state.text(.viewport_size), viewport_text);
+    gui.textWrapped(state.text(.the_dock_layout_uses_stable_panel_ids_now_so_language_switching_no_longer_breaks_docking));
 }

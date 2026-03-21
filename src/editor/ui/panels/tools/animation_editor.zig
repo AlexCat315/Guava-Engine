@@ -1,14 +1,15 @@
 const std = @import("std");
 const engine = @import("guava");
-const EditorState = @import("../../core/state.zig").EditorState;
-const utils = @import("../../common/utils.zig");
-const history = @import("../../actions/history.zig");
-const inspector = @import("inspector.zig");
-const ui_icons = @import("../icons.zig");
-const layout = @import("../layout.zig");
+const gui = @import("../../gui.zig");
+const EditorState = @import("../../../core/state.zig").EditorState;
+const utils = @import("../../../common/utils.zig");
+const history = @import("../../../actions/history.zig");
+const inspector = @import("../scene/inspector.zig");
+const ui_icons = @import("../../icons.zig");
+const layout = @import("../../layout.zig");
 const animation_graph_mod = engine.animation.animation_graph;
 const handles = engine.assets.handles;
-const i18n = @import("../../i18n/message_id.zig");
+const i18n = @import("../../../i18n/message_id.zig");
 
 const TimelineTrack = struct {
     name: []const u8,
@@ -137,9 +138,9 @@ pub fn drawAnimationEditorWindow(state: *EditorState, layer_context: *engine.cor
     var title_buffer: [80]u8 = undefined;
     const title = try state.windowLabel(&title_buffer, .animation_editor, "animation_editor_popup");
     var open = state.animation_editor_open;
-    _ = engine.ui.ImGui.beginWindowFlagsOpen(title, &open, engine.ui.ImGui.WindowFlags.no_docking);
+    _ = gui.beginWindowFlagsOpen(title, &open, gui.WindowFlags.no_docking);
     state.animation_editor_open = open;
-    defer engine.ui.ImGui.endWindow();
+    defer gui.endWindow();
 
     if (!open) {
         return;
@@ -164,28 +165,28 @@ pub fn drawAnimationEditorWindow(state: *EditorState, layer_context: *engine.cor
     layout.beginSectionBody();
     defer layout.endSectionBody();
 
-    if (engine.ui.ImGui.beginChild("animation_graph_runtime_panel", -1.0, 184.0, true)) {
-        defer engine.ui.ImGui.endChild();
+    if (gui.beginChild("animation_graph_runtime_panel", -1.0, 184.0, true)) {
+        defer gui.endChild();
         drawGraphRuntimePanel(state, layer_context, editor_state);
     }
 
-    if (engine.ui.ImGui.beginChild("animation_editor_main", -1.0, -48.0, false)) {
-        defer engine.ui.ImGui.endChild();
+    if (gui.beginChild("animation_editor_main", -1.0, -48.0, false)) {
+        defer gui.endChild();
 
-        if (engine.ui.ImGui.beginTable("animation_editor_layout", 2)) {
-            engine.ui.ImGui.tableSetupColumn("Tracks", true, 0.3);
-            engine.ui.ImGui.tableSetupColumn("Timeline", true, 0.7);
+        if (gui.beginTable("animation_editor_layout", 2)) {
+            gui.tableSetupColumn("Tracks", true, 0.3);
+            gui.tableSetupColumn("Timeline", true, 0.7);
 
-            engine.ui.ImGui.tableNextRow();
-            engine.ui.ImGui.tableNextColumn();
+            gui.tableNextRow();
+            gui.tableNextColumn();
 
             drawTrackList(state, editor_state, layer_context);
 
-            engine.ui.ImGui.tableNextColumn();
+            gui.tableNextColumn();
 
             drawTimeline(state, editor_state, layer_context);
 
-            engine.ui.ImGui.endTable();
+            gui.endTable();
         }
     }
 
@@ -193,11 +194,11 @@ pub fn drawAnimationEditorWindow(state: *EditorState, layer_context: *engine.cor
 }
 
 fn drawTrackList(state: *EditorState, editor_state: *AnimationEditorState, layer_context: *engine.core.LayerContext) void {
-    engine.ui.ImGui.text(localText(state, .animation_tracks));
-    engine.ui.ImGui.separator();
+    gui.text(localText(state, .animation_tracks));
+    gui.separator();
 
-    if (engine.ui.ImGui.beginChild("track_list", -1.0, -1.0, false)) {
-        defer engine.ui.ImGui.endChild();
+    if (gui.beginChild("track_list", -1.0, -1.0, false)) {
+        defer gui.endChild();
 
         for (editor_state.tracks.items, 0..) |track, index| {
             const is_selected = editor_state.selected_track == @as(u32, @intCast(index));
@@ -205,14 +206,14 @@ fn drawTrackList(state: *EditorState, editor_state: *AnimationEditorState, layer
             var track_label: [256]u8 = undefined;
             const label = std.fmt.bufPrint(&track_label, "{s}##track_{}", .{ track.name, index }) catch continue;
 
-            if (engine.ui.ImGui.selectable(label, is_selected, false, -1.0, 22.0)) {
+            if (gui.selectable(label, is_selected, false, -1.0, 22.0)) {
                 editor_state.selected_track = @intCast(index);
             }
 
-            if (engine.ui.ImGui.beginPopupContextItem(null)) {
-                defer engine.ui.ImGui.endPopup();
+            if (gui.beginPopupContextItem(null)) {
+                defer gui.endPopup();
 
-                if (engine.ui.ImGui.menuItem(localText(state, .delete_track), null, false, true)) {
+                if (gui.menuItem(localText(state, .delete_track), null, false, true)) {
                     deleteTrack(
                         editor_state,
                         state.allocator orelse layer_context.world.allocator,
@@ -223,14 +224,14 @@ fn drawTrackList(state: *EditorState, editor_state: *AnimationEditorState, layer
         }
 
         if (editor_state.tracks.items.len == 0) {
-            engine.ui.ImGui.textWrapped(localText(state, .no_animation_tracks_loaded));
+            gui.textWrapped(localText(state, .no_animation_tracks_loaded));
         }
     }
 }
 
 fn drawTimeline(state: *EditorState, editor_state: *AnimationEditorState, layer_context: *engine.core.LayerContext) void {
-    engine.ui.ImGui.text(localText(state, .animation_timeline));
-    engine.ui.ImGui.separator();
+    gui.text(localText(state, .animation_timeline));
+    gui.separator();
 
     const clip = if (editor_state.selected_clip) |clip_handle|
         layer_context.world.resources.animationClip(clip_handle)
@@ -240,19 +241,19 @@ fn drawTimeline(state: *EditorState, editor_state: *AnimationEditorState, layer_
     const duration: f32 = if (clip) |clip_resource| clip_resource.duration else 1.0;
     const pixels_per_second = 50.0 * editor_state.timeline_scale;
 
-    if (engine.ui.ImGui.beginChild("timeline_area", -1.0, -1.0, true)) {
-        defer engine.ui.ImGui.endChild();
+    if (gui.beginChild("timeline_area", -1.0, -1.0, true)) {
+        defer gui.endChild();
 
         const track_height = 24.0;
         const track_spacing = 2.0;
 
-        if (engine.ui.ImGui.beginChild("timeline_ruler", -1.0, 24.0, false)) {
-            defer engine.ui.ImGui.endChild();
+        if (gui.beginChild("timeline_ruler", -1.0, 24.0, false)) {
+            defer gui.endChild();
 
-            const canvas_width = engine.ui.ImGui.contentRegionAvail()[0];
+            const canvas_width = gui.contentRegionAvail()[0];
 
-            var draw_list = engine.ui.ImGui.getWindowDrawList();
-            const cursor_pos = engine.ui.ImGui.cursorScreenPos();
+            var draw_list = gui.getWindowDrawList();
+            const cursor_pos = gui.cursorScreenPos();
 
             const major_tick_height: f32 = 12.0;
             const minor_tick_height: f32 = 6.0;
@@ -265,35 +266,35 @@ fn drawTimeline(state: *EditorState, editor_state: *AnimationEditorState, layer_
                     const is_major = @abs(@mod(time, 1.0)) < 0.01 or time == 0.0;
                     const tick_height: f32 = if (is_major) major_tick_height else minor_tick_height;
 
-                    draw_list.addLine(.{ x, cursor_pos[1] + 2 }, .{ x, cursor_pos[1] + tick_height }, engine.ui.ImGui.getColorU32(.{ 0.7, 0.7, 0.7, 1.0 }), 1.0);
+                    draw_list.addLine(.{ x, cursor_pos[1] + 2 }, .{ x, cursor_pos[1] + tick_height }, gui.getColorU32(.{ 0.7, 0.7, 0.7, 1.0 }), 1.0);
 
                     if (is_major and time < duration) {
                         var time_label: [16]u8 = undefined;
                         const label = std.fmt.bufPrint(&time_label, "{d:.1}s", .{time}) catch continue;
-                        draw_list.addText(.{ x + 2, cursor_pos[1] + 2 }, engine.ui.ImGui.getColorU32(.{ 0.8, 0.8, 0.8, 1.0 }), label);
+                        draw_list.addText(.{ x + 2, cursor_pos[1] + 2 }, gui.getColorU32(.{ 0.8, 0.8, 0.8, 1.0 }), label);
                     }
                 }
             }
 
             const current_time_x = cursor_pos[0] + editor_state.current_time * pixels_per_second - editor_state.timeline_offset;
             if (current_time_x >= cursor_pos[0] and current_time_x <= cursor_pos[0] + canvas_width) {
-                draw_list.addLine(.{ current_time_x, cursor_pos[1] }, .{ current_time_x, cursor_pos[1] + 22 }, engine.ui.ImGui.getColorU32(.{ 0.9, 0.3, 0.3, 1.0 }), 2.0);
+                draw_list.addLine(.{ current_time_x, cursor_pos[1] }, .{ current_time_x, cursor_pos[1] + 22 }, gui.getColorU32(.{ 0.9, 0.3, 0.3, 1.0 }), 2.0);
             }
         }
 
-        if (engine.ui.ImGui.beginChild("timeline_tracks", -1.0, -1.0, false)) {
-            defer engine.ui.ImGui.endChild();
+        if (gui.beginChild("timeline_tracks", -1.0, -1.0, false)) {
+            defer gui.endChild();
 
-            const canvas_width = engine.ui.ImGui.contentRegionAvail()[0];
-            var draw_list = engine.ui.ImGui.getWindowDrawList();
+            const canvas_width = gui.contentRegionAvail()[0];
+            var draw_list = gui.getWindowDrawList();
 
             for (editor_state.tracks.items, 0..) |track, track_index| {
-                engine.ui.ImGui.pushIdU64(track_index);
-                defer engine.ui.ImGui.popId();
+                gui.pushIdU64(track_index);
+                defer gui.popId();
 
-                const cursor_pos = engine.ui.ImGui.cursorScreenPos();
+                const cursor_pos = gui.cursorScreenPos();
                 const is_selected = editor_state.selected_track == @as(u32, @intCast(track_index));
-                if (engine.ui.ImGui.invisibleButton("track_row", canvas_width, track_height)) {
+                if (gui.invisibleButton("track_row", canvas_width, track_height)) {
                     editor_state.selected_track = @intCast(track_index);
                 }
 
@@ -304,14 +305,14 @@ fn drawTimeline(state: *EditorState, editor_state: *AnimationEditorState, layer_
                 draw_list.addRectFilled(
                     cursor_pos,
                     .{ cursor_pos[0] + canvas_width, cursor_pos[1] + track_height },
-                    engine.ui.ImGui.getColorU32(background_color),
+                    gui.getColorU32(background_color),
                     0,
                     0,
                 );
                 draw_list.addLine(
                     .{ cursor_pos[0], cursor_pos[1] + track_height - 1.0 },
                     .{ cursor_pos[0] + canvas_width, cursor_pos[1] + track_height - 1.0 },
-                    engine.ui.ImGui.getColorU32(.{ 0.24, 0.24, 0.24, 1.0 }),
+                    gui.getColorU32(.{ 0.24, 0.24, 0.24, 1.0 }),
                     1.0,
                 );
 
@@ -320,7 +321,7 @@ fn drawTimeline(state: *EditorState, editor_state: *AnimationEditorState, layer_
                     draw_list.addLine(
                         .{ current_time_x, cursor_pos[1] },
                         .{ current_time_x, cursor_pos[1] + track_height },
-                        engine.ui.ImGui.getColorU32(.{ 0.9, 0.3, 0.3, 1.0 }),
+                        gui.getColorU32(.{ 0.9, 0.3, 0.3, 1.0 }),
                         1.0,
                     );
                 }
@@ -337,7 +338,7 @@ fn drawTimeline(state: *EditorState, editor_state: *AnimationEditorState, layer_
                         draw_list.addCircleFilled(
                             .{ x, cursor_pos[1] + track_height * 0.5 },
                             4.0,
-                            engine.ui.ImGui.getColorU32(keyframe_color),
+                            gui.getColorU32(keyframe_color),
                             8,
                         );
 
@@ -345,7 +346,7 @@ fn drawTimeline(state: *EditorState, editor_state: *AnimationEditorState, layer_
                             draw_list.addLine(
                                 .{ cursor_pos[0], cursor_pos[1] + track_height * 0.5 },
                                 .{ x, cursor_pos[1] + track_height * 0.5 },
-                                engine.ui.ImGui.getColorU32(keyframe_color),
+                                gui.getColorU32(keyframe_color),
                                 1.0,
                             );
                         }
@@ -358,7 +359,7 @@ fn drawTimeline(state: *EditorState, editor_state: *AnimationEditorState, layer_
                                 draw_list.addLine(
                                     .{ x, cursor_pos[1] + track_height * 0.5 },
                                     .{ next_x, cursor_pos[1] + track_height * 0.5 },
-                                    engine.ui.ImGui.getColorU32(keyframe_color),
+                                    gui.getColorU32(keyframe_color),
                                     1.0,
                                 );
                             }
@@ -366,7 +367,7 @@ fn drawTimeline(state: *EditorState, editor_state: *AnimationEditorState, layer_
                     }
                 }
 
-                engine.ui.ImGui.dummy(0.0, track_spacing);
+                gui.dummy(0.0, track_spacing);
             }
         }
     }
@@ -376,33 +377,33 @@ fn drawTimelineControls(state: *EditorState, editor_state: *AnimationEditorState
     const runtime_driven = editor_state.selected_graph != null and editor_state.selected_runtime != null;
 
     if (runtime_driven) {
-        engine.ui.ImGui.textWrapped(localText(state, .runtime_driven_timeline));
+        gui.textWrapped(localText(state, .runtime_driven_timeline));
     }
 
-    if (engine.ui.ImGui.button(localText(state, .play_pause))) {
+    if (gui.button(localText(state, .play_pause))) {
         if (!runtime_driven) {
             editor_state.is_playing = !editor_state.is_playing;
         }
     }
 
-    engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.button(localText(state, .stop))) {
+    gui.sameLine();
+    if (gui.button(localText(state, .stop))) {
         if (!runtime_driven) {
             editor_state.is_playing = false;
             editor_state.current_time = 0.0;
         }
     }
 
-    engine.ui.ImGui.sameLine();
-    engine.ui.ImGui.setNextItemWidth(100.0);
-    _ = engine.ui.ImGui.dragFloat("##current_time", &editor_state.current_time, 0.01, 0.0, 100.0);
+    gui.sameLine();
+    gui.setNextItemWidth(100.0);
+    _ = gui.dragFloat("##current_time", &editor_state.current_time, 0.01, 0.0, 100.0);
 
-    engine.ui.ImGui.sameLine();
-    engine.ui.ImGui.setNextItemWidth(100.0);
-    _ = engine.ui.ImGui.dragFloat("##timeline_scale", &editor_state.timeline_scale, 0.01, 0.1, 10.0);
+    gui.sameLine();
+    gui.setNextItemWidth(100.0);
+    _ = gui.dragFloat("##timeline_scale", &editor_state.timeline_scale, 0.01, 0.1, 10.0);
 
-    engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.button(localText(state, .load_clip))) {
+    gui.sameLine();
+    if (gui.button(localText(state, .load_clip))) {
         try syncAnimationSource(layer_context, editor_state);
     }
 }
@@ -1016,12 +1017,12 @@ fn defaultConditionParameterName(
 
 fn drawConditionTypeCombo(state: *EditorState, widget_id: []const u8, type_index: *u32) bool {
     var changed = false;
-    if (engine.ui.ImGui.beginCombo(widget_id, transitionConditionTypeLabel(state, type_index.*))) {
-        defer engine.ui.ImGui.endCombo();
+    if (gui.beginCombo(widget_id, transitionConditionTypeLabel(state, type_index.*))) {
+        defer gui.endCombo();
 
         for ([_]u32{ 0, 1, 2 }) |candidate| {
             const selected = candidate == type_index.*;
-            if (engine.ui.ImGui.selectable(transitionConditionTypeLabel(state, candidate), selected, false, -1.0, 22.0)) {
+            if (gui.selectable(transitionConditionTypeLabel(state, candidate), selected, false, -1.0, 22.0)) {
                 type_index.* = candidate;
                 changed = true;
             }
@@ -1043,18 +1044,18 @@ fn drawComparisonCombo(
     comparison: anytype,
 ) bool {
     var changed = false;
-    if (engine.ui.ImGui.beginCombo(widget_id, comparisonLabel(comparison.*))) {
-        defer engine.ui.ImGui.endCombo();
+    if (gui.beginCombo(widget_id, comparisonLabel(comparison.*))) {
+        defer gui.endCombo();
 
-        if (engine.ui.ImGui.selectable("<", comparison.* == .less, false, -1.0, 22.0)) {
+        if (gui.selectable("<", comparison.* == .less, false, -1.0, 22.0)) {
             comparison.* = .less;
             changed = true;
         }
-        if (engine.ui.ImGui.selectable(">", comparison.* == .greater, false, -1.0, 22.0)) {
+        if (gui.selectable(">", comparison.* == .greater, false, -1.0, 22.0)) {
             comparison.* = .greater;
             changed = true;
         }
-        if (engine.ui.ImGui.selectable("==", comparison.* == .equal, false, -1.0, 22.0)) {
+        if (gui.selectable("==", comparison.* == .equal, false, -1.0, 22.0)) {
             comparison.* = .equal;
             changed = true;
         }
@@ -1151,34 +1152,34 @@ fn loadSelectedClipIfNeeded(
 
 fn drawGraphRuntimePanel(state: *EditorState, layer_context: *engine.core.LayerContext, editor_state: *AnimationEditorState) void {
     const selected_entity = editor_state.selected_entity orelse {
-        engine.ui.ImGui.textWrapped(localText(state, .no_animator_selected));
+        gui.textWrapped(localText(state, .no_animator_selected));
         return;
     };
     const entity = layer_context.world.getEntityConst(selected_entity) orelse {
-        engine.ui.ImGui.textWrapped(localText(state, .no_animator_selected));
+        gui.textWrapped(localText(state, .no_animator_selected));
         return;
     };
     if (entity.animator == null) {
-        engine.ui.ImGui.textWrapped(localText(state, .no_animator_selected));
+        gui.textWrapped(localText(state, .no_animator_selected));
         return;
     }
 
-    engine.ui.ImGui.text(localText(state, .animation_graph));
-    engine.ui.ImGui.separator();
+    gui.text(localText(state, .animation_graph));
+    gui.separator();
 
     const graph = editor_state.selected_graph orelse {
-        engine.ui.ImGui.textWrapped(localText(state, .no_animation_graph_bound));
+        gui.textWrapped(localText(state, .no_animation_graph_bound));
         return;
     };
 
-    engine.ui.ImGui.text(localText(state, .bound_graph));
-    engine.ui.ImGui.sameLine();
-    engine.ui.ImGui.pushStyleColor(.text, .{ 0.32, 0.82, 0.58, 1.0 });
-    engine.ui.ImGui.text(graph.name);
-    engine.ui.ImGui.popStyleColor(1);
+    gui.text(localText(state, .bound_graph));
+    gui.sameLine();
+    gui.pushStyleColor(.text, .{ 0.32, 0.82, 0.58, 1.0 });
+    gui.text(graph.name);
+    gui.popStyleColor(1);
 
     const runtime = editor_state.selected_runtime;
-    if (engine.ui.ImGui.collapsingHeader(localText(state, .animation_graph), true)) {
+    if (gui.collapsingHeader(localText(state, .animation_graph), true)) {
         if (layout.beginInspectorPropertyTable("animation_graph_runtime_summary", 0.34)) {
             defer layout.endInspectorPropertyTable();
 
@@ -1201,29 +1202,29 @@ fn drawGraphRuntimePanel(state: *EditorState, layer_context: *engine.core.LayerC
                         "{d:.0}% ({d:.2}s / {d:.2}s)",
                         .{ value.blend_factor * 100.0, value.transition_time, value.transition_duration },
                     ) catch "-";
-                    engine.ui.ImGui.text(progress_text);
+                    gui.text(progress_text);
                 } else {
-                    engine.ui.ImGui.text("-");
+                    gui.text("-");
                 }
             } else {
-                engine.ui.ImGui.text("-");
+                gui.text("-");
             }
         }
     }
 
-    if (engine.ui.ImGui.collapsingHeader(localText(state, .graph_overview), true)) {
+    if (gui.collapsingHeader(localText(state, .graph_overview), true)) {
         drawGraphOverview(state, layer_context, editor_state, graph);
     }
 
-    if (engine.ui.ImGui.collapsingHeader(localText(state, .graph_states), true)) {
+    if (gui.collapsingHeader(localText(state, .graph_states), true)) {
         drawGraphStateEditor(state, layer_context, editor_state, graph);
     }
 
-    if (engine.ui.ImGui.collapsingHeader(localText(state, .graph_parameters), true)) {
+    if (gui.collapsingHeader(localText(state, .graph_parameters), true)) {
         drawGraphParameterControls(state, layer_context, editor_state, graph);
     }
 
-    if (engine.ui.ImGui.collapsingHeader(localText(state, .graph_transitions), false)) {
+    if (gui.collapsingHeader(localText(state, .graph_transitions), false)) {
         drawGraphTransitionsList(state, layer_context, editor_state, graph);
     }
 }
@@ -1235,13 +1236,13 @@ fn drawRuntimeStateName(
 ) void {
     if (state_index) |index| {
         if (index < graph.states.items.len) {
-            engine.ui.ImGui.pushStyleColor(.text, color);
-            defer engine.ui.ImGui.popStyleColor(1);
-            engine.ui.ImGui.text(graph.states.items[index].name);
+            gui.pushStyleColor(.text, color);
+            defer gui.popStyleColor(1);
+            gui.text(graph.states.items[index].name);
             return;
         }
     }
-    engine.ui.ImGui.text("-");
+    gui.text("-");
 }
 
 fn drawStateCombo(
@@ -1259,12 +1260,12 @@ fn drawStateCombo(
         graph.states.items[0].name;
 
     var changed = false;
-    if (engine.ui.ImGui.beginCombo(widget_id, preview)) {
-        defer engine.ui.ImGui.endCombo();
+    if (gui.beginCombo(widget_id, preview)) {
+        defer gui.endCombo();
 
         for (graph.states.items, 0..) |state, index| {
             const selected = selected_index.* == index;
-            if (engine.ui.ImGui.selectable(state.name, selected, false, -1.0, 22.0)) {
+            if (gui.selectable(state.name, selected, false, -1.0, 22.0)) {
                 selected_index.* = @intCast(index);
                 changed = true;
             }
@@ -1282,10 +1283,10 @@ fn drawAnimationClipCombo(
     const preview = clipLabel(layer_context, selected_handle.*, &preview_buffer);
 
     var changed = false;
-    if (engine.ui.ImGui.beginCombo(widget_id, preview)) {
-        defer engine.ui.ImGui.endCombo();
+    if (gui.beginCombo(widget_id, preview)) {
+        defer gui.endCombo();
 
-        if (engine.ui.ImGui.selectable("-", selected_handle.* == null, false, -1.0, 22.0)) {
+        if (gui.selectable("-", selected_handle.* == null, false, -1.0, 22.0)) {
             selected_handle.* = null;
             changed = true;
         }
@@ -1293,7 +1294,7 @@ fn drawAnimationClipCombo(
         for (layer_context.world.resources.animation_clips.items, 0..) |clip, index| {
             const handle = handles.animationClipHandle(index);
             const selected = selected_handle.* != null and selected_handle.*.? == handle;
-            if (engine.ui.ImGui.selectable(clip.name, selected, false, -1.0, 22.0)) {
+            if (gui.selectable(clip.name, selected, false, -1.0, 22.0)) {
                 selected_handle.* = handle;
                 changed = true;
             }
@@ -1309,19 +1310,19 @@ fn drawGraphOverview(
     graph: *const animation_graph_mod.AnimationGraph,
 ) void {
     if (graph.states.items.len == 0) {
-        engine.ui.ImGui.textWrapped(localText(state, .no_graph_states));
+        gui.textWrapped(localText(state, .no_graph_states));
         return;
     }
 
-    if (!engine.ui.ImGui.beginChild("animation_graph_overview_canvas", -1.0, 132.0, true)) {
+    if (!gui.beginChild("animation_graph_overview_canvas", -1.0, 132.0, true)) {
         return;
     }
-    defer engine.ui.ImGui.endChild();
+    defer gui.endChild();
 
     const card_width = 150.0;
     const card_height = 44.0;
     const spacing = 10.0;
-    const available_width = engine.ui.ImGui.contentRegionAvail()[0];
+    const available_width = gui.contentRegionAvail()[0];
     const raw_columns = @max(1.0, (available_width + spacing) / (card_width + spacing));
     const column_count = @max(@as(usize, 1), @as(usize, @intFromFloat(raw_columns)));
 
@@ -1348,20 +1349,20 @@ fn drawGraphOverview(
             button_color = .{ 0.23, 0.30, 0.41, 1.0 };
         }
 
-        engine.ui.ImGui.pushStyleColor(.button, button_color);
-        engine.ui.ImGui.pushStyleColor(.button_hovered, .{ button_color[0] + 0.05, button_color[1] + 0.05, button_color[2] + 0.05, 1.0 });
-        engine.ui.ImGui.pushStyleColor(.button_active, .{ button_color[0] + 0.08, button_color[1] + 0.08, button_color[2] + 0.08, 1.0 });
-        defer engine.ui.ImGui.popStyleColor(3);
+        gui.pushStyleColor(.button, button_color);
+        gui.pushStyleColor(.button_hovered, .{ button_color[0] + 0.05, button_color[1] + 0.05, button_color[2] + 0.05, 1.0 });
+        gui.pushStyleColor(.button_active, .{ button_color[0] + 0.08, button_color[1] + 0.08, button_color[2] + 0.08, 1.0 });
+        defer gui.popStyleColor(3);
 
         var label_buffer: [192]u8 = undefined;
         const label = stateLabel(graph, editor_state.selected_runtime, state_index, &label_buffer);
-        if (engine.ui.ImGui.buttonEx(label, card_width, card_height)) {
+        if (gui.buttonEx(label, card_width, card_height)) {
             setSelectedGraphState(editor_state, graph, state_index);
             refreshGraphEditorData(layer_context, editor_state);
         }
 
         if ((index + 1) % column_count != 0 and index + 1 < graph.states.items.len) {
-            engine.ui.ImGui.sameLineEx(0.0, spacing);
+            gui.sameLineEx(0.0, spacing);
         }
     }
 }
@@ -1373,11 +1374,11 @@ fn drawGraphStateEditor(
     graph: *const animation_graph_mod.AnimationGraph,
 ) void {
     const editable_graph = selectedGraphForEditing(layer_context, editor_state) orelse {
-        engine.ui.ImGui.textWrapped(localText(state, .no_animation_graph_bound));
+        gui.textWrapped(localText(state, .no_animation_graph_bound));
         return;
     };
 
-    if (engine.ui.ImGui.button(localText(state, .add_state))) {
+    if (gui.button(localText(state, .add_state))) {
         var name_buffer: [32]u8 = undefined;
         const next_state_name = std.fmt.bufPrint(&name_buffer, "State {}", .{editable_graph.states.items.len + 1}) catch "State";
         const new_state_index = editable_graph.addState(next_state_name, null) catch |err| {
@@ -1389,22 +1390,22 @@ fn drawGraphStateEditor(
     }
 
     if (graph.states.items.len == 0) {
-        engine.ui.ImGui.textWrapped(localText(state, .no_graph_states));
+        gui.textWrapped(localText(state, .no_graph_states));
         return;
     }
 
-    if (!engine.ui.ImGui.beginTable("animation_graph_states_layout", 2)) {
+    if (!gui.beginTable("animation_graph_states_layout", 2)) {
         return;
     }
-    defer engine.ui.ImGui.endTable();
+    defer gui.endTable();
 
-    engine.ui.ImGui.tableSetupColumn("StateList", true, 0.36);
-    engine.ui.ImGui.tableSetupColumn("StateDetails", true, 0.64);
-    engine.ui.ImGui.tableNextRow();
-    engine.ui.ImGui.tableNextColumn();
+    gui.tableSetupColumn("StateList", true, 0.36);
+    gui.tableSetupColumn("StateDetails", true, 0.64);
+    gui.tableNextRow();
+    gui.tableNextColumn();
 
-    if (engine.ui.ImGui.beginChild("animation_graph_state_list", -1.0, 180.0, true)) {
-        defer engine.ui.ImGui.endChild();
+    if (gui.beginChild("animation_graph_state_list", -1.0, 180.0, true)) {
+        defer gui.endChild();
 
         for (graph.states.items, 0..) |_, index| {
             const state_index: u32 = @intCast(index);
@@ -1412,21 +1413,21 @@ fn drawGraphStateEditor(
 
             var label_buffer: [192]u8 = undefined;
             const label = stateLabel(graph, editor_state.selected_runtime, state_index, &label_buffer);
-            if (engine.ui.ImGui.selectable(label, selected, false, -1.0, 22.0)) {
+            if (gui.selectable(label, selected, false, -1.0, 22.0)) {
                 setSelectedGraphState(editor_state, graph, state_index);
                 refreshGraphEditorData(layer_context, editor_state);
             }
         }
     }
 
-    engine.ui.ImGui.tableNextColumn();
+    gui.tableNextColumn();
 
     const state_index = editor_state.selected_graph_state orelse {
-        engine.ui.ImGui.textWrapped(localText(state, .no_graph_state_selected));
+        gui.textWrapped(localText(state, .no_graph_state_selected));
         return;
     };
     if (state_index >= editable_graph.states.items.len) {
-        engine.ui.ImGui.textWrapped(localText(state, .no_graph_state_selected));
+        gui.textWrapped(localText(state, .no_graph_state_selected));
         return;
     }
 
@@ -1435,7 +1436,7 @@ fn drawGraphStateEditor(
         defer layout.endInspectorPropertyTable();
 
         layout.drawInspectorPropertyRow(localText(state, .state_name), null);
-        if (engine.ui.ImGui.inputTextWithHint("##graph_state_name", "State", editor_state.state_name_buffer[0..])) {
+        if (gui.inputTextWithHint("##graph_state_name", "State", editor_state.state_name_buffer[0..])) {
             const next_name = utils.zeroTerminatedSlice(editor_state.state_name_buffer[0..]);
             if (next_name.len != 0 and !std.mem.eql(u8, next_name, selected_state.name)) {
                 replaceOwnedText(editable_graph.allocator, &selected_state.name, next_name) catch |err| {
@@ -1461,36 +1462,36 @@ fn drawGraphStateEditor(
 
         layout.drawInspectorPropertyRow(localText(state, .speed), null);
         var speed = selected_state.speed;
-        if (engine.ui.ImGui.dragFloat("##graph_state_speed", &speed, 0.01, -8.0, 8.0)) {
+        if (gui.dragFloat("##graph_state_speed", &speed, 0.01, -8.0, 8.0)) {
             selected_state.speed = speed;
             commitGraphAuthoringChange(state, layer_context, editor_state);
         }
 
         layout.drawInspectorPropertyRow(localText(state, .loop), null);
         var loop = selected_state.loop;
-        if (engine.ui.ImGui.checkbox("##graph_state_loop", &loop)) {
+        if (gui.checkbox("##graph_state_loop", &loop)) {
             selected_state.loop = loop;
             commitGraphAuthoringChange(state, layer_context, editor_state);
         }
 
         layout.drawInspectorPropertyRow(localText(state, .duration), null);
         var duration = selected_state.duration_seconds;
-        if (engine.ui.ImGui.dragFloat("##graph_state_duration", &duration, 0.01, 0.0, 120.0)) {
+        if (gui.dragFloat("##graph_state_duration", &duration, 0.01, 0.0, 120.0)) {
             selected_state.duration_seconds = @max(duration, 0.0);
             commitGraphAuthoringChange(state, layer_context, editor_state);
         }
 
         layout.drawInspectorPropertyRow(localText(state, .default_state), null);
-        engine.ui.ImGui.text(if (editable_graph.default_state != null and editable_graph.default_state.? == state_index) "Yes" else "No");
+        gui.text(if (editable_graph.default_state != null and editable_graph.default_state.? == state_index) "Yes" else "No");
     }
 
-    if (engine.ui.ImGui.button(localText(state, .set_default_state))) {
+    if (gui.button(localText(state, .set_default_state))) {
         editable_graph.default_state = state_index;
         commitGraphAuthoringChange(state, layer_context, editor_state);
     }
 
-    engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.button(localText(state, .activate_state))) {
+    gui.sameLine();
+    if (gui.button(localText(state, .activate_state))) {
         if (editor_state.selected_entity) |entity_id| {
             if (layer_context.world.animatorGraphInstance(entity_id)) |instance| {
                 instance.current_state = state_index;
@@ -1511,7 +1512,7 @@ fn drawGraphParameterControls(
     graph: *const animation_graph_mod.AnimationGraph,
 ) void {
     if (graph.parameters.items.len == 0) {
-        engine.ui.ImGui.textWrapped(localText(state, .no_graph_parameters));
+        gui.textWrapped(localText(state, .no_graph_parameters));
         return;
     }
 
@@ -1530,21 +1531,21 @@ fn drawGraphParameterControls(
             switch (instance.parameters.items[index]) {
                 .float => |current_value| {
                     var value = current_value;
-                    changed = engine.ui.ImGui.dragFloat(widget_id, &value, 0.01, -1000.0, 1000.0);
+                    changed = gui.dragFloat(widget_id, &value, 0.01, -1000.0, 1000.0);
                     if (changed) {
                         layer_context.world.setAnimatorGraphParameter(entity_id, @intCast(index), .{ .float = value }) catch {};
                     }
                 },
                 .bool => |current_value| {
                     var value = current_value;
-                    changed = engine.ui.ImGui.checkbox(widget_id, &value);
+                    changed = gui.checkbox(widget_id, &value);
                     if (changed) {
                         layer_context.world.setAnimatorGraphParameter(entity_id, @intCast(index), .{ .bool = value }) catch {};
                     }
                 },
                 .int => |current_value| {
                     var value = @as(f32, @floatFromInt(current_value));
-                    changed = engine.ui.ImGui.dragFloat(widget_id, &value, 1.0, -1000.0, 1000.0);
+                    changed = gui.dragFloat(widget_id, &value, 1.0, -1000.0, 1000.0);
                     if (changed) {
                         layer_context.world.setAnimatorGraphParameter(entity_id, @intCast(index), .{ .int = @as(i32, @intFromFloat(@round(value))) }) catch {};
                     }
@@ -1568,7 +1569,7 @@ fn drawGraphTransitionsList(
     graph: *const animation_graph_mod.AnimationGraph,
 ) void {
     const editable_graph = selectedGraphForEditing(layer_context, editor_state) orelse {
-        engine.ui.ImGui.textWrapped(localText(state, .no_animation_graph_bound));
+        gui.textWrapped(localText(state, .no_animation_graph_bound));
         return;
     };
 
@@ -1579,22 +1580,22 @@ fn drawGraphTransitionsList(
             layout.drawInspectorPropertyRow(localText(state, .transition_source), null);
             if (editor_state.selected_graph_state) |selected_state| {
                 if (selected_state < graph.states.items.len) {
-                    engine.ui.ImGui.text(graph.states.items[selected_state].name);
+                    gui.text(graph.states.items[selected_state].name);
                 } else {
-                    engine.ui.ImGui.text("-");
+                    gui.text("-");
                 }
             } else {
-                engine.ui.ImGui.text("-");
+                gui.text("-");
             }
 
             layout.drawInspectorPropertyRow(localText(state, .transition_target), null);
             _ = drawStateCombo("##graph_new_transition_target", graph, &editor_state.new_transition_target_state);
 
             layout.drawInspectorPropertyRow(localText(state, .transition_trigger_time), null);
-            _ = engine.ui.ImGui.dragFloat("##graph_new_transition_time", &editor_state.new_transition_elapsed_seconds, 0.01, 0.0, 120.0);
+            _ = gui.dragFloat("##graph_new_transition_time", &editor_state.new_transition_elapsed_seconds, 0.01, 0.0, 120.0);
 
             layout.drawInspectorPropertyRow(localText(state, .blend_duration), null);
-            _ = engine.ui.ImGui.dragFloat("##graph_new_transition_duration", &editor_state.new_transition_duration, 0.01, 0.0, 30.0);
+            _ = gui.dragFloat("##graph_new_transition_duration", &editor_state.new_transition_duration, 0.01, 0.0, 30.0);
         }
 
         const can_add_transition = editor_state.selected_graph_state != null and
@@ -1602,7 +1603,7 @@ fn drawGraphTransitionsList(
             editor_state.new_transition_target_state < graph.states.items.len and
             editor_state.new_transition_target_state != editor_state.selected_graph_state.?;
 
-        if (engine.ui.ImGui.button(localText(state, .add_transition))) {
+        if (gui.button(localText(state, .add_transition))) {
             if (can_add_transition) {
                 const conditions = [_]animation_graph_mod.TransitionCondition{
                     .{ .time_elapsed = @max(editor_state.new_transition_elapsed_seconds, 0.0) },
@@ -1623,19 +1624,19 @@ fn drawGraphTransitionsList(
     }
 
     if (graph.transitions.items.len == 0) {
-        engine.ui.ImGui.textWrapped(localText(state, .no_graph_transitions));
+        gui.textWrapped(localText(state, .no_graph_transitions));
         return;
     }
 
-    if (!engine.ui.ImGui.beginTable("animation_graph_transition_layout", 2)) {
+    if (!gui.beginTable("animation_graph_transition_layout", 2)) {
         return;
     }
-    defer engine.ui.ImGui.endTable();
+    defer gui.endTable();
 
-    engine.ui.ImGui.tableSetupColumn("TransitionList", true, 0.42);
-    engine.ui.ImGui.tableSetupColumn("TransitionDetails", true, 0.58);
-    engine.ui.ImGui.tableNextRow();
-    engine.ui.ImGui.tableNextColumn();
+    gui.tableSetupColumn("TransitionList", true, 0.42);
+    gui.tableSetupColumn("TransitionDetails", true, 0.58);
+    gui.tableNextRow();
+    gui.tableNextColumn();
 
     const active_transition = if (editor_state.selected_runtime) |runtime|
         if (runtime.secondary) |secondary|
@@ -1645,8 +1646,8 @@ fn drawGraphTransitionsList(
     else
         null;
 
-    const show_transition_list = engine.ui.ImGui.beginChild("animation_graph_transition_list", -1.0, 180.0, true);
-    defer engine.ui.ImGui.endChild();
+    const show_transition_list = gui.beginChild("animation_graph_transition_list", -1.0, 180.0, true);
+    defer gui.endChild();
     if (show_transition_list) {
         for (graph.transitions.items, 0..) |transition, index| {
             const from_name = if (transition.from_state < graph.states.items.len) graph.states.items[transition.from_state].name else "?";
@@ -1660,21 +1661,21 @@ fn drawGraphTransitionsList(
                 "{s} -> {s} ({d:.2}s){s}",
                 .{ from_name, to_name, transition.duration, if (is_active) " [active]" else "" },
             ) catch continue;
-            if (engine.ui.ImGui.selectable(label, is_selected, false, -1.0, 22.0)) {
+            if (gui.selectable(label, is_selected, false, -1.0, 22.0)) {
                 editor_state.selected_graph_transition = @intCast(index);
                 setSelectedTransitionCondition(editor_state, &graph.transitions.items[index], null);
             }
         }
     }
 
-    engine.ui.ImGui.tableNextColumn();
+    gui.tableNextColumn();
 
     const transition_index = editor_state.selected_graph_transition orelse {
-        engine.ui.ImGui.textWrapped(localText(state, .no_transition_selected));
+        gui.textWrapped(localText(state, .no_transition_selected));
         return;
     };
     if (transition_index >= editable_graph.transitions.items.len) {
-        engine.ui.ImGui.textWrapped(localText(state, .no_transition_selected));
+        gui.textWrapped(localText(state, .no_transition_selected));
         return;
     }
 
@@ -1700,28 +1701,28 @@ fn drawGraphTransitionsList(
 
         layout.drawInspectorPropertyRow(localText(state, .blend_duration), null);
         var duration = transition.duration;
-        if (engine.ui.ImGui.dragFloat("##graph_transition_duration", &duration, 0.01, 0.0, 30.0)) {
+        if (gui.dragFloat("##graph_transition_duration", &duration, 0.01, 0.0, 30.0)) {
             transition.duration = @max(duration, 0.0);
             commitGraphAuthoringChange(state, layer_context, editor_state);
         }
 
         layout.drawInspectorPropertyRow(localText(state, .transition_conditions), null);
         if (transition.conditions.len == 0) {
-            engine.ui.ImGui.textWrapped(localText(state, .no_transition_conditions));
+            gui.textWrapped(localText(state, .no_transition_conditions));
         } else {
-            const show_condition_list = engine.ui.ImGui.beginChild("animation_graph_transition_conditions", -1.0, 116.0, true);
-            defer engine.ui.ImGui.endChild();
+            const show_condition_list = gui.beginChild("animation_graph_transition_conditions", -1.0, 116.0, true);
+            defer gui.endChild();
 
             if (show_condition_list) {
                 for (transition.conditions, 0..) |condition, index| {
-                    engine.ui.ImGui.pushIdU64(index);
-                    defer engine.ui.ImGui.popId();
+                    gui.pushIdU64(index);
+                    defer gui.popId();
 
                     const is_selected = editor_state.selected_transition_condition != null and
                         editor_state.selected_transition_condition.? == index;
 
                     var condition_buffer: [192]u8 = undefined;
-                    if (engine.ui.ImGui.selectable(
+                    if (gui.selectable(
                         transitionConditionLabel(condition, &condition_buffer),
                         is_selected,
                         false,
@@ -1735,7 +1736,7 @@ fn drawGraphTransitionsList(
         }
     }
 
-    if (engine.ui.ImGui.button(localText(state, .add_condition))) {
+    if (gui.button(localText(state, .add_condition))) {
         transition.addCondition(editable_graph.allocator, .{ .time_elapsed = 0.0 }) catch |err| {
             std.log.err("Failed to add animation graph transition condition: {}", .{err});
             return;
@@ -1745,8 +1746,8 @@ fn drawGraphTransitionsList(
     }
 
     const condition_index = editor_state.selected_transition_condition orelse {
-        engine.ui.ImGui.textWrapped(localText(state, .no_condition_selected));
-        if (engine.ui.ImGui.button(localText(state, .delete_transition))) {
+        gui.textWrapped(localText(state, .no_condition_selected));
+        if (gui.button(localText(state, .delete_transition))) {
             var removed = editable_graph.transitions.orderedRemove(transition_index);
             removed.deinit(editable_graph.allocator);
 
@@ -1764,8 +1765,8 @@ fn drawGraphTransitionsList(
     };
 
     if (condition_index >= transition.conditions.len) {
-        engine.ui.ImGui.textWrapped(localText(state, .no_condition_selected));
-        if (engine.ui.ImGui.button(localText(state, .delete_transition))) {
+        gui.textWrapped(localText(state, .no_condition_selected));
+        if (gui.button(localText(state, .delete_transition))) {
             var removed = editable_graph.transitions.orderedRemove(transition_index);
             removed.deinit(editable_graph.allocator);
 
@@ -1821,7 +1822,7 @@ fn drawGraphTransitionsList(
             .time_elapsed => |*threshold| {
                 layout.drawInspectorPropertyRow(localText(state, .threshold), null);
                 var value = threshold.*;
-                if (engine.ui.ImGui.dragFloat("##graph_transition_condition_threshold", &value, 0.01, 0.0, 120.0)) {
+                if (gui.dragFloat("##graph_transition_condition_threshold", &value, 0.01, 0.0, 120.0)) {
                     threshold.* = @max(value, 0.0);
                     commitGraphAuthoringChange(state, layer_context, editor_state);
                 }
@@ -1829,7 +1830,7 @@ fn drawGraphTransitionsList(
             .time_remaining => |*threshold| {
                 layout.drawInspectorPropertyRow(localText(state, .threshold), null);
                 var value = threshold.*;
-                if (engine.ui.ImGui.dragFloat("##graph_transition_condition_threshold", &value, 0.01, 0.0, 120.0)) {
+                if (gui.dragFloat("##graph_transition_condition_threshold", &value, 0.01, 0.0, 120.0)) {
                     threshold.* = @max(value, 0.0);
                     commitGraphAuthoringChange(state, layer_context, editor_state);
                 }
@@ -1837,7 +1838,7 @@ fn drawGraphTransitionsList(
             .parameter => |*parameter| {
                 layout.drawInspectorPropertyRow(localText(state, .parameter_name), null);
                 if (editable_graph.parameters.items.len == 0) {
-                    if (engine.ui.ImGui.inputTextWithHint(
+                    if (gui.inputTextWithHint(
                         "##graph_transition_condition_parameter",
                         localText(state, .parameter_name),
                         editor_state.condition_parameter_name_buffer[0..],
@@ -1857,12 +1858,12 @@ fn drawGraphTransitionsList(
                     else
                         parameter.name;
 
-                    if (engine.ui.ImGui.beginCombo("##graph_transition_condition_parameter", preview)) {
-                        defer engine.ui.ImGui.endCombo();
+                    if (gui.beginCombo("##graph_transition_condition_parameter", preview)) {
+                        defer gui.endCombo();
 
                         for (editable_graph.parameters.items) |graph_parameter| {
                             const is_selected = std.mem.eql(u8, graph_parameter.name, parameter.name);
-                            if (engine.ui.ImGui.selectable(graph_parameter.name, is_selected, false, -1.0, 22.0)) {
+                            if (gui.selectable(graph_parameter.name, is_selected, false, -1.0, 22.0)) {
                                 replaceOwnedText(editable_graph.allocator, &parameter.name, graph_parameter.name) catch |err| {
                                     std.log.err("Failed to assign animation graph condition parameter: {}", .{err});
                                     continue;
@@ -1881,7 +1882,7 @@ fn drawGraphTransitionsList(
 
                 layout.drawInspectorPropertyRow(localText(state, .threshold), null);
                 var value = parameter.value;
-                if (engine.ui.ImGui.dragFloat("##graph_transition_condition_parameter_value", &value, 0.01, -1000.0, 1000.0)) {
+                if (gui.dragFloat("##graph_transition_condition_parameter_value", &value, 0.01, -1000.0, 1000.0)) {
                     parameter.value = value;
                     commitGraphAuthoringChange(state, layer_context, editor_state);
                 }
@@ -1889,7 +1890,7 @@ fn drawGraphTransitionsList(
         }
     }
 
-    if (engine.ui.ImGui.button(localText(state, .delete_condition))) {
+    if (gui.button(localText(state, .delete_condition))) {
         transition.removeCondition(editable_graph.allocator, condition_index) catch |err| {
             std.log.err("Failed to remove animation graph transition condition: {}", .{err});
             return;
@@ -1898,7 +1899,7 @@ fn drawGraphTransitionsList(
         commitGraphAuthoringChange(state, layer_context, editor_state);
     }
 
-    if (engine.ui.ImGui.button(localText(state, .delete_transition))) {
+    if (gui.button(localText(state, .delete_transition))) {
         var removed = editable_graph.transitions.orderedRemove(transition_index);
         removed.deinit(editable_graph.allocator);
 

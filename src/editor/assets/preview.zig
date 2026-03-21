@@ -1,5 +1,6 @@
 const std = @import("std");
 const engine = @import("guava");
+const gui = @import("../ui/gui.zig");
 const EditorState = @import("../core/state.zig").EditorState;
 const state_mod = @import("../core/state.zig");
 const utils = @import("../common/utils.zig");
@@ -11,42 +12,42 @@ const AssetEntry = state_mod.AssetEntry;
 pub fn drawAssetPreviewWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     var title_buffer: [96]u8 = undefined;
     const title = try state.windowLabel(&title_buffer, .asset_preview, "asset_preview_panel");
-    _ = engine.ui.ImGui.beginWindow(title);
-    defer engine.ui.ImGui.endWindow();
+    _ = gui.beginWindow(title);
+    defer gui.endWindow();
     layout.beginSectionBody();
     defer layout.endSectionBody();
 
     if (selectedAsset(state)) |entry| {
-        engine.ui.ImGui.labelText(state.text(.name), entry.name);
-        engine.ui.ImGui.labelText(state.text(.type), utils.assetKindLabel(state, entry.kind));
-        engine.ui.ImGui.labelText(state.text(.path), entry.path);
+        gui.labelText(state.text(.name), entry.name);
+        gui.labelText(state.text(.type), utils.assetKindLabel(state, entry.kind));
+        gui.labelText(state.text(.path), entry.path);
 
         switch (entry.kind) {
             .texture => {
                 try ensurePreviewTextureForAssetPath(state, layer_context, entry.path);
                 drawCurrentPreviewImage(state);
-                engine.ui.ImGui.textWrapped(state.text(.use_this_texture_from_details_gt_material));
+                gui.textWrapped(state.text(.use_this_texture_from_details_gt_material));
             },
             .model => {
-                engine.ui.ImGui.textWrapped(state.text(.models_are_imported_as_grouped_instances_with_a_movable_root_entity));
-                if (engine.ui.ImGui.buttonEx(state.text(.instantiate_model), engine.ui.ImGui.contentRegionAvail()[0], 0.0)) {
+                gui.textWrapped(state.text(.models_are_imported_as_grouped_instances_with_a_movable_root_entity));
+                if (gui.buttonEx(state.text(.instantiate_model), gui.contentRegionAvail()[0], 0.0)) {
                     try history.importModelPath(state, layer_context, entry.path);
                 }
             },
             .material => {
-                engine.ui.ImGui.textWrapped(state.text(.drop_material_here));
+                gui.textWrapped(state.text(.drop_material_here));
             },
             .scene => {
-                engine.ui.ImGui.textWrapped(state.text(.scenes_can_be_loaded_directly_or_overwritten_from_the_current_world));
-                if (engine.ui.ImGui.buttonEx(state.text(.load_scene), engine.ui.ImGui.contentRegionAvail()[0], 0.0)) {
+                gui.textWrapped(state.text(.scenes_can_be_loaded_directly_or_overwritten_from_the_current_world));
+                if (gui.buttonEx(state.text(.load_scene), gui.contentRegionAvail()[0], 0.0)) {
                     try history.loadScenePath(state, layer_context, entry.path);
                 }
-                if (engine.ui.ImGui.buttonEx(state.text(.save_over), engine.ui.ImGui.contentRegionAvail()[0], 0.0)) {
+                if (gui.buttonEx(state.text(.save_over), gui.contentRegionAvail()[0], 0.0)) {
                     history.saveScenePath(state, layer_context, entry.path);
                 }
             },
             .shader => {
-                engine.ui.ImGui.textWrapped(state.text(.shader_source_preview_is_currently_metadata_only));
+                gui.textWrapped(state.text(.shader_source_preview_is_currently_metadata_only));
             },
         }
         return;
@@ -67,7 +68,7 @@ pub fn drawAssetPreviewWindow(state: *EditorState, layer_context: *engine.core.L
                                     texture_resource.height,
                                     texture_resource.pixels,
                                 );
-                                engine.ui.ImGui.labelText(state.text(.previewing), texture_resource.name);
+                                gui.labelText(state.text(.previewing), texture_resource.name);
                                 drawCurrentPreviewImage(state);
                                 return;
                             }
@@ -78,7 +79,7 @@ pub fn drawAssetPreviewWindow(state: *EditorState, layer_context: *engine.core.L
         }
     }
 
-    engine.ui.ImGui.textWrapped(state.text(.select_a_texture_asset_or_an_entity_with_a_textured_material_to_preview_it));
+    gui.textWrapped(state.text(.select_a_texture_asset_or_an_entity_with_a_textured_material_to_preview_it));
 }
 
 fn selectedAsset(state: *EditorState) ?*const AssetEntry {
@@ -152,7 +153,7 @@ pub fn ensurePreviewTextureForResource(
 
 pub fn drawCurrentPreviewImage(state: *EditorState) void {
     const texture = if (state.preview_texture) |*value| value else return;
-    const available = engine.ui.ImGui.contentRegionAvail();
+    const available = gui.contentRegionAvail();
     if (available[0] <= 1.0 or available[1] <= 1.0 or state.preview_texture_size[0] == 0 or state.preview_texture_size[1] == 0) {
         return;
     }
@@ -162,7 +163,7 @@ pub fn drawCurrentPreviewImage(state: *EditorState) void {
     const scale = @min(available[0] / width_f, available[1] / height_f);
     const display_width = @max(width_f * scale, 1.0);
     const display_height = @max(height_f * scale, 1.0);
-    engine.ui.ImGui.image(texture, display_width, display_height);
+    gui.image(texture, display_width, display_height);
 }
 
 pub fn clearPreviewTexture(state: *EditorState) void {

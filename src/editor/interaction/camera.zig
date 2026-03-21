@@ -1,5 +1,6 @@
 const std = @import("std");
 const engine = @import("guava");
+const gui = @import("../ui/gui.zig");
 const mat4 = engine.math.mat4;
 const vec3 = engine.math.vec3;
 const quat = engine.math.quat;
@@ -16,7 +17,7 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
         state.viewport_hovered and
         state.viewport_focused and
         !state.viewport_overlay_hovered and
-        !engine.ui.ImGui.wantsTextInput();
+        !gui.wantsTextInput();
 
     // DCC ergonomics:
     // Alt+LMB orbit, MMB pan, Alt+RMB dolly, RMB freelook+WASDQE move.

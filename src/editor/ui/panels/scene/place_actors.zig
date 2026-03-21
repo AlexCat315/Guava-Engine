@@ -1,13 +1,14 @@
 const std = @import("std");
 const engine = @import("guava");
-const EditorState = @import("../../core/state.zig").EditorState;
-const state_mod = @import("../../core/state.zig");
-const MessageId = @import("../../i18n/message_id.zig").MessageId;
-const ui_icons = @import("../icons.zig");
-const layout = @import("../layout.zig");
-const history = @import("../../actions/history.zig");
-const camera = @import("../../interaction/camera.zig");
-const utils = @import("../../common/utils.zig");
+const gui = @import("../../gui.zig");
+const EditorState = @import("../../../core/state.zig").EditorState;
+const state_mod = @import("../../../core/state.zig");
+const MessageId = @import("../../../i18n/message_id.zig").MessageId;
+const ui_icons = @import("../../icons.zig");
+const layout = @import("../../layout.zig");
+const history = @import("../../../actions/history.zig");
+const camera = @import("../../../interaction/camera.zig");
+const utils = @import("../../../common/utils.zig");
 
 const PlaceActorEntry = struct {
     kind: state_mod.PlaceActorKind,
@@ -132,10 +133,10 @@ fn drawPlaceActorDragPreview(
     description: []const u8,
     icon_texture: *engine.rhi.Texture,
 ) void {
-    if (!engine.ui.ImGui.beginDragDropSourceU64(state_mod.place_actor_drag_payload, @intFromEnum(kind))) {
+    if (!gui.beginDragDropSourceU64(state_mod.place_actor_drag_payload, @intFromEnum(kind))) {
         return;
     }
-    defer engine.ui.ImGui.endDragDropSource();
+    defer gui.endDragDropSource();
 
     state.active_drag_payload = .{
         .kind = .place_actor,
@@ -145,9 +146,9 @@ fn drawPlaceActorDragPreview(
     var preview_buffer: [320]u8 = undefined;
     const preview_text = std.fmt.bufPrint(&preview_buffer, "{s}\n{s}", .{ label, description }) catch label;
 
-    engine.ui.ImGui.image(icon_texture, place_actor_drag_preview_icon_size, place_actor_drag_preview_icon_size);
-    engine.ui.ImGui.sameLine();
-    engine.ui.ImGui.text(preview_text);
+    gui.image(icon_texture, place_actor_drag_preview_icon_size, place_actor_drag_preview_icon_size);
+    gui.sameLine();
+    gui.text(preview_text);
 }
 
 fn categoryTabWidth(available_width: f32, category_count: usize) f32 {
@@ -161,23 +162,23 @@ fn drawCategoryButton(state: *EditorState, category: state_mod.PlaceActorCategor
     const active = state.place_actor_category == category;
     const palette = if (active) ui_icons.palettes.toolbar_active else ui_icons.palettes.toolbar_idle;
 
-    engine.ui.ImGui.pushStyleColor(.button, palette.button);
-    engine.ui.ImGui.pushStyleColor(.button_hovered, palette.hovered);
-    engine.ui.ImGui.pushStyleColor(.button_active, palette.active);
-    engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, ui_icons.regular_icon_button_rounding);
+    gui.pushStyleColor(.button, palette.button);
+    gui.pushStyleColor(.button_hovered, palette.hovered);
+    gui.pushStyleColor(.button_active, palette.active);
+    gui.pushStyleVarFloat(.frame_rounding, ui_icons.regular_icon_button_rounding);
 
     if (active) {
-        engine.ui.ImGui.pushStyleColor(.text, .{ 0.20, 0.60, 0.45, 1.0 });
+        gui.pushStyleColor(.text, .{ 0.20, 0.60, 0.45, 1.0 });
     }
 
-    const clicked = engine.ui.ImGui.buttonEx(label, width, category_button_height);
+    const clicked = gui.buttonEx(label, width, category_button_height);
 
     if (active) {
-        engine.ui.ImGui.popStyleColor(1);
+        gui.popStyleColor(1);
     }
 
-    engine.ui.ImGui.popStyleVar(1);
-    engine.ui.ImGui.popStyleColor(3);
+    gui.popStyleVar(1);
+    gui.popStyleColor(3);
     return clicked;
 }
 
@@ -203,19 +204,19 @@ fn triggerPlaceActorEntry(
 pub fn drawPlaceActorsWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     var title_buffer: [80]u8 = undefined;
     const title = try state.windowLabel(&title_buffer, .place_actors, "place_actors_panel");
-    _ = engine.ui.ImGui.beginWindow(title);
-    defer engine.ui.ImGui.endWindow();
+    _ = gui.beginWindow(title);
+    defer gui.endWindow();
 
     layout.beginSectionBody();
 
     // Category tabs
-    const available_width = engine.ui.ImGui.contentRegionAvail()[0];
+    const available_width = gui.contentRegionAvail()[0];
     const category_count = categories.len;
     const tab_width = categoryTabWidth(available_width, category_count);
 
     for (categories, 0..) |category, i| {
         if (i > 0) {
-            engine.ui.ImGui.sameLine();
+            gui.sameLine();
         }
         const label = state.text(category.label_id);
         if (drawCategoryButton(state, category.id, label, tab_width)) {
@@ -223,15 +224,15 @@ pub fn drawPlaceActorsWindow(state: *EditorState, layer_context: *engine.core.La
         }
     }
 
-    engine.ui.ImGui.dummy(0.0, 8.0);
-    engine.ui.ImGui.separator();
-    engine.ui.ImGui.dummy(0.0, 8.0);
+    gui.dummy(0.0, 8.0);
+    gui.separator();
+    gui.dummy(0.0, 8.0);
 
     // Filter input
-    engine.ui.ImGui.setNextItemWidth(-1.0);
-    _ = engine.ui.ImGui.inputTextWithHint("##place_actors_filter", state.text(.search_place_actors), state.place_actor_filter_buffer[0..]);
+    gui.setNextItemWidth(-1.0);
+    _ = gui.inputTextWithHint("##place_actors_filter", state.text(.search_place_actors), state.place_actor_filter_buffer[0..]);
 
-    engine.ui.ImGui.dummy(0.0, 8.0);
+    gui.dummy(0.0, 8.0);
 
     // Actor entries
     const entries = getEntriesForCategory(state.place_actor_category);
@@ -274,19 +275,19 @@ fn drawPlaceActorEntry(
 
     {
         // Compact list row (like hierarchy)
-        const row_width = @max(engine.ui.ImGui.contentRegionAvail()[0], 1.0);
+        const row_width = @max(gui.contentRegionAvail()[0], 1.0);
         var row_button_id_buffer: [72]u8 = undefined;
         const row_button_id = try std.fmt.bufPrint(&row_button_id_buffer, "##place_actor_row_{d}", .{@intFromEnum(entry.kind)});
-        engine.ui.ImGui.pushStyleColor(.button, place_actor_card_idle.button);
-        engine.ui.ImGui.pushStyleColor(.button_hovered, place_actor_card_idle.hovered);
-        engine.ui.ImGui.pushStyleColor(.button_active, place_actor_card_active.button);
-        engine.ui.ImGui.pushStyleVarVec2(.frame_padding, .{ 4.0, 2.0 });
-        engine.ui.ImGui.pushStyleVarFloat(.frame_rounding, place_actor_card_rounding);
-        const row_clicked = engine.ui.ImGui.buttonEx(row_button_id, row_width, place_actor_row_height);
-        const row_hovered = engine.ui.ImGui.isItemHovered();
+        gui.pushStyleColor(.button, place_actor_card_idle.button);
+        gui.pushStyleColor(.button_hovered, place_actor_card_idle.hovered);
+        gui.pushStyleColor(.button_active, place_actor_card_active.button);
+        gui.pushStyleVarVec2(.frame_padding, .{ 4.0, 2.0 });
+        gui.pushStyleVarFloat(.frame_rounding, place_actor_card_rounding);
+        const row_clicked = gui.buttonEx(row_button_id, row_width, place_actor_row_height);
+        const row_hovered = gui.isItemHovered();
         defer {
-            engine.ui.ImGui.popStyleVar(2);
-            engine.ui.ImGui.popStyleColor(3);
+            gui.popStyleVar(2);
+            gui.popStyleColor(3);
         }
 
         if (row_clicked) {
@@ -298,9 +299,9 @@ fn drawPlaceActorEntry(
         }
 
         // Compact layout: icon on left, label on right
-        engine.ui.ImGui.image(icon_texture, place_actor_list_icon_size, place_actor_list_icon_size);
-        engine.ui.ImGui.sameLine();
-        engine.ui.ImGui.text(label);
+        gui.image(icon_texture, place_actor_list_icon_size, place_actor_list_icon_size);
+        gui.sameLine();
+        gui.text(label);
     }
 }
 

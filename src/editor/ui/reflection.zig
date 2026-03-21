@@ -1,5 +1,6 @@
 const std = @import("std");
 const engine = @import("guava");
+const gui = @import("gui.zig");
 const layout = @import("layout.zig");
 
 pub const FieldChangedFn = *const fn (field_name: []const u8, value_str: []const u8) void;
@@ -18,7 +19,7 @@ pub fn drawComponentUI(comptime T: type, ctx: *ReflectionContext, component: *T)
     const struct_info = type_info.Struct;
     const type_name = @typeName(T);
 
-    if (engine.ui.ImGui.collapsingHeader(type_name, true)) {
+    if (gui.collapsingHeader(type_name, true)) {
         layout.beginSectionBody();
         inline for (struct_info.fields) |field| {
             drawFieldUI(field, ctx, @ptrCast(component));
@@ -52,7 +53,7 @@ fn drawFieldUI(comptime field: std.builtin.Type.StructField, ctx: *ReflectionCon
 
 fn drawFloatField(name: []const u8, ctx: *ReflectionContext, value: *f32) void {
     layout.drawInspectorPropertyRow(name, null);
-    if (engine.ui.ImGui.dragFloat("##value", value, 0.1, -10000.0, 10000.0)) {
+    if (gui.dragFloat("##value", value, 0.1, -10000.0, 10000.0)) {
         ctx.changed = true;
         if (ctx.on_field_changed) |callback| {
             var buf: [32]u8 = undefined;
@@ -64,7 +65,7 @@ fn drawFloatField(name: []const u8, ctx: *ReflectionContext, value: *f32) void {
 
 fn drawBoolField(name: []const u8, ctx: *ReflectionContext, value: *bool) void {
     layout.drawInspectorPropertyRow(name, null);
-    if (engine.ui.ImGui.checkbox("##value", value)) {
+    if (gui.checkbox("##value", value)) {
         ctx.changed = true;
         if (ctx.on_field_changed) |callback| {
             callback(name, if (value.*) "true" else "false");
@@ -75,7 +76,7 @@ fn drawBoolField(name: []const u8, ctx: *ReflectionContext, value: *bool) void {
 fn drawIntField(comptime T: type, name: []const u8, ctx: *ReflectionContext, value: *T) void {
     layout.drawInspectorPropertyRow(name, null);
     var val: i32 = @intCast(value.*);
-    if (engine.ui.ImGui.dragInt("##value", &val, 1.0, -100000, 100000)) {
+    if (gui.dragInt("##value", &val, 1.0, -100000, 100000)) {
         value.* = @intCast(val);
         ctx.changed = true;
         if (ctx.on_field_changed) |callback| {
@@ -88,7 +89,7 @@ fn drawIntField(comptime T: type, name: []const u8, ctx: *ReflectionContext, val
 
 fn drawVec3Field(name: []const u8, ctx: *ReflectionContext, value: *[3]f32) void {
     layout.drawInspectorPropertyRow(name, null);
-    if (engine.ui.ImGui.dragFloat3("##value", value, 0.1, -10000.0, 10000.0)) {
+    if (gui.dragFloat3("##value", value, 0.1, -10000.0, 10000.0)) {
         ctx.changed = true;
         if (ctx.on_field_changed) |callback| {
             var buf: [96]u8 = undefined;
@@ -100,7 +101,7 @@ fn drawVec3Field(name: []const u8, ctx: *ReflectionContext, value: *[3]f32) void
 
 fn drawVec4Field(name: []const u8, ctx: *ReflectionContext, value: *[4]f32) void {
     layout.drawInspectorPropertyRow(name, null);
-    if (engine.ui.ImGui.dragFloat4("##value", value, 0.1, -10000.0, 10000.0)) {
+    if (gui.dragFloat4("##value", value, 0.1, -10000.0, 10000.0)) {
         ctx.changed = true;
         if (ctx.on_field_changed) |callback| {
             var buf: [128]u8 = undefined;

@@ -75,6 +75,7 @@ const AABB = @import("../math/aabb.zig").AABB;
 const frustum_mod = @import("../math/frustum.zig");
 const vec3 = @import("../math/vec3.zig");
 const physics_mod = @import("../physics/system.zig");
+const PassDescriptors = @import("render_helpers.zig").PassDescriptors;
 const render_log = std.log.scoped(.viewport_render);
 
 /// 是否已记录视口后端日志
@@ -1197,15 +1198,7 @@ pub const Renderer = struct {
                 };
 
                 if (self.shadow_pass.isReady()) {
-                    const shadow_render_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
-                        .color = .{},
-                        .depth = .{
-                            .texture = &self.shadow_map.depth_texture.?,
-                            .clear_depth = 1.0,
-                            .load_op = .clear,
-                            .store_op = .store,
-                        },
-                    });
+                    const shadow_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.shadowOnly(&self.shadow_map.depth_texture.?));
                     const shadow_start = std.time.nanoTimestamp();
                     const shadow_stats = self.shadow_pass.draw(&self.rhi, frame, shadow_render_pass, &prepared_scene, light_space_matrix);
                     self.graph.recordPassStat(pass_stats, .shadow_map, durationNs(shadow_start, std.time.nanoTimestamp()), shadow_stats.draw_calls, shadow_stats.triangles_drawn);
@@ -1215,15 +1208,7 @@ pub const Renderer = struct {
 
                 if (self.id_pass.isReady()) {
                     const id_texture = self.id_pass.texture().?;
-                    const id_render_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
-                        .color = .{
-                            .target = .{ .texture = id_texture },
-                            .clear_color = .{ 0.0, 0.0, 0.0, 0.0 },
-                            .load_op = .clear,
-                            .store_op = .store,
-                        },
-                        .depth = scene_depth_target,
-                    });
+                    const id_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.idPass(id_texture, scene_depth_target));
                     const start = std.time.nanoTimestamp();
                     const id_stats = self.id_pass.draw(&self.rhi, frame, id_render_pass, &prepared_scene);
                     self.graph.recordPassStat(pass_stats, .id_pass, durationNs(start, std.time.nanoTimestamp()), id_stats.draw_calls, id_stats.triangles_drawn);
@@ -1233,15 +1218,7 @@ pub const Renderer = struct {
 
                 const base_pass_target = if (viewport_active) scene_hdr_color_target else scene_color_target;
 
-                const scene_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
-                    .color = .{
-                        .target = base_pass_target,
-                        .clear_color = clear.color,
-                        .load_op = .clear,
-                        .store_op = .store,
-                    },
-                    .depth = scene_depth_target,
-                });
+                const scene_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.colorWithDepth(base_pass_target, clear.color, scene_depth_target));
                 const depth_start = std.time.nanoTimestamp();
                 const depth_stats = self.depth_prepass.draw(&self.rhi, frame, scene_pass, &prepared_scene);
                 self.graph.recordPassStat(pass_stats, .depth_prepass, durationNs(depth_start, std.time.nanoTimestamp()), depth_stats.draw_calls, depth_stats.triangles_drawn);
@@ -1311,15 +1288,7 @@ pub const Renderer = struct {
                     const fxaa_enabled = self.editor_viewport_state.fxaa_enabled and self.fxaa_pass.isReady() and self.scene_viewport.fxaa() != null;
                     if (bloom_enabled) {
                         try self.bloom_pass.syncTexture(&self.rhi, self.scene_viewport.hdrColor().?);
-                        const bloom_render_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
-                            .color = .{
-                                .target = .{ .texture = self.scene_viewport.bloom().? },
-                                .clear_color = .{ 0.0, 0.0, 0.0, 1.0 },
-                                .load_op = .clear,
-                                .store_op = .store,
-                            },
-                            .depth = null,
-                        });
+                        const bloom_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.bloom().? }));
                         const bloom_start = std.time.nanoTimestamp();
                         const bloom_stats = self.bloom_pass.draw(
                             &self.rhi,
@@ -1340,15 +1309,7 @@ pub const Renderer = struct {
                         else
                             scene_color_target;
                         try self.tonemap_pass.syncTextures(&self.rhi, self.scene_viewport.hdrColor().?, bloom_input, lut_texture);
-                        const tonemap_render_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
-                            .color = .{
-                                .target = tonemap_target,
-                                .clear_color = .{ 0.0, 0.0, 0.0, 1.0 },
-                                .load_op = .clear,
-                                .store_op = .store,
-                            },
-                            .depth = null,
-                        });
+                        const tonemap_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(tonemap_target));
                         self.tonemap_pass.draw(
                             &self.rhi,
                             frame,
@@ -1369,15 +1330,7 @@ pub const Renderer = struct {
 
                     if (fxaa_enabled) {
                         try self.fxaa_pass.syncTexture(&self.rhi, self.scene_viewport.fxaa().?);
-                        const fxaa_render_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
-                            .color = .{
-                                .target = scene_color_target,
-                                .clear_color = .{ 0.0, 0.0, 0.0, 1.0 },
-                                .load_op = .clear,
-                                .store_op = .store,
-                            },
-                            .depth = null,
-                        });
+                        const fxaa_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(scene_color_target));
                         const fxaa_start = std.time.nanoTimestamp();
                         const fxaa_stats = self.fxaa_pass.draw(&self.rhi, fxaa_render_pass);
                         self.graph.recordPassStat(pass_stats, .post_process, durationNs(fxaa_start, std.time.nanoTimestamp()), fxaa_stats.draw_calls, fxaa_stats.triangles_drawn);
@@ -1389,14 +1342,7 @@ pub const Renderer = struct {
                 const selected_entities = self.selection_history.currentSelection();
                 if (self.outline_pass.isReady() and self.id_pass.texture() != null and selected_entities.len > 0) {
                     try self.outline_pass.syncTexture(&self.rhi, self.id_pass.texture().?);
-                    const outline_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
-                        .color = .{
-                            .target = scene_color_target,
-                            .load_op = .load,
-                            .store_op = .store,
-                        },
-                        .depth = null,
-                    });
+                    const outline_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(scene_color_target));
                     const outline_start = std.time.nanoTimestamp();
                     const outline_stats = self.outline_pass.draw(&self.rhi, frame, outline_pass, selected_entities);
                     self.graph.recordPassStat(pass_stats, .outline_pass, durationNs(outline_start, std.time.nanoTimestamp()), outline_stats.draw_calls, outline_stats.triangles_drawn);
@@ -1405,14 +1351,7 @@ pub const Renderer = struct {
                 }
 
                 if (self.gizmoPassRequired(scene)) {
-                    const gizmo_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
-                        .color = .{
-                            .target = scene_color_target,
-                            .load_op = .load,
-                            .store_op = .store,
-                        },
-                        .depth = null,
-                    });
+                    const gizmo_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(scene_color_target));
                     const gizmo_start = std.time.nanoTimestamp();
                     var gizmo_overlay_stats = mesh_pass_mod.DrawStats{};
                     const gizmo_target_transform = if (self.preview_gizmo_transform) |preview_transform|

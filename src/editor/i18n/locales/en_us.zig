@@ -308,7 +308,7 @@ pub const locale = types.LocaleInfo{
         .scale_tool = "Scale (R)",
         .global = "Global",
         .local = "Local",
-        
+
         // Prefab related
         .prefab = "Prefab",
         .prefab_browser = "Prefab Browser",
@@ -323,5 +323,14 @@ pub const locale = types.LocaleInfo{
         .prefab_override = "Prefab Override",
         .visibility = "Visibility",
         .visible = "Visible",
+
+        // AI Chat
+        .ai_chat = "AI Assistant",
+        .ai_chat_send = "Send",
+        .ai_chat_input_hint = "Ask AI to modify the scene...",
+        .ai_chat_empty = "Start a conversation with the AI assistant. It can help you create entities, modify the scene, and more.",
+        .ai_chat_thinking = "Thinking...",
+        .ai_chat_connected = "Connected",
+        .ai_chat_disconnected = "Not Connected",
     }),
 };

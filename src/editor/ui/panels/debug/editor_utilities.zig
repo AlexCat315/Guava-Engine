@@ -1,16 +1,17 @@
 const engine = @import("guava");
-const EditorState = @import("../../core/state.zig").EditorState;
-const layout = @import("../layout.zig");
+const gui = @import("../../gui.zig");
+const EditorState = @import("../../../core/state.zig").EditorState;
+const layout = @import("../../layout.zig");
 
 pub fn drawEditorUtilitiesWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     var open = state.editor_utilities_open;
-    if (!engine.ui.ImGui.beginWindowOpen("AI Utilities###editor_utilities_panel", &open)) {
-        engine.ui.ImGui.endWindow();
+    if (!gui.beginWindowOpen("AI Utilities###editor_utilities_panel", &open)) {
+        gui.endWindow();
         state.editor_utilities_open = open;
         return;
     }
     defer {
-        engine.ui.ImGui.endWindow();
+        gui.endWindow();
         state.editor_utilities_open = open;
     }
 
@@ -18,7 +19,7 @@ pub fn drawEditorUtilitiesWindow(state: *EditorState, layer_context: *engine.cor
     defer layout.endSectionBody();
 
     const runtime = layer_context.editor_utility_runtime orelse {
-        engine.ui.ImGui.textWrapped("Editor utility runtime is not available.");
+        gui.textWrapped("Editor utility runtime is not available.");
         return;
     };
 
@@ -26,20 +27,20 @@ pub fn drawEditorUtilitiesWindow(state: *EditorState, layer_context: *engine.cor
     defer engine.script.freeEditorUtilitySnapshots(layer_context.world.allocator, snapshots);
 
     if (snapshots.len == 0) {
-        engine.ui.ImGui.textWrapped("No editor utilities are loaded. Use MCP compile_editor_utility to add one.");
+        gui.textWrapped("No editor utilities are loaded. Use MCP compile_editor_utility to add one.");
         return;
     }
 
-    engine.ui.ImGui.text("Loaded Utilities");
-    const registry_height = @min(260.0, @max(148.0, engine.ui.ImGui.contentRegionAvail()[1] * 0.42));
-    if (engine.ui.ImGui.beginChild("editor_utilities_registry", 0.0, registry_height, true)) {
-        defer engine.ui.ImGui.endChild();
+    gui.text("Loaded Utilities");
+    const registry_height = @min(260.0, @max(148.0, gui.contentRegionAvail()[1] * 0.42));
+    if (gui.beginChild("editor_utilities_registry", 0.0, registry_height, true)) {
+        defer gui.endChild();
         try drawRegistry(runtime, snapshots);
     }
 
-    engine.ui.ImGui.dummy(0.0, 8.0);
-    engine.ui.ImGui.text("Panel Content");
-    engine.ui.ImGui.separator();
+    gui.dummy(0.0, 8.0);
+    gui.text("Panel Content");
+    gui.separator();
 
     var open_count: usize = 0;
     for (snapshots) |snapshot| {
@@ -48,21 +49,21 @@ pub fn drawEditorUtilitiesWindow(state: *EditorState, layer_context: *engine.cor
         }
         open_count += 1;
 
-        engine.ui.ImGui.pushIdU64(@intFromEnum(snapshot.handle));
-        defer engine.ui.ImGui.popId();
+        gui.pushIdU64(@intFromEnum(snapshot.handle));
+        defer gui.popId();
 
-        if (engine.ui.ImGui.collapsingHeader(snapshot.name, true)) {
+        if (gui.collapsingHeader(snapshot.name, true)) {
             if (snapshot.description.len != 0) {
-                engine.ui.ImGui.textWrapped(snapshot.description);
+                gui.textWrapped(snapshot.description);
             }
             if (snapshot.source_path.len != 0) {
-                engine.ui.ImGui.labelText("Source", snapshot.source_path);
+                gui.labelText("Source", snapshot.source_path);
             }
-            engine.ui.ImGui.labelText("Status", statusLabel(snapshot.status));
+            gui.labelText("Status", statusLabel(snapshot.status));
             if (snapshot.last_error.len != 0 and snapshot.status != .ready) {
-                engine.ui.ImGui.textWrapped(snapshot.last_error);
+                gui.textWrapped(snapshot.last_error);
             }
-            engine.ui.ImGui.separator();
+            gui.separator();
             _ = runtime.drawUtilityInCurrentWindow(snapshot.handle, .{
                 .world = layer_context.world,
                 .allocator = layer_context.world.allocator,
@@ -77,11 +78,11 @@ pub fn drawEditorUtilitiesWindow(state: *EditorState, layer_context: *engine.cor
             });
         }
 
-        engine.ui.ImGui.dummy(0.0, 6.0);
+        gui.dummy(0.0, 6.0);
     }
 
     if (open_count == 0) {
-        engine.ui.ImGui.textWrapped("No utility panels are currently open. Toggle Open above to render one here.");
+        gui.textWrapped("No utility panels are currently open. Toggle Open above to render one here.");
     }
 }
 
@@ -90,34 +91,34 @@ fn drawRegistry(
     snapshots: anytype,
 ) !void {
     for (snapshots, 0..) |snapshot, index| {
-        engine.ui.ImGui.pushIdU64(@intFromEnum(snapshot.handle));
-        defer engine.ui.ImGui.popId();
+        gui.pushIdU64(@intFromEnum(snapshot.handle));
+        defer gui.popId();
 
         if (index != 0) {
-            engine.ui.ImGui.separator();
+            gui.separator();
         }
 
-        engine.ui.ImGui.text(snapshot.name);
+        gui.text(snapshot.name);
         if (snapshot.description.len != 0) {
-            engine.ui.ImGui.textWrapped(snapshot.description);
+            gui.textWrapped(snapshot.description);
         }
         if (snapshot.source_path.len != 0) {
-            engine.ui.ImGui.labelText("Source", snapshot.source_path);
+            gui.labelText("Source", snapshot.source_path);
         }
-        engine.ui.ImGui.labelText("Status", statusLabel(snapshot.status));
+        gui.labelText("Status", statusLabel(snapshot.status));
 
         var is_open = snapshot.open;
-        if (engine.ui.ImGui.checkbox("Open", &is_open)) {
+        if (gui.checkbox("Open", &is_open)) {
             runtime.setOpen(snapshot.handle, is_open);
         }
-        engine.ui.ImGui.sameLine();
-        if (engine.ui.ImGui.button("Unload")) {
+        gui.sameLine();
+        if (gui.button("Unload")) {
             _ = runtime.remove(snapshot.handle);
             continue;
         }
 
         if (snapshot.last_error.len != 0 and snapshot.status != .ready) {
-            engine.ui.ImGui.textWrapped(snapshot.last_error);
+            gui.textWrapped(snapshot.last_error);
         }
     }
 }

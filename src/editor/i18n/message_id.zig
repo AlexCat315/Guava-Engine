@@ -301,7 +301,7 @@ pub const MessageId = enum {
     scale_tool,
     global,
     local,
-    
+
     // Prefab 相关
     prefab,
     prefab_browser,
@@ -316,4 +316,13 @@ pub const MessageId = enum {
     prefab_override,
     visibility,
     visible,
+
+    // AI Chat
+    ai_chat,
+    ai_chat_send,
+    ai_chat_input_hint,
+    ai_chat_empty,
+    ai_chat_thinking,
+    ai_chat_connected,
+    ai_chat_disconnected,
 };

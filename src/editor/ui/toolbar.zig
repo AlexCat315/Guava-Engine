@@ -1,5 +1,6 @@
 const std = @import("std");
 const engine = @import("guava");
+const gui = @import("gui.zig");
 const EditorState = @import("../core/state.zig").EditorState;
 const PlaybackState = @import("../core/state.zig").PlaybackState;
 const ui_icons = @import("icons.zig");
@@ -33,19 +34,19 @@ fn drawPlaybackButton(
 }
 
 pub fn drawToolbarWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
-    _ = engine.ui.ImGui.beginWindowFlags(
+    _ = gui.beginWindowFlags(
         "Toolbar###toolbar_panel",
-        engine.ui.ImGui.WindowFlags.no_title_bar |
-            engine.ui.ImGui.WindowFlags.no_scrollbar |
-            engine.ui.ImGui.WindowFlags.no_resize |
-            engine.ui.ImGui.WindowFlags.no_collapse,
+        gui.WindowFlags.no_title_bar |
+            gui.WindowFlags.no_scrollbar |
+            gui.WindowFlags.no_resize |
+            gui.WindowFlags.no_collapse,
     );
-    defer engine.ui.ImGui.endWindow();
+    defer gui.endWindow();
 
-    const content_width = engine.ui.ImGui.contentRegionAvail()[0];
+    const content_width = gui.contentRegionAvail()[0];
 
-    engine.ui.ImGui.pushStyleVarVec2(.item_spacing, .{ 6.0, 6.0 });
-    defer engine.ui.ImGui.popStyleVar(1);
+    gui.pushStyleVarVec2(.item_spacing, .{ 6.0, 6.0 });
+    defer gui.popStyleVar(1);
 
     // Centered playback controls
     const play_button_size: f32 = 28.0;
@@ -53,8 +54,8 @@ pub fn drawToolbarWindow(state: *EditorState, layer_context: *engine.core.LayerC
     const total_playback_width = play_button_size * 3.0 + spacing * 2.0;
     const center_start = (content_width - total_playback_width) * 0.5;
 
-    engine.ui.ImGui.dummy(0.0, 1.0);
-    engine.ui.ImGui.sameLineEx(center_start, 0.0);
+    gui.dummy(0.0, 1.0);
+    gui.sameLineEx(center_start, 0.0);
 
     // Play button - green background when active
     const is_playing = state.playback_state == .playing;
@@ -62,10 +63,10 @@ pub fn drawToolbarWindow(state: *EditorState, layer_context: *engine.core.LayerC
     if (try drawPlaybackButton(state, layer_context, "toolbar_play", ui_icons.paths.toolbar.play, play_palette)) {
         setPlaybackState(state, layer_context, .playing);
     }
-    if (engine.ui.ImGui.isItemHovered()) {
-        engine.ui.ImGui.setTooltip(state.text(.run));
+    if (gui.isItemHovered()) {
+        gui.setTooltip(state.text(.run));
     }
-    engine.ui.ImGui.sameLine();
+    gui.sameLine();
 
     // Pause button
     const is_paused = state.playback_state == .paused;
@@ -73,16 +74,16 @@ pub fn drawToolbarWindow(state: *EditorState, layer_context: *engine.core.LayerC
     if (try drawPlaybackButton(state, layer_context, "toolbar_pause", ui_icons.paths.toolbar.pause, pause_palette)) {
         setPlaybackState(state, layer_context, .paused);
     }
-    if (engine.ui.ImGui.isItemHovered()) {
-        engine.ui.ImGui.setTooltip(state.text(.pause));
+    if (gui.isItemHovered()) {
+        gui.setTooltip(state.text(.pause));
     }
-    engine.ui.ImGui.sameLine();
+    gui.sameLine();
 
     // Step button
     if (try drawPlaybackButton(state, layer_context, "toolbar_step", ui_icons.paths.toolbar.step, ui_icons.palettes.toolbar_idle)) {
         stepPlayback(state, layer_context);
     }
-    if (engine.ui.ImGui.isItemHovered()) {
-        engine.ui.ImGui.setTooltip(state.text(.step));
+    if (gui.isItemHovered()) {
+        gui.setTooltip(state.text(.step));
     }
 }

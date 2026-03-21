@@ -680,6 +680,79 @@ pub fn drawViewCube(view: *const [16]f32, position: [2]f32, size: f32) ViewCubeR
     };
 }
 
+// ── Extended widget API ─────────────────────────────────────────────────
+
+pub const MouseButton = enum(c_int) {
+    left = 0,
+    right = 1,
+    middle = 2,
+};
+
+pub const ColorEditFlags = struct {
+    // placeholder — ImGui default flags (0) used when callers pass .{}
+};
+
+pub fn dragFloat4(label: []const u8, value: *[4]f32, speed: f32, min_value: f32, max_value: f32) bool {
+    return c.guava_imgui_drag_float4(label.ptr, label.len, value, speed, min_value, max_value);
+}
+
+pub fn dragInt(label: []const u8, value: *i32, speed: f32, min_value: i32, max_value: i32) bool {
+    return c.guava_imgui_drag_int(label.ptr, label.len, value, speed, min_value, max_value);
+}
+
+pub fn colorEdit3(label: []const u8, color: *[3]f32, _flags: ColorEditFlags) bool {
+    _ = _flags;
+    return c.guava_imgui_color_edit3(label.ptr, label.len, color);
+}
+
+pub fn colorEdit4(label: []const u8, color: *[4]f32, _flags: ColorEditFlags) bool {
+    _ = _flags;
+    return c.guava_imgui_color_edit4(label.ptr, label.len, color);
+}
+
+pub fn textColored(color: [4]f32, value: []const u8) void {
+    c.guava_imgui_text_colored(color[0], color[1], color[2], color[3], value.ptr, value.len);
+}
+
+pub fn beginGroup() void {
+    c.guava_imgui_begin_group();
+}
+
+pub fn endGroup() void {
+    c.guava_imgui_end_group();
+}
+
+pub fn setItemDefaultFocus() void {
+    c.guava_imgui_set_item_default_focus();
+}
+
+pub fn setCursorScreenPos(position: [2]f32) void {
+    c.guava_imgui_set_cursor_screen_pos(position[0], position[1]);
+}
+
+pub fn isMouseDoubleClicked(btn: MouseButton) bool {
+    return c.guava_imgui_is_mouse_double_clicked(@intFromEnum(btn));
+}
+
+pub fn isMouseDragging(btn: MouseButton) bool {
+    return c.guava_imgui_is_mouse_dragging(@intFromEnum(btn));
+}
+
+pub fn mouseDragDelta(btn: MouseButton) [2]f32 {
+    var value = [2]f32{ 0.0, 0.0 };
+    c.guava_imgui_get_mouse_drag_delta(@intFromEnum(btn), &value[0]);
+    return value;
+}
+
+pub fn resetMouseDragDelta(btn: MouseButton) void {
+    c.guava_imgui_reset_mouse_drag_delta(@intFromEnum(btn));
+}
+
+pub fn getContentRegionAvail() struct { x: f32, y: f32 } {
+    const avail = contentRegionAvail();
+    return .{ .x = avail[0], .y = avail[1] };
+}
+
 fn textureFormatToSdl(format: rhi_types.TextureFormat) c.SDL_GPUTextureFormat {
     return switch (format) {
         .bgra8_unorm => @as(c.SDL_GPUTextureFormat, @intCast(c.SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM)),

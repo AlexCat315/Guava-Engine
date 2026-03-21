@@ -1,5 +1,6 @@
 const std = @import("std");
 const engine = @import("guava");
+const gui = @import("../ui/gui.zig");
 const EditorState = @import("state.zig").EditorState;
 const utils = @import("../common/utils.zig");
 const ai_collaboration = @import("../ai_native/collaboration.zig");
@@ -12,9 +13,9 @@ const asset_preview = @import("../assets/preview.zig");
 const history = @import("../actions/history.zig");
 const vfx_runtime = @import("../runtime/vfx.zig");
 const layout = @import("../ui/layout.zig");
-const animation_editor = @import("../ui/windows/animation_editor.zig");
-const editor_utilities = @import("../ui/windows/editor_utilities.zig");
-const prefab_browser = @import("../ui/windows/prefab_browser.zig");
+const animation_editor = @import("../ui/panels/tools/animation_editor.zig");
+const editor_utilities = @import("../ui/panels/debug/editor_utilities.zig");
+const prefab_browser = @import("../ui/panels/assets/prefab_browser.zig");
 
 fn initEditorStyle() void {
     // 采用更沉稳、现代的深灰色调，精简强调色应用以减少视觉疲劳
@@ -32,51 +33,51 @@ fn initEditorStyle() void {
     const text_dim = .{ 0.55, 0.58, 0.62, 1.0 };
 
     // 强调色精简应用
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.header), accent_dimmed);
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.header_hovered), accent_hover);
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.header_active), accent_primary);
+    gui.setStyleColor(@intFromEnum(gui.Col.header), accent_dimmed);
+    gui.setStyleColor(@intFromEnum(gui.Col.header_hovered), accent_hover);
+    gui.setStyleColor(@intFromEnum(gui.Col.header_active), accent_primary);
 
     // Tab 样式优化 - 仅激活状态显示强调色
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.tab), .{ 0.11, 0.12, 0.13, 0.0 });
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.tab_active), accent_primary);
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.tab_hovered), accent_hover);
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.tab_unfocused), .{ 0.11, 0.12, 0.13, 0.0 });
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.tab_unfocused_active), .{ 0.15, 0.16, 0.17, 1.0 });
+    gui.setStyleColor(@intFromEnum(gui.Col.tab), .{ 0.11, 0.12, 0.13, 0.0 });
+    gui.setStyleColor(@intFromEnum(gui.Col.tab_active), accent_primary);
+    gui.setStyleColor(@intFromEnum(gui.Col.tab_hovered), accent_hover);
+    gui.setStyleColor(@intFromEnum(gui.Col.tab_unfocused), .{ 0.11, 0.12, 0.13, 0.0 });
+    gui.setStyleColor(@intFromEnum(gui.Col.tab_unfocused_active), .{ 0.15, 0.16, 0.17, 1.0 });
 
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.slider_grab), accent_primary);
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.slider_grab_active), accent_active);
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.check_mark), accent_primary);
+    gui.setStyleColor(@intFromEnum(gui.Col.slider_grab), accent_primary);
+    gui.setStyleColor(@intFromEnum(gui.Col.slider_grab_active), accent_active);
+    gui.setStyleColor(@intFromEnum(gui.Col.check_mark), accent_primary);
 
     // 按钮样式调整 - 降低默认亮度
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.button), .{ 0.18, 0.19, 0.21, 1.0 });
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.button_hovered), .{ 0.24, 0.25, 0.28, 1.0 });
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.button_active), accent_primary);
+    gui.setStyleColor(@intFromEnum(gui.Col.button), .{ 0.18, 0.19, 0.21, 1.0 });
+    gui.setStyleColor(@intFromEnum(gui.Col.button_hovered), .{ 0.24, 0.25, 0.28, 1.0 });
+    gui.setStyleColor(@intFromEnum(gui.Col.button_active), accent_primary);
 
     // 背景体系
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.text), text_main);
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.text_disabled), text_dim);
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.window_bg), bg_mid);
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.child_bg), bg_frame);
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.frame_bg), bg_frame);
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.popup_bg), bg_light);
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.modal_window_dim_bg), .{ 0.05, 0.05, 0.06, 0.7 });
+    gui.setStyleColor(@intFromEnum(gui.Col.text), text_main);
+    gui.setStyleColor(@intFromEnum(gui.Col.text_disabled), text_dim);
+    gui.setStyleColor(@intFromEnum(gui.Col.window_bg), bg_mid);
+    gui.setStyleColor(@intFromEnum(gui.Col.child_bg), bg_frame);
+    gui.setStyleColor(@intFromEnum(gui.Col.frame_bg), bg_frame);
+    gui.setStyleColor(@intFromEnum(gui.Col.popup_bg), bg_light);
+    gui.setStyleColor(@intFromEnum(gui.Col.modal_window_dim_bg), .{ 0.05, 0.05, 0.06, 0.7 });
 
     // 边框与间距优化
-    engine.ui.ImGui.setStyleVarFloat(100, 0.0); // WindowBorderSize
-    engine.ui.ImGui.setStyleVarFloat(101, 1.0); // FrameBorderSize
-    engine.ui.ImGui.setStyleVarFloat(102, 3.0); // FrameRounding
+    gui.setStyleVarFloat(100, 0.0); // WindowBorderSize
+    gui.setStyleVarFloat(101, 1.0); // FrameBorderSize
+    gui.setStyleVarFloat(102, 3.0); // FrameRounding
 
     // 分割线颜色调暗
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.separator), .{ 0.15, 0.16, 0.18, 1.0 });
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.separator_hovered), accent_hover);
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.separator_active), accent_primary);
+    gui.setStyleColor(@intFromEnum(gui.Col.separator), .{ 0.15, 0.16, 0.18, 1.0 });
+    gui.setStyleColor(@intFromEnum(gui.Col.separator_hovered), accent_hover);
+    gui.setStyleColor(@intFromEnum(gui.Col.separator_active), accent_primary);
 
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.text_selected_bg), .{ 0.20, 0.60, 0.45, 0.35 });
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.drag_drop_target), accent_primary);
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.docking_preview), accent_dimmed);
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.resize_grip_hovered), accent_hover);
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.resize_grip_active), accent_primary);
-    engine.ui.ImGui.setStyleColor(@intFromEnum(engine.ui.ImGui.Col.nav_highlight), accent_primary);
+    gui.setStyleColor(@intFromEnum(gui.Col.text_selected_bg), .{ 0.20, 0.60, 0.45, 0.35 });
+    gui.setStyleColor(@intFromEnum(gui.Col.drag_drop_target), accent_primary);
+    gui.setStyleColor(@intFromEnum(gui.Col.docking_preview), accent_dimmed);
+    gui.setStyleColor(@intFromEnum(gui.Col.resize_grip_hovered), accent_hover);
+    gui.setStyleColor(@intFromEnum(gui.Col.resize_grip_active), accent_primary);
+    gui.setStyleColor(@intFromEnum(gui.Col.nav_highlight), accent_primary);
 }
 
 pub const EditorLayer = struct {
@@ -102,7 +103,7 @@ pub const EditorLayer = struct {
         self.state.preview_device = layer_context.rhi();
         self.state.icon_device = layer_context.rhi();
         self.state.asset_registry = engine.assets.AssetRegistry.init(layer_context.world.allocator);
-        try engine.ui.ImGui.init(layer_context.window, layer_context.rhi());
+        try gui.init(layer_context.window, layer_context.rhi());
 
         initEditorStyle();
 
@@ -155,7 +156,7 @@ pub const EditorLayer = struct {
             self.state.asset_registry = null;
         }
         history.clearSnapshotHistory(&self.state);
-        engine.ui.ImGui.shutdown();
+        gui.shutdown();
     }
 
     fn onUpdate(context: *anyopaque, layer_context: *engine.core.LayerContext) !void {
@@ -169,10 +170,10 @@ pub const EditorLayer = struct {
         try utils.pruneFrozenSelection(&self.state, layer_context);
         try utils.pruneLockedSelection(&self.state, layer_context);
         utils.syncInspectorNameBuffer(&self.state, layer_context);
-        engine.ui.ImGui.beginDockspace();
+        gui.beginDockspace();
         if (!self.state.dock_layout_initialized) {
             std.log.info("Editor: Initializing default dock layout", .{});
-            engine.ui.ImGui.resetDefaultLayout();
+            gui.resetDefaultLayout();
             self.state.dock_layout_initialized = true;
         }
         try viewport.drawEditorUi(&self.state, layer_context);

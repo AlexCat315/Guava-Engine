@@ -1,5 +1,6 @@
 const std = @import("std");
 const engine = @import("guava");
+const gui = @import("../ui/gui.zig");
 const camera = @import("../interaction/camera.zig");
 const state_mod = @import("../core/state.zig");
 
@@ -248,18 +249,18 @@ fn drawPreviewCard(
     snapshot: collaboration_mod.OverlaySnapshot,
 ) !void {
     const card_pos = .{ state.viewport_origin[0] + 18.0, state.viewport_origin[1] + 18.0 };
-    engine.ui.ImGui.setNextWindowPos(card_pos);
-    engine.ui.ImGui.setNextWindowBgAlpha(0.92);
-    _ = engine.ui.ImGui.beginWindowFlags(
+    gui.setNextWindowPos(card_pos);
+    gui.setNextWindowBgAlpha(0.92);
+    _ = gui.beginWindowFlags(
         "AI Collaboration Overlay##ai_native_preview",
-        engine.ui.ImGui.WindowFlags.no_title_bar |
-            engine.ui.ImGui.WindowFlags.no_saved_settings |
-            engine.ui.ImGui.WindowFlags.no_move |
-            engine.ui.ImGui.WindowFlags.always_auto_resize,
+        gui.WindowFlags.no_title_bar |
+            gui.WindowFlags.no_saved_settings |
+            gui.WindowFlags.no_move |
+            gui.WindowFlags.always_auto_resize,
     );
-    defer engine.ui.ImGui.endWindow();
+    defer gui.endWindow();
 
-    if (engine.ui.ImGui.isWindowHovered()) {
+    if (gui.isWindowHovered()) {
         state.viewport_overlay_hovered = true;
     }
 
@@ -269,16 +270,16 @@ fn drawPreviewCard(
         "Ghost Preview  #{d}  [{s}]",
         .{ snapshot.transaction_id, @tagName(snapshot.source) },
     ) catch "Ghost Preview";
-    engine.ui.ImGui.text(header);
+    gui.text(header);
 
     if (snapshot.label.len > 0) {
-        engine.ui.ImGui.text(snapshot.label.slice());
+        gui.text(snapshot.label.slice());
     }
     if (snapshot.note.len > 0) {
-        engine.ui.ImGui.textWrapped(snapshot.note.slice());
+        gui.textWrapped(snapshot.note.slice());
     }
 
-    engine.ui.ImGui.separator();
+    gui.separator();
 
     var summary_buffer: [192]u8 = undefined;
     const summary = std.fmt.bufPrint(
@@ -286,15 +287,15 @@ fn drawPreviewCard(
         "commands: {d}   preview: {d}   errors: {d}",
         .{ snapshot.command_count, snapshot.preview_count, snapshot.error_count },
     ) catch "preview summary";
-    engine.ui.ImGui.text(summary);
+    gui.text(summary);
 
-    if (engine.ui.ImGui.buttonEx("Apply Preview##ai_stage_apply", 136.0, 0.0)) {
+    if (gui.buttonEx("Apply Preview##ai_stage_apply", 136.0, 0.0)) {
         _ = try store.applyStagedTransaction(layer_context.world, .human);
         clearPreviewSelection(state, layer_context);
         state.viewport_overlay_hovered = true;
     }
-    engine.ui.ImGui.sameLine();
-    if (engine.ui.ImGui.buttonEx("Discard##ai_stage_discard", 112.0, 0.0)) {
+    gui.sameLine();
+    if (gui.buttonEx("Discard##ai_stage_discard", 112.0, 0.0)) {
         _ = store.discardStagedTransaction(.human);
         clearPreviewSelection(state, layer_context);
         state.viewport_overlay_hovered = true;
@@ -302,10 +303,10 @@ fn drawPreviewCard(
 
     if (state.ai_preview_selected_entity) |selected_entity| {
         if (previewEntityLabel(state, selected_entity)) |label| {
-            engine.ui.ImGui.separator();
+            gui.separator();
             var selected_buffer: [160]u8 = undefined;
             const selected_text = std.fmt.bufPrint(&selected_buffer, "editing ghost: {s}  #{d}", .{ label, selected_entity }) catch "editing ghost";
-            engine.ui.ImGui.text(selected_text);
+            gui.text(selected_text);
         }
     }
 }
@@ -315,7 +316,7 @@ fn drawPreviewPins(
     layer_context: *engine.core.LayerContext,
     snapshot: collaboration_mod.OverlaySnapshot,
 ) void {
-    const draw_list = engine.ui.ImGui.getWindowDrawList();
+    const draw_list = gui.getWindowDrawList();
     const label_limit = @min(snapshot.visible_entry_count, 12);
 
     for (0..snapshot.visible_entry_count) |index| {
@@ -327,7 +328,7 @@ fn drawPreviewPins(
         const color = previewColor(entry.action, entry.visible);
         const is_selected = entry.entity_id != null and state.ai_preview_selected_entity != null and entry.entity_id.? == state.ai_preview_selected_entity.?;
         if (is_selected) {
-            draw_list.addCircleFilled(screen_pos, 8.5, engine.ui.ImGui.getColorU32(.{ 0.98, 0.98, 0.98, 0.92 }), 18);
+            draw_list.addCircleFilled(screen_pos, 8.5, gui.getColorU32(.{ 0.98, 0.98, 0.98, 0.92 }), 18);
         }
         draw_list.addCircleFilled(screen_pos, if (is_selected) 6.0 else 5.5, color, 12);
 
@@ -338,7 +339,7 @@ fn drawPreviewPins(
         draw_list.addRectFilled(
             .{ label_pos[0] - 4.0, label_pos[1] - 2.0 },
             .{ label_pos[0] + 12.0 + @as(f32, @floatFromInt(entry.name.len)) * 6.0, label_pos[1] + 16.0 },
-            engine.ui.ImGui.getColorU32(.{ 0.05, 0.08, 0.07, 0.78 }),
+            gui.getColorU32(.{ 0.05, 0.08, 0.07, 0.78 }),
             4.0,
             0,
         );
@@ -570,7 +571,7 @@ fn worldPointToViewportScreen(
 
 fn previewColor(action: collaboration_mod.PreviewAction, visible: bool) u32 {
     const alpha: f32 = if (visible) 0.96 else 0.55;
-    return engine.ui.ImGui.getColorU32(switch (action) {
+    return gui.getColorU32(switch (action) {
         .created => .{ 0.24, 0.90, 0.56, alpha },
         .updated => .{ 0.96, 0.78, 0.30, alpha },
         .deleted => .{ 0.98, 0.42, 0.42, alpha },
