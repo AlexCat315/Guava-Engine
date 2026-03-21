@@ -46,6 +46,12 @@ pub const EditorViewportState = struct {
     ssr_ray_thickness: f32 = 0.5,
     ssr_fade_distance: f32 = 10.0,
     ssr_edge_fade: f32 = 0.1,
+    // TAA 时域抗锯齿
+    taa_enabled: bool = false,
+    taa_blend_factor: f32 = 0.1,
+    taa_motion_blur_scale: f32 = 1.0,
+    taa_feedback_min: f32 = 0.88,
+    taa_feedback_max: f32 = 0.97,
     // Color Grading 先走参数级 MVP，LUT 后续单独补。
     color_grading_enabled: bool = false,
     color_grading_saturation: f32 = 1.0,
