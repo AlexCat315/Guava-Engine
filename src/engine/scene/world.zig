@@ -42,6 +42,7 @@ const AABB = @import("../math/aabb.zig").AABB;
 const frustum_mod = @import("../math/frustum.zig");
 const job_system_mod = @import("../core/job_system.zig");
 const prefab_mod = @import("prefab.zig");
+const sparse_set_mod = @import("../core/sparse_set.zig");
 
 const compose_epsilon = 0.0001;
 const dynamic_reintegration_query_threshold: u8 = 3;
@@ -395,6 +396,8 @@ pub const World = struct {
     skinned_mesh_bindings: std.ArrayList(SkinnedMeshBinding) = .empty,
     /// 是否需要完全同步可渲染物
     renderable_full_sync_required: bool = false,
+    /// Transform 组件稀疏集（热路径组件，O(1) 访问）
+    transform_set: sparse_set_mod.SparseSet(components.Transform),
 
     /// 初始化世界
     ///
@@ -418,6 +421,7 @@ pub const World = struct {
             .dynamic_renderables = std.AutoHashMap(EntityId, DynamicRenderableState).init(allocator),
             .dynamic_dirty_renderables = std.AutoHashMap(EntityId, void).init(allocator),
             .renderable_sync_candidates = std.AutoHashMap(EntityId, void).init(allocator),
+            .transform_set = sparse_set_mod.SparseSet(components.Transform).initNoFail(allocator, 1024),
         };
     }
 
@@ -462,6 +466,7 @@ pub const World = struct {
         self.skinned_mesh_bindings.deinit(self.allocator);
         self.resources.deinit();
         self.prefab_library.deinit();
+        self.transform_set.deinit(self.allocator);
         if (reinitialize) {
             self.entities = .empty;
             self.id_to_index = std.AutoHashMap(EntityId, usize).init(self.allocator);
@@ -481,6 +486,7 @@ pub const World = struct {
             self.animator_graph_bindings = .empty;
             self.skinned_mesh_bindings = .empty;
             self.renderable_full_sync_required = false;
+            self.transform_set = sparse_set_mod.SparseSet(components.Transform).initNoFail(self.allocator, 1024);
         }
     }
 
@@ -535,6 +541,7 @@ pub const World = struct {
         });
 
         try self.id_to_index.put(id, index);
+        self.transform_set.insert(id, desc.local_transform) catch {};
 
         if (desc.parent) |parent_id| {
             if (self.getEntity(parent_id)) |parent| {
@@ -693,11 +700,17 @@ pub const World = struct {
     pub fn setEntityLocalTransform(self: *World, id: EntityId, transform: components.Transform) bool {
         const entity = self.getEntity(id) orelse return false;
         entity.local_transform = transform;
+        if (self.transform_set.getPtr(id)) |t| {
+            t.* = transform;
+        }
         self.markDirty(id);
         return true;
     }
 
     pub fn localTransform(self: *const World, id: EntityId) components.Transform {
+        if (self.transform_set.get(id)) |t| {
+            return t.*;
+        }
         const entity = self.getEntityConst(id) orelse return .{};
         return entity.local_transform;
     }
@@ -737,6 +750,9 @@ pub const World = struct {
             entity.local_transform = relativeTransform(parent_world, world_transform);
         } else {
             entity.local_transform = world_transform;
+        }
+        if (self.transform_set.getPtr(id)) |t| {
+            t.* = entity.local_transform;
         }
         self.markDirty(id);
         return true;

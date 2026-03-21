@@ -46,6 +46,18 @@ extern uint32_t guava_wasm_host_ui_drag_float_bits(
     float max_value
 );
 extern void guava_wasm_host_ui_set_next_item_width(void *userdata, float width);
+extern uint32_t guava_wasm_host_ui_begin_window(void *userdata, const uint8_t *ptr, uint32_t len);
+extern void guava_wasm_host_ui_end_window(void *userdata);
+extern uint32_t guava_wasm_host_ui_collapsing_header(void *userdata, const uint8_t *ptr, uint32_t len, uint32_t default_open);
+extern uint32_t guava_wasm_host_ui_input_text(void *userdata, const uint8_t *label_ptr, uint32_t label_len, uint8_t *buffer_ptr, uint32_t buffer_len);
+extern uint32_t guava_wasm_host_ui_drag_float3_bits(void *userdata, const uint8_t *ptr, uint32_t len, uint32_t x_bits, uint32_t y_bits, uint32_t z_bits, float speed, float min_value, float max_value);
+extern void guava_wasm_host_ui_indent(void *userdata, float width);
+extern void guava_wasm_host_ui_unindent(void *userdata, float width);
+extern uint32_t guava_wasm_host_ui_begin_child(void *userdata, const uint8_t *ptr, uint32_t len, float width, float height, uint32_t border);
+extern void guava_wasm_host_ui_end_child(void *userdata);
+extern uint32_t guava_wasm_host_ui_is_item_clicked(void *userdata);
+extern uint32_t guava_wasm_host_ui_is_item_hovered(void *userdata);
+extern void guava_wasm_host_ui_set_tooltip(void *userdata, const uint8_t *ptr, uint32_t len);
 
 static void *
 guava_get_userdata(wasm_exec_env_t exec_env) {
@@ -212,7 +224,99 @@ host_ui_set_next_item_width(wasm_exec_env_t exec_env, float width) {
     guava_wasm_host_ui_set_next_item_width(guava_get_userdata(exec_env), width);
 }
 
-#define GUAVA_NATIVE_SYMBOL_COUNT 22
+static uint32_t
+host_ui_begin_window(wasm_exec_env_t exec_env, const uint8_t *ptr, uint32_t len) {
+    return guava_wasm_host_ui_begin_window(guava_get_userdata(exec_env), ptr, len);
+}
+
+static void
+host_ui_end_window(wasm_exec_env_t exec_env) {
+    guava_wasm_host_ui_end_window(guava_get_userdata(exec_env));
+}
+
+static uint32_t
+host_ui_collapsing_header(wasm_exec_env_t exec_env, const uint8_t *ptr, uint32_t len, uint32_t default_open) {
+    return guava_wasm_host_ui_collapsing_header(guava_get_userdata(exec_env), ptr, len, default_open);
+}
+
+static uint32_t
+host_ui_input_text(
+    wasm_exec_env_t exec_env,
+    const uint8_t *label_ptr,
+    uint32_t label_len,
+    uint8_t *buffer_ptr,
+    uint32_t buffer_len
+) {
+    return guava_wasm_host_ui_input_text(
+        guava_get_userdata(exec_env),
+        label_ptr,
+        label_len,
+        buffer_ptr,
+        buffer_len
+    );
+}
+
+static uint32_t
+host_ui_drag_float3_bits(
+    wasm_exec_env_t exec_env,
+    const uint8_t *ptr,
+    uint32_t len,
+    uint32_t x_bits,
+    uint32_t y_bits,
+    uint32_t z_bits,
+    float speed,
+    float min_value,
+    float max_value
+) {
+    return guava_wasm_host_ui_drag_float3_bits(
+        guava_get_userdata(exec_env),
+        ptr,
+        len,
+        x_bits,
+        y_bits,
+        z_bits,
+        speed,
+        min_value,
+        max_value
+    );
+}
+
+static void
+host_ui_indent(wasm_exec_env_t exec_env, float width) {
+    guava_wasm_host_ui_indent(guava_get_userdata(exec_env), width);
+}
+
+static void
+host_ui_unindent(wasm_exec_env_t exec_env, float width) {
+    guava_wasm_host_ui_unindent(guava_get_userdata(exec_env), width);
+}
+
+static uint32_t
+host_ui_begin_child(wasm_exec_env_t exec_env, const uint8_t *ptr, uint32_t len, float width, float height, uint32_t border) {
+    return guava_wasm_host_ui_begin_child(guava_get_userdata(exec_env), ptr, len, width, height, border);
+}
+
+static void
+host_ui_end_child(wasm_exec_env_t exec_env) {
+    guava_wasm_host_ui_end_child(guava_get_userdata(exec_env));
+}
+
+static uint32_t
+host_ui_is_item_clicked(wasm_exec_env_t exec_env) {
+    return guava_wasm_host_ui_is_item_clicked(guava_get_userdata(exec_env));
+}
+
+static uint32_t
+host_ui_is_item_hovered(wasm_exec_env_t exec_env) {
+    return guava_wasm_host_ui_is_item_hovered(guava_get_userdata(exec_env));
+}
+
+static void
+host_ui_set_tooltip(wasm_exec_env_t exec_env, const uint8_t *ptr, uint32_t len) {
+    guava_wasm_host_ui_set_tooltip(guava_get_userdata(exec_env), ptr, len);
+}
+
+#define GUAVA_NATIVE_SYMBOL_COUNT 34
 
 static NativeSymbol guava_native_symbols[GUAVA_NATIVE_SYMBOL_COUNT] = {
     EXPORT_WASM_API_WITH_SIG(host_get_entity_id, "()i"),
@@ -237,6 +341,18 @@ static NativeSymbol guava_native_symbols[GUAVA_NATIVE_SYMBOL_COUNT] = {
     EXPORT_WASM_API_WITH_SIG(host_ui_checkbox, "(*~i)i"),
     EXPORT_WASM_API_WITH_SIG(host_ui_drag_float_bits, "(*~ifff)i"),
     EXPORT_WASM_API_WITH_SIG(host_ui_set_next_item_width, "(f)"),
+    EXPORT_WASM_API_WITH_SIG(host_ui_begin_window, "(*~)i"),
+    EXPORT_WASM_API_WITH_SIG(host_ui_end_window, "()"),
+    EXPORT_WASM_API_WITH_SIG(host_ui_collapsing_header, "(*~i)i"),
+    EXPORT_WASM_API_WITH_SIG(host_ui_input_text, "(*~*~)i"),
+    EXPORT_WASM_API_WITH_SIG(host_ui_drag_float3_bits, "(*~iiifff)i"),
+    EXPORT_WASM_API_WITH_SIG(host_ui_indent, "(f)"),
+    EXPORT_WASM_API_WITH_SIG(host_ui_unindent, "(f)"),
+    EXPORT_WASM_API_WITH_SIG(host_ui_begin_child, "(*~ffi)i"),
+    EXPORT_WASM_API_WITH_SIG(host_ui_end_child, "()"),
+    EXPORT_WASM_API_WITH_SIG(host_ui_is_item_clicked, "()i"),
+    EXPORT_WASM_API_WITH_SIG(host_ui_is_item_hovered, "()i"),
+    EXPORT_WASM_API_WITH_SIG(host_ui_set_tooltip, "(*~)"),
 };
 
 NativeSymbol *

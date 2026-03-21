@@ -791,6 +791,87 @@ pub export fn guava_wasm_host_ui_set_next_item_width(_: ?*anyopaque, width: f32)
     ui.setNextItemWidth(width);
 }
 
+pub export fn guava_wasm_host_ui_begin_window(userdata: ?*anyopaque, ptr: [*]const u8, len: u32) u32 {
+    _ = userdata;
+    const open = ui.beginWindow(ptr[0..len]);
+    return if (open) 1 else 0;
+}
+
+pub export fn guava_wasm_host_ui_end_window(_: ?*anyopaque) void {
+    ui.endWindow();
+}
+
+pub export fn guava_wasm_host_ui_collapsing_header(userdata: ?*anyopaque, ptr: [*]const u8, len: u32, default_open: u32) u32 {
+    const open = ui.collapsingHeader(ptr[0..len], default_open != 0);
+    setLastItemChanged(userdata, open);
+    return if (open) 1 else 0;
+}
+
+pub export fn guava_wasm_host_ui_input_text(
+    userdata: ?*anyopaque,
+    label_ptr: [*]const u8,
+    label_len: u32,
+    buffer_ptr: [*]u8,
+    buffer_len: u32,
+) u32 {
+    _ = userdata;
+    const changed = ui.inputText(label_ptr[0..label_len], buffer_ptr[0..buffer_len]);
+    return if (changed) 1 else 0;
+}
+
+pub export fn guava_wasm_host_ui_drag_float3_bits(
+    userdata: ?*anyopaque,
+    ptr: [*]const u8,
+    len: u32,
+    x_bits: u32,
+    y_bits: u32,
+    z_bits: u32,
+    speed: f32,
+    min_value: f32,
+    max_value: f32,
+) u32 {
+    var value: [3]f32 = .{
+        @bitCast(x_bits),
+        @bitCast(y_bits),
+        @bitCast(z_bits),
+    };
+    const changed = ui.dragFloat3(ptr[0..len], &value, speed, min_value, max_value);
+    setLastItemChanged(userdata, changed);
+    return (@as(u32, @bitCast(value[0])) & 0xFFF) |
+        ((@as(u32, @bitCast(value[1])) & 0xFFF) << 10) |
+        ((@as(u32, @bitCast(value[2])) & 0xFFF) << 20);
+}
+
+pub export fn guava_wasm_host_ui_indent(_: ?*anyopaque, width: f32) void {
+    ui.indent(width);
+}
+
+pub export fn guava_wasm_host_ui_unindent(_: ?*anyopaque, width: f32) void {
+    ui.unindent(width);
+}
+
+pub export fn guava_wasm_host_ui_begin_child(userdata: ?*anyopaque, ptr: [*]const u8, len: u32, width: f32, height: f32, border: u32) u32 {
+    _ = userdata;
+    const open = ui.beginChild(ptr[0..len], width, height, border != 0);
+    return if (open) 1 else 0;
+}
+
+pub export fn guava_wasm_host_ui_end_child(_: ?*anyopaque) void {
+    ui.endChild();
+}
+
+pub export fn guava_wasm_host_ui_is_item_clicked(_: ?*anyopaque) u32 {
+    return if (ui.isItemClicked()) 1 else 0;
+}
+
+pub export fn guava_wasm_host_ui_is_item_hovered(_: ?*anyopaque) u32 {
+    return if (ui.isItemHovered()) 1 else 0;
+}
+
+pub export fn guava_wasm_host_ui_set_tooltip(_: ?*anyopaque, ptr: [*]const u8, len: u32) void {
+    ui.setTooltip(ptr[0..len]);
+}
+
 fn castContext(comptime T: type, context_ptr: *anyopaque) *T {
     return @ptrCast(@alignCast(context_ptr));
 }
