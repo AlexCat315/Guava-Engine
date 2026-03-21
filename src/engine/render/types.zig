@@ -38,6 +38,14 @@ pub const EditorViewportState = struct {
     ssao_bias: f32 = 0.025,
     ssao_intensity: f32 = 1.0,
     ssao_power: f32 = 2.0,
+    // SSR 屏幕空间反射
+    ssr_enabled: bool = false,
+    ssr_intensity: f32 = 0.5,
+    ssr_ray_step: f32 = 0.1,
+    ssr_ray_max_distance: f32 = 100.0,
+    ssr_ray_thickness: f32 = 0.5,
+    ssr_fade_distance: f32 = 10.0,
+    ssr_edge_fade: f32 = 0.1,
     // Color Grading 先走参数级 MVP，LUT 后续单独补。
     color_grading_enabled: bool = false,
     color_grading_saturation: f32 = 1.0,
