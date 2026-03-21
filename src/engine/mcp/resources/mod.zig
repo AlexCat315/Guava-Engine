@@ -1129,6 +1129,8 @@ fn buildToolsSchemaJsonAlloc(allocator: std.mem.Allocator) ![]u8 {
         .{ .name = "visible", .type = "bool", .description = "Filter by visibility flag." },
         .{ .name = "origin", .type = "Vec3", .description = "Center of radius query." },
         .{ .name = "radius", .type = "f32", .description = "Radius in world units." },
+        .{ .name = "aabb_min", .type = "Vec3", .description = "Inclusive minimum corner for AABB point query." },
+        .{ .name = "aabb_max", .type = "Vec3", .description = "Inclusive maximum corner for AABB point query." },
         .{ .name = "limit", .type = "usize", .description = "Maximum rows to return. Default 50." },
         .{ .name = "offset", .type = "usize", .description = "Row offset for paging. Default 0." },
         .{ .name = "count_only", .type = "bool", .description = "Return only totals without item payloads." },
@@ -1161,6 +1163,7 @@ fn buildToolsSchemaJsonAlloc(allocator: std.mem.Allocator) ![]u8 {
         .notes = &.{
             "All vector and quaternion arguments inherit the array encoding rules from schema://components.",
             "query_entities should default to paged access: limit=50, offset=0, count_only=false.",
+            "AABB filtering requires both aabb_min and aabb_max (Vec3 arrays).",
             "Staged transaction commands share the same command payload shapes as the write tools they wrap.",
         },
         .tools = &.{
@@ -1171,7 +1174,7 @@ fn buildToolsSchemaJsonAlloc(allocator: std.mem.Allocator) ![]u8 {
             .{ .name = "set_local_transform", .description = "Write local transform channels on an entity.", .properties = &transform_properties },
             .{ .name = "set_world_transform", .description = "Write world transform channels on an entity.", .properties = &transform_properties },
             .{ .name = "set_visible", .description = "Update entity visibility.", .properties = &set_visible_properties },
-            .{ .name = "query_entities", .description = "Run a paged entity query with optional radius filtering.", .properties = &query_entities_properties },
+            .{ .name = "query_entities", .description = "Run a paged entity query with optional radius and AABB spatial filtering.", .properties = &query_entities_properties },
             .{ .name = "compile_script", .description = "Compile Zig source to WASM and attach or reload it.", .properties = &compile_script_properties },
             .{ .name = "compile_editor_utility", .description = "Compile Zig source to a WASM-powered editor utility panel.", .properties = &compile_editor_utility_properties },
             .{ .name = "stage_transaction", .description = "Preview a staged command batch without committing it to the main world.", .properties = &stage_transaction_properties },

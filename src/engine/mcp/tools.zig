@@ -75,6 +75,8 @@ const QueryRequest = struct {
     visible: ?bool = null,
     origin: ?components.Vec3 = null,
     radius: ?f32 = null,
+    aabb_min: ?components.Vec3 = null,
+    aabb_max: ?components.Vec3 = null,
     is_dynamic: ?bool = null,
     is_root: ?bool = null,
     has_collider: ?bool = null,
@@ -105,6 +107,8 @@ const QueryRequest = struct {
             .visible = self.visible,
             .origin = self.origin,
             .radius = self.radius,
+            .aabb_min = self.aabb_min,
+            .aabb_max = self.aabb_max,
             .is_dynamic = self.is_dynamic,
             .is_root = self.is_root,
             .has_collider = self.has_collider,
@@ -921,6 +925,21 @@ fn parseQueryRequestAlloc(
         break :blk value;
     } else null;
 
+    const has_aabb_min = args.get("aabb_min") != null;
+    const has_aabb_max = args.get("aabb_max") != null;
+    if (has_aabb_min != has_aabb_max) {
+        return error.InvalidArguments;
+    }
+
+    const aabb_min = if (has_aabb_min)
+        try parseVec3Value(args.get("aabb_min").?)
+    else
+        null;
+    const aabb_max = if (has_aabb_max)
+        try parseVec3Value(args.get("aabb_max").?)
+    else
+        null;
+
     var sort_by: ?query_engine.Filter.SortBy = null;
     if (args.get("sort_by")) |sort_val| {
         const sort_str = switch (sort_val) {
@@ -950,6 +969,8 @@ fn parseQueryRequestAlloc(
         .visible = try parseOptionalBoolFromObject(args, "visible"),
         .origin = origin,
         .radius = radius,
+        .aabb_min = aabb_min,
+        .aabb_max = aabb_max,
         .is_dynamic = try parseOptionalBoolFromObject(args, "is_dynamic"),
         .is_root = try parseOptionalBoolFromObject(args, "is_root"),
         .has_collider = try parseOptionalBoolFromObject(args, "has_collider"),
@@ -1408,6 +1429,8 @@ test "parseToolCallAlloc parses query_entities with paging and radius filters" {
         \\    "visible": true,
         \\    "origin": [0, 0, 0],
         \\    "radius": 12,
+        \\    "aabb_min": [-2, -2, -2],
+        \\    "aabb_max": [2, 2, 2],
         \\    "limit": 10,
         \\    "offset": 5,
         \\    "count_only": false
@@ -1432,10 +1455,35 @@ test "parseToolCallAlloc parses query_entities with paging and radius filters" {
             try std.testing.expectEqualStrings("light", query.has_component.?);
             try std.testing.expectEqual(@as(?bool, true), query.visible);
             try std.testing.expectApproxEqAbs(@as(f32, 12.0), query.radius.?, 0.0001);
+            try std.testing.expectEqualSlices(f32, &.{ -2.0, -2.0, -2.0 }, &query.aabb_min.?);
+            try std.testing.expectEqualSlices(f32, &.{ 2.0, 2.0, 2.0 }, &query.aabb_max.?);
             try std.testing.expectEqual(@as(usize, 10), query.limit);
             try std.testing.expectEqual(@as(usize, 5), query.offset);
             try std.testing.expectEqualSlices(f32, &.{ 0.0, 0.0, 0.0 }, &query.origin.?);
         },
         else => return error.UnexpectedCommandTag,
     }
+}
+
+test "parseToolCallAlloc rejects query_entities with incomplete AABB" {
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator,
+        \\{
+        \\  "name": "query_entities",
+        \\  "arguments": {
+        \\    "aabb_min": [0, 0, 0]
+        \\  }
+        \\}
+    , .{
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+
+    try std.testing.expectError(
+        error.InvalidArguments,
+        parseToolCallAlloc(
+            std.testing.allocator,
+            parsed.value.object.get("name").?.string,
+            parsed.value.object.get("arguments").?,
+        ),
+    );
 }

@@ -568,7 +568,7 @@ fn writeToolList(stdout_file: *std.fs.File, id: std.json.Value) !void {
             },
             .{
                 .name = "query_entities",
-                .description = "Query entities with pagination, optional component filters, and optional radius filtering. Use count_only before requesting large result sets.",
+                .description = "Query entities with pagination, optional component filters, optional radius filtering, and optional AABB filtering. Use count_only before requesting large result sets.",
                 .inputSchema = .{
                     .type = "object",
                     .properties = .{
@@ -579,6 +579,8 @@ fn writeToolList(stdout_file: *std.fs.File, id: std.json.Value) !void {
                         .visible = .{ .type = "boolean" },
                         .origin = .{ .type = "array" },
                         .radius = .{ .type = "number" },
+                        .aabb_min = .{ .type = "array" },
+                        .aabb_max = .{ .type = "array" },
                         .limit = .{ .type = "integer" },
                         .offset = .{ .type = "integer" },
                         .count_only = .{ .type = "boolean" },

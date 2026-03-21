@@ -13,6 +13,8 @@ pub const Filter = struct {
     visible: ?bool = null,
     origin: ?components.Vec3 = null,
     radius: ?f32 = null,
+    aabb_min: ?components.Vec3 = null,
+    aabb_max: ?components.Vec3 = null,
     is_dynamic: ?bool = null,
     is_root: ?bool = null,
     has_collider: ?bool = null,
@@ -39,6 +41,20 @@ pub const Filter = struct {
         }
         if (copy.radius) |radius| {
             copy.radius = @max(radius, 0.0);
+        }
+        if (copy.aabb_min != null and copy.aabb_max != null) {
+            const min_v = copy.aabb_min.?;
+            const max_v = copy.aabb_max.?;
+            copy.aabb_min = .{
+                @min(min_v[0], max_v[0]),
+                @min(min_v[1], max_v[1]),
+                @min(min_v[2], max_v[2]),
+            };
+            copy.aabb_max = .{
+                @max(min_v[0], max_v[0]),
+                @max(min_v[1], max_v[1]),
+                @max(min_v[2], max_v[2]),
+            };
         }
         return copy;
     }
@@ -162,6 +178,13 @@ fn matchesEntity(
         const radius = filter.radius orelse return false;
         const resolved_distance = distance orelse distanceBetween(filter.origin.?, world_translation);
         if (resolved_distance > radius) return false;
+    }
+    if (filter.aabb_min != null or filter.aabb_max != null) {
+        const min_v = filter.aabb_min orelse return false;
+        const max_v = filter.aabb_max orelse return false;
+        if (world_translation[0] < min_v[0] or world_translation[0] > max_v[0]) return false;
+        if (world_translation[1] < min_v[1] or world_translation[1] > max_v[1]) return false;
+        if (world_translation[2] < min_v[2] or world_translation[2] > max_v[2]) return false;
     }
     if (filter.is_dynamic) |dynamic| {
         const has_rigidbody = entity.rigidbody != null;
@@ -356,4 +379,31 @@ test "QueryEngine supports radius filters and count_only mode" {
     try std.testing.expectEqual(@as(usize, 1), result.total);
     try std.testing.expectEqual(@as(usize, 0), result.items.len);
     try std.testing.expect(!result.truncated);
+}
+
+test "QueryEngine supports AABB filters" {
+    var world = world_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+
+    _ = try world.createEntity(.{
+        .name = "Inside",
+        .local_transform = .{ .translation = .{ 1.0, 2.0, 3.0 } },
+    });
+    _ = try world.createEntity(.{
+        .name = "Outside",
+        .local_transform = .{ .translation = .{ 20.0, 2.0, 3.0 } },
+    });
+    world.updateHierarchy();
+
+    var result = try queryAlloc(std.testing.allocator, &world, .{
+        .aabb_min = .{ 0.0, 0.0, 0.0 },
+        .aabb_max = .{ 10.0, 10.0, 10.0 },
+        .limit = 10,
+        .offset = 0,
+    });
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.total);
+    try std.testing.expectEqual(@as(usize, 1), result.items.len);
+    try std.testing.expectEqualStrings("Inside", result.items[0].name);
 }
