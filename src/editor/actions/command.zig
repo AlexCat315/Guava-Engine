@@ -1,6 +1,41 @@
 const std = @import("std");
 const engine = @import("guava");
 
+pub const TimelineSource = enum {
+    human,
+    ai,
+
+    pub fn colorRgba(self: TimelineSource) [4]f32 {
+        return switch (self) {
+            .human => .{ 0.23, 0.56, 0.94, 1.0 },
+            .ai => .{ 0.62, 0.33, 0.90, 1.0 },
+        };
+    }
+
+    pub fn colorHex(self: TimelineSource) []const u8 {
+        return switch (self) {
+            .human => "#3A8FF0",
+            .ai => "#9E54E6",
+        };
+    }
+};
+
+pub const TimelineEntry = struct {
+    sequence: u64 = 0,
+    timestamp_ms: i64 = 0,
+    source: TimelineSource = .human,
+    label: []u8,
+    detail: []u8,
+    command_kind: []u8,
+
+    pub fn deinit(self: *TimelineEntry, allocator: std.mem.Allocator) void {
+        allocator.free(self.label);
+        allocator.free(self.detail);
+        allocator.free(self.command_kind);
+        self.* = undefined;
+    }
+};
+
 pub const EntitySnapshot = struct {
     id: engine.scene.EntityId,
     name: []u8,

@@ -17,6 +17,14 @@ pub fn executeQueuedCommands(layer_context: *engine.core.LayerContext) ![]engine
 }
 
 pub fn captureSnapshot(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    return captureSnapshotWithSource(state, layer_context, .human);
+}
+
+pub fn captureSnapshotWithSource(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    source: command_mod.TimelineSource,
+) !void {
     const allocator = state.allocator orelse return;
     const before = state.history_world_snapshot orelse {
         try refreshCurrentHistorySnapshot(state, layer_context.world);
@@ -45,8 +53,32 @@ pub fn captureSnapshot(state: *EditorState, layer_context: *engine.core.LayerCon
     };
     errdefer command.deinit(allocator);
 
-    try pushCommand(state, command);
+    try pushCommand(state, command, source);
     try replaceHistoryWorldSnapshot(state, after);
+}
+
+pub fn appendTimelineEvent(
+    state: *EditorState,
+    source: command_mod.TimelineSource,
+    label: []const u8,
+    detail: []const u8,
+    command_kind: []const u8,
+) !void {
+    const allocator = state.allocator orelse return;
+    try state.timeline_entries.append(allocator, .{
+        .sequence = state.next_timeline_sequence,
+        .timestamp_ms = std.time.milliTimestamp(),
+        .source = source,
+        .label = try allocator.dupe(u8, label),
+        .detail = try allocator.dupe(u8, detail),
+        .command_kind = try allocator.dupe(u8, command_kind),
+    });
+    state.next_timeline_sequence += 1;
+
+    while (state.timeline_entries.items.len > state.max_timeline_entries) {
+        var removed = state.timeline_entries.orderedRemove(0);
+        removed.deinit(allocator);
+    }
 }
 
 pub fn resetSnapshotHistory(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -59,6 +91,8 @@ pub fn clearSnapshotHistory(state: *EditorState) void {
     const allocator = state.allocator orelse return;
     clearCommandStack(allocator, &state.undo_stack);
     clearCommandStack(allocator, &state.redo_stack);
+    clearTimelineEntries(allocator, &state.timeline_entries);
+    state.next_timeline_sequence = 1;
     if (state.history_world_snapshot) |snapshot| {
         allocator.free(snapshot);
         state.history_world_snapshot = null;
@@ -791,7 +825,15 @@ fn clearCommandStack(allocator: std.mem.Allocator, stack: *std.ArrayList(command
     stack.* = .empty;
 }
 
-fn pushCommand(state: *EditorState, command: command_mod.EditorCommand) !void {
+fn clearTimelineEntries(allocator: std.mem.Allocator, timeline: *std.ArrayList(command_mod.TimelineEntry)) void {
+    for (timeline.items) |*entry| {
+        entry.deinit(allocator);
+    }
+    timeline.deinit(allocator);
+    timeline.* = .empty;
+}
+
+fn pushCommand(state: *EditorState, command: command_mod.EditorCommand, source: command_mod.TimelineSource) !void {
     const allocator = state.allocator orelse return;
     clearCommandStack(allocator, &state.redo_stack);
     if (state.saved_command_cursor) |saved_command_cursor| {
@@ -801,6 +843,7 @@ fn pushCommand(state: *EditorState, command: command_mod.EditorCommand) !void {
     }
 
     try state.undo_stack.append(allocator, command);
+    try appendTimelineFromCommand(state, command, source);
 
     while (state.undo_stack.items.len > state.max_history_commands) {
         var removed = state.undo_stack.orderedRemove(0);
@@ -809,6 +852,18 @@ fn pushCommand(state: *EditorState, command: command_mod.EditorCommand) !void {
             state.saved_command_cursor = if (saved_command_cursor == 0) null else saved_command_cursor - 1;
         }
     }
+}
+
+fn appendTimelineFromCommand(state: *EditorState, command: command_mod.EditorCommand, source: command_mod.TimelineSource) !void {
+    const label = switch (source) {
+        .human => "Human Command",
+        .ai => "AI Command",
+    };
+    const kind = switch (command) {
+        .scene_snapshot => "scene_snapshot",
+        .subtree_delta => "subtree_delta",
+    };
+    try appendTimelineEvent(state, source, label, kind, kind);
 }
 
 fn pushSubtreeDeltaCommand(
@@ -828,7 +883,7 @@ fn pushSubtreeDeltaCommand(
     deltas.* = .empty;
     errdefer command.deinit(allocator);
 
-    try pushCommand(state, command);
+    try pushCommand(state, command, .human);
     try refreshCurrentHistorySnapshot(state, layer_context.world);
 }
 

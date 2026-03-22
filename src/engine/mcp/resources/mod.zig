@@ -153,7 +153,7 @@ pub const SnapshotStore = struct {
 
         const listed_count = countListedResources(mutable.entries.items) +
             5 +
-            @as(usize, if (mutable.collaboration != null) 3 else 0) +
+            @as(usize, if (mutable.collaboration != null) 4 else 0) +
             @as(usize, if (mutable.script_runtime != null) 1 else 0) +
             @as(usize, if (mutable.editor_utility_runtime != null) 1 else 0);
         try resources.ensureTotalCapacity(allocator, listed_count);

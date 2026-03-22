@@ -1497,7 +1497,7 @@ fn renameEntityViaCommandQueue(
         var before_owned = true;
         defer if (before_owned) before.deinit(allocator);
 
-        try queue.enqueueRenameEntity(entity_id, next_name);
+        try queue.enqueueRenameEntityWithSource(entity_id, next_name, .human);
         const results = try history.executeQueuedCommands(layer_context);
         defer allocator.free(results);
         if (results.len == 0 or !results[0].changed) {
@@ -1525,7 +1525,7 @@ fn applyWorldTransformUpdate(
     _ = state;
     if (layer_context.command_queue) |queue| {
         const allocator = layer_context.world.allocator;
-        try queue.enqueueSetWorldTransform(entity_id, transform);
+        try queue.enqueueSetWorldTransformWithSource(entity_id, transform, .human);
         const results = try history.executeQueuedCommands(layer_context);
         defer allocator.free(results);
         return;
@@ -1542,7 +1542,7 @@ fn applyLocalTransformUpdate(
     _ = state;
     if (layer_context.command_queue) |queue| {
         const allocator = layer_context.world.allocator;
-        try queue.enqueueSetLocalTransform(entity_id, transform);
+        try queue.enqueueSetLocalTransformWithSource(entity_id, transform, .human);
         const results = try history.executeQueuedCommands(layer_context);
         defer allocator.free(results);
         return;

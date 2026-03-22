@@ -259,6 +259,9 @@ pub const EditorState = struct {
     manipulation_target: ManipulationTarget = .main_world,
     undo_stack: std.ArrayList(command_mod.EditorCommand) = .empty,
     redo_stack: std.ArrayList(command_mod.EditorCommand) = .empty,
+    timeline_entries: std.ArrayList(command_mod.TimelineEntry) = .empty,
+    next_timeline_sequence: u64 = 1,
+    max_timeline_entries: usize = 256,
     max_history_commands: usize = 64,
     saved_command_cursor: ?usize = null,
     history_world_snapshot: ?[]u8 = null,
@@ -525,6 +528,11 @@ pub const EditorState = struct {
             command.deinit(allocator);
         }
         self.redo_stack.deinit(allocator);
+
+        for (self.timeline_entries.items) |*entry| {
+            entry.deinit(allocator);
+        }
+        self.timeline_entries.deinit(allocator);
 
         if (self.history_world_snapshot) |snapshot| {
             allocator.free(snapshot);

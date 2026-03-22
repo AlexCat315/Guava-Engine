@@ -54,6 +54,20 @@ pub const PreviewAction = enum {
     deleted,
 };
 
+fn timelineColorHexForSource(source: IntentSource) []const u8 {
+    return switch (source) {
+        .human => "#3A8FF0",
+        .ai => "#9E54E6",
+    };
+}
+
+fn timelineColorRgbaForSource(source: IntentSource) [4]f32 {
+    return switch (source) {
+        .human => .{ 0.23, 0.56, 0.94, 1.0 },
+        .ai => .{ 0.62, 0.33, 0.90, 1.0 },
+    };
+}
+
 fn commandSourceFromIntent(source: IntentSource) command_mod.CommandSource {
     return switch (source) {
         .human => .human,
@@ -762,6 +776,14 @@ pub const Store = struct {
                 .text = text,
             };
         }
+        if (std.mem.eql(u8, uri, "editor://command-timeline")) {
+            const text = try self.buildCommandTimelineJsonAlloc(allocator);
+            return .{
+                .uri = try allocator.dupe(u8, uri),
+                .mimeType = try allocator.dupe(u8, "application/json"),
+                .text = text,
+            };
+        }
         if (std.mem.eql(u8, uri, "preview://staged")) {
             const text = try self.buildStagedPreviewJsonAlloc(allocator);
             return .{
@@ -940,6 +962,44 @@ pub const Store = struct {
                 .sequence = entry.sequence,
                 .source = @tagName(entry.source),
                 .action = entry.action.slice(),
+                .detail = entry.detail.slice(),
+            };
+        }
+
+        return stringifyAlloc(allocator, Payload{
+            .count = items.len,
+            .items = items,
+        });
+    }
+
+    fn buildCommandTimelineJsonAlloc(self: *const Store, allocator: std.mem.Allocator) ![]u8 {
+        const mutable: *Store = @constCast(self);
+        mutable.mutex.lock();
+        defer mutable.mutex.unlock();
+
+        const TimelineItemView = struct {
+            sequence: u64,
+            source: []const u8,
+            color_hex: []const u8,
+            color_rgba: [4]f32,
+            label: []const u8,
+            detail: []const u8,
+        };
+        const Payload = struct {
+            count: usize,
+            items: []const TimelineItemView,
+        };
+
+        const items = try allocator.alloc(TimelineItemView, mutable.intent_log.items.len);
+        defer allocator.free(items);
+
+        for (mutable.intent_log.items, 0..) |entry, index| {
+            items[index] = .{
+                .sequence = entry.sequence,
+                .source = @tagName(entry.source),
+                .color_hex = timelineColorHexForSource(entry.source),
+                .color_rgba = timelineColorRgbaForSource(entry.source),
+                .label = entry.action.slice(),
                 .detail = entry.detail.slice(),
             };
         }
@@ -1255,6 +1315,11 @@ const collaboration_resource_specs = [_]struct {
         .uri = "editor://intent-log",
         .name = "Editor Intent Log",
         .description = "Recent human and AI intents captured from editor interaction and staged transactions.",
+    },
+    .{
+        .uri = "editor://command-timeline",
+        .name = "Editor Command Timeline",
+        .description = "Command timeline snapshot with source metadata and color hints (human=blue, ai=purple).",
     },
     .{
         .uri = "preview://staged",
