@@ -183,8 +183,13 @@ const CookedMeshRecord = struct {
     asset_id: []const u8,
     name: []const u8,
     primitive_type: @import("../rhi/types.zig").PrimitiveType = .triangle_list,
-    vertices: []const mesh_mod.Vertex,
-    indices: []const u32,
+    vertices: []const mesh_mod.Vertex = &.{},
+    indices: []const u32 = &.{},
+    // Binary sidecar offsets (used when mesh_bin_path is set on CookedModelFile)
+    vertex_byte_offset: u32 = 0,
+    vertex_count: u32 = 0,
+    index_byte_offset: u32 = 0,
+    index_count: u32 = 0,
 };
 
 const CookedMaterialRecord = struct {
@@ -273,6 +278,7 @@ const CookedModelFile = struct {
     skins: []CookedSkinRecord,
     animation_clips: []CookedAnimationClipRecord,
     entities: []CookedEntityRecord,
+    mesh_bin_path: []const u8 = "",
 };
 
 const CookedMaterialResolution = struct {
@@ -628,12 +634,43 @@ fn cookModelRecord(
     };
     defer freeCookedModelOwned(allocator, &cooked);
 
-    const encoded = try stringifyAlloc(allocator, cooked);
-    defer allocator.free(encoded);
-
     if (std.fs.path.dirname(cooked_path)) |directory| {
         try std.fs.cwd().makePath(directory);
     }
+
+    // Write mesh binary sidecar: all vertices then all indices packed sequentially
+    const bin_path = try std.fmt.allocPrint(allocator, "{s}.mesh.bin", .{cooked_path});
+    defer allocator.free(bin_path);
+
+    {
+        var bin_data = std.ArrayList(u8).empty;
+        defer bin_data.deinit(allocator);
+
+        for (cooked.meshes) |*mesh| {
+            const vert_bytes = std.mem.sliceAsBytes(mesh.vertices);
+            const idx_bytes = std.mem.sliceAsBytes(mesh.indices);
+            mesh.vertex_byte_offset = @intCast(bin_data.items.len);
+            mesh.vertex_count = @intCast(mesh.vertices.len);
+            try bin_data.appendSlice(allocator, vert_bytes);
+            mesh.index_byte_offset = @intCast(bin_data.items.len);
+            mesh.index_count = @intCast(mesh.indices.len);
+            try bin_data.appendSlice(allocator, idx_bytes);
+            // Clear inline data — binary sidecar is the source of truth
+            mesh.vertices = &.{};
+            mesh.indices = &.{};
+        }
+
+        try std.fs.cwd().writeFile(.{
+            .sub_path = bin_path,
+            .data = bin_data.items,
+        });
+    }
+
+    cooked.mesh_bin_path = bin_path;
+
+    const encoded = try stringifyAlloc(allocator, cooked);
+    defer allocator.free(encoded);
+
     try std.fs.cwd().writeFile(.{
         .sub_path = cooked_path,
         .data = encoded,
@@ -951,16 +988,38 @@ fn instantiateCookedModel(
     const default_material_asset_id = try builtinAssetIdAlloc(world.allocator, "builtin://material/default");
     defer world.allocator.free(default_material_asset_id);
 
+    // Load mesh binary sidecar if available
+    const mesh_bin_data: ?[]const u8 = if (cooked.mesh_bin_path.len > 0)
+        std.fs.cwd().readFileAlloc(world.allocator, cooked.mesh_bin_path, 512 * 1024 * 1024) catch null
+    else
+        null;
+    defer if (mesh_bin_data) |d| world.allocator.free(d);
+
     var mesh_handles = std.ArrayList(CookedMeshHandle).empty;
     defer mesh_handles.deinit(world.allocator);
     for (cooked.meshes) |mesh| {
         const handle = if (world.resources.meshHandleByAssetId(mesh.asset_id)) |existing|
             existing
         else blk: {
+            // Resolve vertices/indices: prefer binary sidecar, fall back to inline JSON
+            var vertices = mesh.vertices;
+            var indices = mesh.indices;
+            if (vertices.len == 0 and mesh.vertex_count > 0) {
+                if (mesh_bin_data) |bin| {
+                    const vert_end = mesh.vertex_byte_offset + mesh.vertex_count * @sizeOf(mesh_mod.Vertex);
+                    const idx_end = mesh.index_byte_offset + mesh.index_count * @sizeOf(u32);
+                    if (vert_end <= bin.len and idx_end <= bin.len) {
+                        const vert_bytes = bin[mesh.vertex_byte_offset..vert_end];
+                        vertices = std.mem.bytesAsSlice(mesh_mod.Vertex, @as([]align(@alignOf(mesh_mod.Vertex)) const u8, @alignCast(vert_bytes)));
+                        const idx_bytes = bin[mesh.index_byte_offset..idx_end];
+                        indices = std.mem.bytesAsSlice(u32, @as([]align(@alignOf(u32)) const u8, @alignCast(idx_bytes)));
+                    }
+                }
+            }
             const created = try world.resources.createMesh(.{
                 .name = mesh.name,
-                .vertices = mesh.vertices,
-                .indices = mesh.indices,
+                .vertices = vertices,
+                .indices = indices,
                 .primitive_type = mesh.primitive_type,
             });
             const record = if (findCookedAssetRecord(cooked.asset_records, mesh.asset_id)) |asset_record|

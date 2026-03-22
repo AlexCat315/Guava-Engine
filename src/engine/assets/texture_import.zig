@@ -18,7 +18,8 @@ const CookedTexture = struct {
     width: u32,
     height: u32,
     format: rhi_types.TextureFormat = .rgba8_unorm,
-    pixels_hex: []const u8,
+    pixels_hex: []const u8 = "",
+    pixels_bin_path: []const u8 = "",
 };
 
 pub fn ensureCookedTexture(allocator: std.mem.Allocator, registry: *const registry_mod.AssetRegistry, asset_id: []const u8) ![]u8 {
@@ -62,7 +63,7 @@ pub fn validateCookedTextureAsset(
     const cooked = try readCookedTextureAlloc(allocator, cooked_path);
     defer freeCookedTexture(allocator, &cooked);
 
-    const pixels = try decodeHexAlloc(allocator, cooked.pixels_hex);
+    const pixels = try loadCookedPixelsAlloc(allocator, cooked);
     defer allocator.free(pixels);
 
     if (pixels.len == 0 or cooked.width == 0 or cooked.height == 0) {
@@ -97,7 +98,7 @@ pub fn loadTextureAsset(
         return error.AssetIdMismatch;
     }
 
-    const pixels = try decodeHexAlloc(allocator, cooked.pixels_hex);
+    const pixels = try loadCookedPixelsAlloc(allocator, cooked);
     defer allocator.free(pixels);
 
     const handle = try library.createTexture(.{
@@ -118,18 +119,17 @@ pub fn loadTextureAsset(
 fn cookTextureRecord(allocator: std.mem.Allocator, record: *const registry_mod.AssetRecord, cooked_path: []const u8) !void {
     var width: u32 = 0;
     var height: u32 = 0;
-    var pixels_hex: []u8 = undefined;
+    var raw_pixels: []u8 = undefined;
     var format: rhi_types.TextureFormat = .rgba8_unorm;
-    defer allocator.free(pixels_hex);
+    defer allocator.free(raw_pixels);
 
     if (std.mem.endsWith(u8, record.source_path, ".svg")) {
         var rasterized = try svg_decoder.rasterizeBgra8(allocator, record.source_path, .{});
         defer rasterized.deinit();
-        // rasterizeBgra8 outputs BGRA; swizzle to RGBA to match rgba8_unorm format.
         swizzleBgraToRgba(rasterized.pixels);
         width = rasterized.width;
         height = rasterized.height;
-        pixels_hex = try encodeHexAlloc(allocator, rasterized.pixels);
+        raw_pixels = try allocator.dupe(u8, rasterized.pixels);
     } else if (std.mem.endsWith(u8, record.source_path, ".hdr")) {
         const encoded = try std.fs.cwd().readFileAlloc(allocator, record.source_path, 128 * 1024 * 1024);
         defer allocator.free(encoded);
@@ -139,7 +139,7 @@ fn cookTextureRecord(allocator: std.mem.Allocator, record: *const registry_mod.A
         width = decoded.width;
         height = decoded.height;
         format = .rgba32_float;
-        pixels_hex = try encodeHexAlloc(allocator, std.mem.sliceAsBytes(decoded.pixels));
+        raw_pixels = try allocator.dupe(u8, std.mem.sliceAsBytes(decoded.pixels));
 
         const cooked_ibl_path = try environment_map_import.cookedIBLPathAlloc(allocator, cooked_path);
         defer allocator.free(cooked_ibl_path);
@@ -170,12 +170,22 @@ fn cookTextureRecord(allocator: std.mem.Allocator, record: *const registry_mod.A
 
         var decoded = try image_decoder.decodeRgba8(allocator, encoded);
         defer decoded.deinit();
-        // Use RGBA format directly — no channel swizzle needed.
-        // bgra8_unorm on Metal returns bytes in BGRA semantic order causing R↔B swap in shaders.
         width = decoded.width;
         height = decoded.height;
-        pixels_hex = try encodeHexAlloc(allocator, decoded.pixels);
+        raw_pixels = try allocator.dupe(u8, decoded.pixels);
     }
+
+    // Write raw pixel data to .bin sidecar file
+    const bin_path = try std.fmt.allocPrint(allocator, "{s}.bin", .{cooked_path});
+    defer allocator.free(bin_path);
+
+    if (std.fs.path.dirname(cooked_path)) |directory| {
+        try std.fs.cwd().makePath(directory);
+    }
+    try std.fs.cwd().writeFile(.{
+        .sub_path = bin_path,
+        .data = raw_pixels,
+    });
 
     const cooked = CookedTexture{
         .asset_id = record.id,
@@ -186,15 +196,12 @@ fn cookTextureRecord(allocator: std.mem.Allocator, record: *const registry_mod.A
         .width = width,
         .height = height,
         .format = format,
-        .pixels_hex = pixels_hex,
+        .pixels_bin_path = bin_path,
     };
 
     const output = try stringifyAlloc(allocator, cooked);
     defer allocator.free(output);
 
-    if (std.fs.path.dirname(cooked_path)) |directory| {
-        try std.fs.cwd().makePath(directory);
-    }
     try std.fs.cwd().writeFile(.{
         .sub_path = cooked_path,
         .data = output,
@@ -236,6 +243,7 @@ fn readCookedTextureAlloc(allocator: std.mem.Allocator, cooked_path: []const u8)
         .height = parsed.value.height,
         .format = parsed.value.format,
         .pixels_hex = try allocator.dupe(u8, parsed.value.pixels_hex),
+        .pixels_bin_path = try allocator.dupe(u8, parsed.value.pixels_bin_path),
     };
 }
 
@@ -244,7 +252,8 @@ fn freeCookedTexture(allocator: std.mem.Allocator, cooked: *const CookedTexture)
     allocator.free(cooked.source_path);
     allocator.free(cooked.source_hash);
     allocator.free(cooked.import_settings_hash);
-    allocator.free(cooked.pixels_hex);
+    if (cooked.pixels_hex.len > 0) allocator.free(cooked.pixels_hex);
+    if (cooked.pixels_bin_path.len > 0) allocator.free(cooked.pixels_bin_path);
 }
 
 fn cookedTextureIsCurrent(
@@ -283,6 +292,17 @@ fn decodeHexAlloc(allocator: std.mem.Allocator, encoded: []const u8) ![]u8 {
     errdefer allocator.free(decoded);
     _ = try std.fmt.hexToBytes(decoded, encoded);
     return decoded;
+}
+
+/// Load pixel data from either a binary sidecar file or hex-encoded JSON field.
+fn loadCookedPixelsAlloc(allocator: std.mem.Allocator, cooked: CookedTexture) ![]u8 {
+    if (cooked.pixels_bin_path.len > 0) {
+        return std.fs.cwd().readFileAlloc(allocator, cooked.pixels_bin_path, 512 * 1024 * 1024);
+    }
+    if (cooked.pixels_hex.len > 0) {
+        return decodeHexAlloc(allocator, cooked.pixels_hex);
+    }
+    return error.MissingPixelData;
 }
 
 fn nibbleToHex(value: u8) u8 {

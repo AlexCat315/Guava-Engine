@@ -367,6 +367,7 @@ pub const EditorState = struct {
     viewport_color_grading_contrast: f32 = 1.0,
     viewport_color_grading_gamma: f32 = 1.0,
     viewport_fxaa_enabled: bool = false,
+    viewport_taa_enabled: bool = false,
     viewport_lut_enabled: bool = false,
     viewport_lut_intensity: f32 = 1.0,
     viewport_lut_preset: ViewportLutPreset = .neutral,

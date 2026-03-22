@@ -456,6 +456,7 @@ const SceneViewportState = struct {
     width: u32 = 0,
     height: u32 = 0,
     hdr_color_texture: ?rhi_mod.Texture = null,
+    taa_texture: ?rhi_mod.Texture = null,
     ssao_texture: ?rhi_mod.Texture = null,
     bloom_texture: ?rhi_mod.Texture = null,
     fxaa_texture: ?rhi_mod.Texture = null,
@@ -464,6 +465,9 @@ const SceneViewportState = struct {
 
     fn deinit(self: *SceneViewportState, device: *rhi_mod.RhiDevice) void {
         if (self.hdr_color_texture) |*texture| {
+            device.releaseTexture(texture);
+        }
+        if (self.taa_texture) |*texture| {
             device.releaseTexture(texture);
         }
         if (self.ssao_texture) |*texture| {
@@ -491,7 +495,7 @@ const SceneViewportState = struct {
         }
 
         if (self.color_texture) |color_texture| {
-            if (self.depth_texture != null and self.hdr_color_texture != null and self.ssao_texture != null and self.bloom_texture != null and self.fxaa_texture != null and color_texture.desc.width == width and color_texture.desc.height == height) {
+            if (self.depth_texture != null and self.hdr_color_texture != null and self.taa_texture != null and self.ssao_texture != null and self.bloom_texture != null and self.fxaa_texture != null and color_texture.desc.width == width and color_texture.desc.height == height) {
                 self.width = width;
                 self.height = height;
                 return;
@@ -509,6 +513,17 @@ const SceneViewportState = struct {
         errdefer if (self.hdr_color_texture) |*texture| {
             device.releaseTexture(texture);
             self.hdr_color_texture = null;
+        };
+
+        self.taa_texture = try device.createTexture(.{
+            .width = width,
+            .height = height,
+            .format = .rgba16_float,
+            .usage = rhi_types.TextureUsage.color_target | rhi_types.TextureUsage.sampler,
+        });
+        errdefer if (self.taa_texture) |*texture| {
+            device.releaseTexture(texture);
+            self.taa_texture = null;
         };
 
         self.ssao_texture = try device.createTexture(.{
@@ -586,6 +601,13 @@ const SceneViewportState = struct {
 
     fn hdrColor(self: *SceneViewportState) ?*const rhi_mod.Texture {
         if (self.hdr_color_texture) |*texture| {
+            return texture;
+        }
+        return null;
+    }
+
+    fn taa(self: *SceneViewportState) ?*const rhi_mod.Texture {
+        if (self.taa_texture) |*texture| {
             return texture;
         }
         return null;
@@ -995,6 +1017,8 @@ pub const Renderer = struct {
     preview_entity_filter: std.ArrayList(scene_mod.EntityId) = .empty,
     /// 编辑器视口状态
     editor_viewport_state: EditorViewportState = .{},
+    /// 前一帧视图矩阵（TAA 重投影用）
+    prev_view_matrix: [16]f32 = mat4_mod.identity(),
     /// 缓存的环境贴图纹理指针（避免每帧重新加载 IBL 数据）
     cached_env_textures: CachedEnvironmentTextures = .{},
     /// 待处理的选择回读请求
@@ -1570,6 +1594,19 @@ pub const Renderer = struct {
 
                     const base_pass_target = if (viewport_active) scene_hdr_color_target else scene_color_target;
 
+                    // TAA jitter: apply subpixel offset to projection matrix before rendering
+                    const taa_enabled = viewport_active and self.editor_viewport_state.taa_enabled and self.taa_pass.isReady() and self.scene_viewport.taa() != null;
+                    const unjittered_projection = prepared_scene.projection_matrix;
+                    if (taa_enabled) {
+                        const jitter = self.taa_pass.getJitter();
+                        const jx = jitter[0] / @as(f32, @floatFromInt(self.scene_viewport.width));
+                        const jy = jitter[1] / @as(f32, @floatFromInt(self.scene_viewport.height));
+                        // Offset the projection matrix translation column (indices 12,13 in row-major = [3][0],[3][1] in col-major)
+                        prepared_scene.projection_matrix[8] += jx * 2.0;
+                        prepared_scene.projection_matrix[9] += jy * 2.0;
+                        prepared_scene.view_projection = mat4_mod.mul(prepared_scene.projection_matrix, prepared_scene.view_matrix);
+                    }
+
                     const scene_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.colorWithDepth(base_pass_target, clear.color, scene_depth_target));
                     const active_render_mode = effectiveViewportRenderMode(self.editor_viewport_state);
                     const depth_start = std.time.nanoTimestamp();
@@ -1711,8 +1748,47 @@ pub const Renderer = struct {
                             self.rhi.endRenderPass(ssao_render_pass);
                         }
 
+                        // TAA resolve: blend current frame with history
+                        var taa_resolved = false;
+                        if (taa_enabled) {
+                            try self.taa_pass.ensureHistoryTexture(&self.rhi, self.scene_viewport.width, self.scene_viewport.height);
+                            try self.taa_pass.syncTextures(&self.rhi, self.scene_viewport.hdrColor().?, null, self.scene_viewport.depth());
+                            const taa_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.taa().? }));
+
+                            const inv_proj_taa = mat4_mod.inverse(unjittered_projection) orelse mat4_mod.identity();
+                            const jitter_val = self.taa_pass.getJitter();
+
+                            const taa_uniforms = taa_pass_mod.TAAUniforms{
+                                .projection = unjittered_projection,
+                                .inv_projection = inv_proj_taa,
+                                .view = prepared_scene.view_matrix,
+                                .prev_view = self.prev_view_matrix,
+                                .resolution = .{ @floatFromInt(self.scene_viewport.width), @floatFromInt(self.scene_viewport.height) },
+                                .jitter = .{
+                                    jitter_val[0] / @as(f32, @floatFromInt(self.scene_viewport.width)),
+                                    jitter_val[1] / @as(f32, @floatFromInt(self.scene_viewport.height)),
+                                },
+                                .blend_factor = self.editor_viewport_state.taa_blend_factor,
+                                .motion_blur_scale = 0.0, // No velocity buffer in MVP — disable velocity lookup
+                                .feedback_min = self.editor_viewport_state.taa_feedback_min,
+                                .feedback_max = self.editor_viewport_state.taa_feedback_max,
+                            };
+                            const taa_stats = self.taa_pass.draw(&self.rhi, frame, taa_render_pass, taa_uniforms);
+                            draw_stats.add(taa_stats);
+                            self.rhi.endRenderPass(taa_render_pass);
+
+                            // Copy TAA output to history for next frame
+                            self.rhi.blitTexture(frame, self.scene_viewport.taa().?, &self.taa_pass.history_texture.?);
+                            taa_resolved = true;
+
+                            self.taa_pass.advanceFrame();
+                        }
+
+                        // Select HDR input for bloom: use TAA output if resolved, otherwise raw HDR
+                        const hdr_input_for_post = if (taa_resolved) self.scene_viewport.taa().? else self.scene_viewport.hdrColor().?;
+
                         if (bloom_enabled) {
-                            try self.bloom_pass.syncTexture(&self.rhi, self.scene_viewport.hdrColor().?);
+                            try self.bloom_pass.syncTexture(&self.rhi, hdr_input_for_post);
                             const bloom_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.bloom().? }));
                             const bloom_start = std.time.nanoTimestamp();
                             const bloom_stats = self.bloom_pass.draw(
@@ -1727,13 +1803,13 @@ pub const Renderer = struct {
                         }
 
                         if (self.tonemap_pass.isReady()) {
-                            const bloom_input = if (bloom_enabled) self.scene_viewport.bloom().? else self.scene_viewport.hdrColor().?;
+                            const bloom_input = if (bloom_enabled) self.scene_viewport.bloom().? else hdr_input_for_post;
                             const lut_texture = self.tonemap_pass.lutTexture(self.editor_viewport_state.lut_preset) orelse return error.TextureNotFound;
                             const tonemap_target: rhi_mod.ColorTarget = if (fxaa_enabled)
                                 .{ .texture = self.scene_viewport.fxaa().? }
                             else
                                 scene_color_target;
-                            try self.tonemap_pass.syncTextures(&self.rhi, self.scene_viewport.hdrColor().?, bloom_input, lut_texture);
+                            try self.tonemap_pass.syncTextures(&self.rhi, hdr_input_for_post, bloom_input, lut_texture);
                             const tonemap_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(tonemap_target));
                             self.tonemap_pass.draw(
                                 &self.rhi,
@@ -1818,6 +1894,9 @@ pub const Renderer = struct {
                         self.graph.recordPassStat(pass_stats, .gizmo_overlay, durationNs(gizmo_start, std.time.nanoTimestamp()), gizmo_overlay_stats.draw_calls, gizmo_overlay_stats.triangles_drawn);
                         self.rhi.endRenderPass(gizmo_pass);
                     }
+
+                    // Store view matrix for TAA reprojection next frame
+                    self.prev_view_matrix = prepared_scene.view_matrix;
                 }
             }
 
@@ -2202,6 +2281,95 @@ pub const Renderer = struct {
         }
         try writer.writeAll(rgb_data);
         return try allocator.dupe(u8, ppm_data[0..fbs.pos]);
+    }
+
+    /// Download final frame pixels as raw BGRA byte data from the LDR color texture.
+    /// Returns allocated byte slice (caller owns memory).
+    pub fn downloadFramePixelsAlloc(self: *Renderer, allocator: std.mem.Allocator) !FramePixels {
+        const texture = self.scene_viewport.color_texture orelse return error.TextureNotFound;
+        const width = texture.desc.width;
+        const height = texture.desc.height;
+        const byte_count = width * height * 4;
+
+        var transfer_buffer = try self.rhi.createTransferBuffer(.{
+            .size = byte_count,
+            .upload = false,
+        });
+        defer self.rhi.releaseTransferBuffer(&transfer_buffer);
+
+        const command_buffer = self.rhi.acquireCommandBuffer() orelse return error.CommandBufferAcquireFailed;
+        const copy_pass = try self.rhi.beginCopyPass(.{
+            .command_buffer = command_buffer,
+            .swapchain_texture = null,
+            .width = width,
+            .height = height,
+        });
+
+        const sdl = @import("../platform/sdl.zig").c;
+        const source = sdl.SDL_GPUTextureRegion{
+            .texture = texture.raw,
+            .w = width,
+            .h = height,
+            .d = 1,
+        };
+        const destination = sdl.SDL_GPUTextureTransferInfo{
+            .transfer_buffer = transfer_buffer.raw,
+            .pixels_per_row = width,
+            .rows_per_layer = height,
+        };
+        sdl.SDL_DownloadFromGPUTexture(copy_pass.raw, &source, &destination);
+
+        self.rhi.endCopyPass(copy_pass);
+        if (!self.rhi.submitCommandBuffer(command_buffer)) return error.CommandBufferSubmitFailed;
+        _ = self.rhi.waitForIdle();
+
+        const data = try allocator.alloc(u8, byte_count);
+        try self.rhi.readTransferBufferBytes(&transfer_buffer, data);
+
+        return .{ .data = data, .width = width, .height = height };
+    }
+
+    pub const FramePixels = struct {
+        data: []u8,
+        width: u32,
+        height: u32,
+    };
+
+    /// Export a single frame to PNG at the given path.
+    /// Performs GPU readback + CPU-side PNG encode + disk write.
+    pub fn exportFramePng(self: *Renderer, allocator: std.mem.Allocator, out_path: []const u8) !void {
+        const pixels = try self.downloadFramePixelsAlloc(allocator);
+        defer allocator.free(pixels.data);
+
+        // BGRA → RGBA in-place
+        var i: usize = 0;
+        while (i < pixels.data.len) : (i += 4) {
+            const b = pixels.data[i];
+            pixels.data[i] = pixels.data[i + 2];
+            pixels.data[i + 2] = b;
+        }
+
+        const c = @cImport({
+            @cDefine("STBI_WRITE_NO_STDIO", "1");
+            @cInclude("stb/stb_image_write.h");
+        });
+
+        var out_len: c_int = 0;
+        const png_data = c.stbi_write_png_to_mem(
+            pixels.data.ptr,
+            @intCast(pixels.width * 4),
+            @intCast(pixels.width),
+            @intCast(pixels.height),
+            4,
+            &out_len,
+        ) orelse return error.PngEncodingFailed;
+        defer c.free(png_data);
+
+        const png_slice: []const u8 = @ptrCast(png_data[0..@intCast(out_len)]);
+
+        const file = try std.fs.cwd().createFile(out_path, .{});
+        defer file.close();
+        try file.writeAll(png_slice);
     }
 
     fn buildSceneSnapshot(scene: *const scene_mod.Scene) types.SceneSnapshot {

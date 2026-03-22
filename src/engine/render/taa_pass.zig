@@ -84,6 +84,21 @@ pub const TAAPass = struct {
         self.frame_index += 1;
     }
 
+    pub fn ensureHistoryTexture(self: *TAAPass, device: *rhi_mod.RhiDevice, width: u32, height: u32) !void {
+        if (self.history_texture) |ht| {
+            if (ht.desc.width == width and ht.desc.height == height) return;
+            var tex = self.history_texture.?;
+            device.releaseTexture(&tex);
+            self.history_texture = null;
+        }
+        self.history_texture = try device.createTexture(.{
+            .width = width,
+            .height = height,
+            .format = .rgba16_float,
+            .usage = rhi_types.TextureUsage.color_target | rhi_types.TextureUsage.sampler,
+        });
+    }
+
     pub fn syncTextures(
         self: *TAAPass,
         device: *rhi_mod.RhiDevice,
@@ -92,11 +107,13 @@ pub const TAAPass = struct {
         depth_texture: ?*const rhi_mod.Texture,
     ) !void {
         const color_handle = @intFromPtr(color_texture.raw);
+        const history_handle = if (self.history_texture) |ht| @intFromPtr(ht.raw) else 0;
         const velocity_handle = if (velocity_texture) |vt| @intFromPtr(vt.raw) else 0;
         const depth_handle = if (depth_texture) |dt| @intFromPtr(dt.raw) else 0;
 
         if (self.bind_group != null and
             self.bound_color_handle == color_handle and
+            self.bound_history_handle == history_handle and
             self.bound_velocity_handle == velocity_handle and
             self.bound_depth_handle == depth_handle)
         {
@@ -107,44 +124,25 @@ pub const TAAPass = struct {
             device.releaseBindGroup(bind_group);
         }
 
-        var bindings: [4]rhi_mod.TextureSamplerBinding = undefined;
-        var binding_count: usize = 0;
+        // Always bind 4 textures to match shader layout (set=2, binding 0-3).
+        // Use current color as fallback for missing history/velocity/depth.
+        const history_tex = if (self.history_texture) |*ht| @as(*const rhi_mod.Texture, ht) else color_texture;
+        const velocity_tex = if (velocity_texture) |vt| vt else color_texture;
+        const depth_tex = if (depth_texture) |dt| dt else color_texture;
 
-        bindings[binding_count] = .{
-            .texture = color_texture,
-            .sampler = &self.sampler.?,
+        const bindings = [4]rhi_mod.TextureSamplerBinding{
+            .{ .texture = color_texture, .sampler = &self.sampler.? },
+            .{ .texture = history_tex, .sampler = &self.sampler.? },
+            .{ .texture = velocity_tex, .sampler = &self.sampler.? },
+            .{ .texture = depth_tex, .sampler = &self.sampler.? },
         };
-        binding_count += 1;
-
-        if (self.history_texture) |*history| {
-            bindings[binding_count] = .{
-                .texture = history,
-                .sampler = &self.sampler.?,
-            };
-            binding_count += 1;
-        }
-
-        if (velocity_texture) |vt| {
-            bindings[binding_count] = .{
-                .texture = vt,
-                .sampler = &self.sampler.?,
-            };
-            binding_count += 1;
-        }
-
-        if (depth_texture) |dt| {
-            bindings[binding_count] = .{
-                .texture = dt,
-                .sampler = &self.sampler.?,
-            };
-            binding_count += 1;
-        }
 
         self.bind_group = try device.createBindGroup(.{
             .stage = .fragment,
-            .texture_sampler_bindings = bindings[0..binding_count],
+            .texture_sampler_bindings = bindings[0..],
         });
         self.bound_color_handle = color_handle;
+        self.bound_history_handle = history_handle;
         self.bound_velocity_handle = velocity_handle;
         self.bound_depth_handle = depth_handle;
     }

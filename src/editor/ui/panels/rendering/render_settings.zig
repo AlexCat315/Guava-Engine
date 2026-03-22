@@ -136,6 +136,10 @@ pub fn drawRenderSettingsWindow(state: *EditorState, layer_context: *engine.core
     _ = gui.checkbox(state.text(.enable_fxaa), &state.viewport_fxaa_enabled);
 
     gui.separator();
+    gui.text("TAA");
+    _ = gui.checkbox("##enable_taa", &state.viewport_taa_enabled);
+
+    gui.separator();
     gui.text(state.text(.lut));
     _ = gui.checkbox(state.text(.enable_lut), &state.viewport_lut_enabled);
     var lut_intensity = state.viewport_lut_intensity;

@@ -508,6 +508,25 @@ pub const RhiDevice = struct {
         sdl.SDL_EndGPUCopyPass(pass.raw);
     }
 
+    pub fn blitTexture(_: *RhiDevice, frame: Frame, src: *const Texture, dst: *const Texture) void {
+        const blit_info = sdl.SDL_GPUBlitInfo{
+            .source = .{
+                .texture = src.raw,
+                .w = src.desc.width,
+                .h = src.desc.height,
+            },
+            .destination = .{
+                .texture = dst.raw,
+                .w = dst.desc.width,
+                .h = dst.desc.height,
+            },
+            .load_op = sdl.SDL_GPU_LOADOP_DONT_CARE,
+            .filter = sdl.SDL_GPU_FILTER_LINEAR,
+            .cycle = true,
+        };
+        sdl.SDL_BlitGPUTexture(frame.command_buffer, &blit_info);
+    }
+
     pub fn clearAndPresent(self: *RhiDevice, frame: Frame, clear: types.ClearState) Error!void {
         if (frame.swapchain_texture == null) {
             return self.cancelFrame(frame);
