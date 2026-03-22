@@ -82,6 +82,7 @@ const vec3 = @import("../math/vec3.zig");
 const physics_mod = @import("../physics/system.zig");
 const PassDescriptors = @import("render_helpers.zig").PassDescriptors;
 const render_log = std.log.scoped(.viewport_render);
+const rt_backend = @import("../rt/rt_backend.zig");
 
 /// 是否已记录视口后端日志
 var g_logged_viewport_backend: bool = false;
@@ -217,8 +218,8 @@ fn previewRenderMode(render_mode: types.EditorViewportRenderMode) types.EditorVi
 }
 
 fn effectiveViewportRenderMode(state: types.EditorViewportState) types.EditorViewportRenderMode {
-    if (state.pipeline_mode == .path_trace) {
-        // PathTrace 模式下仍返回 textured，以保持依赖渲染模式分支的代码路径稳定。
+    if (state.pipeline_mode == .path_trace or state.pipeline_mode == .hardware_rt) {
+        // PathTrace / Hardware RT 模式下仍返回 textured，以保持依赖渲染模式分支的代码路径稳定。
         return .textured;
     }
     return state.render_mode;
@@ -286,6 +287,37 @@ const PathTraceProgressiveState = struct {
         if (self.display_pixels) |p| allocator.free(p);
         if (self.triangles) |t| allocator.free(t);
         if (self.meshes) |m| allocator.free(m);
+        self.* = .{};
+    }
+};
+
+/// 硬件 RT 渲染状态（GPU 光追，与平台无关）
+const HwRtState = struct {
+    triangles: ?[]rt_backend.RtTriangle = null,
+    trace_pixels: ?[]u8 = null,
+    display_pixels: ?[]u8 = null,
+    trace_width: u32 = 0,
+    trace_height: u32 = 0,
+    target_width: u32 = 0,
+    target_height: u32 = 0,
+    accel_built: bool = false,
+    needs_retrace: bool = true,
+    last_view_projection: [16]f32 = mat4_mod.identity(),
+    last_samples: u32 = 0,
+    last_bounces: u32 = 0,
+    last_resolution_scale: f32 = 0.0,
+
+    fn reset(self: *HwRtState, allocator: std.mem.Allocator) void {
+        if (self.triangles) |t| allocator.free(t);
+        self.triangles = null;
+        self.accel_built = false;
+        self.needs_retrace = true;
+    }
+
+    fn deinit(self: *HwRtState, allocator: std.mem.Allocator) void {
+        if (self.triangles) |t| allocator.free(t);
+        if (self.trace_pixels) |p| allocator.free(p);
+        if (self.display_pixels) |p| allocator.free(p);
         self.* = .{};
     }
 };
@@ -1089,6 +1121,10 @@ pub const Renderer = struct {
     ai_focus_entity_count: usize = 0,
     /// 渐进式 CPU 路径追踪状态
     path_trace_state: PathTraceProgressiveState = .{},
+    /// 硬件 RT 后端（macOS=Metal, 未来 Win/Linux=Vulkan/DX12）
+    hw_rt_backend: ?rt_backend.HardwareRtBackend = null,
+    /// 硬件 RT 渲染状态
+    hw_rt_state: HwRtState = .{},
 
     /// 初始化渲染器
     ///
@@ -1217,6 +1253,8 @@ pub const Renderer = struct {
 
     pub fn deinit(self: *Renderer) void {
         self.path_trace_state.deinit(self.allocator);
+        self.hw_rt_state.deinit(self.allocator);
+        if (self.hw_rt_backend) |*backend| backend.deinit();
         self.releaseInFlightSelectionBatches();
         self.pending_selection_readbacks.deinit(self.allocator);
         self.selection_history.deinit();
@@ -1605,10 +1643,15 @@ pub const Renderer = struct {
                 }
 
                 const path_trace_viewport = viewport_active and self.editor_viewport_state.pipeline_mode == .path_trace;
+                const hw_rt_viewport = viewport_active and self.editor_viewport_state.pipeline_mode == .hardware_rt;
                 if (path_trace_viewport) {
                     const path_trace_start = std.time.nanoTimestamp();
                     try self.renderCpuPathTraceViewport(&prepared_scene, scene);
                     self.graph.recordPassStat(pass_stats, .base_pass, durationNs(path_trace_start, std.time.nanoTimestamp()), 0, 0);
+                } else if (hw_rt_viewport) {
+                    const hw_rt_start = std.time.nanoTimestamp();
+                    try self.renderHardwareRTViewport(&prepared_scene, scene);
+                    self.graph.recordPassStat(pass_stats, .base_pass, durationNs(hw_rt_start, std.time.nanoTimestamp()), 0, 0);
                 } else {
                     const scene_color_target: rhi_mod.ColorTarget = if (viewport_active)
                         .{ .texture = self.scene_viewport.color().? }
@@ -1982,7 +2025,7 @@ pub const Renderer = struct {
             }
 
             if (self.pending_selection_readbacks.items.len > 0) {
-                const id_pick_available = can_render_scene and self.id_pass.texture() != null and !(viewport_active and self.editor_viewport_state.pipeline_mode == .path_trace);
+                const id_pick_available = can_render_scene and self.id_pass.texture() != null and !(viewport_active and (self.editor_viewport_state.pipeline_mode == .path_trace or self.editor_viewport_state.pipeline_mode == .hardware_rt));
                 if (id_pick_available) {
                     const id_texture = self.id_pass.texture().?;
                     try self.enqueueSelectionReadbacks(frame, id_texture);
@@ -2308,6 +2351,200 @@ pub const Renderer = struct {
                 display_pixels[dst_index + 1] = trace_pixels[src_index + 1];
                 display_pixels[dst_index + 2] = trace_pixels[src_index + 2];
                 display_pixels[dst_index + 3] = trace_pixels[src_index + 3];
+            }
+        }
+
+        try self.rhi.uploadTextureData(target, display_pixels, width, height);
+    }
+
+    // ==================================================================
+    // Hardware RT — GPU 硬件加速路径追踪 (macOS=Metal, 未来 Win/Linux=Vulkan)
+    // ==================================================================
+
+    fn renderHardwareRTViewport(self: *Renderer, prepared_scene: *const mesh_pass_mod.PreparedScene, scene: *scene_mod.Scene) !void {
+        // 懒初始化硬件 RT 后端
+        if (self.hw_rt_backend == null) {
+            self.hw_rt_backend = rt_backend.HardwareRtBackend.init();
+            if (self.hw_rt_backend == null) {
+                render_log.warn("{s} not available, falling back to CPU path trace", .{rt_backend.backendName()});
+                try self.renderCpuPathTraceViewport(prepared_scene, scene);
+                return;
+            }
+            render_log.info("{s} backend initialized", .{rt_backend.backendName()});
+        }
+
+        var backend = &self.hw_rt_backend.?;
+        const target = self.scene_viewport.color() orelse return;
+        const width = target.desc.width;
+        const height = target.desc.height;
+        if (width == 0 or height == 0) return;
+
+        const samples = std.math.clamp(self.editor_viewport_state.path_trace_samples, 1, 64);
+        const bounces = std.math.clamp(self.editor_viewport_state.path_trace_bounces, 1, 8);
+        const resolution_scale = std.math.clamp(self.editor_viewport_state.path_trace_resolution_scale, 0.25, 1.0);
+        const trace_width = @max(@as(u32, 1), @as(u32, @intFromFloat(@as(f32, @floatFromInt(width)) * resolution_scale)));
+        const trace_height = @max(@as(u32, 1), @as(u32, @intFromFloat(@as(f32, @floatFromInt(height)) * resolution_scale)));
+
+        var mrt = &self.hw_rt_state;
+
+        // --- 变化检测 ---
+        const vp_changed = !std.mem.eql(u8, std.mem.asBytes(&prepared_scene.view_projection), std.mem.asBytes(&mrt.last_view_projection));
+        const size_changed = trace_width != mrt.trace_width or trace_height != mrt.trace_height or width != mrt.target_width or height != mrt.target_height;
+        const params_changed = samples != mrt.last_samples or bounces != mrt.last_bounces or resolution_scale != mrt.last_resolution_scale;
+
+        if (vp_changed or params_changed) {
+            mrt.needs_retrace = true;
+        }
+        if (size_changed) {
+            mrt.reset(self.allocator);
+            if (mrt.trace_pixels) |p| self.allocator.free(p);
+            if (mrt.display_pixels) |p| self.allocator.free(p);
+            mrt.trace_pixels = null;
+            mrt.display_pixels = null;
+        }
+
+        mrt.last_view_projection = prepared_scene.view_projection;
+        mrt.last_samples = samples;
+        mrt.last_bounces = bounces;
+        mrt.last_resolution_scale = resolution_scale;
+
+        // --- 分配缓冲区 ---
+        if (mrt.trace_pixels == null) {
+            mrt.trace_pixels = try self.allocator.alloc(u8, @as(usize, trace_width) * trace_height * 4);
+            @memset(mrt.trace_pixels.?, 0);
+            mrt.trace_width = trace_width;
+            mrt.trace_height = trace_height;
+        }
+        if (mrt.display_pixels == null) {
+            mrt.display_pixels = try self.allocator.alloc(u8, @as(usize, width) * height * 4);
+            @memset(mrt.display_pixels.?, 0);
+            mrt.target_width = width;
+            mrt.target_height = height;
+        }
+
+        // 若无变化且已追踪完成,直接上传缓存
+        if (!mrt.needs_retrace and mrt.accel_built) {
+            try self.rhi.uploadTextureData(target, mrt.display_pixels.?, width, height);
+            return;
+        }
+
+        // --- 构建/重建三角形数据 ---
+        if (mrt.triangles == null) {
+            var triangle_list: std.ArrayListUnmanaged(rt_backend.RtTriangle) = .empty;
+            defer triangle_list.deinit(self.allocator);
+
+            for (prepared_scene.opaque_meshes) |item| {
+                const mesh_res = if (handles.isValid(item.mesh_handle))
+                    scene.resources.mesh(item.mesh_handle)
+                else
+                    null;
+                if (mesh_res) |mesh| {
+                    const indices = mesh.indices;
+                    const vertices = mesh.vertices;
+                    const albedo = [3]f32{
+                        std.math.clamp(item.base_color_factor[0], 0.02, 1.0),
+                        std.math.clamp(item.base_color_factor[1], 0.02, 1.0),
+                        std.math.clamp(item.base_color_factor[2], 0.02, 1.0),
+                    };
+                    const emissive = [3]f32{
+                        item.emissive_factor[0] * item.emissive_factor[3],
+                        item.emissive_factor[1] * item.emissive_factor[3],
+                        item.emissive_factor[2] * item.emissive_factor[3],
+                    };
+                    const metallic = std.math.clamp(item.pbr_factors[0], 0.0, 1.0);
+                    const roughness = std.math.clamp(item.pbr_factors[1], 0.04, 1.0);
+
+                    var i: usize = 0;
+                    while (i + 2 < indices.len) : (i += 3) {
+                        const idx0 = indices[i];
+                        const idx1 = indices[i + 1];
+                        const idx2 = indices[i + 2];
+                        if (idx0 >= vertices.len or idx1 >= vertices.len or idx2 >= vertices.len) continue;
+
+                        try triangle_list.append(self.allocator, .{
+                            .v0 = transformPoint(item.model, vertices[idx0].position),
+                            .v1 = transformPoint(item.model, vertices[idx1].position),
+                            .v2 = transformPoint(item.model, vertices[idx2].position),
+                            .n0 = transformNormal(item.model, vertices[idx0].normal),
+                            .n1 = transformNormal(item.model, vertices[idx1].normal),
+                            .n2 = transformNormal(item.model, vertices[idx2].normal),
+                            .albedo = albedo,
+                            .emissive = emissive,
+                            .metallic = metallic,
+                            .roughness = roughness,
+                        });
+                    }
+                }
+            }
+
+            // 无网格时显示地面平面
+            if (triangle_list.items.len == 0) {
+                try triangle_list.append(self.allocator, .{
+                    .v0 = .{ -5.0, 0.0, -5.0 }, .v1 = .{ 5.0, 0.0, -5.0 }, .v2 = .{ 5.0, 0.0, 5.0 },
+                    .n0 = .{ 0.0, 1.0, 0.0 }, .n1 = .{ 0.0, 1.0, 0.0 }, .n2 = .{ 0.0, 1.0, 0.0 },
+                    .albedo = .{ 0.6, 0.6, 0.6 }, .emissive = .{ 0.0, 0.0, 0.0 }, .metallic = 0.0, .roughness = 0.8,
+                });
+                try triangle_list.append(self.allocator, .{
+                    .v0 = .{ -5.0, 0.0, -5.0 }, .v1 = .{ 5.0, 0.0, 5.0 }, .v2 = .{ -5.0, 0.0, 5.0 },
+                    .n0 = .{ 0.0, 1.0, 0.0 }, .n1 = .{ 0.0, 1.0, 0.0 }, .n2 = .{ 0.0, 1.0, 0.0 },
+                    .albedo = .{ 0.6, 0.6, 0.6 }, .emissive = .{ 0.0, 0.0, 0.0 }, .metallic = 0.0, .roughness = 0.8,
+                });
+            }
+
+            mrt.triangles = try self.allocator.dupe(rt_backend.RtTriangle, triangle_list.items);
+            mrt.accel_built = false;
+        }
+
+        // --- 构建加速结构 ---
+        if (!mrt.accel_built) {
+            if (!backend.buildAccelerationStructure(mrt.triangles.?)) {
+                render_log.err("{s} acceleration structure build failed", .{rt_backend.backendName()});
+                return;
+            }
+            mrt.accel_built = true;
+        }
+
+        // --- 光线追踪 ---
+        const light_dir: [3]f32 = if (prepared_scene.lights.directional_lights.len > 0)
+            vec3.normalize(vec3.scale(prepared_scene.lights.directional_lights[0].direction, -1.0))
+        else
+            vec3.normalize(.{ 0.38, 0.82, 0.42 });
+
+        var params = rt_backend.RtParams{
+            .inv_view_projection = mat4_mod.inverse(prepared_scene.view_projection) orelse mat4_mod.identity(),
+            .camera_origin = .{
+                prepared_scene.camera_world_position[0],
+                prepared_scene.camera_world_position[1],
+                prepared_scene.camera_world_position[2],
+            },
+            .light_direction = light_dir,
+            .width = trace_width,
+            .height = trace_height,
+            .samples = samples,
+            .bounces = bounces,
+        };
+
+        if (!backend.traceRays(&params, mrt.trace_pixels.?)) {
+            render_log.err("{s} trace failed", .{rt_backend.backendName()});
+            return;
+        }
+        mrt.needs_retrace = false;
+
+        // --- 上采样 trace → display ---
+        const trace_pixels = mrt.trace_pixels.?;
+        const display_pixels = mrt.display_pixels.?;
+        var out_y: u32 = 0;
+        while (out_y < height) : (out_y += 1) {
+            const src_y: u32 = @min(trace_height - 1, @as(u32, @intCast((@as(u64, out_y) * @as(u64, trace_height)) / @as(u64, height))));
+            var out_x: u32 = 0;
+            while (out_x < width) : (out_x += 1) {
+                const src_x: u32 = @min(trace_width - 1, @as(u32, @intCast((@as(u64, out_x) * @as(u64, trace_width)) / @as(u64, width))));
+                const src_idx: usize = (@as(usize, src_y) * @as(usize, trace_width) + @as(usize, src_x)) * 4;
+                const dst_idx: usize = (@as(usize, out_y) * @as(usize, width) + @as(usize, out_x)) * 4;
+                display_pixels[dst_idx + 0] = trace_pixels[src_idx + 0];
+                display_pixels[dst_idx + 1] = trace_pixels[src_idx + 1];
+                display_pixels[dst_idx + 2] = trace_pixels[src_idx + 2];
+                display_pixels[dst_idx + 3] = trace_pixels[src_idx + 3];
             }
         }
 

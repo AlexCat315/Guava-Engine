@@ -14,6 +14,7 @@ pub const EditorViewportRenderMode = enum {
 pub const EditorViewportPipelineMode = enum {
     raster,
     path_trace,
+    hardware_rt,
 };
 
 pub const EditorViewportLutPreset = enum {

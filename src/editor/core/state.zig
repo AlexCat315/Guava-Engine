@@ -124,6 +124,7 @@ pub const ViewportRenderMode = enum {
 pub const ViewportPipelineMode = enum {
     raster,
     path_trace,
+    hardware_rt,
 };
 
 pub const ViewportLutPreset = engine.render.EditorViewportLutPreset;
