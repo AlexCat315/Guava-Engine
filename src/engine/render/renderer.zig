@@ -2201,14 +2201,20 @@ fn resolveEnvironmentTextures(
         &scene.resources,
         &scene.resources.asset_registry,
         environment_asset_id,
-    ) catch return;
+    ) catch |err| {
+        render_log.warn("failed to load environment texture asset '{s}': {s}; using fallback", .{ environment_asset_id, @errorName(err) });
+        return;
+    };
 
     var environment = environment_map_import_mod.loadIBLData(
         self.allocator,
         &scene.resources,
         &scene.resources.asset_registry,
         environment_asset_id,
-    ) catch return;
+    ) catch |err| {
+        render_log.warn("failed to load IBL data for '{s}': {s}; using fallback", .{ environment_asset_id, @errorName(err) });
+        return;
+    };
     defer environment.deinit(self.allocator);
 
     if (environment.environment_map_handle) |handle| {
