@@ -169,6 +169,8 @@ pub const Application = struct {
     global_time: f32 = 0.0,
     /// 时间缩放（用于慢动作、暂停等）
     time_scale: f32 = 1.0,
+    /// 游戏运行时状态机
+    game_state: layer_mod.GameState = .game_start,
     /// 物理时间累积器
     physics_accumulator_seconds: f32 = 0.0,
     /// 物理状态实例（替代全局变量）
@@ -361,6 +363,15 @@ pub const Application = struct {
             self.global_time += delta_seconds * self.time_scale;
 
             const should_advance_simulation = self.playback_controller.shouldAdvance();
+
+            // 同步 GameState 与 PlaybackController
+            if (should_advance_simulation and self.game_state == .game_start) {
+                self.game_state = .playing;
+            }
+            if (self.playback_controller.state == .stopped and self.game_state != .game_start) {
+                self.game_state = .game_start;
+            }
+
             if (should_advance_simulation) {
                 animator_system.update(&self.world, delta_seconds);
                 self.advancePhysics(delta_seconds);
@@ -492,6 +503,7 @@ pub const Application = struct {
             .input = &self.input,
             .window = &self.window,
             .playback_controller = &self.playback_controller,
+            .game_state = &self.game_state,
             .physics_state = &self.physics_state,
             .frame_index = frame_index,
             .delta_seconds = delta_seconds,
@@ -560,9 +572,13 @@ pub const Application = struct {
                     .allocator = self.allocator,
                     .command_queue = &self.command_queue,
                     .input = &self.input,
+                    .physics_state = &self.physics_state,
                     .time = self.global_time,
                     .delta_time = delta_seconds,
                     .time_scale = self.time_scale,
+                    .game_state = @intFromEnum(self.game_state),
+                    .time_scale_ptr = &self.time_scale,
+                    .game_state_ptr = @ptrCast(&self.game_state),
                 };
 
                 vm.callUpdate(instance, &ctx, delta_seconds) catch |err| {

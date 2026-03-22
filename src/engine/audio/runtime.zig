@@ -88,6 +88,9 @@ pub const AudioRuntime = struct {
     clips: std.AutoHashMap(u32, AudioClip),
     next_clip_id: u32 = 1,
 
+    // 路径 → clip ID 缓存（避免重复加载）
+    clip_path_cache: std.StringHashMap(u32),
+
     // 正在播放的实例追踪
     playing_instances: std.ArrayList(PlayingInstance),
 
@@ -134,6 +137,7 @@ pub const AudioRuntime = struct {
             .bus_music = bus_music,
             .bus_sfx = bus_sfx,
             .clips = std.AutoHashMap(u32, AudioClip).init(allocator),
+            .clip_path_cache = std.StringHashMap(u32).init(allocator),
             .playing_instances = .empty,
         };
 
@@ -156,6 +160,7 @@ pub const AudioRuntime = struct {
             clip.deinit(runtime.allocator);
         }
         runtime.clips.deinit();
+        runtime.clip_path_cache.deinit();
 
         // 销毁混音器总线
         if (runtime.bus_sfx) |bus| soloud_bindings.busDestroy(bus);
@@ -189,6 +194,16 @@ pub const AudioRuntime = struct {
         try runtime.clips.put(clip_id, clip);
 
         std.debug.print("[INF] audio: Loaded audio clip '{s}' (id={d})\n", .{ name, clip_id });
+        return clip_id;
+    }
+
+    /// 通过路径加载或获取已缓存的音频剪辑
+    pub fn loadClipByPath(runtime: *AudioRuntime, path: [:0]const u8) !AudioClipHandle {
+        if (runtime.clip_path_cache.get(path)) |existing_id| {
+            return existing_id;
+        }
+        const clip_id = try runtime.loadClip(path, path);
+        try runtime.clip_path_cache.put(path, clip_id);
         return clip_id;
     }
 
@@ -366,7 +381,22 @@ pub const AudioRuntime = struct {
     }
 
     /// 从 ECS 世界更新音频（每帧调用）
-    pub fn updateFromWorld(runtime: *AudioRuntime, world: *const world_mod.World) void {
+    pub fn updateFromWorld(runtime: *AudioRuntime, world: *world_mod.World) void {
+        // 解析 clip_asset_path → clip_handle（惰性加载）
+        for (world.entities.items) |*entity| {
+            if (entity.audio_source) |*audio_src| {
+                if (audio_src.clip_handle == null) {
+                    if (audio_src.clip_asset_path) |path| {
+                        if (path.len > 0) {
+                            if (runtime.clip_path_cache.get(path)) |cached_id| {
+                                audio_src.clip_handle = @enumFromInt(cached_id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // 更新监听器位置（从相机）
         if (world.primaryCameraEntity()) |camera_id| {
             if (world.getEntityConst(camera_id)) |entity| {

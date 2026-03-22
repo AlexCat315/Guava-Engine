@@ -34,12 +34,20 @@ pub const ScriptContext = struct {
     command_queue: ?*command_queue_mod.CommandQueue = null,
     /// 输入状态（可选）
     input: ?*const input_mod.InputState = null,
+    /// 物理系统状态（用于物理查询）
+    physics_state: ?*physics_mod.PhysicsState = null,
     /// 全局时间（秒）
     time: f32 = 0.0,
     /// DeltaTime（秒）
     delta_time: f32 = 0.0,
     /// 时间缩放
     time_scale: f32 = 1.0,
+    /// 游戏运行时状态（GameStart/Playing/Paused/GameOver/Quit）
+    game_state: u32 = 0,
+    /// 可写回的 time_scale 指针（指向 Application.time_scale）
+    time_scale_ptr: ?*f32 = null,
+    /// 可写回的 game_state 指针（指向 Application.game_state 的 u32 表示）
+    game_state_ptr: ?*u32 = null,
     /// 编辑器当前选择集（Editor Utility UI 使用）
     editor_selection: []const EntityId = &.{},
     /// 编辑器选择回调（Editor Utility UI 使用）
@@ -370,7 +378,8 @@ pub const ScriptContext = struct {
         direction: components.Vec3,
         max_distance: f32,
     ) ?physics_mod.RaycastHit {
-        return physics_mod.raycast(self.world, .{
+        const ps = self.physics_state orelse return null;
+        return ps.raycast(self.world, .{
             .origin = origin,
             .direction = direction,
             .max_distance = max_distance,
@@ -382,7 +391,8 @@ pub const ScriptContext = struct {
         query_bounds: AABB,
         filter: physics_mod.QueryFilter,
     ) ![]physics_mod.OverlapHit {
-        return physics_mod.overlapAabb(self.world, self.allocator, query_bounds, filter);
+        const ps = self.physics_state orelse return self.allocator.alloc(physics_mod.OverlapHit, 0);
+        return ps.overlapAabb(self.world, self.allocator, query_bounds, filter);
     }
 
     pub fn physicsOverlapBox(

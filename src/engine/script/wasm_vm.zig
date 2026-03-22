@@ -954,6 +954,114 @@ pub export fn guava_wasm_host_audio_set_volume(userdata: ?*anyopaque, entity_id_
     audio_src.volume = @max(0.0, @min(1.0, volume));
 }
 
+// ── Physics WASM API ──
+
+/// 射线检测。命中返回 1 并写入 8 个 f32 到 out_ptr：
+/// [entity_id_as_f32, hit_x, hit_y, hit_z, normal_x, normal_y, normal_z, distance]
+pub export fn guava_wasm_host_physics_raycast(
+    userdata: ?*anyopaque,
+    ox: f32,
+    oy: f32,
+    oz: f32,
+    dx: f32,
+    dy: f32,
+    dz: f32,
+    max_dist: f32,
+    out_ptr: [*]f32,
+) u32 {
+    const ctx = activeContext(userdata) orelse return 0;
+    const hit = ctx.physicsRaycast(.{ ox, oy, oz }, .{ dx, dy, dz }, max_dist) orelse return 0;
+    out_ptr[0] = @floatFromInt(hit.entity_id);
+    out_ptr[1] = hit.position[0];
+    out_ptr[2] = hit.position[1];
+    out_ptr[3] = hit.position[2];
+    out_ptr[4] = hit.normal[0];
+    out_ptr[5] = hit.normal[1];
+    out_ptr[6] = hit.normal[2];
+    out_ptr[7] = hit.distance;
+    return 1;
+}
+
+/// AABB 重叠检测。返回命中数（最多 max_count）。
+/// 每个命中写入 1 个 u32 entity_id 到 out_ptr。
+pub export fn guava_wasm_host_physics_overlap_aabb(
+    userdata: ?*anyopaque,
+    min_x: f32,
+    min_y: f32,
+    min_z: f32,
+    max_x: f32,
+    max_y: f32,
+    max_z: f32,
+    out_ptr: [*]u32,
+    max_count: u32,
+) u32 {
+    const ctx = activeContext(userdata) orelse return 0;
+    const physics_mod = @import("../physics/system.zig");
+    const AABB = @import("../math/aabb.zig").AABB;
+    const query_bounds = AABB{ .min = .{ min_x, min_y, min_z }, .max = .{ max_x, max_y, max_z } };
+    const hits = ctx.physicsOverlapAabb(query_bounds, .{}) catch return 0;
+    defer ctx.allocator.free(hits);
+    const count: u32 = @intCast(@min(hits.len, max_count));
+    for (0..count) |i| {
+        out_ptr[i] = @intCast(hits[i].entity_id);
+    }
+    _ = physics_mod;
+    return count;
+}
+
+/// 球形重叠检测。返回命中数（最多 max_count）。
+/// 内部转换为 AABB 查询。
+pub export fn guava_wasm_host_physics_overlap_sphere(
+    userdata: ?*anyopaque,
+    cx: f32,
+    cy: f32,
+    cz: f32,
+    radius: f32,
+    out_ptr: [*]u32,
+    max_count: u32,
+) u32 {
+    const ctx = activeContext(userdata) orelse return 0;
+    const physics_mod = @import("../physics/system.zig");
+    const hits = ctx.physicsOverlapBox(.{ cx, cy, cz }, .{ radius, radius, radius }, .{}) catch return 0;
+    defer ctx.allocator.free(hits);
+    const count: u32 = @intCast(@min(hits.len, max_count));
+    for (0..count) |i| {
+        out_ptr[i] = @intCast(hits[i].entity_id);
+    }
+    _ = physics_mod;
+    return count;
+}
+
+// ── GameState / TimeScale WASM API ──
+
+/// 获取当前 GameState（0=GameStart, 1=Playing, 2=Paused, 3=GameOver, 4=Quit）
+pub export fn guava_wasm_host_get_game_state(userdata: ?*anyopaque) u32 {
+    const ctx = activeContext(userdata) orelse return 0;
+    return ctx.game_state;
+}
+
+/// 设置 GameState
+pub export fn guava_wasm_host_set_game_state(userdata: ?*anyopaque, state: u32) void {
+    const ctx = activeContext(userdata) orelse return;
+    if (ctx.game_state_ptr) |ptr| {
+        ptr.* = state;
+    }
+}
+
+/// 获取当前 time_scale
+pub export fn guava_wasm_host_get_time_scale(userdata: ?*anyopaque) f32 {
+    const ctx = activeContext(userdata) orelse return 1.0;
+    return ctx.time_scale;
+}
+
+/// 设置 time_scale（0.0 冻结, 1.0 正常, 0.5 慢动作等）
+pub export fn guava_wasm_host_set_time_scale(userdata: ?*anyopaque, scale: f32) void {
+    const ctx = activeContext(userdata) orelse return;
+    if (ctx.time_scale_ptr) |ptr| {
+        ptr.* = @max(0.0, @min(10.0, scale));
+    }
+}
+
 fn castContext(comptime T: type, context_ptr: *anyopaque) *T {
     return @ptrCast(@alignCast(context_ptr));
 }

@@ -15,6 +15,20 @@ pub const PlaybackState = enum {
     paused,
 };
 
+/// 游戏运行时状态机
+pub const GameState = enum(u32) {
+    /// 初始化/加载中
+    game_start = 0,
+    /// 正常运行
+    playing = 1,
+    /// 暂停（UI 叠加）
+    paused = 2,
+    /// 游戏结束
+    game_over = 3,
+    /// 退出
+    quit = 4,
+};
+
 pub const PlaybackController = struct {
     state: PlaybackState = .stopped,
     pending_steps: usize = 0,
@@ -53,6 +67,7 @@ pub const LayerContext = struct {
     input: *input_mod.InputState,
     window: *window_mod.Window,
     playback_controller: *PlaybackController,
+    game_state: *GameState,
     physics_state: *physics_mod.PhysicsState,
     frame_index: usize,
     delta_seconds: f32,

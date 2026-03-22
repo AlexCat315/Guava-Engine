@@ -134,6 +134,7 @@ const ScriptComponentRecord = struct {
 };
 
 const AudioSourceComponentRecord = struct {
+    clip_asset_path: ?[]const u8 = null,
     volume: f32 = 1.0,
     spatial: bool = false,
     looping: bool = false,
@@ -715,6 +716,7 @@ fn buildSceneFile(allocator: std.mem.Allocator, world: *const world_mod.World) !
             .vfx = entity.vfx,
             .script = script_component,
             .audio_source = if (entity.audio_source) |as| AudioSourceComponentRecord{
+                .clip_asset_path = as.clip_asset_path,
                 .volume = as.volume,
                 .spatial = as.spatial,
                 .looping = as.looping,
@@ -1077,6 +1079,7 @@ fn deserializeWorldV4FromSlice(allocator: std.mem.Allocator, world: *world_mod.W
                 null,
             .audio_source = if (entity.audio_source) |as_rec|
                 .{
+                    .clip_asset_path = as_rec.clip_asset_path,
                     .volume = as_rec.volume,
                     .spatial = as_rec.spatial,
                     .looping = as_rec.looping,

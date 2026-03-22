@@ -356,6 +356,31 @@ extern uint32_t guava_wasm_host_audio_play(void *userdata, uint32_t entity_id);
 extern void guava_wasm_host_audio_stop(void *userdata, uint32_t entity_id);
 extern void guava_wasm_host_audio_set_volume(void *userdata, uint32_t entity_id, float volume);
 
+extern uint32_t guava_wasm_host_physics_raycast(
+    void *userdata,
+    float ox, float oy, float oz,
+    float dx, float dy, float dz,
+    float max_dist,
+    float *out_ptr
+);
+extern uint32_t guava_wasm_host_physics_overlap_aabb(
+    void *userdata,
+    float min_x, float min_y, float min_z,
+    float max_x, float max_y, float max_z,
+    uint32_t *out_ptr, uint32_t max_count
+);
+extern uint32_t guava_wasm_host_physics_overlap_sphere(
+    void *userdata,
+    float cx, float cy, float cz,
+    float radius,
+    uint32_t *out_ptr, uint32_t max_count
+);
+
+extern uint32_t guava_wasm_host_get_game_state(void *userdata);
+extern void guava_wasm_host_set_game_state(void *userdata, uint32_t state);
+extern float guava_wasm_host_get_time_scale(void *userdata);
+extern void guava_wasm_host_set_time_scale(void *userdata, float scale);
+
 static uint32_t
 host_audio_play(wasm_exec_env_t exec_env, uint32_t entity_id) {
     return guava_wasm_host_audio_play(guava_get_userdata(exec_env), entity_id);
@@ -371,7 +396,69 @@ host_audio_set_volume(wasm_exec_env_t exec_env, uint32_t entity_id, float volume
     guava_wasm_host_audio_set_volume(guava_get_userdata(exec_env), entity_id, volume);
 }
 
-#define GUAVA_NATIVE_SYMBOL_COUNT 38
+static uint32_t
+host_physics_raycast(
+    wasm_exec_env_t exec_env,
+    float ox, float oy, float oz,
+    float dx, float dy, float dz,
+    float max_dist,
+    float *out_ptr
+) {
+    return guava_wasm_host_physics_raycast(
+        guava_get_userdata(exec_env),
+        ox, oy, oz, dx, dy, dz, max_dist, out_ptr
+    );
+}
+
+static uint32_t
+host_physics_overlap_aabb(
+    wasm_exec_env_t exec_env,
+    float min_x, float min_y, float min_z,
+    float max_x, float max_y, float max_z,
+    uint32_t *out_ptr, uint32_t max_count
+) {
+    return guava_wasm_host_physics_overlap_aabb(
+        guava_get_userdata(exec_env),
+        min_x, min_y, min_z, max_x, max_y, max_z,
+        out_ptr, max_count
+    );
+}
+
+static uint32_t
+host_physics_overlap_sphere(
+    wasm_exec_env_t exec_env,
+    float cx, float cy, float cz,
+    float radius,
+    uint32_t *out_ptr, uint32_t max_count
+) {
+    return guava_wasm_host_physics_overlap_sphere(
+        guava_get_userdata(exec_env),
+        cx, cy, cz, radius,
+        out_ptr, max_count
+    );
+}
+
+static uint32_t
+host_get_game_state(wasm_exec_env_t exec_env) {
+    return guava_wasm_host_get_game_state(guava_get_userdata(exec_env));
+}
+
+static void
+host_set_game_state(wasm_exec_env_t exec_env, uint32_t state) {
+    guava_wasm_host_set_game_state(guava_get_userdata(exec_env), state);
+}
+
+static float
+host_get_time_scale(wasm_exec_env_t exec_env) {
+    return guava_wasm_host_get_time_scale(guava_get_userdata(exec_env));
+}
+
+static void
+host_set_time_scale(wasm_exec_env_t exec_env, float scale) {
+    guava_wasm_host_set_time_scale(guava_get_userdata(exec_env), scale);
+}
+
+#define GUAVA_NATIVE_SYMBOL_COUNT 45
 
 static NativeSymbol guava_native_symbols[GUAVA_NATIVE_SYMBOL_COUNT] = {
     EXPORT_WASM_API_WITH_SIG(host_get_entity_id, "()i"),
@@ -412,6 +499,13 @@ static NativeSymbol guava_native_symbols[GUAVA_NATIVE_SYMBOL_COUNT] = {
     EXPORT_WASM_API_WITH_SIG(host_audio_play, "(i)i"),
     EXPORT_WASM_API_WITH_SIG(host_audio_stop, "(i)"),
     EXPORT_WASM_API_WITH_SIG(host_audio_set_volume, "(if)"),
+    EXPORT_WASM_API_WITH_SIG(host_physics_raycast, "(fffffff*)i"),
+    EXPORT_WASM_API_WITH_SIG(host_physics_overlap_aabb, "(ffffff*i)i"),
+    EXPORT_WASM_API_WITH_SIG(host_physics_overlap_sphere, "(ffff*i)i"),
+    EXPORT_WASM_API_WITH_SIG(host_get_game_state, "()i"),
+    EXPORT_WASM_API_WITH_SIG(host_set_game_state, "(i)"),
+    EXPORT_WASM_API_WITH_SIG(host_get_time_scale, "()F"),
+    EXPORT_WASM_API_WITH_SIG(host_set_time_scale, "(f)"),
 };
 
 NativeSymbol *
