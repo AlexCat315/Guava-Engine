@@ -138,7 +138,7 @@ fn drawViewportToolbarStrip(state: *EditorState, layer_context: *engine.core.Lay
         const space_width = 72.0;
         const mode_width = 212.0;
         const undo_source_width = 132.0;
-        const ai_status_width = 196.0;
+        const ai_status_width = 304.0;
         const options_width = 28.0 + 10.0 + mode_width + 8.0 + undo_source_width + 8.0 + ai_status_width + 8.0 + 28.0 + 10.0 + filter_width + 8.0 + category_width + 8.0 + space_width;
         gui.sameLine();
         gui.dummy(@max(gui.contentRegionAvail()[0] - options_width, 10.0), 1.0);
@@ -222,24 +222,43 @@ fn drawToolbarUndoSourceChip(state: *EditorState) void {
 }
 
 fn drawToolbarAiStatusCapsule(state: *EditorState) void {
-    const label: []const u8 = blk: {
-        const store = state.ai_collaboration orelse break :blk "AI: Offline";
-        const status = store.aiStatusSnapshot();
-        break :blk switch (status.stage) {
-            .ready => "AI: Ready",
-            .analyzing_screenshot => "AI: Analyzing Screenshot",
-            .compiling_shader => "AI: Compiling Shader",
-            .waiting_approval => "AI: Waiting Approval",
-        };
+    const store = state.ai_collaboration;
+    const status = if (store) |value| value.aiStatusSnapshot() else null;
+    const stage_label = if (status) |value|
+        switch (value.stage) {
+            .ready => "Ready",
+            .analyzing_screenshot => "Analyzing Screenshot",
+            .compiling_shader => "Compiling Shader",
+            .waiting_approval => "Waiting Approval",
+        }
+    else
+        "Offline";
+
+    const detail = if (status) |value|
+        if (value.detail.len > 0) value.detail.slice() else "idle"
+    else
+        "Bridge unavailable";
+
+    var detail_short_buffer: [112]u8 = undefined;
+    const detail_short: []const u8 = if (detail.len <= 36)
+        detail
+    else blk: {
+        const prefix_len = @min(@as(usize, 33), detail.len);
+        @memcpy(detail_short_buffer[0..prefix_len], detail[0..prefix_len]);
+        @memcpy(detail_short_buffer[prefix_len .. prefix_len + 3], "...");
+        break :blk detail_short_buffer[0 .. prefix_len + 3];
     };
 
-    const bg: [4]f32 = if (std.mem.eql(u8, label, "AI: Offline"))
+    var label_buffer: [192]u8 = undefined;
+    const label = std.fmt.bufPrint(&label_buffer, "AI: {s} | {s}", .{ stage_label, detail_short }) catch "AI: Status";
+
+    const bg: [4]f32 = if (store == null)
         .{ 0.32, 0.20, 0.20, 0.92 }
-    else if (std.mem.eql(u8, label, "AI: Waiting Approval"))
+    else if (status != null and status.?.stage == .waiting_approval)
         .{ 0.30, 0.24, 0.45, 0.92 }
-    else if (std.mem.eql(u8, label, "AI: Compiling Shader"))
+    else if (status != null and status.?.stage == .compiling_shader)
         .{ 0.30, 0.28, 0.18, 0.92 }
-    else if (std.mem.eql(u8, label, "AI: Analyzing Screenshot"))
+    else if (status != null and status.?.stage == .analyzing_screenshot)
         .{ 0.19, 0.30, 0.40, 0.92 }
     else
         .{ 0.18, 0.33, 0.25, 0.92 };
@@ -248,7 +267,12 @@ fn drawToolbarAiStatusCapsule(state: *EditorState) void {
     gui.pushStyleColor(.button_hovered, bg);
     gui.pushStyleColor(.button_active, bg);
     defer gui.popStyleColor(3);
-    _ = gui.buttonEx(label, 196.0, 0.0);
+    _ = gui.buttonEx(label, 304.0, 0.0);
+    if (gui.isItemHovered()) {
+        var tip_buffer: [448]u8 = undefined;
+        const tip = std.fmt.bufPrint(&tip_buffer, "Stage: {s}\nDetail: {s}", .{ stage_label, detail }) catch detail;
+        gui.setTooltip(tip);
+    }
 }
 
 fn drawViewportToolbarOptions(
@@ -448,6 +472,7 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
         // Draw overlays (positioned absolutely, won't affect layout)
         try handleViewportAssetDropTargets(state, layer_context);
         try drawViewportOverlayControlsWindow(state, layer_context);
+        drawViewportAiStateOverlayWindow(state);
         try drawViewportPlaybackOverlayWindow(state, layer_context);
         try drawViewportFpsOverlayWindow(state, layer_context);
         try drawViewportDebugOverlayWindow(state, layer_context);
@@ -641,6 +666,39 @@ fn drawCommandTimelineWindow(state: *EditorState, layer_context: *engine.core.La
         return;
     }
 
+    if (gui.checkbox("Hover Preview + Click Confirm", &state.timeline_hover_preview_confirm_mode)) {
+        if (!state.timeline_hover_preview_confirm_mode) {
+            state.timeline_preview_sequence = null;
+            state.timeline_preview_target_cursor = null;
+        }
+    }
+
+    if (state.timeline_hover_preview_confirm_mode) {
+        const preview_cursor_opt = state.timeline_preview_target_cursor;
+        const has_valid_preview = preview_cursor_opt != null and preview_cursor_opt.? > 0 and preview_cursor_opt.? <= available_entries and preview_cursor_opt.? != current_cursor;
+        if (has_valid_preview) {
+            const preview_cursor = preview_cursor_opt.?;
+            const preview_entry = state.timeline_entries.items[timeline_start_index + preview_cursor - 1];
+            var preview_buffer: [224]u8 = undefined;
+            const preview_text = std.fmt.bufPrint(
+                &preview_buffer,
+                "Preview: #{d} {s}",
+                .{ preview_entry.sequence, preview_entry.label },
+            ) catch "Preview pending";
+            gui.text(preview_text);
+            gui.sameLine();
+            if (gui.buttonEx("Confirm Time Travel", 166.0, 0.0)) {
+                try history.timeTravelToCursor(state, layer_context, preview_cursor);
+                state.timeline_preview_sequence = null;
+                state.timeline_preview_target_cursor = null;
+            }
+        } else {
+            gui.textWrapped("Hover a node to select preview target, then click Confirm Time Travel.");
+        }
+    }
+
+    gui.separator();
+
     if (!gui.beginChild("command_timeline_lane", 0.0, 66.0, true)) {
         return;
     }
@@ -670,6 +728,7 @@ fn drawCommandTimelineWindow(state: *EditorState, layer_context: *engine.core.La
 
         const node_cursor = index + 1;
         const is_current = node_cursor == current_cursor;
+        const is_preview = state.timeline_hover_preview_confirm_mode and state.timeline_preview_target_cursor != null and state.timeline_preview_target_cursor.? == node_cursor and node_cursor != current_cursor;
 
         var node_label_buffer: [192]u8 = undefined;
         const node_label = std.fmt.bufPrint(
@@ -683,16 +742,34 @@ fn drawCommandTimelineWindow(state: *EditorState, layer_context: *engine.core.La
         gui.pushStyleColor(.button_active, palette.active);
         if (is_current) {
             gui.pushStyleColor(.text, .{ 0.98, 0.98, 0.78, 1.0 });
+        } else if (is_preview) {
+            gui.pushStyleColor(.text, .{ 0.80, 0.95, 1.0, 1.0 });
         }
         gui.pushStyleVarVec2(.frame_padding, .{ 10.0, 6.0 });
         gui.pushStyleVarFloat(.frame_rounding, 7.0);
         defer {
             gui.popStyleVar(2);
-            gui.popStyleColor(if (is_current) 4 else 3);
+            gui.popStyleColor(if (is_current or is_preview) 4 else 3);
         }
 
-        if (gui.buttonEx(node_label, 0.0, 0.0)) {
-            try history.timeTravelToCursor(state, layer_context, node_cursor);
+        const clicked = gui.buttonEx(node_label, 0.0, 0.0);
+        if (state.timeline_hover_preview_confirm_mode and gui.isItemHovered() and node_cursor != current_cursor) {
+            state.timeline_preview_sequence = entry.sequence;
+            state.timeline_preview_target_cursor = node_cursor;
+        }
+
+        if (clicked) {
+            if (state.timeline_hover_preview_confirm_mode) {
+                if (node_cursor == current_cursor) {
+                    state.timeline_preview_sequence = null;
+                    state.timeline_preview_target_cursor = null;
+                } else {
+                    state.timeline_preview_sequence = entry.sequence;
+                    state.timeline_preview_target_cursor = node_cursor;
+                }
+            } else {
+                try history.timeTravelToCursor(state, layer_context, node_cursor);
+            }
         }
         if (gui.isItemHovered()) {
             var tip_buffer: [320]u8 = undefined;
@@ -850,6 +927,9 @@ fn syncViewportState(state: *EditorState, layer_context: *engine.core.LayerConte
             .raster => .raster,
             .path_trace => .path_trace,
         },
+        .path_trace_samples = state.viewport_path_trace_samples,
+        .path_trace_bounces = state.viewport_path_trace_bounces,
+        .path_trace_resolution_scale = state.viewport_path_trace_resolution_scale,
         .render_mode = switch (state.viewport_render_mode) {
             .textured => .textured,
             .wireframe => .wireframe,
@@ -1325,6 +1405,53 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
         stepPlayback(state, layer_context);
     }
     if (gui.isItemHovered() or (state.manipulation_started_from_ui and input.isMouseDown(.left))) state.viewport_overlay_hovered = true;
+}
+
+fn drawViewportAiStateOverlayWindow(state: *EditorState) void {
+    const store = state.ai_collaboration orelse return;
+    const ai_status = store.aiStatusSnapshot();
+
+    const stage_label = switch (ai_status.stage) {
+        .ready => "AI Ready",
+        .analyzing_screenshot => "Analyzing Screenshot",
+        .compiling_shader => "Compiling Shader",
+        .waiting_approval => "Waiting Approval",
+    };
+
+    const base_color: [4]f32 = switch (ai_status.stage) {
+        .ready => .{ 0.20, 0.56, 0.36, 0.88 },
+        .analyzing_screenshot => .{ 0.18, 0.42, 0.62, 0.90 },
+        .compiling_shader => .{ 0.46, 0.34, 0.18, 0.90 },
+        .waiting_approval => .{ 0.43, 0.24, 0.66, 0.92 },
+    };
+
+    const pulse = 0.07 * (std.math.sin(gui.time() * 3.2) + 1.0);
+    const bg_alpha = std.math.clamp(base_color[3] + pulse, 0.0, 1.0);
+    const overlay_width = 260.0;
+    gui.setNextWindowPos(.{
+        state.viewport_origin[0] + @max((state.viewport_extent[0] - overlay_width) * 0.5, 12.0),
+        state.viewport_origin[1] + 10.0,
+    });
+    gui.setNextWindowBgAlpha(bg_alpha);
+    _ = gui.beginWindowFlags(
+        "##viewport_ai_state_hud",
+        gui.WindowFlags.no_title_bar |
+            gui.WindowFlags.no_resize |
+            gui.WindowFlags.no_move |
+            gui.WindowFlags.no_saved_settings |
+            gui.WindowFlags.no_docking |
+            gui.WindowFlags.always_auto_resize |
+            gui.WindowFlags.no_scrollbar,
+    );
+    defer gui.endWindow();
+
+    if (gui.isWindowHovered()) {
+        state.viewport_overlay_hovered = true;
+    }
+
+    gui.pushStyleColor(.text, .{ 0.95, 0.96, 0.99, 1.0 });
+    defer gui.popStyleColor(1);
+    gui.text(stage_label);
 }
 
 fn logViewportStateChange(state: *const EditorState, layer_context: *const engine.core.LayerContext) void {

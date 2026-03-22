@@ -16,6 +16,12 @@ const layout = @import("../ui/layout.zig");
 const animation_editor = @import("../ui/panels/tools/animation_editor.zig");
 const editor_utilities = @import("../ui/panels/debug/editor_utilities.zig");
 const prefab_browser = @import("../ui/panels/assets/prefab_browser.zig");
+const particle_editor = @import("../ui/panels/tools/particle_editor.zig");
+const script_editor = @import("../ui/panels/tools/script_editor.zig");
+const physics_visualization = @import("../ui/panels/rendering/physics_visualization.zig");
+const post_process_editor = @import("../ui/panels/rendering/post_process_editor.zig");
+const prefab_editor = @import("../ui/panels/assets/prefab_editor.zig");
+const camera_bookmarks = @import("../ui/panels/viewport/camera_bookmarks.zig");
 
 fn initEditorStyle() void {
     // 采用更沉稳、现代的深灰色调，精简强调色应用以减少视觉疲劳
@@ -83,6 +89,14 @@ fn initEditorStyle() void {
 pub const EditorLayer = struct {
     state: EditorState = .{},
     animation_editor_state: ?animation_editor.AnimationEditorState = null,
+    particle_editor_state: particle_editor.ParticleEditorState = .{},
+    script_editor_state: ?script_editor.ScriptEditorState = null,
+    post_process_editor_state: ?post_process_editor.PostProcessPipelineEditorState = null,
+    post_process_viewport_state: engine.render.EditorViewportState = .{},
+    prefab_editor_state: prefab_editor.PrefabEditorState = .{},
+    physics_viz_settings: physics_visualization.PhysicsVisualizationSettings = .{},
+    physics_debug_draw_mode: physics_visualization.PhysicsDebugDrawMode = .off,
+    camera_bookmark_manager: ?camera_bookmarks.CameraBookmarkManager = null,
 
     pub fn asLayer(self: *EditorLayer) engine.core.Layer {
         return .{
@@ -119,6 +133,11 @@ pub const EditorLayer = struct {
         // Initialize animation editor state
         self.animation_editor_state = try animation_editor.createAnimationEditorState(layer_context.world.allocator);
 
+        // Initialize tool panel states
+        self.script_editor_state = script_editor.ScriptEditorState.init(layer_context.world.allocator);
+        self.post_process_editor_state = post_process_editor.PostProcessPipelineEditorState.init(layer_context.world.allocator);
+        self.camera_bookmark_manager = camera_bookmarks.CameraBookmarkManager.init(layer_context.world.allocator);
+
         try camera.createEditorCamera(&self.state, layer_context);
         manipulation.syncGizmoState(&self.state, layer_context);
         utils.syncInspectorNameBuffer(&self.state, layer_context);
@@ -147,6 +166,22 @@ pub const EditorLayer = struct {
                 animation_editor.destroyAnimationEditorState(editor_state, allocator);
                 self.animation_editor_state = null;
             }
+
+            // Cleanup tool panel states
+            if (self.script_editor_state) |*s| {
+                s.deinit();
+                self.script_editor_state = null;
+            }
+            if (self.post_process_editor_state) |*s| {
+                s.deinit();
+                self.post_process_editor_state = null;
+            }
+            if (self.camera_bookmark_manager) |*m| {
+                m.deinit();
+                self.camera_bookmark_manager = null;
+            }
+            self.particle_editor_state.deinit();
+            self.prefab_editor_state.deinit(allocator);
 
             if (self.state.ai_preview_runtime) |*runtime| {
                 runtime.deinit();
@@ -217,6 +252,32 @@ pub const EditorLayer = struct {
 
         if (self.state.editor_utilities_open) {
             try editor_utilities.drawEditorUtilitiesWindow(&self.state, layer_context);
+        }
+
+        // Draw migrated tool panels
+        if (self.state.particle_editor_open) {
+            try particle_editor.drawParticleEditorWindow(&self.state, layer_context, &self.particle_editor_state);
+        }
+        if (self.state.script_editor_open) {
+            if (self.script_editor_state) |*es| {
+                try script_editor.drawScriptEditorWindow(&self.state, layer_context, es);
+            }
+        }
+        if (self.state.physics_visualization_open) {
+            try physics_visualization.drawPhysicsVisualizationWindow(&self.state, &self.physics_viz_settings, &self.physics_debug_draw_mode);
+        }
+        if (self.state.post_process_editor_open) {
+            if (self.post_process_editor_state) |*es| {
+                try post_process_editor.drawPostProcessPipelineEditorWindow(&self.state, layer_context, es, &self.post_process_viewport_state);
+            }
+        }
+        if (self.state.prefab_editor_open) {
+            try prefab_editor.drawPrefabEditorWindow(&self.state, layer_context, &self.prefab_editor_state);
+        }
+        if (self.state.camera_bookmarks_open) {
+            if (self.camera_bookmark_manager) |*bm| {
+                try camera_bookmarks.drawCameraBookmarkWindow(&self.state, layer_context, bm);
+            }
         }
     }
 };

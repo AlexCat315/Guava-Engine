@@ -137,6 +137,28 @@ pub fn drawAiChatPanel(state: *EditorState) !void {
         }
     }
 
+    if (state.ai_collaboration) |store| {
+        const ai_status = store.aiStatusSnapshot();
+        const stage_label = switch (ai_status.stage) {
+            .ready => "Ready",
+            .analyzing_screenshot => "Analyzing Screenshot",
+            .compiling_shader => "Compiling Shader",
+            .waiting_approval => "Waiting Approval",
+        };
+        const detail = if (ai_status.detail.len > 0)
+            ai_status.detail.slice()
+        else
+            "No detail available yet.";
+
+        gui.separator();
+        gui.pushStyleColor(.text, .{ 0.78, 0.86, 0.95, 1.0 });
+        gui.text(stage_label);
+        gui.popStyleColor(1);
+        gui.pushStyleColor(.text, .{ 0.64, 0.70, 0.78, 1.0 });
+        gui.textWrapped(detail);
+        gui.popStyleColor(1);
+    }
+
     // AI Provider settings (collapsible)
     if (state.ai_provider_settings_open) {
         gui.separator();

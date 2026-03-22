@@ -342,6 +342,14 @@ pub const locale = blk: {
             .add_audio_listener_component = "Add Audio Listener",
             .remove_audio_listener_component = "Remove Audio Listener",
 
+            // Tool panels
+            .particle_editor = "Particle Editor",
+            .physics_visualization = "Physics Visualization",
+            .post_process_pipeline = "Post Process Pipeline",
+            .prefab_editor = "Prefab Editor",
+            .camera_bookmarks = "Camera Bookmarks",
+            .script_editor = "Script Editor",
+
             // AI Chat
             .ai_chat = "AI Assistant",
             .ai_chat_send = "Send",

@@ -3,6 +3,7 @@ const engine = @import("guava");
 const gui = @import("../../gui.zig");
 const layout = @import("../../layout.zig");
 const props = @import("../../properties.zig");
+const EditorState = @import("../../../core/state.zig").EditorState;
 
 pub const PhysicsVisualizationSettings = struct {
     show_collision_shapes: bool = true,
@@ -29,59 +30,60 @@ pub const PhysicsDebugDrawMode = enum {
     all,
 };
 
-pub fn drawPhysicsVisualizationPanel(settings: *PhysicsVisualizationSettings, mode: *PhysicsDebugDrawMode) void {
-    if (gui.begin("Physics Visualization")) {
-        defer gui.end();
+pub fn drawPhysicsVisualizationWindow(state: *EditorState, settings: *PhysicsVisualizationSettings, mode: *PhysicsDebugDrawMode) !void {
+    var title_buffer: [80]u8 = undefined;
+    const title = try state.windowLabel(&title_buffer, .physics_visualization, "physics_viz_panel");
+    _ = gui.beginWindow(title);
+    defer gui.endWindow();
 
-        if (props.beginPropertyGrid("physics_viz_settings")) {
-            defer props.endPropertyGrid();
+    if (props.beginPropertyGrid("physics_viz_settings")) {
+        defer props.endPropertyGrid();
 
-            if (props.combo("Draw Mode", modeName(mode.*))) {
-                defer gui.endCombo();
-                const modes = [_]PhysicsDebugDrawMode{ .off, .selection_only, .all };
-                for (modes) |m| {
-                    const is_selected = mode.* == m;
-                    if (gui.selectable(modeName(m), is_selected)) {
-                        mode.* = m;
-                    }
-                    if (is_selected) {
-                        gui.setItemDefaultFocus();
-                    }
+        if (props.combo("Draw Mode", modeName(mode.*))) {
+            defer gui.endCombo();
+            const modes = [_]PhysicsDebugDrawMode{ .off, .selection_only, .all };
+            for (modes) |m| {
+                const is_selected = mode.* == m;
+                if (gui.selectable(modeName(m), is_selected, false, 0, 0)) {
+                    mode.* = m;
+                }
+                if (is_selected) {
+                    gui.setItemDefaultFocus();
                 }
             }
+        }
 
-            if (mode.* != .off) {
-                _ = props.float("Opacity", &settings.opacity, 0.01, 0.1, 1.0);
-                _ = props.boolean("Wireframe", &settings.wireframe_only);
+        if (mode.* != .off) {
+            _ = props.float("Opacity", &settings.opacity, 0.01, 0.1, 1.0);
+            _ = props.boolean("Wireframe", &settings.wireframe_only);
 
-                gui.separator();
-                gui.text("Show:");
-                gui.separator();
+            gui.separator();
+            gui.text("Show:");
+            gui.separator();
 
-                _ = props.boolean("Collision Shapes", &settings.show_collision_shapes);
-                _ = props.boolean("Rigidbodies", &settings.show_rigidbodies);
-                _ = props.boolean("Triggers", &settings.show_triggers);
-                _ = props.boolean("Constraints", &settings.show_constraints);
-                _ = props.boolean("Velocity Vectors", &settings.show_velocity_vectors);
+            _ = props.boolean("Collision Shapes", &settings.show_collision_shapes);
+            _ = props.boolean("Rigidbodies", &settings.show_rigidbodies);
+            _ = props.boolean("Triggers", &settings.show_triggers);
+            _ = props.boolean("Constraints", &settings.show_constraints);
+            _ = props.boolean("Velocity Vectors", &settings.show_velocity_vectors);
 
-                if (settings.show_velocity_vectors) {
-                    _ = props.float("Velocity Scale", &settings.velocity_scale, 0.1, 0.1, 10.0);
-                }
-
-                _ = props.boolean("Sleep State", &settings.show_sleep_state);
-                _ = props.boolean("AABBs", &settings.show_aabbs);
-
-                gui.separator();
-                gui.text("Colors:");
-                gui.separator();
-
-                _ = props.color4("Static", &settings.color_static, .{});
-                _ = props.color4("Dynamic", &settings.color_dynamic, .{});
-                _ = props.color4("Kinematic", &settings.color_kinematic, .{});
-                _ = props.color4("Trigger", &settings.color_trigger, .{});
-                _ = props.color4("Sleeping", &settings.color_sleeping, .{});
-                _ = props.color4("Constraint", &settings.color_constraint, .{});
+            if (settings.show_velocity_vectors) {
+                _ = props.float("Velocity Scale", &settings.velocity_scale, 0.1, 0.1, 10.0);
             }
+
+            _ = props.boolean("Sleep State", &settings.show_sleep_state);
+            _ = props.boolean("AABBs", &settings.show_aabbs);
+
+            gui.separator();
+            gui.text("Colors:");
+            gui.separator();
+
+            _ = props.color4("Static", &settings.color_static, .{});
+            _ = props.color4("Dynamic", &settings.color_dynamic, .{});
+            _ = props.color4("Kinematic", &settings.color_kinematic, .{});
+            _ = props.color4("Trigger", &settings.color_trigger, .{});
+            _ = props.color4("Sleeping", &settings.color_sleeping, .{});
+            _ = props.color4("Constraint", &settings.color_constraint, .{});
         }
     }
 }

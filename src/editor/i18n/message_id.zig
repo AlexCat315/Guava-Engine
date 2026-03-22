@@ -333,6 +333,14 @@ pub const MessageId = enum {
     add_audio_listener_component,
     remove_audio_listener_component,
 
+    // Tool panels
+    particle_editor,
+    physics_visualization,
+    post_process_pipeline,
+    prefab_editor,
+    camera_bookmarks,
+    script_editor,
+
     // AI Chat
     ai_chat,
     ai_chat_send,

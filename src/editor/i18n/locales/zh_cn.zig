@@ -342,6 +342,14 @@ pub const locale = blk: {
             .add_audio_listener_component = "添加音频监听器",
             .remove_audio_listener_component = "移除音频监听器",
 
+            // 工具面板
+            .particle_editor = "粒子编辑器",
+            .physics_visualization = "物理可视化",
+            .post_process_pipeline = "后处理管线",
+            .prefab_editor = "预制体编辑器",
+            .camera_bookmarks = "相机书签",
+            .script_editor = "脚本编辑器",
+
             // AI 对话
             .ai_chat = "AI 助手",
             .ai_chat_send = "发送",

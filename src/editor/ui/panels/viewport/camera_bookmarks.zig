@@ -1,6 +1,7 @@
 const std = @import("std");
 const engine = @import("guava");
 const gui = @import("../../gui.zig");
+const EditorState = @import("../../../core/state.zig").EditorState;
 
 pub const CameraBookmark = struct {
     name: [64]u8,
@@ -48,28 +49,29 @@ pub const CameraBookmarkManager = struct {
     pub fn init(allocator: std.mem.Allocator) CameraBookmarkManager {
         return .{
             .allocator = allocator,
-            .bookmarks = std.ArrayList(CameraBookmark).init(allocator),
+            .bookmarks = .empty,
         };
     }
 
     pub fn deinit(self: *CameraBookmarkManager) void {
-        self.bookmarks.deinit();
+        self.bookmarks.deinit(self.allocator);
         self.* = undefined;
     }
 
     pub fn addBookmark(self: *CameraBookmarkManager, bookmark: CameraBookmark) !usize {
-        try self.bookmarks.append(bookmark);
+        try self.bookmarks.append(self.allocator, bookmark);
         return self.bookmarks.items.len - 1;
     }
 
     pub fn removeBookmark(self: *CameraBookmarkManager, index: usize) bool {
         if (index >= self.bookmarks.items.len) return false;
         _ = self.bookmarks.orderedRemove(index);
-        if (self.selected_index) |*si| {
-            if (si.* == index) {
-                si.* = null;
-            } else if (si.* > index) {
-                si.* -= 1;
+        // Note: orderedRemove doesn't take allocator in Zig 0.15
+        if (self.selected_index) |si| {
+            if (si == index) {
+                self.selected_index = null;
+            } else if (si > index) {
+                self.selected_index = si - 1;
             }
         }
         return true;
@@ -93,60 +95,73 @@ pub const CameraBookmarkManager = struct {
     }
 };
 
-pub fn drawCameraBookmarkPanel(manager: *CameraBookmarkManager, current_position: [3]f32, current_target: [3]f32, current_pitch: f32, current_yaw: f32, current_distance: f32, current_fov: f32, current_orthographic: bool, on_apply: *const fn (usize) void) void {
-    if (gui.begin("Camera Bookmarks")) {
-        defer gui.end();
+pub fn drawCameraBookmarkWindow(state: *EditorState, layer_context: *engine.core.LayerContext, manager: *CameraBookmarkManager) !void {
+    _ = layer_context;
 
-        if (gui.button("Add Current View")) {
-            const bookmark = CameraBookmark.init(
-                "Bookmark",
-                current_position,
-                current_target,
-                current_pitch,
-                current_yaw,
-                current_distance,
-                current_fov,
-                current_orthographic,
-            );
-            _ = manager.addBookmark(bookmark) catch {};
-        }
+    var title_buffer: [80]u8 = undefined;
+    const title = try state.windowLabel(&title_buffer, .camera_bookmarks, "camera_bookmarks_panel");
+    _ = gui.beginWindow(title);
+    defer gui.endWindow();
 
-        gui.separator();
+    // Derive current camera state from EditorState for saving bookmarks.
+    const vec3 = engine.math.vec3;
+    const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
+    const current_position = vec3.sub(state.focus_pivot, vec3.scale(forward, state.orbit_distance));
 
-        if (manager.bookmarks.items.len == 0) {
-            gui.text("No bookmarks saved");
-        } else {
-            var i: usize = 0;
-            while (i < manager.bookmarks.items.len) : (i += 1) {
-                const bookmark = &manager.bookmarks.items[i];
+    if (gui.button("Add Current View")) {
+        const bookmark = CameraBookmark.init(
+            "Bookmark",
+            current_position,
+            state.focus_pivot,
+            state.pitch,
+            state.yaw,
+            state.orbit_distance,
+            60.0,
+            false,
+        );
+        _ = manager.addBookmark(bookmark) catch {};
+    }
 
-                const is_selected = manager.selected_index != null and manager.selected_index.? == i;
+    gui.separator();
 
-                var name_buf: [128]u8 = undefined;
-                const display_name = std.fmt.bufPrint(&name_buf, "{s}##{}", .{ bookmark.getName(), i }) catch continue;
+    if (manager.bookmarks.items.len == 0) {
+        gui.text("No bookmarks saved");
+    } else {
+        var i: usize = 0;
+        while (i < manager.bookmarks.items.len) : (i += 1) {
+            const bookmark = &manager.bookmarks.items[i];
 
-                if (gui.selectable(display_name, is_selected)) {
-                    manager.selected_index = i;
+            const is_selected = manager.selected_index != null and manager.selected_index.? == i;
+
+            var name_buf: [128]u8 = undefined;
+            const display_name = std.fmt.bufPrint(&name_buf, "{s}##{}", .{ bookmark.getName(), i }) catch continue;
+
+            if (gui.selectable(display_name, is_selected, false, 0.0, 0.0)) {
+                manager.selected_index = i;
+            }
+
+            if (gui.beginPopupContextItem(null)) {
+                if (gui.selectable("Apply", false, false, 0.0, 0.0)) {
+                    applyBookmark(state, bookmark);
                 }
-
-                if (gui.beginPopupContextItem()) {
-                    if (gui.selectable("Apply", false)) {
-                        on_apply(i);
-                    }
-                    if (gui.selectable("Rename", false)) {
-                    }
-                    if (gui.selectable("Delete", false)) {
-                        _ = manager.removeBookmark(i);
-                        i -= 1;
-                        if (i < 0) i = 0;
-                    }
-                    gui.endPopup();
+                if (gui.selectable("Rename", false, false, 0.0, 0.0)) {}
+                if (gui.selectable("Delete", false, false, 0.0, 0.0)) {
+                    _ = manager.removeBookmark(i);
+                    if (i > 0) i -= 1;
                 }
+                gui.endPopup();
+            }
 
-                if (gui.isItemHovered() and gui.isMouseDoubleClicked(.left)) {
-                    on_apply(i);
-                }
+            if (gui.isItemHovered() and gui.isMouseDoubleClicked(.left)) {
+                applyBookmark(state, bookmark);
             }
         }
     }
+}
+
+fn applyBookmark(state: *EditorState, bookmark: *const CameraBookmark) void {
+    state.pitch = bookmark.pitch;
+    state.yaw = bookmark.yaw;
+    state.orbit_distance = bookmark.distance;
+    state.focus_pivot = bookmark.target;
 }

@@ -2,9 +2,10 @@ const std = @import("std");
 const engine = @import("guava");
 const gui = @import("../../gui.zig");
 const layout = @import("../../layout.zig");
+const EditorState = @import("../../../core/state.zig").EditorState;
 
 const EntityId = engine.scene.EntityId;
-const PrefabResource = engine.scene.PrefabResource;
+const PrefabResource = engine.scene.prefab.PrefabResource;
 
 pub const PrefabEditorState = struct {
     selected_prefab_id: ?[]const u8 = null,
@@ -24,36 +25,36 @@ pub const PrefabEditorState = struct {
     }
 };
 
-pub fn drawPrefabEditor(
-    state: *engine.AppState,
-    layer_context: *engine.LayerContext,
+pub fn drawPrefabEditorWindow(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
     editor_state: *PrefabEditorState,
-) void {
-    _ = layer_context;
-    const world = state.world orelse return;
+) !void {
+    const world = layer_context.world;
 
-    if (gui.begin("Prefab Library")) {
-        defer gui.end();
+    var title_buffer: [80]u8 = undefined;
+    const title = try state.windowLabel(&title_buffer, .prefab_editor, "prefab_editor_panel");
+    _ = gui.beginWindow(title);
+    defer gui.endWindow();
 
-        drawPrefabToolbar(state, editor_state);
+    drawPrefabToolbar(editor_state);
 
-        gui.separator();
+    gui.separator();
 
-        const left_pane_width = gui.getContentRegionAvail().x * 0.3;
-        _ = gui.beginChild("prefab_list", left_pane_width, -1.0, true);
-        defer gui.endChild();
+    const content_region = gui.contentRegionAvail();
+    const left_pane_width = content_region[0] * 0.3;
 
-        drawPrefabList(state, editor_state);
+    if (gui.beginChild("prefab_list", left_pane_width, -1.0, true)) {
+        drawPrefabList(world, editor_state, state.allocator orelse world.allocator);
     }
+    gui.endChild();
 
     gui.sameLine();
 
-    if (gui.begin("Prefab Details")) {
-        defer gui.end();
-
+    if (gui.beginChild("prefab_details", -1.0, -1.0, true)) {
         if (editor_state.selected_prefab_id) |prefab_id| {
             if (world.prefab_library.getPrefab(prefab_id)) |prefab| {
-                drawPrefabDetails(state, editor_state, prefab);
+                drawPrefabDetails(editor_state, prefab);
             } else {
                 gui.textWrapped("Prefab not found");
             }
@@ -61,14 +62,12 @@ pub fn drawPrefabEditor(
             gui.textWrapped("Select a prefab from the library");
         }
     }
+    gui.endChild();
 }
 
 fn drawPrefabToolbar(
-    state: *engine.AppState,
     editor_state: *PrefabEditorState,
 ) void {
-    _ = state;
-
     if (gui.button("Create Prefab")) {
         editor_state.show_create_dialog = true;
     }
@@ -81,15 +80,14 @@ fn drawPrefabToolbar(
 
     gui.text("Search:");
     gui.sameLine();
-    _ = gui.inputText("##prefab_search", &editor_state.search_filter, 128, .{}, null, null);
+    _ = gui.inputText("##prefab_search", &editor_state.search_filter);
 }
 
 fn drawPrefabList(
-    state: *engine.AppState,
+    world: *engine.scene.World,
     editor_state: *PrefabEditorState,
+    allocator: std.mem.Allocator,
 ) void {
-    const world = state.world orelse return;
-
     var filter_empty = true;
     for (editor_state.search_filter) |c| {
         if (c != 0) {
@@ -118,29 +116,25 @@ fn drawPrefabList(
         var name_buf: [256]u8 = undefined;
         const display_name = std.fmt.bufPrint(&name_buf, "{s}##{s}", .{ prefab.name, prefab_id }) catch continue;
 
-        if (gui.selectable(display_name, is_selected)) {
+        if (gui.selectable(display_name, is_selected, false, 0.0, 0.0)) {
             if (editor_state.selected_prefab_id) |old_id| {
-                state.allocator.free(old_id);
+                allocator.free(old_id);
             }
-            editor_state.selected_prefab_id = state.allocator.dupe(u8, prefab_id) catch null;
+            editor_state.selected_prefab_id = allocator.dupe(u8, prefab_id) catch null;
         }
 
-        if (gui.beginPopupContextItem()) {
-            if (gui.selectable("Delete Prefab", false)) {}
-            if (gui.selectable("Duplicate Prefab", false)) {}
+        if (gui.beginPopupContextItem(null)) {
+            if (gui.selectable("Delete Prefab", false, false, 0.0, 0.0)) {}
+            if (gui.selectable("Duplicate Prefab", false, false, 0.0, 0.0)) {}
             gui.endPopup();
         }
     }
 }
 
 fn drawPrefabDetails(
-    state: *engine.AppState,
     editor_state: *PrefabEditorState,
     prefab: *const PrefabResource,
 ) void {
-    _ = state;
-    // _ = editor_state;
-
     if (layout.beginInspectorPropertyTable("prefab_details", 0.34)) {
         defer layout.endInspectorPropertyTable();
 
@@ -151,10 +145,12 @@ fn drawPrefabDetails(
         gui.textWrapped(prefab.name);
 
         layout.drawInspectorPropertyRow("Version", null);
-        gui.text("{}", .{prefab.version});
+        var ver_buf: [16]u8 = undefined;
+        gui.text(std.fmt.bufPrint(&ver_buf, "{}", .{prefab.version}) catch "?");
 
         layout.drawInspectorPropertyRow("Entities", null);
-        gui.text("{}", .{prefab.entities.len});
+        var ent_buf: [16]u8 = undefined;
+        gui.text(std.fmt.bufPrint(&ent_buf, "{}", .{prefab.entities.len}) catch "?");
 
         layout.drawInspectorPropertyRow("Source Path", null);
         if (prefab.source_path) |path| {
@@ -176,7 +172,7 @@ fn drawPrefabDetails(
             var name_buf: [256]u8 = undefined;
             const display_name = std.fmt.bufPrint(&name_buf, "{s}##{}", .{ entity.name, index }) catch continue;
 
-            if (gui.selectable(display_name, is_selected)) {
+            if (gui.selectable(display_name, is_selected, false, 0.0, 0.0)) {
                 editor_state.selected_entity_index = index;
             }
         }

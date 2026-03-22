@@ -2,13 +2,14 @@ const std = @import("std");
 const engine = @import("guava");
 const gui = @import("../../gui.zig");
 const layout = @import("../../layout.zig");
+const EditorState = @import("../../../core/state.zig").EditorState;
 
 const ScriptResource = engine.assets.ScriptResource;
 const ScriptLanguage = engine.script.ScriptLanguage;
 
 pub const ScriptEditorState = struct {
     allocator: std.mem.Allocator,
-    selected_script_handle: ?engine.handles.ScriptHandle = null,
+    selected_script_handle: ?engine.assets.ScriptHandle = null,
     source_buffer: std.ArrayList(u8),
     original_source: []const u8 = "",
     is_modified: bool = false,
@@ -32,16 +33,16 @@ pub const ScriptEditorState = struct {
     pub fn init(allocator: std.mem.Allocator) ScriptEditorState {
         return .{
             .allocator = allocator,
-            .source_buffer = std.ArrayList(u8).init(allocator),
-            .console_output = std.ArrayList(u8).init(allocator),
-            .breakpoints = std.ArrayList(usize).init(allocator),
+            .source_buffer = .empty,
+            .console_output = .empty,
+            .breakpoints = .empty,
         };
     }
 
     pub fn deinit(self: *ScriptEditorState) void {
-        self.source_buffer.deinit();
-        self.console_output.deinit();
-        self.breakpoints.deinit();
+        self.source_buffer.deinit(self.allocator);
+        self.console_output.deinit(self.allocator);
+        self.breakpoints.deinit(self.allocator);
         if (self.original_source.len > 0) {
             self.allocator.free(self.original_source);
         }
@@ -53,7 +54,7 @@ pub const ScriptEditorState = struct {
             self.allocator.free(self.original_source);
         }
         self.original_source = try self.allocator.dupe(u8, resource.source);
-        try self.source_buffer.resize(resource.source.len);
+        try self.source_buffer.resize(self.allocator, resource.source.len);
         @memcpy(self.source_buffer.items, resource.source);
         self.is_modified = false;
         self.cursor_line = 1;
@@ -65,7 +66,7 @@ pub const ScriptEditorState = struct {
     }
 
     pub fn insertText(self: *ScriptEditorState, pos: usize, text: []const u8) !void {
-        try self.source_buffer.insertSlice(pos, text);
+        try self.source_buffer.insertSlice(self.allocator, pos, text);
         self.is_modified = true;
     }
 
@@ -82,7 +83,7 @@ pub const ScriptEditorState = struct {
                 return;
             }
         }
-        try self.breakpoints.append(line);
+        try self.breakpoints.append(self.allocator, line);
     }
 
     pub fn hasBreakpoint(self: *const ScriptEditorState, line: usize) bool {
@@ -93,8 +94,8 @@ pub const ScriptEditorState = struct {
     }
 
     pub fn appendConsole(self: *ScriptEditorState, text: []const u8) !void {
-        try self.console_output.appendSlice(text);
-        try self.console_output.append('\n');
+        try self.console_output.appendSlice(self.allocator, text);
+        try self.console_output.append(self.allocator, '\n');
     }
 
     pub fn clearConsole(self: *ScriptEditorState) void {
@@ -102,43 +103,41 @@ pub const ScriptEditorState = struct {
     }
 };
 
-pub fn drawScriptEditor(
-    state: *engine.AppState,
-    layer_context: *engine.LayerContext,
+pub fn drawScriptEditorWindow(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
     editor_state: *ScriptEditorState,
-) void {
+) !void {
     _ = layer_context;
 
-    if (gui.begin("Script Editor")) {
-        defer gui.end();
+    var title_buffer: [80]u8 = undefined;
+    const title = try state.windowLabel(&title_buffer, .script_editor, "script_editor_panel");
+    _ = gui.beginWindow(title);
+    defer gui.endWindow();
 
-        drawScriptToolbar(state, editor_state);
+    drawScriptToolbar(editor_state);
 
+    gui.separator();
+
+    const content_region = gui.contentRegionAvail();
+    const editor_height = if (editor_state.show_console) content_region[1] * 0.7 else content_region[1];
+
+    drawScriptSourceArea(editor_state, editor_height);
+
+    if (editor_state.show_console) {
         gui.separator();
-
-        const content_region = gui.contentRegionAvail();
-        const editor_height = if (editor_state.show_console) content_region[1] * 0.7 else content_region[1];
-
-        drawScriptSourceArea(state, editor_state, editor_height);
-
-        if (editor_state.show_console) {
-            gui.separator();
-            drawConsolePanel(editor_state);
-        }
+        drawConsolePanel(editor_state);
     }
 }
 
-fn drawScriptToolbar(state: *engine.AppState, editor_state: *ScriptEditorState) void {
-    _ = state;
-
+fn drawScriptToolbar(editor_state: *ScriptEditorState) void {
     if (gui.button("New")) {
         editor_state.source_buffer.clearRetainingCapacity();
         editor_state.is_modified = false;
     }
     gui.sameLine();
 
-    if (gui.button("Open")) {
-    }
+    if (gui.button("Open")) {}
     gui.sameLine();
 
     if (gui.button("Save")) {
@@ -174,9 +173,7 @@ fn drawScriptToolbar(state: *engine.AppState, editor_state: *ScriptEditorState) 
     }
 }
 
-fn drawScriptSourceArea(state: *engine.AppState, editor_state: *ScriptEditorState, height: f32) void {
-    _ = state;
-
+fn drawScriptSourceArea(editor_state: *ScriptEditorState, height: f32) void {
     if (editor_state.show_find_panel) {
         drawFindPanel(editor_state);
         gui.separator();
@@ -186,7 +183,7 @@ fn drawScriptSourceArea(state: *engine.AppState, editor_state: *ScriptEditorStat
         const line_count = countLines(editor_state.source_buffer.items);
         var line_buf: [16]u8 = undefined;
 
-        const line_num_width = if (editor_state.show_line_numbers) 40.0 else 0.0;
+        const line_num_width: f32 = if (editor_state.show_line_numbers) 40.0 else 0.0;
         _ = line_num_width;
 
         for (1..line_count + 1) |line_num| {
@@ -209,7 +206,7 @@ fn drawScriptSourceArea(state: *engine.AppState, editor_state: *ScriptEditorStat
             }
 
             if (is_current_debug) {
-                gui.pushStyleColor(.child_bg, .{ 0.2, 0.3, 0.5, 0.5 });
+                gui.pushStyleColor(.text, .{ 0.70, 0.82, 1.0, 1.0 });
             }
 
             const line_text = getLine(editor_state.source_buffer.items, line_num);
@@ -222,11 +219,11 @@ fn drawScriptSourceArea(state: *engine.AppState, editor_state: *ScriptEditorStat
     }
     gui.endChild();
 
-    if (gui.beginPopupContextWindow()) {
-        if (gui.selectable("Toggle Breakpoint", false)) {
+    if (gui.beginPopupContextWindow(null, true)) {
+        if (gui.selectable("Toggle Breakpoint", false, false, 0.0, 0.0)) {
             editor_state.toggleBreakpoint(editor_state.cursor_line) catch {};
         }
-        if (gui.selectable("Run to Cursor", false)) {
+        if (gui.selectable("Run to Cursor", false, false, 0.0, 0.0)) {
             editor_state.current_debug_line = editor_state.cursor_line;
         }
         gui.endPopup();
@@ -236,12 +233,12 @@ fn drawScriptSourceArea(state: *engine.AppState, editor_state: *ScriptEditorStat
 fn drawFindPanel(editor_state: *ScriptEditorState) void {
     gui.text("Find:");
     gui.sameLine();
-    _ = gui.inputText("##find", &editor_state.find_buffer, 256, .{}, null, null);
+    _ = gui.inputText("##find", &editor_state.find_buffer);
     gui.sameLine();
 
     gui.text("Replace:");
     gui.sameLine();
-    _ = gui.inputText("##replace", &editor_state.replace_buffer, 256, .{}, null, null);
+    _ = gui.inputText("##replace", &editor_state.replace_buffer);
     gui.sameLine();
 
     if (gui.button("Find Next")) {
@@ -252,12 +249,10 @@ fn drawFindPanel(editor_state: *ScriptEditorState) void {
     }
     gui.sameLine();
 
-    if (gui.button("Replace")) {
-    }
+    if (gui.button("Replace")) {}
     gui.sameLine();
 
-    if (gui.button("Replace All")) {
-    }
+    if (gui.button("Replace All")) {}
 }
 
 fn drawConsolePanel(editor_state: *ScriptEditorState) void {

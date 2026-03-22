@@ -76,6 +76,7 @@ const scene_mod = @import("../scene/scene.zig");
 const types = @import("types.zig");
 const AABB = @import("../math/aabb.zig").AABB;
 const frustum_mod = @import("../math/frustum.zig");
+const mat4_mod = @import("../math/mat4.zig");
 const vec3 = @import("../math/vec3.zig");
 const physics_mod = @import("../physics/system.zig");
 const PassDescriptors = @import("render_helpers.zig").PassDescriptors;
@@ -91,8 +92,8 @@ var g_logged_postfx_state: ?types.EditorViewportState = null;
 var g_logged_scene_extraction_culling: bool = false;
 /// 已记录的碰撞覆盖盒数量
 var g_logged_collision_overlay_boxes: ?usize = null;
-/// 是否已记录 PathTrace 回退日志
-var g_logged_path_trace_fallback: bool = false;
+/// 是否已记录 CPU PathTrace 激活日志
+var g_logged_path_trace_active: bool = false;
 
 const CachedEnvironmentTextures = struct {
     resolved: bool = false,
@@ -216,16 +217,154 @@ fn previewRenderMode(render_mode: types.EditorViewportRenderMode) types.EditorVi
 
 fn effectiveViewportRenderMode(state: types.EditorViewportState) types.EditorViewportRenderMode {
     if (state.pipeline_mode == .path_trace) {
-        if (!g_logged_path_trace_fallback) {
-            render_log.info(
-                "viewport pipeline set to path_trace; falling back to raster path until backend integration lands",
-                .{},
-            );
-            g_logged_path_trace_fallback = true;
-        }
+        // PathTrace 模式下仍返回 textured，以保持依赖渲染模式分支的代码路径稳定。
         return .textured;
     }
     return state.render_mode;
+}
+
+const PathTraceSphere = struct {
+    center: [3]f32,
+    radius: f32,
+    albedo: [3]f32,
+};
+
+fn mulMat4Vec4(matrix: [16]f32, vector: [4]f32) [4]f32 {
+    return .{
+        matrix[0] * vector[0] + matrix[4] * vector[1] + matrix[8] * vector[2] + matrix[12] * vector[3],
+        matrix[1] * vector[0] + matrix[5] * vector[1] + matrix[9] * vector[2] + matrix[13] * vector[3],
+        matrix[2] * vector[0] + matrix[6] * vector[1] + matrix[10] * vector[2] + matrix[14] * vector[3],
+        matrix[3] * vector[0] + matrix[7] * vector[1] + matrix[11] * vector[2] + matrix[15] * vector[3],
+    };
+}
+
+fn unprojectNdc(inv_view_projection: [16]f32, ndc_x: f32, ndc_y: f32, ndc_z: f32) [3]f32 {
+    const clip = [4]f32{ ndc_x, ndc_y, ndc_z, 1.0 };
+    const world = mulMat4Vec4(inv_view_projection, clip);
+    const inv_w = if (@abs(world[3]) > 0.000001) 1.0 / world[3] else 1.0;
+    return .{ world[0] * inv_w, world[1] * inv_w, world[2] * inv_w };
+}
+
+fn hashU32(value: u32) u32 {
+    var x = value;
+    x ^= x >> 17;
+    x *%= 0xed5ad4bb;
+    x ^= x >> 11;
+    x *%= 0xac4c1b51;
+    x ^= x >> 15;
+    x *%= 0x31848bab;
+    x ^= x >> 14;
+    return x;
+}
+
+fn hashUnitFloat(seed: u32) f32 {
+    const h = hashU32(seed);
+    return @as(f32, @floatFromInt(h & 0x00FFFFFF)) / 16777215.0;
+}
+
+fn estimateDrawItemRadius(model: [16]f32) f32 {
+    const sx = std.math.sqrt(model[0] * model[0] + model[1] * model[1] + model[2] * model[2]);
+    const sy = std.math.sqrt(model[4] * model[4] + model[5] * model[5] + model[6] * model[6]);
+    const sz = std.math.sqrt(model[8] * model[8] + model[9] * model[9] + model[10] * model[10]);
+    return std.math.clamp(@max(sx, @max(sy, sz)) * 0.45, 0.22, 2.4);
+}
+
+fn intersectSphere(origin: [3]f32, direction: [3]f32, sphere: PathTraceSphere, t_min: f32, t_max: f32) ?f32 {
+    const oc = vec3.sub(origin, sphere.center);
+    const a = vec3.dot(direction, direction);
+    const half_b = vec3.dot(oc, direction);
+    const c = vec3.dot(oc, oc) - sphere.radius * sphere.radius;
+    const discriminant = half_b * half_b - a * c;
+    if (discriminant <= 0.0) return null;
+
+    const sqrt_d = std.math.sqrt(discriminant);
+    const near_root = (-half_b - sqrt_d) / a;
+    if (near_root > t_min and near_root < t_max) return near_root;
+    const far_root = (-half_b + sqrt_d) / a;
+    if (far_root > t_min and far_root < t_max) return far_root;
+    return null;
+}
+
+fn sampleSky(direction: [3]f32) [3]f32 {
+    const horizon = std.math.clamp(direction[1] * 0.5 + 0.5, 0.0, 1.0);
+    return .{
+        0.12 + 0.42 * horizon,
+        0.18 + 0.48 * horizon,
+        0.24 + 0.58 * horizon,
+    };
+}
+
+fn randomHemisphereDirection(normal: [3]f32, seed: u32) [3]f32 {
+    const jitter = vec3.normalize(.{
+        hashUnitFloat(seed ^ 0x68bc21eb) * 2.0 - 1.0,
+        hashUnitFloat(seed ^ 0x02e5be93) * 2.0 - 1.0,
+        hashUnitFloat(seed ^ 0xa3d95fa1) * 2.0 - 1.0,
+    });
+    return vec3.normalize(vec3.add(normal, jitter));
+}
+
+fn pathTraceRay(
+    origin_start: [3]f32,
+    direction_start: [3]f32,
+    spheres: []const PathTraceSphere,
+    light_direction: [3]f32,
+    seed_base: u32,
+    max_bounces: u32,
+) [3]f32 {
+    var origin = origin_start;
+    var direction = direction_start;
+    var throughput = [3]f32{ 1.0, 1.0, 1.0 };
+    var radiance = [3]f32{ 0.0, 0.0, 0.0 };
+
+    var bounce: u32 = 0;
+    while (bounce < max_bounces) : (bounce += 1) {
+        var closest_t: f32 = 1.0e30;
+        var hit_index: ?usize = null;
+        for (spheres, 0..) |sphere, index| {
+            if (intersectSphere(origin, direction, sphere, 0.01, closest_t)) |t| {
+                closest_t = t;
+                hit_index = index;
+            }
+        }
+
+        if (hit_index == null) {
+            const sky = sampleSky(direction);
+            radiance = vec3.add(radiance, vec3.mul(throughput, sky));
+            break;
+        }
+
+        const sphere = spheres[hit_index.?];
+        const hit_pos = vec3.add(origin, vec3.scale(direction, closest_t));
+        const normal = vec3.normalize(vec3.sub(hit_pos, sphere.center));
+        const direct = std.math.clamp(vec3.dot(normal, light_direction), 0.0, 1.0);
+        const direct_light = vec3.scale(sphere.albedo, 0.12 + 0.88 * direct);
+        radiance = vec3.add(radiance, vec3.mul(throughput, direct_light));
+
+        throughput = vec3.scale(vec3.mul(throughput, sphere.albedo), 0.55);
+        if (vec3.length(throughput) < 0.02) {
+            break;
+        }
+
+        const seed = seed_base ^ (bounce *% 0x9e3779b9);
+        direction = randomHemisphereDirection(normal, seed);
+        origin = vec3.add(hit_pos, vec3.scale(normal, 0.02));
+    }
+
+    return radiance;
+}
+
+fn linearToSrgb8(color: [3]f32) [4]u8 {
+    const corrected = [3]f32{
+        std.math.pow(f32, std.math.clamp(color[0], 0.0, 1.0), 1.0 / 2.2),
+        std.math.pow(f32, std.math.clamp(color[1], 0.0, 1.0), 1.0 / 2.2),
+        std.math.pow(f32, std.math.clamp(color[2], 0.0, 1.0), 1.0 / 2.2),
+    };
+    return .{
+        @as(u8, @intFromFloat(corrected[2] * 255.0)),
+        @as(u8, @intFromFloat(corrected[1] * 255.0)),
+        @as(u8, @intFromFloat(corrected[0] * 255.0)),
+        255,
+    };
 }
 
 const SceneViewportState = struct {
@@ -1280,285 +1419,291 @@ pub const Renderer = struct {
                     has_prepared_preview_scene = true;
                 }
 
-                const scene_color_target: rhi_mod.ColorTarget = if (viewport_active)
-                    .{ .texture = self.scene_viewport.color().? }
-                else
-                    .swapchain;
-                const scene_hdr_color_target: rhi_mod.ColorTarget = if (viewport_active)
-                    .{ .texture = self.scene_viewport.hdrColor().? }
-                else
-                    .swapchain;
-                const scene_depth_target: ?rhi_mod.DepthAttachmentDesc = blk_depth: {
-                    const depth_texture = if (viewport_active)
-                        self.scene_viewport.depth().?
+                const path_trace_viewport = viewport_active and self.editor_viewport_state.pipeline_mode == .path_trace;
+                if (path_trace_viewport) {
+                    const path_trace_start = std.time.nanoTimestamp();
+                    try self.renderCpuPathTraceViewport(&prepared_scene);
+                    self.graph.recordPassStat(pass_stats, .base_pass, durationNs(path_trace_start, std.time.nanoTimestamp()), 0, 0);
+                } else {
+                    const scene_color_target: rhi_mod.ColorTarget = if (viewport_active)
+                        .{ .texture = self.scene_viewport.color().? }
                     else
-                        self.rhi.depthTexture() orelse break :blk_depth null;
-                    break :blk_depth .{
-                        .texture = depth_texture,
-                        .clear_depth = 1.0,
-                        .clear_stencil = 0,
-                        .load_op = .clear,
-                        .store_op = .dont_care,
-                        .stencil_load_op = .dont_care,
-                        .stencil_store_op = .dont_care,
+                        .swapchain;
+                    const scene_hdr_color_target: rhi_mod.ColorTarget = if (viewport_active)
+                        .{ .texture = self.scene_viewport.hdrColor().? }
+                    else
+                        .swapchain;
+                    const scene_depth_target: ?rhi_mod.DepthAttachmentDesc = blk_depth: {
+                        const depth_texture = if (viewport_active)
+                            self.scene_viewport.depth().?
+                        else
+                            self.rhi.depthTexture() orelse break :blk_depth null;
+                        break :blk_depth .{
+                            .texture = depth_texture,
+                            .clear_depth = 1.0,
+                            .clear_stencil = 0,
+                            .load_op = .clear,
+                            .store_op = .dont_care,
+                            .stencil_load_op = .dont_care,
+                            .stencil_store_op = .dont_care,
+                        };
                     };
-                };
 
-                if (self.shadow_pass.isReady()) {
-                    const shadow_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.shadowOnly(&self.shadow_map.depth_texture.?));
-                    const shadow_start = std.time.nanoTimestamp();
-                    const shadow_stats = self.shadow_pass.draw(&self.rhi, frame, shadow_render_pass, &prepared_scene, light_space_matrix);
-                    self.graph.recordPassStat(pass_stats, .shadow_map, durationNs(shadow_start, std.time.nanoTimestamp()), shadow_stats.draw_calls, shadow_stats.triangles_drawn);
-                    draw_stats.add(shadow_stats);
-                    self.rhi.endRenderPass(shadow_render_pass);
-                }
-
-                if (self.id_pass.isReady()) {
-                    const id_texture = self.id_pass.texture().?;
-                    const id_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.idPass(id_texture, scene_depth_target));
-                    const start = std.time.nanoTimestamp();
-                    const id_stats = self.id_pass.draw(&self.rhi, frame, id_render_pass, &prepared_scene);
-                    self.graph.recordPassStat(pass_stats, .id_pass, durationNs(start, std.time.nanoTimestamp()), id_stats.draw_calls, id_stats.triangles_drawn);
-                    draw_stats.add(id_stats);
-                    self.rhi.endRenderPass(id_render_pass);
-                }
-
-                const base_pass_target = if (viewport_active) scene_hdr_color_target else scene_color_target;
-
-                const scene_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.colorWithDepth(base_pass_target, clear.color, scene_depth_target));
-                const active_render_mode = effectiveViewportRenderMode(self.editor_viewport_state);
-                const depth_start = std.time.nanoTimestamp();
-                const depth_stats = if (active_render_mode != .wireframe)
-                    self.depth_prepass.draw(&self.rhi, frame, scene_pass, &prepared_scene)
-                else
-                    mesh_pass_mod.DrawStats{};
-                self.graph.recordPassStat(pass_stats, .depth_prepass, durationNs(depth_start, std.time.nanoTimestamp()), depth_stats.draw_calls, depth_stats.triangles_drawn);
-                draw_stats.add(depth_stats);
-
-                const opaque_start = std.time.nanoTimestamp();
-                const opaque_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene, .{
-                    .render_mode = active_render_mode,
-                    .target = if (viewport_active) .hdr else .ldr,
-                    .phase = .opaque_pass,
-                });
-                self.graph.recordPassStat(pass_stats, .base_pass, durationNs(opaque_start, std.time.nanoTimestamp()), opaque_stats.draw_calls, opaque_stats.triangles_drawn);
-                draw_stats.add(opaque_stats);
-
-                if (self.skybox_pass) |*skybox_pass| {
-                    if (skybox_pass.isReady() and prepared_scene.environment_map != null) {
-                        const skybox_start = std.time.nanoTimestamp();
-                        skybox_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene, prepared_scene.environment_map.?);
-                        self.graph.recordPassStat(pass_stats, .skybox_pass, durationNs(skybox_start, std.time.nanoTimestamp()), 1, 1);
-                        draw_stats.draw_calls += 1;
-                        draw_stats.triangles_drawn += 1;
+                    if (self.shadow_pass.isReady()) {
+                        const shadow_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.shadowOnly(&self.shadow_map.depth_texture.?));
+                        const shadow_start = std.time.nanoTimestamp();
+                        const shadow_stats = self.shadow_pass.draw(&self.rhi, frame, shadow_render_pass, &prepared_scene, light_space_matrix);
+                        self.graph.recordPassStat(pass_stats, .shadow_map, durationNs(shadow_start, std.time.nanoTimestamp()), shadow_stats.draw_calls, shadow_stats.triangles_drawn);
+                        draw_stats.add(shadow_stats);
+                        self.rhi.endRenderPass(shadow_render_pass);
                     }
-                }
 
-                if (has_prepared_preview_scene) {
-                    const preview_opaque_start = std.time.nanoTimestamp();
-                    const preview_opaque_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_preview_scene, .{
-                        .render_mode = previewRenderMode(active_render_mode),
-                        .target = .hdr,
+                    if (self.id_pass.isReady()) {
+                        const id_texture = self.id_pass.texture().?;
+                        const id_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.idPass(id_texture, scene_depth_target));
+                        const start = std.time.nanoTimestamp();
+                        const id_stats = self.id_pass.draw(&self.rhi, frame, id_render_pass, &prepared_scene);
+                        self.graph.recordPassStat(pass_stats, .id_pass, durationNs(start, std.time.nanoTimestamp()), id_stats.draw_calls, id_stats.triangles_drawn);
+                        draw_stats.add(id_stats);
+                        self.rhi.endRenderPass(id_render_pass);
+                    }
+
+                    const base_pass_target = if (viewport_active) scene_hdr_color_target else scene_color_target;
+
+                    const scene_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.colorWithDepth(base_pass_target, clear.color, scene_depth_target));
+                    const active_render_mode = effectiveViewportRenderMode(self.editor_viewport_state);
+                    const depth_start = std.time.nanoTimestamp();
+                    const depth_stats = if (active_render_mode != .wireframe)
+                        self.depth_prepass.draw(&self.rhi, frame, scene_pass, &prepared_scene)
+                    else
+                        mesh_pass_mod.DrawStats{};
+                    self.graph.recordPassStat(pass_stats, .depth_prepass, durationNs(depth_start, std.time.nanoTimestamp()), depth_stats.draw_calls, depth_stats.triangles_drawn);
+                    draw_stats.add(depth_stats);
+
+                    const opaque_start = std.time.nanoTimestamp();
+                    const opaque_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene, .{
+                        .render_mode = active_render_mode,
+                        .target = if (viewport_active) .hdr else .ldr,
                         .phase = .opaque_pass,
-                        .blend_opaque = true,
-                        .alpha_multiplier = ghost_preview_tint_color[3],
-                        .preview_tint_strength = ghost_preview_tint_strength,
-                        .override_base_color = ghost_preview_tint_color,
                     });
-                    self.graph.recordPassStat(pass_stats, .base_pass, durationNs(preview_opaque_start, std.time.nanoTimestamp()), preview_opaque_stats.draw_calls, preview_opaque_stats.triangles_drawn);
-                    draw_stats.add(preview_opaque_stats);
-                }
+                    self.graph.recordPassStat(pass_stats, .base_pass, durationNs(opaque_start, std.time.nanoTimestamp()), opaque_stats.draw_calls, opaque_stats.triangles_drawn);
+                    draw_stats.add(opaque_stats);
 
-                const transparent_start = std.time.nanoTimestamp();
-                const transparent_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene, .{
-                    .render_mode = active_render_mode,
-                    .target = if (viewport_active) .hdr else .ldr,
-                    .phase = .transparent_pass,
-                });
-                self.graph.recordPassStat(pass_stats, .transparent, durationNs(transparent_start, std.time.nanoTimestamp()), transparent_stats.draw_calls, transparent_stats.triangles_drawn);
-                draw_stats.add(transparent_stats);
-
-                if (has_prepared_preview_scene) {
-                    const preview_transparent_start = std.time.nanoTimestamp();
-                    const preview_transparent_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_preview_scene, .{
-                        .render_mode = previewRenderMode(active_render_mode),
-                        .target = .hdr,
-                        .phase = .transparent_pass,
-                        .alpha_multiplier = ghost_preview_tint_color[3],
-                        .preview_tint_strength = ghost_preview_tint_strength,
-                        .override_base_color = ghost_preview_tint_color,
-                    });
-                    self.graph.recordPassStat(pass_stats, .transparent, durationNs(preview_transparent_start, std.time.nanoTimestamp()), preview_transparent_stats.draw_calls, preview_transparent_stats.triangles_drawn);
-                    draw_stats.add(preview_transparent_stats);
-                }
-
-                self.rhi.endRenderPass(scene_pass);
-
-                if (viewport_active) {
-                    // Volumetric fog: composite onto HDR color before bloom/tonemap
-                    const fog_enabled = self.editor_viewport_state.volumetric_fog_enabled and self.volumetric_fog_pass.isReady() and self.scene_viewport.hdrColor() != null;
-                    if (fog_enabled) {
-                        if (self.shadow_map.depth_texture) |*shadow_tex| {
-                            try self.volumetric_fog_pass.syncTextures(&self.rhi, self.scene_viewport.depth().?, shadow_tex);
-                            const fog_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(.{ .texture = self.scene_viewport.hdrColor().? }));
-
-                            const mat4_mod = @import("../math/mat4.zig");
-                            const inv_vp = mat4_mod.inverse(prepared_scene.view_projection) orelse mat4_mod.identity();
-
-                            // Extract directional light data
-                            var light_dir = [4]f32{ 0.0, -1.0, 0.0, 0.0 };
-                            var light_col = [4]f32{ 1.0, 1.0, 1.0, 1.0 };
-                            if (prepared_scene.lights.directional_lights.len > 0) {
-                                const main_light = prepared_scene.lights.directional_lights[0];
-                                light_dir = .{ main_light.direction[0], main_light.direction[1], main_light.direction[2], 0.0 };
-                                light_col = .{ main_light.color[0], main_light.color[1], main_light.color[2], main_light.intensity };
-                            }
-
-                            const fog_uniforms = volumetric_fog_pass_mod.VolumetricFogUniforms{
-                                .inv_view_projection = inv_vp,
-                                .light_space_matrix = prepared_scene.light_space_matrix,
-                                .camera_position = prepared_scene.camera_world_position,
-                                .light_direction = light_dir,
-                                .light_color = light_col,
-                                .fog_params = .{
-                                    self.editor_viewport_state.volumetric_fog_density,
-                                    self.editor_viewport_state.volumetric_fog_height_falloff,
-                                    self.editor_viewport_state.volumetric_fog_max_distance,
-                                    32.0,
-                                },
-                            };
-                            const fog_stats = self.volumetric_fog_pass.draw(&self.rhi, frame, fog_render_pass, fog_uniforms);
-                            draw_stats.add(fog_stats);
-                            self.rhi.endRenderPass(fog_render_pass);
+                    if (self.skybox_pass) |*skybox_pass| {
+                        if (skybox_pass.isReady() and prepared_scene.environment_map != null) {
+                            const skybox_start = std.time.nanoTimestamp();
+                            skybox_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene, prepared_scene.environment_map.?);
+                            self.graph.recordPassStat(pass_stats, .skybox_pass, durationNs(skybox_start, std.time.nanoTimestamp()), 1, 1);
+                            draw_stats.draw_calls += 1;
+                            draw_stats.triangles_drawn += 1;
                         }
                     }
 
-                    const bloom_enabled = self.editor_viewport_state.bloom_enabled and self.bloom_pass.isReady() and self.scene_viewport.bloom() != null;
-                    const fxaa_enabled = self.editor_viewport_state.fxaa_enabled and self.fxaa_pass.isReady() and self.scene_viewport.fxaa() != null;
-
-                    // SSAO: render ambient occlusion to ssao_texture
-                    const ssao_enabled = self.editor_viewport_state.ssao_enabled and self.ssao_pass.isReady() and self.scene_viewport.ssao() != null and self.scene_viewport.depth() != null;
-                    if (ssao_enabled) {
-                        try self.ssao_pass.syncTextures(&self.rhi, self.scene_viewport.depth().?, null);
-                        const ssao_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.ssao().? }));
-
-                        const mat4_ssao = @import("../math/mat4.zig");
-                        const inv_proj = mat4_ssao.inverse(prepared_scene.projection_matrix) orelse mat4_ssao.identity();
-                        const inv_view = mat4_ssao.inverse(prepared_scene.view_matrix) orelse mat4_ssao.identity();
-
-                        const ssao_uniforms = ssao_pass_mod.SSAOUniforms{
-                            .projection = prepared_scene.projection_matrix,
-                            .inv_projection = inv_proj,
-                            .view = prepared_scene.view_matrix,
-                            .inv_view = inv_view,
-                            .resolution = .{ @floatFromInt(self.scene_viewport.width), @floatFromInt(self.scene_viewport.height) },
-                            .radius = self.editor_viewport_state.ssao_radius,
-                            .bias = self.editor_viewport_state.ssao_bias,
-                            .intensity = self.editor_viewport_state.ssao_intensity,
-                            .power = self.editor_viewport_state.ssao_power,
-                            .kernel_size = 16,
-                            .noise_scale = .{
-                                @as(f32, @floatFromInt(self.scene_viewport.width)) / 4.0,
-                                @as(f32, @floatFromInt(self.scene_viewport.height)) / 4.0,
-                            },
-                        };
-                        const ssao_stats = self.ssao_pass.draw(&self.rhi, frame, ssao_render_pass, ssao_uniforms);
-                        draw_stats.add(ssao_stats);
-                        self.rhi.endRenderPass(ssao_render_pass);
+                    if (has_prepared_preview_scene) {
+                        const preview_opaque_start = std.time.nanoTimestamp();
+                        const preview_opaque_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_preview_scene, .{
+                            .render_mode = previewRenderMode(active_render_mode),
+                            .target = .hdr,
+                            .phase = .opaque_pass,
+                            .blend_opaque = true,
+                            .alpha_multiplier = ghost_preview_tint_color[3],
+                            .preview_tint_strength = ghost_preview_tint_strength,
+                            .override_base_color = ghost_preview_tint_color,
+                        });
+                        self.graph.recordPassStat(pass_stats, .base_pass, durationNs(preview_opaque_start, std.time.nanoTimestamp()), preview_opaque_stats.draw_calls, preview_opaque_stats.triangles_drawn);
+                        draw_stats.add(preview_opaque_stats);
                     }
 
-                    if (bloom_enabled) {
-                        try self.bloom_pass.syncTexture(&self.rhi, self.scene_viewport.hdrColor().?);
-                        const bloom_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.bloom().? }));
-                        const bloom_start = std.time.nanoTimestamp();
-                        const bloom_stats = self.bloom_pass.draw(
-                            &self.rhi,
-                            frame,
-                            bloom_render_pass,
-                            self.editor_viewport_state.bloom_threshold,
-                        );
-                        self.graph.recordPassStat(pass_stats, .post_process, durationNs(bloom_start, std.time.nanoTimestamp()), bloom_stats.draw_calls, bloom_stats.triangles_drawn);
-                        draw_stats.add(bloom_stats);
-                        self.rhi.endRenderPass(bloom_render_pass);
+                    const transparent_start = std.time.nanoTimestamp();
+                    const transparent_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene, .{
+                        .render_mode = active_render_mode,
+                        .target = if (viewport_active) .hdr else .ldr,
+                        .phase = .transparent_pass,
+                    });
+                    self.graph.recordPassStat(pass_stats, .transparent, durationNs(transparent_start, std.time.nanoTimestamp()), transparent_stats.draw_calls, transparent_stats.triangles_drawn);
+                    draw_stats.add(transparent_stats);
+
+                    if (has_prepared_preview_scene) {
+                        const preview_transparent_start = std.time.nanoTimestamp();
+                        const preview_transparent_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_preview_scene, .{
+                            .render_mode = previewRenderMode(active_render_mode),
+                            .target = .hdr,
+                            .phase = .transparent_pass,
+                            .alpha_multiplier = ghost_preview_tint_color[3],
+                            .preview_tint_strength = ghost_preview_tint_strength,
+                            .override_base_color = ghost_preview_tint_color,
+                        });
+                        self.graph.recordPassStat(pass_stats, .transparent, durationNs(preview_transparent_start, std.time.nanoTimestamp()), preview_transparent_stats.draw_calls, preview_transparent_stats.triangles_drawn);
+                        draw_stats.add(preview_transparent_stats);
                     }
 
-                    if (self.tonemap_pass.isReady()) {
-                        const bloom_input = if (bloom_enabled) self.scene_viewport.bloom().? else self.scene_viewport.hdrColor().?;
-                        const lut_texture = self.tonemap_pass.lutTexture(self.editor_viewport_state.lut_preset) orelse return error.TextureNotFound;
-                        const tonemap_target: rhi_mod.ColorTarget = if (fxaa_enabled)
-                            .{ .texture = self.scene_viewport.fxaa().? }
+                    self.rhi.endRenderPass(scene_pass);
+
+                    if (viewport_active) {
+                        // Volumetric fog: composite onto HDR color before bloom/tonemap
+                        const fog_enabled = self.editor_viewport_state.volumetric_fog_enabled and self.volumetric_fog_pass.isReady() and self.scene_viewport.hdrColor() != null;
+                        if (fog_enabled) {
+                            if (self.shadow_map.depth_texture) |*shadow_tex| {
+                                try self.volumetric_fog_pass.syncTextures(&self.rhi, self.scene_viewport.depth().?, shadow_tex);
+                                const fog_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(.{ .texture = self.scene_viewport.hdrColor().? }));
+
+                                const inv_vp = mat4_mod.inverse(prepared_scene.view_projection) orelse mat4_mod.identity();
+
+                                // Extract directional light data
+                                var light_dir = [4]f32{ 0.0, -1.0, 0.0, 0.0 };
+                                var light_col = [4]f32{ 1.0, 1.0, 1.0, 1.0 };
+                                if (prepared_scene.lights.directional_lights.len > 0) {
+                                    const main_light = prepared_scene.lights.directional_lights[0];
+                                    light_dir = .{ main_light.direction[0], main_light.direction[1], main_light.direction[2], 0.0 };
+                                    light_col = .{ main_light.color[0], main_light.color[1], main_light.color[2], main_light.intensity };
+                                }
+
+                                const fog_uniforms = volumetric_fog_pass_mod.VolumetricFogUniforms{
+                                    .inv_view_projection = inv_vp,
+                                    .light_space_matrix = prepared_scene.light_space_matrix,
+                                    .camera_position = prepared_scene.camera_world_position,
+                                    .light_direction = light_dir,
+                                    .light_color = light_col,
+                                    .fog_params = .{
+                                        self.editor_viewport_state.volumetric_fog_density,
+                                        self.editor_viewport_state.volumetric_fog_height_falloff,
+                                        self.editor_viewport_state.volumetric_fog_max_distance,
+                                        32.0,
+                                    },
+                                };
+                                const fog_stats = self.volumetric_fog_pass.draw(&self.rhi, frame, fog_render_pass, fog_uniforms);
+                                draw_stats.add(fog_stats);
+                                self.rhi.endRenderPass(fog_render_pass);
+                            }
+                        }
+
+                        const bloom_enabled = self.editor_viewport_state.bloom_enabled and self.bloom_pass.isReady() and self.scene_viewport.bloom() != null;
+                        const fxaa_enabled = self.editor_viewport_state.fxaa_enabled and self.fxaa_pass.isReady() and self.scene_viewport.fxaa() != null;
+
+                        // SSAO: render ambient occlusion to ssao_texture
+                        const ssao_enabled = self.editor_viewport_state.ssao_enabled and self.ssao_pass.isReady() and self.scene_viewport.ssao() != null and self.scene_viewport.depth() != null;
+                        if (ssao_enabled) {
+                            try self.ssao_pass.syncTextures(&self.rhi, self.scene_viewport.depth().?, null);
+                            const ssao_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.ssao().? }));
+
+                            const mat4_ssao = @import("../math/mat4.zig");
+                            const inv_proj = mat4_ssao.inverse(prepared_scene.projection_matrix) orelse mat4_ssao.identity();
+                            const inv_view = mat4_ssao.inverse(prepared_scene.view_matrix) orelse mat4_ssao.identity();
+
+                            const ssao_uniforms = ssao_pass_mod.SSAOUniforms{
+                                .projection = prepared_scene.projection_matrix,
+                                .inv_projection = inv_proj,
+                                .view = prepared_scene.view_matrix,
+                                .inv_view = inv_view,
+                                .resolution = .{ @floatFromInt(self.scene_viewport.width), @floatFromInt(self.scene_viewport.height) },
+                                .radius = self.editor_viewport_state.ssao_radius,
+                                .bias = self.editor_viewport_state.ssao_bias,
+                                .intensity = self.editor_viewport_state.ssao_intensity,
+                                .power = self.editor_viewport_state.ssao_power,
+                                .kernel_size = 16,
+                                .noise_scale = .{
+                                    @as(f32, @floatFromInt(self.scene_viewport.width)) / 4.0,
+                                    @as(f32, @floatFromInt(self.scene_viewport.height)) / 4.0,
+                                },
+                            };
+                            const ssao_stats = self.ssao_pass.draw(&self.rhi, frame, ssao_render_pass, ssao_uniforms);
+                            draw_stats.add(ssao_stats);
+                            self.rhi.endRenderPass(ssao_render_pass);
+                        }
+
+                        if (bloom_enabled) {
+                            try self.bloom_pass.syncTexture(&self.rhi, self.scene_viewport.hdrColor().?);
+                            const bloom_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.bloom().? }));
+                            const bloom_start = std.time.nanoTimestamp();
+                            const bloom_stats = self.bloom_pass.draw(
+                                &self.rhi,
+                                frame,
+                                bloom_render_pass,
+                                self.editor_viewport_state.bloom_threshold,
+                            );
+                            self.graph.recordPassStat(pass_stats, .post_process, durationNs(bloom_start, std.time.nanoTimestamp()), bloom_stats.draw_calls, bloom_stats.triangles_drawn);
+                            draw_stats.add(bloom_stats);
+                            self.rhi.endRenderPass(bloom_render_pass);
+                        }
+
+                        if (self.tonemap_pass.isReady()) {
+                            const bloom_input = if (bloom_enabled) self.scene_viewport.bloom().? else self.scene_viewport.hdrColor().?;
+                            const lut_texture = self.tonemap_pass.lutTexture(self.editor_viewport_state.lut_preset) orelse return error.TextureNotFound;
+                            const tonemap_target: rhi_mod.ColorTarget = if (fxaa_enabled)
+                                .{ .texture = self.scene_viewport.fxaa().? }
+                            else
+                                scene_color_target;
+                            try self.tonemap_pass.syncTextures(&self.rhi, self.scene_viewport.hdrColor().?, bloom_input, lut_texture);
+                            const tonemap_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(tonemap_target));
+                            self.tonemap_pass.draw(
+                                &self.rhi,
+                                frame,
+                                tonemap_render_pass,
+                                self.editor_viewport_state.exposure_enabled,
+                                self.editor_viewport_state.exposure,
+                                bloom_enabled,
+                                self.editor_viewport_state.bloom_intensity,
+                                self.editor_viewport_state.color_grading_enabled,
+                                self.editor_viewport_state.color_grading_saturation,
+                                self.editor_viewport_state.color_grading_contrast,
+                                self.editor_viewport_state.color_grading_gamma,
+                                self.editor_viewport_state.lut_enabled,
+                                self.editor_viewport_state.lut_intensity,
+                            );
+                            self.rhi.endRenderPass(tonemap_render_pass);
+                        }
+
+                        if (fxaa_enabled) {
+                            try self.fxaa_pass.syncTexture(&self.rhi, self.scene_viewport.fxaa().?);
+                            const fxaa_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(scene_color_target));
+                            const fxaa_start = std.time.nanoTimestamp();
+                            const fxaa_stats = self.fxaa_pass.draw(&self.rhi, fxaa_render_pass);
+                            self.graph.recordPassStat(pass_stats, .post_process, durationNs(fxaa_start, std.time.nanoTimestamp()), fxaa_stats.draw_calls, fxaa_stats.triangles_drawn);
+                            draw_stats.add(fxaa_stats);
+                            self.rhi.endRenderPass(fxaa_render_pass);
+                        }
+                    }
+
+                    const selected_entities = self.selection_history.currentSelection();
+                    if (self.outline_pass.isReady() and self.id_pass.texture() != null and selected_entities.len > 0) {
+                        try self.outline_pass.syncTexture(&self.rhi, self.id_pass.texture().?);
+                        const outline_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(scene_color_target));
+                        const outline_start = std.time.nanoTimestamp();
+                        const outline_stats = self.outline_pass.draw(&self.rhi, frame, outline_pass, selected_entities);
+                        self.graph.recordPassStat(pass_stats, .outline_pass, durationNs(outline_start, std.time.nanoTimestamp()), outline_stats.draw_calls, outline_stats.triangles_drawn);
+                        draw_stats.add(outline_stats);
+                        self.rhi.endRenderPass(outline_pass);
+                    }
+
+                    if (self.gizmoPassRequired(scene)) {
+                        const gizmo_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(scene_color_target));
+                        const gizmo_start = std.time.nanoTimestamp();
+                        var gizmo_overlay_stats = mesh_pass_mod.DrawStats{};
+                        const gizmo_target_transform = if (self.preview_gizmo_transform) |preview_transform|
+                            preview_transform
+                        else if (self.selection_history.primarySelection()) |selected_entity_id|
+                            scene.worldTransformConst(selected_entity_id)
                         else
-                            scene_color_target;
-                        try self.tonemap_pass.syncTextures(&self.rhi, self.scene_viewport.hdrColor().?, bloom_input, lut_texture);
-                        const tonemap_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(tonemap_target));
-                        self.tonemap_pass.draw(
-                            &self.rhi,
-                            frame,
-                            tonemap_render_pass,
-                            self.editor_viewport_state.exposure_enabled,
-                            self.editor_viewport_state.exposure,
-                            bloom_enabled,
-                            self.editor_viewport_state.bloom_intensity,
-                            self.editor_viewport_state.color_grading_enabled,
-                            self.editor_viewport_state.color_grading_saturation,
-                            self.editor_viewport_state.color_grading_contrast,
-                            self.editor_viewport_state.color_grading_gamma,
-                            self.editor_viewport_state.lut_enabled,
-                            self.editor_viewport_state.lut_intensity,
-                        );
-                        self.rhi.endRenderPass(tonemap_render_pass);
+                            null;
+                        if (gizmo_target_transform) |selected_transform| {
+                            const gizmo_stats = self.gizmo_pass.draw(
+                                &self.rhi,
+                                frame,
+                                gizmo_pass,
+                                &prepared_scene,
+                                selected_transform,
+                                self.editor_gizmo_state,
+                            );
+                            gizmo_overlay_stats.add(gizmo_stats);
+                            draw_stats.add(gizmo_stats);
+                        }
+
+                        const debug_stats = try self.drawViewportDebugOverlays(frame, gizmo_pass, scene, &prepared_scene, physics_state_opt);
+                        gizmo_overlay_stats.add(debug_stats);
+                        draw_stats.add(debug_stats);
+                        self.graph.recordPassStat(pass_stats, .gizmo_overlay, durationNs(gizmo_start, std.time.nanoTimestamp()), gizmo_overlay_stats.draw_calls, gizmo_overlay_stats.triangles_drawn);
+                        self.rhi.endRenderPass(gizmo_pass);
                     }
-
-                    if (fxaa_enabled) {
-                        try self.fxaa_pass.syncTexture(&self.rhi, self.scene_viewport.fxaa().?);
-                        const fxaa_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(scene_color_target));
-                        const fxaa_start = std.time.nanoTimestamp();
-                        const fxaa_stats = self.fxaa_pass.draw(&self.rhi, fxaa_render_pass);
-                        self.graph.recordPassStat(pass_stats, .post_process, durationNs(fxaa_start, std.time.nanoTimestamp()), fxaa_stats.draw_calls, fxaa_stats.triangles_drawn);
-                        draw_stats.add(fxaa_stats);
-                        self.rhi.endRenderPass(fxaa_render_pass);
-                    }
-                }
-
-                const selected_entities = self.selection_history.currentSelection();
-                if (self.outline_pass.isReady() and self.id_pass.texture() != null and selected_entities.len > 0) {
-                    try self.outline_pass.syncTexture(&self.rhi, self.id_pass.texture().?);
-                    const outline_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(scene_color_target));
-                    const outline_start = std.time.nanoTimestamp();
-                    const outline_stats = self.outline_pass.draw(&self.rhi, frame, outline_pass, selected_entities);
-                    self.graph.recordPassStat(pass_stats, .outline_pass, durationNs(outline_start, std.time.nanoTimestamp()), outline_stats.draw_calls, outline_stats.triangles_drawn);
-                    draw_stats.add(outline_stats);
-                    self.rhi.endRenderPass(outline_pass);
-                }
-
-                if (self.gizmoPassRequired(scene)) {
-                    const gizmo_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(scene_color_target));
-                    const gizmo_start = std.time.nanoTimestamp();
-                    var gizmo_overlay_stats = mesh_pass_mod.DrawStats{};
-                    const gizmo_target_transform = if (self.preview_gizmo_transform) |preview_transform|
-                        preview_transform
-                    else if (self.selection_history.primarySelection()) |selected_entity_id|
-                        scene.worldTransformConst(selected_entity_id)
-                    else
-                        null;
-                    if (gizmo_target_transform) |selected_transform| {
-                        const gizmo_stats = self.gizmo_pass.draw(
-                            &self.rhi,
-                            frame,
-                            gizmo_pass,
-                            &prepared_scene,
-                            selected_transform,
-                            self.editor_gizmo_state,
-                        );
-                        gizmo_overlay_stats.add(gizmo_stats);
-                        draw_stats.add(gizmo_stats);
-                    }
-
-                    const debug_stats = try self.drawViewportDebugOverlays(frame, gizmo_pass, scene, &prepared_scene, physics_state_opt);
-                    gizmo_overlay_stats.add(debug_stats);
-                    draw_stats.add(debug_stats);
-                    self.graph.recordPassStat(pass_stats, .gizmo_overlay, durationNs(gizmo_start, std.time.nanoTimestamp()), gizmo_overlay_stats.draw_calls, gizmo_overlay_stats.triangles_drawn);
-                    self.rhi.endRenderPass(gizmo_pass);
                 }
             }
 
@@ -1583,7 +1728,8 @@ pub const Renderer = struct {
             }
 
             if (self.pending_selection_readbacks.items.len > 0) {
-                if (can_render_scene and self.id_pass.texture() != null) {
+                const id_pick_available = can_render_scene and self.id_pass.texture() != null and !(viewport_active and self.editor_viewport_state.pipeline_mode == .path_trace);
+                if (id_pick_available) {
                     const id_texture = self.id_pass.texture().?;
                     try self.enqueueSelectionReadbacks(frame, id_texture);
                 } else {
@@ -1620,6 +1766,158 @@ pub const Renderer = struct {
             };
         }
         return result;
+    }
+
+    fn renderCpuPathTraceViewport(self: *Renderer, prepared_scene: *const mesh_pass_mod.PreparedScene) !void {
+        const target = self.scene_viewport.color() orelse return;
+        const width = target.desc.width;
+        const height = target.desc.height;
+        if (width == 0 or height == 0) return;
+
+        const samples = std.math.clamp(self.editor_viewport_state.path_trace_samples, 1, 64);
+        const bounces = std.math.clamp(self.editor_viewport_state.path_trace_bounces, 1, 8);
+        const resolution_scale = std.math.clamp(self.editor_viewport_state.path_trace_resolution_scale, 0.25, 1.0);
+        const trace_width = @max(@as(u32, 1), @as(u32, @intFromFloat(@as(f32, @floatFromInt(width)) * resolution_scale)));
+        const trace_height = @max(@as(u32, 1), @as(u32, @intFromFloat(@as(f32, @floatFromInt(height)) * resolution_scale)));
+
+        if (!g_logged_path_trace_active) {
+            render_log.info("CPU path trace viewport active (MVP)", .{});
+            g_logged_path_trace_active = true;
+        }
+
+        const pixel_count: usize = @as(usize, width) * @as(usize, height);
+        const byte_count: usize = pixel_count * 4;
+        const pixels = try self.allocator.alloc(u8, byte_count);
+        defer self.allocator.free(pixels);
+
+        const trace_pixel_count: usize = @as(usize, trace_width) * @as(usize, trace_height);
+        const trace_byte_count: usize = trace_pixel_count * 4;
+        const trace_pixels = try self.allocator.alloc(u8, trace_byte_count);
+        defer self.allocator.free(trace_pixels);
+
+        const inv_view_projection = mat4_mod.inverse(prepared_scene.view_projection) orelse mat4_mod.identity();
+        const camera_origin = [3]f32{
+            prepared_scene.camera_world_position[0],
+            prepared_scene.camera_world_position[1],
+            prepared_scene.camera_world_position[2],
+        };
+
+        var spheres: [64]PathTraceSphere = undefined;
+        var sphere_count: usize = 0;
+        for (prepared_scene.opaque_meshes) |item| {
+            if (sphere_count >= spheres.len) break;
+            spheres[sphere_count] = .{
+                .center = item.world_position,
+                .radius = estimateDrawItemRadius(item.model),
+                .albedo = .{
+                    std.math.clamp(item.base_color_factor[0], 0.05, 1.0),
+                    std.math.clamp(item.base_color_factor[1], 0.05, 1.0),
+                    std.math.clamp(item.base_color_factor[2], 0.05, 1.0),
+                },
+            };
+            sphere_count += 1;
+        }
+
+        if (sphere_count == 0) {
+            spheres[0] = .{
+                .center = .{ 0.0, 0.9, 0.0 },
+                .radius = 0.95,
+                .albedo = .{ 0.86, 0.58, 0.22 },
+            };
+            sphere_count = 1;
+        }
+
+        const light_direction = if (prepared_scene.lights.directional_lights.len > 0)
+            vec3.normalize(vec3.scale(prepared_scene.lights.directional_lights[0].direction, -1.0))
+        else
+            vec3.normalize(.{ 0.38, 0.82, 0.42 });
+
+        const pixel_budget: u32 = 960 * 540;
+        const area = trace_width * trace_height;
+        const sample_step: u32 = if (area > pixel_budget * 4)
+            4
+        else if (area > pixel_budget * 2)
+            3
+        else if (area > pixel_budget)
+            2
+        else
+            1;
+
+        var y: u32 = 0;
+        while (y < trace_height) : (y += sample_step) {
+            var x: u32 = 0;
+            while (x < trace_width) : (x += sample_step) {
+                var traced_color = [3]f32{ 0.0, 0.0, 0.0 };
+                const seed_base = hashU32(x ^ (y << 16) ^ 0x7f4a7c15);
+
+                var s: u32 = 0;
+                while (s < samples) : (s += 1) {
+                    const jitter_seed = seed_base ^ (s *% 0x45d9f3b);
+                    const jitter_x = hashUnitFloat(jitter_seed ^ 0x18f0e149) - 0.5;
+                    const jitter_y = hashUnitFloat(jitter_seed ^ 0x6c8e9cf5) - 0.5;
+                    const uv_x = (@as(f32, @floatFromInt(x)) + 0.5 + jitter_x) /
+                        @as(f32, @floatFromInt(trace_width));
+                    const uv_y = (@as(f32, @floatFromInt(y)) + 0.5 + jitter_y) /
+                        @as(f32, @floatFromInt(trace_height));
+                    const ndc_x = uv_x * 2.0 - 1.0;
+                    const ndc_y = 1.0 - uv_y * 2.0;
+
+                    const world_near = unprojectNdc(inv_view_projection, ndc_x, ndc_y, 0.0);
+                    const world_far = unprojectNdc(inv_view_projection, ndc_x, ndc_y, 1.0);
+                    const ray_origin = camera_origin;
+                    var ray_direction = vec3.normalize(vec3.sub(world_far, world_near));
+                    if (vec3.length(ray_direction) <= 0.0001) {
+                        ray_direction = vec3.normalize(vec3.sub(world_far, ray_origin));
+                    }
+
+                    const sample_color = pathTraceRay(
+                        ray_origin,
+                        ray_direction,
+                        spheres[0..sphere_count],
+                        light_direction,
+                        jitter_seed,
+                        bounces,
+                    );
+                    traced_color = vec3.add(traced_color, sample_color);
+                }
+
+                traced_color = vec3.scale(traced_color, 1.0 / @as(f32, @floatFromInt(samples)));
+                const bgra = linearToSrgb8(traced_color);
+
+                var fy: u32 = 0;
+                while (fy < sample_step and y + fy < trace_height) : (fy += 1) {
+                    var fx: u32 = 0;
+                    while (fx < sample_step and x + fx < trace_width) : (fx += 1) {
+                        const out_x = x + fx;
+                        const out_y = y + fy;
+                        const pixel_index: usize = (@as(usize, out_y) * @as(usize, trace_width) + @as(usize, out_x)) * 4;
+                        trace_pixels[pixel_index + 0] = bgra[0];
+                        trace_pixels[pixel_index + 1] = bgra[1];
+                        trace_pixels[pixel_index + 2] = bgra[2];
+                        trace_pixels[pixel_index + 3] = bgra[3];
+                    }
+                }
+            }
+        }
+
+        var out_y: u32 = 0;
+        while (out_y < height) : (out_y += 1) {
+            const src_y_u64 = (@as(u64, out_y) * @as(u64, trace_height)) / @as(u64, height);
+            const src_y: u32 = @min(trace_height - 1, @as(u32, @intCast(src_y_u64)));
+            var out_x: u32 = 0;
+            while (out_x < width) : (out_x += 1) {
+                const src_x_u64 = (@as(u64, out_x) * @as(u64, trace_width)) / @as(u64, width);
+                const src_x: u32 = @min(trace_width - 1, @as(u32, @intCast(src_x_u64)));
+                const src_index: usize = (@as(usize, src_y) * @as(usize, trace_width) + @as(usize, src_x)) * 4;
+                const dst_index: usize = (@as(usize, out_y) * @as(usize, width) + @as(usize, out_x)) * 4;
+                pixels[dst_index + 0] = trace_pixels[src_index + 0];
+                pixels[dst_index + 1] = trace_pixels[src_index + 1];
+                pixels[dst_index + 2] = trace_pixels[src_index + 2];
+                pixels[dst_index + 3] = trace_pixels[src_index + 3];
+            }
+        }
+
+        try self.rhi.uploadTextureData(target, pixels, width, height);
     }
 
     /// Downloads the final rendered frame from GPU to CPU as RGBA8 pixels.

@@ -285,49 +285,48 @@ void build_default_dock_layout() {
 
   ImGuiID dock_main = g_dockspace_id;
 
-    // Global frame split: left tooling rail, right inspector rail, center viewport,
-    // and a full-width bottom shelf for content browser / console.
-    ImGuiID dock_left =
-      ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Left, 0.20f, nullptr,
-                    &dock_main);
-    ImGuiID dock_right =
-      ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Right, 0.27f, nullptr,
-                    &dock_main);
-    ImGuiID dock_bottom =
-      ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Down, 0.24f, nullptr,
-                    &dock_main);
-    ImGuiID dock_viewport = dock_main;
+  // 1) Full-width bottom timeline.
+  ImGuiID dock_timeline = ImGui::DockBuilderSplitNode(
+      dock_main, ImGuiDir_Down, 0.15f, nullptr, &dock_main);
 
-    // Left rail: Place Actors (top) + Command Timeline (middle) + Jarvis (bottom).
-    ImGuiID dock_left_bottom = dock_left;
-    ImGuiID dock_place_actors =
-      ImGui::DockBuilderSplitNode(dock_left, ImGuiDir_Up, 0.46f, nullptr,
-                    &dock_left_bottom);
-    ImGuiID dock_left_tail = dock_left_bottom;
-    ImGuiID dock_timeline =
-      ImGui::DockBuilderSplitNode(dock_left_bottom, ImGuiDir_Up, 0.38f,
-                    nullptr, &dock_left_tail);
-    ImGuiID dock_jarvis = dock_left_tail;
+  // 2) Left rail for scene/tools.
+  ImGuiID dock_left = ImGui::DockBuilderSplitNode(
+      dock_main, ImGuiDir_Left, 0.20f, nullptr, &dock_main);
 
-    // Right rail: Scene hierarchy (top) + Inspector details (bottom).
-    ImGuiID dock_right_bottom = dock_right;
-    ImGuiID dock_scene =
-      ImGui::DockBuilderSplitNode(dock_right, ImGuiDir_Up, 0.55f, nullptr,
-                    &dock_right_bottom);
-    ImGuiID dock_details = dock_right_bottom;
+  // 3) Right rail for inspector + Jarvis.
+  ImGuiID dock_right = ImGui::DockBuilderSplitNode(
+      dock_main, ImGuiDir_Right, 0.25f, nullptr, &dock_main);
 
-    ImGui::DockBuilderDockWindow("Viewport###viewport_panel", dock_viewport);
-    ImGui::DockBuilderDockWindow("Place Actors###place_actors_panel",
-                   dock_place_actors);
-    ImGui::DockBuilderDockWindow("Command Timeline##command_timeline_panel",
-                   dock_timeline);
-    ImGui::DockBuilderDockWindow("Jarvis Terminal##ai_chat_panel", dock_jarvis);
-    ImGui::DockBuilderDockWindow("Scene###scene_panel", dock_scene);
-    ImGui::DockBuilderDockWindow("Details###details_panel", dock_details);
-    ImGui::DockBuilderDockWindow("Content Browser###content_browser_panel",
-                   dock_bottom);
-    ImGui::DockBuilderDockWindow("AI Utilities###editor_utilities_panel",
-                   dock_bottom);
+  // 4) Center viewport.
+  ImGuiID dock_viewport = dock_main;
+
+  // Left rail split: scene tree top, assets bottom.
+  ImGuiID dock_left_bottom;
+  ImGuiID dock_scene = ImGui::DockBuilderSplitNode(
+      dock_left, ImGuiDir_Up, 0.55f, nullptr, &dock_left_bottom);
+  ImGuiID dock_assets = dock_left_bottom;
+
+  // Right rail split: inspector top, Jarvis bottom.
+  ImGuiID dock_right_bottom;
+  ImGuiID dock_inspector = ImGui::DockBuilderSplitNode(
+      dock_right, ImGuiDir_Up, 0.60f, nullptr, &dock_right_bottom);
+  ImGuiID dock_jarvis = dock_right_bottom;
+
+  ImGui::DockBuilderDockWindow("Command Timeline##command_timeline_panel",
+                               dock_timeline);
+
+  ImGui::DockBuilderDockWindow("Scene###scene_panel", dock_scene);
+  ImGui::DockBuilderDockWindow("Place Actors###place_actors_panel", dock_scene);
+
+  ImGui::DockBuilderDockWindow("Content Browser###content_browser_panel",
+                               dock_assets);
+  ImGui::DockBuilderDockWindow("AI Utilities###editor_utilities_panel",
+                               dock_assets);
+
+  ImGui::DockBuilderDockWindow("Details###details_panel", dock_inspector);
+  ImGui::DockBuilderDockWindow("Jarvis Terminal##ai_chat_panel", dock_jarvis);
+
+  ImGui::DockBuilderDockWindow("Viewport###viewport_panel", dock_viewport);
   ImGui::DockBuilderFinish(g_dockspace_id);
 }
 
@@ -346,41 +345,41 @@ void build_animation_dock_layout() {
 
   ImGuiID dock_main = g_dockspace_id;
 
-    ImGuiID dock_left =
-      ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Left, 0.16f, nullptr,
-                    &dock_main);
-    ImGuiID dock_right =
-      ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Right, 0.26f, nullptr,
-                    &dock_main);
-    ImGuiID dock_bottom =
-      ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Down, 0.32f, nullptr,
-                    &dock_main);
-    ImGuiID dock_viewport = dock_main;
+  ImGuiID dock_timeline = ImGui::DockBuilderSplitNode(
+      dock_main, ImGuiDir_Down, 0.18f, nullptr, &dock_main);
+  ImGuiID dock_left = ImGui::DockBuilderSplitNode(
+      dock_main, ImGuiDir_Left, 0.20f, nullptr, &dock_main);
+  ImGuiID dock_right = ImGui::DockBuilderSplitNode(
+      dock_main, ImGuiDir_Right, 0.26f, nullptr, &dock_main);
+  ImGuiID dock_viewport = dock_main;
 
-    ImGuiID dock_left_bottom = dock_left;
-    ImGuiID dock_place_actors =
-      ImGui::DockBuilderSplitNode(dock_left, ImGuiDir_Up, 0.52f, nullptr,
-                    &dock_left_bottom);
-    ImGuiID dock_timeline = dock_left_bottom;
+  ImGuiID dock_left_bottom;
+  ImGuiID dock_scene = ImGui::DockBuilderSplitNode(
+      dock_left, ImGuiDir_Up, 0.52f, nullptr, &dock_left_bottom);
+  ImGuiID dock_assets = dock_left_bottom;
 
-    ImGuiID dock_right_bottom = dock_right;
-    ImGuiID dock_scene =
-      ImGui::DockBuilderSplitNode(dock_right, ImGuiDir_Up, 0.52f, nullptr,
-                    &dock_right_bottom);
-    ImGuiID dock_details = dock_right_bottom;
+  ImGuiID dock_right_bottom;
+  ImGuiID dock_inspector = ImGui::DockBuilderSplitNode(
+      dock_right, ImGuiDir_Up, 0.58f, nullptr, &dock_right_bottom);
+  ImGuiID dock_jarvis = dock_right_bottom;
 
-    ImGui::DockBuilderDockWindow("Viewport###viewport_panel", dock_viewport);
-    ImGui::DockBuilderDockWindow("Place Actors###place_actors_panel",
-                   dock_place_actors);
-    ImGui::DockBuilderDockWindow("Command Timeline##command_timeline_panel",
-                   dock_timeline);
-    ImGui::DockBuilderDockWindow("Scene###scene_panel", dock_scene);
-    ImGui::DockBuilderDockWindow("Details###details_panel", dock_details);
-    ImGui::DockBuilderDockWindow("Content Browser###content_browser_panel",
-                   dock_bottom);
-    ImGui::DockBuilderDockWindow("AI Utilities###editor_utilities_panel",
-                   dock_bottom);
-    ImGui::DockBuilderDockWindow("Jarvis Terminal##ai_chat_panel", dock_bottom);
+  ImGui::DockBuilderDockWindow("Command Timeline##command_timeline_panel",
+                               dock_timeline);
+  ImGui::DockBuilderDockWindow("Animation Editor###animation_editor_panel",
+                               dock_timeline);
+
+  ImGui::DockBuilderDockWindow("Scene###scene_panel", dock_scene);
+  ImGui::DockBuilderDockWindow("Place Actors###place_actors_panel", dock_scene);
+
+  ImGui::DockBuilderDockWindow("Content Browser###content_browser_panel",
+                               dock_assets);
+  ImGui::DockBuilderDockWindow("AI Utilities###editor_utilities_panel",
+                               dock_assets);
+
+  ImGui::DockBuilderDockWindow("Details###details_panel", dock_inspector);
+  ImGui::DockBuilderDockWindow("Jarvis Terminal##ai_chat_panel", dock_jarvis);
+
+  ImGui::DockBuilderDockWindow("Viewport###viewport_panel", dock_viewport);
   ImGui::DockBuilderFinish(g_dockspace_id);
 }
 
@@ -440,10 +439,15 @@ void apply_guava_editor_style(float content_scale) {
   colors[ImGuiCol_ScrollbarGrabHovered] = make_color(90, 100, 115, 180);
   colors[ImGuiCol_ScrollbarGrabActive] = make_color(110, 120, 140, 200);
 
-  // Accent color: #22c55e (34, 197, 94) -> (0.133, 0.773, 0.369)
+  // Primary accent for human-authored interactions.
   const ImVec4 accent_green = make_color(34, 205, 100);       // Slightly more vibrant
   const ImVec4 accent_green_hover = make_color(50, 225, 120);  // +10% brightness
   const ImVec4 accent_green_dim = make_color(34, 205, 100, 80); // 30% opacity
+
+  // Secondary accent for AI-origin interactions.
+  const ImVec4 accent_ai = make_color(144, 96, 232);
+  const ImVec4 accent_ai_hover = make_color(170, 120, 245);
+  const ImVec4 accent_ai_dim = make_color(144, 96, 232, 90);
 
   colors[ImGuiCol_CheckMark] = accent_green;
   colors[ImGuiCol_SliderGrab] = accent_green;
@@ -455,9 +459,9 @@ void apply_guava_editor_style(float content_scale) {
   colors[ImGuiCol_HeaderActive] = make_color(34, 205, 100, 160);
 
   // Tab colors
-  colors[ImGuiCol_TabHovered] = accent_green_hover;
+  colors[ImGuiCol_TabHovered] = accent_ai_hover;
   colors[ImGuiCol_TabActive] = accent_green;
-  colors[ImGuiCol_TabUnfocusedActive] = accent_green_dim;
+  colors[ImGuiCol_TabUnfocusedActive] = accent_ai_dim;
 
   colors[ImGuiCol_Button] = make_color(45, 48, 54);
   colors[ImGuiCol_ButtonHovered] = make_color(60, 65, 72);
@@ -474,8 +478,8 @@ void apply_guava_editor_style(float content_scale) {
   colors[ImGuiCol_DockingEmptyBg] = make_color(20, 22, 26);
   colors[ImGuiCol_PlotLines] = accent_green;
   colors[ImGuiCol_PlotLinesHovered] = accent_green_hover;
-  colors[ImGuiCol_PlotHistogram] = accent_green;
-  colors[ImGuiCol_PlotHistogramHovered] = accent_green_hover;
+  colors[ImGuiCol_PlotHistogram] = accent_ai;
+  colors[ImGuiCol_PlotHistogramHovered] = accent_ai_hover;
   colors[ImGuiCol_TableHeaderBg] = make_color(42, 46, 52);
   colors[ImGuiCol_TableBorderStrong] = make_color(60, 65, 75);
   colors[ImGuiCol_TableBorderLight] = make_color(45, 49, 56);

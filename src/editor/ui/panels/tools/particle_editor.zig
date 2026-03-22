@@ -2,6 +2,7 @@ const std = @import("std");
 const engine = @import("guava");
 const gui = @import("../../gui.zig");
 const layout = @import("../../layout.zig");
+const EditorState = @import("../../../core/state.zig").EditorState;
 
 const Vfx = engine.scene.Vfx;
 const VfxKind = engine.scene.VfxKind;
@@ -32,38 +33,37 @@ pub const ParticleEditorState = struct {
     }
 };
 
-pub fn drawParticleEditor(
-    state: *engine.AppState,
-    layer_context: *engine.LayerContext,
+pub fn drawParticleEditorWindow(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
     editor_state: *ParticleEditorState,
-) void {
+) !void {
     _ = layer_context;
 
-    if (gui.begin("Particle Editor")) {
-        defer gui.end();
+    var title_buffer: [80]u8 = undefined;
+    const title = try state.windowLabel(&title_buffer, .particle_editor, "particle_editor_panel");
+    _ = gui.beginWindow(title);
+    defer gui.endWindow();
 
-        drawParticleToolbar(state, editor_state);
+    drawParticleToolbar(editor_state);
 
+    gui.separator();
+
+    if (editor_state.preview_vfx) |*vfx| {
+        drawParticlePreview(editor_state);
         gui.separator();
-
-        if (editor_state.preview_vfx) |*vfx| {
-            drawParticlePreview(editor_state);
-            gui.separator();
-            drawParticleParameters(vfx);
-            gui.separator();
-            drawParticleCurves(vfx, editor_state);
-        } else {
-            gui.text("Select a VFX entity or create a new particle system");
-            if (gui.button("Create Particle System")) {
-                editor_state.preview_vfx = engine.scene.defaultVfx(.fountain);
-            }
+        drawParticleParameters(vfx);
+        gui.separator();
+        drawParticleCurves(vfx, editor_state);
+    } else {
+        gui.text("Select a VFX entity or create a new particle system");
+        if (gui.button("Create Particle System")) {
+            editor_state.preview_vfx = engine.scene.defaultVfx(.fountain);
         }
     }
 }
 
-fn drawParticleToolbar(state: *engine.AppState, editor_state: *ParticleEditorState) void {
-    _ = state;
-
+fn drawParticleToolbar(editor_state: *ParticleEditorState) void {
     if (gui.button("New")) {
         editor_state.preview_vfx = engine.scene.defaultVfx(.fountain);
     }
@@ -88,7 +88,7 @@ fn drawParticleToolbar(state: *engine.AppState, editor_state: *ParticleEditorSta
     gui.sameLine();
     gui.text("Preset:");
     gui.sameLine();
-    if (gui.beginCombo("##preset", "Select...", .{})) {
+    if (gui.beginCombo("##preset", "Select...")) {
         defer gui.endCombo();
 
         const presets = [_]struct { name: []const u8, kind: VfxKind }{
@@ -97,7 +97,7 @@ fn drawParticleToolbar(state: *engine.AppState, editor_state: *ParticleEditorSta
         };
 
         for (presets) |preset| {
-            if (gui.selectable(preset.name, false)) {
+            if (gui.selectable(preset.name, false, false, 0.0, 0.0)) {
                 editor_state.preview_vfx = engine.scene.defaultVfx(preset.kind);
             }
         }
@@ -137,14 +137,14 @@ fn drawParticleParameters(vfx: *Vfx) void {
         defer layout.endInspectorPropertyTable();
 
         layout.drawInspectorPropertyRow("Kind", null);
-        if (gui.beginCombo("##kind", @tagName(vfx.kind), .{})) {
+        if (gui.beginCombo("##kind", @tagName(vfx.kind))) {
             defer gui.endCombo();
             inline for (.{
                 .fountain,
                 .orbit,
             }) |kind| {
                 const is_selected = vfx.kind == kind;
-                if (gui.selectable(@tagName(kind), is_selected)) {
+                if (gui.selectable(@tagName(kind), is_selected, false, 0, 0)) {
                     vfx.* = engine.scene.defaultVfx(kind);
                 }
                 if (is_selected) {
@@ -166,7 +166,10 @@ fn drawParticleParameters(vfx: *Vfx) void {
         _ = gui.dragFloat("##speed", &vfx.speed, 0.1, 0.1, 20.0);
 
         layout.drawInspectorPropertyRow("Max Particles", null);
-        _ = gui.dragInt("##max_particles", &@as(*i32, @ptrCast(&vfx.max_particles)), 1.0, 1, 1000);
+        var max_particles_i32: i32 = @intCast(vfx.max_particles);
+        if (gui.dragInt("##max_particles", &max_particles_i32, 1.0, 1, 1000)) {
+            vfx.max_particles = @intCast(std.math.clamp(max_particles_i32, 1, 1000));
+        }
 
         layout.drawInspectorPropertyRow("Radius", null);
         _ = gui.dragFloat("##radius", &vfx.radius, 0.05, 0.0, 5.0);

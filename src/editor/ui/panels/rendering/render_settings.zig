@@ -47,6 +47,32 @@ pub fn drawRenderSettingsWindow(state: *EditorState, layer_context: *engine.core
     }
 
     gui.separator();
+    gui.text("Path Tracer");
+    var pt_samples: i32 = @intCast(state.viewport_path_trace_samples);
+    if (gui.dragInt("##pt_samples", &pt_samples, 1.0, 1, 64)) {
+        state.viewport_path_trace_samples = @intCast(std.math.clamp(pt_samples, 1, 64));
+    }
+    var pt_samples_buf: [32]u8 = undefined;
+    const pt_samples_text = try std.fmt.bufPrint(&pt_samples_buf, "{d}", .{state.viewport_path_trace_samples});
+    gui.labelText("Samples", pt_samples_text);
+
+    var pt_bounces: i32 = @intCast(state.viewport_path_trace_bounces);
+    if (gui.dragInt("##pt_bounces", &pt_bounces, 1.0, 1, 8)) {
+        state.viewport_path_trace_bounces = @intCast(std.math.clamp(pt_bounces, 1, 8));
+    }
+    var pt_bounces_buf: [32]u8 = undefined;
+    const pt_bounces_text = try std.fmt.bufPrint(&pt_bounces_buf, "{d}", .{state.viewport_path_trace_bounces});
+    gui.labelText("Bounces", pt_bounces_text);
+
+    var pt_scale = state.viewport_path_trace_resolution_scale;
+    if (gui.dragFloat("##pt_resolution_scale", &pt_scale, 0.01, 0.25, 1.0)) {
+        state.viewport_path_trace_resolution_scale = std.math.clamp(pt_scale, 0.25, 1.0);
+    }
+    var pt_scale_buf: [32]u8 = undefined;
+    const pt_scale_text = try std.fmt.bufPrint(&pt_scale_buf, "{d:.2}x", .{state.viewport_path_trace_resolution_scale});
+    gui.labelText("Resolution", pt_scale_text);
+
+    gui.separator();
     _ = gui.checkbox(state.text(.show_grid), &state.viewport_show_grid);
     _ = gui.checkbox(state.text(.show_bones), &state.viewport_show_bones);
     _ = gui.checkbox(state.text(.show_collision), &state.viewport_show_collision);

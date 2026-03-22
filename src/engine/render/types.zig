@@ -25,6 +25,9 @@ pub const EditorViewportLutPreset = enum {
 
 pub const EditorViewportState = struct {
     pipeline_mode: EditorViewportPipelineMode = .raster,
+    path_trace_samples: u32 = 2,
+    path_trace_bounces: u32 = 2,
+    path_trace_resolution_scale: f32 = 1.0,
     render_mode: EditorViewportRenderMode = .textured,
     show_grid: bool = true,
     show_bones: bool = false,
