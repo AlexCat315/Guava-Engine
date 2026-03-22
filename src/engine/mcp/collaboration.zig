@@ -349,6 +349,18 @@ pub const OverlaySnapshot = struct {
     entries: [max_entries]OverlayPreviewEntry = [_]OverlayPreviewEntry{.{}} ** max_entries,
 };
 
+pub const AiStage = enum {
+    ready,
+    analyzing_screenshot,
+    compiling_shader,
+    waiting_approval,
+};
+
+pub const AiStatusSnapshot = struct {
+    stage: AiStage = .ready,
+    detail: LongText = .{},
+};
+
 pub const PreviewWorldSnapshot = struct {
     active: bool = false,
     transaction_id: ?u64 = null,
@@ -667,6 +679,57 @@ pub const Store = struct {
         }
 
         return snapshot;
+    }
+
+    pub fn aiStatusSnapshot(self: *const Store) AiStatusSnapshot {
+        const mutable: *Store = @constCast(self);
+        mutable.mutex.lock();
+        defer mutable.mutex.unlock();
+
+        if (mutable.staged.active) {
+            return .{
+                .stage = .waiting_approval,
+                .detail = if (mutable.staged.note.len > 0)
+                    mutable.staged.note
+                else
+                    textFromSlice(LongText, mutable.staged.label.slice()),
+            };
+        }
+
+        if (mutable.intent_log.items.len == 0) {
+            return .{};
+        }
+
+        const latest = mutable.intent_log.items[mutable.intent_log.items.len - 1];
+        const action = latest.action.slice();
+        const detail = latest.detail.slice();
+
+        if (containsAsciiInsensitive(action, "screenshot") or
+            containsAsciiInsensitive(action, "vision") or
+            containsAsciiInsensitive(detail, "screenshot") or
+            containsAsciiInsensitive(detail, "vision"))
+        {
+            return .{
+                .stage = .analyzing_screenshot,
+                .detail = latest.detail,
+            };
+        }
+
+        if (containsAsciiInsensitive(action, "compile") or
+            containsAsciiInsensitive(action, "shader") or
+            containsAsciiInsensitive(detail, "compile") or
+            containsAsciiInsensitive(detail, "shader"))
+        {
+            return .{
+                .stage = .compiling_shader,
+                .detail = latest.detail,
+            };
+        }
+
+        return .{
+            .stage = .ready,
+            .detail = latest.detail,
+        };
     }
 
     pub fn copyPreviewWorldSnapshotAlloc(self: *const Store, allocator: std.mem.Allocator) !PreviewWorldSnapshot {
@@ -1405,6 +1468,32 @@ fn formatDragDetail(buffer: []u8, drag_payload: DragPayload) []const u8 {
 
 fn formatDragEndedDetail(buffer: []u8, drag_payload: DragPayload) []const u8 {
     return std.fmt.bufPrint(buffer, "end {s}", .{formatDragDetail(buffer[4..], drag_payload)}) catch "drag clear";
+}
+
+fn containsAsciiInsensitive(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) {
+        return true;
+    }
+    if (needle.len > haystack.len) {
+        return false;
+    }
+
+    const last_start = haystack.len - needle.len;
+    var start: usize = 0;
+    while (start <= last_start) : (start += 1) {
+        var matched = true;
+        var offset: usize = 0;
+        while (offset < needle.len) : (offset += 1) {
+            if (std.ascii.toLower(haystack[start + offset]) != std.ascii.toLower(needle[offset])) {
+                matched = false;
+                break;
+            }
+        }
+        if (matched) {
+            return true;
+        }
+    }
+    return false;
 }
 
 fn replaceEntitySlice(list: *std.ArrayList(scene_mod.EntityId), allocator: std.mem.Allocator, values: []const scene_mod.EntityId) !void {

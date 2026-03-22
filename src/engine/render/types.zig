@@ -11,6 +11,11 @@ pub const EditorViewportRenderMode = enum {
     unlit,
 };
 
+pub const EditorViewportPipelineMode = enum {
+    raster,
+    path_trace,
+};
+
 pub const EditorViewportLutPreset = enum {
     neutral,
     warm,
@@ -19,6 +24,7 @@ pub const EditorViewportLutPreset = enum {
 };
 
 pub const EditorViewportState = struct {
+    pipeline_mode: EditorViewportPipelineMode = .raster,
     render_mode: EditorViewportRenderMode = .textured,
     show_grid: bool = true,
     show_bones: bool = false,

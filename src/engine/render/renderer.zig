@@ -91,6 +91,8 @@ var g_logged_postfx_state: ?types.EditorViewportState = null;
 var g_logged_scene_extraction_culling: bool = false;
 /// 已记录的碰撞覆盖盒数量
 var g_logged_collision_overlay_boxes: ?usize = null;
+/// 是否已记录 PathTrace 回退日志
+var g_logged_path_trace_fallback: bool = false;
 
 const CachedEnvironmentTextures = struct {
     resolved: bool = false,
@@ -210,6 +212,20 @@ fn previewRenderMode(render_mode: types.EditorViewportRenderMode) types.EditorVi
         .wireframe => .textured,
         else => render_mode,
     };
+}
+
+fn effectiveViewportRenderMode(state: types.EditorViewportState) types.EditorViewportRenderMode {
+    if (state.pipeline_mode == .path_trace) {
+        if (!g_logged_path_trace_fallback) {
+            render_log.info(
+                "viewport pipeline set to path_trace; falling back to raster path until backend integration lands",
+                .{},
+            );
+            g_logged_path_trace_fallback = true;
+        }
+        return .textured;
+    }
+    return state.render_mode;
 }
 
 const SceneViewportState = struct {
@@ -1310,8 +1326,9 @@ pub const Renderer = struct {
                 const base_pass_target = if (viewport_active) scene_hdr_color_target else scene_color_target;
 
                 const scene_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.colorWithDepth(base_pass_target, clear.color, scene_depth_target));
+                const active_render_mode = effectiveViewportRenderMode(self.editor_viewport_state);
                 const depth_start = std.time.nanoTimestamp();
-                const depth_stats = if (self.editor_viewport_state.render_mode != .wireframe)
+                const depth_stats = if (active_render_mode != .wireframe)
                     self.depth_prepass.draw(&self.rhi, frame, scene_pass, &prepared_scene)
                 else
                     mesh_pass_mod.DrawStats{};
@@ -1320,7 +1337,7 @@ pub const Renderer = struct {
 
                 const opaque_start = std.time.nanoTimestamp();
                 const opaque_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene, .{
-                    .render_mode = self.editor_viewport_state.render_mode,
+                    .render_mode = active_render_mode,
                     .target = if (viewport_active) .hdr else .ldr,
                     .phase = .opaque_pass,
                 });
@@ -1340,7 +1357,7 @@ pub const Renderer = struct {
                 if (has_prepared_preview_scene) {
                     const preview_opaque_start = std.time.nanoTimestamp();
                     const preview_opaque_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_preview_scene, .{
-                        .render_mode = previewRenderMode(self.editor_viewport_state.render_mode),
+                        .render_mode = previewRenderMode(active_render_mode),
                         .target = .hdr,
                         .phase = .opaque_pass,
                         .blend_opaque = true,
@@ -1354,7 +1371,7 @@ pub const Renderer = struct {
 
                 const transparent_start = std.time.nanoTimestamp();
                 const transparent_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene, .{
-                    .render_mode = self.editor_viewport_state.render_mode,
+                    .render_mode = active_render_mode,
                     .target = if (viewport_active) .hdr else .ldr,
                     .phase = .transparent_pass,
                 });
@@ -1364,7 +1381,7 @@ pub const Renderer = struct {
                 if (has_prepared_preview_scene) {
                     const preview_transparent_start = std.time.nanoTimestamp();
                     const preview_transparent_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_preview_scene, .{
-                        .render_mode = previewRenderMode(self.editor_viewport_state.render_mode),
+                        .render_mode = previewRenderMode(active_render_mode),
                         .target = .hdr,
                         .phase = .transparent_pass,
                         .alpha_multiplier = ghost_preview_tint_color[3],

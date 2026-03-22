@@ -138,7 +138,7 @@ fn drawViewportToolbarStrip(state: *EditorState, layer_context: *engine.core.Lay
         const space_width = 72.0;
         const mode_width = 212.0;
         const undo_source_width = 132.0;
-        const ai_status_width = 168.0;
+        const ai_status_width = 196.0;
         const options_width = 28.0 + 10.0 + mode_width + 8.0 + undo_source_width + 8.0 + ai_status_width + 8.0 + 28.0 + 10.0 + filter_width + 8.0 + category_width + 8.0 + space_width;
         gui.sameLine();
         gui.dummy(@max(gui.contentRegionAvail()[0] - options_width, 10.0), 1.0);
@@ -170,16 +170,17 @@ fn drawViewportModeZone(state: *EditorState, layer_context: *engine.core.LayerCo
     gui.pushStyleVarVec2(.item_spacing, .{ 4.0, 4.0 });
     defer gui.popStyleVar(1);
 
-    const raster_active = true;
-    const path_trace_active = false;
+    const raster_active = state.viewport_pipeline_mode == .raster;
+    const path_trace_active = state.viewport_pipeline_mode == .path_trace;
 
     if (drawModeButton("Raster##viewport_mode_raster", raster_active, 98.0)) {
-        state.viewport_render_mode = .textured;
+        state.viewport_pipeline_mode = .raster;
     }
     gui.sameLine();
-    _ = drawModeButton("PathTrace##viewport_mode_pathtrace", path_trace_active, 108.0);
-    if (gui.isItemHovered()) {
-        gui.setTooltip("PathTrace mode is planned in Phase 4 and not wired yet.");
+    if (drawModeButton("PathTrace##viewport_mode_pathtrace", path_trace_active, 108.0)) {
+        state.viewport_pipeline_mode = .path_trace;
+        // PathTrace v1 先走 textured 显示，后端再切换到真正的路径追踪输出。
+        state.viewport_render_mode = .textured;
     }
 }
 
@@ -223,17 +224,23 @@ fn drawToolbarUndoSourceChip(state: *EditorState) void {
 fn drawToolbarAiStatusCapsule(state: *EditorState) void {
     const label: []const u8 = blk: {
         const store = state.ai_collaboration orelse break :blk "AI: Offline";
-        const overlay = store.overlaySnapshot();
-        if (overlay.active) {
-            break :blk "AI: Preview Active";
-        }
-        break :blk "AI: Ready";
+        const status = store.aiStatusSnapshot();
+        break :blk switch (status.stage) {
+            .ready => "AI: Ready",
+            .analyzing_screenshot => "AI: Analyzing Screenshot",
+            .compiling_shader => "AI: Compiling Shader",
+            .waiting_approval => "AI: Waiting Approval",
+        };
     };
 
     const bg: [4]f32 = if (std.mem.eql(u8, label, "AI: Offline"))
         .{ 0.32, 0.20, 0.20, 0.92 }
-    else if (std.mem.eql(u8, label, "AI: Preview Active"))
+    else if (std.mem.eql(u8, label, "AI: Waiting Approval"))
         .{ 0.30, 0.24, 0.45, 0.92 }
+    else if (std.mem.eql(u8, label, "AI: Compiling Shader"))
+        .{ 0.30, 0.28, 0.18, 0.92 }
+    else if (std.mem.eql(u8, label, "AI: Analyzing Screenshot"))
+        .{ 0.19, 0.30, 0.40, 0.92 }
     else
         .{ 0.18, 0.33, 0.25, 0.92 };
 
@@ -241,7 +248,7 @@ fn drawToolbarAiStatusCapsule(state: *EditorState) void {
     gui.pushStyleColor(.button_hovered, bg);
     gui.pushStyleColor(.button_active, bg);
     defer gui.popStyleColor(3);
-    _ = gui.buttonEx(label, 168.0, 0.0);
+    _ = gui.buttonEx(label, 196.0, 0.0);
 }
 
 fn drawViewportToolbarOptions(
@@ -627,37 +634,6 @@ fn drawCommandTimelineWindow(state: *EditorState, layer_context: *engine.core.La
         .{ state.timeline_entries.items.len, current_cursor, total_history_commands },
     );
     gui.text(summary);
-
-    if (state.timeline_preview_target_cursor) |target_cursor| {
-        var preview_buffer: [192]u8 = undefined;
-        const preview_text = try std.fmt.bufPrint(
-            &preview_buffer,
-            "Safe Replay Preview: {d} -> {d}",
-            .{ current_cursor, target_cursor },
-        );
-        gui.textColored(.{ 0.86, 0.86, 0.62, 1.0 }, preview_text);
-        if (gui.buttonEx("Apply Replay##timeline_apply", 120.0, 0.0)) {
-            if (target_cursor < current_cursor) {
-                var steps = current_cursor - target_cursor;
-                while (steps > 0) : (steps -= 1) {
-                    try history.undo(state, layer_context);
-                }
-            } else if (target_cursor > current_cursor) {
-                var steps = target_cursor - current_cursor;
-                while (steps > 0) : (steps -= 1) {
-                    try history.redo(state, layer_context);
-                }
-            }
-            state.timeline_preview_target_cursor = null;
-            state.timeline_preview_sequence = null;
-        }
-        gui.sameLine();
-        if (gui.buttonEx("Cancel##timeline_cancel", 96.0, 0.0)) {
-            state.timeline_preview_target_cursor = null;
-            state.timeline_preview_sequence = null;
-        }
-    }
-
     gui.separator();
 
     if (available_entries == 0) {
@@ -692,6 +668,9 @@ fn drawCommandTimelineWindow(state: *EditorState, layer_context: *engine.core.La
             },
         };
 
+        const node_cursor = index + 1;
+        const is_current = node_cursor == current_cursor;
+
         var node_label_buffer: [192]u8 = undefined;
         const node_label = std.fmt.bufPrint(
             &node_label_buffer,
@@ -702,19 +681,18 @@ fn drawCommandTimelineWindow(state: *EditorState, layer_context: *engine.core.La
         gui.pushStyleColor(.button, palette.button);
         gui.pushStyleColor(.button_hovered, palette.hovered);
         gui.pushStyleColor(.button_active, palette.active);
-        if (state.timeline_preview_sequence != null and state.timeline_preview_sequence.? == entry.sequence) {
+        if (is_current) {
             gui.pushStyleColor(.text, .{ 0.98, 0.98, 0.78, 1.0 });
         }
         gui.pushStyleVarVec2(.frame_padding, .{ 10.0, 6.0 });
         gui.pushStyleVarFloat(.frame_rounding, 7.0);
         defer {
             gui.popStyleVar(2);
-            gui.popStyleColor(if (state.timeline_preview_sequence != null and state.timeline_preview_sequence.? == entry.sequence) 4 else 3);
+            gui.popStyleColor(if (is_current) 4 else 3);
         }
 
         if (gui.buttonEx(node_label, 0.0, 0.0)) {
-            state.timeline_preview_sequence = entry.sequence;
-            state.timeline_preview_target_cursor = index + 1;
+            try history.timeTravelToCursor(state, layer_context, node_cursor);
         }
         if (gui.isItemHovered()) {
             var tip_buffer: [320]u8 = undefined;
@@ -868,6 +846,10 @@ fn viewportPixelUnderMouse(state: *const EditorState, layer_context: *const engi
 
 fn syncViewportState(state: *EditorState, layer_context: *engine.core.LayerContext) void {
     layer_context.renderer.setEditorViewportState(.{
+        .pipeline_mode = switch (state.viewport_pipeline_mode) {
+            .raster => .raster,
+            .path_trace => .path_trace,
+        },
         .render_mode = switch (state.viewport_render_mode) {
             .textured => .textured,
             .wireframe => .wireframe,

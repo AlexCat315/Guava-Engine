@@ -140,6 +140,18 @@ pub fn redo(state: *EditorState, layer_context: *engine.core.LayerContext) !void
     try refreshCurrentHistorySnapshot(state, layer_context.world);
 }
 
+pub fn timeTravelToCursor(state: *EditorState, layer_context: *engine.core.LayerContext, target_cursor: usize) !void {
+    const total = state.undo_stack.items.len + state.redo_stack.items.len;
+    const clamped_target = @min(target_cursor, total);
+
+    while (state.undo_stack.items.len > clamped_target) {
+        try undo(state, layer_context);
+    }
+    while (state.undo_stack.items.len < clamped_target) {
+        try redo(state, layer_context);
+    }
+}
+
 pub fn pruneMissingSelection(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     _ = state;
     if (layer_context.renderer.selectedEntity()) |selected| {

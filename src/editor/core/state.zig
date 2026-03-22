@@ -119,6 +119,11 @@ pub const ViewportRenderMode = enum {
     unlit,
 };
 
+pub const ViewportPipelineMode = enum {
+    raster,
+    path_trace,
+};
+
 pub const ViewportLutPreset = engine.render.EditorViewportLutPreset;
 
 pub const ViewportViewPreset = enum {
@@ -308,6 +313,7 @@ pub const EditorState = struct {
     layout_templates: std.ArrayList(LayoutTemplateEntry) = .empty,
     layout_templates_loaded: bool = false,
     viewport_render_mode: ViewportRenderMode = .textured,
+    viewport_pipeline_mode: ViewportPipelineMode = .raster,
     viewport_view_preset: ViewportViewPreset = .perspective,
     viewport_debug_overlay: bool = false,
     viewport_show_grid: bool = true,
