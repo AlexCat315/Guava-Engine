@@ -35,7 +35,7 @@ pub fn backendName() []const u8 {
     return switch (builtin.os.tag) {
         .macos => "Metal RT",
         .windows => "Vulkan RT", // 占位
-        .linux => "Vulkan RT",   // 占位
+        .linux => "Vulkan RT", // 占位
         else => "CPU",
     };
 }
