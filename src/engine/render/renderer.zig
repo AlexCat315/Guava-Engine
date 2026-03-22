@@ -243,6 +243,53 @@ const PathTraceMesh = struct {
     tri_count: u32,
 };
 
+/// 渐进式路径追踪状态：每帧只追踪有限扫描行，避免阻塞主线程。
+const PathTraceProgressiveState = struct {
+    current_scanline: u32 = 0,
+    complete: bool = false,
+    trace_pixels: ?[]u8 = null,
+    display_pixels: ?[]u8 = null,
+    trace_width: u32 = 0,
+    trace_height: u32 = 0,
+    target_width: u32 = 0,
+    target_height: u32 = 0,
+    // 缓存的场景数据
+    triangles: ?[]PathTraceTriangle = null,
+    meshes: ?[]PathTraceMesh = null,
+    inv_view_projection: [16]f32 = mat4_mod.identity(),
+    camera_origin: [3]f32 = .{ 0, 0, 0 },
+    light_direction: [3]f32 = .{ 0, 1, 0 },
+    sample_step: u32 = 1,
+    cached_samples: u32 = 0,
+    cached_bounces: u32 = 0,
+    // 变化检测
+    last_view_projection: [16]f32 = mat4_mod.identity(),
+    last_samples: u32 = 0,
+    last_bounces: u32 = 0,
+    last_resolution_scale: f32 = 0.0,
+
+    fn reset(self: *PathTraceProgressiveState, allocator: std.mem.Allocator) void {
+        self.current_scanline = 0;
+        self.complete = false;
+        if (self.triangles) |t| {
+            allocator.free(t);
+            self.triangles = null;
+        }
+        if (self.meshes) |m| {
+            allocator.free(m);
+            self.meshes = null;
+        }
+    }
+
+    fn deinit(self: *PathTraceProgressiveState, allocator: std.mem.Allocator) void {
+        if (self.trace_pixels) |p| allocator.free(p);
+        if (self.display_pixels) |p| allocator.free(p);
+        if (self.triangles) |t| allocator.free(t);
+        if (self.meshes) |m| allocator.free(m);
+        self.* = .{};
+    }
+};
+
 fn mulMat4Vec4(matrix: [16]f32, vector: [4]f32) [4]f32 {
     return .{
         matrix[0] * vector[0] + matrix[4] * vector[1] + matrix[8] * vector[2] + matrix[12] * vector[3],
@@ -1040,6 +1087,8 @@ pub const Renderer = struct {
     /// AI Ghost Highlight: 实体 ID 列表（最多 16 个），显示紫色呼吸灯轮廓
     ai_focus_entity_ids: [16]scene_mod.EntityId = .{0} ** 16,
     ai_focus_entity_count: usize = 0,
+    /// 渐进式 CPU 路径追踪状态
+    path_trace_state: PathTraceProgressiveState = .{},
 
     /// 初始化渲染器
     ///
@@ -1167,6 +1216,7 @@ pub const Renderer = struct {
     }
 
     pub fn deinit(self: *Renderer) void {
+        self.path_trace_state.deinit(self.allocator);
         self.releaseInFlightSelectionBatches();
         self.pending_selection_readbacks.deinit(self.allocator);
         self.selection_history.deinit();
@@ -1974,158 +2024,205 @@ pub const Renderer = struct {
         const trace_height = @max(@as(u32, 1), @as(u32, @intFromFloat(@as(f32, @floatFromInt(height)) * resolution_scale)));
 
         if (!g_logged_path_trace_active) {
-            render_log.info("CPU path trace viewport active (triangle)", .{});
+            render_log.info("CPU path trace viewport active (progressive)", .{});
             g_logged_path_trace_active = true;
         }
 
-        const pixel_count: usize = @as(usize, width) * @as(usize, height);
-        const byte_count: usize = pixel_count * 4;
-        const pixels = try self.allocator.alloc(u8, byte_count);
-        defer self.allocator.free(pixels);
+        var pt = &self.path_trace_state;
 
-        const trace_pixel_count: usize = @as(usize, trace_width) * @as(usize, trace_height);
-        const trace_byte_count: usize = trace_pixel_count * 4;
-        const trace_pixels = try self.allocator.alloc(u8, trace_byte_count);
-        defer self.allocator.free(trace_pixels);
+        // --- 检测变化，需要时重置 ---
+        const vp_changed = !std.mem.eql(u8, std.mem.asBytes(&prepared_scene.view_projection), std.mem.asBytes(&pt.last_view_projection));
+        const size_changed = trace_width != pt.trace_width or trace_height != pt.trace_height or width != pt.target_width or height != pt.target_height;
+        const params_changed = samples != pt.last_samples or bounces != pt.last_bounces or resolution_scale != pt.last_resolution_scale;
 
-        const inv_view_projection = mat4_mod.inverse(prepared_scene.view_projection) orelse mat4_mod.identity();
-        const camera_origin = [3]f32{
-            prepared_scene.camera_world_position[0],
-            prepared_scene.camera_world_position[1],
-            prepared_scene.camera_world_position[2],
-        };
+        if (vp_changed or params_changed) {
+            pt.reset(self.allocator);
+        }
 
-        // Build triangle list from scene mesh data
-        var triangle_list = std.ArrayList(PathTraceTriangle).empty;
-        defer triangle_list.deinit(self.allocator);
-        var mesh_list = std.ArrayList(PathTraceMesh).empty;
-        defer mesh_list.deinit(self.allocator);
+        if (size_changed) {
+            pt.reset(self.allocator);
+            if (pt.trace_pixels) |p| self.allocator.free(p);
+            if (pt.display_pixels) |p| self.allocator.free(p);
+            pt.trace_pixels = null;
+            pt.display_pixels = null;
+        }
 
-        for (prepared_scene.opaque_meshes) |item| {
-            const mesh_res = if (handles.isValid(item.mesh_handle))
-                scene.resources.mesh(item.mesh_handle)
-            else
-                null;
+        // 更新变化检测用的缓存值
+        pt.last_view_projection = prepared_scene.view_projection;
+        pt.last_samples = samples;
+        pt.last_bounces = bounces;
+        pt.last_resolution_scale = resolution_scale;
 
-            if (mesh_res) |mesh| {
-                const tri_start: u32 = @intCast(triangle_list.items.len);
-                const indices = mesh.indices;
-                const vertices = mesh.vertices;
-                const albedo = [3]f32{
-                    std.math.clamp(item.base_color_factor[0], 0.02, 1.0),
-                    std.math.clamp(item.base_color_factor[1], 0.02, 1.0),
-                    std.math.clamp(item.base_color_factor[2], 0.02, 1.0),
-                };
-                const emissive = [3]f32{
-                    item.emissive_factor[0] * item.emissive_factor[3],
-                    item.emissive_factor[1] * item.emissive_factor[3],
-                    item.emissive_factor[2] * item.emissive_factor[3],
-                };
-                const metallic = std.math.clamp(item.pbr_factors[0], 0.0, 1.0);
-                const roughness = std.math.clamp(item.pbr_factors[1], 0.04, 1.0);
+        // --- 分配/复用持久缓冲区 ---
+        if (pt.trace_pixels == null) {
+            pt.trace_pixels = try self.allocator.alloc(u8, @as(usize, trace_width) * trace_height * 4);
+            @memset(pt.trace_pixels.?, 0);
+            pt.trace_width = trace_width;
+            pt.trace_height = trace_height;
+        }
+        if (pt.display_pixels == null) {
+            pt.display_pixels = try self.allocator.alloc(u8, @as(usize, width) * height * 4);
+            @memset(pt.display_pixels.?, 0);
+            pt.target_width = width;
+            pt.target_height = height;
+        }
 
-                var aabb = AABB.empty();
-                var i: usize = 0;
-                while (i + 2 < indices.len) : (i += 3) {
-                    const idx0 = indices[i];
-                    const idx1 = indices[i + 1];
-                    const idx2 = indices[i + 2];
-                    if (idx0 >= vertices.len or idx1 >= vertices.len or idx2 >= vertices.len) continue;
+        // 如果已经渲染完成，直接上传缓存结果
+        if (pt.complete) {
+            try self.rhi.uploadTextureData(target, pt.display_pixels.?, width, height);
+            return;
+        }
 
-                    const v0 = transformPoint(item.model, vertices[idx0].position);
-                    const v1 = transformPoint(item.model, vertices[idx1].position);
-                    const v2 = transformPoint(item.model, vertices[idx2].position);
-                    const n0 = transformNormal(item.model, vertices[idx0].normal);
-                    const n1 = transformNormal(item.model, vertices[idx1].normal);
-                    const n2 = transformNormal(item.model, vertices[idx2].normal);
+        // --- 构建/缓存场景三角形数据 ---
+        if (pt.triangles == null) {
+            var triangle_list = std.ArrayList(PathTraceTriangle).empty;
+            defer triangle_list.deinit(self.allocator);
+            var mesh_list = std.ArrayList(PathTraceMesh).empty;
+            defer mesh_list.deinit(self.allocator);
 
-                    aabb.expand(v0);
-                    aabb.expand(v1);
-                    aabb.expand(v2);
+            for (prepared_scene.opaque_meshes) |item| {
+                const mesh_res = if (handles.isValid(item.mesh_handle))
+                    scene.resources.mesh(item.mesh_handle)
+                else
+                    null;
 
-                    try triangle_list.append(self.allocator, .{
-                        .v0 = v0,
-                        .v1 = v1,
-                        .v2 = v2,
-                        .n0 = n0,
-                        .n1 = n1,
-                        .n2 = n2,
-                        .albedo = albedo,
-                        .emissive = emissive,
-                        .metallic = metallic,
-                        .roughness = roughness,
-                    });
-                }
+                if (mesh_res) |mesh| {
+                    const tri_start: u32 = @intCast(triangle_list.items.len);
+                    const indices = mesh.indices;
+                    const vertices = mesh.vertices;
+                    const albedo = [3]f32{
+                        std.math.clamp(item.base_color_factor[0], 0.02, 1.0),
+                        std.math.clamp(item.base_color_factor[1], 0.02, 1.0),
+                        std.math.clamp(item.base_color_factor[2], 0.02, 1.0),
+                    };
+                    const emissive = [3]f32{
+                        item.emissive_factor[0] * item.emissive_factor[3],
+                        item.emissive_factor[1] * item.emissive_factor[3],
+                        item.emissive_factor[2] * item.emissive_factor[3],
+                    };
+                    const metallic = std.math.clamp(item.pbr_factors[0], 0.0, 1.0);
+                    const roughness = std.math.clamp(item.pbr_factors[1], 0.04, 1.0);
 
-                const tri_count: u32 = @intCast(triangle_list.items.len - tri_start);
-                if (tri_count > 0) {
-                    try mesh_list.append(self.allocator, .{
-                        .aabb = aabb,
-                        .tri_start = tri_start,
-                        .tri_count = tri_count,
-                    });
+                    var aabb = AABB.empty();
+                    var i: usize = 0;
+                    while (i + 2 < indices.len) : (i += 3) {
+                        const idx0 = indices[i];
+                        const idx1 = indices[i + 1];
+                        const idx2 = indices[i + 2];
+                        if (idx0 >= vertices.len or idx1 >= vertices.len or idx2 >= vertices.len) continue;
+
+                        const v0 = transformPoint(item.model, vertices[idx0].position);
+                        const v1 = transformPoint(item.model, vertices[idx1].position);
+                        const v2 = transformPoint(item.model, vertices[idx2].position);
+                        const n0 = transformNormal(item.model, vertices[idx0].normal);
+                        const n1 = transformNormal(item.model, vertices[idx1].normal);
+                        const n2 = transformNormal(item.model, vertices[idx2].normal);
+
+                        aabb.expand(v0);
+                        aabb.expand(v1);
+                        aabb.expand(v2);
+
+                        try triangle_list.append(self.allocator, .{
+                            .v0 = v0,
+                            .v1 = v1,
+                            .v2 = v2,
+                            .n0 = n0,
+                            .n1 = n1,
+                            .n2 = n2,
+                            .albedo = albedo,
+                            .emissive = emissive,
+                            .metallic = metallic,
+                            .roughness = roughness,
+                        });
+                    }
+
+                    const tri_count: u32 = @intCast(triangle_list.items.len - tri_start);
+                    if (tri_count > 0) {
+                        try mesh_list.append(self.allocator, .{
+                            .aabb = aabb,
+                            .tri_start = tri_start,
+                            .tri_count = tri_count,
+                        });
+                    }
                 }
             }
+
+            // 无网格时显示地面平面
+            if (triangle_list.items.len == 0) {
+                try triangle_list.append(self.allocator, .{
+                    .v0 = .{ -5.0, 0.0, -5.0 },
+                    .v1 = .{ 5.0, 0.0, -5.0 },
+                    .v2 = .{ 5.0, 0.0, 5.0 },
+                    .n0 = .{ 0.0, 1.0, 0.0 },
+                    .n1 = .{ 0.0, 1.0, 0.0 },
+                    .n2 = .{ 0.0, 1.0, 0.0 },
+                    .albedo = .{ 0.6, 0.6, 0.6 },
+                    .emissive = .{ 0.0, 0.0, 0.0 },
+                    .metallic = 0.0,
+                    .roughness = 0.8,
+                });
+                try triangle_list.append(self.allocator, .{
+                    .v0 = .{ -5.0, 0.0, -5.0 },
+                    .v1 = .{ 5.0, 0.0, 5.0 },
+                    .v2 = .{ -5.0, 0.0, 5.0 },
+                    .n0 = .{ 0.0, 1.0, 0.0 },
+                    .n1 = .{ 0.0, 1.0, 0.0 },
+                    .n2 = .{ 0.0, 1.0, 0.0 },
+                    .albedo = .{ 0.6, 0.6, 0.6 },
+                    .emissive = .{ 0.0, 0.0, 0.0 },
+                    .metallic = 0.0,
+                    .roughness = 0.8,
+                });
+                try mesh_list.append(self.allocator, .{
+                    .aabb = .{ .min = .{ -5.0, -0.01, -5.0 }, .max = .{ 5.0, 0.01, 5.0 } },
+                    .tri_start = 0,
+                    .tri_count = 2,
+                });
+            }
+
+            pt.triangles = try self.allocator.dupe(PathTraceTriangle, triangle_list.items);
+            pt.meshes = try self.allocator.dupe(PathTraceMesh, mesh_list.items);
+            pt.inv_view_projection = mat4_mod.inverse(prepared_scene.view_projection) orelse mat4_mod.identity();
+            pt.camera_origin = .{
+                prepared_scene.camera_world_position[0],
+                prepared_scene.camera_world_position[1],
+                prepared_scene.camera_world_position[2],
+            };
+            pt.light_direction = if (prepared_scene.lights.directional_lights.len > 0)
+                vec3.normalize(vec3.scale(prepared_scene.lights.directional_lights[0].direction, -1.0))
+            else
+                vec3.normalize(.{ 0.38, 0.82, 0.42 });
+            pt.cached_samples = samples;
+            pt.cached_bounces = bounces;
+
+            const pixel_budget: u32 = 960 * 540;
+            const area = trace_width * trace_height;
+            pt.sample_step = if (area > pixel_budget * 4)
+                4
+            else if (area > pixel_budget * 2)
+                3
+            else if (area > pixel_budget)
+                2
+            else
+                1;
         }
 
-        // Fallback: if no mesh geometry found, show a ground plane
-        if (triangle_list.items.len == 0) {
-            try triangle_list.append(self.allocator, .{
-                .v0 = .{ -5.0, 0.0, -5.0 },
-                .v1 = .{ 5.0, 0.0, -5.0 },
-                .v2 = .{ 5.0, 0.0, 5.0 },
-                .n0 = .{ 0.0, 1.0, 0.0 },
-                .n1 = .{ 0.0, 1.0, 0.0 },
-                .n2 = .{ 0.0, 1.0, 0.0 },
-                .albedo = .{ 0.6, 0.6, 0.6 },
-                .emissive = .{ 0.0, 0.0, 0.0 },
-                .metallic = 0.0,
-                .roughness = 0.8,
-            });
-            try triangle_list.append(self.allocator, .{
-                .v0 = .{ -5.0, 0.0, -5.0 },
-                .v1 = .{ 5.0, 0.0, 5.0 },
-                .v2 = .{ -5.0, 0.0, 5.0 },
-                .n0 = .{ 0.0, 1.0, 0.0 },
-                .n1 = .{ 0.0, 1.0, 0.0 },
-                .n2 = .{ 0.0, 1.0, 0.0 },
-                .albedo = .{ 0.6, 0.6, 0.6 },
-                .emissive = .{ 0.0, 0.0, 0.0 },
-                .metallic = 0.0,
-                .roughness = 0.8,
-            });
-            try mesh_list.append(self.allocator, .{
-                .aabb = .{ .min = .{ -5.0, -0.01, -5.0 }, .max = .{ 5.0, 0.01, 5.0 } },
-                .tri_start = 0,
-                .tri_count = 2,
-            });
-        }
+        // --- 渐进追踪：每帧只渲染时间预算内的扫描行 ---
+        const budget_ns: i128 = 8_000_000; // 8ms
+        const start_time = std.time.nanoTimestamp();
+        const trace_pixels = pt.trace_pixels.?;
+        const triangles = pt.triangles.?;
+        const meshes = pt.meshes.?;
 
-        const light_direction = if (prepared_scene.lights.directional_lights.len > 0)
-            vec3.normalize(vec3.scale(prepared_scene.lights.directional_lights[0].direction, -1.0))
-        else
-            vec3.normalize(.{ 0.38, 0.82, 0.42 });
-
-        const pixel_budget: u32 = 960 * 540;
-        const area = trace_width * trace_height;
-        const sample_step: u32 = if (area > pixel_budget * 4)
-            4
-        else if (area > pixel_budget * 2)
-            3
-        else if (area > pixel_budget)
-            2
-        else
-            1;
-
-        var y: u32 = 0;
-        while (y < trace_height) : (y += sample_step) {
+        while (pt.current_scanline < trace_height) {
+            const y = pt.current_scanline;
             var x: u32 = 0;
-            while (x < trace_width) : (x += sample_step) {
+            while (x < trace_width) : (x += pt.sample_step) {
                 var traced_color = [3]f32{ 0.0, 0.0, 0.0 };
                 const seed_base = hashU32(x ^ (y << 16) ^ 0x7f4a7c15);
 
                 var s: u32 = 0;
-                while (s < samples) : (s += 1) {
+                while (s < pt.cached_samples) : (s += 1) {
                     const jitter_seed = seed_base ^ (s *% 0x45d9f3b);
                     const jitter_x = hashUnitFloat(jitter_seed ^ 0x18f0e149) - 0.5;
                     const jitter_y = hashUnitFloat(jitter_seed ^ 0x6c8e9cf5) - 0.5;
@@ -2136,9 +2233,9 @@ pub const Renderer = struct {
                     const ndc_x = uv_x * 2.0 - 1.0;
                     const ndc_y = 1.0 - uv_y * 2.0;
 
-                    const world_near = unprojectNdc(inv_view_projection, ndc_x, ndc_y, 0.0);
-                    const world_far = unprojectNdc(inv_view_projection, ndc_x, ndc_y, 1.0);
-                    const ray_origin = camera_origin;
+                    const world_near = unprojectNdc(pt.inv_view_projection, ndc_x, ndc_y, 0.0);
+                    const world_far = unprojectNdc(pt.inv_view_projection, ndc_x, ndc_y, 1.0);
+                    const ray_origin = pt.camera_origin;
                     var ray_direction = vec3.normalize(vec3.sub(world_far, world_near));
                     if (vec3.length(ray_direction) <= 0.0001) {
                         ray_direction = vec3.normalize(vec3.sub(world_far, ray_origin));
@@ -2147,22 +2244,22 @@ pub const Renderer = struct {
                     const sample_color = pathTraceRay(
                         ray_origin,
                         ray_direction,
-                        triangle_list.items,
-                        mesh_list.items,
-                        light_direction,
+                        triangles,
+                        meshes,
+                        pt.light_direction,
                         jitter_seed,
-                        bounces,
+                        pt.cached_bounces,
                     );
                     traced_color = vec3.add(traced_color, sample_color);
                 }
 
-                traced_color = vec3.scale(traced_color, 1.0 / @as(f32, @floatFromInt(samples)));
+                traced_color = vec3.scale(traced_color, 1.0 / @as(f32, @floatFromInt(pt.cached_samples)));
                 const bgra = linearToSrgb8(traced_color);
 
                 var fy: u32 = 0;
-                while (fy < sample_step and y + fy < trace_height) : (fy += 1) {
+                while (fy < pt.sample_step and y + fy < trace_height) : (fy += 1) {
                     var fx: u32 = 0;
-                    while (fx < sample_step and x + fx < trace_width) : (fx += 1) {
+                    while (fx < pt.sample_step and x + fx < trace_width) : (fx += 1) {
                         const out_x = x + fx;
                         const out_y = y + fy;
                         const pixel_index: usize = (@as(usize, out_y) * @as(usize, trace_width) + @as(usize, out_x)) * 4;
@@ -2173,8 +2270,19 @@ pub const Renderer = struct {
                     }
                 }
             }
+
+            pt.current_scanline += pt.sample_step;
+
+            // 超出时间预算后让出控制权，下帧继续
+            if (std.time.nanoTimestamp() - start_time >= budget_ns) break;
         }
 
+        if (pt.current_scanline >= trace_height) {
+            pt.complete = true;
+        }
+
+        // --- 上采样 trace_pixels → display_pixels ---
+        const display_pixels = pt.display_pixels.?;
         var out_y: u32 = 0;
         while (out_y < height) : (out_y += 1) {
             const src_y_u64 = (@as(u64, out_y) * @as(u64, trace_height)) / @as(u64, height);
@@ -2185,14 +2293,14 @@ pub const Renderer = struct {
                 const src_x: u32 = @min(trace_width - 1, @as(u32, @intCast(src_x_u64)));
                 const src_index: usize = (@as(usize, src_y) * @as(usize, trace_width) + @as(usize, src_x)) * 4;
                 const dst_index: usize = (@as(usize, out_y) * @as(usize, width) + @as(usize, out_x)) * 4;
-                pixels[dst_index + 0] = trace_pixels[src_index + 0];
-                pixels[dst_index + 1] = trace_pixels[src_index + 1];
-                pixels[dst_index + 2] = trace_pixels[src_index + 2];
-                pixels[dst_index + 3] = trace_pixels[src_index + 3];
+                display_pixels[dst_index + 0] = trace_pixels[src_index + 0];
+                display_pixels[dst_index + 1] = trace_pixels[src_index + 1];
+                display_pixels[dst_index + 2] = trace_pixels[src_index + 2];
+                display_pixels[dst_index + 3] = trace_pixels[src_index + 3];
             }
         }
 
-        try self.rhi.uploadTextureData(target, pixels, width, height);
+        try self.rhi.uploadTextureData(target, display_pixels, width, height);
     }
 
     /// Downloads the final rendered frame from GPU to CPU as RGBA8 pixels.

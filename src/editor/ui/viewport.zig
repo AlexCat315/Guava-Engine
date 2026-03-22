@@ -24,7 +24,6 @@ const ai_chat = @import("panels/ai/ai_chat.zig");
 const ui_icons = @import("icons.zig");
 const layout = @import("layout.zig");
 const PlaybackState = @import("../core/state.zig").PlaybackState;
-const HierarchyCategory = @import("../core/state.zig").HierarchyCategory;
 const viewport_log = std.log.scoped(.viewport_input);
 
 var g_last_viewport_hovered: ?bool = null;
@@ -132,37 +131,92 @@ fn drawViewportToolbarStrip(state: *EditorState, layer_context: *engine.core.Lay
         gui.setTooltip(state.text(.scale_tool));
     }
 
+    // 模式切换始终显示（不受宽度限制）
+    gui.sameLine();
+    try drawViewportModeZone(state, layer_context);
+
+    // 右侧工具组：Undo Source + AI Status + AI Chat + Settings + Transform Space
+    const undo_source_width: f32 = 132.0;
+    const ai_status_width: f32 = 304.0;
+    const settings_icon: f32 = 28.0;
+    const transform_icon: f32 = 28.0;
+    const ai_chat_icon: f32 = 28.0;
+
     if (width >= 860.0) {
-        const filter_width = std.math.clamp(width * 0.16, 132.0, 208.0);
-        const category_width = 72.0;
-        const space_width = 72.0;
-        const mode_width = 212.0;
-        const undo_source_width = 132.0;
-        const ai_status_width = 304.0;
-        const options_width = 28.0 + 10.0 + mode_width + 8.0 + undo_source_width + 8.0 + ai_status_width + 8.0 + 28.0 + 10.0 + filter_width + 8.0 + category_width + 8.0 + space_width;
+        // 宽布局：完整显示所有元素
+        const right_width = undo_source_width + 8.0 + ai_status_width + 8.0 + ai_chat_icon + 8.0 + settings_icon + 8.0 + transform_icon;
         gui.sameLine();
-        gui.dummy(@max(gui.contentRegionAvail()[0] - options_width, 10.0), 1.0);
-        gui.sameLine();
-        try drawViewportModeZone(state, layer_context);
+        gui.dummy(@max(gui.contentRegionAvail()[0] - right_width, 10.0), 1.0);
         gui.sameLine();
         drawToolbarUndoSourceChip(state);
         gui.sameLine();
         drawToolbarAiStatusCapsule(state);
         gui.sameLine();
-        // AI Chat toggle button
         if (try drawToolbarIconButton(state, layer_context, "toolbar_ai_chat", ui_icons.paths.toolbar.ai_chat, state.ai_chat_open)) {
             state.ai_chat_open = !state.ai_chat_open;
         }
-        if (gui.isItemHovered()) {
-            gui.setTooltip(state.text(.ai_chat));
-        }
+        if (gui.isItemHovered()) gui.setTooltip(state.text(.ai_chat));
         gui.sameLine();
-        try drawViewportToolbarOptions(state, layer_context, filter_width, category_width, space_width);
-        return;
+        if (try drawToolbarIconButton(state, layer_context, "toolbar_settings", ui_icons.paths.toolbar.settings, state.render_settings_open)) {
+            state.render_settings_open = !state.render_settings_open;
+        }
+        if (gui.isItemHovered()) gui.setTooltip(state.text(.render_settings));
+        gui.sameLine();
+        try drawTransformSpaceButton(state, layer_context, "toolbar_transform_space");
+    } else if (width >= 520.0) {
+        // 中等布局：省略 AI Status
+        const right_width = undo_source_width + 8.0 + ai_chat_icon + 8.0 + settings_icon + 8.0 + transform_icon;
+        gui.sameLine();
+        gui.dummy(@max(gui.contentRegionAvail()[0] - right_width, 10.0), 1.0);
+        gui.sameLine();
+        drawToolbarUndoSourceChip(state);
+        gui.sameLine();
+        if (try drawToolbarIconButton(state, layer_context, "toolbar_ai_chat_m", ui_icons.paths.toolbar.ai_chat, state.ai_chat_open)) {
+            state.ai_chat_open = !state.ai_chat_open;
+        }
+        if (gui.isItemHovered()) gui.setTooltip(state.text(.ai_chat));
+        gui.sameLine();
+        if (try drawToolbarIconButton(state, layer_context, "toolbar_settings_m", ui_icons.paths.toolbar.settings, state.render_settings_open)) {
+            state.render_settings_open = !state.render_settings_open;
+        }
+        if (gui.isItemHovered()) gui.setTooltip(state.text(.render_settings));
+        gui.sameLine();
+        try drawTransformSpaceButton(state, layer_context, "toolbar_transform_space_m");
+    } else {
+        // 窄布局：只保留图标按钮
+        const right_width = ai_chat_icon + 8.0 + settings_icon + 8.0 + transform_icon;
+        gui.sameLine();
+        gui.dummy(@max(gui.contentRegionAvail()[0] - right_width, 4.0), 1.0);
+        gui.sameLine();
+        if (try drawToolbarIconButton(state, layer_context, "toolbar_ai_chat_s", ui_icons.paths.toolbar.ai_chat, state.ai_chat_open)) {
+            state.ai_chat_open = !state.ai_chat_open;
+        }
+        if (gui.isItemHovered()) gui.setTooltip(state.text(.ai_chat));
+        gui.sameLine();
+        if (try drawToolbarIconButton(state, layer_context, "toolbar_settings_s", ui_icons.paths.toolbar.settings, state.render_settings_open)) {
+            state.render_settings_open = !state.render_settings_open;
+        }
+        if (gui.isItemHovered()) gui.setTooltip(state.text(.render_settings));
+        gui.sameLine();
+        try drawTransformSpaceButton(state, layer_context, "toolbar_transform_space_s");
     }
+}
 
-    gui.dummy(0.0, 6.0);
-    try drawViewportToolbarOptionsCompact(state, layer_context, width);
+fn drawTransformSpaceButton(state: *EditorState, layer_context: *engine.core.LayerContext, id: []const u8) !void {
+    const transform_icon_path = switch (state.transform_space) {
+        .local => ui_icons.paths.toolbar.transform_local,
+        .world => ui_icons.paths.toolbar.transform_global,
+    };
+    const is_world = state.transform_space == .world;
+    if (try drawToolbarIconButton(state, layer_context, id, transform_icon_path, is_world)) {
+        state.transform_space = switch (state.transform_space) {
+            .local => .world,
+            .world => .local,
+        };
+    }
+    if (gui.isItemHovered()) {
+        gui.setTooltip(if (is_world) state.text(.world_space) else state.text(.local_space));
+    }
 }
 
 fn drawViewportModeZone(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -272,145 +326,6 @@ fn drawToolbarAiStatusCapsule(state: *EditorState) void {
         var tip_buffer: [448]u8 = undefined;
         const tip = std.fmt.bufPrint(&tip_buffer, "Stage: {s}\nDetail: {s}", .{ stage_label, detail }) catch detail;
         gui.setTooltip(tip);
-    }
-}
-
-fn drawViewportToolbarOptions(
-    state: *EditorState,
-    layer_context: *engine.core.LayerContext,
-    filter_width: f32,
-    category_width: f32,
-    space_width: f32, // Kept for signature compatibility
-) !void {
-    _ = space_width;
-    const is_manipulating = state.manipulation_mode != .none;
-
-    if (try ui_icons.drawIconButton(
-        state,
-        layer_context,
-        "toolbar_settings",
-        ui_icons.paths.toolbar.settings,
-        20.0,
-        .{ 235, 239, 245, 255 },
-        if (state.render_settings_open) ui_icons.palettes.toolbar_active else ui_icons.palettes.toolbar_idle,
-    )) {
-        state.render_settings_open = !state.render_settings_open;
-    }
-    if (gui.isItemHovered()) {
-        gui.setTooltip(state.text(.render_settings));
-    }
-    gui.sameLine();
-    gui.setNextItemWidth(filter_width);
-    _ = gui.inputTextWithHint("##viewport_hierarchy_filter", state.text(.hierarchy_filter), state.hierarchy_filter_buffer[0..]);
-    if (is_manipulating) {
-        gui.pushStyleVarFloat(.alpha, 0.5);
-    }
-    gui.sameLine();
-    if (gui.buttonEx(hierarchyCategoryLabel(state), category_width, 0.0)) {
-        state.hierarchy_category = nextHierarchyCategory(state.hierarchy_category);
-    }
-    if (is_manipulating) {
-        gui.popStyleVar(1);
-    }
-    gui.sameLine();
-    // Global/Local toggle - now uses icons instead of text
-    const transform_icon_path = switch (state.transform_space) {
-        .local => ui_icons.paths.toolbar.transform_local,
-        .world => ui_icons.paths.toolbar.transform_global,
-    };
-    const is_world = state.transform_space == .world;
-    if (try drawToolbarIconButton(state, layer_context, "toolbar_transform_space", transform_icon_path, is_world)) {
-        state.transform_space = switch (state.transform_space) {
-            .local => .world,
-            .world => .local,
-        };
-    }
-    if (gui.isItemHovered()) {
-        gui.setTooltip(if (is_world) state.text(.world_space) else state.text(.local_space));
-    }
-}
-
-fn drawViewportToolbarOptionsCompact(state: *EditorState, layer_context: *engine.core.LayerContext, width: f32) !void {
-    const is_manipulating = state.manipulation_mode != .none;
-
-    if (width >= 260.0) {
-        if (try ui_icons.drawIconButton(
-            state,
-            layer_context,
-            "toolbar_settings_compact",
-            ui_icons.paths.toolbar.settings,
-            20.0,
-            .{ 235, 239, 245, 255 },
-            if (state.render_settings_open) ui_icons.palettes.toolbar_active else ui_icons.palettes.toolbar_idle,
-        )) {
-            state.render_settings_open = !state.render_settings_open;
-        }
-        gui.sameLine();
-        gui.setNextItemWidth(@max(width - 38.0, 120.0));
-        _ = gui.inputTextWithHint("##viewport_hierarchy_filter_compact", state.text(.hierarchy_filter), state.hierarchy_filter_buffer[0..]);
-    } else {
-        if (try ui_icons.drawIconButton(
-            state,
-            layer_context,
-            "toolbar_settings_compact",
-            ui_icons.paths.toolbar.settings,
-            20.0,
-            .{ 235, 239, 245, 255 },
-            if (state.render_settings_open) ui_icons.palettes.toolbar_active else ui_icons.palettes.toolbar_idle,
-        )) {
-            state.render_settings_open = !state.render_settings_open;
-        }
-        gui.dummy(0.0, 6.0);
-        gui.setNextItemWidth(-1.0);
-        _ = gui.inputTextWithHint("##viewport_hierarchy_filter_narrow", state.text(.hierarchy_filter), state.hierarchy_filter_buffer[0..]);
-    }
-
-    gui.dummy(0.0, 6.0);
-    if (width >= 184.0) {
-        const half_width = @max((width - 8.0) * 0.5, 88.0);
-        if (is_manipulating) {
-            gui.pushStyleVarFloat(.alpha, 0.5);
-        }
-        if (gui.buttonEx(hierarchyCategoryLabel(state), half_width, 0.0)) {
-            state.hierarchy_category = nextHierarchyCategory(state.hierarchy_category);
-        }
-        if (is_manipulating) {
-            gui.popStyleVar(1);
-        }
-        gui.sameLine();
-        // Global/Local toggle - now uses icons instead of text
-        const transform_icon_path = switch (state.transform_space) {
-            .local => ui_icons.paths.toolbar.transform_local,
-            .world => ui_icons.paths.toolbar.transform_global,
-        };
-        if (try drawToolbarIconButton(state, layer_context, "toolbar_transform_space_compact", transform_icon_path, state.transform_space == .world)) {
-            state.transform_space = switch (state.transform_space) {
-                .local => .world,
-                .world => .local,
-            };
-        }
-    } else {
-        if (is_manipulating) {
-            gui.pushStyleVarFloat(.alpha, 0.5);
-        }
-        if (gui.buttonEx(hierarchyCategoryLabel(state), width, 0.0)) {
-            state.hierarchy_category = nextHierarchyCategory(state.hierarchy_category);
-        }
-        if (is_manipulating) {
-            gui.popStyleVar(1);
-        }
-        gui.dummy(0.0, 6.0);
-        // Global/Local toggle - now uses icons instead of text
-        const transform_icon_path = switch (state.transform_space) {
-            .local => ui_icons.paths.toolbar.transform_local,
-            .world => ui_icons.paths.toolbar.transform_global,
-        };
-        if (try drawToolbarIconButton(state, layer_context, "toolbar_transform_space_narrow", transform_icon_path, state.transform_space == .world)) {
-            state.transform_space = switch (state.transform_space) {
-                .local => .world,
-                .world => .local,
-            };
-        }
     }
 }
 
@@ -1678,25 +1593,5 @@ fn currentRenderModeIcon(state: *const EditorState) []const u8 {
         .textured => ui_icons.paths.viewport.textured,
         .wireframe => ui_icons.paths.viewport.wireframe,
         .unlit => ui_icons.paths.viewport.unlit,
-    };
-}
-
-fn hierarchyCategoryLabel(state: *const EditorState) []const u8 {
-    return switch (state.hierarchy_category) {
-        .all => state.text(.all),
-        .cameras => state.text(.cameras),
-        .lights => state.text(.lights),
-        .geometry => state.text(.geometry),
-        .objects => state.text(.objects),
-    };
-}
-
-fn nextHierarchyCategory(category: HierarchyCategory) HierarchyCategory {
-    return switch (category) {
-        .all => .cameras,
-        .cameras => .lights,
-        .lights => .geometry,
-        .geometry => .objects,
-        .objects => .all,
     };
 }
