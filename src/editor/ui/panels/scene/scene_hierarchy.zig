@@ -104,7 +104,7 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
         _ = gui.inputTextWithHint("##scene_filter", state.text(.scene_filter), state.scene_filter_buffer[0..]);
     }
 
-    gui.dummy(0.0, 4.0);
+    layout.drawSidebarSectionGap();
     layout.endSectionBody();
     var dropped_root: u64 = 0;
     if (gui.acceptDragDropPayloadU64(state_mod.entity_drag_payload, &dropped_root)) {
@@ -117,9 +117,7 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
             try history.importModelPath(state, layer_context, state.asset_entries.items[asset_index].path);
         }
     }
-    gui.dummy(0.0, 4.0);
-    gui.separator();
-    gui.dummy(0.0, 4.0);
+    layout.drawSidebarSectionDivider();
 
     if (!gui.beginTable("scene_tree_table", 4)) {
         return;

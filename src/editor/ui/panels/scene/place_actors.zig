@@ -224,15 +224,13 @@ pub fn drawPlaceActorsWindow(state: *EditorState, layer_context: *engine.core.La
         }
     }
 
-    gui.dummy(0.0, 8.0);
-    gui.separator();
-    gui.dummy(0.0, 8.0);
+    layout.drawSidebarSectionDivider();
 
     // Filter input
     gui.setNextItemWidth(-1.0);
     _ = gui.inputTextWithHint("##place_actors_filter", state.text(.search_place_actors), state.place_actor_filter_buffer[0..]);
 
-    gui.dummy(0.0, 8.0);
+    layout.drawSidebarSectionGap();
 
     // Actor entries
     const entries = getEntriesForCategory(state.place_actor_category);

@@ -173,9 +173,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
             state.inspector_filter_buffer[0..],
         );
     }
-    gui.dummy(0.0, 4.0);
-    gui.separator();
-    gui.dummy(0.0, 4.0);
+    layout.drawSidebarSectionDivider();
     const filter = inspectorFilter(state);
 
     if (inspectorSectionMatches(filter, state.text(.identity)) and gui.collapsingHeader(state.text(.identity), filter.len != 0)) {

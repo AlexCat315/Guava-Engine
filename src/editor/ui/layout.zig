@@ -17,6 +17,16 @@ pub fn endSectionBody() void {
     gui.unindent(default_section_padding);
 }
 
+pub fn drawSidebarSectionDivider() void {
+    gui.dummy(0.0, 6.0);
+    gui.separator();
+    gui.dummy(0.0, 6.0);
+}
+
+pub fn drawSidebarSectionGap() void {
+    gui.dummy(0.0, 6.0);
+}
+
 pub fn responsiveButtonColumns(button_count: usize, min_button_width: f32) usize {
     var columns = button_count;
     while (columns > 1) : (columns -= 1) {
