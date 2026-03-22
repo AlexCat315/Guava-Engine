@@ -98,8 +98,8 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
         if (gui.menuItem("Jarvis Terminal", null, state.ai_chat_open, true)) {
             state.ai_chat_open = !state.ai_chat_open;
         }
-        if (gui.menuItem("Command Timeline", null, state.command_timeline_open, true)) {
-            state.command_timeline_open = !state.command_timeline_open;
+        if (gui.menuItem("Command Timeline", null, state.bottom_panel_tab == .command_timeline, true)) {
+            state.bottom_panel_tab = .command_timeline;
         }
         gui.separator();
         if (gui.menuItem(state.text(.material_editor), null, state.material_editor_open, true)) {

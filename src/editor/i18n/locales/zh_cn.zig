@@ -260,6 +260,7 @@ pub const locale = blk: {
             .free_axis = "自由",
             .project = "项目",
             .console = "控制台",
+            .command_timeline = "命令时间线",
             .hierarchy_filter = "层级过滤",
             .hierarchy_category = "类别",
             .all = "全部",

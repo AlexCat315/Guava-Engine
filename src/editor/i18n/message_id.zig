@@ -251,6 +251,7 @@ pub const MessageId = enum {
     free_axis,
     project,
     console,
+    command_timeline,
     hierarchy_filter,
     hierarchy_category,
     all,

@@ -260,6 +260,7 @@ pub const locale = blk: {
             .free_axis = "Free",
             .project = "Project",
             .console = "Console",
+            .command_timeline = "Timeline",
             .hierarchy_filter = "Hierarchy Filter",
             .hierarchy_category = "Category",
             .all = "All",

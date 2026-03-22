@@ -8,6 +8,7 @@ const utils = @import("../common/utils.zig");
 const history = @import("../actions/history.zig");
 const asset_preview = @import("preview.zig");
 const console = @import("../ui/panels/debug/console.zig");
+const command_timeline = @import("../ui/panels/debug/command_timeline.zig");
 const ui_icons = @import("../ui/icons.zig");
 const layout = @import("../ui/layout.zig");
 
@@ -28,26 +29,36 @@ pub fn drawContentBrowser(state: *EditorState, layer_context: *engine.core.Layer
     switch (state.bottom_panel_tab) {
         .project => try drawProjectPanel(state, layer_context),
         .console => try console.drawConsolePanel(state),
+        .command_timeline => try command_timeline.drawCommandTimelinePanel(state, layer_context),
     }
 }
 
 fn drawBottomTabs(state: *EditorState) !void {
     const available_width = gui.contentRegionAvail()[0];
-    const stacked = available_width < 184.0;
+    // 3 tabs: need at least 3*84 + 2*8 = 268 px for horizontal layout
+    const stacked = available_width < 268.0;
     const tab_width = if (stacked)
         available_width
     else
-        std.math.clamp((available_width - 8.0) * 0.5, 84.0, 148.0);
+        std.math.clamp((available_width - 16.0) / 3.0, 84.0, 140.0);
     if (drawTabButton(state, .project, state.text(.project), tab_width)) {
         state.bottom_panel_tab = .project;
     }
     if (!stacked) {
         gui.sameLine();
     } else {
-        gui.dummy(0.0, 6.0);
+        gui.dummy(0.0, 4.0);
     }
     if (drawTabButton(state, .console, state.text(.console), tab_width)) {
         state.bottom_panel_tab = .console;
+    }
+    if (!stacked) {
+        gui.sameLine();
+    } else {
+        gui.dummy(0.0, 4.0);
+    }
+    if (drawTabButton(state, .command_timeline, state.text(.command_timeline), tab_width)) {
+        state.bottom_panel_tab = .command_timeline;
     }
 }
 
