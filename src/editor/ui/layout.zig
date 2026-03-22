@@ -105,6 +105,7 @@ pub fn drawInspectorPropertyRow(label: []const u8, label_color: ?[4]f32) void {
 
 pub fn resetDockLayout(state: *EditorState) void {
     gui.resetDefaultLayout();
+    gui.saveLayout();
     state.dock_layout_initialized = true;
 }
 
@@ -177,6 +178,7 @@ pub fn loadUserLayoutTemplate(state: *EditorState, path: []const u8) bool {
     if (!gui.loadLayoutFromPath(path)) {
         return false;
     }
+    gui.saveLayout();
     state.dock_layout_initialized = true;
     return true;
 }

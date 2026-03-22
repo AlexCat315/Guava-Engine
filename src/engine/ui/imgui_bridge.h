@@ -206,6 +206,8 @@ bool guava_imgui_input_text(const char *label, size_t label_len, char *buffer,
 bool guava_imgui_input_text_with_hint(const char *label, size_t label_len,
                                       const char *hint, size_t hint_len,
                                       char *buffer, size_t buffer_size);
+bool guava_imgui_input_text_password(const char *label, size_t label_len,
+                                     char *buffer, size_t buffer_size);
 bool guava_imgui_drag_float(const char *label, size_t label_len, float *value,
                             float speed, float min_value, float max_value);
 bool guava_imgui_drag_float3(const char *label, size_t label_len,

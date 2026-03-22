@@ -126,18 +126,16 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
         }
         if (gui.beginMenu(state.text(.layout))) {
             defer gui.endMenu();
-            if (gui.menuItem(state.text(.save_current_layout), null, false, true)) {
-                gui.saveLayout();
-            }
             if (gui.menuItem(state.text(.load_default_layout), null, false, true)) {
                 layout.resetDockLayout(state);
             }
-            if (gui.menuItem(state.text(.load_animation_layout), null, false, true)) {
-                layout.loadAnimationDockLayout(state);
+
+            if (gui.menuItem(state.text(.save_as_template), null, false, true)) {
+                var name_buffer: [64]u8 = undefined;
+                const generated_name = try std.fmt.bufPrint(&name_buffer, "layout-{d}", .{std.time.timestamp()});
+                _ = try layout.saveUserLayoutTemplate(state, generated_name);
             }
-            if (gui.menuItem(state.text(.reset_dock_layout), null, false, true)) {
-                layout.resetDockLayout(state);
-            }
+
             gui.separator();
             try layout.ensureLayoutTemplatesLoaded(state);
             if (gui.beginMenu(state.text(.layout_templates))) {
@@ -145,10 +143,22 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
                 if (state.layout_templates.items.len == 0) {
                     _ = gui.menuItem(state.text(.no_saved_layout_templates), null, false, false);
                 } else {
-                    for (state.layout_templates.items) |entry| {
-                        if (gui.menuItem(entry.name, null, false, true)) {
+                    var template_deleted = false;
+                    for (state.layout_templates.items, 0..) |entry, index| {
+                        if (!gui.beginMenu(entry.name)) {
+                            continue;
+                        }
+                        defer gui.endMenu();
+
+                        if (gui.menuItem(state.text(.load_template), null, false, true)) {
                             _ = layout.loadUserLayoutTemplate(state, entry.path);
                         }
+                        if (gui.menuItem(state.text(.delete_template), null, false, true)) {
+                            _ = try layout.deleteUserLayoutTemplate(state, index);
+                            template_deleted = true;
+                        }
+
+                        if (template_deleted) break;
                     }
                 }
             }

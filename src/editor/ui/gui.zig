@@ -151,6 +151,7 @@ pub const isItemDeactivatedAfterEdit = backend.isItemDeactivatedAfterEdit;
 // Input widgets
 pub const inputText = backend.inputText;
 pub const inputTextWithHint = backend.inputTextWithHint;
+pub const inputTextPassword = backend.inputTextPassword;
 pub const dragFloat = backend.dragFloat;
 pub const dragFloat3 = backend.dragFloat3;
 pub const checkbox = backend.checkbox;

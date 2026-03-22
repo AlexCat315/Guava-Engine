@@ -567,6 +567,10 @@ pub fn inputTextWithHint(label: []const u8, hint: []const u8, buffer: []u8) bool
     return c.guava_imgui_input_text_with_hint(label.ptr, label.len, hint.ptr, hint.len, buffer.ptr, buffer.len);
 }
 
+pub fn inputTextPassword(label: []const u8, buffer: []u8) bool {
+    return c.guava_imgui_input_text_password(label.ptr, label.len, buffer.ptr, buffer.len);
+}
+
 pub fn dragFloat(label: []const u8, value: *f32, speed: f32, min_value: f32, max_value: f32) bool {
     return c.guava_imgui_drag_float(label.ptr, label.len, value, speed, min_value, max_value);
 }

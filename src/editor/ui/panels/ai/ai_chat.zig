@@ -115,12 +115,12 @@ fn drawHeaderBar(state: *EditorState) void {
 
     // Settings button: right-aligned
     const avail_x = gui.contentRegionAvail()[0];
-    if (avail_x > 68.0) {
-        gui.sameLineEx(0.0, avail_x - 60.0);
+    if (avail_x > 110.0) {
+        gui.sameLineEx(0.0, avail_x - 104.0);
         gui.pushStyleColor(.button, .{ 0.18, 0.20, 0.24, 0.0 });
         gui.pushStyleColor(.button_hovered, .{ 0.26, 0.29, 0.34, 0.90 });
         gui.pushStyleColor(.button_active, .{ 0.20, 0.22, 0.27, 1.0 });
-        if (gui.buttonEx("⚙ 设置", 58.0, 0.0)) {
+        if (gui.buttonEx("配置", 102.0, 0.0)) {
             state.ai_provider_settings_open = !state.ai_provider_settings_open;
         }
         gui.popStyleColor(3);
@@ -222,8 +222,14 @@ fn drawProviderSettings(state: *EditorState) void {
     if (!state.ai_provider_settings_open) return;
 
     gui.separator();
-    _ = gui.beginChild("ai_provider_settings##jt", 0.0, 168.0, true);
+    _ = gui.beginChild("ai_provider_settings##jt", 0.0, 196.0, true);
     defer gui.endChild();
+
+    gui.pushStyleColor(.text, .{ 0.78, 0.83, 0.92, 1.0 });
+    gui.text("Provider Configuration");
+    gui.popStyleColor(1);
+
+    gui.dummy(0.0, 2.0);
 
     gui.pushStyleColor(.text, .{ 0.65, 0.70, 0.78, 1.0 });
     gui.text("Provider");
@@ -231,23 +237,38 @@ fn drawProviderSettings(state: *EditorState) void {
     gui.setNextItemWidth(-1.0);
     _ = gui.inputTextWithHint("##ai_provider_name", "OpenAI / Anthropic / ...", state.ai_provider_name_buffer[0..]);
 
+    gui.dummy(0.0, 2.0);
     gui.pushStyleColor(.text, .{ 0.65, 0.70, 0.78, 1.0 });
     gui.text("Endpoint");
     gui.popStyleColor(1);
     gui.setNextItemWidth(-1.0);
     _ = gui.inputTextWithHint("##ai_provider_endpoint", "https://api.openai.com/v1", state.ai_provider_endpoint_buffer[0..]);
 
+    gui.dummy(0.0, 2.0);
     gui.pushStyleColor(.text, .{ 0.65, 0.70, 0.78, 1.0 });
     gui.text("Model");
     gui.popStyleColor(1);
     gui.setNextItemWidth(-1.0);
     _ = gui.inputTextWithHint("##ai_provider_model", "gpt-4o / claude-sonnet-4-20250514", state.ai_provider_model_buffer[0..]);
 
+    gui.dummy(0.0, 2.0);
     gui.pushStyleColor(.text, .{ 0.65, 0.70, 0.78, 1.0 });
     gui.text("API Key");
     gui.popStyleColor(1);
-    gui.setNextItemWidth(-1.0);
-    _ = gui.inputTextWithHint("##ai_provider_api_key", "sk-...", state.ai_provider_api_key_buffer[0..]);
+
+    const toggle_width: f32 = 84.0;
+    const spacing: f32 = 6.0;
+    gui.setNextItemWidth(gui.contentRegionAvail()[0] - toggle_width - spacing);
+    if (state.ai_provider_api_key_visible) {
+        _ = gui.inputTextWithHint("##ai_provider_api_key", "sk-...", state.ai_provider_api_key_buffer[0..]);
+    } else {
+        _ = gui.inputTextPassword("##ai_provider_api_key", state.ai_provider_api_key_buffer[0..]);
+    }
+
+    gui.sameLine();
+    if (gui.buttonEx(if (state.ai_provider_api_key_visible) "隐藏" else "显示", toggle_width, 0.0)) {
+        state.ai_provider_api_key_visible = !state.ai_provider_api_key_visible;
+    }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
