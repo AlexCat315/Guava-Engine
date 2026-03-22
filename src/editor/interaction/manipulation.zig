@@ -17,7 +17,11 @@ const TransformSpace = state_mod.TransformSpace;
 pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const input = layer_context.input;
 
-    if (gui.wantsTextInput()) {
+    // wantsCaptureKeyboard() is true as soon as any ImGui widget (InputText,
+    // combo, etc.) holds keyboard focus — even before the first character
+    // arrives.  wantsTextInput() only becomes true once a char is delivered,
+    // leaving a window where shortcuts fire on the very first keypress.
+    if (gui.wantsCaptureKeyboard()) {
         return;
     }
 

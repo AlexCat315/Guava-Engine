@@ -77,6 +77,12 @@ fn submitInput(state: *EditorState) void {
 // Header bar: connection status + AI stage + action buttons
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 fn drawHeaderBar(state: *EditorState) void {
+    // Capture the FULL row width BEFORE any item is rendered.
+    // contentRegionAvail() after gui.text() would return the full width again
+    // (cursor is at the start of the next line), making offset_from_start_x
+    // wrong.  We need it now, at the true left edge of this row.
+    const full_width = gui.contentRegionAvail()[0];
+
     const is_connected = state.ai_collaboration != null;
 
     // Status dot
@@ -114,13 +120,14 @@ fn drawHeaderBar(state: *EditorState) void {
     }
 
     // Right-aligned: [清空] [配置]
-    const avail_x = gui.contentRegionAvail()[0];
+    // Use offset_from_start_x (non-zero first arg) so ImGui positions the
+    // cursor at (content_left + offset), giving true right-alignment.
     const clear_w: f32 = 44.0;
     const config_w: f32 = 58.0;
     const btn_gap: f32 = 6.0;
     const total_btns = clear_w + config_w + btn_gap;
-    if (avail_x > total_btns + 16.0) {
-        gui.sameLineEx(0.0, avail_x - total_btns);
+    if (full_width > total_btns + 80.0) {
+        gui.sameLineEx(full_width - total_btns, 0.0);
         gui.pushStyleColor(.button, .{ 0.18, 0.20, 0.24, 0.0 });
         gui.pushStyleColor(.button_hovered, .{ 0.26, 0.29, 0.34, 0.90 });
         gui.pushStyleColor(.button_active, .{ 0.20, 0.22, 0.27, 1.0 });

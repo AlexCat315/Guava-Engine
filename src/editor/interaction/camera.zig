@@ -17,7 +17,7 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
         state.viewport_hovered and
         state.viewport_focused and
         !state.viewport_overlay_hovered and
-        !gui.wantsTextInput();
+        !gui.wantsCaptureKeyboard();
 
     // DCC ergonomics:
     // Alt+LMB orbit, MMB pan, Alt+RMB dolly, RMB freelook+WASDQE move.
