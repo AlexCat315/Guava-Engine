@@ -42,6 +42,7 @@
 //! ```
 
 const std = @import("std");
+const mesh_resource_mod = @import("../assets/mesh_resource.zig");
 const assets_lib = @import("../assets/library.zig");
 const handles = @import("../assets/handles.zig");
 const environment_map_import_mod = @import("../assets/environment_map_import.zig");
@@ -223,10 +224,23 @@ fn effectiveViewportRenderMode(state: types.EditorViewportState) types.EditorVie
     return state.render_mode;
 }
 
-const PathTraceSphere = struct {
-    center: [3]f32,
-    radius: f32,
+const PathTraceTriangle = struct {
+    v0: [3]f32,
+    v1: [3]f32,
+    v2: [3]f32,
+    n0: [3]f32,
+    n1: [3]f32,
+    n2: [3]f32,
     albedo: [3]f32,
+    emissive: [3]f32,
+    metallic: f32,
+    roughness: f32,
+};
+
+const PathTraceMesh = struct {
+    aabb: AABB,
+    tri_start: u32,
+    tri_count: u32,
 };
 
 fn mulMat4Vec4(matrix: [16]f32, vector: [4]f32) [4]f32 {
@@ -262,26 +276,49 @@ fn hashUnitFloat(seed: u32) f32 {
     return @as(f32, @floatFromInt(h & 0x00FFFFFF)) / 16777215.0;
 }
 
-fn estimateDrawItemRadius(model: [16]f32) f32 {
-    const sx = std.math.sqrt(model[0] * model[0] + model[1] * model[1] + model[2] * model[2]);
-    const sy = std.math.sqrt(model[4] * model[4] + model[5] * model[5] + model[6] * model[6]);
-    const sz = std.math.sqrt(model[8] * model[8] + model[9] * model[9] + model[10] * model[10]);
-    return std.math.clamp(@max(sx, @max(sy, sz)) * 0.45, 0.22, 2.4);
+fn transformPoint(model: [16]f32, p: [3]f32) [3]f32 {
+    const w = mulMat4Vec4(model, .{ p[0], p[1], p[2], 1.0 });
+    const inv_w = if (@abs(w[3]) > 0.000001) 1.0 / w[3] else 1.0;
+    return .{ w[0] * inv_w, w[1] * inv_w, w[2] * inv_w };
 }
 
-fn intersectSphere(origin: [3]f32, direction: [3]f32, sphere: PathTraceSphere, t_min: f32, t_max: f32) ?f32 {
-    const oc = vec3.sub(origin, sphere.center);
-    const a = vec3.dot(direction, direction);
-    const half_b = vec3.dot(oc, direction);
-    const c = vec3.dot(oc, oc) - sphere.radius * sphere.radius;
-    const discriminant = half_b * half_b - a * c;
-    if (discriminant <= 0.0) return null;
+fn transformNormal(model: [16]f32, n: [3]f32) [3]f32 {
+    // Transform normal by upper 3x3 of model matrix (ignoring translation)
+    return vec3.normalize(.{
+        model[0] * n[0] + model[4] * n[1] + model[8] * n[2],
+        model[1] * n[0] + model[5] * n[1] + model[9] * n[2],
+        model[2] * n[0] + model[6] * n[1] + model[10] * n[2],
+    });
+}
 
-    const sqrt_d = std.math.sqrt(discriminant);
-    const near_root = (-half_b - sqrt_d) / a;
-    if (near_root > t_min and near_root < t_max) return near_root;
-    const far_root = (-half_b + sqrt_d) / a;
-    if (far_root > t_min and far_root < t_max) return far_root;
+const TriangleHit = struct {
+    t: f32,
+    u: f32,
+    v: f32,
+};
+
+/// Möller–Trumbore ray-triangle intersection
+fn intersectTriangle(origin: [3]f32, direction: [3]f32, tri: PathTraceTriangle, t_min: f32, t_max: f32) ?TriangleHit {
+    const edge1 = vec3.sub(tri.v1, tri.v0);
+    const edge2 = vec3.sub(tri.v2, tri.v0);
+    const h = vec3.cross(direction, edge2);
+    const a = vec3.dot(edge1, h);
+
+    if (@abs(a) < 0.0000001) return null; // Ray parallel to triangle
+
+    const f = 1.0 / a;
+    const s = vec3.sub(origin, tri.v0);
+    const u = f * vec3.dot(s, h);
+    if (u < 0.0 or u > 1.0) return null;
+
+    const q = vec3.cross(s, edge1);
+    const v = f * vec3.dot(direction, q);
+    if (v < 0.0 or u + v > 1.0) return null;
+
+    const t = f * vec3.dot(edge2, q);
+    if (t > t_min and t < t_max) {
+        return .{ .t = t, .u = u, .v = v };
+    }
     return null;
 }
 
@@ -306,7 +343,8 @@ fn randomHemisphereDirection(normal: [3]f32, seed: u32) [3]f32 {
 fn pathTraceRay(
     origin_start: [3]f32,
     direction_start: [3]f32,
-    spheres: []const PathTraceSphere,
+    triangles: []const PathTraceTriangle,
+    meshes: []const PathTraceMesh,
     light_direction: [3]f32,
     seed_base: u32,
     max_bounces: u32,
@@ -319,35 +357,82 @@ fn pathTraceRay(
     var bounce: u32 = 0;
     while (bounce < max_bounces) : (bounce += 1) {
         var closest_t: f32 = 1.0e30;
-        var hit_index: ?usize = null;
-        for (spheres, 0..) |sphere, index| {
-            if (intersectSphere(origin, direction, sphere, 0.01, closest_t)) |t| {
-                closest_t = t;
-                hit_index = index;
+        var hit_tri: ?*const PathTraceTriangle = null;
+        var hit_u: f32 = 0.0;
+        var hit_v: f32 = 0.0;
+
+        // Per-mesh AABB early-out, then scan triangles
+        for (meshes) |mesh| {
+            if (mesh.aabb.rayIntersection(origin, direction, closest_t) == null) continue;
+            const end = mesh.tri_start + mesh.tri_count;
+            for (triangles[mesh.tri_start..end]) |*tri| {
+                if (intersectTriangle(origin, direction, tri.*, 0.001, closest_t)) |hit| {
+                    closest_t = hit.t;
+                    hit_tri = tri;
+                    hit_u = hit.u;
+                    hit_v = hit.v;
+                }
             }
         }
 
-        if (hit_index == null) {
+        if (hit_tri == null) {
             const sky = sampleSky(direction);
             radiance = vec3.add(radiance, vec3.mul(throughput, sky));
             break;
         }
 
-        const sphere = spheres[hit_index.?];
+        const tri = hit_tri.?;
         const hit_pos = vec3.add(origin, vec3.scale(direction, closest_t));
-        const normal = vec3.normalize(vec3.sub(hit_pos, sphere.center));
-        const direct = std.math.clamp(vec3.dot(normal, light_direction), 0.0, 1.0);
-        const direct_light = vec3.scale(sphere.albedo, 0.12 + 0.88 * direct);
-        radiance = vec3.add(radiance, vec3.mul(throughput, direct_light));
 
-        throughput = vec3.scale(vec3.mul(throughput, sphere.albedo), 0.55);
+        // Interpolate vertex normal using barycentric coordinates
+        const w0 = 1.0 - hit_u - hit_v;
+        const normal = vec3.normalize(.{
+            w0 * tri.n0[0] + hit_u * tri.n1[0] + hit_v * tri.n2[0],
+            w0 * tri.n0[1] + hit_u * tri.n1[1] + hit_v * tri.n2[1],
+            w0 * tri.n0[2] + hit_u * tri.n1[2] + hit_v * tri.n2[2],
+        });
+
+        // Emissive contribution
+        const emissive_strength = tri.emissive[0] + tri.emissive[1] + tri.emissive[2];
+        if (emissive_strength > 0.001) {
+            radiance = vec3.add(radiance, vec3.mul(throughput, tri.emissive));
+        }
+
+        // Direct lighting (Lambertian + roughness-based specular)
+        const n_dot_l = std.math.clamp(vec3.dot(normal, light_direction), 0.0, 1.0);
+        const diffuse = vec3.scale(tri.albedo, n_dot_l * (1.0 - tri.metallic));
+
+        // Simple specular (Blinn-Phong approximation for roughness)
+        const halfway = vec3.normalize(vec3.add(light_direction, vec3.scale(direction, -1.0)));
+        const n_dot_h = std.math.clamp(vec3.dot(normal, halfway), 0.0, 1.0);
+        const spec_power = @max(2.0, 2.0 / (tri.roughness * tri.roughness + 0.001));
+        const spec = std.math.pow(f32, n_dot_h, spec_power) * (1.0 - tri.roughness) * 0.4;
+        const spec_color = [3]f32{
+            tri.albedo[0] * tri.metallic + (1.0 - tri.metallic) * spec,
+            tri.albedo[1] * tri.metallic + (1.0 - tri.metallic) * spec,
+            tri.albedo[2] * tri.metallic + (1.0 - tri.metallic) * spec,
+        };
+
+        const direct_light = [3]f32{
+            diffuse[0] + spec_color[0] * n_dot_l,
+            diffuse[1] + spec_color[1] * n_dot_l,
+            diffuse[2] + spec_color[2] * n_dot_l,
+        };
+
+        // Ambient
+        const ambient = vec3.scale(tri.albedo, 0.08);
+        const combined = vec3.add(direct_light, ambient);
+        radiance = vec3.add(radiance, vec3.mul(throughput, combined));
+
+        // Bounce
+        throughput = vec3.scale(vec3.mul(throughput, tri.albedo), 0.5);
         if (vec3.length(throughput) < 0.02) {
             break;
         }
 
         const seed = seed_base ^ (bounce *% 0x9e3779b9);
         direction = randomHemisphereDirection(normal, seed);
-        origin = vec3.add(hit_pos, vec3.scale(normal, 0.02));
+        origin = vec3.add(hit_pos, vec3.scale(normal, 0.002));
     }
 
     return radiance;
@@ -1437,7 +1522,7 @@ pub const Renderer = struct {
                 const path_trace_viewport = viewport_active and self.editor_viewport_state.pipeline_mode == .path_trace;
                 if (path_trace_viewport) {
                     const path_trace_start = std.time.nanoTimestamp();
-                    try self.renderCpuPathTraceViewport(&prepared_scene);
+                    try self.renderCpuPathTraceViewport(&prepared_scene, scene);
                     self.graph.recordPassStat(pass_stats, .base_pass, durationNs(path_trace_start, std.time.nanoTimestamp()), 0, 0);
                 } else {
                     const scene_color_target: rhi_mod.ColorTarget = if (viewport_active)
@@ -1797,7 +1882,7 @@ pub const Renderer = struct {
         return result;
     }
 
-    fn renderCpuPathTraceViewport(self: *Renderer, prepared_scene: *const mesh_pass_mod.PreparedScene) !void {
+    fn renderCpuPathTraceViewport(self: *Renderer, prepared_scene: *const mesh_pass_mod.PreparedScene, scene: *scene_mod.Scene) !void {
         const target = self.scene_viewport.color() orelse return;
         const width = target.desc.width;
         const height = target.desc.height;
@@ -1810,7 +1895,7 @@ pub const Renderer = struct {
         const trace_height = @max(@as(u32, 1), @as(u32, @intFromFloat(@as(f32, @floatFromInt(height)) * resolution_scale)));
 
         if (!g_logged_path_trace_active) {
-            render_log.info("CPU path trace viewport active (MVP)", .{});
+            render_log.info("CPU path trace viewport active (triangle)", .{});
             g_logged_path_trace_active = true;
         }
 
@@ -1831,29 +1916,110 @@ pub const Renderer = struct {
             prepared_scene.camera_world_position[2],
         };
 
-        var spheres: [64]PathTraceSphere = undefined;
-        var sphere_count: usize = 0;
+        // Build triangle list from scene mesh data
+        var triangle_list = std.ArrayList(PathTraceTriangle).empty;
+        defer triangle_list.deinit(self.allocator);
+        var mesh_list = std.ArrayList(PathTraceMesh).empty;
+        defer mesh_list.deinit(self.allocator);
+
         for (prepared_scene.opaque_meshes) |item| {
-            if (sphere_count >= spheres.len) break;
-            spheres[sphere_count] = .{
-                .center = item.world_position,
-                .radius = estimateDrawItemRadius(item.model),
-                .albedo = .{
-                    std.math.clamp(item.base_color_factor[0], 0.05, 1.0),
-                    std.math.clamp(item.base_color_factor[1], 0.05, 1.0),
-                    std.math.clamp(item.base_color_factor[2], 0.05, 1.0),
-                },
-            };
-            sphere_count += 1;
+            const mesh_res = if (handles.isValid(item.mesh_handle))
+                scene.resources.mesh(item.mesh_handle)
+            else
+                null;
+
+            if (mesh_res) |mesh| {
+                const tri_start: u32 = @intCast(triangle_list.items.len);
+                const indices = mesh.indices;
+                const vertices = mesh.vertices;
+                const albedo = [3]f32{
+                    std.math.clamp(item.base_color_factor[0], 0.02, 1.0),
+                    std.math.clamp(item.base_color_factor[1], 0.02, 1.0),
+                    std.math.clamp(item.base_color_factor[2], 0.02, 1.0),
+                };
+                const emissive = [3]f32{
+                    item.emissive_factor[0] * item.emissive_factor[3],
+                    item.emissive_factor[1] * item.emissive_factor[3],
+                    item.emissive_factor[2] * item.emissive_factor[3],
+                };
+                const metallic = std.math.clamp(item.pbr_factors[0], 0.0, 1.0);
+                const roughness = std.math.clamp(item.pbr_factors[1], 0.04, 1.0);
+
+                var aabb = AABB.empty();
+                var i: usize = 0;
+                while (i + 2 < indices.len) : (i += 3) {
+                    const idx0 = indices[i];
+                    const idx1 = indices[i + 1];
+                    const idx2 = indices[i + 2];
+                    if (idx0 >= vertices.len or idx1 >= vertices.len or idx2 >= vertices.len) continue;
+
+                    const v0 = transformPoint(item.model, vertices[idx0].position);
+                    const v1 = transformPoint(item.model, vertices[idx1].position);
+                    const v2 = transformPoint(item.model, vertices[idx2].position);
+                    const n0 = transformNormal(item.model, vertices[idx0].normal);
+                    const n1 = transformNormal(item.model, vertices[idx1].normal);
+                    const n2 = transformNormal(item.model, vertices[idx2].normal);
+
+                    aabb.expand(v0);
+                    aabb.expand(v1);
+                    aabb.expand(v2);
+
+                    try triangle_list.append(self.allocator, .{
+                        .v0 = v0,
+                        .v1 = v1,
+                        .v2 = v2,
+                        .n0 = n0,
+                        .n1 = n1,
+                        .n2 = n2,
+                        .albedo = albedo,
+                        .emissive = emissive,
+                        .metallic = metallic,
+                        .roughness = roughness,
+                    });
+                }
+
+                const tri_count: u32 = @intCast(triangle_list.items.len - tri_start);
+                if (tri_count > 0) {
+                    try mesh_list.append(self.allocator, .{
+                        .aabb = aabb,
+                        .tri_start = tri_start,
+                        .tri_count = tri_count,
+                    });
+                }
+            }
         }
 
-        if (sphere_count == 0) {
-            spheres[0] = .{
-                .center = .{ 0.0, 0.9, 0.0 },
-                .radius = 0.95,
-                .albedo = .{ 0.86, 0.58, 0.22 },
-            };
-            sphere_count = 1;
+        // Fallback: if no mesh geometry found, show a ground plane
+        if (triangle_list.items.len == 0) {
+            try triangle_list.append(self.allocator, .{
+                .v0 = .{ -5.0, 0.0, -5.0 },
+                .v1 = .{ 5.0, 0.0, -5.0 },
+                .v2 = .{ 5.0, 0.0, 5.0 },
+                .n0 = .{ 0.0, 1.0, 0.0 },
+                .n1 = .{ 0.0, 1.0, 0.0 },
+                .n2 = .{ 0.0, 1.0, 0.0 },
+                .albedo = .{ 0.6, 0.6, 0.6 },
+                .emissive = .{ 0.0, 0.0, 0.0 },
+                .metallic = 0.0,
+                .roughness = 0.8,
+            });
+            try triangle_list.append(self.allocator, .{
+                .v0 = .{ -5.0, 0.0, -5.0 },
+                .v1 = .{ 5.0, 0.0, 5.0 },
+                .v2 = .{ -5.0, 0.0, 5.0 },
+                .n0 = .{ 0.0, 1.0, 0.0 },
+                .n1 = .{ 0.0, 1.0, 0.0 },
+                .n2 = .{ 0.0, 1.0, 0.0 },
+                .albedo = .{ 0.6, 0.6, 0.6 },
+                .emissive = .{ 0.0, 0.0, 0.0 },
+                .metallic = 0.0,
+                .roughness = 0.8,
+            });
+            try mesh_list.append(self.allocator, .{
+                .aabb = .{ .min = .{ -5.0, -0.01, -5.0 }, .max = .{ 5.0, 0.01, 5.0 } },
+                .tri_start = 0,
+                .tri_count = 2,
+            });
         }
 
         const light_direction = if (prepared_scene.lights.directional_lights.len > 0)
@@ -1902,7 +2068,8 @@ pub const Renderer = struct {
                     const sample_color = pathTraceRay(
                         ray_origin,
                         ray_direction,
-                        spheres[0..sphere_count],
+                        triangle_list.items,
+                        mesh_list.items,
                         light_direction,
                         jitter_seed,
                         bounces,

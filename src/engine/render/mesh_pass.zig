@@ -62,6 +62,7 @@ pub const BasePassUniforms = extern struct {
 pub const DrawItem = struct {
     entity_id: scene_mod.EntityId,
     pickable: bool,
+    mesh_handle: handles.MeshHandle = .invalid,
     vertex_buffer: rhi_mod.Buffer,
     index_buffer: rhi_mod.Buffer,
     index_count: u32,
@@ -825,6 +826,7 @@ pub const MeshSceneCache = struct {
             const draw_item = DrawItem{
                 .entity_id = render_mesh.entity_id,
                 .pickable = pickable,
+                .mesh_handle = mesh_handle,
                 .vertex_buffer = gpu_mesh.vertex_buffer,
                 .index_buffer = gpu_mesh.index_buffer,
                 .index_count = gpu_mesh.index_count,

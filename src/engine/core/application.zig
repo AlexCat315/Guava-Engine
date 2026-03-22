@@ -71,6 +71,8 @@ pub const ApplicationConfig = struct {
     window_height: u32 = 720,
     /// 是否无边框窗口
     window_borderless: bool = false,
+    /// 是否启动时最大化窗口
+    window_maximized: bool = false,
     /// 是否使用原生标题栏控件（macOS）
     window_native_titlebar_controls: bool = false,
     /// 帧延迟（毫秒，用于限制帧率）
@@ -194,6 +196,7 @@ pub const Application = struct {
             .width = config.window_width,
             .height = config.window_height,
             .borderless = config.window_borderless,
+            .maximized = config.window_maximized,
             .native_titlebar_controls = config.window_native_titlebar_controls,
         });
         errdefer window.deinit();
@@ -473,6 +476,10 @@ pub const Application = struct {
                             self.input.setKey(key, false);
                         }
                     }
+                },
+                .text_input => {
+                    // Already forwarded to ImGui via processEvent() above.
+                    // Nothing to do in application layer.
                 },
             }
         }

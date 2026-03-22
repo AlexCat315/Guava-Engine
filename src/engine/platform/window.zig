@@ -21,6 +21,7 @@ pub const WindowConfig = struct {
     height: u32 = 720,
     resizable: bool = true,
     borderless: bool = false,
+    maximized: bool = false,
     native_titlebar_controls: bool = false,
     high_pixel_density: bool = true,
     hidden: bool = false,
@@ -39,6 +40,7 @@ pub const EventKind = enum {
     mouse_wheel,
     key_down,
     key_up,
+    text_input,
 };
 
 pub const Event = struct {
@@ -95,6 +97,9 @@ pub const Window = struct {
         }
         if (config.hidden) {
             flags |= sdl.SDL_WINDOW_HIDDEN;
+        }
+        if (config.maximized) {
+            flags |= sdl.SDL_WINDOW_MAXIMIZED;
         }
 
         const handle = sdl.SDL_CreateWindow(
@@ -284,6 +289,12 @@ pub const Window = struct {
                         .key = keyFromScancode(raw_event.key.scancode),
                         .repeat = false,
                         .modifiers = currentModifiers(),
+                    };
+                },
+                sdl.SDL_EVENT_TEXT_INPUT, sdl.SDL_EVENT_TEXT_EDITING => {
+                    return .{
+                        .kind = .text_input,
+                        .raw = raw_event,
                     };
                 },
                 else => {},
