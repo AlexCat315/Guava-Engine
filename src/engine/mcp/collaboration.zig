@@ -54,6 +54,13 @@ pub const PreviewAction = enum {
     deleted,
 };
 
+fn commandSourceFromIntent(source: IntentSource) command_mod.CommandSource {
+    return switch (source) {
+        .human => .human,
+        .ai => .ai,
+    };
+}
+
 fn InlineText(comptime max_len: usize) type {
     return struct {
         buffer: [max_len]u8 = [_]u8{0} ** max_len,
@@ -429,7 +436,11 @@ pub const Store = struct {
 
         var error_count: usize = 0;
         for (request.commands.items) |entry| {
-            const result = try command_queue_mod.executeOne(&preview_world, entry.command);
+            const result = try command_queue_mod.executeOneWithSource(
+                &preview_world,
+                entry.command,
+                commandSourceFromIntent(request.source),
+            );
             try preview_results.append(self.allocator, .{
                 .tool_name = textFromSlice(ShortText, entry.tool_name),
                 .changed = result.changed,
@@ -515,7 +526,11 @@ pub const Store = struct {
         var changed_count: usize = 0;
         var error_count: usize = 0;
         for (local_commands.items) |entry| {
-            const result = try command_queue_mod.executeOne(world, entry.command);
+            const result = try command_queue_mod.executeOneWithSource(
+                world,
+                entry.command,
+                commandSourceFromIntent(source),
+            );
             if (result.changed) {
                 changed_count += 1;
             }

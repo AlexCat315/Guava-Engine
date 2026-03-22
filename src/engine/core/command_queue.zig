@@ -3,9 +3,19 @@ const command_mod = @import("command.zig");
 const scene_mod = @import("../scene/scene.zig");
 const components_mod = @import("../scene/components.zig");
 
+const QueuedCommand = struct {
+    source: command_mod.CommandSource = .human,
+    command: command_mod.Command,
+
+    fn deinit(self: *QueuedCommand, allocator: std.mem.Allocator) void {
+        self.command.deinit(allocator);
+        self.* = undefined;
+    }
+};
+
 pub const CommandQueue = struct {
     allocator: std.mem.Allocator,
-    commands: std.ArrayList(command_mod.Command) = .empty,
+    commands: std.ArrayList(QueuedCommand) = .empty,
     max_pending: usize = 1000,
 
     pub fn init(allocator: std.mem.Allocator) CommandQueue {
@@ -16,8 +26,8 @@ pub const CommandQueue = struct {
     }
 
     pub fn deinit(self: *CommandQueue) void {
-        for (self.commands.items) |*cmd| {
-            cmd.deinit(self.allocator);
+        for (self.commands.items) |*queued| {
+            queued.deinit(self.allocator);
         }
         self.commands.deinit(self.allocator);
     }
@@ -35,97 +45,179 @@ pub const CommandQueue = struct {
     }
 
     pub fn enqueueCreateEntity(self: *CommandQueue, spec: command_mod.CreateEntitySpec) !void {
+        return self.enqueueCreateEntityWithSource(spec, .human);
+    }
+
+    pub fn enqueueCreateEntityWithSource(
+        self: *CommandQueue,
+        spec: command_mod.CreateEntitySpec,
+        source: command_mod.CommandSource,
+    ) !void {
         if (self.isFull()) {
             return error.QueueFull;
         }
         try self.commands.append(self.allocator, .{
-            .create_entity = .{
-                .name = try self.allocator.dupe(u8, spec.name),
-                .parent = spec.parent,
-                .local_transform = spec.local_transform,
-                .camera = spec.camera,
-                .mesh = spec.mesh,
-                .material = spec.material,
-                .light = spec.light,
-                .vfx = spec.vfx,
-                .visible = spec.visible,
-                .editor_only = spec.editor_only,
-                .is_folder = spec.is_folder,
+            .source = source,
+            .command = .{
+                .create_entity = .{
+                    .name = try self.allocator.dupe(u8, spec.name),
+                    .parent = spec.parent,
+                    .local_transform = spec.local_transform,
+                    .camera = spec.camera,
+                    .mesh = spec.mesh,
+                    .material = spec.material,
+                    .light = spec.light,
+                    .vfx = spec.vfx,
+                    .visible = spec.visible,
+                    .editor_only = spec.editor_only,
+                    .is_folder = spec.is_folder,
+                },
             },
         });
     }
 
     pub fn enqueueDeleteEntity(self: *CommandQueue, entity_id: scene_mod.EntityId) !void {
+        return self.enqueueDeleteEntityWithSource(entity_id, .human);
+    }
+
+    pub fn enqueueDeleteEntityWithSource(
+        self: *CommandQueue,
+        entity_id: scene_mod.EntityId,
+        source: command_mod.CommandSource,
+    ) !void {
         if (self.isFull()) {
             return error.QueueFull;
         }
         try self.commands.append(self.allocator, .{
-            .delete_entity = .{ .entity_id = entity_id },
+            .source = source,
+            .command = .{
+                .delete_entity = .{ .entity_id = entity_id },
+            },
         });
     }
 
     pub fn enqueueRenameEntity(self: *CommandQueue, entity_id: scene_mod.EntityId, name: []const u8) !void {
+        return self.enqueueRenameEntityWithSource(entity_id, name, .human);
+    }
+
+    pub fn enqueueRenameEntityWithSource(
+        self: *CommandQueue,
+        entity_id: scene_mod.EntityId,
+        name: []const u8,
+        source: command_mod.CommandSource,
+    ) !void {
         if (self.isFull()) {
             return error.QueueFull;
         }
         try self.commands.append(self.allocator, .{
-            .rename_entity = .{
-                .entity_id = entity_id,
-                .name = try self.allocator.dupe(u8, name),
+            .source = source,
+            .command = .{
+                .rename_entity = .{
+                    .entity_id = entity_id,
+                    .name = try self.allocator.dupe(u8, name),
+                },
             },
         });
     }
 
     pub fn enqueueSetParent(self: *CommandQueue, entity_id: scene_mod.EntityId, parent_id: ?scene_mod.EntityId) !void {
+        return self.enqueueSetParentWithSource(entity_id, parent_id, .human);
+    }
+
+    pub fn enqueueSetParentWithSource(
+        self: *CommandQueue,
+        entity_id: scene_mod.EntityId,
+        parent_id: ?scene_mod.EntityId,
+        source: command_mod.CommandSource,
+    ) !void {
         if (self.isFull()) {
             return error.QueueFull;
         }
         try self.commands.append(self.allocator, .{
-            .set_parent = .{
-                .entity_id = entity_id,
-                .parent_id = parent_id,
+            .source = source,
+            .command = .{
+                .set_parent = .{
+                    .entity_id = entity_id,
+                    .parent_id = parent_id,
+                },
             },
         });
     }
 
     pub fn enqueueSetLocalTransform(self: *CommandQueue, entity_id: scene_mod.EntityId, transform: components_mod.Transform) !void {
+        return self.enqueueSetLocalTransformWithSource(entity_id, transform, .human);
+    }
+
+    pub fn enqueueSetLocalTransformWithSource(
+        self: *CommandQueue,
+        entity_id: scene_mod.EntityId,
+        transform: components_mod.Transform,
+        source: command_mod.CommandSource,
+    ) !void {
         if (self.isFull()) {
             return error.QueueFull;
         }
-        if (self.tryCoalesceTransform(.set_local_transform, entity_id, transform)) {
+        if (self.tryCoalesceTransform(.set_local_transform, entity_id, transform, source)) {
             return;
         }
         try self.commands.append(self.allocator, .{
-            .set_local_transform = .{
-                .entity_id = entity_id,
-                .transform = transform,
+            .source = source,
+            .command = .{
+                .set_local_transform = .{
+                    .entity_id = entity_id,
+                    .transform = transform,
+                },
             },
         });
     }
 
     pub fn enqueueSetWorldTransform(self: *CommandQueue, entity_id: scene_mod.EntityId, transform: components_mod.Transform) !void {
+        return self.enqueueSetWorldTransformWithSource(entity_id, transform, .human);
+    }
+
+    pub fn enqueueSetWorldTransformWithSource(
+        self: *CommandQueue,
+        entity_id: scene_mod.EntityId,
+        transform: components_mod.Transform,
+        source: command_mod.CommandSource,
+    ) !void {
         if (self.isFull()) {
             return error.QueueFull;
         }
-        if (self.tryCoalesceTransform(.set_world_transform, entity_id, transform)) {
+        if (self.tryCoalesceTransform(.set_world_transform, entity_id, transform, source)) {
             return;
         }
         try self.commands.append(self.allocator, .{
-            .set_world_transform = .{
-                .entity_id = entity_id,
-                .transform = transform,
+            .source = source,
+            .command = .{
+                .set_world_transform = .{
+                    .entity_id = entity_id,
+                    .transform = transform,
+                },
             },
         });
     }
 
     pub fn enqueueSetVisible(self: *CommandQueue, entity_id: scene_mod.EntityId, visible: bool) !void {
+        return self.enqueueSetVisibleWithSource(entity_id, visible, .human);
+    }
+
+    pub fn enqueueSetVisibleWithSource(
+        self: *CommandQueue,
+        entity_id: scene_mod.EntityId,
+        visible: bool,
+        source: command_mod.CommandSource,
+    ) !void {
         if (self.isFull()) {
             return error.QueueFull;
         }
         try self.commands.append(self.allocator, .{
-            .set_visible = .{
-                .entity_id = entity_id,
-                .visible = visible,
+            .source = source,
+            .command = .{
+                .set_visible = .{
+                    .entity_id = entity_id,
+                    .visible = visible,
+                },
             },
         });
     }
@@ -134,7 +226,7 @@ pub const CommandQueue = struct {
         var index = self.commands.items.len;
         while (index > 0) {
             index -= 1;
-            switch (self.commands.items[index]) {
+            switch (self.commands.items[index].command) {
                 .set_local_transform => |set_transform| {
                     if (set_transform.entity_id == entity_id) {
                         return set_transform.transform;
@@ -155,9 +247,11 @@ pub const CommandQueue = struct {
         var results = try self.allocator.alloc(command_mod.ExecutionResult, command_count);
         errdefer self.allocator.free(results);
 
-        for (self.commands.items, 0..) |*command, index| {
-            results[index] = try executeCommand(world, command.*);
-            command.deinit(self.allocator);
+        for (self.commands.items, 0..) |*queued, index| {
+            var result = try executeCommand(world, queued.command);
+            result.source = queued.source;
+            results[index] = result;
+            queued.deinit(self.allocator);
         }
         self.commands.clearRetainingCapacity();
 
@@ -169,26 +263,29 @@ pub const CommandQueue = struct {
         comptime tag: std.meta.Tag(command_mod.Command),
         entity_id: scene_mod.EntityId,
         transform: components_mod.Transform,
+        source: command_mod.CommandSource,
     ) bool {
         if (self.commands.items.len == 0) {
             return false;
         }
 
         const last = &self.commands.items[self.commands.items.len - 1];
-        switch (last.*) {
+        switch (last.command) {
             .set_local_transform => |*pending| {
                 if (pending.entity_id != entity_id) {
                     return false;
                 }
                 if (tag == .set_local_transform) {
                     pending.transform = transform;
+                    last.source = source;
                 } else {
-                    last.* = .{
+                    last.command = .{
                         .set_world_transform = .{
                             .entity_id = entity_id,
                             .transform = transform,
                         },
                     };
+                    last.source = source;
                 }
                 return true;
             },
@@ -198,13 +295,15 @@ pub const CommandQueue = struct {
                 }
                 if (tag == .set_world_transform) {
                     pending.transform = transform;
+                    last.source = source;
                 } else {
-                    last.* = .{
+                    last.command = .{
                         .set_local_transform = .{
                             .entity_id = entity_id,
                             .transform = transform,
                         },
                     };
+                    last.source = source;
                 }
                 return true;
             },
@@ -302,7 +401,17 @@ fn executeCommand(world: *scene_mod.World, command: command_mod.Command) !comman
 }
 
 pub fn executeOne(world: *scene_mod.World, command: command_mod.Command) !command_mod.ExecutionResult {
-    return try executeCommand(world, command);
+    return try executeOneWithSource(world, command, .human);
+}
+
+pub fn executeOneWithSource(
+    world: *scene_mod.World,
+    command: command_mod.Command,
+    source: command_mod.CommandSource,
+) !command_mod.ExecutionResult {
+    var result = try executeCommand(world, command);
+    result.source = source;
+    return result;
 }
 
 fn mapWorldError(err: anyerror) command_mod.CommandError {

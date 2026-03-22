@@ -9,6 +9,11 @@ pub const CommandError = enum {
     entity_id_conflict,
 };
 
+pub const CommandSource = enum {
+    human,
+    ai,
+};
+
 pub const CreateEntitySpec = struct {
     name: []const u8,
     parent: ?scene_mod.EntityId = null,
@@ -27,6 +32,7 @@ pub const ExecutionResult = struct {
     changed: bool = false,
     entity_id: ?scene_mod.EntityId = null,
     err: ?CommandError = null,
+    source: CommandSource = .human,
 
     pub fn ok(self: ExecutionResult) bool {
         return self.err == null;
