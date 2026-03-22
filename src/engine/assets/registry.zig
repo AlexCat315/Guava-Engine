@@ -23,7 +23,7 @@ pub const AssetType = enum {
         if (std.mem.endsWith(u8, path, ".gltf")) {
             return .model;
         }
-        if (std.mem.endsWith(u8, path, ".png") or std.mem.endsWith(u8, path, ".jpg") or std.mem.endsWith(u8, path, ".jpeg") or std.mem.endsWith(u8, path, ".svg")) {
+        if (std.mem.endsWith(u8, path, ".png") or std.mem.endsWith(u8, path, ".jpg") or std.mem.endsWith(u8, path, ".jpeg") or std.mem.endsWith(u8, path, ".svg") or std.mem.endsWith(u8, path, ".hdr")) {
             return .texture;
         }
         if (std.mem.endsWith(u8, path, ".glsl") or std.mem.endsWith(u8, path, ".spv")) {

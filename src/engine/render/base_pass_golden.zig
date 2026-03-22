@@ -130,7 +130,7 @@ fn projectVertex(
     }
 
     const ndc_x = clip[0] / clip[3];
-    const ndc_y = -(clip[1] / clip[3]);
+    const ndc_y = clip[1] / clip[3];
     const ndc_z = clip[2] / clip[3];
     if (ndc_x < -1.25 or ndc_x > 1.25 or ndc_y < -1.25 or ndc_y > 1.25) {
         return null;
