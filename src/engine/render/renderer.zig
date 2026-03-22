@@ -60,6 +60,8 @@ const id_pass_mod = @import("id_pass.zig");
 const gizmo_pass_mod = @import("gizmo_pass.zig");
 const outline_pass_mod = @import("outline_pass.zig");
 const volumetric_fog_pass_mod = @import("volumetric_fog_pass.zig");
+const ssao_pass_mod = @import("ssao_pass.zig");
+const taa_pass_mod = @import("taa_pass.zig");
 const platform_mod = @import("../core/platform.zig");
 const selection_history_mod = @import("selection_history.zig");
 const imgui_mod = @import("../ui/imgui.zig");
@@ -214,6 +216,7 @@ const SceneViewportState = struct {
     width: u32 = 0,
     height: u32 = 0,
     hdr_color_texture: ?rhi_mod.Texture = null,
+    ssao_texture: ?rhi_mod.Texture = null,
     bloom_texture: ?rhi_mod.Texture = null,
     fxaa_texture: ?rhi_mod.Texture = null,
     color_texture: ?rhi_mod.Texture = null,
@@ -221,6 +224,9 @@ const SceneViewportState = struct {
 
     fn deinit(self: *SceneViewportState, device: *rhi_mod.RhiDevice) void {
         if (self.hdr_color_texture) |*texture| {
+            device.releaseTexture(texture);
+        }
+        if (self.ssao_texture) |*texture| {
             device.releaseTexture(texture);
         }
         if (self.bloom_texture) |*texture| {
@@ -245,7 +251,7 @@ const SceneViewportState = struct {
         }
 
         if (self.color_texture) |color_texture| {
-            if (self.depth_texture != null and self.hdr_color_texture != null and self.bloom_texture != null and self.fxaa_texture != null and color_texture.desc.width == width and color_texture.desc.height == height) {
+            if (self.depth_texture != null and self.hdr_color_texture != null and self.ssao_texture != null and self.bloom_texture != null and self.fxaa_texture != null and color_texture.desc.width == width and color_texture.desc.height == height) {
                 self.width = width;
                 self.height = height;
                 return;
@@ -263,6 +269,17 @@ const SceneViewportState = struct {
         errdefer if (self.hdr_color_texture) |*texture| {
             device.releaseTexture(texture);
             self.hdr_color_texture = null;
+        };
+
+        self.ssao_texture = try device.createTexture(.{
+            .width = width,
+            .height = height,
+            .format = .r8_unorm,
+            .usage = rhi_types.TextureUsage.color_target | rhi_types.TextureUsage.sampler,
+        });
+        errdefer if (self.ssao_texture) |*texture| {
+            device.releaseTexture(texture);
+            self.ssao_texture = null;
         };
 
         self.bloom_texture = try device.createTexture(.{
@@ -343,6 +360,13 @@ const SceneViewportState = struct {
 
     fn bloom(self: *SceneViewportState) ?*const rhi_mod.Texture {
         if (self.bloom_texture) |*texture| {
+            return texture;
+        }
+        return null;
+    }
+
+    fn ssao(self: *SceneViewportState) ?*const rhi_mod.Texture {
+        if (self.ssao_texture) |*texture| {
             return texture;
         }
         return null;
@@ -713,6 +737,10 @@ pub const Renderer = struct {
     gizmo_pass: gizmo_pass_mod.GizmoPass,
     /// 体积雾通道
     volumetric_fog_pass: volumetric_fog_pass_mod.VolumetricFogPass,
+    /// SSAO 后处理通道
+    ssao_pass: ssao_pass_mod.SSAOPass,
+    /// TAA 抗锯齿通道
+    taa_pass: taa_pass_mod.TAAPass,
     /// 色调映射通道
     tonemap_pass: tonemap_pass_mod.TonemapPass,
     /// 选择历史管理
@@ -797,6 +825,8 @@ pub const Renderer = struct {
             .outline_pass = undefined,
             .gizmo_pass = undefined,
             .volumetric_fog_pass = undefined,
+            .ssao_pass = undefined,
+            .taa_pass = undefined,
             .tonemap_pass = undefined,
             .selection_history = SelectionHistory.init(allocator, 64),
             .material_thumbnail_cache = std.StringHashMap(MaterialThumbnailCacheEntry).init(allocator),
@@ -850,6 +880,12 @@ pub const Renderer = struct {
         renderer.volumetric_fog_pass = try volumetric_fog_pass_mod.VolumetricFogPass.init(&renderer.rhi);
         errdefer renderer.volumetric_fog_pass.deinit(&renderer.rhi);
 
+        renderer.ssao_pass = try ssao_pass_mod.SSAOPass.init(&renderer.rhi);
+        errdefer renderer.ssao_pass.deinit(&renderer.rhi);
+
+        renderer.taa_pass = try taa_pass_mod.TAAPass.init(&renderer.rhi);
+        errdefer renderer.taa_pass.deinit(&renderer.rhi);
+
         renderer.fxaa_pass = try fxaa_pass_mod.FxaaPass.init(&renderer.rhi);
         errdefer renderer.fxaa_pass.deinit(&renderer.rhi);
 
@@ -880,6 +916,8 @@ pub const Renderer = struct {
         }
         self.bloom_pass.deinit(&self.rhi);
         self.volumetric_fog_pass.deinit(&self.rhi);
+        self.ssao_pass.deinit(&self.rhi);
+        self.taa_pass.deinit(&self.rhi);
         self.fxaa_pass.deinit(&self.rhi);
         self.gizmo_pass.deinit(&self.rhi);
         self.outline_pass.deinit(&self.rhi);
@@ -1380,6 +1418,38 @@ pub const Renderer = struct {
 
                     const bloom_enabled = self.editor_viewport_state.bloom_enabled and self.bloom_pass.isReady() and self.scene_viewport.bloom() != null;
                     const fxaa_enabled = self.editor_viewport_state.fxaa_enabled and self.fxaa_pass.isReady() and self.scene_viewport.fxaa() != null;
+
+                    // SSAO: render ambient occlusion to ssao_texture
+                    const ssao_enabled = self.editor_viewport_state.ssao_enabled and self.ssao_pass.isReady() and self.scene_viewport.ssao() != null and self.scene_viewport.depth() != null;
+                    if (ssao_enabled) {
+                        try self.ssao_pass.syncTextures(&self.rhi, self.scene_viewport.depth().?, null);
+                        const ssao_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.ssao().? }));
+
+                        const mat4_ssao = @import("../math/mat4.zig");
+                        const inv_proj = mat4_ssao.inverse(prepared_scene.projection_matrix) orelse mat4_ssao.identity();
+                        const inv_view = mat4_ssao.inverse(prepared_scene.view_matrix) orelse mat4_ssao.identity();
+
+                        const ssao_uniforms = ssao_pass_mod.SSAOUniforms{
+                            .projection = prepared_scene.projection_matrix,
+                            .inv_projection = inv_proj,
+                            .view = prepared_scene.view_matrix,
+                            .inv_view = inv_view,
+                            .resolution = .{ @floatFromInt(self.scene_viewport.width), @floatFromInt(self.scene_viewport.height) },
+                            .radius = self.editor_viewport_state.ssao_radius,
+                            .bias = self.editor_viewport_state.ssao_bias,
+                            .intensity = self.editor_viewport_state.ssao_intensity,
+                            .power = self.editor_viewport_state.ssao_power,
+                            .kernel_size = 16,
+                            .noise_scale = .{
+                                @as(f32, @floatFromInt(self.scene_viewport.width)) / 4.0,
+                                @as(f32, @floatFromInt(self.scene_viewport.height)) / 4.0,
+                            },
+                        };
+                        const ssao_stats = self.ssao_pass.draw(&self.rhi, frame, ssao_render_pass, ssao_uniforms);
+                        draw_stats.add(ssao_stats);
+                        self.rhi.endRenderPass(ssao_render_pass);
+                    }
+
                     if (bloom_enabled) {
                         try self.bloom_pass.syncTexture(&self.rhi, self.scene_viewport.hdrColor().?);
                         const bloom_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.bloom().? }));

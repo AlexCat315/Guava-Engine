@@ -146,6 +146,7 @@ pub const DeviceConfig = struct {
 
 pub const TextureFormat = enum {
     unknown,
+    r8_unorm,
     rgba8_unorm,
     bgra8_unorm,
     bgra8_unorm_srgb,

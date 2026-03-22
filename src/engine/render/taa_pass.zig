@@ -225,18 +225,19 @@ pub const TAAPass = struct {
         };
 
         self.pipeline = try device.createGraphicsPipeline(.{
-            .label = "TAA Pipeline",
-            .vertex_shader = self.stages.?.vertex,
-            .fragment_shader = self.stages.?.fragment,
-            .vertex_layouts = &vertex_layouts,
-            .vertex_attributes = &vertex_attributes,
-            .primitive_topology = .triangle_list,
+            .vertex_shader = &self.stages.?.vertex,
+            .fragment_shader = &self.stages.?.fragment,
+            .vertex_buffer_layouts = vertex_layouts[0..],
+            .vertex_attributes = vertex_attributes[0..],
+            .color_format = .rgba16_float,
+            .depth_format = null,
+            .primitive_type = .triangle_list,
+            .fill_mode = .fill,
             .cull_mode = .none,
+            .front_face = .counter_clockwise,
+            .depth_compare = .always,
             .depth_test = false,
             .depth_write = false,
-            .blend_enabled = false,
-            .color_format = .rgba16_float,
-            .depth_format = .invalid,
         });
     }
 };

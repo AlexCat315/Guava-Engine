@@ -224,12 +224,12 @@ pub const SSAOPass = struct {
             .width = 4,
             .height = 4,
             .format = .rgba8_unorm,
-            .usage = rhi_types.TextureUsage.sampled | rhi_types.TextureUsage.copy_dst,
+            .usage = rhi_types.TextureUsage.sampler,
         });
         errdefer if (self.noise_texture) |*texture| {
             device.releaseTexture(texture);
         };
-        try device.uploadTextureData(&self.noise_texture.?, &noise_data);
+        try device.uploadTextureData(&self.noise_texture.?, &noise_data, 4, 4);
 
         self.stages = try shader_support.loadProgramStages(device, "ssao");
         errdefer if (self.stages) |*stages| {
@@ -253,18 +253,19 @@ pub const SSAOPass = struct {
         };
 
         self.pipeline = try device.createGraphicsPipeline(.{
-            .label = "SSAO Pipeline",
-            .vertex_shader = self.stages.?.vertex,
-            .fragment_shader = self.stages.?.fragment,
-            .vertex_layouts = &vertex_layouts,
-            .vertex_attributes = &vertex_attributes,
-            .primitive_topology = .triangle_list,
+            .vertex_shader = &self.stages.?.vertex,
+            .fragment_shader = &self.stages.?.fragment,
+            .vertex_buffer_layouts = vertex_layouts[0..],
+            .vertex_attributes = vertex_attributes[0..],
+            .color_format = .r8_unorm,
+            .depth_format = null,
+            .primitive_type = .triangle_list,
+            .fill_mode = .fill,
             .cull_mode = .none,
+            .front_face = .counter_clockwise,
+            .depth_compare = .always,
             .depth_test = false,
             .depth_write = false,
-            .blend_enabled = false,
-            .color_format = .r8_unorm,
-            .depth_format = .invalid,
         });
     }
 };
