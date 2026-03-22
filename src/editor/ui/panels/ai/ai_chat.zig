@@ -74,7 +74,7 @@ fn submitInput(state: *EditorState) void {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// Header bar: connection status + AI stage + Settings button
+// Header bar: connection status + AI stage + action buttons
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 fn drawHeaderBar(state: *EditorState) void {
     const is_connected = state.ai_collaboration != null;
@@ -113,14 +113,22 @@ fn drawHeaderBar(state: *EditorState) void {
         gui.popStyleColor(1);
     }
 
-    // Settings button: right-aligned
+    // Right-aligned: [清空] [配置]
     const avail_x = gui.contentRegionAvail()[0];
-    if (avail_x > 110.0) {
-        gui.sameLineEx(0.0, avail_x - 104.0);
+    const clear_w: f32 = 44.0;
+    const config_w: f32 = 58.0;
+    const btn_gap: f32 = 6.0;
+    const total_btns = clear_w + config_w + btn_gap;
+    if (avail_x > total_btns + 16.0) {
+        gui.sameLineEx(0.0, avail_x - total_btns);
         gui.pushStyleColor(.button, .{ 0.18, 0.20, 0.24, 0.0 });
         gui.pushStyleColor(.button_hovered, .{ 0.26, 0.29, 0.34, 0.90 });
         gui.pushStyleColor(.button_active, .{ 0.20, 0.22, 0.27, 1.0 });
-        if (gui.buttonEx("配置", 102.0, 0.0)) {
+        if (gui.buttonEx("清空", clear_w, 0.0)) {
+            clearHistory();
+        }
+        gui.sameLine();
+        if (gui.buttonEx("配置", config_w, 0.0)) {
             state.ai_provider_settings_open = !state.ai_provider_settings_open;
         }
         gui.popStyleColor(3);
@@ -216,57 +224,113 @@ fn drawMessages(state: *EditorState) void {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// Provider settings (collapsible child)
+// Provider settings panel (collapsible child)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 fn drawProviderSettings(state: *EditorState) void {
     if (!state.ai_provider_settings_open) return;
 
     gui.separator();
-    _ = gui.beginChild("ai_provider_settings##jt", 0.0, 196.0, true);
+    _ = gui.beginChild("ai_provider_settings##jt", 0.0, 240.0, true);
     defer gui.endChild();
 
     gui.pushStyleColor(.text, .{ 0.78, 0.83, 0.92, 1.0 });
-    gui.text("Provider Configuration");
+    gui.text("Provider 配置");
     gui.popStyleColor(1);
-
     gui.dummy(0.0, 2.0);
 
+    // ── Provider selector: [combo ▼] [+] [×] ─────────────
+    const avail_w = gui.contentRegionAvail()[0];
+    const btn_w: f32 = 26.0;
+    const btn_gap: f32 = 4.0;
+    const combo_w = avail_w - (btn_w + btn_gap) * 2.0;
+
+    const active_idx = state.ai_active_provider;
+    const active_name = state.ai_providers[active_idx].displayName();
+    gui.setNextItemWidth(combo_w);
+    if (gui.beginCombo("##ai_prov_select", active_name)) {
+        defer gui.endCombo();
+        for (0..state.ai_provider_count) |i| {
+            gui.pushIdU64(@intCast(i));
+            defer gui.popId();
+            const name = state.ai_providers[i].displayName();
+            if (gui.selectable(name, i == active_idx, false, 0.0, 0.0)) {
+                state.ai_active_provider = i;
+            }
+            if (i == active_idx) gui.setItemDefaultFocus();
+        }
+    }
+
+    gui.sameLine();
+    if (gui.buttonEx("+", btn_w, 0.0)) {
+        if (state.ai_provider_count < state.ai_providers.len) {
+            state.ai_providers[state.ai_provider_count] = .{};
+            state.ai_active_provider = state.ai_provider_count;
+            state.ai_provider_count += 1;
+        }
+    }
+
+    gui.sameLine();
+    const can_delete = state.ai_provider_count > 1;
+    if (!can_delete) {
+        gui.pushStyleColor(.button, .{ 0.25, 0.26, 0.28, 0.50 });
+        gui.pushStyleColor(.text, .{ 0.38, 0.38, 0.40, 1.0 });
+    }
+    const did_delete = gui.buttonEx("×", btn_w, 0.0);
+    if (!can_delete) gui.popStyleColor(2);
+    if (did_delete and can_delete) {
+        var i = active_idx;
+        while (i + 1 < state.ai_provider_count) : (i += 1) {
+            state.ai_providers[i] = state.ai_providers[i + 1];
+        }
+        state.ai_provider_count -= 1;
+        if (state.ai_active_provider >= state.ai_provider_count) {
+            state.ai_active_provider = state.ai_provider_count - 1;
+        }
+    }
+
+    // ── Fields for the active provider ───────────────────
+    // Push a unique ID scope so ImGui's InputText cached state is
+    // invalidated when the user switches to a different provider.
+    gui.pushIdU64(@intCast(state.ai_active_provider));
+    defer gui.popId();
+
+    const p = &state.ai_providers[state.ai_active_provider];
+
+    gui.dummy(0.0, 2.0);
     gui.pushStyleColor(.text, .{ 0.65, 0.70, 0.78, 1.0 });
-    gui.text("Provider");
+    gui.text("Name");
     gui.popStyleColor(1);
     gui.setNextItemWidth(-1.0);
-    _ = gui.inputTextWithHint("##ai_provider_name", "OpenAI / Anthropic / ...", state.ai_provider_name_buffer[0..]);
+    _ = gui.inputTextWithHint("##name", "OpenAI / Anthropic / ...", p.name[0..]);
 
     gui.dummy(0.0, 2.0);
     gui.pushStyleColor(.text, .{ 0.65, 0.70, 0.78, 1.0 });
     gui.text("Endpoint");
     gui.popStyleColor(1);
     gui.setNextItemWidth(-1.0);
-    _ = gui.inputTextWithHint("##ai_provider_endpoint", "https://api.openai.com/v1", state.ai_provider_endpoint_buffer[0..]);
+    _ = gui.inputTextWithHint("##endpoint", "https://api.openai.com/v1", p.endpoint[0..]);
 
     gui.dummy(0.0, 2.0);
     gui.pushStyleColor(.text, .{ 0.65, 0.70, 0.78, 1.0 });
     gui.text("Model");
     gui.popStyleColor(1);
     gui.setNextItemWidth(-1.0);
-    _ = gui.inputTextWithHint("##ai_provider_model", "gpt-4o / claude-sonnet-4-20250514", state.ai_provider_model_buffer[0..]);
+    _ = gui.inputTextWithHint("##model", "gpt-4o / claude-opus-4-5", p.model[0..]);
 
     gui.dummy(0.0, 2.0);
     gui.pushStyleColor(.text, .{ 0.65, 0.70, 0.78, 1.0 });
     gui.text("API Key");
     gui.popStyleColor(1);
-
-    const toggle_width: f32 = 84.0;
-    const spacing: f32 = 6.0;
-    gui.setNextItemWidth(gui.contentRegionAvail()[0] - toggle_width - spacing);
+    const toggle_w: f32 = 50.0;
+    const key_gap: f32 = 6.0;
+    gui.setNextItemWidth(gui.contentRegionAvail()[0] - toggle_w - key_gap);
     if (state.ai_provider_api_key_visible) {
-        _ = gui.inputTextWithHint("##ai_provider_api_key", "sk-...", state.ai_provider_api_key_buffer[0..]);
+        _ = gui.inputTextWithHint("##apikey", "sk-...", p.api_key[0..]);
     } else {
-        _ = gui.inputTextPassword("##ai_provider_api_key", state.ai_provider_api_key_buffer[0..]);
+        _ = gui.inputTextPassword("##apikey", p.api_key[0..]);
     }
-
     gui.sameLine();
-    if (gui.buttonEx(if (state.ai_provider_api_key_visible) "隐藏" else "显示", toggle_width, 0.0)) {
+    if (gui.buttonEx(if (state.ai_provider_api_key_visible) "隐藏" else "显示", toggle_w, 0.0)) {
         state.ai_provider_api_key_visible = !state.ai_provider_api_key_visible;
     }
 }

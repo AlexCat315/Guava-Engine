@@ -104,9 +104,11 @@ pub fn drawInspectorPropertyRow(label: []const u8, label_color: ?[4]f32) void {
 }
 
 pub fn resetDockLayout(state: *EditorState) void {
-    gui.resetDefaultLayout();
-    gui.saveLayout();
-    state.dock_layout_initialized = true;
+    // DockBuilder ops (RemoveNode/AddNode/SplitNode/DockWindow) must happen
+    // immediately AFTER DockSpaceOverViewport() in the same frame, not scattered
+    // mid-frame after panels have already been rendered.  Setting this flag to
+    // false defers the actual rebuild to the top of the next frame in layer.zig.
+    state.dock_layout_initialized = false;
 }
 
 pub fn loadAnimationDockLayout(state: *EditorState) void {

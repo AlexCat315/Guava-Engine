@@ -211,6 +211,23 @@ pub const AiPreviewRuntime = struct {
     }
 };
 
+pub const max_ai_providers: usize = 8;
+
+/// Per-provider configuration stored in EditorState.
+pub const AiProviderConfig = struct {
+    name: [64]u8 = [_]u8{0} ** 64,
+    endpoint: [256]u8 = [_]u8{0} ** 256,
+    model: [128]u8 = [_]u8{0} ** 128,
+    api_key: [256]u8 = [_]u8{0} ** 256,
+
+    /// Returns the human-readable name as a slice (up to the first NUL).
+    /// Falls back to "New Provider" when the name buffer is empty.
+    pub fn displayName(self: *const AiProviderConfig) []const u8 {
+        const len = std.mem.indexOfScalar(u8, self.name[0..], 0) orelse self.name.len;
+        return if (len > 0) self.name[0..len] else "New Provider";
+    }
+};
+
 pub const EditorState = struct {
     allocator: ?std.mem.Allocator = null,
     ai_collaboration: ?*engine.mcp.collaboration.Store = null,
@@ -320,10 +337,9 @@ pub const EditorState = struct {
     animation_editor_open: bool = false,
     ai_chat_open: bool = false,
     ai_provider_settings_open: bool = true,
-    ai_provider_name_buffer: [128]u8 = [_]u8{0} ** 128,
-    ai_provider_endpoint_buffer: [256]u8 = [_]u8{0} ** 256,
-    ai_provider_model_buffer: [128]u8 = [_]u8{0} ** 128,
-    ai_provider_api_key_buffer: [256]u8 = [_]u8{0} ** 256,
+    ai_providers: [max_ai_providers]AiProviderConfig = [_]AiProviderConfig{.{}} ** max_ai_providers,
+    ai_provider_count: usize = 1,
+    ai_active_provider: usize = 0,
     ai_provider_api_key_visible: bool = false,
     layout_template_name_buffer: [128]u8 = [_]u8{0} ** 128,
     layout_templates: std.ArrayList(LayoutTemplateEntry) = .empty,

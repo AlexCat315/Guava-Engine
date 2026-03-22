@@ -232,6 +232,7 @@ pub const EditorLayer = struct {
         if (!self.state.dock_layout_initialized) {
             std.log.info("Editor: Initializing default dock layout", .{});
             gui.resetDefaultLayout();
+            gui.saveLayout();
             self.state.dock_layout_initialized = true;
         }
         try viewport.drawEditorUi(&self.state, layer_context);
