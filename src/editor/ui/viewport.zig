@@ -220,7 +220,6 @@ fn drawTransformSpaceButton(state: *EditorState, layer_context: *engine.core.Lay
 }
 
 fn drawViewportModeZone(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
-    _ = layer_context;
     gui.pushStyleVarVec2(.item_spacing, .{ 4.0, 4.0 });
     defer gui.popStyleVar(1);
 
@@ -233,8 +232,10 @@ fn drawViewportModeZone(state: *EditorState, layer_context: *engine.core.LayerCo
     gui.sameLine();
     if (drawModeButton("PathTrace##viewport_mode_pathtrace", path_trace_active, 108.0)) {
         state.viewport_pipeline_mode = .path_trace;
-        // PathTrace v1 先走 textured 显示，后端再切换到真正的路径追踪输出。
         state.viewport_render_mode = .textured;
+        // 切换到 PathTrace 时强制同步当前场景状态并重新渲染，
+        // 而 Raster 模式中的操作不会影响 PathTrace 渐进状态。
+        layer_context.renderer.resetPathTraceState();
     }
 }
 

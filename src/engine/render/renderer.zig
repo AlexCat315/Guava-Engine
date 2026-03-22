@@ -1353,6 +1353,17 @@ pub const Renderer = struct {
         self.preview_entity_filter.clearRetainingCapacity();
     }
 
+    /// Reset progressive path trace state so the next frame in PathTrace mode
+    /// starts a fresh render.  Called on explicit Raster→PathTrace mode switch.
+    pub fn resetPathTraceState(self: *Renderer) void {
+        self.path_trace_state.reset(self.allocator);
+        // Zero out last_view_projection so change detection triggers re-cache
+        self.path_trace_state.last_view_projection = mat4_mod.identity();
+        self.path_trace_state.last_samples = 0;
+        self.path_trace_state.last_bounces = 0;
+        self.path_trace_state.last_resolution_scale = 0.0;
+    }
+
     pub fn setEditorViewportState(self: *Renderer, state: EditorViewportState) void {
         if (g_logged_postfx_state == null or
             g_logged_postfx_state.?.exposure_enabled != state.exposure_enabled or
