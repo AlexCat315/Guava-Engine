@@ -161,7 +161,7 @@ pub const TonemapPass = struct {
             .lut_params = .{
                 if (lut_enabled) 1.0 else 0.0,
                 std.math.clamp(lut_intensity, 0.0, 1.0),
-                0.0,
+                1.0, // enable sRGB gamma correction
                 0.0,
             },
         };

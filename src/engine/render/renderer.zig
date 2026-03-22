@@ -59,6 +59,7 @@ const depth_prepass_mod = @import("depth_prepass.zig");
 const id_pass_mod = @import("id_pass.zig");
 const gizmo_pass_mod = @import("gizmo_pass.zig");
 const outline_pass_mod = @import("outline_pass.zig");
+const volumetric_fog_pass_mod = @import("volumetric_fog_pass.zig");
 const platform_mod = @import("../core/platform.zig");
 const selection_history_mod = @import("selection_history.zig");
 const imgui_mod = @import("../ui/imgui.zig");
@@ -293,7 +294,7 @@ const SceneViewportState = struct {
             .width = width,
             .height = height,
             .format = .d32_float,
-            .usage = rhi_types.TextureUsage.depth_stencil_target,
+            .usage = rhi_types.TextureUsage.depth_stencil_target | rhi_types.TextureUsage.sampler,
         });
         errdefer if (self.depth_texture) |*texture| {
             device.releaseTexture(texture);
@@ -702,6 +703,8 @@ pub const Renderer = struct {
     outline_pass: outline_pass_mod.OutlinePass,
     /// Gizmo 通道（编辑器可视化）
     gizmo_pass: gizmo_pass_mod.GizmoPass,
+    /// 体积雾通道
+    volumetric_fog_pass: volumetric_fog_pass_mod.VolumetricFogPass,
     /// 色调映射通道
     tonemap_pass: tonemap_pass_mod.TonemapPass,
     /// 选择历史管理
@@ -783,6 +786,7 @@ pub const Renderer = struct {
             .fxaa_pass = undefined,
             .outline_pass = undefined,
             .gizmo_pass = undefined,
+            .volumetric_fog_pass = undefined,
             .tonemap_pass = undefined,
             .selection_history = SelectionHistory.init(allocator, 64),
             .material_thumbnail_cache = std.StringHashMap(MaterialThumbnailCacheEntry).init(allocator),
@@ -833,6 +837,9 @@ pub const Renderer = struct {
         renderer.bloom_pass = try bloom_pass_mod.BloomPass.init(&renderer.rhi);
         errdefer renderer.bloom_pass.deinit(&renderer.rhi);
 
+        renderer.volumetric_fog_pass = try volumetric_fog_pass_mod.VolumetricFogPass.init(&renderer.rhi);
+        errdefer renderer.volumetric_fog_pass.deinit(&renderer.rhi);
+
         renderer.fxaa_pass = try fxaa_pass_mod.FxaaPass.init(&renderer.rhi);
         errdefer renderer.fxaa_pass.deinit(&renderer.rhi);
 
@@ -862,6 +869,7 @@ pub const Renderer = struct {
             pass.deinit(&self.rhi);
         }
         self.bloom_pass.deinit(&self.rhi);
+        self.volumetric_fog_pass.deinit(&self.rhi);
         self.fxaa_pass.deinit(&self.rhi);
         self.gizmo_pass.deinit(&self.rhi);
         self.outline_pass.deinit(&self.rhi);
@@ -1319,6 +1327,44 @@ pub const Renderer = struct {
                 self.rhi.endRenderPass(scene_pass);
 
                 if (viewport_active) {
+                    // Volumetric fog: composite onto HDR color before bloom/tonemap
+                    const fog_enabled = self.editor_viewport_state.volumetric_fog_enabled and self.volumetric_fog_pass.isReady() and self.scene_viewport.hdrColor() != null;
+                    if (fog_enabled) {
+                        if (self.shadow_map.depth_texture) |*shadow_tex| {
+                            try self.volumetric_fog_pass.syncTextures(&self.rhi, self.scene_viewport.depth().?, shadow_tex);
+                            const fog_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(.{ .texture = self.scene_viewport.hdrColor().? }));
+
+                            const mat4_mod = @import("../math/mat4.zig");
+                            const inv_vp = mat4_mod.inverse(prepared_scene.view_projection) orelse mat4_mod.identity();
+
+                            // Extract directional light data
+                            var light_dir = [4]f32{ 0.0, -1.0, 0.0, 0.0 };
+                            var light_col = [4]f32{ 1.0, 1.0, 1.0, 1.0 };
+                            if (prepared_scene.lights.directional_lights.len > 0) {
+                                const main_light = prepared_scene.lights.directional_lights[0];
+                                light_dir = .{ main_light.direction[0], main_light.direction[1], main_light.direction[2], 0.0 };
+                                light_col = .{ main_light.color[0], main_light.color[1], main_light.color[2], main_light.intensity };
+                            }
+
+                            const fog_uniforms = volumetric_fog_pass_mod.VolumetricFogUniforms{
+                                .inv_view_projection = inv_vp,
+                                .light_space_matrix = prepared_scene.light_space_matrix,
+                                .camera_position = prepared_scene.camera_world_position,
+                                .light_direction = light_dir,
+                                .light_color = light_col,
+                                .fog_params = .{
+                                    self.editor_viewport_state.volumetric_fog_density,
+                                    self.editor_viewport_state.volumetric_fog_height_falloff,
+                                    self.editor_viewport_state.volumetric_fog_max_distance,
+                                    32.0,
+                                },
+                            };
+                            const fog_stats = self.volumetric_fog_pass.draw(&self.rhi, frame, fog_render_pass, fog_uniforms);
+                            draw_stats.add(fog_stats);
+                            self.rhi.endRenderPass(fog_render_pass);
+                        }
+                    }
+
                     const bloom_enabled = self.editor_viewport_state.bloom_enabled and self.bloom_pass.isReady() and self.scene_viewport.bloom() != null;
                     const fxaa_enabled = self.editor_viewport_state.fxaa_enabled and self.fxaa_pass.isReady() and self.scene_viewport.fxaa() != null;
                     if (bloom_enabled) {

@@ -71,6 +71,11 @@ pub const EditorViewportState = struct {
     color_grading_contrast: f32 = 1.0,
     color_grading_gamma: f32 = 1.0,
     fxaa_enabled: bool = false,
+    // 体积雾
+    volumetric_fog_enabled: bool = false,
+    volumetric_fog_density: f32 = 0.02,
+    volumetric_fog_height_falloff: f32 = 0.1,
+    volumetric_fog_max_distance: f32 = 100.0,
     lut_enabled: bool = false,
     lut_intensity: f32 = 1.0,
     lut_preset: EditorViewportLutPreset = .neutral,
