@@ -691,9 +691,11 @@ pub const World = struct {
             if (self.dynamic_renderables.getPtr(id)) |state| {
                 state.steady_query_count = 0;
                 _ = self.dynamic_dirty_renderables.put(id, {}) catch {};
-                self.dynamic_renderable_spatial_index.markDirty();
+                // 不直接 markDirty() 整个 BVH，让 refitDirtyDynamicRenderables()
+                // 先尝试增量 updateItemBounds()，只在失败时才退回全量重建。
             } else if (self.promoteRenderableToDynamic(id)) {
                 _ = self.dynamic_dirty_renderables.put(id, {}) catch {};
+                // 新晋升的动态实体需要全量重建以插入 BVH。
                 self.dynamic_renderable_spatial_index.markDirty();
             } else {
                 self.renderable_spatial_index.markDirty();
