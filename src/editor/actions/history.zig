@@ -79,6 +79,16 @@ pub fn appendTimelineEvent(
         var removed = state.timeline_entries.orderedRemove(0);
         removed.deinit(allocator);
     }
+
+    if (state.ai_collaboration) |store| {
+        const collaboration_source: engine.mcp.collaboration.IntentSource = switch (source) {
+            .human => .human,
+            .ai => .ai,
+        };
+        store.recordCommandTimeline(collaboration_source, label, detail, command_kind) catch |err| {
+            std.log.warn("failed to record command timeline entry: {s}", .{@errorName(err)});
+        };
+    }
 }
 
 pub fn resetSnapshotHistory(state: *EditorState, layer_context: *engine.core.LayerContext) !void {

@@ -18,6 +18,7 @@ const menu_bar = @import("menu_bar.zig");
 const render_settings = @import("panels/rendering/render_settings.zig");
 const settings = @import("panels/rendering/settings.zig");
 const material_editor = @import("panels/assets/material_editor.zig");
+const timeline_mod = @import("../actions/command.zig");
 const viewport_status = @import("panels/viewport/viewport_status.zig");
 const ai_chat = @import("panels/ai/ai_chat.zig");
 const ui_icons = @import("icons.zig");
@@ -513,6 +514,56 @@ pub fn drawStatusBarWindow(state: *EditorState, layer_context: *engine.core.Laye
     }
 }
 
+fn drawCommandTimelineWindow(state: *EditorState) !void {
+    _ = gui.beginWindowFlags(
+        "Command Timeline##command_timeline_panel",
+        gui.WindowFlags.no_collapse,
+    );
+    defer gui.endWindow();
+
+    var summary_buffer: [96]u8 = undefined;
+    const summary = try std.fmt.bufPrint(&summary_buffer, "entries: {d}", .{state.timeline_entries.items.len});
+    gui.text(summary);
+    gui.separator();
+
+    if (state.timeline_entries.items.len == 0) {
+        gui.textWrapped("No command timeline entries yet.");
+        return;
+    }
+
+    if (!gui.beginTable("command_timeline_table", 4)) {
+        return;
+    }
+    defer gui.endTable();
+
+    gui.tableSetupColumn("#", false, 60.0);
+    gui.tableSetupColumn("Source", false, 80.0);
+    gui.tableSetupColumn("Label", false, 180.0);
+    gui.tableSetupColumn("Detail", true, 1.0);
+    gui.tableHeadersRow();
+
+    var remaining = state.timeline_entries.items.len;
+    while (remaining > 0) {
+        remaining -= 1;
+        const entry = state.timeline_entries.items[remaining];
+
+        gui.tableNextRow();
+        gui.tableNextColumn();
+        var seq_buffer: [32]u8 = undefined;
+        const seq_text = std.fmt.bufPrint(&seq_buffer, "{d}", .{entry.sequence}) catch "0";
+        gui.text(seq_text);
+
+        gui.tableNextColumn();
+        gui.textColored(entry.source.colorRgba(), @tagName(entry.source));
+
+        gui.tableNextColumn();
+        gui.text(entry.label);
+
+        gui.tableNextColumn();
+        gui.textWrapped(entry.detail);
+    }
+}
+
 pub fn handleViewportSelection(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const input = layer_context.input;
     if (input.wasMousePressed(.left)) {
@@ -597,13 +648,19 @@ pub fn drawEditorUi(state: *EditorState, layer_context: *engine.core.LayerContex
     syncViewportState(state, layer_context);
     try applyPendingViewportAssetDrop(state, layer_context);
     syncPlaybackState(state, layer_context);
+
+    // Phase 2 UI refactor baseline: keep collaboration-critical panels visible and stable.
+    state.ai_chat_open = true;
+
     try menu_bar.drawMenuBar(state, layer_context);
     try drawViewportWindow(state, layer_context);
-    try drawStatusBarWindow(state, layer_context);
     try scene_hierarchy.drawSceneWindow(state, layer_context);
     try place_actors.drawPlaceActorsWindow(state, layer_context);
     try inspector.drawInspectorWindow(state, layer_context);
     try content_browser.drawContentBrowser(state, layer_context);
+    try ai_chat.drawAiChatPanel(state);
+    try drawCommandTimelineWindow(state);
+    try drawStatusBarWindow(state, layer_context);
     if (state.render_settings_open) {
         try render_settings.drawRenderSettingsWindow(state, layer_context);
     }
@@ -612,9 +669,6 @@ pub fn drawEditorUi(state: *EditorState, layer_context: *engine.core.LayerContex
     }
     if (state.material_editor_open) {
         try material_editor.drawMaterialEditorWindow(state, layer_context);
-    }
-    if (state.ai_chat_open) {
-        try ai_chat.drawAiChatPanel(state);
     }
 }
 

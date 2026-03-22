@@ -108,8 +108,7 @@ fn roleLabel(role: Role) []const u8 {
 }
 
 pub fn drawAiChatPanel(state: *EditorState) !void {
-    var title_buffer: [80]u8 = undefined;
-    const title = try state.windowLabel(&title_buffer, .ai_chat, "ai_chat_panel");
+    const title = "Jarvis Terminal##ai_chat_panel";
     var open = state.ai_chat_open;
     _ = gui.beginWindowOpen(title, &open);
     defer gui.endWindow();

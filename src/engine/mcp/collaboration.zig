@@ -163,6 +163,14 @@ const IntentEntry = struct {
     detail: LongText = .{},
 };
 
+const CommandTimelineEntry = struct {
+    sequence: u64 = 0,
+    source: IntentSource = .human,
+    label: MediumText = .{},
+    detail: LongText = .{},
+    command_kind: ShortText = .{},
+};
+
 pub const CommandEntry = struct {
     tool_name: []u8,
     command: command_mod.Command,
@@ -359,8 +367,10 @@ pub const Store = struct {
     mutex: std.Thread.Mutex = .{},
     context: ContextSnapshot = .{},
     intent_log: std.ArrayList(IntentEntry) = .empty,
+    command_timeline: std.ArrayList(CommandTimelineEntry) = .empty,
     staged: StagedTransaction = .{},
     next_intent_sequence: u64 = 1,
+    next_command_timeline_sequence: u64 = 1,
     next_transaction_id: u64 = 1,
 
     pub fn init(allocator: std.mem.Allocator) Store {
@@ -374,7 +384,26 @@ pub const Store = struct {
         defer self.mutex.unlock();
         self.context.deinit(self.allocator);
         self.intent_log.deinit(self.allocator);
+        self.command_timeline.deinit(self.allocator);
         self.staged.deinit(self.allocator);
+    }
+
+    pub fn recordCommandTimeline(self: *Store, source: IntentSource, label: []const u8, detail: []const u8, command_kind: []const u8) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.command_timeline.items.len >= 256) {
+            _ = self.command_timeline.orderedRemove(0);
+        }
+
+        try self.command_timeline.append(self.allocator, .{
+            .sequence = self.next_command_timeline_sequence,
+            .source = source,
+            .label = textFromSlice(MediumText, label),
+            .detail = textFromSlice(LongText, detail),
+            .command_kind = textFromSlice(ShortText, command_kind),
+        });
+        self.next_command_timeline_sequence += 1;
     }
 
     pub fn updateContext(self: *Store, args: UpdateContextArgs) !void {
@@ -984,23 +1013,25 @@ pub const Store = struct {
             color_rgba: [4]f32,
             label: []const u8,
             detail: []const u8,
+            command_kind: []const u8,
         };
         const Payload = struct {
             count: usize,
             items: []const TimelineItemView,
         };
 
-        const items = try allocator.alloc(TimelineItemView, mutable.intent_log.items.len);
+        const items = try allocator.alloc(TimelineItemView, mutable.command_timeline.items.len);
         defer allocator.free(items);
 
-        for (mutable.intent_log.items, 0..) |entry, index| {
+        for (mutable.command_timeline.items, 0..) |entry, index| {
             items[index] = .{
                 .sequence = entry.sequence,
                 .source = @tagName(entry.source),
                 .color_hex = timelineColorHexForSource(entry.source),
                 .color_rgba = timelineColorRgbaForSource(entry.source),
-                .label = entry.action.slice(),
+                .label = entry.label.slice(),
                 .detail = entry.detail.slice(),
+                .command_kind = entry.command_kind.slice(),
             };
         }
 
