@@ -928,6 +928,9 @@ pub const Renderer = struct {
     material_thumbnail_requests: std.ArrayList([]u8) = .empty,
     /// 编辑器 staged preview scene
     preview_scene: ?*const scene_mod.Scene = null,
+    /// AI Ghost Highlight: 实体 ID 列表（最多 16 个），显示紫色呼吸灯轮廓
+    ai_focus_entity_ids: [16]scene_mod.EntityId = .{0} ** 16,
+    ai_focus_entity_count: usize = 0,
 
     /// 初始化渲染器
     ///
@@ -1117,6 +1120,18 @@ pub const Renderer = struct {
             .mode = mode,
         });
         self.selection_seeded = true;
+    }
+
+    /// 设置 AI 聚焦实体（Ghost Highlight），渲染时显示紫色呼吸灯轮廓
+    pub fn setAiFocusEntities(self: *Renderer, ids: []const scene_mod.EntityId) void {
+        const count = @min(ids.len, self.ai_focus_entity_ids.len);
+        @memcpy(self.ai_focus_entity_ids[0..count], ids[0..count]);
+        self.ai_focus_entity_count = count;
+    }
+
+    /// 清除 AI 聚焦实体列表
+    pub fn clearAiFocusEntities(self: *Renderer) void {
+        self.ai_focus_entity_count = 0;
     }
 
     pub fn selectedEntity(self: *const Renderer) ?scene_mod.EntityId {

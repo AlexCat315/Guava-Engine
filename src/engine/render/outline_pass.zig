@@ -116,6 +116,39 @@ pub const OutlinePass = struct {
         return stats;
     }
 
+    /// Draw outlines with a custom color (used for AI Ghost Highlight — purple pulse).
+    pub fn drawWithColor(
+        self: *OutlinePass,
+        device: *rhi_mod.RhiDevice,
+        frame: rhi_mod.Frame,
+        pass: rhi_mod.RenderPass,
+        entities: []const scene_mod.EntityId,
+        color: [4]f32,
+    ) mesh_pass_mod.DrawStats {
+        var stats = mesh_pass_mod.DrawStats{};
+        if (!self.isReady() or self.bind_group == null or entities.len == 0) {
+            return stats;
+        }
+
+        device.bindGraphicsPipeline(pass, &self.pipeline.?);
+        device.bindVertexBuffer(pass, 0, &self.fullscreen_vertex_buffer.?, 0);
+        device.bindGroup(pass, &self.bind_group.?);
+
+        for (entities) |entity_id| {
+            var uniforms = OutlineUniforms{
+                .selected_entity_color = id_pass_mod.encodeEntityIdColor(entity_id),
+                .outline_color = color,
+            };
+
+            device.pushFragmentUniformData(frame, 0, std.mem.asBytes(&uniforms));
+            device.drawPrimitives(pass, fullscreen_triangle.len, 1, 0, 0);
+
+            stats.draw_calls += 1;
+            stats.triangles_drawn += 1;
+        }
+        return stats;
+    }
+
     fn createResources(self: *OutlinePass, device: *rhi_mod.RhiDevice) !void {
         self.fullscreen_vertex_buffer = try device.createBuffer(.{
             .size = @sizeOf(FullscreenVertex) * fullscreen_triangle.len,
