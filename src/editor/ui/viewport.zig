@@ -515,14 +515,20 @@ pub fn drawStatusBarWindow(state: *EditorState, layer_context: *engine.core.Laye
 }
 
 fn drawCommandTimelineWindow(state: *EditorState) !void {
-    _ = gui.beginWindowFlags(
+    var open = state.command_timeline_open;
+    _ = gui.beginWindowFlagsOpen(
         "Command Timeline##command_timeline_panel",
+        &open,
         gui.WindowFlags.no_collapse,
     );
     defer gui.endWindow();
+    state.command_timeline_open = open;
+    if (!open) {
+        return;
+    }
 
     var summary_buffer: [96]u8 = undefined;
-    const summary = try std.fmt.bufPrint(&summary_buffer, "entries: {d}", .{state.timeline_entries.items.len});
+    const summary = try std.fmt.bufPrint(&summary_buffer, "Entries: {d}", .{state.timeline_entries.items.len});
     gui.text(summary);
     gui.separator();
 
@@ -531,36 +537,59 @@ fn drawCommandTimelineWindow(state: *EditorState) !void {
         return;
     }
 
-    if (!gui.beginTable("command_timeline_table", 4)) {
+    if (!gui.beginChild("command_timeline_lane", 0.0, 66.0, true)) {
         return;
     }
-    defer gui.endTable();
+    defer gui.endChild();
 
-    gui.tableSetupColumn("#", false, 60.0);
-    gui.tableSetupColumn("Source", false, 80.0);
-    gui.tableSetupColumn("Label", false, 180.0);
-    gui.tableSetupColumn("Detail", true, 1.0);
-    gui.tableHeadersRow();
+    for (state.timeline_entries.items, 0..) |entry, index| {
+        if (index > 0) {
+            gui.sameLine();
+            gui.pushStyleColor(.text, .{ 0.44, 0.48, 0.56, 1.0 });
+            gui.text("->");
+            gui.popStyleColor(1);
+            gui.sameLine();
+        }
 
-    var remaining = state.timeline_entries.items.len;
-    while (remaining > 0) {
-        remaining -= 1;
-        const entry = state.timeline_entries.items[remaining];
+        const palette = switch (entry.source) {
+            .human => ui_icons.ButtonPalette{
+                .button = .{ 0.16, 0.34, 0.66, 0.88 },
+                .hovered = .{ 0.20, 0.41, 0.77, 0.96 },
+                .active = .{ 0.13, 0.28, 0.54, 1.0 },
+            },
+            .ai => ui_icons.ButtonPalette{
+                .button = .{ 0.47, 0.28, 0.72, 0.88 },
+                .hovered = .{ 0.56, 0.33, 0.84, 0.96 },
+                .active = .{ 0.38, 0.22, 0.60, 1.0 },
+            },
+        };
 
-        gui.tableNextRow();
-        gui.tableNextColumn();
-        var seq_buffer: [32]u8 = undefined;
-        const seq_text = std.fmt.bufPrint(&seq_buffer, "{d}", .{entry.sequence}) catch "0";
-        gui.text(seq_text);
+        var node_label_buffer: [192]u8 = undefined;
+        const node_label = std.fmt.bufPrint(
+            &node_label_buffer,
+            "#{d} {s}",
+            .{ entry.sequence, entry.label },
+        ) catch entry.label;
 
-        gui.tableNextColumn();
-        gui.textColored(entry.source.colorRgba(), @tagName(entry.source));
+        gui.pushStyleColor(.button, palette.button);
+        gui.pushStyleColor(.button_hovered, palette.hovered);
+        gui.pushStyleColor(.button_active, palette.active);
+        gui.pushStyleVarVec2(.frame_padding, .{ 10.0, 6.0 });
+        defer {
+            gui.popStyleVar(1);
+            gui.popStyleColor(3);
+        }
 
-        gui.tableNextColumn();
-        gui.text(entry.label);
-
-        gui.tableNextColumn();
-        gui.textWrapped(entry.detail);
+        _ = gui.buttonEx(node_label, 0.0, 0.0);
+        if (gui.isItemHovered()) {
+            var tip_buffer: [320]u8 = undefined;
+            const tip_text = std.fmt.bufPrint(
+                &tip_buffer,
+                "[{s}] {s}\n{s}",
+                .{ @tagName(entry.source), entry.command_kind, entry.detail },
+            ) catch entry.detail;
+            gui.setTooltip(tip_text);
+        }
     }
 }
 
@@ -648,9 +677,6 @@ pub fn drawEditorUi(state: *EditorState, layer_context: *engine.core.LayerContex
     syncViewportState(state, layer_context);
     try applyPendingViewportAssetDrop(state, layer_context);
     syncPlaybackState(state, layer_context);
-
-    // Phase 2 UI refactor baseline: keep collaboration-critical panels visible and stable.
-    state.ai_chat_open = true;
 
     try menu_bar.drawMenuBar(state, layer_context);
     try drawViewportWindow(state, layer_context);

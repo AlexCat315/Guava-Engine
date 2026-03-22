@@ -114,6 +114,7 @@ pub const EditorLayer = struct {
         self.state.dock_layout_initialized = false;
         self.state.scene_camera = layer_context.world.primaryCameraEntity();
         self.state.ai_chat_open = true;
+        self.state.command_timeline_open = true;
 
         // Initialize animation editor state
         self.animation_editor_state = try animation_editor.createAnimationEditorState(layer_context.world.allocator);

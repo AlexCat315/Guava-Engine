@@ -297,6 +297,7 @@ pub const EditorState = struct {
     editor_utilities_open: bool = false,
     animation_editor_open: bool = false,
     ai_chat_open: bool = false,
+    command_timeline_open: bool = true,
     ai_provider_settings_open: bool = false,
     ai_provider_name_buffer: [128]u8 = [_]u8{0} ** 128,
     ai_provider_endpoint_buffer: [256]u8 = [_]u8{0} ** 256,

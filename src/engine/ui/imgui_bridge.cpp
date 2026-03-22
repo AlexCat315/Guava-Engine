@@ -285,31 +285,49 @@ void build_default_dock_layout() {
 
   ImGuiID dock_main = g_dockspace_id;
 
-  // Left panel - Place Actors (expanded from 12% to 18% for better readability)
-  ImGuiID dock_left = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Left,
-                                                  0.18f, nullptr, &dock_main);
+    // Global frame split: left tooling rail, right inspector rail, center viewport,
+    // and a full-width bottom shelf for content browser / console.
+    ImGuiID dock_left =
+      ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Left, 0.20f, nullptr,
+                    &dock_main);
+    ImGuiID dock_right =
+      ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Right, 0.27f, nullptr,
+                    &dock_main);
+    ImGuiID dock_bottom =
+      ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Down, 0.24f, nullptr,
+                    &dock_main);
+    ImGuiID dock_viewport = dock_main;
 
-  // Right panel - Scene + Details (adjusted to 26% for better balance)
-  ImGuiID dock_right = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Right,
-                                                   0.26f, nullptr, &dock_main);
-  ImGuiID dock_scene = ImGui::DockBuilderSplitNode(dock_right, ImGuiDir_Up,
-                                                   0.50f, nullptr, &dock_right);
-  ImGuiID dock_details = dock_right;
+    // Left rail: Place Actors (top) + Command Timeline (middle) + Jarvis (bottom).
+    ImGuiID dock_left_bottom = dock_left;
+    ImGuiID dock_place_actors =
+      ImGui::DockBuilderSplitNode(dock_left, ImGuiDir_Up, 0.46f, nullptr,
+                    &dock_left_bottom);
+    ImGuiID dock_left_tail = dock_left_bottom;
+    ImGuiID dock_timeline =
+      ImGui::DockBuilderSplitNode(dock_left_bottom, ImGuiDir_Up, 0.38f,
+                    nullptr, &dock_left_tail);
+    ImGuiID dock_jarvis = dock_left_tail;
 
-  // Bottom panel - Content Browser
-  ImGuiID dock_bottom = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Down,
-                                                    0.22f, nullptr, &dock_main);
-  ImGuiID dock_viewport = dock_main;
+    // Right rail: Scene hierarchy (top) + Inspector details (bottom).
+    ImGuiID dock_right_bottom = dock_right;
+    ImGuiID dock_scene =
+      ImGui::DockBuilderSplitNode(dock_right, ImGuiDir_Up, 0.55f, nullptr,
+                    &dock_right_bottom);
+    ImGuiID dock_details = dock_right_bottom;
 
-  // Dock windows to their respective areas
-  ImGui::DockBuilderDockWindow("Viewport###viewport_panel", dock_viewport);
-  ImGui::DockBuilderDockWindow("Place Actors###place_actors_panel", dock_left);
-  ImGui::DockBuilderDockWindow("Scene###scene_panel", dock_scene);
-  ImGui::DockBuilderDockWindow("Details###details_panel", dock_details);
-  ImGui::DockBuilderDockWindow("Content Browser###content_browser_panel",
-                               dock_bottom);
-  ImGui::DockBuilderDockWindow("AI Utilities###editor_utilities_panel",
-                               dock_bottom);
+    ImGui::DockBuilderDockWindow("Viewport###viewport_panel", dock_viewport);
+    ImGui::DockBuilderDockWindow("Place Actors###place_actors_panel",
+                   dock_place_actors);
+    ImGui::DockBuilderDockWindow("Command Timeline##command_timeline_panel",
+                   dock_timeline);
+    ImGui::DockBuilderDockWindow("Jarvis Terminal##ai_chat_panel", dock_jarvis);
+    ImGui::DockBuilderDockWindow("Scene###scene_panel", dock_scene);
+    ImGui::DockBuilderDockWindow("Details###details_panel", dock_details);
+    ImGui::DockBuilderDockWindow("Content Browser###content_browser_panel",
+                   dock_bottom);
+    ImGui::DockBuilderDockWindow("AI Utilities###editor_utilities_panel",
+                   dock_bottom);
   ImGui::DockBuilderFinish(g_dockspace_id);
 }
 
@@ -328,31 +346,41 @@ void build_animation_dock_layout() {
 
   ImGuiID dock_main = g_dockspace_id;
 
-  // Left panel (compressed)
-  ImGuiID dock_left = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Left,
-                                                  0.10f, nullptr, &dock_main);
+    ImGuiID dock_left =
+      ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Left, 0.16f, nullptr,
+                    &dock_main);
+    ImGuiID dock_right =
+      ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Right, 0.26f, nullptr,
+                    &dock_main);
+    ImGuiID dock_bottom =
+      ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Down, 0.32f, nullptr,
+                    &dock_main);
+    ImGuiID dock_viewport = dock_main;
 
-  // Right panel
-  ImGuiID dock_right = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Right,
-                                                   0.24f, nullptr, &dock_main);
-  ImGuiID dock_scene = ImGui::DockBuilderSplitNode(dock_right, ImGuiDir_Up,
-                                                   0.50f, nullptr, &dock_right);
-  ImGuiID dock_details = dock_right;
+    ImGuiID dock_left_bottom = dock_left;
+    ImGuiID dock_place_actors =
+      ImGui::DockBuilderSplitNode(dock_left, ImGuiDir_Up, 0.52f, nullptr,
+                    &dock_left_bottom);
+    ImGuiID dock_timeline = dock_left_bottom;
 
-  // Bottom panel
-  ImGuiID dock_bottom = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Down,
-                                                     0.30f, nullptr, &dock_main);
-  ImGuiID dock_viewport = dock_main;
+    ImGuiID dock_right_bottom = dock_right;
+    ImGuiID dock_scene =
+      ImGui::DockBuilderSplitNode(dock_right, ImGuiDir_Up, 0.52f, nullptr,
+                    &dock_right_bottom);
+    ImGuiID dock_details = dock_right_bottom;
 
-  // Dock windows
-  ImGui::DockBuilderDockWindow("Viewport###viewport_panel", dock_viewport);
-  ImGui::DockBuilderDockWindow("Place Actors###place_actors_panel", dock_left);
-  ImGui::DockBuilderDockWindow("Scene###scene_panel", dock_scene);
-  ImGui::DockBuilderDockWindow("Details###details_panel", dock_details);
-  ImGui::DockBuilderDockWindow("Content Browser###content_browser_panel",
-                               dock_bottom);
-  ImGui::DockBuilderDockWindow("AI Utilities###editor_utilities_panel",
-                               dock_bottom);
+    ImGui::DockBuilderDockWindow("Viewport###viewport_panel", dock_viewport);
+    ImGui::DockBuilderDockWindow("Place Actors###place_actors_panel",
+                   dock_place_actors);
+    ImGui::DockBuilderDockWindow("Command Timeline##command_timeline_panel",
+                   dock_timeline);
+    ImGui::DockBuilderDockWindow("Scene###scene_panel", dock_scene);
+    ImGui::DockBuilderDockWindow("Details###details_panel", dock_details);
+    ImGui::DockBuilderDockWindow("Content Browser###content_browser_panel",
+                   dock_bottom);
+    ImGui::DockBuilderDockWindow("AI Utilities###editor_utilities_panel",
+                   dock_bottom);
+    ImGui::DockBuilderDockWindow("Jarvis Terminal##ai_chat_panel", dock_bottom);
   ImGui::DockBuilderFinish(g_dockspace_id);
 }
 
