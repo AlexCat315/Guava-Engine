@@ -14,51 +14,91 @@ const layout = @import("../ui/layout.zig");
 
 const AssetKind = state_mod.AssetKind;
 const AssetEntry = state_mod.AssetEntry;
-const BottomPanelTab = state_mod.BottomPanelTab;
+const BottomWorkspaceTab = state_mod.BottomWorkspaceTab;
 const asset_drag_preview_icon_size: f32 = 24.0;
 
 pub fn drawContentBrowser(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
-    var title_buffer: [96]u8 = undefined;
-    const title = try state.windowLabel(&title_buffer, .content_browser, "content_browser_panel");
-    _ = gui.beginWindow(title);
+    _ = gui.beginWindow("Workspace##content_browser_panel");
     defer gui.endWindow();
 
-    try drawBottomTabs(state);
+    try drawWorkspaceShellHeader(state);
     gui.separator();
 
-    switch (state.bottom_panel_tab) {
+    switch (state.bottom_workspace_tab) {
         .project => try drawProjectPanel(state, layer_context),
         .console => try console.drawConsolePanel(state),
         .command_timeline => try command_timeline.drawCommandTimelinePanel(state, layer_context),
+        .ai_assistant => try drawAiAssistantTab(state),
     }
 }
 
-fn drawBottomTabs(state: *EditorState) !void {
+fn drawAiAssistantTab(state: *EditorState) !void {
+    _ = state;
+    gui.dummy(0.0, 8.0);
+    gui.pushStyleColor(.text, .{ 0.60, 0.34, 0.90, 1.0 });
+    gui.text("Jarvis AI Assistant");
+    gui.popStyleColor(1);
+    gui.dummy(0.0, 4.0);
+    gui.pushStyleColor(.text, .{ 0.55, 0.60, 0.68, 1.0 });
+    gui.textWrapped("AI terminal is docked in the right sidebar. Use the Jarvis Terminal panel for chat, or open it via Window > Jarvis Terminal.");
+    gui.popStyleColor(1);
+}
+
+fn drawWorkspaceShellHeader(state: *EditorState) !void {
+    gui.pushStyleVarVec2(.item_spacing, .{ 8.0, 6.0 });
+    defer gui.popStyleVar(1);
+
+    gui.pushStyleColor(.text, .{ 0.78, 0.82, 0.88, 1.0 });
+    gui.text("Workspace");
+    gui.popStyleColor(1);
+
     const available_width = gui.contentRegionAvail()[0];
+    const stacked = available_width < 388.0;
+    const tab_total_width = if (stacked)
+        available_width
+    else
+        std.math.clamp(available_width * 0.58, 268.0, 456.0);
+
+    if (!stacked) {
+        gui.sameLine();
+        const trailing_width = gui.contentRegionAvail()[0] - tab_total_width;
+        if (trailing_width > 8.0) {
+            gui.dummy(trailing_width, 1.0);
+            gui.sameLine();
+        }
+    } else {
+        gui.dummy(0.0, 4.0);
+    }
+
+    try drawBottomTabs(state, tab_total_width);
+}
+
+fn drawBottomTabs(state: *EditorState, total_width: f32) !void {
+    const available_width = total_width;
     // 3 tabs: need at least 3*84 + 2*8 = 268 px for horizontal layout
     const stacked = available_width < 268.0;
     const tab_width = if (stacked)
         available_width
     else
         std.math.clamp((available_width - 16.0) / 3.0, 84.0, 140.0);
-    if (drawTabButton(state, .project, state.text(.project), tab_width)) {
-        state.bottom_panel_tab = .project;
+    if (drawTabButton(state, .project, "Project", tab_width)) {
+        state.bottom_workspace_tab = .project;
     }
     if (!stacked) {
         gui.sameLine();
     } else {
         gui.dummy(0.0, 4.0);
     }
-    if (drawTabButton(state, .console, state.text(.console), tab_width)) {
-        state.bottom_panel_tab = .console;
+    if (drawTabButton(state, .console, "Console", tab_width)) {
+        state.bottom_workspace_tab = .console;
     }
     if (!stacked) {
         gui.sameLine();
     } else {
         gui.dummy(0.0, 4.0);
     }
-    if (drawTabButton(state, .command_timeline, state.text(.command_timeline), tab_width)) {
-        state.bottom_panel_tab = .command_timeline;
+    if (drawTabButton(state, .command_timeline, "Timeline", tab_width)) {
+        state.bottom_workspace_tab = .command_timeline;
     }
 }
 
@@ -105,8 +145,8 @@ fn drawAssetDragSource(state: *EditorState, entry: AssetEntry, index: usize, pre
     }
 }
 
-fn drawTabButton(state: *EditorState, tab: BottomPanelTab, label: []const u8, width: f32) bool {
-    const active = state.bottom_panel_tab == tab;
+fn drawTabButton(state: *EditorState, tab: BottomWorkspaceTab, label: []const u8, width: f32) bool {
+    const active = state.bottom_workspace_tab == tab;
     const palette = if (active) ui_icons.palettes.toolbar_active else ui_icons.palettes.toolbar_idle;
 
     gui.pushStyleColor(.button, palette.button);

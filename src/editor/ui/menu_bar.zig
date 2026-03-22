@@ -98,8 +98,18 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
         if (gui.menuItem("Jarvis Terminal", null, state.ai_chat_open, true)) {
             state.ai_chat_open = !state.ai_chat_open;
         }
-        if (gui.menuItem("Command Timeline", null, state.bottom_panel_tab == .command_timeline, true)) {
-            state.bottom_panel_tab = .command_timeline;
+        if (gui.menuItem("Command Timeline", null, state.bottom_workspace_tab == .command_timeline, true)) {
+            state.bottom_workspace_tab = .command_timeline;
+        }
+        if (gui.menuItem("Project Browser", null, state.bottom_workspace_tab == .project, true)) {
+            state.bottom_workspace_tab = .project;
+        }
+        if (gui.menuItem("Console", null, state.bottom_workspace_tab == .console, true)) {
+            state.bottom_workspace_tab = .console;
+        }
+        gui.separator();
+        if (gui.menuItem("Ghost Highlight (AI Outline)", null, state.ghost_highlight_enabled, true)) {
+            state.ghost_highlight_enabled = !state.ghost_highlight_enabled;
         }
         gui.separator();
         if (gui.menuItem(state.text(.material_editor), null, state.material_editor_open, true)) {

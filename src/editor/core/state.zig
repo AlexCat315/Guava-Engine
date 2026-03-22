@@ -97,10 +97,11 @@ pub const LayoutTemplateEntry = struct {
     path: []u8,
 };
 
-pub const BottomPanelTab = enum {
+pub const BottomWorkspaceTab = enum {
     project,
     console,
     command_timeline,
+    ai_assistant,
 };
 
 pub const FpsDisplayMode = enum {
@@ -291,7 +292,19 @@ pub const EditorState = struct {
     // Material thumbnail render queue (asset IDs pending render)
     material_thumbnail_queue: std.ArrayList([]const u8) = .empty,
 
-    bottom_panel_tab: BottomPanelTab = .project,
+    bottom_workspace_tab: BottomWorkspaceTab = .project,
+    shell_show_left_sidebar: bool = true,
+    shell_show_right_sidebar: bool = true,
+    shell_show_bottom_workspace: bool = true,
+    shell_left_sidebar_width: f32 = 320.0,
+    shell_right_sidebar_width: f32 = 380.0,
+    shell_bottom_workspace_height: f32 = 260.0,
+    shell_dense_mode: bool = false,
+    ghost_highlight_enabled: bool = true,
+    ghost_highlight_pulse_speed: f32 = 1.85,
+    ghost_highlight_alpha_min: f32 = 0.30,
+    ghost_highlight_alpha_max: f32 = 0.92,
+    ghost_highlight_show_preview_selection_only: bool = false,
     fps_display_mode: FpsDisplayMode = .viewport,
     console_show_errors: bool = true,
     console_show_warnings: bool = true,

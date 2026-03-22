@@ -719,20 +719,51 @@ pub fn drawEditorUi(state: *EditorState, layer_context: *engine.core.LayerContex
     try applyPendingViewportAssetDrop(state, layer_context);
     syncPlaybackState(state, layer_context);
 
+    // ── Shell Layer 1: Top Bar ────────────────────────────────────────────
     try menu_bar.drawMenuBar(state, layer_context);
+
+    // ── Shell Layer 2: Main Workspace (center + left + right panels) ──────
     try drawViewportWindow(state, layer_context);
+    try drawLeftSidebar(state, layer_context);
+    try drawRightSidebar(state, layer_context);
+
+    // ── Shell Layer 3: Bottom Workspace ───────────────────────────────────
+    try content_browser.drawContentBrowser(state, layer_context);
+
+    // ── Shell Layer 4: Auxiliary / Floating Windows ───────────────────────
+    try drawAuxiliaryWindows(state, layer_context);
+
+    // ── Shell Layer 5: Status Bar (pinned bottom) ─────────────────────────
+    try drawStatusBarWindow(state, layer_context);
+}
+
+/// Left sidebar: Scene Hierarchy + Place Actors
+fn drawLeftSidebar(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     try scene_hierarchy.drawSceneWindow(state, layer_context);
     try place_actors.drawPlaceActorsWindow(state, layer_context);
+}
+
+/// Right sidebar: Inspector / Details
+fn drawRightSidebar(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     try inspector.drawInspectorWindow(state, layer_context);
-    try content_browser.drawContentBrowser(state, layer_context);
+}
+
+/// Auxiliary floating / tool windows (toggled via state flags)
+fn drawAuxiliaryWindows(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    // AI assistant
     try ai_chat.drawAiChatPanel(state);
-    try drawStatusBarWindow(state, layer_context);
+
+    // Rendering tools
     if (state.render_settings_open) {
         try render_settings.drawRenderSettingsWindow(state, layer_context);
     }
+
+    // Editor settings
     if (state.settings_open) {
         try settings.drawSettingsWindow(state, layer_context);
     }
+
+    // Asset tools
     if (state.material_editor_open) {
         try material_editor.drawMaterialEditorWindow(state, layer_context);
     }
@@ -1261,23 +1292,32 @@ fn drawViewportAiStateOverlayWindow(state: *EditorState) void {
     const store = state.ai_collaboration orelse return;
     const ai_status = store.aiStatusSnapshot();
 
-    const stage_label = switch (ai_status.stage) {
-        .ready => "AI Ready",
-        .analyzing_screenshot => "Analyzing Screenshot",
-        .compiling_shader => "Compiling Shader",
-        .waiting_approval => "Waiting Approval",
+    // Only show capsule when AI is actively doing something or waiting approval.
+    // Hide when ready to keep the viewport uncluttered.
+    const show = ai_status.stage != .ready;
+    if (!show) return;
+
+    const stage_label: []const u8 = switch (ai_status.stage) {
+        .ready => return,
+        .analyzing_screenshot => "👀  Analyzing Screenshot...",
+        .compiling_shader => "⚙  Compiling Shader...",
+        .waiting_approval => "◆  Waiting Approval",
     };
 
+    // Background colour: green→blue→amber→purple by stage
     const base_color: [4]f32 = switch (ai_status.stage) {
         .ready => .{ 0.20, 0.56, 0.36, 0.88 },
-        .analyzing_screenshot => .{ 0.18, 0.42, 0.62, 0.90 },
-        .compiling_shader => .{ 0.46, 0.34, 0.18, 0.90 },
-        .waiting_approval => .{ 0.43, 0.24, 0.66, 0.92 },
+        .analyzing_screenshot => .{ 0.14, 0.38, 0.58, 0.90 },
+        .compiling_shader => .{ 0.42, 0.30, 0.12, 0.90 },
+        .waiting_approval => .{ 0.38, 0.18, 0.60, 0.94 },
     };
 
-    const pulse = 0.07 * (std.math.sin(gui.time() * 3.2) + 1.0);
+    // Pulse speed: faster when waiting approval to draw attention
+    const pulse_speed: f32 = if (ai_status.stage == .waiting_approval) 2.6 else 3.2;
+    const pulse = 0.06 * (std.math.sin(gui.time() * pulse_speed) + 1.0);
     const bg_alpha = std.math.clamp(base_color[3] + pulse, 0.0, 1.0);
-    const overlay_width = 260.0;
+
+    const overlay_width: f32 = if (ai_status.stage == .waiting_approval) 320.0 else 280.0;
     gui.setNextWindowPos(.{
         state.viewport_origin[0] + @max((state.viewport_extent[0] - overlay_width) * 0.5, 12.0),
         state.viewport_origin[1] + 10.0,
@@ -1299,9 +1339,35 @@ fn drawViewportAiStateOverlayWindow(state: *EditorState) void {
         state.viewport_overlay_hovered = true;
     }
 
-    gui.pushStyleColor(.text, .{ 0.95, 0.96, 0.99, 1.0 });
-    defer gui.popStyleColor(1);
+    // Stage label
+    gui.pushStyleColor(.text, .{ 0.96, 0.97, 1.0, 1.0 });
     gui.text(stage_label);
+    gui.popStyleColor(1);
+
+    // Detail line (when available)
+    if (ai_status.detail.len > 0) {
+        const detail = ai_status.detail.slice();
+        // Clamp detail to one line
+        const max_chars: usize = 44;
+        gui.pushStyleColor(.text, .{ 0.74, 0.78, 0.86, 0.90 });
+        if (detail.len <= max_chars) {
+            gui.text(detail);
+        } else {
+            var short: [max_chars + 3]u8 = undefined;
+            @memcpy(short[0..max_chars], detail[0..max_chars]);
+            @memcpy(short[max_chars..], "...");
+            gui.text(&short);
+        }
+        gui.popStyleColor(1);
+    }
+
+    // Ghost Highlight indicator when waiting approval and enabled
+    if (ai_status.stage == .waiting_approval and state.ghost_highlight_enabled) {
+        const ghost_pulse = 0.45 + 0.55 * @abs(std.math.sin(gui.time() * state.ghost_highlight_pulse_speed));
+        gui.pushStyleColor(.text, .{ 0.75 * ghost_pulse, 0.38 * ghost_pulse, 1.0 * ghost_pulse, 1.0 });
+        gui.text("◆ Ghost Highlight active");
+        gui.popStyleColor(1);
+    }
 }
 
 fn logViewportStateChange(state: *const EditorState, layer_context: *const engine.core.LayerContext) void {

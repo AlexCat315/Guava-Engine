@@ -1680,11 +1680,25 @@ pub const Renderer = struct {
                     }
 
                     const selected_entities = self.selection_history.currentSelection();
-                    if (self.outline_pass.isReady() and self.id_pass.texture() != null and selected_entities.len > 0) {
+                    const ai_focus_entities = self.ai_focus_entity_ids[0..self.ai_focus_entity_count];
+                    if (self.outline_pass.isReady() and self.id_pass.texture() != null and (selected_entities.len > 0 or ai_focus_entities.len > 0)) {
                         try self.outline_pass.syncTexture(&self.rhi, self.id_pass.texture().?);
                         const outline_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(scene_color_target));
                         const outline_start = std.time.nanoTimestamp();
-                        const outline_stats = self.outline_pass.draw(&self.rhi, frame, outline_pass, selected_entities);
+                        var outline_stats = mesh_pass_mod.DrawStats{};
+                        if (selected_entities.len > 0) {
+                            outline_stats.add(self.outline_pass.draw(&self.rhi, frame, outline_pass, selected_entities));
+                        }
+                        if (ai_focus_entities.len > 0) {
+                            const pulse = 0.65 + 0.35 * @sin(@as(f32, @floatCast(@as(f64, @floatFromInt(std.time.milliTimestamp())) / 220.0)));
+                            outline_stats.add(self.outline_pass.drawWithColor(
+                                &self.rhi,
+                                frame,
+                                outline_pass,
+                                ai_focus_entities,
+                                .{ 0.70, 0.35, 1.0, pulse },
+                            ));
+                        }
                         self.graph.recordPassStat(pass_stats, .outline_pass, durationNs(outline_start, std.time.nanoTimestamp()), outline_stats.draw_calls, outline_stats.triangles_drawn);
                         draw_stats.add(outline_stats);
                         self.rhi.endRenderPass(outline_pass);

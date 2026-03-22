@@ -2,6 +2,7 @@ const std = @import("std");
 const engine = @import("guava");
 const gui = @import("../ui/gui.zig");
 const camera = @import("../interaction/camera.zig");
+const history = @import("../actions/history.zig");
 const state_mod = @import("../core/state.zig");
 
 const collaboration_mod = engine.mcp.collaboration;
@@ -12,7 +13,10 @@ pub fn beginFrame(state: *EditorState) void {
 }
 
 pub fn syncContext(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
-    const store = state.ai_collaboration orelse return;
+    const store = state.ai_collaboration orelse {
+        layer_context.renderer.clearAiFocusEntities();
+        return;
+    };
     const viewport_size = layer_context.renderer.sceneViewportSize();
     const center_ray = if (viewport_size[0] > 0 and viewport_size[1] > 0)
         camera.activeCameraRayFromViewportPixel(
@@ -41,6 +45,8 @@ pub fn syncContext(state: *EditorState, layer_context: *engine.core.LayerContext
         .selected_asset = buildSelectedAsset(state),
         .pending_viewport_drop = buildPendingViewportDrop(state),
     });
+
+    syncGhostHighlight(state, layer_context, store);
 }
 
 pub fn syncPreviewWorld(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -48,6 +54,7 @@ pub fn syncPreviewWorld(state: *EditorState, layer_context: *engine.core.LayerCo
         layer_context.renderer.setPreviewScene(null);
         layer_context.renderer.setPreviewGizmoTransform(null);
         layer_context.renderer.clearPreviewEntityFilter();
+        layer_context.renderer.clearAiFocusEntities();
         return;
     };
 
@@ -57,6 +64,7 @@ pub fn syncPreviewWorld(state: *EditorState, layer_context: *engine.core.LayerCo
         layer_context.renderer.setPreviewScene(null);
         layer_context.renderer.setPreviewGizmoTransform(null);
         layer_context.renderer.clearPreviewEntityFilter();
+        layer_context.renderer.clearAiFocusEntities();
         return;
     };
     const allocator = state.allocator orelse layer_context.world.allocator;
@@ -72,6 +80,7 @@ pub fn syncPreviewWorld(state: *EditorState, layer_context: *engine.core.LayerCo
         layer_context.renderer.setPreviewScene(null);
         layer_context.renderer.setPreviewGizmoTransform(null);
         layer_context.renderer.clearPreviewEntityFilter();
+        layer_context.renderer.clearAiFocusEntities();
         return;
     }
 
@@ -290,14 +299,35 @@ fn drawPreviewCard(
     gui.text(summary);
 
     if (gui.buttonEx("Apply Preview##ai_stage_apply", 136.0, 0.0)) {
-        _ = try store.applyStagedTransaction(layer_context.world, .human);
+        const result = try store.applyStagedTransaction(layer_context.world, .human);
+        if (result.had_transaction) {
+            var label_buffer: [96]u8 = undefined;
+            const label = std.fmt.bufPrint(&label_buffer, "Apply AI Preview #{d}", .{result.transaction_id orelse 0}) catch "Apply AI Preview";
+            var detail_buffer: [160]u8 = undefined;
+            const detail = std.fmt.bufPrint(
+                &detail_buffer,
+                "commands={d} changed={d} errors={d}",
+                .{ result.command_count, result.changed_count, result.error_count },
+            ) catch "applied staged transaction";
+            try history.appendTimelineEvent(state, .human, label, detail, "applied_transaction");
+            try history.captureSnapshotWithSource(state, layer_context, .human);
+        }
         clearPreviewSelection(state, layer_context);
+        layer_context.renderer.clearAiFocusEntities();
         state.viewport_overlay_hovered = true;
     }
     gui.sameLine();
     if (gui.buttonEx("Discard##ai_stage_discard", 112.0, 0.0)) {
-        _ = store.discardStagedTransaction(.human);
+        const result = store.discardStagedTransaction(.human);
+        if (result.had_transaction) {
+            var label_buffer: [96]u8 = undefined;
+            const label = std.fmt.bufPrint(&label_buffer, "Discard AI Preview #{d}", .{result.transaction_id orelse 0}) catch "Discard AI Preview";
+            var detail_buffer: [128]u8 = undefined;
+            const detail = std.fmt.bufPrint(&detail_buffer, "commands={d}", .{result.command_count}) catch "discarded staged transaction";
+            try history.appendTimelineEvent(state, .human, label, detail, "discarded_transaction");
+        }
         clearPreviewSelection(state, layer_context);
+        layer_context.renderer.clearAiFocusEntities();
         state.viewport_overlay_hovered = true;
     }
 
@@ -427,6 +457,53 @@ fn notePreviewSelection(state: *EditorState, entity_id: ?engine.scene.EntityId) 
     store.recordIntent(.human, "preview_selection_changed", detail) catch |err| {
         std.log.warn("failed to record preview selection intent: {s}", .{@errorName(err)});
     };
+}
+
+fn syncGhostHighlight(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    store: *collaboration_mod.Store,
+) void {
+    if (!state.ghost_highlight_enabled) {
+        layer_context.renderer.clearAiFocusEntities();
+        return;
+    }
+
+    const snapshot = store.overlaySnapshot();
+    if (!snapshot.active) {
+        layer_context.renderer.clearAiFocusEntities();
+        return;
+    }
+
+    var focus_entities: [16]engine.scene.EntityId = .{0} ** 16;
+    var count: usize = 0;
+
+    if (state.ai_preview_selected_entity) |selected_entity| {
+        focus_entities[count] = selected_entity;
+        count += 1;
+    }
+
+    for (state.ai_preview_entities.items) |entity_id| {
+        if (count >= focus_entities.len) break;
+        var exists = false;
+        for (focus_entities[0..count]) |existing| {
+            if (existing == entity_id) {
+                exists = true;
+                break;
+            }
+        }
+        if (!exists) {
+            focus_entities[count] = entity_id;
+            count += 1;
+        }
+    }
+
+    if (count == 0) {
+        layer_context.renderer.clearAiFocusEntities();
+        return;
+    }
+
+    layer_context.renderer.setAiFocusEntities(focus_entities[0..count]);
 }
 
 fn previewEntityLabel(state: *const EditorState, entity_id: engine.scene.EntityId) ?[]const u8 {

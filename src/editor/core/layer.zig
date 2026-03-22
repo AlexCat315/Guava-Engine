@@ -24,66 +24,84 @@ const prefab_editor = @import("../ui/panels/assets/prefab_editor.zig");
 const camera_bookmarks = @import("../ui/panels/viewport/camera_bookmarks.zig");
 
 fn initEditorStyle() void {
-    // 采用更沉稳、现代的深灰色调，精简强调色应用以减少视觉疲劳
-    const accent_primary = .{ 0.20, 0.60, 0.45, 1.0 }; // 调暗的翡翠绿，更专业
-    const accent_hover = .{ 0.25, 0.70, 0.55, 1.0 };
-    const accent_active = .{ 0.15, 0.50, 0.35, 1.0 };
-    const accent_dimmed = .{ 0.20, 0.60, 0.45, 0.25 }; // 更淡的背景高亮
+    // Phase 2 shell redesign:
+    // 建立统一的深色编辑器基调，并为 AI 协作态预留更明确的紫色强调层级。
+    const accent_primary = .{ 0.22, 0.62, 0.48, 1.0 };
+    const accent_hover = .{ 0.29, 0.72, 0.58, 1.0 };
+    const accent_active = .{ 0.16, 0.52, 0.38, 1.0 };
+    const accent_dimmed = .{ 0.22, 0.62, 0.48, 0.22 };
 
-    // 中性灰阶体系 - 提升纵深感，减少绿色冲击
-    const bg_mid = .{ 0.11, 0.12, 0.13, 1.0 }; // 主背景
-    const bg_light = .{ 0.15, 0.16, 0.17, 1.0 }; // 浮窗背景
-    const bg_frame = .{ 0.08, 0.09, 0.10, 1.0 }; // 控件背景
+    const ai_accent = .{ 0.60, 0.34, 0.90, 1.0 };
+    const ai_accent_dimmed = .{ 0.60, 0.34, 0.90, 0.22 };
 
-    const text_main = .{ 0.85, 0.87, 0.90, 1.0 };
-    const text_dim = .{ 0.55, 0.58, 0.62, 1.0 };
+    const bg_base = .{ 0.09, 0.10, 0.11, 1.0 };
+    const bg_mid = .{ 0.11, 0.12, 0.14, 1.0 };
+    const bg_light = .{ 0.14, 0.15, 0.18, 1.0 };
+    const bg_panel = .{ 0.12, 0.13, 0.15, 1.0 };
+    const bg_frame = .{ 0.08, 0.09, 0.10, 1.0 };
+    const bg_frame_hover = .{ 0.15, 0.17, 0.20, 1.0 };
+    const bg_frame_active = .{ 0.18, 0.20, 0.24, 1.0 };
 
-    // 强调色精简应用
+    const text_main = .{ 0.89, 0.91, 0.94, 1.0 };
+    const text_dim = .{ 0.58, 0.62, 0.68, 1.0 };
+    const border_subtle = .{ 0.18, 0.20, 0.24, 1.0 };
+
+    gui.setStyleColor(@intFromEnum(gui.Col.text), text_main);
+    gui.setStyleColor(@intFromEnum(gui.Col.text_disabled), text_dim);
+    gui.setStyleColor(@intFromEnum(gui.Col.window_bg), bg_mid);
+    gui.setStyleColor(@intFromEnum(gui.Col.child_bg), bg_panel);
+    gui.setStyleColor(@intFromEnum(gui.Col.popup_bg), bg_light);
+    gui.setStyleColor(@intFromEnum(gui.Col.modal_window_dim_bg), .{ 0.03, 0.04, 0.05, 0.76 });
+
+    gui.setStyleColor(@intFromEnum(gui.Col.border), border_subtle);
+    gui.setStyleColor(@intFromEnum(gui.Col.border), .{ 0.0, 0.0, 0.0, 0.0 });
+    gui.setStyleColor(@intFromEnum(gui.Col.separator), border_subtle);
+    gui.setStyleColor(@intFromEnum(gui.Col.separator_hovered), accent_hover);
+    gui.setStyleColor(@intFromEnum(gui.Col.separator_active), accent_primary);
+
+    gui.setStyleColor(@intFromEnum(gui.Col.frame_bg), bg_frame);
+    gui.setStyleColor(@intFromEnum(gui.Col.frame_bg_hovered), bg_frame_hover);
+    gui.setStyleColor(@intFromEnum(gui.Col.frame_bg_active), bg_frame_active);
+
+    gui.setStyleColor(@intFromEnum(gui.Col.title_bg), bg_base);
+    gui.setStyleColor(@intFromEnum(gui.Col.title_bg_active), bg_base);
+    gui.setStyleColor(@intFromEnum(gui.Col.title_bg_collapsed), bg_base);
+
+    gui.setStyleColor(@intFromEnum(gui.Col.menu_bar_bg), bg_base);
+    gui.setStyleColor(@intFromEnum(gui.Col.scrollbar_bg), bg_base);
+    gui.setStyleColor(@intFromEnum(gui.Col.scrollbar_grab), .{ 0.22, 0.24, 0.28, 1.0 });
+    gui.setStyleColor(@intFromEnum(gui.Col.scrollbar_grab_hovered), .{ 0.28, 0.31, 0.36, 1.0 });
+    gui.setStyleColor(@intFromEnum(gui.Col.scrollbar_grab_active), .{ 0.34, 0.38, 0.44, 1.0 });
+
     gui.setStyleColor(@intFromEnum(gui.Col.header), accent_dimmed);
     gui.setStyleColor(@intFromEnum(gui.Col.header_hovered), accent_hover);
     gui.setStyleColor(@intFromEnum(gui.Col.header_active), accent_primary);
 
-    // Tab 样式优化 - 仅激活状态显示强调色
-    gui.setStyleColor(@intFromEnum(gui.Col.tab), .{ 0.11, 0.12, 0.13, 0.0 });
-    gui.setStyleColor(@intFromEnum(gui.Col.tab_active), accent_primary);
-    gui.setStyleColor(@intFromEnum(gui.Col.tab_hovered), accent_hover);
-    gui.setStyleColor(@intFromEnum(gui.Col.tab_unfocused), .{ 0.11, 0.12, 0.13, 0.0 });
-    gui.setStyleColor(@intFromEnum(gui.Col.tab_unfocused_active), .{ 0.15, 0.16, 0.17, 1.0 });
+    gui.setStyleColor(@intFromEnum(gui.Col.button), .{ 0.17, 0.18, 0.21, 1.0 });
+    gui.setStyleColor(@intFromEnum(gui.Col.button_hovered), .{ 0.23, 0.25, 0.30, 1.0 });
+    gui.setStyleColor(@intFromEnum(gui.Col.button_active), accent_primary);
+
+    gui.setStyleColor(@intFromEnum(gui.Col.tab), .{ 0.13, 0.14, 0.17, 1.0 });
+    gui.setStyleColor(@intFromEnum(gui.Col.tab_hovered), .{ 0.22, 0.24, 0.30, 1.0 });
+    gui.setStyleColor(@intFromEnum(gui.Col.tab_active), .{ 0.18, 0.21, 0.26, 1.0 });
+    gui.setStyleColor(@intFromEnum(gui.Col.tab_unfocused), .{ 0.11, 0.12, 0.14, 1.0 });
+    gui.setStyleColor(@intFromEnum(gui.Col.tab_unfocused_active), .{ 0.15, 0.17, 0.21, 1.0 });
+
+    gui.setStyleColor(@intFromEnum(gui.Col.docking_preview), accent_dimmed);
+    gui.setStyleColor(@intFromEnum(gui.Col.drag_drop_target), ai_accent);
+    gui.setStyleColor(@intFromEnum(gui.Col.nav_highlight), ai_accent);
+    gui.setStyleColor(@intFromEnum(gui.Col.text_selected_bg), ai_accent_dimmed);
 
     gui.setStyleColor(@intFromEnum(gui.Col.slider_grab), accent_primary);
     gui.setStyleColor(@intFromEnum(gui.Col.slider_grab_active), accent_active);
     gui.setStyleColor(@intFromEnum(gui.Col.check_mark), accent_primary);
-
-    // 按钮样式调整 - 降低默认亮度
-    gui.setStyleColor(@intFromEnum(gui.Col.button), .{ 0.18, 0.19, 0.21, 1.0 });
-    gui.setStyleColor(@intFromEnum(gui.Col.button_hovered), .{ 0.24, 0.25, 0.28, 1.0 });
-    gui.setStyleColor(@intFromEnum(gui.Col.button_active), accent_primary);
-
-    // 背景体系
-    gui.setStyleColor(@intFromEnum(gui.Col.text), text_main);
-    gui.setStyleColor(@intFromEnum(gui.Col.text_disabled), text_dim);
-    gui.setStyleColor(@intFromEnum(gui.Col.window_bg), bg_mid);
-    gui.setStyleColor(@intFromEnum(gui.Col.child_bg), bg_frame);
-    gui.setStyleColor(@intFromEnum(gui.Col.frame_bg), bg_frame);
-    gui.setStyleColor(@intFromEnum(gui.Col.popup_bg), bg_light);
-    gui.setStyleColor(@intFromEnum(gui.Col.modal_window_dim_bg), .{ 0.05, 0.05, 0.06, 0.7 });
-
-    // 边框与间距优化
-    gui.setStyleVarFloat(100, 0.0); // WindowBorderSize
-    gui.setStyleVarFloat(101, 1.0); // FrameBorderSize
-    gui.setStyleVarFloat(102, 3.0); // FrameRounding
-
-    // 分割线颜色调暗
-    gui.setStyleColor(@intFromEnum(gui.Col.separator), .{ 0.15, 0.16, 0.18, 1.0 });
-    gui.setStyleColor(@intFromEnum(gui.Col.separator_hovered), accent_hover);
-    gui.setStyleColor(@intFromEnum(gui.Col.separator_active), accent_primary);
-
-    gui.setStyleColor(@intFromEnum(gui.Col.text_selected_bg), .{ 0.20, 0.60, 0.45, 0.35 });
-    gui.setStyleColor(@intFromEnum(gui.Col.drag_drop_target), accent_primary);
-    gui.setStyleColor(@intFromEnum(gui.Col.docking_preview), accent_dimmed);
+    gui.setStyleColor(@intFromEnum(gui.Col.resize_grip), .{ 0.00, 0.00, 0.00, 0.0 });
     gui.setStyleColor(@intFromEnum(gui.Col.resize_grip_hovered), accent_hover);
-    gui.setStyleColor(@intFromEnum(gui.Col.resize_grip_active), accent_primary);
-    gui.setStyleColor(@intFromEnum(gui.Col.nav_highlight), accent_primary);
+    gui.setStyleColor(@intFromEnum(gui.Col.resize_grip_active), ai_accent);
+
+    gui.setStyleVarFloat(100, 1.0); // WindowBorderSize
+    gui.setStyleVarFloat(101, 1.0); // FrameBorderSize
+    gui.setStyleVarFloat(102, 5.0); // FrameRounding
 }
 
 pub const EditorLayer = struct {

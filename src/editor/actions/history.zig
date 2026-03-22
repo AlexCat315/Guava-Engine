@@ -20,6 +20,22 @@ pub fn captureSnapshot(state: *EditorState, layer_context: *engine.core.LayerCon
     return captureSnapshotWithSource(state, layer_context, .human);
 }
 
+pub fn captureSnapshotWithLabel(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    label: []const u8,
+    detail: []const u8,
+    source: command_mod.TimelineSource,
+) !void {
+    const before_count = state.undo_stack.items.len;
+    try captureSnapshotWithSource(state, layer_context, source);
+    const after_count = state.undo_stack.items.len;
+    // Only append a labelled timeline entry when the snapshot actually produced a new command.
+    if (after_count > before_count) {
+        try appendTimelineEvent(state, source, label, detail, "scene_snapshot");
+    }
+}
+
 pub fn captureSnapshotWithSource(
     state: *EditorState,
     layer_context: *engine.core.LayerContext,

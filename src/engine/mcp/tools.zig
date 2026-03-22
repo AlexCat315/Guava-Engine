@@ -10,6 +10,7 @@ const resources_mod = @import("resources/mod.zig");
 const scene_mod = @import("../scene/scene.zig");
 const components = @import("../scene/components.zig");
 const wasm_compiler = @import("../script/wasm_compiler.zig");
+const screenshot_tool = @import("screenshot_tool.zig");
 
 pub const Error = error{
     ToolNotFound,

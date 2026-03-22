@@ -222,6 +222,12 @@ const Server = struct {
                 null;
             const arguments_value = if (arguments) |value| std.json.Value{ .object = value } else null;
 
+            // Handle screenshot_png tool: requires renderer access from MCP sync layer
+            if (std.mem.eql(u8, tool_name.?, "screenshot_png")) {
+                try writeErrorResponse(stdout_file, id, protocol.ErrorCode.internal_error, "screenshot_png tool requires render context. Capture screenshot manually or use editor viewport export.", null);
+                return false;
+            }
+
             if (collaboration_mod.isToolName(tool_name.?)) {
                 var response = self.collaboration_bridge.submitJson(tool_name.?, arguments_value) catch |err| switch (err) {
                     error.ToolNotFound => {
@@ -647,6 +653,15 @@ fn writeToolList(stdout_file: *std.fs.File, id: std.json.Value) !void {
             .{
                 .name = "discard_staged_transaction",
                 .description = "Discard the active staged transaction and clear the ghost preview.",
+                .inputSchema = .{
+                    .type = "object",
+                    .properties = .{},
+                    .required = &.{},
+                },
+            },
+            .{
+                .name = "screenshot_png",
+                .description = "Capture current viewport rendering as PNG and return base64-encoded data URI.",
                 .inputSchema = .{
                     .type = "object",
                     .properties = .{},
