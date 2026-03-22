@@ -292,7 +292,7 @@ pub const EditorState = struct {
     // Material thumbnail render queue (asset IDs pending render)
     material_thumbnail_queue: std.ArrayList([]const u8) = .empty,
 
-    bottom_workspace_tab: BottomWorkspaceTab = .project,
+    bottom_workspace_tab: BottomWorkspaceTab = .command_timeline,
     shell_show_left_sidebar: bool = true,
     shell_show_right_sidebar: bool = true,
     shell_show_bottom_workspace: bool = true,
@@ -323,6 +323,7 @@ pub const EditorState = struct {
     ai_provider_name_buffer: [128]u8 = [_]u8{0} ** 128,
     ai_provider_endpoint_buffer: [256]u8 = [_]u8{0} ** 256,
     ai_provider_model_buffer: [128]u8 = [_]u8{0} ** 128,
+    ai_provider_api_key_buffer: [256]u8 = [_]u8{0} ** 256,
     layout_template_name_buffer: [128]u8 = [_]u8{0} ** 128,
     layout_templates: std.ArrayList(LayoutTemplateEntry) = .empty,
     layout_templates_loaded: bool = false,

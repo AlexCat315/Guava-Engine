@@ -78,54 +78,6 @@ pub fn drawSettingsWindow(state: *EditorState, layer_context: *engine.core.Layer
     gui.dummy(0.0, 6.0);
     _ = gui.checkbox(state.text(.viewport_debug_overlay), &state.viewport_debug_overlay);
 
-    gui.dummy(0.0, 6.0);
-    if (gui.buttonEx(state.text(.reset_dock_layout), gui.contentRegionAvail()[0], 0.0)) {
-        layout.resetDockLayout(state);
-    }
-
-    gui.dummy(0.0, 6.0);
-    gui.separator();
-    gui.dummy(0.0, 6.0);
-    gui.text(state.text(.layout_templates));
-    _ = gui.inputTextWithHint(
-        "##layout_template_name",
-        state.text(.template_name),
-        state.layout_template_name_buffer[0..],
-    );
-    if (gui.buttonEx(state.text(.save_as_template), gui.contentRegionAvail()[0], 0.0)) {
-        const template_name = std.mem.sliceTo(state.layout_template_name_buffer[0..], 0);
-        if (try layout.saveUserLayoutTemplate(state, template_name)) {
-            @memset(state.layout_template_name_buffer[0..], 0);
-        }
-    }
-
-    try layout.ensureLayoutTemplatesLoaded(state);
-    if (state.layout_templates.items.len == 0) {
-        gui.textWrapped(state.text(.no_saved_layout_templates));
-    } else {
-        for (state.layout_templates.items, 0..) |entry, index| {
-            gui.pushIdU64(index);
-            defer gui.popId();
-
-            gui.text(entry.name);
-            gui.sameLineEx(160.0, 10.0);
-
-            var load_label_buffer: [96]u8 = undefined;
-            const load_label = try std.fmt.bufPrint(&load_label_buffer, "{s}##load_template_{d}", .{ state.text(.load_template), index });
-            if (gui.buttonEx(load_label, 92.0, 0.0)) {
-                _ = layout.loadUserLayoutTemplate(state, entry.path);
-            }
-            gui.sameLine();
-
-            var delete_label_buffer: [96]u8 = undefined;
-            const delete_label = try std.fmt.bufPrint(&delete_label_buffer, "{s}##delete_template_{d}", .{ state.text(.delete_template), index });
-            if (gui.buttonEx(delete_label, 92.0, 0.0)) {
-                _ = try layout.deleteUserLayoutTemplate(state, index);
-                break;
-            }
-        }
-    }
-
     const debug_icon = try icon_cache.ensureIconTexture(state, layer_context, debug_icon_path, 28, 28, debug_icon_tint);
     gui.text("SVG icon preview");
     gui.image(debug_icon, 28.0, 28.0);
@@ -134,5 +86,4 @@ pub fn drawSettingsWindow(state: *EditorState, layer_context: *engine.core.Layer
     var viewport_buffer: [64]u8 = undefined;
     const viewport_text = try std.fmt.bufPrint(&viewport_buffer, "{d} x {d}", .{ viewport_size[0], viewport_size[1] });
     gui.labelText(state.text(.viewport_size), viewport_text);
-    gui.textWrapped(state.text(.the_dock_layout_uses_stable_panel_ids_now_so_language_switching_no_longer_breaks_docking));
 }

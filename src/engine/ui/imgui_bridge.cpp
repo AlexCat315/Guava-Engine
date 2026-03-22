@@ -285,47 +285,45 @@ void build_default_dock_layout() {
 
   ImGuiID dock_main = g_dockspace_id;
 
-  // 1) Full-width bottom timeline.
-  ImGuiID dock_timeline = ImGui::DockBuilderSplitNode(
-      dock_main, ImGuiDir_Down, 0.15f, nullptr, &dock_main);
+  // 1) Bottom workspace strip (Project / Console / Timeline tabs) — 22% height.
+  ImGuiID dock_bottom = ImGui::DockBuilderSplitNode(
+      dock_main, ImGuiDir_Down, 0.22f, nullptr, &dock_main);
 
-  // 2) Left rail for scene/tools.
+  // 2) Left sidebar: Scene hierarchy + Place Actors — 18% width.
   ImGuiID dock_left = ImGui::DockBuilderSplitNode(
-      dock_main, ImGuiDir_Left, 0.20f, nullptr, &dock_main);
+      dock_main, ImGuiDir_Left, 0.18f, nullptr, &dock_main);
 
-  // 3) Right rail for inspector + Jarvis.
+  // 3) Right sidebar: Inspector (top 60%) + Jarvis Terminal (bottom 40%) — 26% width.
   ImGuiID dock_right = ImGui::DockBuilderSplitNode(
-      dock_main, ImGuiDir_Right, 0.25f, nullptr, &dock_main);
+      dock_main, ImGuiDir_Right, 0.26f, nullptr, &dock_main);
 
-  // 4) Center viewport.
+  // 4) Center: 3D Viewport fills the rest.
   ImGuiID dock_viewport = dock_main;
 
-  // Left rail split: scene tree top, assets bottom.
+  // Left sidebar: Scene hierarchy tab + Place Actors stacked in same node.
   ImGuiID dock_left_bottom;
   ImGuiID dock_scene = ImGui::DockBuilderSplitNode(
-      dock_left, ImGuiDir_Up, 0.55f, nullptr, &dock_left_bottom);
-  ImGuiID dock_assets = dock_left_bottom;
+      dock_left, ImGuiDir_Up, 0.60f, nullptr, &dock_left_bottom);
+  ImGuiID dock_place = dock_left_bottom;
 
-  // Right rail split: inspector top, Jarvis bottom.
+  // Right sidebar: inspector top, Jarvis bottom.
   ImGuiID dock_right_bottom;
   ImGuiID dock_inspector = ImGui::DockBuilderSplitNode(
-      dock_right, ImGuiDir_Up, 0.60f, nullptr, &dock_right_bottom);
+      dock_right, ImGuiDir_Up, 0.58f, nullptr, &dock_right_bottom);
   ImGuiID dock_jarvis = dock_right_bottom;
 
-  ImGui::DockBuilderDockWindow("Command Timeline##command_timeline_panel",
-                               dock_timeline);
+  // Bottom workspace — single tabbed node for Project / Console / Timeline.
+  ImGui::DockBuilderDockWindow("Workspace##content_browser_panel", dock_bottom);
 
+  // Left sidebar.
   ImGui::DockBuilderDockWindow("Scene###scene_panel", dock_scene);
-  ImGui::DockBuilderDockWindow("Place Actors###place_actors_panel", dock_scene);
+  ImGui::DockBuilderDockWindow("Place Actors###place_actors_panel", dock_place);
 
-  ImGui::DockBuilderDockWindow("Content Browser###content_browser_panel",
-                               dock_assets);
-  ImGui::DockBuilderDockWindow("AI Utilities###editor_utilities_panel",
-                               dock_assets);
-
+  // Right sidebar.
   ImGui::DockBuilderDockWindow("Details###details_panel", dock_inspector);
   ImGui::DockBuilderDockWindow("Jarvis Terminal##ai_chat_panel", dock_jarvis);
 
+  // Center.
   ImGui::DockBuilderDockWindow("Viewport###viewport_panel", dock_viewport);
   ImGui::DockBuilderFinish(g_dockspace_id);
 }
@@ -680,8 +678,21 @@ extern "C" void guava_imgui_begin_dockspace(void) {
     return;
   }
   g_dockspace_id = ImGui::GetID("GuavaEditorDockspace");
+  // PassthruCentralNode: 3D viewport shows through the dockspace background.
+  // NoDockingOverCentralNode: prevents accidental docking over the viewport.
   ImGui::DockSpaceOverViewport(g_dockspace_id, nullptr,
-                               ImGuiDockNodeFlags_PassthruCentralNode);
+                               ImGuiDockNodeFlags_PassthruCentralNode |
+                               ImGuiDockNodeFlags_NoDockingOverCentralNode);
+
+  // Persist layout edits automatically so users can drag/resize dock panels
+  // directly without opening settings or triggering explicit save actions.
+  if (!g_ini_path.empty()) {
+    ImGuiIO &io = ImGui::GetIO();
+    if (io.WantSaveIniSettings) {
+      ImGui::SaveIniSettingsToDisk(g_ini_path.c_str());
+      io.WantSaveIniSettings = false;
+    }
+  }
 }
 
 extern "C" void guava_imgui_reset_default_layout(void) {
@@ -1589,6 +1600,18 @@ extern "C" bool guava_imgui_input_text_with_hint(const char *label,
   const std::string owned_hint = make_string(hint, hint_len);
   return ImGui::InputTextWithHint(owned_label.c_str(), owned_hint.c_str(),
                                   buffer, buffer_size);
+}
+
+extern "C" bool guava_imgui_input_text_password(const char *label,
+                                                size_t label_len,
+                                                char *buffer,
+                                                size_t buffer_size) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string owned_label = make_string(label, label_len);
+  return ImGui::InputText(owned_label.c_str(), buffer, buffer_size,
+                          ImGuiInputTextFlags_Password);
 }
 
 extern "C" bool guava_imgui_drag_float(const char *label, size_t label_len,

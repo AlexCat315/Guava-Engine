@@ -222,26 +222,32 @@ fn drawProviderSettings(state: *EditorState) void {
     if (!state.ai_provider_settings_open) return;
 
     gui.separator();
-    _ = gui.beginChild("ai_provider_settings##jt", 0.0, 108.0, true);
+    _ = gui.beginChild("ai_provider_settings##jt", 0.0, 168.0, true);
     defer gui.endChild();
 
     gui.pushStyleColor(.text, .{ 0.65, 0.70, 0.78, 1.0 });
     gui.text("Provider");
     gui.popStyleColor(1);
     gui.setNextItemWidth(-1.0);
-    _ = gui.inputTextWithHint("##ai_provider_name", "OpenAI / Anthropic / ...", &state.ai_provider_name_buffer);
+    _ = gui.inputTextWithHint("##ai_provider_name", "OpenAI / Anthropic / ...", state.ai_provider_name_buffer[0..]);
 
     gui.pushStyleColor(.text, .{ 0.65, 0.70, 0.78, 1.0 });
     gui.text("Endpoint");
     gui.popStyleColor(1);
     gui.setNextItemWidth(-1.0);
-    _ = gui.inputTextWithHint("##ai_provider_endpoint", "https://api.openai.com/v1", &state.ai_provider_endpoint_buffer);
+    _ = gui.inputTextWithHint("##ai_provider_endpoint", "https://api.openai.com/v1", state.ai_provider_endpoint_buffer[0..]);
 
     gui.pushStyleColor(.text, .{ 0.65, 0.70, 0.78, 1.0 });
     gui.text("Model");
     gui.popStyleColor(1);
     gui.setNextItemWidth(-1.0);
-    _ = gui.inputTextWithHint("##ai_provider_model", "gpt-4o / claude-sonnet-4-20250514", &state.ai_provider_model_buffer);
+    _ = gui.inputTextWithHint("##ai_provider_model", "gpt-4o / claude-sonnet-4-20250514", state.ai_provider_model_buffer[0..]);
+
+    gui.pushStyleColor(.text, .{ 0.65, 0.70, 0.78, 1.0 });
+    gui.text("API Key");
+    gui.popStyleColor(1);
+    gui.setNextItemWidth(-1.0);
+    _ = gui.inputTextWithHint("##ai_provider_api_key", "sk-...", state.ai_provider_api_key_buffer[0..]);
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -297,7 +303,7 @@ pub fn drawAiChatPanel(state: *EditorState) !void {
         _ = gui.inputTextWithHint(
             "##ai_input",
             state.text(.ai_chat_input_hint),
-            &g_input_buffer,
+            g_input_buffer[0..],
         );
         const enter_pressed = gui.isItemDeactivatedAfterEdit();
 
