@@ -81,7 +81,7 @@ pub fn loadTextureAsset(
     }
 
     const cooked_path = try ensureCookedTexture(allocator, registry, asset_id);
-    const encoded = try std.fs.cwd().readFileAlloc(allocator, cooked_path, 128 * 1024 * 1024);
+    const encoded = try std.fs.cwd().readFileAlloc(allocator, cooked_path, 512 * 1024 * 1024);
     defer allocator.free(encoded);
 
     var parsed = try std.json.parseFromSlice(CookedTexture, allocator, encoded, .{
@@ -217,7 +217,7 @@ fn stringifyAlloc(allocator: std.mem.Allocator, value: anytype) ![]u8 {
 }
 
 fn readCookedTextureAlloc(allocator: std.mem.Allocator, cooked_path: []const u8) !CookedTexture {
-    const encoded = try std.fs.cwd().readFileAlloc(allocator, cooked_path, 128 * 1024 * 1024);
+    const encoded = try std.fs.cwd().readFileAlloc(allocator, cooked_path, 512 * 1024 * 1024);
     defer allocator.free(encoded);
 
     var parsed = try std.json.parseFromSlice(CookedTexture, allocator, encoded, .{

@@ -129,7 +129,7 @@ pub fn loadIBLData(
     const cooked_ibl_path = try ensureCookedIBLData(allocator, registry, asset_id);
     defer allocator.free(cooked_ibl_path);
 
-    const encoded = try std.fs.cwd().readFileAlloc(allocator, cooked_ibl_path, 128 * 1024 * 1024);
+    const encoded = try std.fs.cwd().readFileAlloc(allocator, cooked_ibl_path, 512 * 1024 * 1024);
     defer allocator.free(encoded);
 
     var parsed = try std.json.parseFromSlice(CookedIBLData, allocator, encoded, .{
@@ -199,7 +199,7 @@ fn cookedIBLDataIsCurrent(
     record: *const registry_mod.AssetRecord,
     cooked_path: []const u8,
 ) !bool {
-    const encoded = try std.fs.cwd().readFileAlloc(allocator, cooked_path, 128 * 1024 * 1024);
+    const encoded = try std.fs.cwd().readFileAlloc(allocator, cooked_path, 512 * 1024 * 1024);
     defer allocator.free(encoded);
 
     var parsed = std.json.parseFromSlice(CookedIBLData, allocator, encoded, .{

@@ -1273,7 +1273,10 @@ pub const Renderer = struct {
 
                 const scene_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.colorWithDepth(base_pass_target, clear.color, scene_depth_target));
                 const depth_start = std.time.nanoTimestamp();
-                const depth_stats = self.depth_prepass.draw(&self.rhi, frame, scene_pass, &prepared_scene);
+                const depth_stats = if (self.editor_viewport_state.render_mode != .wireframe)
+                    self.depth_prepass.draw(&self.rhi, frame, scene_pass, &prepared_scene)
+                else
+                    mesh_pass_mod.DrawStats{};
                 self.graph.recordPassStat(pass_stats, .depth_prepass, durationNs(depth_start, std.time.nanoTimestamp()), depth_stats.draw_calls, depth_stats.triangles_drawn);
                 draw_stats.add(depth_stats);
 
