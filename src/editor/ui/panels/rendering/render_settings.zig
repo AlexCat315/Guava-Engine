@@ -48,6 +48,10 @@ pub fn drawRenderSettingsWindow(state: *EditorState, layer_context: *engine.core
 
     gui.separator();
     gui.text("Path Tracer");
+
+    // Quality preset combo
+    drawPtQualityPresetCombo(state);
+
     var pt_samples: i32 = @intCast(state.viewport_path_trace_samples);
     if (gui.dragInt("##pt_samples", &pt_samples, 1.0, 1, 64)) {
         state.viewport_path_trace_samples = @intCast(std.math.clamp(pt_samples, 1, 64));
@@ -227,4 +231,81 @@ fn lutPresetLabel(state: *const EditorState, preset: ViewportLutPreset) []const 
         .cool => state.text(.lut_cool),
         .filmic => state.text(.lut_filmic),
     };
+}
+
+const PtQualityPreset = enum {
+    preview,
+    low,
+    medium,
+    high,
+    ultra,
+};
+
+fn ptQualityPresetLabel(preset: PtQualityPreset) []const u8 {
+    return switch (preset) {
+        .preview => "Preview",
+        .low => "Low",
+        .medium => "Medium",
+        .high => "High",
+        .ultra => "Ultra",
+    };
+}
+
+fn detectCurrentPtPreset(state: *const EditorState) ?PtQualityPreset {
+    const s = state.viewport_path_trace_samples;
+    const b = state.viewport_path_trace_bounces;
+    const r = state.viewport_path_trace_resolution_scale;
+    if (s == 1 and b == 1 and r == 0.5) return .preview;
+    if (s == 4 and b == 2 and r == 0.75) return .low;
+    if (s == 8 and b == 3 and r == 1.0) return .medium;
+    if (s == 16 and b == 4 and r == 1.0) return .high;
+    if (s == 32 and b == 6 and r == 1.0) return .ultra;
+    return null;
+}
+
+fn applyPtPreset(state: *EditorState, preset: PtQualityPreset) void {
+    switch (preset) {
+        .preview => {
+            state.viewport_path_trace_samples = 1;
+            state.viewport_path_trace_bounces = 1;
+            state.viewport_path_trace_resolution_scale = 0.5;
+        },
+        .low => {
+            state.viewport_path_trace_samples = 4;
+            state.viewport_path_trace_bounces = 2;
+            state.viewport_path_trace_resolution_scale = 0.75;
+        },
+        .medium => {
+            state.viewport_path_trace_samples = 8;
+            state.viewport_path_trace_bounces = 3;
+            state.viewport_path_trace_resolution_scale = 1.0;
+        },
+        .high => {
+            state.viewport_path_trace_samples = 16;
+            state.viewport_path_trace_bounces = 4;
+            state.viewport_path_trace_resolution_scale = 1.0;
+        },
+        .ultra => {
+            state.viewport_path_trace_samples = 32;
+            state.viewport_path_trace_bounces = 6;
+            state.viewport_path_trace_resolution_scale = 1.0;
+        },
+    }
+}
+
+fn drawPtQualityPresetCombo(state: *EditorState) void {
+    const current = detectCurrentPtPreset(state);
+    const preview_label = if (current) |p| ptQualityPresetLabel(p) else "Custom";
+    if (!gui.beginCombo("Quality##pt_quality", preview_label)) {
+        return;
+    }
+    defer gui.endCombo();
+
+    const presets = [_]PtQualityPreset{ .preview, .low, .medium, .high, .ultra };
+    for (presets) |preset| {
+        const selected = if (current) |c| c == preset else false;
+        if (gui.selectable(ptQualityPresetLabel(preset), selected, false, 0.0, 0.0)) {
+            applyPtPreset(state, preset);
+        }
+    }
 }

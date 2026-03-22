@@ -21,7 +21,7 @@ fn encodePngAlloc(
 ) ![]u8 {
     const c = @cImport({
         @cDefine("STBI_WRITE_NO_STDIO", "1");
-        @cInclude("stb/stb_image_write.h");
+        @cInclude("stb_image_write.h");
     });
 
     var out_len: c_int = 0;

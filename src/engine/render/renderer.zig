@@ -232,10 +232,20 @@ const PathTraceTriangle = struct {
     n0: [3]f32,
     n1: [3]f32,
     n2: [3]f32,
+    uv0: [2]f32,
+    uv1: [2]f32,
+    uv2: [2]f32,
     albedo: [3]f32,
     emissive: [3]f32,
     metallic: f32,
     roughness: f32,
+    texture_index: i32, // -1 = no texture, >=0 = index into PathTraceTextureCache.textures
+};
+
+const PathTraceTexture = struct {
+    pixels: []const u8, // borrowed pointer (owned by TextureResource)
+    width: u32,
+    height: u32,
 };
 
 const PathTraceMesh = struct {
@@ -257,6 +267,7 @@ const PathTraceProgressiveState = struct {
     // 缓存的场景数据
     triangles: ?[]PathTraceTriangle = null,
     meshes: ?[]PathTraceMesh = null,
+    textures: ?[]PathTraceTexture = null,
     inv_view_projection: [16]f32 = mat4_mod.identity(),
     camera_origin: [3]f32 = .{ 0, 0, 0 },
     light_direction: [3]f32 = .{ 0, 1, 0 },
@@ -280,6 +291,10 @@ const PathTraceProgressiveState = struct {
             allocator.free(m);
             self.meshes = null;
         }
+        if (self.textures) |tex| {
+            allocator.free(tex);
+            self.textures = null;
+        }
     }
 
     fn deinit(self: *PathTraceProgressiveState, allocator: std.mem.Allocator) void {
@@ -287,6 +302,7 @@ const PathTraceProgressiveState = struct {
         if (self.display_pixels) |p| allocator.free(p);
         if (self.triangles) |t| allocator.free(t);
         if (self.meshes) |m| allocator.free(m);
+        if (self.textures) |tex| allocator.free(tex);
         self.* = .{};
     }
 };
@@ -410,6 +426,52 @@ fn sampleSky(direction: [3]f32) [3]f32 {
     };
 }
 
+/// bilinear sample a BGRA8 CPU texture, return linear RGB [0,1]
+fn sampleTextureBilinear(tex: PathTraceTexture, u_in: f32, v_in: f32) [3]f32 {
+    // Wrap UVs to [0,1)
+    var u = u_in - @floor(u_in);
+    var v = v_in - @floor(v_in);
+    if (u < 0.0) u += 1.0;
+    if (v < 0.0) v += 1.0;
+    const fx = u * @as(f32, @floatFromInt(tex.width)) - 0.5;
+    const fy = v * @as(f32, @floatFromInt(tex.height)) - 0.5;
+    const x0_i = @as(i32, @intFromFloat(@floor(fx)));
+    const y0_i = @as(i32, @intFromFloat(@floor(fy)));
+    const frac_x = fx - @floor(fx);
+    const frac_y = fy - @floor(fy);
+    const w: i32 = @intCast(tex.width);
+    const h: i32 = @intCast(tex.height);
+
+    const x0: u32 = @intCast(@mod(x0_i, w) + (if (@mod(x0_i, w) < 0) w else @as(i32, 0)));
+    const y0: u32 = @intCast(@mod(y0_i, h) + (if (@mod(y0_i, h) < 0) h else @as(i32, 0)));
+    const x1: u32 = @intCast(@mod(x0_i + 1, w) + (if (@mod(x0_i + 1, w) < 0) w else @as(i32, 0)));
+    const y1: u32 = @intCast(@mod(y0_i + 1, h) + (if (@mod(y0_i + 1, h) < 0) h else @as(i32, 0)));
+
+    const c00 = readTexelBgra(tex, x0, y0);
+    const c10 = readTexelBgra(tex, x1, y0);
+    const c01 = readTexelBgra(tex, x0, y1);
+    const c11 = readTexelBgra(tex, x1, y1);
+    return .{
+        (c00[0] * (1.0 - frac_x) + c10[0] * frac_x) * (1.0 - frac_y) + (c01[0] * (1.0 - frac_x) + c11[0] * frac_x) * frac_y,
+        (c00[1] * (1.0 - frac_x) + c10[1] * frac_x) * (1.0 - frac_y) + (c01[1] * (1.0 - frac_x) + c11[1] * frac_x) * frac_y,
+        (c00[2] * (1.0 - frac_x) + c10[2] * frac_x) * (1.0 - frac_y) + (c01[2] * (1.0 - frac_x) + c11[2] * frac_x) * frac_y,
+    };
+}
+
+fn readTexelBgra(tex: PathTraceTexture, x: u32, y: u32) [3]f32 {
+    const idx = (@as(usize, y) * @as(usize, tex.width) + @as(usize, x)) * 4;
+    if (idx + 3 >= tex.pixels.len) return [3]f32{ 0.5, 0.5, 0.5 };
+    // BGRA8 → linear RGB (approximate sRGB→linear via pow 2.2)
+    const b = @as(f32, @floatFromInt(tex.pixels[idx + 0])) / 255.0;
+    const g = @as(f32, @floatFromInt(tex.pixels[idx + 1])) / 255.0;
+    const r = @as(f32, @floatFromInt(tex.pixels[idx + 2])) / 255.0;
+    return .{
+        std.math.pow(f32, r, 2.2),
+        std.math.pow(f32, g, 2.2),
+        std.math.pow(f32, b, 2.2),
+    };
+}
+
 fn randomHemisphereDirection(normal: [3]f32, seed: u32) [3]f32 {
     const jitter = vec3.normalize(.{
         hashUnitFloat(seed ^ 0x68bc21eb) * 2.0 - 1.0,
@@ -424,6 +486,7 @@ fn pathTraceRay(
     direction_start: [3]f32,
     triangles: []const PathTraceTriangle,
     meshes: []const PathTraceMesh,
+    textures: []const PathTraceTexture,
     light_direction: [3]f32,
     seed_base: u32,
     max_bounces: u32,
@@ -477,9 +540,24 @@ fn pathTraceRay(
             radiance = vec3.add(radiance, vec3.mul(throughput, tri.emissive));
         }
 
+        // Resolve surface albedo: texture sample * base_color_factor, or just factor
+        const surface_albedo = blk_albedo: {
+            if (tri.texture_index >= 0 and @as(usize, @intCast(tri.texture_index)) < textures.len) {
+                const uv_u = w0 * tri.uv0[0] + hit_u * tri.uv1[0] + hit_v * tri.uv2[0];
+                const uv_v = w0 * tri.uv0[1] + hit_u * tri.uv1[1] + hit_v * tri.uv2[1];
+                const tex_color = sampleTextureBilinear(textures[@intCast(tri.texture_index)], uv_u, uv_v);
+                break :blk_albedo [3]f32{
+                    tex_color[0] * tri.albedo[0],
+                    tex_color[1] * tri.albedo[1],
+                    tex_color[2] * tri.albedo[2],
+                };
+            }
+            break :blk_albedo tri.albedo;
+        };
+
         // Direct lighting (Lambertian + roughness-based specular)
         const n_dot_l = std.math.clamp(vec3.dot(normal, light_direction), 0.0, 1.0);
-        const diffuse = vec3.scale(tri.albedo, n_dot_l * (1.0 - tri.metallic));
+        const diffuse = vec3.scale(surface_albedo, n_dot_l * (1.0 - tri.metallic));
 
         // Simple specular (Blinn-Phong approximation for roughness)
         const halfway = vec3.normalize(vec3.add(light_direction, vec3.scale(direction, -1.0)));
@@ -487,9 +565,9 @@ fn pathTraceRay(
         const spec_power = @max(2.0, 2.0 / (tri.roughness * tri.roughness + 0.001));
         const spec = std.math.pow(f32, n_dot_h, spec_power) * (1.0 - tri.roughness) * 0.4;
         const spec_color = [3]f32{
-            tri.albedo[0] * tri.metallic + (1.0 - tri.metallic) * spec,
-            tri.albedo[1] * tri.metallic + (1.0 - tri.metallic) * spec,
-            tri.albedo[2] * tri.metallic + (1.0 - tri.metallic) * spec,
+            surface_albedo[0] * tri.metallic + (1.0 - tri.metallic) * spec,
+            surface_albedo[1] * tri.metallic + (1.0 - tri.metallic) * spec,
+            surface_albedo[2] * tri.metallic + (1.0 - tri.metallic) * spec,
         };
 
         const direct_light = [3]f32{
@@ -499,12 +577,12 @@ fn pathTraceRay(
         };
 
         // Ambient
-        const ambient = vec3.scale(tri.albedo, 0.08);
+        const ambient = vec3.scale(surface_albedo, 0.08);
         const combined = vec3.add(direct_light, ambient);
         radiance = vec3.add(radiance, vec3.mul(throughput, combined));
 
         // Bounce
-        throughput = vec3.scale(vec3.mul(throughput, tri.albedo), 0.5);
+        throughput = vec3.scale(vec3.mul(throughput, surface_albedo), 0.5);
         if (vec3.length(throughput) < 0.02) {
             break;
         }
@@ -1644,6 +1722,13 @@ pub const Renderer = struct {
 
                 const path_trace_viewport = viewport_active and self.editor_viewport_state.pipeline_mode == .path_trace;
                 const hw_rt_viewport = viewport_active and self.editor_viewport_state.pipeline_mode == .hardware_rt;
+
+                // scene_color_target 在所有模式下都需要（用于 overlay passes: gizmo, outline, debug）
+                const scene_color_target: rhi_mod.ColorTarget = if (viewport_active)
+                    .{ .texture = self.scene_viewport.color().? }
+                else
+                    .swapchain;
+
                 if (path_trace_viewport) {
                     const path_trace_start = std.time.nanoTimestamp();
                     try self.renderCpuPathTraceViewport(&prepared_scene, scene);
@@ -1653,10 +1738,6 @@ pub const Renderer = struct {
                     try self.renderHardwareRTViewport(&prepared_scene, scene);
                     self.graph.recordPassStat(pass_stats, .base_pass, durationNs(hw_rt_start, std.time.nanoTimestamp()), 0, 0);
                 } else {
-                    const scene_color_target: rhi_mod.ColorTarget = if (viewport_active)
-                        .{ .texture = self.scene_viewport.color().? }
-                    else
-                        .swapchain;
                     const scene_hdr_color_target: rhi_mod.ColorTarget = if (viewport_active)
                         .{ .texture = self.scene_viewport.hdrColor().? }
                     else
@@ -1944,64 +2025,66 @@ pub const Renderer = struct {
                         }
                     }
 
-                    const selected_entities = self.selection_history.currentSelection();
-                    const ai_focus_entities = self.ai_focus_entity_ids[0..self.ai_focus_entity_count];
-                    if (self.outline_pass.isReady() and self.id_pass.texture() != null and (selected_entities.len > 0 or ai_focus_entities.len > 0)) {
-                        try self.outline_pass.syncTexture(&self.rhi, self.id_pass.texture().?);
-                        const outline_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(scene_color_target));
-                        const outline_start = std.time.nanoTimestamp();
-                        var outline_stats = mesh_pass_mod.DrawStats{};
-                        if (selected_entities.len > 0) {
-                            outline_stats.add(self.outline_pass.draw(&self.rhi, frame, outline_pass, selected_entities));
-                        }
-                        if (ai_focus_entities.len > 0) {
-                            const pulse = 0.65 + 0.35 * @sin(@as(f32, @floatCast(@as(f64, @floatFromInt(std.time.milliTimestamp())) / 220.0)));
-                            outline_stats.add(self.outline_pass.drawWithColor(
-                                &self.rhi,
-                                frame,
-                                outline_pass,
-                                ai_focus_entities,
-                                .{ 0.70, 0.35, 1.0, pulse },
-                            ));
-                        }
-                        self.graph.recordPassStat(pass_stats, .outline_pass, durationNs(outline_start, std.time.nanoTimestamp()), outline_stats.draw_calls, outline_stats.triangles_drawn);
-                        draw_stats.add(outline_stats);
-                        self.rhi.endRenderPass(outline_pass);
-                    }
-
-                    if (self.gizmoPassRequired(scene)) {
-                        const gizmo_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(scene_color_target));
-                        const gizmo_start = std.time.nanoTimestamp();
-                        var gizmo_overlay_stats = mesh_pass_mod.DrawStats{};
-                        const gizmo_target_transform = if (self.preview_gizmo_transform) |preview_transform|
-                            preview_transform
-                        else if (self.selection_history.primarySelection()) |selected_entity_id|
-                            scene.worldTransformConst(selected_entity_id)
-                        else
-                            null;
-                        if (gizmo_target_transform) |selected_transform| {
-                            const gizmo_stats = self.gizmo_pass.draw(
-                                &self.rhi,
-                                frame,
-                                gizmo_pass,
-                                &prepared_scene,
-                                selected_transform,
-                                self.editor_gizmo_state,
-                            );
-                            gizmo_overlay_stats.add(gizmo_stats);
-                            draw_stats.add(gizmo_stats);
-                        }
-
-                        const debug_stats = try self.drawViewportDebugOverlays(frame, gizmo_pass, scene, &prepared_scene, physics_state_opt);
-                        gizmo_overlay_stats.add(debug_stats);
-                        draw_stats.add(debug_stats);
-                        self.graph.recordPassStat(pass_stats, .gizmo_overlay, durationNs(gizmo_start, std.time.nanoTimestamp()), gizmo_overlay_stats.draw_calls, gizmo_overlay_stats.triangles_drawn);
-                        self.rhi.endRenderPass(gizmo_pass);
-                    }
-
-                    // Store view matrix for TAA reprojection next frame
-                    self.prev_view_matrix = prepared_scene.view_matrix;
                 }
+
+                // --- 公共 overlay passes：所有模式（Raster/PathTrace/HW RT）都运行 ---
+                const selected_entities = self.selection_history.currentSelection();
+                const ai_focus_entities = self.ai_focus_entity_ids[0..self.ai_focus_entity_count];
+                if (self.outline_pass.isReady() and self.id_pass.texture() != null and (selected_entities.len > 0 or ai_focus_entities.len > 0)) {
+                    try self.outline_pass.syncTexture(&self.rhi, self.id_pass.texture().?);
+                    const outline_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(scene_color_target));
+                    const outline_start = std.time.nanoTimestamp();
+                    var outline_stats = mesh_pass_mod.DrawStats{};
+                    if (selected_entities.len > 0) {
+                        outline_stats.add(self.outline_pass.draw(&self.rhi, frame, outline_pass, selected_entities));
+                    }
+                    if (ai_focus_entities.len > 0) {
+                        const pulse = 0.65 + 0.35 * @sin(@as(f32, @floatCast(@as(f64, @floatFromInt(std.time.milliTimestamp())) / 220.0)));
+                        outline_stats.add(self.outline_pass.drawWithColor(
+                            &self.rhi,
+                            frame,
+                            outline_pass,
+                            ai_focus_entities,
+                            .{ 0.70, 0.35, 1.0, pulse },
+                        ));
+                    }
+                    self.graph.recordPassStat(pass_stats, .outline_pass, durationNs(outline_start, std.time.nanoTimestamp()), outline_stats.draw_calls, outline_stats.triangles_drawn);
+                    draw_stats.add(outline_stats);
+                    self.rhi.endRenderPass(outline_pass);
+                }
+
+                if (self.gizmoPassRequired(scene)) {
+                    const gizmo_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(scene_color_target));
+                    const gizmo_start = std.time.nanoTimestamp();
+                    var gizmo_overlay_stats = mesh_pass_mod.DrawStats{};
+                    const gizmo_target_transform = if (self.preview_gizmo_transform) |preview_transform|
+                        preview_transform
+                    else if (self.selection_history.primarySelection()) |selected_entity_id|
+                        scene.worldTransformConst(selected_entity_id)
+                    else
+                        null;
+                    if (gizmo_target_transform) |selected_transform| {
+                        const gizmo_stats = self.gizmo_pass.draw(
+                            &self.rhi,
+                            frame,
+                            gizmo_pass,
+                            &prepared_scene,
+                            selected_transform,
+                            self.editor_gizmo_state,
+                        );
+                        gizmo_overlay_stats.add(gizmo_stats);
+                        draw_stats.add(gizmo_stats);
+                    }
+
+                    const debug_stats = try self.drawViewportDebugOverlays(frame, gizmo_pass, scene, &prepared_scene, physics_state_opt);
+                    gizmo_overlay_stats.add(debug_stats);
+                    draw_stats.add(debug_stats);
+                    self.graph.recordPassStat(pass_stats, .gizmo_overlay, durationNs(gizmo_start, std.time.nanoTimestamp()), gizmo_overlay_stats.draw_calls, gizmo_overlay_stats.triangles_drawn);
+                    self.rhi.endRenderPass(gizmo_pass);
+                }
+
+                // Store view matrix for TAA reprojection next frame
+                self.prev_view_matrix = prepared_scene.view_matrix;
             }
 
             const thumbnail_stats = try self.processMaterialThumbnailRequests(frame, scene);
@@ -2133,6 +2216,11 @@ pub const Renderer = struct {
             defer triangle_list.deinit(self.allocator);
             var mesh_list = std.ArrayList(PathTraceMesh).empty;
             defer mesh_list.deinit(self.allocator);
+            var texture_list = std.ArrayList(PathTraceTexture).empty;
+            defer texture_list.deinit(self.allocator);
+            // 去重: TextureHandle.value → texture_list index
+            var texture_index_map = std.AutoHashMap(u32, i32).init(self.allocator);
+            defer texture_index_map.deinit();
 
             for (prepared_scene.opaque_meshes) |item| {
                 const mesh_res = if (handles.isValid(item.mesh_handle))
@@ -2156,6 +2244,29 @@ pub const Renderer = struct {
                     };
                     const metallic = std.math.clamp(item.pbr_factors[0], 0.0, 1.0);
                     const roughness = std.math.clamp(item.pbr_factors[1], 0.04, 1.0);
+
+                    // 解析 base_color 纹理（如果存在）
+                    const tex_idx: i32 = blk_tex: {
+                        if (item.has_textures[0] == 0) break :blk_tex @as(i32, -1);
+                        const entity = scene.getEntityConst(item.entity_id) orelse break :blk_tex @as(i32, -1);
+                        const mat_comp = entity.material orelse break :blk_tex @as(i32, -1);
+                        const mat_handle = mat_comp.handle orelse break :blk_tex @as(i32, -1);
+                        const mat_res = scene.resources.material(mat_handle) orelse break :blk_tex @as(i32, -1);
+                        const tex_handle = mat_res.base_color_texture orelse break :blk_tex @as(i32, -1);
+                        // 去重查询
+                        const tex_key = @intFromEnum(tex_handle);
+                        if (texture_index_map.get(tex_key)) |existing| break :blk_tex existing;
+                        const tex_res = scene.resources.texture(tex_handle) orelse break :blk_tex @as(i32, -1);
+                        if (tex_res.pixels.len == 0 or tex_res.width == 0 or tex_res.height == 0) break :blk_tex @as(i32, -1);
+                        const idx_i32: i32 = @intCast(texture_list.items.len);
+                        try texture_list.append(self.allocator, .{
+                            .pixels = tex_res.pixels,
+                            .width = tex_res.width,
+                            .height = tex_res.height,
+                        });
+                        try texture_index_map.put(tex_key, idx_i32);
+                        break :blk_tex idx_i32;
+                    };
 
                     var aabb = AABB.empty();
                     var i: usize = 0;
@@ -2183,10 +2294,14 @@ pub const Renderer = struct {
                             .n0 = n0,
                             .n1 = n1,
                             .n2 = n2,
+                            .uv0 = vertices[idx0].uv,
+                            .uv1 = vertices[idx1].uv,
+                            .uv2 = vertices[idx2].uv,
                             .albedo = albedo,
                             .emissive = emissive,
                             .metallic = metallic,
                             .roughness = roughness,
+                            .texture_index = tex_idx,
                         });
                     }
 
@@ -2210,10 +2325,14 @@ pub const Renderer = struct {
                     .n0 = .{ 0.0, 1.0, 0.0 },
                     .n1 = .{ 0.0, 1.0, 0.0 },
                     .n2 = .{ 0.0, 1.0, 0.0 },
+                    .uv0 = .{ 0.0, 0.0 },
+                    .uv1 = .{ 1.0, 0.0 },
+                    .uv2 = .{ 1.0, 1.0 },
                     .albedo = .{ 0.6, 0.6, 0.6 },
                     .emissive = .{ 0.0, 0.0, 0.0 },
                     .metallic = 0.0,
                     .roughness = 0.8,
+                    .texture_index = -1,
                 });
                 try triangle_list.append(self.allocator, .{
                     .v0 = .{ -5.0, 0.0, -5.0 },
@@ -2222,10 +2341,14 @@ pub const Renderer = struct {
                     .n0 = .{ 0.0, 1.0, 0.0 },
                     .n1 = .{ 0.0, 1.0, 0.0 },
                     .n2 = .{ 0.0, 1.0, 0.0 },
+                    .uv0 = .{ 0.0, 0.0 },
+                    .uv1 = .{ 1.0, 1.0 },
+                    .uv2 = .{ 0.0, 1.0 },
                     .albedo = .{ 0.6, 0.6, 0.6 },
                     .emissive = .{ 0.0, 0.0, 0.0 },
                     .metallic = 0.0,
                     .roughness = 0.8,
+                    .texture_index = -1,
                 });
                 try mesh_list.append(self.allocator, .{
                     .aabb = .{ .min = .{ -5.0, -0.01, -5.0 }, .max = .{ 5.0, 0.01, 5.0 } },
@@ -2236,6 +2359,7 @@ pub const Renderer = struct {
 
             pt.triangles = try self.allocator.dupe(PathTraceTriangle, triangle_list.items);
             pt.meshes = try self.allocator.dupe(PathTraceMesh, mesh_list.items);
+            pt.textures = try self.allocator.dupe(PathTraceTexture, texture_list.items);
             pt.inv_view_projection = mat4_mod.inverse(prepared_scene.view_projection) orelse mat4_mod.identity();
             pt.camera_origin = .{
                 prepared_scene.camera_world_position[0],
@@ -2267,6 +2391,7 @@ pub const Renderer = struct {
         const trace_pixels = pt.trace_pixels.?;
         const triangles = pt.triangles.?;
         const meshes = pt.meshes.?;
+        const pt_textures = pt.textures orelse &[_]PathTraceTexture{};
 
         while (pt.current_scanline < trace_height) {
             const y = pt.current_scanline;
@@ -2300,6 +2425,7 @@ pub const Renderer = struct {
                         ray_direction,
                         triangles,
                         meshes,
+                        pt_textures,
                         pt.light_direction,
                         jitter_seed,
                         pt.cached_bounces,
@@ -2721,7 +2847,7 @@ pub const Renderer = struct {
 
         const c = @cImport({
             @cDefine("STBI_WRITE_NO_STDIO", "1");
-            @cInclude("stb/stb_image_write.h");
+            @cInclude("stb_image_write.h");
         });
 
         var out_len: c_int = 0;
