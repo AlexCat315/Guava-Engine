@@ -229,6 +229,28 @@ pub const RhiDevice = struct {
         }
         errdefer sdl.SDL_ReleaseWindowFromGPUDevice(selection.raw, window.handle);
 
+        // Use non-VSYNC present mode to avoid blocking the main thread ~16ms per frame.
+        // Try MAILBOX (triple-buffered) first, then IMMEDIATE, fallback to VSYNC.
+        const mailbox: sdl.SDL_GPUPresentMode = @intCast(sdl.SDL_GPU_PRESENTMODE_MAILBOX);
+        const immediate: sdl.SDL_GPUPresentMode = @intCast(sdl.SDL_GPU_PRESENTMODE_IMMEDIATE);
+        const vsync: sdl.SDL_GPUPresentMode = @intCast(sdl.SDL_GPU_PRESENTMODE_VSYNC);
+
+        const present_mode: sdl.SDL_GPUPresentMode = if (sdl.SDL_WindowSupportsGPUPresentMode(selection.raw, window.handle, mailbox))
+            mailbox
+        else if (sdl.SDL_WindowSupportsGPUPresentMode(selection.raw, window.handle, immediate))
+            immediate
+        else
+            vsync;
+
+        if (present_mode != vsync) {
+            _ = sdl.SDL_SetGPUSwapchainParameters(
+                selection.raw,
+                window.handle,
+                @intCast(sdl.SDL_GPU_SWAPCHAINCOMPOSITION_SDR),
+                present_mode,
+            );
+        }
+
         if (!sdl.SDL_SetGPUAllowedFramesInFlight(selection.raw, config.frames_in_flight)) {
             std.log.err("SDL_SetGPUAllowedFramesInFlight failed: {s}", .{window_mod.lastError()});
             return error.FramesInFlightFailed;

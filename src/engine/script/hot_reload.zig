@@ -20,6 +20,8 @@ pub const HotReloadManager = struct {
     runtime: *runtime_mod.ScriptRuntime,
     /// 分配器
     allocator: std.mem.Allocator,
+    /// 上次检查文件变更的时间戳（纳秒）
+    last_check_timestamp: i128 = 0,
 
     pub fn init(allocator: std.mem.Allocator, rt: *runtime_mod.ScriptRuntime) HotReloadManager {
         return .{
@@ -59,8 +61,13 @@ pub const HotReloadManager = struct {
         });
     }
 
-    /// 检查是否有脚本需要重载
+    /// 检查是否有脚本需要重载（节流：最多每秒检查一次）
     pub fn checkForChanges(self: *HotReloadManager) void {
+        const now = std.time.nanoTimestamp();
+        const elapsed_ns = now - self.last_check_timestamp;
+        if (elapsed_ns < 1_000_000_000) return; // throttle to once per second
+        self.last_check_timestamp = now;
+
         self.pending_reload.clearRetainingCapacity();
 
         var it = self.watched_scripts.iterator();

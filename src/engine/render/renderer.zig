@@ -90,6 +90,14 @@ var g_logged_scene_extraction_culling: bool = false;
 /// 已记录的碰撞覆盖盒数量
 var g_logged_collision_overlay_boxes: ?usize = null;
 
+const CachedEnvironmentTextures = struct {
+    resolved: bool = false,
+    environment_map: ?*const rhi_mod.Texture = null,
+    irradiance_map: ?*const rhi_mod.Texture = null,
+    prefiltered_env_map: ?*const rhi_mod.Texture = null,
+    brdf_lut: ?*const rhi_mod.Texture = null,
+};
+
 /// 图形 API 类型
 pub const GraphicsAPI = rhi_types.GraphicsAPI;
 /// 运行时信息
@@ -719,6 +727,8 @@ pub const Renderer = struct {
     preview_entity_filter: std.ArrayList(scene_mod.EntityId) = .empty,
     /// 编辑器视口状态
     editor_viewport_state: EditorViewportState = .{},
+    /// 缓存的环境贴图纹理指针（避免每帧重新加载 IBL 数据）
+    cached_env_textures: CachedEnvironmentTextures = .{},
     /// 待处理的选择回读请求
     pending_selection_readbacks: std.ArrayList(SelectionReadbackRequest) = .empty,
     /// 飞行中的选择批次
@@ -1506,16 +1516,19 @@ pub const Renderer = struct {
             };
         };
 
-        self.graph.writeFrameReport(
-            self.allocator,
-            "dist/reports/latest_frame_report.json",
-            rhi_types.graphicsApiName(self.rhi.api),
-            result.draw_calls,
-            result.triangles_drawn,
-            pass_stats,
-        ) catch |err| {
-            std.log.warn("failed to write frame report: {}", .{err});
-        };
+        // Only write frame report on first frame to avoid per-frame disk I/O
+        if (!g_logged_viewport_backend) {
+            self.graph.writeFrameReport(
+                self.allocator,
+                "dist/reports/latest_frame_report.json",
+                rhi_types.graphicsApiName(self.rhi.api),
+                result.draw_calls,
+                result.triangles_drawn,
+                pass_stats,
+            ) catch |err| {
+                std.log.warn("failed to write frame report: {}", .{err});
+            };
+        }
         return result;
     }
 
@@ -2149,10 +2162,28 @@ fn resolveEnvironmentTextures(
     scene: *scene_mod.Scene,
     prepared_scene: *mesh_pass_mod.PreparedScene,
 ) !void {
+    // Use cached textures if already resolved (avoid per-frame disk I/O + IBL decode)
+    if (self.cached_env_textures.resolved) {
+        prepared_scene.environment_map = self.cached_env_textures.environment_map orelse &self.scene_cache.fallback_texture.?;
+        prepared_scene.irradiance_map = self.cached_env_textures.irradiance_map orelse &self.scene_cache.fallback_texture.?;
+        prepared_scene.prefiltered_env_map = self.cached_env_textures.prefiltered_env_map orelse &self.scene_cache.fallback_texture.?;
+        prepared_scene.brdf_lut = self.cached_env_textures.brdf_lut orelse self.scene_cache.fallbackBrdfLut();
+        return;
+    }
+
     prepared_scene.environment_map = &self.scene_cache.fallback_texture.?;
     prepared_scene.irradiance_map = &self.scene_cache.fallback_texture.?;
     prepared_scene.prefiltered_env_map = &self.scene_cache.fallback_texture.?;
     prepared_scene.brdf_lut = self.scene_cache.fallbackBrdfLut();
+
+    // Mark resolved early so we never retry on failure (each attempt costs ~9s of disk I/O)
+    self.cached_env_textures = .{
+        .resolved = true,
+        .environment_map = null,
+        .irradiance_map = null,
+        .prefiltered_env_map = null,
+        .brdf_lut = null,
+    };
 
     const environment_asset_id = findSceneEnvironmentAssetId(&scene.resources) orelse {
         if (!g_logged_environment_status) {
@@ -2192,6 +2223,15 @@ fn resolveEnvironmentTextures(
     if (environment.brdf_lut_handle) |handle| {
         prepared_scene.brdf_lut = try self.scene_cache.ensureTextureHandle(&self.rhi, scene, handle);
     }
+
+    // Cache resolved textures for subsequent frames
+    self.cached_env_textures = .{
+        .resolved = true,
+        .environment_map = prepared_scene.environment_map,
+        .irradiance_map = prepared_scene.irradiance_map,
+        .prefiltered_env_map = prepared_scene.prefiltered_env_map,
+        .brdf_lut = prepared_scene.brdf_lut,
+    };
 }
 
 fn findSceneEnvironmentAssetId(resources: *const assets_lib.ResourceLibrary) ?[]const u8 {

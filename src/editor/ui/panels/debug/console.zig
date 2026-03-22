@@ -77,9 +77,6 @@ fn writeToLogFile(level: std.log.Level, scope: []const u8, message: []const u8) 
         file.writeAll(": ") catch {};
         file.writeAll(message) catch {};
         file.writeAll("\n") catch {};
-
-        // 刷新文件缓冲区
-        file.sync() catch {};
     }
 }
 
