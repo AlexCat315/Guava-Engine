@@ -226,7 +226,10 @@ fn vtAcquireSwapchainImage(ctx: *anyopaque) rhi.Error!rhi.SwapchainImage {
     var out_w: u32 = 0;
     var out_h: u32 = 0;
     if (!MetalDevice.bridge.guava_metal_rhi_acquire_swapchain(
-        self.bridge_ctx, &out_id, &out_w, &out_h,
+        self.bridge_ctx,
+        &out_id,
+        &out_w,
+        &out_h,
     )) return error.SwapchainAcquireFailed;
     return .{ .id = out_id, .width = out_w, .height = out_h };
 }
