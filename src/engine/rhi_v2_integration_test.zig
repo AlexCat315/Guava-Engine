@@ -3,10 +3,13 @@ const std = @import("std");
 const metal_backend = @import("rhi/metal/metal_backend.zig");
 const rhi = @import("rhi/rhi.zig");
 const binding_cache = @import("rhi/binding_cache.zig");
+const command_buffer = @import("rhi/command_buffer.zig");
 const ssao_v2 = @import("render/ssao_compute_pass_v2.zig");
 const fullscreen_post_v2 = @import("render/fullscreen_post_pass_v2.zig");
 const bloom_pass_v2 = @import("render/bloom_pass_v2.zig");
 const tonemap_pass_v2 = @import("render/tonemap_pass_v2.zig");
+const contact_shadow_v2 = @import("render/contact_shadow_pass_v2.zig");
+const dof_pass_v2 = @import("render/dof_pass_v2.zig");
 const render_graph = @import("render/render_graph.zig");
 
 test "metal backend compute queue submission path" {
@@ -265,4 +268,142 @@ test "setPassBindingConstraints injects constraints into compiled graph" {
     const errors_after = try graph.validateSlotLayoutConstraints(std.testing.allocator, &device);
     defer std.testing.allocator.free(errors_after);
     try std.testing.expectEqual(@as(usize, 0), errors_after.len);
+}
+
+test "command buffer encode-decode round-trip" {
+    var cb = command_buffer.CommandBuffer.init(std.testing.allocator);
+    defer cb.deinit();
+
+    // Encode a multi-pass sequence: render pass → compute pass → barrier
+    try cb.encodeBeginRenderPass(.{ .color_target_id = 10, .depth_target_id = 20, .clear_mask = 3 });
+    try cb.encodeSetBindingSet(.{ .slot = 0, .set_id = 100 });
+    try cb.encodeDrawIndexed(.{ .index_count = 36, .instance_count = 1, .first_index = 0, .vertex_offset = 0, .first_instance = 0 });
+    try cb.encodeEndRenderPass();
+    try cb.encodePipelineBarrier(.{ .resource_id = 10, .src_state_bits = 0x04, .dst_state_bits = 0x10, .src_queue = 0, .dst_queue = 0 });
+    try cb.encodeBeginComputePass(.{});
+    try cb.encodeSetBindingSet(.{ .slot = 1, .set_id = 200 });
+    try cb.encodeDispatch(.{ .x = 8, .y = 8, .z = 1 });
+    try cb.encodeEndComputePass();
+
+    // Decode and verify the exact sequence
+    var dec = cb.decoder();
+    {
+        const cmd = (try dec.next()).?;
+        try std.testing.expectEqual(command_buffer.OpCode.begin_render_pass, cmd);
+        try std.testing.expectEqual(@as(u32, 10), cmd.begin_render_pass.color_target_id);
+        try std.testing.expectEqual(@as(u32, 20), cmd.begin_render_pass.depth_target_id);
+    }
+    {
+        const cmd = (try dec.next()).?;
+        try std.testing.expectEqual(command_buffer.OpCode.set_binding_set, cmd);
+        try std.testing.expectEqual(@as(u32, 100), cmd.set_binding_set.set_id);
+    }
+    {
+        const cmd = (try dec.next()).?;
+        try std.testing.expectEqual(command_buffer.OpCode.draw_indexed, cmd);
+        try std.testing.expectEqual(@as(u32, 36), cmd.draw_indexed.index_count);
+    }
+    {
+        const cmd = (try dec.next()).?;
+        try std.testing.expectEqual(command_buffer.OpCode.end_render_pass, cmd);
+    }
+    {
+        const cmd = (try dec.next()).?;
+        try std.testing.expectEqual(command_buffer.OpCode.pipeline_barrier, cmd);
+        try std.testing.expectEqual(@as(u32, 10), cmd.pipeline_barrier.resource_id);
+    }
+    {
+        const cmd = (try dec.next()).?;
+        try std.testing.expectEqual(command_buffer.OpCode.begin_compute_pass, cmd);
+    }
+    {
+        const cmd = (try dec.next()).?;
+        try std.testing.expectEqual(command_buffer.OpCode.set_binding_set, cmd);
+        try std.testing.expectEqual(@as(u32, 200), cmd.set_binding_set.set_id);
+    }
+    {
+        const cmd = (try dec.next()).?;
+        try std.testing.expectEqual(command_buffer.OpCode.dispatch, cmd);
+        try std.testing.expectEqual(@as(u32, 8), cmd.dispatch.x);
+    }
+    {
+        const cmd = (try dec.next()).?;
+        try std.testing.expectEqual(command_buffer.OpCode.end_compute_pass, cmd);
+    }
+    // No more commands
+    try std.testing.expectEqual(@as(?command_buffer.DecodedCommand, null), try dec.next());
+}
+
+test "contact shadow pass v2 two-set pipeline submission" {
+    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
+    defer backend.deinit();
+
+    var device = backend.createDevice();
+    defer device.deinit();
+
+    try contact_shadow_v2.ContactShadowPassV2.execute(
+        std.testing.allocator,
+        &device,
+        null,
+        7001,
+        7002,
+        .{},
+    );
+    try std.testing.expectEqual(rhi.QueueClass.graphics, backend.last_submit_queue.?);
+    try std.testing.expect(device.bindingSetCacheEntryCount() >= 2);
+}
+
+test "dof pass v2 three-subpass pipeline submission" {
+    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
+    defer backend.deinit();
+
+    var device = backend.createDevice();
+    defer device.deinit();
+
+    try dof_pass_v2.DOFPassV2.execute(
+        std.testing.allocator,
+        &device,
+        null,
+        8001,
+        8002,
+        .{},
+    );
+    try std.testing.expectEqual(rhi.QueueClass.graphics, backend.last_submit_queue.?);
+    // 3 subpasses × unique binding sets
+    try std.testing.expect(device.bindingSetCacheEntryCount() >= 3);
+}
+
+test "binding set cache per-frame delta stats" {
+    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
+    defer backend.deinit();
+
+    var device = backend.createDevice();
+    defer device.deinit();
+
+    // Create a layout + binding set to generate a miss
+    const layout = try device.createBindingLayout(.{
+        .entries = &.{.{ .slot = 0, .binding_type = .texture, .stage = .fragment }},
+    });
+    _ = try device.createBindingSetCached(layout, .{
+        .entries = &.{.{ .slot = 0, .resource = .{ .texture = .{ .id = 50 } } }},
+    });
+
+    // Frame 1: snapshot should capture the initial miss
+    const delta1 = device.snapshotFrameStats();
+    try std.testing.expectEqual(@as(u64, 0), delta1.hits);
+    try std.testing.expectEqual(@as(u64, 1), delta1.misses);
+
+    // Frame 2: same binding set → cache hit
+    _ = try device.createBindingSetCached(layout, .{
+        .entries = &.{.{ .slot = 0, .resource = .{ .texture = .{ .id = 50 } } }},
+    });
+    const delta2 = device.snapshotFrameStats();
+    try std.testing.expectEqual(@as(u64, 1), delta2.hits);
+    try std.testing.expectEqual(@as(u64, 0), delta2.misses);
+
+    // Frame 3: no activity → zero delta
+    const delta3 = device.snapshotFrameStats();
+    try std.testing.expectEqual(@as(u64, 0), delta3.hits);
+    try std.testing.expectEqual(@as(u64, 0), delta3.misses);
+    try std.testing.expectEqual(@as(u64, 0), delta3.evictions);
 }

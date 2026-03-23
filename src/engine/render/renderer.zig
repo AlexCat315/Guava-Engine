@@ -81,6 +81,7 @@ const rhi_v2_backend_mod = @import("../rhi/metal/metal_backend.zig");
 const fullscreen_post_v2_mod = @import("fullscreen_post_pass_v2.zig");
 const bloom_pass_v2_mod = @import("bloom_pass_v2.zig");
 const tonemap_pass_v2_mod = @import("tonemap_pass_v2.zig");
+const contact_shadow_v2_mod = @import("contact_shadow_pass_v2.zig");
 const components = @import("../scene/components.zig");
 const scene_mod = @import("../scene/scene.zig");
 const types = @import("types.zig");
@@ -166,6 +167,12 @@ pub const FrameReport = struct {
     binding_cache_misses: u64 = 0,
     /// RHI v2 slot-layout 校验失败数
     slot_layout_errors: usize = 0,
+    /// 本帧 RHI v2 缓存命中增量
+    binding_cache_hits_delta: u64 = 0,
+    /// 本帧 RHI v2 缓存未命中增量
+    binding_cache_misses_delta: u64 = 0,
+    /// 本帧 RHI v2 缓存淘汰增量
+    binding_cache_evictions_delta: u64 = 0,
 };
 
 /// 选择回读请求
@@ -2201,6 +2208,40 @@ pub const Renderer = struct {
                         // Contact Shadows: screen-space ray march for small-scale occlusion
                         const cs_enabled = self.editor_viewport_state.contact_shadows_enabled and self.contact_shadow_pass.isReady() and self.scene_viewport.contactShadow() != null and self.scene_viewport.depth() != null;
                         if (cs_enabled) {
+                            const use_cs_v2 = self.editor_viewport_state.contact_shadows_use_rhi_v2;
+                            if (use_cs_v2) cs_v2_blk: {
+                                const v2_dev = self.rhi_v2_device orelse break :cs_v2_blk;
+
+                                const mat4_cs = @import("../math/mat4.zig");
+                                const inv_proj_cs = mat4_cs.inverse(prepared_scene.projection_matrix) orelse mat4_cs.identity();
+                                const cs_light_dir: [4]f32 = if (prepared_scene.lights.directional_lights.len > 0) cs_v2_ld: {
+                                    const dl = prepared_scene.lights.directional_lights[0];
+                                    break :cs_v2_ld .{ dl.direction[0], dl.direction[1], dl.direction[2], 0.0 };
+                                } else .{ 0.3, -0.9, -0.2, 0.0 };
+
+                                contact_shadow_v2_mod.ContactShadowPassV2.execute(
+                                    self.allocator,
+                                    v2_dev,
+                                    &self.graph,
+                                    0,
+                                    0,
+                                    .{
+                                        .projection = prepared_scene.projection_matrix,
+                                        .inv_projection = inv_proj_cs,
+                                        .view = prepared_scene.view_matrix,
+                                        .light_direction = cs_light_dir,
+                                        .resolution = .{ @floatFromInt(self.scene_viewport.width), @floatFromInt(self.scene_viewport.height) },
+                                        .max_distance = self.editor_viewport_state.contact_shadows_distance,
+                                        .thickness = self.editor_viewport_state.contact_shadows_thickness,
+                                        .intensity = self.editor_viewport_state.contact_shadows_intensity,
+                                        .bias = self.editor_viewport_state.contact_shadows_bias,
+                                        .num_steps = @intCast(self.editor_viewport_state.contact_shadows_steps),
+                                    },
+                                ) catch |err| {
+                                    std.log.warn("contact shadow v2 failed: {}", .{err});
+                                };
+                            }
+                            if (!use_cs_v2) {
                             try self.contact_shadow_pass.syncTextures(&self.rhi, self.scene_viewport.depth().?);
                             const cs_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.contactShadow().? }));
 
@@ -2236,6 +2277,7 @@ pub const Renderer = struct {
                                 const cs_composite_stats = self.contact_shadow_composite_pass.draw(&self.rhi, frame, cs_composite_pass, self.editor_viewport_state.contact_shadows_intensity);
                                 draw_stats.add(cs_composite_stats);
                                 self.rhi.endRenderPass(cs_composite_pass);
+                            }
                             }
                         }
 
@@ -2512,11 +2554,18 @@ pub const Renderer = struct {
             // Collect RHI v2 stats
             var v2_cache_hits: u64 = 0;
             var v2_cache_misses: u64 = 0;
+            var v2_delta_hits: u64 = 0;
+            var v2_delta_misses: u64 = 0;
+            var v2_delta_evictions: u64 = 0;
             var v2_slot_errors: usize = 0;
             if (self.rhi_v2_device) |v2_dev| {
                 const cs = v2_dev.bindingSetCacheStats();
                 v2_cache_hits = cs.hits;
                 v2_cache_misses = cs.misses;
+                const frame_delta = v2_dev.snapshotFrameStats();
+                v2_delta_hits = frame_delta.hits;
+                v2_delta_misses = frame_delta.misses;
+                v2_delta_evictions = frame_delta.evictions;
 
                 // Slot-layout consistency validation against compiled graph
                 const slot_errors = self.graph.validateSlotLayoutConstraints(self.allocator, v2_dev) catch &.{};
@@ -2540,6 +2589,9 @@ pub const Renderer = struct {
                 .binding_cache_hits = v2_cache_hits,
                 .binding_cache_misses = v2_cache_misses,
                 .slot_layout_errors = v2_slot_errors,
+                .binding_cache_hits_delta = v2_delta_hits,
+                .binding_cache_misses_delta = v2_delta_misses,
+                .binding_cache_evictions_delta = v2_delta_evictions,
             };
         };
 

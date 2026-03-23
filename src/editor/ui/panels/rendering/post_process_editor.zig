@@ -349,6 +349,7 @@ fn drawEffectParameters(viewport_state: *EditorViewportState, node: *PostProcess
                 _ = props.float("Thickness", &viewport_state.contact_shadows_thickness, 0.01, 0.01, 0.5);
                 _ = props.float("Intensity", &viewport_state.contact_shadows_intensity, 0.05, 0.0, 1.0);
                 _ = props.float("Bias", &viewport_state.contact_shadows_bias, 0.005, 0.0, 0.1);
+                _ = props.boolean("RHI v2 Path", &viewport_state.contact_shadows_use_rhi_v2);
             },
             .tonemap => {
                 _ = props.boolean("RHI v2 Path", &viewport_state.tonemap_use_rhi_v2);

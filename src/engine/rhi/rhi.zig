@@ -228,6 +228,7 @@ pub const Device = struct {
     pipeline_layout_sets: std.AutoHashMap(u32, []u32),
     binding_set_layouts: std.AutoHashMap(u32, u32),
     next_binding_layout_id: u32 = 1,
+    prev_frame_stats: binding_cache.BindingSetCacheStats = .{},
 
     pub fn initWithCache(ctx: *anyopaque, vtable: *const DeviceVTable, capabilities: Capabilities, allocator: std.mem.Allocator) Device {
         return .{
@@ -302,6 +303,15 @@ pub const Device = struct {
 
     pub fn resetBindingSetCacheStats(self: *Device) void {
         self.binding_set_cache.resetStats();
+        self.prev_frame_stats = .{};
+    }
+
+    /// Snapshot current stats as the previous frame baseline and return the delta.
+    pub fn snapshotFrameStats(self: *Device) binding_cache.BindingSetCacheStats {
+        const current = self.binding_set_cache.stats;
+        const d = current.delta(self.prev_frame_stats);
+        self.prev_frame_stats = current;
+        return d;
     }
 
     pub fn bindingSetCacheEntryCount(self: *const Device) u32 {

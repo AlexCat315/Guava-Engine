@@ -59,6 +59,15 @@ pub const BindingSetCacheStats = struct {
     pub fn totalLookups(self: BindingSetCacheStats) u64 {
         return self.hits + self.misses;
     }
+
+    /// Returns the difference (this - prev), useful for per-frame delta computation.
+    pub fn delta(self: BindingSetCacheStats, prev: BindingSetCacheStats) BindingSetCacheStats {
+        return .{
+            .hits = self.hits -| prev.hits,
+            .misses = self.misses -| prev.misses,
+            .evictions = self.evictions -| prev.evictions,
+        };
+    }
 };
 
 pub const BindingSetCache = struct {

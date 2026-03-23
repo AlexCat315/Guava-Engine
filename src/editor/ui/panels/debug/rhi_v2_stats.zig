@@ -26,14 +26,15 @@ pub fn drawRhiV2StatsWindow(state: *EditorState, layer_context: *engine.core.Lay
     if (gui.collapsingHeader("Binding Set Cache", true)) {
         const stats = v2_dev.bindingSetCacheStats();
         const entries = v2_dev.bindingSetCacheEntryCount();
+        const frame_delta = stats.delta(v2_dev.prev_frame_stats);
 
         var buf: [128]u8 = undefined;
 
         const hit_text = std.fmt.bufPrint(&buf, "{d}", .{stats.hits}) catch "?";
-        gui.labelText("Hits", hit_text);
+        gui.labelText("Hits (total)", hit_text);
 
         const miss_text = std.fmt.bufPrint(&buf, "{d}", .{stats.misses}) catch "?";
-        gui.labelText("Misses", miss_text);
+        gui.labelText("Misses (total)", miss_text);
 
         const rate_text = std.fmt.bufPrint(&buf, "{d:.1}%", .{stats.hitRate() * 100.0}) catch "?";
         gui.labelText("Hit Rate", rate_text);
@@ -42,10 +43,22 @@ pub fn drawRhiV2StatsWindow(state: *EditorState, layer_context: *engine.core.Lay
         gui.labelText("Total Lookups", total_text);
 
         const evict_text = std.fmt.bufPrint(&buf, "{d}", .{stats.evictions}) catch "?";
-        gui.labelText("Evictions", evict_text);
+        gui.labelText("Evictions (total)", evict_text);
 
         const entry_text = std.fmt.bufPrint(&buf, "{d} / 1024", .{entries}) catch "?";
         gui.labelText("Entries", entry_text);
+
+        gui.dummy(0.0, 4.0);
+        gui.textColored(.{ 0.6, 0.8, 1.0, 1.0 }, "Per-Frame Delta");
+
+        const dh_text = std.fmt.bufPrint(&buf, "+{d}", .{frame_delta.hits}) catch "?";
+        gui.labelText("Hits (frame)", dh_text);
+
+        const dm_text = std.fmt.bufPrint(&buf, "+{d}", .{frame_delta.misses}) catch "?";
+        gui.labelText("Misses (frame)", dm_text);
+
+        const de_text = std.fmt.bufPrint(&buf, "+{d}", .{frame_delta.evictions}) catch "?";
+        gui.labelText("Evictions (frame)", de_text);
 
         gui.dummy(0.0, 4.0);
         if (gui.button("Reset Stats")) {
@@ -83,5 +96,7 @@ pub fn drawRhiV2StatsWindow(state: *EditorState, layer_context: *engine.core.Lay
         gui.labelText("FXAA", if (vs.fxaa_use_rhi_v2) "v2" else "legacy");
         gui.labelText("Bloom", if (vs.bloom_use_rhi_v2) "v2" else "legacy");
         gui.labelText("Tonemap", if (vs.tonemap_use_rhi_v2) "v2" else "legacy");
+        gui.labelText("Contact Shadow", if (vs.contact_shadows_use_rhi_v2) "v2" else "legacy");
+        gui.labelText("DOF", "v2 prototype");
     }
 }
