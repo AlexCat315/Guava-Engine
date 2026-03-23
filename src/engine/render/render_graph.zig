@@ -125,6 +125,16 @@ pub const RenderPass = struct {
     inputs: []const PassResourceUse = &.{},
     /// Resources written by this pass; compile() adds output barriers for subsequent readers.
     outputs: []const PassResourceUse = &.{},
+    /// Binding slot-layout constraints: which RHI v2 binding layout each slot must use.
+    binding_constraints: []const SlotLayoutConstraint = &.{},
+};
+
+/// Constraint declaring which binding layout a pipeline slot expects.
+pub const SlotLayoutConstraint = struct {
+    /// Pipeline slot index (set index in Vulkan terms).
+    slot: u32,
+    /// Expected BindingLayout id (from Device.createBindingLayout).
+    expected_layout_id: u32,
 };
 
 /// Explicit dependency edge calculated by compile() between two passes.
@@ -167,6 +177,8 @@ pub const CompiledPass = struct {
     inputs: []const PassResourceUse,
     /// Output resources with write access semantics.
     outputs: []const PassResourceUse,
+    /// Binding slot-layout constraints carried from source pass declaration.
+    binding_constraints: []const SlotLayoutConstraint,
     /// Number of other passes this pass depends on (for topological ordering). Must reach 0 before executing.
     dependency_count: usize,
 };
@@ -262,6 +274,7 @@ pub const RenderGraph = struct {
         for (self.passes.items) |*pass| {
             self.allocator.free(pass.inputs);
             self.allocator.free(pass.outputs);
+            self.allocator.free(pass.binding_constraints);
         }
         self.passes.deinit(self.allocator);
         self.resources.deinit(self.allocator);
@@ -275,6 +288,7 @@ pub const RenderGraph = struct {
         for (self.passes.items) |*pass| {
             self.allocator.free(pass.inputs);
             self.allocator.free(pass.outputs);
+            self.allocator.free(pass.binding_constraints);
         }
         self.passes.clearRetainingCapacity();
         self.resources.clearRetainingCapacity();
@@ -372,6 +386,7 @@ pub const RenderGraph = struct {
             .enabled = pass.enabled,
             .inputs = try self.allocator.dupe(PassResourceUse, pass.inputs),
             .outputs = try self.allocator.dupe(PassResourceUse, pass.outputs),
+            .binding_constraints = try self.allocator.dupe(SlotLayoutConstraint, pass.binding_constraints),
         });
     }
 
@@ -446,6 +461,7 @@ pub const RenderGraph = struct {
                 .queue = pass.queue,
                 .inputs = pass.inputs,
                 .outputs = pass.outputs,
+                .binding_constraints = pass.binding_constraints,
                 .dependency_count = dependency_counts.items[pass_index],
             });
         }
@@ -540,6 +556,58 @@ pub const RenderGraph = struct {
                 .dst_queue = @intCast(@intFromEnum(plan.dst_queue)),
             });
         }
+    }
+
+    /// Slot-layout consistency validation error returned by validateSlotLayoutConstraints.
+    pub const SlotLayoutValidationError = struct {
+        pass_name: []const u8,
+        pass_index: u16,
+        slot: u32,
+        expected_layout_id: u32,
+        actual_layout_id: ?u32,
+    };
+
+    /// Validate all compiled passes' binding slot-layout constraints against
+    /// the pipeline layouts registered on the given RHI v2 device.
+    /// Returns a list of mismatches (empty = all good).
+    pub fn validateSlotLayoutConstraints(
+        self: *const RenderGraph,
+        allocator: std.mem.Allocator,
+        device: *const rhi_v2.Device,
+    ) ![]SlotLayoutValidationError {
+        const compiled = self.compiled orelse return allocator.alloc(SlotLayoutValidationError, 0);
+
+        var errors = std.ArrayList(SlotLayoutValidationError).empty;
+        defer errors.deinit(allocator);
+
+        for (compiled.execution) |pass| {
+            for (pass.binding_constraints) |constraint| {
+                // Look up registered pipeline layout sets to see if this pass's
+                // expected layout id matches what the device actually has.
+                var found = false;
+                var pl_it = device.pipeline_layout_sets.iterator();
+                while (pl_it.next()) |entry| {
+                    const layout_ids = entry.value_ptr.*;
+                    if (constraint.slot < layout_ids.len) {
+                        if (layout_ids[constraint.slot] == constraint.expected_layout_id) {
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+                if (!found) {
+                    try errors.append(allocator, .{
+                        .pass_name = pass.name,
+                        .pass_index = pass.pass_index,
+                        .slot = constraint.slot,
+                        .expected_layout_id = constraint.expected_layout_id,
+                        .actual_layout_id = null,
+                    });
+                }
+            }
+        }
+
+        return errors.toOwnedSlice(allocator);
     }
 
     pub fn recordPassStat(

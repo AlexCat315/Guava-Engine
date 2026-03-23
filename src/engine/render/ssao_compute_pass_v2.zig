@@ -4,7 +4,7 @@ const render_graph = @import("render_graph.zig");
 const metal_backend = @import("../rhi/metal/metal_backend.zig");
 
 pub const SSAOComputePassV2 = struct {
-    pub fn dispatch(
+    pub fn dispatchRhiV2(
         allocator: std.mem.Allocator,
         device: *const rhi.Device,
         graph: ?*const render_graph.RenderGraph,
@@ -23,7 +23,6 @@ pub const SSAOComputePassV2 = struct {
         try cmd.encodeDispatch(.{ .x = group_x, .y = group_y, .z = 1 });
         try cmd.encodeEndComputePass();
 
-        // Ensure the compute write transitions to readable state for subsequent graphics passes.
         try cmd.encodePipelineBarrier(.{
             .resource_id = output_resource_id,
             .src_state_bits = (rhi.ResourceStates{ .unordered_access = true }).asBits(),
@@ -42,6 +41,6 @@ test "ssao compute pass v2 submits on compute queue" {
     var device = backend.createDevice();
     defer device.deinit();
 
-    try SSAOComputePassV2.dispatch(std.testing.allocator, &device, null, 501, 16, 9);
+    try SSAOComputePassV2.dispatchRhiV2(std.testing.allocator, &device, null, 501, 16, 9);
     try std.testing.expectEqual(rhi.QueueClass.compute, backend.last_submit_queue.?);
 }

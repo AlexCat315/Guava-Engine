@@ -313,6 +313,7 @@ fn drawEffectParameters(viewport_state: *EditorViewportState, node: *PostProcess
                 _ = props.float("Intensity", &viewport_state.bloom_intensity, 0.1, 0.0, 5.0);
             },
             .ssao => {
+                _ = props.boolean("Legacy Path", &viewport_state.ssao_use_legacy_path);
                 _ = props.float("Radius", &viewport_state.ssao_radius, 0.1, 0.0, 5.0);
                 _ = props.float("Bias", &viewport_state.ssao_bias, 0.01, 0.0, 1.0);
                 _ = props.float("Intensity", &viewport_state.ssao_intensity, 0.1, 0.0, 5.0);
@@ -333,7 +334,10 @@ fn drawEffectParameters(viewport_state: *EditorViewportState, node: *PostProcess
                 _ = props.float("Focus Range", &viewport_state.dof_focus_range, 0.5, 0.0, 50.0);
                 _ = props.float("Blur Radius", &viewport_state.dof_blur_radius, 1.0, 0.0, 50.0);
             },
-            .fxaa, .color_grading => {
+            .fxaa => {
+                _ = props.boolean("RHI v2 Path", &viewport_state.fxaa_use_rhi_v2);
+            },
+            .color_grading => {
                 gui.text("No additional parameters");
             },
             .contact_shadows => {

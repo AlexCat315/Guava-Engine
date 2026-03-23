@@ -43,6 +43,7 @@ pub const EditorViewportState = struct {
     bloom_intensity: f32 = 0.35,
     // SSAO 环境光遮蔽
     ssao_enabled: bool = false,
+    ssao_use_legacy_path: bool = false,
     ssao_radius: f32 = 0.5,
     ssao_bias: f32 = 0.025,
     ssao_intensity: f32 = 1.0,
@@ -87,6 +88,7 @@ pub const EditorViewportState = struct {
     color_grading_contrast: f32 = 1.0,
     color_grading_gamma: f32 = 1.0,
     fxaa_enabled: bool = false,
+    fxaa_use_rhi_v2: bool = false,
     // RT 增强阴影（光栅模式下用硬件 RT 替换 shadow map）
     rt_shadows_enabled: bool = false,
     rt_shadow_samples: u32 = 4,

@@ -62,7 +62,7 @@ const gizmo_pass_mod = @import("gizmo_pass.zig");
 const outline_pass_mod = @import("outline_pass.zig");
 const volumetric_fog_pass_mod = @import("volumetric_fog_pass.zig");
 const ssao_pass_mod = @import("ssao_pass.zig");
-const ssao_compute_pass_mod = @import("ssao_compute_pass.zig");
+const ssao_compute_pass_mod = @import("ssao_compute_pass_v2_runtime.zig");
 const ibl_compute_pass_mod = @import("ibl_compute_pass.zig");
 const contact_shadow_pass_mod = @import("contact_shadow_pass.zig");
 const taa_pass_mod = @import("taa_pass.zig");
@@ -76,6 +76,8 @@ const mesh_pass_mod = @import("mesh_pass.zig");
 const scene_extraction = @import("scene_extraction.zig");
 const rhi_mod = @import("../rhi/device.zig");
 const rhi_types = @import("../rhi/types.zig");
+const rhi_v2_mod = @import("../rhi/rhi.zig");
+const fullscreen_post_v2_mod = @import("fullscreen_post_pass_v2.zig");
 const components = @import("../scene/components.zig");
 const scene_mod = @import("../scene/scene.zig");
 const types = @import("types.zig");
@@ -1217,7 +1219,9 @@ pub const Renderer = struct {
     /// SSAO 后处理通道
     ssao_pass: ssao_pass_mod.SSAOPass,
     /// SSAO Compute 通道（GPU Compute 加速）
-    ssao_compute_pass: ?ssao_compute_pass_mod.SSAOComputePass = null,
+    ssao_compute_pass: ?ssao_compute_pass_mod.SSAOComputePassV2 = null,
+    /// 可选 RHI v2 设备（抽象后端，用于已迁移至 v2 的通道）
+    rhi_v2_device: ?*rhi_v2_mod.Device = null,
     /// IBL Compute 通道（GPU Compute 加速 BRDF LUT + Irradiance）
     ibl_compute_pass: ?ibl_compute_pass_mod.IBLComputePass = null,
     /// Contact Shadow 屏幕空间接触阴影通道
@@ -1396,7 +1400,7 @@ pub const Renderer = struct {
         renderer.ssao_pass = try ssao_pass_mod.SSAOPass.init(&renderer.rhi);
         errdefer renderer.ssao_pass.deinit(&renderer.rhi);
 
-        renderer.ssao_compute_pass = ssao_compute_pass_mod.SSAOComputePass.init(&renderer.rhi) catch |err| blk: {
+        renderer.ssao_compute_pass = ssao_compute_pass_mod.SSAOComputePassV2.init(&renderer.rhi) catch |err| blk: {
             std.log.warn("SSAO compute pass init failed (falling back to fragment): {}", .{err});
             break :blk null;
         };
@@ -2111,18 +2115,24 @@ pub const Renderer = struct {
                                 },
                             };
 
-                            // Prefer compute path when available; fall back to fragment
-                            if (self.ssao_compute_pass) |*compute_pass| {
-                                if (compute_pass.isReady()) {
-                                    compute_pass.dispatch(
-                                        &self.rhi,
-                                        frame,
-                                        self.scene_viewport.depth().?,
-                                        self.scene_viewport.ssao().?,
-                                        ssao_uniforms,
-                                    );
+                            // Prefer V2 compute path when available; keep fragment path as legacy fallback.
+                            const use_legacy_path = self.editor_viewport_state.ssao_use_legacy_path;
+                            var dispatched_v2 = false;
+                            if (!use_legacy_path) {
+                                if (self.ssao_compute_pass) |*compute_pass| {
+                                    if (compute_pass.isReady()) {
+                                        compute_pass.dispatch(
+                                            &self.rhi,
+                                            frame,
+                                            self.scene_viewport.depth().?,
+                                            self.scene_viewport.ssao().?,
+                                            ssao_uniforms,
+                                        );
+                                        dispatched_v2 = true;
+                                    }
                                 }
-                            } else if (self.ssao_pass.isReady()) {
+                            }
+                            if (!dispatched_v2 and self.ssao_pass.isReady()) {
                                 try self.ssao_pass.syncTextures(&self.rhi, self.scene_viewport.depth().?, null);
                                 const ssao_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.ssao().? }));
                                 const ssao_stats = self.ssao_pass.draw(&self.rhi, frame, ssao_render_pass, ssao_uniforms);
@@ -2264,13 +2274,31 @@ pub const Renderer = struct {
                         }
 
                         if (fxaa_enabled) {
-                            try self.fxaa_pass.syncTexture(&self.rhi, self.scene_viewport.fxaa().?);
-                            const fxaa_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(scene_color_target));
-                            const fxaa_start = std.time.nanoTimestamp();
-                            const fxaa_stats = self.fxaa_pass.draw(&self.rhi, fxaa_render_pass);
-                            self.graph.recordPassStat(pass_stats, .post_process, durationNs(fxaa_start, std.time.nanoTimestamp()), fxaa_stats.draw_calls, fxaa_stats.triangles_drawn);
-                            draw_stats.add(fxaa_stats);
-                            self.rhi.endRenderPass(fxaa_render_pass);
+                            const use_fxaa_v2 = self.editor_viewport_state.fxaa_use_rhi_v2;
+                            var dispatched_fxaa_v2 = false;
+                            if (use_fxaa_v2) {
+                                if (self.rhi_v2_device) |v2_dev| {
+                                    const fxaa_start_v2 = std.time.nanoTimestamp();
+                                    fullscreen_post_v2_mod.FullscreenPostPassV2.execute(
+                                        self.allocator,
+                                        v2_dev,
+                                        null,
+                                        0, // input resource id (fullscreen LDR image)
+                                        0, // output resource id (final target)
+                                    ) catch {};
+                                    self.graph.recordPassStat(pass_stats, .post_process, durationNs(fxaa_start_v2, std.time.nanoTimestamp()), 1, 1);
+                                    dispatched_fxaa_v2 = true;
+                                }
+                            }
+                            if (!dispatched_fxaa_v2) {
+                                try self.fxaa_pass.syncTexture(&self.rhi, self.scene_viewport.fxaa().?);
+                                const fxaa_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(scene_color_target));
+                                const fxaa_start = std.time.nanoTimestamp();
+                                const fxaa_stats = self.fxaa_pass.draw(&self.rhi, fxaa_render_pass);
+                                self.graph.recordPassStat(pass_stats, .post_process, durationNs(fxaa_start, std.time.nanoTimestamp()), fxaa_stats.draw_calls, fxaa_stats.triangles_drawn);
+                                draw_stats.add(fxaa_stats);
+                                self.rhi.endRenderPass(fxaa_render_pass);
+                            }
                         }
                     }
                 }
