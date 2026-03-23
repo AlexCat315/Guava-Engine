@@ -8,6 +8,9 @@ pub const MetalBackend = struct {
     next_swapchain_id: u32 = 1,
     next_buffer_id: u32 = 1,
     next_texture_id: u32 = 1,
+    next_shader_module_id: u32 = 1,
+    next_graphics_pipeline_id: u32 = 1,
+    next_compute_pipeline_id: u32 = 1,
     resource_state_bits: std.AutoHashMap(u32, u32),
     resource_owner_queue: std.AutoHashMap(u32, rhi.QueueClass),
     last_submit_queue: ?rhi.QueueClass = null,
@@ -161,6 +164,40 @@ fn getQueue(ctx: *anyopaque, class: rhi.QueueClass) rhi.Error!rhi.Queue {
     };
 }
 
+fn createShaderModule(ctx: *anyopaque, desc: rhi.ShaderModuleDesc) rhi.Error!rhi.ShaderModule {
+    _ = desc;
+    var backend: *MetalBackend = @ptrCast(@alignCast(ctx));
+    const id = backend.next_shader_module_id;
+    backend.next_shader_module_id += 1;
+    return .{ .id = id };
+}
+
+fn createGraphicsPipeline(ctx: *anyopaque, desc: rhi.GraphicsPipelineDesc) rhi.Error!rhi.GraphicsPipeline {
+    _ = desc;
+    var backend: *MetalBackend = @ptrCast(@alignCast(ctx));
+    const id = backend.next_graphics_pipeline_id;
+    backend.next_graphics_pipeline_id += 1;
+    return .{ .id = id };
+}
+
+fn createComputePipeline(ctx: *anyopaque, desc: rhi.ComputePipelineDesc) rhi.Error!rhi.ComputePipeline {
+    _ = desc;
+    var backend: *MetalBackend = @ptrCast(@alignCast(ctx));
+    const id = backend.next_compute_pipeline_id;
+    backend.next_compute_pipeline_id += 1;
+    return .{ .id = id };
+}
+
+fn destroyGraphicsPipeline(ctx: *anyopaque, pipeline: rhi.GraphicsPipeline) void {
+    _ = ctx;
+    _ = pipeline;
+}
+
+fn destroyComputePipeline(ctx: *anyopaque, pipeline: rhi.ComputePipeline) void {
+    _ = ctx;
+    _ = pipeline;
+}
+
 const device_vtable = rhi.DeviceVTable{
     .create_buffer = createBuffer,
     .create_texture = createTexture,
@@ -171,6 +208,11 @@ const device_vtable = rhi.DeviceVTable{
     .submit_command_buffer = submitCommandBuffer,
     .present = present,
     .get_queue = getQueue,
+    .create_shader_module = createShaderModule,
+    .create_graphics_pipeline = createGraphicsPipeline,
+    .create_compute_pipeline = createComputePipeline,
+    .destroy_graphics_pipeline = destroyGraphicsPipeline,
+    .destroy_compute_pipeline = destroyComputePipeline,
 };
 
 test "metal backend handles compute queue barrier ownership transfer" {

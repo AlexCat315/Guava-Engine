@@ -337,6 +337,7 @@ fn drawEffectParameters(viewport_state: *EditorViewportState, node: *PostProcess
                 _ = props.float("Focus Distance", &viewport_state.dof_focus_distance, 1.0, 0.0, 100.0);
                 _ = props.float("Focus Range", &viewport_state.dof_focus_range, 0.5, 0.0, 50.0);
                 _ = props.float("Blur Radius", &viewport_state.dof_blur_radius, 1.0, 0.0, 50.0);
+                _ = props.boolean("RHI v2 Path", &viewport_state.dof_use_rhi_v2);
             },
             .fxaa => {
                 _ = props.boolean("RHI v2 Path", &viewport_state.fxaa_use_rhi_v2);

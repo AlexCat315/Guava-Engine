@@ -216,6 +216,11 @@ pub const DeviceVTable = struct {
     submit_command_buffer: *const fn (ctx: *anyopaque, queue: QueueClass, cmd: *const command_buffer.CommandBuffer, desc: SubmitDesc) Error!void,
     present: *const fn (ctx: *anyopaque, image: SwapchainImage) Error!void,
     get_queue: *const fn (ctx: *anyopaque, class: QueueClass) Error!Queue,
+    create_shader_module: *const fn (ctx: *anyopaque, desc: ShaderModuleDesc) Error!ShaderModule,
+    create_graphics_pipeline: *const fn (ctx: *anyopaque, desc: GraphicsPipelineDesc) Error!GraphicsPipeline,
+    create_compute_pipeline: *const fn (ctx: *anyopaque, desc: ComputePipelineDesc) Error!ComputePipeline,
+    destroy_graphics_pipeline: *const fn (ctx: *anyopaque, pipeline: GraphicsPipeline) void,
+    destroy_compute_pipeline: *const fn (ctx: *anyopaque, pipeline: ComputePipeline) void,
 };
 
 pub const Device = struct {
@@ -352,6 +357,26 @@ pub const Device = struct {
 
     pub fn getQueue(self: *const Device, class: QueueClass) Error!Queue {
         return self.vtable.get_queue(self.ctx, class);
+    }
+
+    pub fn createShaderModule(self: *const Device, desc: ShaderModuleDesc) Error!ShaderModule {
+        return self.vtable.create_shader_module(self.ctx, desc);
+    }
+
+    pub fn createGraphicsPipeline(self: *const Device, desc: GraphicsPipelineDesc) Error!GraphicsPipeline {
+        return self.vtable.create_graphics_pipeline(self.ctx, desc);
+    }
+
+    pub fn createComputePipeline(self: *const Device, desc: ComputePipelineDesc) Error!ComputePipeline {
+        return self.vtable.create_compute_pipeline(self.ctx, desc);
+    }
+
+    pub fn destroyGraphicsPipeline(self: *const Device, pipeline: GraphicsPipeline) void {
+        self.vtable.destroy_graphics_pipeline(self.ctx, pipeline);
+    }
+
+    pub fn destroyComputePipeline(self: *const Device, pipeline: ComputePipeline) void {
+        self.vtable.destroy_compute_pipeline(self.ctx, pipeline);
     }
 
     pub fn resolvePipelineLayout(

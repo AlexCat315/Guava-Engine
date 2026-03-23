@@ -10,6 +10,7 @@ const bloom_pass_v2 = @import("render/bloom_pass_v2.zig");
 const tonemap_pass_v2 = @import("render/tonemap_pass_v2.zig");
 const contact_shadow_v2 = @import("render/contact_shadow_pass_v2.zig");
 const dof_pass_v2 = @import("render/dof_pass_v2.zig");
+const ssr_pass_v2 = @import("render/ssr_pass_v2.zig");
 const render_graph = @import("render/render_graph.zig");
 
 test "metal backend compute queue submission path" {
@@ -289,46 +290,46 @@ test "command buffer encode-decode round-trip" {
     var dec = cb.decoder();
     {
         const cmd = (try dec.next()).?;
-        try std.testing.expectEqual(command_buffer.OpCode.begin_render_pass, cmd);
+        try std.testing.expectEqual(command_buffer.OpCode.begin_render_pass, std.meta.activeTag(cmd));
         try std.testing.expectEqual(@as(u32, 10), cmd.begin_render_pass.color_target_id);
         try std.testing.expectEqual(@as(u32, 20), cmd.begin_render_pass.depth_target_id);
     }
     {
         const cmd = (try dec.next()).?;
-        try std.testing.expectEqual(command_buffer.OpCode.set_binding_set, cmd);
+        try std.testing.expectEqual(command_buffer.OpCode.set_binding_set, std.meta.activeTag(cmd));
         try std.testing.expectEqual(@as(u32, 100), cmd.set_binding_set.set_id);
     }
     {
         const cmd = (try dec.next()).?;
-        try std.testing.expectEqual(command_buffer.OpCode.draw_indexed, cmd);
+        try std.testing.expectEqual(command_buffer.OpCode.draw_indexed, std.meta.activeTag(cmd));
         try std.testing.expectEqual(@as(u32, 36), cmd.draw_indexed.index_count);
     }
     {
         const cmd = (try dec.next()).?;
-        try std.testing.expectEqual(command_buffer.OpCode.end_render_pass, cmd);
+        try std.testing.expectEqual(command_buffer.OpCode.end_render_pass, std.meta.activeTag(cmd));
     }
     {
         const cmd = (try dec.next()).?;
-        try std.testing.expectEqual(command_buffer.OpCode.pipeline_barrier, cmd);
+        try std.testing.expectEqual(command_buffer.OpCode.pipeline_barrier, std.meta.activeTag(cmd));
         try std.testing.expectEqual(@as(u32, 10), cmd.pipeline_barrier.resource_id);
     }
     {
         const cmd = (try dec.next()).?;
-        try std.testing.expectEqual(command_buffer.OpCode.begin_compute_pass, cmd);
+        try std.testing.expectEqual(command_buffer.OpCode.begin_compute_pass, std.meta.activeTag(cmd));
     }
     {
         const cmd = (try dec.next()).?;
-        try std.testing.expectEqual(command_buffer.OpCode.set_binding_set, cmd);
+        try std.testing.expectEqual(command_buffer.OpCode.set_binding_set, std.meta.activeTag(cmd));
         try std.testing.expectEqual(@as(u32, 200), cmd.set_binding_set.set_id);
     }
     {
         const cmd = (try dec.next()).?;
-        try std.testing.expectEqual(command_buffer.OpCode.dispatch, cmd);
+        try std.testing.expectEqual(command_buffer.OpCode.dispatch, std.meta.activeTag(cmd));
         try std.testing.expectEqual(@as(u32, 8), cmd.dispatch.x);
     }
     {
         const cmd = (try dec.next()).?;
-        try std.testing.expectEqual(command_buffer.OpCode.end_compute_pass, cmd);
+        try std.testing.expectEqual(command_buffer.OpCode.end_compute_pass, std.meta.activeTag(cmd));
     }
     // No more commands
     try std.testing.expectEqual(@as(?command_buffer.DecodedCommand, null), try dec.next());
@@ -406,4 +407,84 @@ test "binding set cache per-frame delta stats" {
     try std.testing.expectEqual(@as(u64, 0), delta3.hits);
     try std.testing.expectEqual(@as(u64, 0), delta3.misses);
     try std.testing.expectEqual(@as(u64, 0), delta3.evictions);
+}
+
+test "ssr pass v2 four-set pipeline submission" {
+    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
+    defer backend.deinit();
+
+    var device = backend.createDevice();
+    defer device.deinit();
+
+    try ssr_pass_v2.SSRPassV2.execute(
+        std.testing.allocator,
+        &device,
+        null,
+        0,
+        0,
+        .{},
+    );
+
+    const stats = device.bindingSetCacheStats();
+    try std.testing.expect(stats.misses >= 4); // 4 binding sets (color, depth, normal, uniform)
+}
+
+test "pipeline creation and destruction round-trip" {
+    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
+    defer backend.deinit();
+
+    var device = backend.createDevice();
+    defer device.deinit();
+
+    // Create shader modules
+    const vert = try device.createShaderModule(.{
+        .stage = .vertex,
+        .format = .spirv,
+        .code = &.{0},
+        .entry_point = "main",
+    });
+    const frag = try device.createShaderModule(.{
+        .stage = .fragment,
+        .format = .spirv,
+        .code = &.{0},
+        .entry_point = "main",
+    });
+    const comp = try device.createShaderModule(.{
+        .stage = .compute,
+        .format = .spirv,
+        .code = &.{0},
+        .entry_point = "main",
+    });
+
+    // Create a binding layout + pipeline layout for the pipelines
+    const layout = try device.createBindingLayout(.{
+        .entries = &.{.{
+            .slot = 0,
+            .binding_type = .uniform_buffer,
+            .stage = .fragment,
+        }},
+        .label = "test_pipeline_layout",
+    });
+    const pl = try device.resolvePipelineLayout(&.{layout});
+
+    // Create graphics pipeline
+    const gfx = try device.createGraphicsPipeline(.{
+        .layout = pl,
+        .vertex = vert,
+        .fragment = frag,
+        .color_format = .rgba8_unorm,
+    });
+    try std.testing.expect(gfx.id > 0);
+
+    // Create compute pipeline
+    const cmp = try device.createComputePipeline(.{
+        .layout = pl,
+        .shader = comp,
+    });
+    try std.testing.expect(cmp.id > 0);
+    try std.testing.expect(cmp.id != gfx.id); // different ID spaces or sequential
+
+    // Destroy — should not panic
+    device.destroyGraphicsPipeline(gfx);
+    device.destroyComputePipeline(cmp);
 }

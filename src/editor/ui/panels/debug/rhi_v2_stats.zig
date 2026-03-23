@@ -97,6 +97,15 @@ pub fn drawRhiV2StatsWindow(state: *EditorState, layer_context: *engine.core.Lay
         gui.labelText("Bloom", if (vs.bloom_use_rhi_v2) "v2" else "legacy");
         gui.labelText("Tonemap", if (vs.tonemap_use_rhi_v2) "v2" else "legacy");
         gui.labelText("Contact Shadow", if (vs.contact_shadows_use_rhi_v2) "v2" else "legacy");
-        gui.labelText("DOF", "v2 prototype");
+        gui.labelText("DOF", if (vs.dof_use_rhi_v2) "v2" else "legacy");
+        gui.labelText("SSR", "v2 prototype");
+    }
+
+    // ── V2 Infrastructure ──────────────────────────────────────────
+    if (gui.collapsingHeader("V2 Infrastructure", false)) {
+        gui.labelText("Pipeline Creation", "shader + gfx + compute");
+        gui.labelText("Command Buffer", "encode + decode + submit");
+        gui.labelText("Binding Cache", "FIFO eviction (max 1024)");
+        gui.labelText("State Tracker", "barrier + ownership");
     }
 }

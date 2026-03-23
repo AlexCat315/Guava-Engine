@@ -106,6 +106,7 @@ pub const EditorViewportState = struct {
     lut_preset: EditorViewportLutPreset = .neutral,
     tonemap_use_rhi_v2: bool = false,
     contact_shadows_use_rhi_v2: bool = false,
+    dof_use_rhi_v2: bool = false,
 };
 
 pub const SceneSnapshot = struct {

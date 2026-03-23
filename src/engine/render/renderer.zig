@@ -82,6 +82,7 @@ const fullscreen_post_v2_mod = @import("fullscreen_post_pass_v2.zig");
 const bloom_pass_v2_mod = @import("bloom_pass_v2.zig");
 const tonemap_pass_v2_mod = @import("tonemap_pass_v2.zig");
 const contact_shadow_v2_mod = @import("contact_shadow_pass_v2.zig");
+const dof_pass_v2_mod = @import("dof_pass_v2.zig");
 const components = @import("../scene/components.zig");
 const scene_mod = @import("../scene/scene.zig");
 const types = @import("types.zig");
@@ -2242,42 +2243,42 @@ pub const Renderer = struct {
                                 };
                             }
                             if (!use_cs_v2) {
-                            try self.contact_shadow_pass.syncTextures(&self.rhi, self.scene_viewport.depth().?);
-                            const cs_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.contactShadow().? }));
+                                try self.contact_shadow_pass.syncTextures(&self.rhi, self.scene_viewport.depth().?);
+                                const cs_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.contactShadow().? }));
 
-                            const mat4_cs = @import("../math/mat4.zig");
-                            const inv_proj_cs = mat4_cs.inverse(prepared_scene.projection_matrix) orelse mat4_cs.identity();
+                                const mat4_cs = @import("../math/mat4.zig");
+                                const inv_proj_cs = mat4_cs.inverse(prepared_scene.projection_matrix) orelse mat4_cs.identity();
 
-                            // Use primary directional light direction (same as CSM)
-                            const cs_light_dir: [4]f32 = if (prepared_scene.lights.directional_lights.len > 0) cs_blk: {
-                                const dl = prepared_scene.lights.directional_lights[0];
-                                break :cs_blk .{ dl.direction[0], dl.direction[1], dl.direction[2], 0.0 };
-                            } else .{ 0.3, -0.9, -0.2, 0.0 };
+                                // Use primary directional light direction (same as CSM)
+                                const cs_light_dir: [4]f32 = if (prepared_scene.lights.directional_lights.len > 0) cs_blk: {
+                                    const dl = prepared_scene.lights.directional_lights[0];
+                                    break :cs_blk .{ dl.direction[0], dl.direction[1], dl.direction[2], 0.0 };
+                                } else .{ 0.3, -0.9, -0.2, 0.0 };
 
-                            const cs_uniforms = contact_shadow_pass_mod.ContactShadowUniforms{
-                                .projection = prepared_scene.projection_matrix,
-                                .inv_projection = inv_proj_cs,
-                                .view = prepared_scene.view_matrix,
-                                .light_direction = cs_light_dir,
-                                .resolution = .{ @floatFromInt(self.scene_viewport.width), @floatFromInt(self.scene_viewport.height) },
-                                .max_distance = self.editor_viewport_state.contact_shadows_distance,
-                                .thickness = self.editor_viewport_state.contact_shadows_thickness,
-                                .intensity = self.editor_viewport_state.contact_shadows_intensity,
-                                .bias = self.editor_viewport_state.contact_shadows_bias,
-                                .num_steps = @intCast(self.editor_viewport_state.contact_shadows_steps),
-                            };
-                            const cs_stats = self.contact_shadow_pass.draw(&self.rhi, frame, cs_render_pass, cs_uniforms);
-                            draw_stats.add(cs_stats);
-                            self.rhi.endRenderPass(cs_render_pass);
+                                const cs_uniforms = contact_shadow_pass_mod.ContactShadowUniforms{
+                                    .projection = prepared_scene.projection_matrix,
+                                    .inv_projection = inv_proj_cs,
+                                    .view = prepared_scene.view_matrix,
+                                    .light_direction = cs_light_dir,
+                                    .resolution = .{ @floatFromInt(self.scene_viewport.width), @floatFromInt(self.scene_viewport.height) },
+                                    .max_distance = self.editor_viewport_state.contact_shadows_distance,
+                                    .thickness = self.editor_viewport_state.contact_shadows_thickness,
+                                    .intensity = self.editor_viewport_state.contact_shadows_intensity,
+                                    .bias = self.editor_viewport_state.contact_shadows_bias,
+                                    .num_steps = @intCast(self.editor_viewport_state.contact_shadows_steps),
+                                };
+                                const cs_stats = self.contact_shadow_pass.draw(&self.rhi, frame, cs_render_pass, cs_uniforms);
+                                draw_stats.add(cs_stats);
+                                self.rhi.endRenderPass(cs_render_pass);
 
-                            // Contact Shadow 合成: 乘法混合叠加到 HDR 缓冲
-                            if (self.contact_shadow_composite_pass.isReady() and self.scene_viewport.hdrColor() != null) {
-                                try self.contact_shadow_composite_pass.syncTexture(&self.rhi, self.scene_viewport.contactShadow().?);
-                                const cs_composite_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(.{ .texture = self.scene_viewport.hdrColor().? }));
-                                const cs_composite_stats = self.contact_shadow_composite_pass.draw(&self.rhi, frame, cs_composite_pass, self.editor_viewport_state.contact_shadows_intensity);
-                                draw_stats.add(cs_composite_stats);
-                                self.rhi.endRenderPass(cs_composite_pass);
-                            }
+                                // Contact Shadow 合成: 乘法混合叠加到 HDR 缓冲
+                                if (self.contact_shadow_composite_pass.isReady() and self.scene_viewport.hdrColor() != null) {
+                                    try self.contact_shadow_composite_pass.syncTexture(&self.rhi, self.scene_viewport.contactShadow().?);
+                                    const cs_composite_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(.{ .texture = self.scene_viewport.hdrColor().? }));
+                                    const cs_composite_stats = self.contact_shadow_composite_pass.draw(&self.rhi, frame, cs_composite_pass, self.editor_viewport_state.contact_shadows_intensity);
+                                    draw_stats.add(cs_composite_stats);
+                                    self.rhi.endRenderPass(cs_composite_pass);
+                                }
                             }
                         }
 
@@ -2353,6 +2354,32 @@ pub const Renderer = struct {
                                 self.graph.recordPassStat(pass_stats, .post_process, durationNs(bloom_start, std.time.nanoTimestamp()), bloom_stats.draw_calls, bloom_stats.triangles_drawn);
                                 draw_stats.add(bloom_stats);
                                 self.rhi.endRenderPass(bloom_render_pass);
+                            }
+                        }
+
+                        // ── DOF v2 dispatch ───────────────────────────────────
+                        if (self.editor_viewport_state.dof_enabled) {
+                            if (self.editor_viewport_state.dof_use_rhi_v2) {
+                                if (self.rhi_v2_device) |v2_dev| {
+                                    const dof_start_v2 = std.time.nanoTimestamp();
+                                    dof_pass_v2_mod.DOFPassV2.execute(
+                                        self.allocator,
+                                        v2_dev,
+                                        null,
+                                        0,
+                                        0,
+                                        .{
+                                            .focus_distance = self.editor_viewport_state.dof_focus_distance,
+                                            .focus_range = self.editor_viewport_state.dof_focus_range,
+                                            .blur_radius = self.editor_viewport_state.dof_blur_radius,
+                                            .bokeh_radius = self.editor_viewport_state.dof_bokeh_radius,
+                                            .near_blur = self.editor_viewport_state.dof_near_blur,
+                                            .far_blur = self.editor_viewport_state.dof_far_blur,
+                                            .quality = self.editor_viewport_state.dof_quality,
+                                        },
+                                    ) catch {};
+                                    self.graph.recordPassStat(pass_stats, .post_process, durationNs(dof_start_v2, std.time.nanoTimestamp()), 1, 1);
+                                }
                             }
                         }
 
