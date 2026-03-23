@@ -1,0 +1,122 @@
+const std = @import("std");
+
+pub const ResourceStates = packed struct(u32) {
+    constant_buffer: bool = false,
+    vertex_buffer: bool = false,
+    index_buffer: bool = false,
+    indirect_argument: bool = false,
+    shader_resource: bool = false,
+    unordered_access: bool = false,
+    render_target: bool = false,
+    depth_write: bool = false,
+    depth_read: bool = false,
+    copy_dest: bool = false,
+    copy_source: bool = false,
+    present: bool = false,
+    accel_struct_read: bool = false,
+    accel_struct_write: bool = false,
+    resolve_dest: bool = false,
+    resolve_source: bool = false,
+    _padding: u16 = 0,
+
+    pub fn asBits(self: ResourceStates) u32 {
+        return @bitCast(self);
+    }
+
+    pub fn fromBits(bits: u32) ResourceStates {
+        return @bitCast(bits);
+    }
+};
+
+pub const ResourceKind = enum(u8) {
+    buffer,
+    texture,
+    accel_structure,
+};
+
+pub const ResourceRef = struct {
+    kind: ResourceKind,
+    id: u32,
+    subresource_base: u16 = 0,
+    subresource_count: u16 = 1,
+};
+
+pub const Barrier = struct {
+    resource: ResourceRef,
+    before: ResourceStates,
+    after: ResourceStates,
+    cross_queue: bool = false,
+};
+
+pub const StateTracker = struct {
+    allocator: std.mem.Allocator,
+    current_states: std.AutoHashMap(ResourceRef, u32),
+    pending_barriers: std.ArrayList(Barrier),
+
+    pub fn init(allocator: std.mem.Allocator) StateTracker {
+        return .{
+            .allocator = allocator,
+            .current_states = std.AutoHashMap(ResourceRef, u32).init(allocator),
+            .pending_barriers = .empty,
+        };
+    }
+
+    pub fn deinit(self: *StateTracker) void {
+        self.current_states.deinit();
+        self.pending_barriers.deinit(self.allocator);
+        self.* = undefined;
+    }
+
+    pub fn clear(self: *StateTracker) void {
+        self.current_states.clearRetainingCapacity();
+        self.pending_barriers.clearRetainingCapacity();
+    }
+
+    pub fn setInitialState(self: *StateTracker, resource: ResourceRef, state: ResourceStates) !void {
+        try self.current_states.put(resource, state.asBits());
+    }
+
+    pub fn requireState(self: *StateTracker, resource: ResourceRef, desired: ResourceStates) !void {
+        const desired_bits = desired.asBits();
+        const current_bits = self.current_states.get(resource) orelse 0;
+
+        if (current_bits == desired_bits) return;
+
+        try self.pending_barriers.append(self.allocator, .{
+            .resource = resource,
+            .before = ResourceStates.fromBits(current_bits),
+            .after = desired,
+        });
+        try self.current_states.put(resource, desired_bits);
+    }
+
+    pub fn commitBarriers(self: *StateTracker, allocator: std.mem.Allocator) ![]Barrier {
+        if (self.pending_barriers.items.len == 0) {
+            return allocator.alloc(Barrier, 0);
+        }
+        defer self.pending_barriers.clearRetainingCapacity();
+
+        // Merge adjacent transitions for the same subresource by OR-ing target states.
+        var merged = std.AutoHashMap(ResourceRef, Barrier).init(allocator);
+        defer merged.deinit();
+
+        for (self.pending_barriers.items) |barrier| {
+            if (merged.getPtr(barrier.resource)) |existing| {
+                const combined = existing.after.asBits() | barrier.after.asBits();
+                existing.after = ResourceStates.fromBits(combined);
+            } else {
+                try merged.put(barrier.resource, barrier);
+            }
+        }
+
+        var out = std.ArrayList(Barrier).empty;
+        defer out.deinit(allocator);
+
+        var it = merged.valueIterator();
+        while (it.next()) |value| {
+            try out.append(allocator, value.*);
+        }
+
+        return out.toOwnedSlice(allocator);
+    }
+};

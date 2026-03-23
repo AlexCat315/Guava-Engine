@@ -22,6 +22,8 @@ pub const Error = error{
     PipelineCreateFailed,
     TransferBufferMapFailed,
     CopyPassBeginFailed,
+    ComputePassBeginFailed,
+    ComputePipelineCreateFailed,
     CommandBufferCancelFailed,
     CommandBufferSubmitFailed,
     OutOfMemory,
@@ -124,6 +126,29 @@ pub const BindGroupDesc = struct {
 
 pub const GraphicsPipeline = struct {
     raw: *sdl.SDL_GPUGraphicsPipeline,
+};
+
+pub const ComputePipeline = struct {
+    raw: *sdl.SDL_GPUComputePipeline,
+};
+
+pub const ComputePipelineDesc = struct {
+    code: []const u8,
+    entry_point: [:0]const u8 = "main",
+    format: types.ShaderFormat = .spirv,
+    num_samplers: u32 = 0,
+    num_readonly_storage_textures: u32 = 0,
+    num_readonly_storage_buffers: u32 = 0,
+    num_readwrite_storage_textures: u32 = 0,
+    num_readwrite_storage_buffers: u32 = 0,
+    num_uniform_buffers: u32 = 0,
+    threadcount_x: u32 = 1,
+    threadcount_y: u32 = 1,
+    threadcount_z: u32 = 1,
+};
+
+pub const ComputePass = struct {
+    raw: *sdl.SDL_GPUComputePass,
 };
 
 pub const BindGroup = struct {
@@ -508,6 +533,87 @@ pub const RhiDevice = struct {
         sdl.SDL_EndGPUCopyPass(pass.raw);
     }
 
+    // ---- Compute Pass ----
+
+    pub fn beginComputePass(
+        _: *RhiDevice,
+        frame: Frame,
+        rw_storage_textures: []const *const Texture,
+        rw_storage_buffers: []const *const Buffer,
+    ) Error!ComputePass {
+        // Build read-write storage texture bindings
+        var tex_bindings: [8]sdl.SDL_GPUStorageTextureReadWriteBinding = undefined;
+        for (rw_storage_textures, 0..) |tex, i| {
+            tex_bindings[i] = std.mem.zeroes(sdl.SDL_GPUStorageTextureReadWriteBinding);
+            tex_bindings[i].texture = tex.raw;
+        }
+        const tex_ptr: ?[*]const sdl.SDL_GPUStorageTextureReadWriteBinding = if (rw_storage_textures.len > 0) &tex_bindings else null;
+
+        // Build read-write storage buffer bindings
+        var buf_bindings: [8]sdl.SDL_GPUStorageBufferReadWriteBinding = undefined;
+        for (rw_storage_buffers, 0..) |buf, i| {
+            buf_bindings[i] = std.mem.zeroes(sdl.SDL_GPUStorageBufferReadWriteBinding);
+            buf_bindings[i].buffer = buf.raw;
+        }
+        const buf_ptr: ?[*]const sdl.SDL_GPUStorageBufferReadWriteBinding = if (rw_storage_buffers.len > 0) &buf_bindings else null;
+
+        const compute_pass = sdl.SDL_BeginGPUComputePass(
+            frame.command_buffer,
+            tex_ptr,
+            @intCast(rw_storage_textures.len),
+            buf_ptr,
+            @intCast(rw_storage_buffers.len),
+        ) orelse {
+            std.log.err("SDL_BeginGPUComputePass failed: {s}", .{window_mod.lastError()});
+            return error.ComputePassBeginFailed;
+        };
+
+        return .{ .raw = compute_pass };
+    }
+
+    pub fn endComputePass(_: *RhiDevice, pass: ComputePass) void {
+        sdl.SDL_EndGPUComputePass(pass.raw);
+    }
+
+    pub fn bindComputePipeline(_: *RhiDevice, pass: ComputePass, pipeline: *const ComputePipeline) void {
+        sdl.SDL_BindGPUComputePipeline(pass.raw, pipeline.raw);
+    }
+
+    pub fn bindComputeSamplers(_: *RhiDevice, pass: ComputePass, first_slot: u32, bindings: []const TextureSamplerBinding) void {
+        var sdl_bindings: [16]sdl.SDL_GPUTextureSamplerBinding = undefined;
+        for (bindings, 0..) |b, i| {
+            sdl_bindings[i] = .{
+                .texture = b.texture.raw,
+                .sampler = b.sampler.raw,
+            };
+        }
+        sdl.SDL_BindGPUComputeSamplers(pass.raw, first_slot, &sdl_bindings, @intCast(bindings.len));
+    }
+
+    pub fn bindComputeStorageTextures(_: *RhiDevice, pass: ComputePass, first_slot: u32, textures: []const *const Texture) void {
+        var raw_textures: [16]*sdl.SDL_GPUTexture = undefined;
+        for (textures, 0..) |tex, i| {
+            raw_textures[i] = tex.raw;
+        }
+        sdl.SDL_BindGPUComputeStorageTextures(pass.raw, first_slot, &raw_textures, @intCast(textures.len));
+    }
+
+    pub fn bindComputeStorageBuffers(_: *RhiDevice, pass: ComputePass, first_slot: u32, buffers: []const *const Buffer) void {
+        var raw_buffers: [16]*sdl.SDL_GPUBuffer = undefined;
+        for (buffers, 0..) |buf, i| {
+            raw_buffers[i] = buf.raw;
+        }
+        sdl.SDL_BindGPUComputeStorageBuffers(pass.raw, first_slot, &raw_buffers, @intCast(buffers.len));
+    }
+
+    pub fn dispatchCompute(_: *RhiDevice, pass: ComputePass, groupcount_x: u32, groupcount_y: u32, groupcount_z: u32) void {
+        sdl.SDL_DispatchGPUCompute(pass.raw, groupcount_x, groupcount_y, groupcount_z);
+    }
+
+    pub fn pushComputeUniformData(_: *RhiDevice, frame: Frame, slot: u32, data: []const u8) void {
+        sdl.SDL_PushGPUComputeUniformData(frame.command_buffer, slot, data.ptr, @intCast(data.len));
+    }
+
     pub fn blitTexture(_: *RhiDevice, frame: Frame, src: *const Texture, dst: *const Texture) void {
         const blit_info = sdl.SDL_GPUBlitInfo{
             .source = .{
@@ -805,6 +911,36 @@ pub const RhiDevice = struct {
         pipeline.* = undefined;
     }
 
+    pub fn createComputePipeline(self: *RhiDevice, desc: ComputePipelineDesc) Error!ComputePipeline {
+        var create_info = std.mem.zeroes(sdl.SDL_GPUComputePipelineCreateInfo);
+        create_info.code_size = desc.code.len;
+        create_info.code = desc.code.ptr;
+        create_info.entrypoint = desc.entry_point.ptr;
+        create_info.format = shaderFormatToSdl(desc.format);
+        create_info.num_samplers = desc.num_samplers;
+        create_info.num_readonly_storage_textures = desc.num_readonly_storage_textures;
+        create_info.num_readonly_storage_buffers = desc.num_readonly_storage_buffers;
+        create_info.num_readwrite_storage_textures = desc.num_readwrite_storage_textures;
+        create_info.num_readwrite_storage_buffers = desc.num_readwrite_storage_buffers;
+        create_info.num_uniform_buffers = desc.num_uniform_buffers;
+        create_info.threadcount_x = desc.threadcount_x;
+        create_info.threadcount_y = desc.threadcount_y;
+        create_info.threadcount_z = desc.threadcount_z;
+
+        const pipeline = sdl.SDL_CreateGPUComputePipeline(self.raw, &create_info);
+        if (pipeline == null) {
+            std.log.err("SDL_CreateGPUComputePipeline failed: {s}", .{window_mod.lastError()});
+            return error.ComputePipelineCreateFailed;
+        }
+
+        return .{ .raw = pipeline.? };
+    }
+
+    pub fn releaseComputePipeline(self: *RhiDevice, pipeline: *ComputePipeline) void {
+        sdl.SDL_ReleaseGPUComputePipeline(self.raw, pipeline.raw);
+        pipeline.* = undefined;
+    }
+
     pub fn createBindGroup(self: *RhiDevice, desc: BindGroupDesc) Error!BindGroup {
         const texture_sampler_bindings = self.allocator.alloc(sdl.SDL_GPUTextureSamplerBinding, desc.texture_sampler_bindings.len) catch {
             return error.OutOfMemory;
@@ -896,6 +1032,7 @@ pub const RhiDevice = struct {
                     sdl.SDL_BindGPUFragmentStorageBuffers(pass.raw, bind_group.slot_offset, bind_group.storage_buffers.ptr, @intCast(bind_group.storage_buffers.len));
                 }
             },
+            .compute => unreachable, // use bindComputeStorageTextures/bindComputeStorageBuffers
         }
     }
 
@@ -956,6 +1093,7 @@ pub const RhiDevice = struct {
                     sdl.SDL_BindGPUFragmentStorageBuffers(pass.raw, bind_group.slot_offset, bind_group.storage_buffers.ptr, @intCast(bind_group.storage_buffers.len));
                 }
             },
+            .compute => unreachable,
         }
     }
 
@@ -1498,6 +1636,7 @@ fn shaderStageToSdl(stage: types.ShaderStage) sdl.SDL_GPUShaderStage {
     return switch (stage) {
         .vertex => sdl.SDL_GPU_SHADERSTAGE_VERTEX,
         .fragment => sdl.SDL_GPU_SHADERSTAGE_FRAGMENT,
+        .compute => unreachable, // compute shaders use SDL_CreateGPUComputePipeline directly
     };
 }
 

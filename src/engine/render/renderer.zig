@@ -62,6 +62,8 @@ const gizmo_pass_mod = @import("gizmo_pass.zig");
 const outline_pass_mod = @import("outline_pass.zig");
 const volumetric_fog_pass_mod = @import("volumetric_fog_pass.zig");
 const ssao_pass_mod = @import("ssao_pass.zig");
+const ssao_compute_pass_mod = @import("ssao_compute_pass.zig");
+const ibl_compute_pass_mod = @import("ibl_compute_pass.zig");
 const contact_shadow_pass_mod = @import("contact_shadow_pass.zig");
 const taa_pass_mod = @import("taa_pass.zig");
 const rt_shadow_composite_pass_mod = @import("rt_shadow_composite_pass.zig");
@@ -85,6 +87,7 @@ const physics_mod = @import("../physics/system.zig");
 const PassDescriptors = @import("render_helpers.zig").PassDescriptors;
 const render_log = std.log.scoped(.viewport_render);
 const rt_backend = @import("../rt/rt_backend.zig");
+const rt_device_mod = @import("../rhi/rt_device.zig");
 
 /// 是否已记录视口后端日志
 var g_logged_viewport_backend: bool = false;
@@ -703,7 +706,7 @@ const SceneViewportState = struct {
             .width = width,
             .height = height,
             .format = .r8_unorm,
-            .usage = rhi_types.TextureUsage.color_target | rhi_types.TextureUsage.sampler,
+            .usage = rhi_types.TextureUsage.color_target | rhi_types.TextureUsage.sampler | rhi_types.TextureUsage.compute_storage_write,
         });
         errdefer if (self.ssao_texture) |*texture| {
             device.releaseTexture(texture);
@@ -1213,6 +1216,10 @@ pub const Renderer = struct {
     volumetric_fog_pass: volumetric_fog_pass_mod.VolumetricFogPass,
     /// SSAO 后处理通道
     ssao_pass: ssao_pass_mod.SSAOPass,
+    /// SSAO Compute 通道（GPU Compute 加速）
+    ssao_compute_pass: ?ssao_compute_pass_mod.SSAOComputePass = null,
+    /// IBL Compute 通道（GPU Compute 加速 BRDF LUT + Irradiance）
+    ibl_compute_pass: ?ibl_compute_pass_mod.IBLComputePass = null,
     /// Contact Shadow 屏幕空间接触阴影通道
     contact_shadow_pass: contact_shadow_pass_mod.ContactShadowPass,
     /// Contact Shadow 合成通道 — 乘法混合到 HDR 缓冲
@@ -1269,8 +1276,8 @@ pub const Renderer = struct {
     ai_focus_entity_count: usize = 0,
     /// 渐进式 CPU 路径追踪状态
     path_trace_state: PathTraceProgressiveState = .{},
-    /// 硬件 RT 后端（macOS=Metal, 未来 Win/Linux=Vulkan/DX12）
-    hw_rt_backend: ?rt_backend.HardwareRtBackend = null,
+    /// 硬件 RT 后端（通过 RHI RT 抽象层）
+    rt_device: ?rt_device_mod.RtDevice = null,
     /// 硬件 RT 渲染状态
     hw_rt_state: HwRtState = .{},
 
@@ -1326,6 +1333,8 @@ pub const Renderer = struct {
             .gizmo_pass = undefined,
             .volumetric_fog_pass = undefined,
             .ssao_pass = undefined,
+            .ssao_compute_pass = null,
+            .ibl_compute_pass = null,
             .contact_shadow_pass = undefined,
             .contact_shadow_composite_pass = undefined,
             .taa_pass = undefined,
@@ -1387,6 +1396,20 @@ pub const Renderer = struct {
         renderer.ssao_pass = try ssao_pass_mod.SSAOPass.init(&renderer.rhi);
         errdefer renderer.ssao_pass.deinit(&renderer.rhi);
 
+        renderer.ssao_compute_pass = ssao_compute_pass_mod.SSAOComputePass.init(&renderer.rhi) catch |err| blk: {
+            std.log.warn("SSAO compute pass init failed (falling back to fragment): {}", .{err});
+            break :blk null;
+        };
+
+        renderer.ibl_compute_pass = blk: {
+            const p = ibl_compute_pass_mod.IBLComputePass.init(&renderer.rhi);
+            if (!p.hasBRDF() and !p.hasIrradiance()) {
+                std.log.warn("IBL compute pass: no pipelines available, GPU IBL disabled", .{});
+                break :blk null;
+            }
+            break :blk p;
+        };
+
         renderer.contact_shadow_pass = try contact_shadow_pass_mod.ContactShadowPass.init(&renderer.rhi);
         errdefer renderer.contact_shadow_pass.deinit(&renderer.rhi);
 
@@ -1419,7 +1442,7 @@ pub const Renderer = struct {
     pub fn deinit(self: *Renderer) void {
         self.path_trace_state.deinit(self.allocator);
         self.hw_rt_state.deinit(self.allocator);
-        if (self.hw_rt_backend) |*backend| backend.deinit();
+        if (self.rt_device) |*d| d.deinit();
         self.releaseInFlightSelectionBatches();
         self.pending_selection_readbacks.deinit(self.allocator);
         self.selection_history.deinit();
@@ -1437,6 +1460,8 @@ pub const Renderer = struct {
         self.bloom_pass.deinit(&self.rhi);
         self.volumetric_fog_pass.deinit(&self.rhi);
         self.ssao_pass.deinit(&self.rhi);
+        if (self.ssao_compute_pass) |*p| p.deinit(&self.rhi);
+        if (self.ibl_compute_pass) |*p| p.deinit(&self.rhi);
         self.contact_shadow_pass.deinit(&self.rhi);
         self.contact_shadow_composite_pass.deinit(&self.rhi);
         self.taa_pass.deinit(&self.rhi);
@@ -2063,11 +2088,8 @@ pub const Renderer = struct {
                         const fxaa_enabled = self.editor_viewport_state.fxaa_enabled and self.fxaa_pass.isReady() and self.scene_viewport.fxaa() != null;
 
                         // SSAO: render ambient occlusion to ssao_texture
-                        const ssao_enabled = self.editor_viewport_state.ssao_enabled and self.ssao_pass.isReady() and self.scene_viewport.ssao() != null and self.scene_viewport.depth() != null;
+                        const ssao_enabled = self.editor_viewport_state.ssao_enabled and self.scene_viewport.ssao() != null and self.scene_viewport.depth() != null;
                         if (ssao_enabled) {
-                            try self.ssao_pass.syncTextures(&self.rhi, self.scene_viewport.depth().?, null);
-                            const ssao_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.ssao().? }));
-
                             const mat4_ssao = @import("../math/mat4.zig");
                             const inv_proj = mat4_ssao.inverse(prepared_scene.projection_matrix) orelse mat4_ssao.identity();
                             const inv_view = mat4_ssao.inverse(prepared_scene.view_matrix) orelse mat4_ssao.identity();
@@ -2088,9 +2110,25 @@ pub const Renderer = struct {
                                     @as(f32, @floatFromInt(self.scene_viewport.height)) / 4.0,
                                 },
                             };
-                            const ssao_stats = self.ssao_pass.draw(&self.rhi, frame, ssao_render_pass, ssao_uniforms);
-                            draw_stats.add(ssao_stats);
-                            self.rhi.endRenderPass(ssao_render_pass);
+
+                            // Prefer compute path when available; fall back to fragment
+                            if (self.ssao_compute_pass) |*compute_pass| {
+                                if (compute_pass.isReady()) {
+                                    compute_pass.dispatch(
+                                        &self.rhi,
+                                        frame,
+                                        self.scene_viewport.depth().?,
+                                        self.scene_viewport.ssao().?,
+                                        ssao_uniforms,
+                                    );
+                                }
+                            } else if (self.ssao_pass.isReady()) {
+                                try self.ssao_pass.syncTextures(&self.rhi, self.scene_viewport.depth().?, null);
+                                const ssao_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.ssao().? }));
+                                const ssao_stats = self.ssao_pass.draw(&self.rhi, frame, ssao_render_pass, ssao_uniforms);
+                                draw_stats.add(ssao_stats);
+                                self.rhi.endRenderPass(ssao_render_pass);
+                            }
 
                             // SSAO 合成: 将 SSAO 纹理以乘法混合叠加到 HDR 颜色缓冲，
                             // 使遮蔽区域（角落/缝隙）自然变暗，增强场景接地感。
@@ -2715,12 +2753,16 @@ pub const Renderer = struct {
         if (width == 0 or height == 0) return false;
 
         // 懒初始化硬件 RT 后端
-        if (self.hw_rt_backend == null) {
-            self.hw_rt_backend = rt_backend.HardwareRtBackend.init();
-            if (self.hw_rt_backend == null) return false;
+        if (self.rt_device == null) {
+            self.rt_device = rt_device_mod.RtDevice.init();
+            if (!self.rt_device.?.isAvailable()) {
+                self.rt_device.?.deinit();
+                self.rt_device = null;
+                return false;
+            }
         }
 
-        var backend = &self.hw_rt_backend.?;
+        var rt_dev = &self.rt_device.?;
         var mrt = &self.hw_rt_state;
 
         // --- 变化检测 ---
@@ -2838,16 +2880,16 @@ pub const Renderer = struct {
 
         // --- 构建加速结构 ---
         if (!mrt.accel_built) {
-            if (!backend.buildAccelerationStructure(mrt.triangles.?)) return false;
+            if (!rt_dev.buildAccelerationStructure(mrt.triangles.?)) return false;
             mrt.accel_built = true;
         }
 
         // --- 上传纹理图集到 GPU ---
         if (!mrt.textures_uploaded) {
             if (mrt.texture_atlas != null and mrt.texture_meta != null) {
-                _ = backend.uploadTextures(mrt.texture_atlas.?, mrt.texture_meta.?);
+                _ = rt_dev.uploadTextures(mrt.texture_atlas.?, mrt.texture_meta.?);
             } else {
-                _ = backend.uploadTextures(&.{}, &.{});
+                _ = rt_dev.uploadTextures(&.{}, &.{});
             }
             mrt.textures_uploaded = true;
         }
@@ -2889,7 +2931,7 @@ pub const Renderer = struct {
             .shadow_samples = self.editor_viewport_state.rt_shadow_samples,
         };
 
-        if (!backend.traceRays(&params, self.rt_shadow_pixels.?)) return false;
+        if (!rt_dev.traceRays(&params, self.rt_shadow_pixels.?)) return false;
 
         // --- 上采样 (如果 trace 分辨率 < 输出分辨率) ---
         const upload_pixels: []u8 = if (trace_w == width and trace_h == height)
@@ -2964,18 +3006,20 @@ pub const Renderer = struct {
         resolution_scale: f32,
     ) bool {
         // 懒初始化硬件 RT 后端
-        if (self.hw_rt_backend == null) {
-            self.hw_rt_backend = rt_backend.HardwareRtBackend.init();
-            if (self.hw_rt_backend == null) {
+        if (self.rt_device == null) {
+            self.rt_device = rt_device_mod.RtDevice.init();
+            if (!self.rt_device.?.isAvailable()) {
+                self.rt_device.?.deinit();
+                self.rt_device = null;
                 if (!g_logged_path_trace_active) {
-                    render_log.info("{s} not available, using CPU path trace", .{rt_backend.backendName()});
+                    render_log.info("{s} not available, using CPU path trace", .{rt_device_mod.RtDevice.backendName()});
                 }
                 return false;
             }
-            render_log.info("{s} backend initialized — GPU path trace active", .{rt_backend.backendName()});
+            render_log.info("{s} backend initialized — GPU path trace active", .{rt_device_mod.RtDevice.backendName()});
         }
 
-        var backend = &self.hw_rt_backend.?;
+        var rt_dev = &self.rt_device.?;
         var mrt = &self.hw_rt_state;
 
         // --- 变化检测 ---
@@ -3152,8 +3196,8 @@ pub const Renderer = struct {
 
         // --- 构建加速结构 ---
         if (!mrt.accel_built) {
-            if (!backend.buildAccelerationStructure(mrt.triangles.?)) {
-                render_log.err("{s} acceleration structure build failed", .{rt_backend.backendName()});
+            if (!rt_dev.buildAccelerationStructure(mrt.triangles.?)) {
+                render_log.err("{s} acceleration structure build failed", .{rt_device_mod.RtDevice.backendName()});
                 return false;
             }
             mrt.accel_built = true;
@@ -3162,9 +3206,9 @@ pub const Renderer = struct {
         // --- 上传纹理图集到 GPU ---
         if (!mrt.textures_uploaded) {
             if (mrt.texture_atlas != null and mrt.texture_meta != null) {
-                _ = backend.uploadTextures(mrt.texture_atlas.?, mrt.texture_meta.?);
+                _ = rt_dev.uploadTextures(mrt.texture_atlas.?, mrt.texture_meta.?);
             } else {
-                _ = backend.uploadTextures(&.{}, &.{});
+                _ = rt_dev.uploadTextures(&.{}, &.{});
             }
             mrt.textures_uploaded = true;
         }

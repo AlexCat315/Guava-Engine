@@ -170,6 +170,23 @@ pub const CompiledPass = struct {
     dependency_count: usize,
 };
 
+pub const BarrierState = enum {
+    unknown,
+    shader_read,
+    shader_write,
+    shader_read_write,
+    present,
+};
+
+pub const BarrierPlan = struct {
+    from_pass: u16,
+    to_pass: u16,
+    resource: u16,
+    src_state: BarrierState,
+    dst_state: BarrierState,
+    cross_queue: bool,
+};
+
 pub const PassExecutionStat = struct {
     name: []const u8,
     kind: PassKind,
@@ -457,6 +474,33 @@ pub const RenderGraph = struct {
         return if (self.compiled) |compiled| compiled.resource_lifetimes else &.{};
     }
 
+    /// Build explicit transition intents from dependency edges.
+    ///
+    /// Phase 3 backends can map each BarrierPlan to platform-specific barriers:
+    /// - Metal: memoryBarrier / fence scopes
+    /// - Vulkan: vkCmdPipelineBarrier2
+    /// - DX12: ResourceBarrier
+    pub fn buildBarrierPlanAlloc(self: *const RenderGraph, allocator: std.mem.Allocator) ![]BarrierPlan {
+        const compiled = self.compiled orelse return allocator.alloc(BarrierPlan, 0);
+
+        var plans = std.ArrayList(BarrierPlan).empty;
+        defer plans.deinit(allocator);
+
+        for (compiled.dependencies) |edge| {
+            const resource_node = self.resources.items[edge.resource];
+            try plans.append(allocator, .{
+                .from_pass = edge.from_pass,
+                .to_pass = edge.to_pass,
+                .resource = edge.resource,
+                .src_state = accessToBarrierState(edge.previous_access, resource_node.kind),
+                .dst_state = accessToBarrierState(edge.next_access, resource_node.kind),
+                .cross_queue = edge.cross_queue,
+            });
+        }
+
+        return plans.toOwnedSlice(allocator);
+    }
+
     pub fn allocatePassStats(self: *const RenderGraph, allocator: std.mem.Allocator) ![]PassExecutionStat {
         const compiled = self.compiled orelse return allocator.alloc(PassExecutionStat, 0);
         const stats = try allocator.alloc(PassExecutionStat, compiled.execution.len);
@@ -621,6 +665,15 @@ fn dependencyCountsForPass(edges: []const DependencyEdge, pass_index: u16) usize
     return count;
 }
 
+fn accessToBarrierState(access: ResourceAccess, kind: ResourceKind) BarrierState {
+    if (kind == .swapchain and access == .write) return .present;
+    return switch (access) {
+        .read => .shader_read,
+        .write => .shader_write,
+        .read_write => .shader_read_write,
+    };
+}
+
 fn stringifyAlloc(allocator: std.mem.Allocator, value: anytype) ![]u8 {
     var output = std.ArrayList(u8).empty;
     defer output.deinit(allocator);
@@ -668,4 +721,15 @@ test "render graph exports deterministic dot" {
     try std.testing.expect(std.mem.indexOf(u8, dot, "OutlinePass") != null);
     try std.testing.expect(std.mem.indexOf(u8, dot, "SceneDepth") != null);
     try std.testing.expect(std.mem.indexOf(u8, dot, "resource_1 -> pass_2") != null);
+}
+
+test "render graph builds barrier plans" {
+    var graph = try RenderGraph.initDefault3D(std.testing.allocator);
+    defer graph.deinit();
+
+    const plans = try graph.buildBarrierPlanAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(plans);
+
+    try std.testing.expect(plans.len > 0);
+    try std.testing.expect(plans[0].to_pass >= plans[0].from_pass);
 }

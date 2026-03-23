@@ -28,6 +28,7 @@ pub const ShaderFormat = enum {
 pub const ShaderStage = enum {
     vertex,
     fragment,
+    compute,
 };
 
 pub const PrimitiveType = enum {
