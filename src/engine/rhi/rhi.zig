@@ -224,6 +224,7 @@ pub const DeviceVTable = struct {
     create_sampler: *const fn (ctx: *anyopaque, desc: SamplerDesc) Error!Sampler,
     destroy_sampler: *const fn (ctx: *anyopaque, sampler: Sampler) void,
     upload_buffer_data: *const fn (ctx: *anyopaque, buffer: Buffer, offset: u64, data: []const u8) Error!void,
+    register_binding_set: ?*const fn (ctx: *anyopaque, set_id: u32, layout_entries: []const BindingLayoutEntry, set_entries: []const BindingSetEntry) void = null,
 };
 
 pub const Device = struct {
@@ -293,6 +294,12 @@ pub const Device = struct {
         const id = self.binding_set_cache.nextSyntheticId();
         self.binding_set_cache.putByHash(key_hash, id) catch return error.OutOfMemory;
         self.binding_set_layouts.put(id, layout.id) catch return error.OutOfMemory;
+
+        // Notify backend so it can map set_id → real GPU resources
+        if (self.vtable.register_binding_set) |reg_fn| {
+            reg_fn(self.ctx, id, layout_entries, desc.entries);
+        }
+
         return .{ .id = id };
     }
 

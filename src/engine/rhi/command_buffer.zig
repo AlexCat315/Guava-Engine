@@ -204,6 +204,11 @@ pub const CommandBuffer = struct {
         return Decoder.init(self.opcodes.items);
     }
 
+    /// Raw byte slice for FFI — used by the Metal bridge to decode commands.
+    pub fn rawBytes(self: *const CommandBuffer) []const u8 {
+        return self.opcodes.items;
+    }
+
     fn writeOp(self: *CommandBuffer, op: OpCode) Error!void {
         self.opcodes.append(self.allocator, @intFromEnum(op)) catch return error.OutOfMemory;
     }
