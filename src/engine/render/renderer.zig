@@ -2024,7 +2024,6 @@ pub const Renderer = struct {
                             self.rhi.endRenderPass(fxaa_render_pass);
                         }
                     }
-
                 }
 
                 // --- 公共 overlay passes：所有模式（Raster/PathTrace/HW RT）都运行 ---
