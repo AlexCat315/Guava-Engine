@@ -817,26 +817,43 @@ const SceneViewportState = struct {
     }
 };
 
+const csm_cascade_count = 4;
+
 const ShadowMapState = struct {
-    /// Shadow map resolution (2048x2048 as a trade-off between visual quality and GPU memory budget).
-    /// Chosen to minimize temporal aliasing on moving shadows while keeping VRAM usage reasonable (~16 MB for d32_float).
-    /// Higher values (4096+) improve shadow quality but impact performance on lower-end GPUs.
-    /// Lower values (1024-) degrade quality, especially visible on large shadow-casting objects.
+    /// Per-cascade shadow map resolution. 2048×2048 per cascade = ~64 MB total VRAM for d32_float.
     size: u32 = 2048,
-    depth_texture: ?rhi_mod.Texture = null,
+    depth_textures: [csm_cascade_count]?rhi_mod.Texture = .{ null, null, null, null },
     sampler: ?rhi_mod.Sampler = null,
     /// true = shadow map depth already cleared to 1.0 for RT shadow bypass
     cleared_for_rt: bool = false,
 
+    /// View-space far-plane distance per cascade (computed each frame).
+    cascade_splits: [csm_cascade_count]f32 = .{ 0.0, 0.0, 0.0, 0.0 },
+    /// Light-space view-projection per cascade (computed each frame).
+    cascade_matrices: [csm_cascade_count][16]f32 = .{ mat4_mod.identity(), mat4_mod.identity(), mat4_mod.identity(), mat4_mod.identity() },
+
     fn init(device: *rhi_mod.RhiDevice) !ShadowMapState {
         const size: u32 = 2048;
-        const depth_texture = try device.createTexture(.{
-            .width = size,
-            .height = size,
-            .format = .d32_float,
-            .usage = rhi_types.TextureUsage.depth_stencil_target | rhi_types.TextureUsage.sampler,
-            .label = "ShadowMap",
-        });
+        var textures: [csm_cascade_count]?rhi_mod.Texture = .{ null, null, null, null };
+        errdefer for (&textures) |*t| {
+            if (t.*) |*tex| device.releaseTexture(tex);
+        };
+        for (0..csm_cascade_count) |i| {
+            const label: []const u8 = switch (i) {
+                0 => "CSM_Cascade0",
+                1 => "CSM_Cascade1",
+                2 => "CSM_Cascade2",
+                3 => "CSM_Cascade3",
+                else => unreachable,
+            };
+            textures[i] = try device.createTexture(.{
+                .width = size,
+                .height = size,
+                .format = .d32_float,
+                .usage = rhi_types.TextureUsage.depth_stencil_target | rhi_types.TextureUsage.sampler,
+                .label = label,
+            });
+        }
 
         const sampler = try device.createSampler(.{
             .min_filter = .linear,
@@ -851,14 +868,16 @@ const ShadowMapState = struct {
 
         return .{
             .size = size,
-            .depth_texture = depth_texture,
+            .depth_textures = textures,
             .sampler = sampler,
         };
     }
 
     fn deinit(self: *ShadowMapState, device: *rhi_mod.RhiDevice) void {
-        if (self.depth_texture) |*texture| {
-            device.releaseTexture(texture);
+        for (&self.depth_textures) |*texture| {
+            if (texture.*) |*tex| {
+                device.releaseTexture(tex);
+            }
         }
         if (self.sampler) |*sampler| {
             device.releaseSampler(sampler);
@@ -1728,15 +1747,46 @@ pub const Renderer = struct {
                     else
                         mesh_pass_mod.DirectionalLightBlock{ .direction = vec3.normalize(.{ 0.3, -0.9, -0.2 }), .color = .{ 1.0, 0.98, 0.92 }, .intensity = 1.6 };
 
-                    const mat4 = @import("../math/mat4.zig");
                     const light_dir = vec3.normalize(main_light.direction);
-                    const light_pos = vec3.scale(light_dir, -20.0);
-                    const light_view = mat4.lookAt(light_pos, .{ 0.0, 0.0, 0.0 }, shadowViewUpVector(light_dir));
-                    const light_proj = mat4.orthographic(40.0, 1.0, 0.1, 100.0);
-                    break :blk_lsm mat4.mul(light_proj, light_view);
+
+                    // Camera near/far from projection
+                    const cam_proj = prepared_scene.camera.camera.projection;
+                    const cam_near = switch (cam_proj) {
+                        .perspective => |p| p.near_clip,
+                        .orthographic => |o| o.near_clip,
+                    };
+                    const cam_far = switch (cam_proj) {
+                        .perspective => |p| p.far_clip,
+                        .orthographic => |o| o.far_clip,
+                    };
+
+                    // Inverse VP for extracting frustum corners
+                    const inv_vp = mat4_mod.inverse(prepared_scene.view_projection) orelse mat4_mod.identity();
+                    const texel_size = @as(f32, @floatFromInt(self.shadow_map.size));
+
+                    // Compute cascade splits (practical-split-scheme, lambda=0.7)
+                    const splits = computeCascadeSplits(cam_near, cam_far, csm_cascade_count, 0.7);
+                    self.shadow_map.cascade_splits = splits;
+
+                    // Compute per-cascade matrices
+                    var first_mat: [16]f32 = mat4_mod.identity();
+                    for (0..csm_cascade_count) |ci| {
+                        const split_near = if (ci == 0) cam_near else splits[ci - 1];
+                        const split_far = splits[ci];
+                        const cascade_mat = computeCascadeMatrix(inv_vp, split_near, split_far, cam_near, cam_far, light_dir, texel_size);
+                        self.shadow_map.cascade_matrices[ci] = cascade_mat;
+                        if (ci == 0) first_mat = cascade_mat;
+                    }
+
+                    // Legacy: keep first cascade as the main light_space_matrix for backward compat
+                    break :blk_lsm first_mat;
                 };
                 prepared_scene.light_space_matrix = light_space_matrix;
-                prepared_scene.shadow_map = &self.shadow_map.depth_texture.?;
+                prepared_scene.cascade_matrices = self.shadow_map.cascade_matrices;
+                prepared_scene.cascade_splits = self.shadow_map.cascade_splits;
+                for (0..csm_cascade_count) |ci| {
+                    prepared_scene.shadow_maps[ci] = &self.shadow_map.depth_textures[ci].?;
+                }
                 prepared_scene.shadow_sampler = &self.shadow_map.sampler.?;
                 try resolveEnvironmentTextures(self, scene, &prepared_scene);
 
@@ -1808,18 +1858,24 @@ pub const Renderer = struct {
                             // RT shadows 激活：首次清除 depth=1.0（mesh shader 得到 shadow=1.0），
                             // 后续帧完全跳过 shadow pass
                             if (!self.shadow_map.cleared_for_rt) {
-                                const shadow_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.shadowOnly(&self.shadow_map.depth_texture.?));
-                                self.rhi.endRenderPass(shadow_render_pass);
+                                for (0..csm_cascade_count) |ci| {
+                                    const rp = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.shadowOnly(&self.shadow_map.depth_textures[ci].?));
+                                    self.rhi.endRenderPass(rp);
+                                }
                                 self.shadow_map.cleared_for_rt = true;
                             }
                         } else {
                             self.shadow_map.cleared_for_rt = false;
-                            const shadow_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.shadowOnly(&self.shadow_map.depth_texture.?));
                             const shadow_start = std.time.nanoTimestamp();
-                            const shadow_stats = self.shadow_pass.draw(&self.rhi, frame, shadow_render_pass, &prepared_scene, light_space_matrix);
-                            self.graph.recordPassStat(pass_stats, .shadow_map, durationNs(shadow_start, std.time.nanoTimestamp()), shadow_stats.draw_calls, shadow_stats.triangles_drawn);
-                            draw_stats.add(shadow_stats);
-                            self.rhi.endRenderPass(shadow_render_pass);
+                            var cascade_stats = mesh_pass_mod.DrawStats{};
+                            for (0..csm_cascade_count) |ci| {
+                                const shadow_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.shadowOnly(&self.shadow_map.depth_textures[ci].?));
+                                const cs = self.shadow_pass.draw(&self.rhi, frame, shadow_render_pass, &prepared_scene, self.shadow_map.cascade_matrices[ci]);
+                                cascade_stats.add(cs);
+                                self.rhi.endRenderPass(shadow_render_pass);
+                            }
+                            self.graph.recordPassStat(pass_stats, .shadow_map, durationNs(shadow_start, std.time.nanoTimestamp()), cascade_stats.draw_calls, cascade_stats.triangles_drawn);
+                            draw_stats.add(cascade_stats);
                         }
                     }
 
@@ -1932,7 +1988,7 @@ pub const Renderer = struct {
                         // Volumetric fog: composite onto HDR color before bloom/tonemap
                         const fog_enabled = self.editor_viewport_state.volumetric_fog_enabled and self.volumetric_fog_pass.isReady() and self.scene_viewport.hdrColor() != null;
                         if (fog_enabled) {
-                            if (self.shadow_map.depth_texture) |*shadow_tex| {
+                            if (self.shadow_map.depth_textures[0]) |*shadow_tex| {
                                 try self.volumetric_fog_pass.syncTextures(&self.rhi, self.scene_viewport.depth().?, shadow_tex);
                                 const fog_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(.{ .texture = self.scene_viewport.hdrColor().? }));
 
@@ -3796,6 +3852,121 @@ fn shadowViewUpVector(light_dir: [3]f32) [3]f32 {
         return .{ 0.0, 0.0, 1.0 };
     }
     return default_up;
+}
+
+/// Practical split scheme: lerp between logarithmic and uniform distribution.
+/// lambda = 1.0 → fully logarithmic, lambda = 0.0 → fully uniform.
+fn computeCascadeSplits(near: f32, far: f32, comptime count: usize, lambda: f32) [count]f32 {
+    var splits: [count]f32 = undefined;
+    for (0..count) |i| {
+        const p = @as(f32, @floatFromInt(i + 1)) / @as(f32, @floatFromInt(count));
+        const log_split = near * std.math.pow(f32, far / near, p);
+        const uni_split = near + (far - near) * p;
+        splits[i] = lambda * log_split + (1.0 - lambda) * uni_split;
+    }
+    return splits;
+}
+
+/// Transform a Vec4 (x,y,z,w) by a 4×4 column-major matrix, return (x,y,z) after perspective divide.
+fn transformPoint4(m: [16]f32, pt: [4]f32) [3]f32 {
+    var out: [4]f32 = undefined;
+    for (0..4) |r| {
+        out[r] = m[0 * 4 + r] * pt[0] + m[1 * 4 + r] * pt[1] + m[2 * 4 + r] * pt[2] + m[3 * 4 + r] * pt[3];
+    }
+    const w = if (@abs(out[3]) > 1e-7) out[3] else 1.0;
+    return .{ out[0] / w, out[1] / w, out[2] / w };
+}
+
+/// Compute a tight-fit light-space VP matrix for one cascade.
+/// `split_near`/`split_far` are view-space Z distances (positive values).
+fn computeCascadeMatrix(
+    camera_inv_vp: [16]f32,
+    split_near: f32,
+    split_far: f32,
+    cam_near: f32,
+    cam_far: f32,
+    light_dir: [3]f32,
+    texel_size: f32,
+) [16]f32 {
+    const mat4 = @import("../math/mat4.zig");
+
+    // Map split_near/split_far into NDC Z range [0,1] (our perspective maps near→0, far→1).
+    // perspective: Z_ndc = far*(z - near) / (z*(near - far))  ... after w divide.
+    // We need the clip-space z/w for a given view-space depth.
+    // For our reversed-depth-style: z_ndc = (far * near / z - near) / (far - near) ... simplified.
+    // Actually let's just linearly remap: NDC_z for a view-space depth d =
+    //   (far / (near - far)) * (near / d) + far*near/(near-far) ... let's compute directly.
+    // Our perspective: M[2][2] = far/(near-far), M[3][2] = far*near/(near-far), M[2][3] = -1
+    // clip_z = M[2][2]*z_view + M[3][2],  clip_w = -z_view  →  ndc_z = clip_z / clip_w
+    // z_view is negative in view space (camera looks -Z).  So for a depth d (positive):
+    //   z_view = -d, clip_z = M[2][2]*(-d) + M[3][2], clip_w = d
+    //   ndc_z = (-M[2][2]*d + M[3][2]) / d
+    // With M[2][2] = far/(near-far), M[3][2] = far*near/(near-far):
+    //   ndc_z = (-far*d/(near-far) + far*near/(near-far)) / d
+    //         = far*(near - d) / (d*(near - far))
+    const ndc_near = cam_far * (cam_near - split_near) / (split_near * (cam_near - cam_far));
+    const ndc_far = cam_far * (cam_near - split_far) / (split_far * (cam_near - cam_far));
+
+    // 8 corners of the sub-frustum in NDC: x,y ∈ {-1,1}, z ∈ {ndc_near, ndc_far}
+    const ndc_corners = [8][4]f32{
+        .{ -1, -1, ndc_near, 1 }, .{ 1, -1, ndc_near, 1 },
+        .{ -1, 1, ndc_near, 1 },  .{ 1, 1, ndc_near, 1 },
+        .{ -1, -1, ndc_far, 1 },  .{ 1, -1, ndc_far, 1 },
+        .{ -1, 1, ndc_far, 1 },   .{ 1, 1, ndc_far, 1 },
+    };
+
+    // Transform corners to world space
+    var world_corners: [8][3]f32 = undefined;
+    var center: [3]f32 = .{ 0, 0, 0 };
+    for (0..8) |i| {
+        world_corners[i] = transformPoint4(camera_inv_vp, ndc_corners[i]);
+        center[0] += world_corners[i][0];
+        center[1] += world_corners[i][1];
+        center[2] += world_corners[i][2];
+    }
+    center = vec3.scale(center, 1.0 / 8.0);
+
+    // Build light view looking at cascade center
+    const light_pos = vec3.sub(center, vec3.scale(light_dir, 50.0)); // back away from center
+    const light_view = mat4.lookAt(light_pos, center, shadowViewUpVector(light_dir));
+
+    // Transform world corners into light view space, compute AABB
+    var min_x: f32 = std.math.floatMax(f32);
+    var min_y: f32 = std.math.floatMax(f32);
+    var min_z: f32 = std.math.floatMax(f32);
+    var max_x: f32 = -std.math.floatMax(f32);
+    var max_y: f32 = -std.math.floatMax(f32);
+    var max_z: f32 = -std.math.floatMax(f32);
+    for (world_corners) |corner| {
+        const lv = transformPoint4(light_view, .{ corner[0], corner[1], corner[2], 1.0 });
+        min_x = @min(min_x, lv[0]);
+        max_x = @max(max_x, lv[0]);
+        min_y = @min(min_y, lv[1]);
+        max_y = @max(max_y, lv[1]);
+        min_z = @min(min_z, lv[2]);
+        max_z = @max(max_z, lv[2]);
+    }
+
+    // Extend Z range to catch shadow casters behind the camera
+    const z_range = max_z - min_z;
+    min_z -= z_range * 2.0;
+
+    // Snap to texel grid to prevent shadow swimming when the camera moves
+    if (texel_size > 0) {
+        const world_units_per_texel_x = (max_x - min_x) / texel_size;
+        const world_units_per_texel_y = (max_y - min_y) / texel_size;
+        if (world_units_per_texel_x > 0) {
+            min_x = @floor(min_x / world_units_per_texel_x) * world_units_per_texel_x;
+            max_x = @floor(max_x / world_units_per_texel_x) * world_units_per_texel_x;
+        }
+        if (world_units_per_texel_y > 0) {
+            min_y = @floor(min_y / world_units_per_texel_y) * world_units_per_texel_y;
+            max_y = @floor(max_y / world_units_per_texel_y) * world_units_per_texel_y;
+        }
+    }
+
+    const light_proj = mat4.orthographicOffCenter(min_x, max_x, min_y, max_y, min_z, max_z);
+    return mat4.mul(light_proj, light_view);
 }
 
 fn resolveEnvironmentTextures(

@@ -144,9 +144,12 @@ pub const BasePass = struct {
             device.releaseBindGroup(bind_group);
         };
         if (!use_metal_combined_bindings) {
-            if (prepared_scene.shadow_map) |sm| {
+            if (prepared_scene.shadow_maps[0]) |_| {
                 const shadow_bindings = [_]rhi_mod.TextureSamplerBinding{
-                    .{ .texture = sm, .sampler = prepared_scene.shadow_sampler.? },
+                    .{ .texture = prepared_scene.shadow_maps[0].?, .sampler = prepared_scene.shadow_sampler.? },
+                    .{ .texture = prepared_scene.shadow_maps[1] orelse prepared_scene.shadow_maps[0].?, .sampler = prepared_scene.shadow_sampler.? },
+                    .{ .texture = prepared_scene.shadow_maps[2] orelse prepared_scene.shadow_maps[0].?, .sampler = prepared_scene.shadow_sampler.? },
+                    .{ .texture = prepared_scene.shadow_maps[3] orelse prepared_scene.shadow_maps[0].?, .sampler = prepared_scene.shadow_sampler.? },
                 };
                 shadow_bg = try device.createBindGroup(.{
                     .stage = .fragment,
@@ -171,7 +174,7 @@ pub const BasePass = struct {
                 ibl_bg = try device.createBindGroup(.{
                     .stage = .fragment,
                     .texture_sampler_bindings = ibl_bindings[0..],
-                    .slot_offset = 6,
+                    .slot_offset = 9,
                 });
                 device.bindGroup(pass, &ibl_bg.?);
             }
@@ -284,7 +287,7 @@ pub const BasePass = struct {
             const draw_index_count = if (is_wireframe) item.wireframe_index_count else item.index_count;
             device.bindIndexBuffer(pass, draw_index_buffer, .u32, 0);
             if (use_metal_combined_bindings) {
-                const shadow_texture = prepared_scene.shadow_map orelse return error.TextureNotFound;
+                const shadow_texture_0 = prepared_scene.shadow_maps[0] orelse return error.TextureNotFound;
                 const shadow_sampler = prepared_scene.shadow_sampler orelse return error.SamplerCreateFailed;
                 const texture_sampler = prepared_scene.texture_sampler orelse return error.SamplerCreateFailed;
                 const irradiance_map = prepared_scene.irradiance_map orelse return error.TextureNotFound;
@@ -298,11 +301,14 @@ pub const BasePass = struct {
                     .{ .texture = item.material_textures[2], .sampler = texture_sampler }, // binding 2: u_normal_map
                     .{ .texture = item.material_textures[3], .sampler = texture_sampler }, // binding 3: u_occlusion_map
                     .{ .texture = item.material_textures[4], .sampler = texture_sampler }, // binding 4: u_emissive_map
-                    .{ .texture = shadow_texture, .sampler = shadow_sampler }, // binding 5: u_shadow_map (sampler2DShadow)
-                    .{ .texture = irradiance_map, .sampler = texture_sampler }, // binding 6: u_irradiance_map
-                    .{ .texture = prefiltered_env_map, .sampler = texture_sampler }, // binding 7: u_prefiltered_env_map
-                    .{ .texture = brdf_lut, .sampler = texture_sampler }, // binding 8: u_brdf_lut
-                    .{ .texture = environment_map, .sampler = texture_sampler }, // binding 9: u_environment_map
+                    .{ .texture = shadow_texture_0, .sampler = shadow_sampler }, // binding 5: u_shadow_map_0
+                    .{ .texture = prepared_scene.shadow_maps[1] orelse shadow_texture_0, .sampler = shadow_sampler }, // binding 6: u_shadow_map_1
+                    .{ .texture = prepared_scene.shadow_maps[2] orelse shadow_texture_0, .sampler = shadow_sampler }, // binding 7: u_shadow_map_2
+                    .{ .texture = prepared_scene.shadow_maps[3] orelse shadow_texture_0, .sampler = shadow_sampler }, // binding 8: u_shadow_map_3
+                    .{ .texture = irradiance_map, .sampler = texture_sampler }, // binding 9: u_irradiance_map
+                    .{ .texture = prefiltered_env_map, .sampler = texture_sampler }, // binding 10: u_prefiltered_env_map
+                    .{ .texture = brdf_lut, .sampler = texture_sampler }, // binding 11: u_brdf_lut
+                    .{ .texture = environment_map, .sampler = texture_sampler }, // binding 12: u_environment_map
                 };
                 var combined_bg = try device.createBindGroup(.{
                     .stage = .fragment,
@@ -349,6 +355,9 @@ pub const BasePass = struct {
             .ambient_color = prepared_scene.ambient_color,
             .shadow_params = .{ 0.005, 0.0, 0.0, 0.0 }, // bias
             .ibl_params = item.ibl_params,
+            .cascade_matrices = prepared_scene.cascade_matrices,
+            .cascade_splits = prepared_scene.cascade_splits,
+            .view_matrix = prepared_scene.view_matrix,
         };
 
         if (settings.render_mode == .unlit) {

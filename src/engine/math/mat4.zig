@@ -215,6 +215,19 @@ pub fn orthographic(size: f32, aspect_ratio: f32, near_clip: f32, far_clip: f32)
     return result;
 }
 
+/// Asymmetric orthographic projection for tight-fit cascade shadow maps.
+pub fn orthographicOffCenter(left: f32, right: f32, bottom: f32, top: f32, near_clip: f32, far_clip: f32) Mat4 {
+    var result: Mat4 = [_]f32{0.0} ** 16;
+    set(&result, 0, 0, 2.0 / (right - left));
+    set(&result, 1, 1, 2.0 / (top - bottom));
+    set(&result, 2, 2, 1.0 / (near_clip - far_clip));
+    set(&result, 0, 3, -(right + left) / (right - left));
+    set(&result, 1, 3, -(top + bottom) / (top - bottom));
+    set(&result, 3, 2, near_clip / (near_clip - far_clip));
+    set(&result, 3, 3, 1.0);
+    return result;
+}
+
 pub fn projectionForCamera(camera: components.Camera, aspect_ratio: f32) Mat4 {
     return switch (camera.projection) {
         .perspective => |proj| perspective(

@@ -43,6 +43,8 @@ pub const VertexUniforms = extern struct {
     skin_matrices: [max_skin_joints][16]f32,
 };
 
+pub const csm_cascade_count = 4;
+
 pub const BasePassUniforms = extern struct {
     base_color_factor: [4]f32,
     emissive_factor: [4]f32, // w is intensity
@@ -57,6 +59,9 @@ pub const BasePassUniforms = extern struct {
     ambient_color: [4]f32,
     shadow_params: [4]f32, // x: bias, yzw: preview tint color
     ibl_params: [4]f32, // x: use_ibl (0/1), y: ibl_intensity, z: preview tint strength, w: unused
+    cascade_matrices: [csm_cascade_count][16]f32,
+    cascade_splits: [4]f32, // view-space far distance per cascade
+    view_matrix: [16]f32,
 };
 
 pub const DrawItem = struct {
@@ -120,7 +125,9 @@ pub const PreparedScene = struct {
     camera_world_position: [4]f32,
     lights: LightBlock,
     light_space_matrix: [16]f32,
-    shadow_map: ?*const rhi_mod.Texture,
+    cascade_matrices: [csm_cascade_count][16]f32 = .{ math.identity(), math.identity(), math.identity(), math.identity() },
+    cascade_splits: [4]f32 = .{ 0.0, 0.0, 0.0, 0.0 },
+    shadow_maps: [csm_cascade_count]?*const rhi_mod.Texture = .{ null, null, null, null },
     shadow_sampler: ?*const rhi_mod.Sampler,
     texture_sampler: ?*const rhi_mod.Sampler,
     environment_map: ?*const rhi_mod.Texture = null,
@@ -356,7 +363,6 @@ pub const MeshSceneCache = struct {
             },
             .lights = lights,
             .light_space_matrix = math.identity(),
-            .shadow_map = null,
             .shadow_sampler = null,
             .texture_sampler = &self.sampler.?,
             .ambient_color = .{ 0.16, 0.16, 0.16, 1.0 },
@@ -410,7 +416,9 @@ pub const MeshSceneCache = struct {
             .camera_world_position = reference.camera_world_position,
             .lights = lights,
             .light_space_matrix = reference.light_space_matrix,
-            .shadow_map = reference.shadow_map,
+            .cascade_matrices = reference.cascade_matrices,
+            .cascade_splits = reference.cascade_splits,
+            .shadow_maps = reference.shadow_maps,
             .shadow_sampler = reference.shadow_sampler,
             .texture_sampler = reference.texture_sampler,
             .environment_map = reference.environment_map,
