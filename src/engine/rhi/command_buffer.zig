@@ -14,6 +14,9 @@ pub const OpCode = enum(u8) {
     begin_copy_pass,
     end_copy_pass,
     set_binding_set,
+    set_vertex_buffer,
+    set_index_buffer,
+    set_pipeline,
     draw_indexed,
     draw_indirect,
     dispatch,
@@ -38,6 +41,22 @@ pub const BeginCopyPassCmd = extern struct {
 pub const SetBindingSetCmd = extern struct {
     slot: u32,
     set_id: u32,
+};
+
+pub const SetVertexBufferCmd = extern struct {
+    slot: u32,
+    buffer_id: u32,
+    offset: u32,
+};
+
+pub const SetIndexBufferCmd = extern struct {
+    buffer_id: u32,
+    offset: u32,
+    format: u32, // 0 = u16, 1 = u32
+};
+
+pub const SetPipelineCmd = extern struct {
+    pipeline_id: u32,
 };
 
 pub const DrawIndexedCmd = extern struct {
@@ -82,6 +101,9 @@ pub const DecodedCommand = union(OpCode) {
     begin_copy_pass: BeginCopyPassCmd,
     end_copy_pass: void,
     set_binding_set: SetBindingSetCmd,
+    set_vertex_buffer: SetVertexBufferCmd,
+    set_index_buffer: SetIndexBufferCmd,
+    set_pipeline: SetPipelineCmd,
     draw_indexed: DrawIndexedCmd,
     draw_indirect: DrawIndirectCmd,
     dispatch: DispatchCmd,
@@ -136,6 +158,21 @@ pub const CommandBuffer = struct {
     pub fn encodeSetBindingSet(self: *CommandBuffer, cmd: SetBindingSetCmd) Error!void {
         try self.writeOp(.set_binding_set);
         try self.writeStruct(SetBindingSetCmd, cmd);
+    }
+
+    pub fn encodeSetVertexBuffer(self: *CommandBuffer, cmd: SetVertexBufferCmd) Error!void {
+        try self.writeOp(.set_vertex_buffer);
+        try self.writeStruct(SetVertexBufferCmd, cmd);
+    }
+
+    pub fn encodeSetIndexBuffer(self: *CommandBuffer, cmd: SetIndexBufferCmd) Error!void {
+        try self.writeOp(.set_index_buffer);
+        try self.writeStruct(SetIndexBufferCmd, cmd);
+    }
+
+    pub fn encodeSetPipeline(self: *CommandBuffer, cmd: SetPipelineCmd) Error!void {
+        try self.writeOp(.set_pipeline);
+        try self.writeStruct(SetPipelineCmd, cmd);
     }
 
     pub fn encodeDrawIndexed(self: *CommandBuffer, cmd: DrawIndexedCmd) Error!void {
@@ -200,6 +237,9 @@ pub const Decoder = struct {
             .begin_copy_pass => .{ .begin_copy_pass = try self.readStruct(BeginCopyPassCmd) },
             .end_copy_pass => .{ .end_copy_pass = {} },
             .set_binding_set => .{ .set_binding_set = try self.readStruct(SetBindingSetCmd) },
+            .set_vertex_buffer => .{ .set_vertex_buffer = try self.readStruct(SetVertexBufferCmd) },
+            .set_index_buffer => .{ .set_index_buffer = try self.readStruct(SetIndexBufferCmd) },
+            .set_pipeline => .{ .set_pipeline = try self.readStruct(SetPipelineCmd) },
             .draw_indexed => .{ .draw_indexed = try self.readStruct(DrawIndexedCmd) },
             .draw_indirect => .{ .draw_indirect = try self.readStruct(DrawIndirectCmd) },
             .dispatch => .{ .dispatch = try self.readStruct(DispatchCmd) },

@@ -100,6 +100,15 @@ pub fn drawRhiV2StatsWindow(state: *EditorState, layer_context: *engine.core.Lay
         gui.labelText("DOF", if (vs.dof_use_rhi_v2) "v2" else "legacy");
         gui.labelText("SSR", if (vs.ssr_use_rhi_v2) "v2" else "legacy");
         gui.labelText("Volumetric Fog", if (vs.volumetric_fog_use_rhi_v2) "v2" else "legacy");
+
+        gui.dummy(0.0, 4.0);
+        gui.textColored(.{ 0.6, 0.8, 1.0, 1.0 }, "Geometry / Misc (v2 prototype)");
+        gui.labelText("Depth Prepass", "v2");
+        gui.labelText("Shadow Pass", "v2");
+        gui.labelText("Outline", "v2");
+        gui.labelText("Skybox", "v2");
+        gui.labelText("TAA", "v2");
+        gui.labelText("IBL Compute", "v2 (BRDF + Irradiance)");
     }
 
     // ── V2 Infrastructure ──────────────────────────────────────────
@@ -108,6 +117,7 @@ pub fn drawRhiV2StatsWindow(state: *EditorState, layer_context: *engine.core.Lay
         gui.labelText("Sampler", "create + destroy");
         gui.labelText("Buffer Upload", "uploadBufferData");
         gui.labelText("Command Buffer", "encode + decode + submit");
+        gui.labelText("Vertex/Index Binding", "set_vertex_buffer + set_index_buffer + set_pipeline");
         gui.labelText("Binding Cache", "FIFO eviction (max 1024)");
         gui.labelText("State Tracker", "barrier + ownership");
     }

@@ -12,6 +12,12 @@ const contact_shadow_v2 = @import("render/contact_shadow_pass_v2.zig");
 const dof_pass_v2 = @import("render/dof_pass_v2.zig");
 const ssr_pass_v2 = @import("render/ssr_pass_v2.zig");
 const volumetric_fog_v2 = @import("render/volumetric_fog_pass_v2.zig");
+const depth_prepass_v2 = @import("render/depth_prepass_v2.zig");
+const shadow_pass_v2 = @import("render/shadow_pass_v2.zig");
+const outline_pass_v2 = @import("render/outline_pass_v2.zig");
+const skybox_pass_v2 = @import("render/skybox_pass_v2.zig");
+const taa_pass_v2 = @import("render/taa_pass_v2.zig");
+const ibl_compute_pass_v2 = @import("render/ibl_compute_pass_v2.zig");
 const render_graph = @import("render/render_graph.zig");
 
 test "metal backend compute queue submission path" {
@@ -543,4 +549,174 @@ test "buffer upload data round-trip" {
     const data = [_]u8{ 1, 2, 3, 4 };
     // uploadBufferData is a stub — should not error
     try device.uploadBufferData(buf, 0, &data);
+}
+
+test "depth prepass v2 geometry submission with vertex/index buffers" {
+    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
+    defer backend.deinit();
+
+    var device = backend.createDevice();
+    defer device.deinit();
+
+    try depth_prepass_v2.DepthPrepassV2.execute(
+        std.testing.allocator,
+        &device,
+        100, // depth_target_id
+        1, // pipeline_id
+        10, // vertex_buffer_id
+        11, // index_buffer_id
+        36, // index_count (12 triangles)
+        .{},
+    );
+
+    try std.testing.expectEqual(rhi.QueueClass.graphics, backend.last_submit_queue.?);
+}
+
+test "shadow pass v2 geometry submission" {
+    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
+    defer backend.deinit();
+
+    var device = backend.createDevice();
+    defer device.deinit();
+
+    try shadow_pass_v2.ShadowPassV2.execute(
+        std.testing.allocator,
+        &device,
+        200, // shadow_map_target_id
+        2, // pipeline_id
+        20, // vertex_buffer_id
+        21, // index_buffer_id
+        72, // index_count
+        .{},
+    );
+
+    try std.testing.expectEqual(rhi.QueueClass.graphics, backend.last_submit_queue.?);
+}
+
+test "outline pass v2 three-set fullscreen submission" {
+    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
+    defer backend.deinit();
+
+    var device = backend.createDevice();
+    defer device.deinit();
+
+    try outline_pass_v2.OutlinePassV2.execute(
+        std.testing.allocator,
+        &device,
+        300, // color_target_id
+        3, // pipeline_id
+        .{},
+    );
+
+    const stats = device.bindingSetCacheStats();
+    try std.testing.expect(stats.misses >= 3);
+}
+
+test "skybox pass v2 three-set submission" {
+    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
+    defer backend.deinit();
+
+    var device = backend.createDevice();
+    defer device.deinit();
+
+    try skybox_pass_v2.SkyboxPassV2.execute(
+        std.testing.allocator,
+        &device,
+        400, // color_target_id
+        401, // depth_target_id
+        .{},
+    );
+
+    const stats = device.bindingSetCacheStats();
+    try std.testing.expect(stats.misses >= 3);
+}
+
+test "taa pass v2 six-set fullscreen submission" {
+    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
+    defer backend.deinit();
+
+    var device = backend.createDevice();
+    defer device.deinit();
+
+    try taa_pass_v2.TAAPassV2.execute(
+        std.testing.allocator,
+        &device,
+        500, // color_target_id
+        .{},
+    );
+
+    const stats = device.bindingSetCacheStats();
+    try std.testing.expect(stats.misses >= 6);
+}
+
+test "ibl compute pass v2 brdf lut generation" {
+    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
+    defer backend.deinit();
+
+    var device = backend.createDevice();
+    defer device.deinit();
+
+    try ibl_compute_pass_v2.IBLComputePassV2.executeBRDF(
+        std.testing.allocator,
+        &device,
+        .{},
+    );
+
+    try std.testing.expectEqual(rhi.QueueClass.compute, backend.last_submit_queue.?);
+}
+
+test "ibl compute pass v2 irradiance convolution" {
+    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
+    defer backend.deinit();
+
+    var device = backend.createDevice();
+    defer device.deinit();
+
+    try ibl_compute_pass_v2.IBLComputePassV2.executeIrradiance(
+        std.testing.allocator,
+        &device,
+        .{},
+    );
+
+    try std.testing.expectEqual(rhi.QueueClass.compute, backend.last_submit_queue.?);
+    const stats = device.bindingSetCacheStats();
+    try std.testing.expect(stats.misses >= 4); // env_map, sampler, output, uniform
+}
+
+test "command buffer set_vertex_buffer/set_index_buffer/set_pipeline round-trip" {
+    var cmd = command_buffer.CommandBuffer.init(std.testing.allocator);
+    defer cmd.deinit();
+
+    try cmd.encodeBeginRenderPass(.{ .color_target_id = 0, .depth_target_id = 1, .clear_mask = 0x2 });
+    try cmd.encodeSetPipeline(.{ .pipeline_id = 42 });
+    try cmd.encodeSetVertexBuffer(.{ .slot = 0, .buffer_id = 10, .offset = 0 });
+    try cmd.encodeSetIndexBuffer(.{ .buffer_id = 11, .offset = 0, .format = 1 });
+    try cmd.encodeDrawIndexed(.{ .index_count = 36, .instance_count = 1, .first_index = 0, .vertex_offset = 0, .first_instance = 0 });
+    try cmd.encodeEndRenderPass();
+
+    var decoder = cmd.decoder();
+
+    const c0 = (try decoder.next()).?;
+    try std.testing.expect(std.meta.activeTag(c0) == .begin_render_pass);
+
+    const c1 = (try decoder.next()).?;
+    try std.testing.expect(std.meta.activeTag(c1) == .set_pipeline);
+    try std.testing.expectEqual(@as(u32, 42), c1.set_pipeline.pipeline_id);
+
+    const c2 = (try decoder.next()).?;
+    try std.testing.expect(std.meta.activeTag(c2) == .set_vertex_buffer);
+    try std.testing.expectEqual(@as(u32, 10), c2.set_vertex_buffer.buffer_id);
+
+    const c3 = (try decoder.next()).?;
+    try std.testing.expect(std.meta.activeTag(c3) == .set_index_buffer);
+    try std.testing.expectEqual(@as(u32, 11), c3.set_index_buffer.buffer_id);
+
+    const c4 = (try decoder.next()).?;
+    try std.testing.expect(std.meta.activeTag(c4) == .draw_indexed);
+    try std.testing.expectEqual(@as(u32, 36), c4.draw_indexed.index_count);
+
+    const c5 = (try decoder.next()).?;
+    try std.testing.expect(std.meta.activeTag(c5) == .end_render_pass);
+
+    try std.testing.expectEqual(@as(?command_buffer.DecodedCommand, null), try decoder.next());
 }
