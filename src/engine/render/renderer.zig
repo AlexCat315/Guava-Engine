@@ -62,6 +62,7 @@ const gizmo_pass_mod = @import("gizmo_pass.zig");
 const outline_pass_mod = @import("outline_pass.zig");
 const volumetric_fog_pass_mod = @import("volumetric_fog_pass.zig");
 const ssao_pass_mod = @import("ssao_pass.zig");
+const contact_shadow_pass_mod = @import("contact_shadow_pass.zig");
 const taa_pass_mod = @import("taa_pass.zig");
 const rt_shadow_composite_pass_mod = @import("rt_shadow_composite_pass.zig");
 const platform_mod = @import("../core/platform.zig");
@@ -626,6 +627,7 @@ const SceneViewportState = struct {
     hdr_color_texture: ?rhi_mod.Texture = null,
     taa_texture: ?rhi_mod.Texture = null,
     ssao_texture: ?rhi_mod.Texture = null,
+    contact_shadow_texture: ?rhi_mod.Texture = null,
     bloom_texture: ?rhi_mod.Texture = null,
     fxaa_texture: ?rhi_mod.Texture = null,
     color_texture: ?rhi_mod.Texture = null,
@@ -639,6 +641,9 @@ const SceneViewportState = struct {
             device.releaseTexture(texture);
         }
         if (self.ssao_texture) |*texture| {
+            device.releaseTexture(texture);
+        }
+        if (self.contact_shadow_texture) |*texture| {
             device.releaseTexture(texture);
         }
         if (self.bloom_texture) |*texture| {
@@ -663,7 +668,7 @@ const SceneViewportState = struct {
         }
 
         if (self.color_texture) |color_texture| {
-            if (self.depth_texture != null and self.hdr_color_texture != null and self.taa_texture != null and self.ssao_texture != null and self.bloom_texture != null and self.fxaa_texture != null and color_texture.desc.width == width and color_texture.desc.height == height) {
+            if (self.depth_texture != null and self.hdr_color_texture != null and self.taa_texture != null and self.ssao_texture != null and self.contact_shadow_texture != null and self.bloom_texture != null and self.fxaa_texture != null and color_texture.desc.width == width and color_texture.desc.height == height) {
                 self.width = width;
                 self.height = height;
                 return;
@@ -703,6 +708,17 @@ const SceneViewportState = struct {
         errdefer if (self.ssao_texture) |*texture| {
             device.releaseTexture(texture);
             self.ssao_texture = null;
+        };
+
+        self.contact_shadow_texture = try device.createTexture(.{
+            .width = width,
+            .height = height,
+            .format = .r8_unorm,
+            .usage = rhi_types.TextureUsage.color_target | rhi_types.TextureUsage.sampler,
+        });
+        errdefer if (self.contact_shadow_texture) |*texture| {
+            device.releaseTexture(texture);
+            self.contact_shadow_texture = null;
         };
 
         self.bloom_texture = try device.createTexture(.{
@@ -797,6 +813,13 @@ const SceneViewportState = struct {
 
     fn ssao(self: *SceneViewportState) ?*const rhi_mod.Texture {
         if (self.ssao_texture) |*texture| {
+            return texture;
+        }
+        return null;
+    }
+
+    fn contactShadow(self: *SceneViewportState) ?*const rhi_mod.Texture {
+        if (self.contact_shadow_texture) |*texture| {
             return texture;
         }
         return null;
@@ -1190,6 +1213,10 @@ pub const Renderer = struct {
     volumetric_fog_pass: volumetric_fog_pass_mod.VolumetricFogPass,
     /// SSAO 后处理通道
     ssao_pass: ssao_pass_mod.SSAOPass,
+    /// Contact Shadow 屏幕空间接触阴影通道
+    contact_shadow_pass: contact_shadow_pass_mod.ContactShadowPass,
+    /// Contact Shadow 合成通道 — 乘法混合到 HDR 缓冲
+    contact_shadow_composite_pass: rt_shadow_composite_pass_mod.RtShadowCompositePass,
     /// TAA 抗锯齿通道
     taa_pass: taa_pass_mod.TAAPass,
     /// RT 阴影合成通道
@@ -1299,6 +1326,8 @@ pub const Renderer = struct {
             .gizmo_pass = undefined,
             .volumetric_fog_pass = undefined,
             .ssao_pass = undefined,
+            .contact_shadow_pass = undefined,
+            .contact_shadow_composite_pass = undefined,
             .taa_pass = undefined,
             .rt_shadow_composite_pass = undefined,
             .ssao_composite_pass = undefined,
@@ -1358,6 +1387,12 @@ pub const Renderer = struct {
         renderer.ssao_pass = try ssao_pass_mod.SSAOPass.init(&renderer.rhi);
         errdefer renderer.ssao_pass.deinit(&renderer.rhi);
 
+        renderer.contact_shadow_pass = try contact_shadow_pass_mod.ContactShadowPass.init(&renderer.rhi);
+        errdefer renderer.contact_shadow_pass.deinit(&renderer.rhi);
+
+        renderer.contact_shadow_composite_pass = try rt_shadow_composite_pass_mod.RtShadowCompositePass.init(&renderer.rhi);
+        errdefer renderer.contact_shadow_composite_pass.deinit(&renderer.rhi);
+
         renderer.taa_pass = try taa_pass_mod.TAAPass.init(&renderer.rhi);
         errdefer renderer.taa_pass.deinit(&renderer.rhi);
 
@@ -1402,6 +1437,8 @@ pub const Renderer = struct {
         self.bloom_pass.deinit(&self.rhi);
         self.volumetric_fog_pass.deinit(&self.rhi);
         self.ssao_pass.deinit(&self.rhi);
+        self.contact_shadow_pass.deinit(&self.rhi);
+        self.contact_shadow_composite_pass.deinit(&self.rhi);
         self.taa_pass.deinit(&self.rhi);
         self.rt_shadow_composite_pass.deinit(&self.rhi);
         self.ssao_composite_pass.deinit(&self.rhi);
@@ -2063,6 +2100,47 @@ pub const Renderer = struct {
                                 const ssao_composite_stats = self.ssao_composite_pass.draw(&self.rhi, frame, ssao_composite_render_pass, self.editor_viewport_state.ssao_intensity);
                                 draw_stats.add(ssao_composite_stats);
                                 self.rhi.endRenderPass(ssao_composite_render_pass);
+                            }
+                        }
+
+                        // Contact Shadows: screen-space ray march for small-scale occlusion
+                        const cs_enabled = self.editor_viewport_state.contact_shadows_enabled and self.contact_shadow_pass.isReady() and self.scene_viewport.contactShadow() != null and self.scene_viewport.depth() != null;
+                        if (cs_enabled) {
+                            try self.contact_shadow_pass.syncTextures(&self.rhi, self.scene_viewport.depth().?);
+                            const cs_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.contactShadow().? }));
+
+                            const mat4_cs = @import("../math/mat4.zig");
+                            const inv_proj_cs = mat4_cs.inverse(prepared_scene.projection_matrix) orelse mat4_cs.identity();
+
+                            // Use primary directional light direction (same as CSM)
+                            const cs_light_dir: [4]f32 = if (prepared_scene.lights.directional_lights.len > 0) cs_blk: {
+                                const dl = prepared_scene.lights.directional_lights[0];
+                                break :cs_blk .{ dl.direction[0], dl.direction[1], dl.direction[2], 0.0 };
+                            } else .{ 0.3, -0.9, -0.2, 0.0 };
+
+                            const cs_uniforms = contact_shadow_pass_mod.ContactShadowUniforms{
+                                .projection = prepared_scene.projection_matrix,
+                                .inv_projection = inv_proj_cs,
+                                .view = prepared_scene.view_matrix,
+                                .light_direction = cs_light_dir,
+                                .resolution = .{ @floatFromInt(self.scene_viewport.width), @floatFromInt(self.scene_viewport.height) },
+                                .max_distance = self.editor_viewport_state.contact_shadows_distance,
+                                .thickness = self.editor_viewport_state.contact_shadows_thickness,
+                                .intensity = self.editor_viewport_state.contact_shadows_intensity,
+                                .bias = self.editor_viewport_state.contact_shadows_bias,
+                                .num_steps = @intCast(self.editor_viewport_state.contact_shadows_steps),
+                            };
+                            const cs_stats = self.contact_shadow_pass.draw(&self.rhi, frame, cs_render_pass, cs_uniforms);
+                            draw_stats.add(cs_stats);
+                            self.rhi.endRenderPass(cs_render_pass);
+
+                            // Contact Shadow 合成: 乘法混合叠加到 HDR 缓冲
+                            if (self.contact_shadow_composite_pass.isReady() and self.scene_viewport.hdrColor() != null) {
+                                try self.contact_shadow_composite_pass.syncTexture(&self.rhi, self.scene_viewport.contactShadow().?);
+                                const cs_composite_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(.{ .texture = self.scene_viewport.hdrColor().? }));
+                                const cs_composite_stats = self.contact_shadow_composite_pass.draw(&self.rhi, frame, cs_composite_pass, self.editor_viewport_state.contact_shadows_intensity);
+                                draw_stats.add(cs_composite_stats);
+                                self.rhi.endRenderPass(cs_composite_pass);
                             }
                         }
 

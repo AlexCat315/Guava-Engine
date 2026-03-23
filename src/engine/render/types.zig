@@ -47,6 +47,13 @@ pub const EditorViewportState = struct {
     ssao_bias: f32 = 0.025,
     ssao_intensity: f32 = 1.0,
     ssao_power: f32 = 2.0,
+    // Contact Shadows 屏幕空间接触阴影
+    contact_shadows_enabled: bool = false,
+    contact_shadows_distance: f32 = 0.3,
+    contact_shadows_thickness: f32 = 0.05,
+    contact_shadows_intensity: f32 = 0.8,
+    contact_shadows_bias: f32 = 0.01,
+    contact_shadows_steps: u32 = 16,
     // SSR 屏幕空间反射
     ssr_enabled: bool = false,
     ssr_intensity: f32 = 0.5,

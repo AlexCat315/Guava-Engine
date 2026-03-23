@@ -15,6 +15,7 @@ pub const PostProcessEffect = enum {
     taa,
     dof,
     color_grading,
+    contact_shadows,
 };
 
 pub const PostProcessEffectNode = struct {
@@ -47,6 +48,7 @@ pub const PostProcessEffectNode = struct {
             .taa => "TAA",
             .dof => "DOF",
             .color_grading => "Color Grading",
+            .contact_shadows => "Contact Shadows",
         };
     }
 
@@ -59,6 +61,7 @@ pub const PostProcessEffectNode = struct {
             .taa => .{ 0.6, 0.6, 1.0, 1.0 },
             .dof => .{ 0.8, 0.6, 0.4, 1.0 },
             .color_grading => .{ 1.0, 0.6, 0.8, 1.0 },
+            .contact_shadows => .{ 0.5, 0.5, 0.5, 1.0 },
         };
     }
 };
@@ -287,6 +290,7 @@ fn drawPreviewPanel(viewport_state: *EditorViewportState) void {
         _ = props.boolean("SSR", &viewport_state.ssr_enabled);
         _ = props.boolean("TAA", &viewport_state.taa_enabled);
         _ = props.boolean("DOF", &viewport_state.dof_enabled);
+        _ = props.boolean("Contact Shadows", &viewport_state.contact_shadows_enabled);
         _ = props.boolean("RT Shadows", &viewport_state.rt_shadows_enabled);
     }
 }
@@ -331,6 +335,12 @@ fn drawEffectParameters(viewport_state: *EditorViewportState, node: *PostProcess
             },
             .fxaa, .color_grading => {
                 gui.text("No additional parameters");
+            },
+            .contact_shadows => {
+                _ = props.float("Distance", &viewport_state.contact_shadows_distance, 0.05, 0.05, 2.0);
+                _ = props.float("Thickness", &viewport_state.contact_shadows_thickness, 0.01, 0.01, 0.5);
+                _ = props.float("Intensity", &viewport_state.contact_shadows_intensity, 0.05, 0.0, 1.0);
+                _ = props.float("Bias", &viewport_state.contact_shadows_bias, 0.005, 0.0, 0.1);
             },
         }
     }
