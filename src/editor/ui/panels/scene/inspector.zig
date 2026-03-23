@@ -158,6 +158,8 @@ fn beginInspectorComboRow(label: []const u8, widget_id: []const u8, preview: []c
 pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     var title_buffer: [80]u8 = undefined;
     const title = try state.windowLabel(&title_buffer, .details, "details_panel");
+    // 检查器面板需要足够宽度显示属性名 + 输入控件
+    gui.setNextWindowSizeConstraints(.{ 260.0, 120.0 }, .{ std.math.floatMax(f32), std.math.floatMax(f32) });
     _ = gui.beginWindow(title);
     defer gui.endWindow();
 

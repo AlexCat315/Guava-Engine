@@ -1216,6 +1216,15 @@ extern "C" void guava_imgui_set_next_window_size(float width, float height) {
   ImGui::SetNextWindowSize(ImVec2(width, height));
 }
 
+extern "C" void guava_imgui_set_next_window_size_constraints(
+    float min_w, float min_h, float max_w, float max_h) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::SetNextWindowSizeConstraints(ImVec2(min_w, min_h),
+                                      ImVec2(max_w, max_h));
+}
+
 extern "C" void guava_imgui_set_next_window_bg_alpha(float alpha) {
   if (!g_imgui_initialized) {
     return;

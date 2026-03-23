@@ -101,6 +101,7 @@ pub const separator = backend.separator;
 pub const setNextItemWidth = backend.setNextItemWidth;
 pub const setNextWindowPos = backend.setNextWindowPos;
 pub const setNextWindowSize = backend.setNextWindowSize;
+pub const setNextWindowSizeConstraints = backend.setNextWindowSizeConstraints;
 pub const setNextWindowBgAlpha = backend.setNextWindowBgAlpha;
 pub const alignTextToFramePadding = backend.alignTextToFramePadding;
 pub const indent = backend.indent;

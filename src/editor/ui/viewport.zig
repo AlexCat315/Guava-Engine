@@ -136,13 +136,14 @@ fn drawViewportToolbarStrip(state: *EditorState, layer_context: *engine.core.Lay
     try drawViewportModeZone(state, layer_context);
 
     // 右侧工具组：Undo Source + AI Status + AI Chat + Settings + Transform Space
-    const undo_source_width: f32 = 132.0;
-    const ai_status_width: f32 = 304.0;
+    // 宽度经过压缩以允许工具栏在 ≥680px 时显示完整布局
+    const undo_source_width: f32 = 100.0;
+    const ai_status_width: f32 = 180.0;
     const settings_icon: f32 = 28.0;
     const transform_icon: f32 = 28.0;
     const ai_chat_icon: f32 = 28.0;
 
-    if (width >= 860.0) {
+    if (width >= 680.0) {
         // 宽布局：完整显示所有元素
         const right_width = undo_source_width + 8.0 + ai_status_width + 8.0 + ai_chat_icon + 8.0 + settings_icon + 8.0 + transform_icon;
         gui.sameLine();
@@ -163,7 +164,7 @@ fn drawViewportToolbarStrip(state: *EditorState, layer_context: *engine.core.Lay
         if (gui.isItemHovered()) gui.setTooltip(state.text(.render_settings));
         gui.sameLine();
         try drawTransformSpaceButton(state, layer_context, "toolbar_transform_space");
-    } else if (width >= 520.0) {
+    } else if (width >= 460.0) {
         // 中等布局：省略 AI Status
         const right_width = undo_source_width + 8.0 + ai_chat_icon + 8.0 + settings_icon + 8.0 + transform_icon;
         gui.sameLine();
@@ -226,11 +227,11 @@ fn drawViewportModeZone(state: *EditorState, layer_context: *engine.core.LayerCo
     const raster_active = state.viewport_pipeline_mode == .raster;
     const path_trace_active = state.viewport_pipeline_mode == .path_trace;
 
-    if (drawModeButton("Raster##viewport_mode_raster", raster_active, 98.0)) {
+    if (drawModeButton("Raster##viewport_mode_raster", raster_active, 82.0)) {
         state.viewport_pipeline_mode = .raster;
     }
     gui.sameLine();
-    if (drawModeButton("PathTrace##viewport_mode_pathtrace", path_trace_active, 108.0)) {
+    if (drawModeButton("PathTrace##viewport_mode_pathtrace", path_trace_active, 92.0)) {
         state.viewport_pipeline_mode = .path_trace;
         state.viewport_render_mode = .textured;
         // 切换到 PathTrace 时强制同步当前场景状态并重新渲染，

@@ -415,6 +415,11 @@ pub fn setNextWindowSize(size: [2]f32) void {
     c.guava_imgui_set_next_window_size(size[0], size[1]);
 }
 
+/// 设置下一个窗口的最小/最大尺寸约束，防止面板被拖到不可用尺寸
+pub fn setNextWindowSizeConstraints(min_size: [2]f32, max_size: [2]f32) void {
+    c.guava_imgui_set_next_window_size_constraints(min_size[0], min_size[1], max_size[0], max_size[1]);
+}
+
 pub fn setNextWindowBgAlpha(alpha: f32) void {
     c.guava_imgui_set_next_window_bg_alpha(alpha);
 }

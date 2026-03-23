@@ -161,6 +161,8 @@ void guava_imgui_separator(void);
 void guava_imgui_set_next_item_width(float width);
 void guava_imgui_set_next_window_pos(float x, float y);
 void guava_imgui_set_next_window_size(float width, float height);
+void guava_imgui_set_next_window_size_constraints(float min_w, float min_h,
+                                                  float max_w, float max_h);
 void guava_imgui_set_next_window_bg_alpha(float alpha);
 void guava_imgui_push_style_color(uint32_t slot, float r, float g, float b,
                                   float a);

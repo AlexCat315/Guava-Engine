@@ -221,9 +221,9 @@ pub const Application = struct {
         var script_runtime = script_system.ScriptRuntime.init(allocator, config.script);
         try script_runtime.initVMs();
 
-        // 初始化音频运行时
+        // 初始化音频运行时（允许失败——无音频设备时引擎仍可运行）
         _ = audio_mod.AudioRuntime.init(allocator) catch |err| blk: {
-            std.log.warn("audio: Failed to initialize audio system: {s}", .{@errorName(err)});
+            std.log.warn("audio: initialization failed ({s}); engine will run without audio", .{@errorName(err)});
             break :blk @as(?*audio_mod.AudioRuntime, null);
         };
 

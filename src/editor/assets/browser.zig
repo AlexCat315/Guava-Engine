@@ -18,6 +18,8 @@ const BottomWorkspaceTab = state_mod.BottomWorkspaceTab;
 const asset_drag_preview_icon_size: f32 = 24.0;
 
 pub fn drawContentBrowser(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    // 工作区面板包含文件浏览器/控制台等多个 Tab，需要最小宽度保证可用性
+    gui.setNextWindowSizeConstraints(.{ 200.0, 100.0 }, .{ std.math.floatMax(f32), std.math.floatMax(f32) });
     _ = gui.beginWindow("Workspace##content_browser_panel");
     defer gui.endWindow();
 

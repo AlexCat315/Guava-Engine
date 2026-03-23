@@ -61,6 +61,9 @@ pub fn init(soloud: *Soloud) !void {
         2, // 2 channels (stereo)
     );
     if (result != 0) {
+        // 输出 SoLoud 内部错误描述以便排查后端初始化失败原因
+        const err_str = getErrorString(soloud, result);
+        std.log.err("SoLoud init failed (code {d}): {s}", .{ result, err_str });
         return Error.SoloudError;
     }
 }

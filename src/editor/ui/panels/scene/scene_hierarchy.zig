@@ -63,6 +63,8 @@ fn drawHierarchyDragPreview(state: *EditorState, entity: *const engine.scene.Ent
 pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     var title_buffer: [80]u8 = undefined;
     const title = try state.windowLabel(&title_buffer, .scene, "scene_panel");
+    // 防止场景层级面板被拖到过窄无法显示内容
+    gui.setNextWindowSizeConstraints(.{ 220.0, 120.0 }, .{ std.math.floatMax(f32), std.math.floatMax(f32) });
     _ = gui.beginWindow(title);
     defer gui.endWindow();
 

@@ -1175,6 +1175,8 @@ pub const Renderer = struct {
     taa_pass: taa_pass_mod.TAAPass,
     /// RT 阴影合成通道
     rt_shadow_composite_pass: rt_shadow_composite_pass_mod.RtShadowCompositePass,
+    /// SSAO 环境光遮蔽合成通道 — 将 SSAO 纹理以乘法混合叠加到 HDR 缓冲
+    ssao_composite_pass: rt_shadow_composite_pass_mod.RtShadowCompositePass,
     /// RT 阴影遮罩纹理（屏幕分辨率，BGRA8）
     rt_shadow_mask_texture: ?rhi_mod.Texture = null,
     /// RT 阴影遮罩像素缓冲 (CPU 侧)
@@ -1280,6 +1282,7 @@ pub const Renderer = struct {
             .ssao_pass = undefined,
             .taa_pass = undefined,
             .rt_shadow_composite_pass = undefined,
+            .ssao_composite_pass = undefined,
             .tonemap_pass = undefined,
             .selection_history = SelectionHistory.init(allocator, 64),
             .material_thumbnail_cache = std.StringHashMap(MaterialThumbnailCacheEntry).init(allocator),
@@ -1342,6 +1345,10 @@ pub const Renderer = struct {
         renderer.rt_shadow_composite_pass = try rt_shadow_composite_pass_mod.RtShadowCompositePass.init(&renderer.rhi);
         errdefer renderer.rt_shadow_composite_pass.deinit(&renderer.rhi);
 
+        // SSAO 合成通道复用 RT 阴影合成的 multiply-blend 管线
+        renderer.ssao_composite_pass = try rt_shadow_composite_pass_mod.RtShadowCompositePass.init(&renderer.rhi);
+        errdefer renderer.ssao_composite_pass.deinit(&renderer.rhi);
+
         renderer.fxaa_pass = try fxaa_pass_mod.FxaaPass.init(&renderer.rhi);
         errdefer renderer.fxaa_pass.deinit(&renderer.rhi);
 
@@ -1378,6 +1385,7 @@ pub const Renderer = struct {
         self.ssao_pass.deinit(&self.rhi);
         self.taa_pass.deinit(&self.rhi);
         self.rt_shadow_composite_pass.deinit(&self.rhi);
+        self.ssao_composite_pass.deinit(&self.rhi);
         if (self.rt_shadow_mask_texture) |*t| self.rhi.releaseTexture(t);
         if (self.rt_shadow_pixels) |p| self.allocator.free(p);
         self.fxaa_pass.deinit(&self.rhi);
@@ -1990,6 +1998,16 @@ pub const Renderer = struct {
                             const ssao_stats = self.ssao_pass.draw(&self.rhi, frame, ssao_render_pass, ssao_uniforms);
                             draw_stats.add(ssao_stats);
                             self.rhi.endRenderPass(ssao_render_pass);
+
+                            // SSAO 合成: 将 SSAO 纹理以乘法混合叠加到 HDR 颜色缓冲，
+                            // 使遮蔽区域（角落/缝隙）自然变暗，增强场景接地感。
+                            if (self.ssao_composite_pass.isReady() and self.scene_viewport.hdrColor() != null) {
+                                try self.ssao_composite_pass.syncTexture(&self.rhi, self.scene_viewport.ssao().?);
+                                const ssao_composite_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(.{ .texture = self.scene_viewport.hdrColor().? }));
+                                const ssao_composite_stats = self.ssao_composite_pass.draw(&self.rhi, frame, ssao_composite_render_pass, self.editor_viewport_state.ssao_intensity);
+                                draw_stats.add(ssao_composite_stats);
+                                self.rhi.endRenderPass(ssao_composite_render_pass);
+                            }
                         }
 
                         // TAA resolve: blend current frame with history
