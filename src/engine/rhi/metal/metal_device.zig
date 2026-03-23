@@ -76,6 +76,13 @@ pub const MetalDevice = struct {
         depth_write_enabled: u32,
         vertex_attr_count: u32,
         vertex_buffer_layout_count: u32,
+        blend_enabled: u32,
+        src_color_blend: u32,
+        dst_color_blend: u32,
+        color_blend_op: u32,
+        src_alpha_blend: u32,
+        dst_alpha_blend: u32,
+        alpha_blend_op: u32,
     };
 
     const VertexAttributeC = extern struct {
@@ -360,6 +367,13 @@ fn vtCreateGraphicsPipeline(ctx: *anyopaque, desc: rhi.GraphicsPipelineDesc) rhi
         .depth_write_enabled = depth_write,
         .vertex_attr_count = attr_count,
         .vertex_buffer_layout_count = buf_layout_count,
+        .blend_enabled = if (desc.blend_state) |bs| @intFromBool(bs.enable_blend) else 0,
+        .src_color_blend = if (desc.blend_state) |bs| @intFromEnum(bs.src_color_blendfactor) else 0,
+        .dst_color_blend = if (desc.blend_state) |bs| @intFromEnum(bs.dst_color_blendfactor) else 0,
+        .color_blend_op = if (desc.blend_state) |bs| @intFromEnum(bs.color_blend_op) else 0,
+        .src_alpha_blend = if (desc.blend_state) |bs| @intFromEnum(bs.src_alpha_blendfactor) else 0,
+        .dst_alpha_blend = if (desc.blend_state) |bs| @intFromEnum(bs.dst_alpha_blendfactor) else 0,
+        .alpha_blend_op = if (desc.blend_state) |bs| @intFromEnum(bs.alpha_blend_op) else 0,
     };
 
     // Build FFI vertex attribute array

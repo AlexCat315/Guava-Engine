@@ -78,6 +78,8 @@ const rhi_mod = @import("../rhi/device.zig");
 const rhi_types = @import("../rhi/types.zig");
 const rhi_v2_mod = @import("../rhi/rhi.zig");
 const rhi_v2_backend_mod = @import("../rhi/metal/metal_backend.zig");
+const metal_device_mod = @import("../rhi/metal/metal_device.zig");
+const sdl = @import("../platform/sdl.zig").c;
 const fullscreen_post_v2_mod = @import("fullscreen_post_pass_v2.zig");
 const bloom_pass_v2_mod = @import("bloom_pass_v2.zig");
 const tonemap_pass_v2_mod = @import("tonemap_pass_v2.zig");
@@ -1241,8 +1243,12 @@ pub const Renderer = struct {
     ssao_compute_pass: ?ssao_compute_pass_mod.SSAOComputePassV2 = null,
     /// 可选 RHI v2 设备（抽象后端，用于已迁移至 v2 的通道）
     rhi_v2_device: ?*rhi_v2_mod.Device = null,
-    /// RHI v2 后端存储（生命周期由 Renderer 管理）
+    /// RHI v2 mock 后端存储（仅测试用；生产环境使用 real Metal）
     rhi_v2_backend: ?*rhi_v2_backend_mod.MetalBackend = null,
+    /// Real Metal backend device（生产环境使用）
+    rhi_v2_metal_device: ?*metal_device_mod.MetalDevice = null,
+    /// SDL Metal view handle（需要在 deinit 时销毁）
+    sdl_metal_view: sdl.SDL_MetalView = null,
     /// IBL Compute 通道（GPU Compute 加速 BRDF LUT + Irradiance）
     ibl_compute_pass: ?ibl_compute_pass_mod.IBLComputePass = null,
     /// Contact Shadow 屏幕空间接触阴影通道
@@ -1454,31 +1460,67 @@ pub const Renderer = struct {
         renderer.fxaa_pass = try fxaa_pass_mod.FxaaPass.init(&renderer.rhi);
         errdefer renderer.fxaa_pass.deinit(&renderer.rhi);
 
-        // RHI v2 abstract backend — enables migrated passes (FXAA v2, Bloom v2, etc.)
-        {
-            const backend_ptr = allocator.create(rhi_v2_backend_mod.MetalBackend) catch null;
-            if (backend_ptr) |bp| {
-                bp.* = rhi_v2_backend_mod.MetalBackend.init(allocator);
-                const dev_ptr = allocator.create(rhi_v2_mod.Device) catch null;
-                if (dev_ptr) |dp| {
-                    dp.* = bp.createDevice();
-                    renderer.rhi_v2_backend = bp;
-                    renderer.rhi_v2_device = dp;
+        // RHI v2 Metal backend — real GPU via ObjC++ bridge on macOS,
+        // falls back to mock MetalBackend if real init fails.
+        rhi_v2_init: {
+            if (comptime @import("builtin").os.tag == .macos) {
+                const md_ptr = allocator.create(metal_device_mod.MetalDevice) catch break :rhi_v2_init;
+                const md = metal_device_mod.MetalDevice.init(allocator) orelse {
+                    allocator.destroy(md_ptr);
+                    break :rhi_v2_init;
+                };
+                md_ptr.* = md;
 
-                    // Pre-create tonemap v2 layouts and wire constraints into the compiled graph
-                    if (tonemap_pass_v2_mod.TonemapPassV2.createLayouts(dp)) |layouts| {
-                        if (dp.resolvePipelineLayout(&.{ layouts.hdr_layout, layouts.bloom_layout, layouts.uniform_layout })) |_| {
-                            renderer.graph.setPassBindingConstraints(.tonemap_pass, &.{
-                                .{ .slot = 0, .expected_layout_id = layouts.hdr_layout.id },
-                                .{ .slot = 1, .expected_layout_id = layouts.bloom_layout.id },
-                                .{ .slot = 2, .expected_layout_id = layouts.uniform_layout.id },
-                            }) catch {};
-                        } else |_| {}
-                    } else |_| {}
-                } else {
-                    bp.deinit();
-                    allocator.destroy(bp);
+                // Create SDL Metal view & obtain CAMetalLayer
+                const metal_view = sdl.SDL_Metal_CreateView(window.handle);
+                if (metal_view) |view| {
+                    renderer.sdl_metal_view = view;
+                    if (sdl.SDL_Metal_GetLayer(view)) |layer| {
+                        md_ptr.setLayer(layer);
+                    }
                 }
+
+                const dev_ptr = allocator.create(rhi_v2_mod.Device) catch {
+                    md_ptr.deinit();
+                    allocator.destroy(md_ptr);
+                    break :rhi_v2_init;
+                };
+                dev_ptr.* = md_ptr.createDevice();
+                renderer.rhi_v2_metal_device = md_ptr;
+                renderer.rhi_v2_device = dev_ptr;
+
+                // Pre-create tonemap v2 layouts
+                if (tonemap_pass_v2_mod.TonemapPassV2.createLayouts(dev_ptr)) |layouts| {
+                    if (dev_ptr.resolvePipelineLayout(&.{ layouts.hdr_layout, layouts.bloom_layout, layouts.uniform_layout })) |_| {
+                        renderer.graph.setPassBindingConstraints(.tonemap_pass, &.{
+                            .{ .slot = 0, .expected_layout_id = layouts.hdr_layout.id },
+                            .{ .slot = 1, .expected_layout_id = layouts.bloom_layout.id },
+                            .{ .slot = 2, .expected_layout_id = layouts.uniform_layout.id },
+                        }) catch {};
+                    } else |_| {}
+                } else |_| {}
+            } else {
+                // Non-macOS: use mock backend
+                const backend_ptr = allocator.create(rhi_v2_backend_mod.MetalBackend) catch break :rhi_v2_init;
+                backend_ptr.* = rhi_v2_backend_mod.MetalBackend.init(allocator);
+                const dev_ptr = allocator.create(rhi_v2_mod.Device) catch {
+                    backend_ptr.deinit();
+                    allocator.destroy(backend_ptr);
+                    break :rhi_v2_init;
+                };
+                dev_ptr.* = backend_ptr.createDevice();
+                renderer.rhi_v2_backend = backend_ptr;
+                renderer.rhi_v2_device = dev_ptr;
+
+                if (tonemap_pass_v2_mod.TonemapPassV2.createLayouts(dev_ptr)) |layouts| {
+                    if (dev_ptr.resolvePipelineLayout(&.{ layouts.hdr_layout, layouts.bloom_layout, layouts.uniform_layout })) |_| {
+                        renderer.graph.setPassBindingConstraints(.tonemap_pass, &.{
+                            .{ .slot = 0, .expected_layout_id = layouts.hdr_layout.id },
+                            .{ .slot = 1, .expected_layout_id = layouts.bloom_layout.id },
+                            .{ .slot = 2, .expected_layout_id = layouts.uniform_layout.id },
+                        }) catch {};
+                    } else |_| {}
+                } else |_| {}
             }
         }
 
@@ -1526,6 +1568,13 @@ pub const Renderer = struct {
         if (self.rhi_v2_device) |dp| {
             dp.deinit();
             self.allocator.destroy(dp);
+        }
+        if (self.rhi_v2_metal_device) |md| {
+            md.deinit();
+            self.allocator.destroy(md);
+        }
+        if (self.sdl_metal_view != null) {
+            sdl.SDL_Metal_DestroyView(self.sdl_metal_view);
         }
         if (self.rhi_v2_backend) |bp| {
             bp.deinit();
@@ -3617,7 +3666,6 @@ pub const Renderer = struct {
             .height = height,
         });
 
-        const sdl = @import("../platform/sdl.zig").c;
         const source = sdl.SDL_GPUTextureRegion{
             .texture = texture.raw,
             .mip_level = 0,
@@ -3689,7 +3737,6 @@ pub const Renderer = struct {
             .height = height,
         });
 
-        const sdl = @import("../platform/sdl.zig").c;
         const source = sdl.SDL_GPUTextureRegion{
             .texture = texture.raw,
             .w = width,

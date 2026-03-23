@@ -187,6 +187,7 @@ pub const GraphicsPipelineDesc = struct {
     primitive: rhi_types.PrimitiveType = .triangle_list,
     depth_stencil: ?DepthStencilState = .{},
     vertex_layout: ?VertexLayoutDesc = null,
+    blend_state: ?rhi_types.ColorTargetBlendState = null,
 };
 
 pub const ComputePipelineDesc = struct {

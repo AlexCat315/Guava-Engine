@@ -63,6 +63,14 @@ typedef struct {
     uint32_t depth_write_enabled;   // bool
     uint32_t vertex_attr_count;     // number of vertex attributes (0=no vertex layout)
     uint32_t vertex_buffer_layout_count; // number of vertex buffer layouts
+    // ── Blend state ───────────────────────────────────────────────────
+    uint32_t blend_enabled;         // 0=disabled, 1=enabled
+    uint32_t src_color_blend;       // BlendFactor ordinal
+    uint32_t dst_color_blend;       // BlendFactor ordinal
+    uint32_t color_blend_op;        // BlendOp ordinal (0=add,...4=max)
+    uint32_t src_alpha_blend;       // BlendFactor ordinal
+    uint32_t dst_alpha_blend;       // BlendFactor ordinal
+    uint32_t alpha_blend_op;        // BlendOp ordinal
 } GuavaMetalGraphicsPipelineDesc;
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────

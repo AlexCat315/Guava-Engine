@@ -142,6 +142,42 @@ static MTLVertexFormat mapVertexFormat(uint32_t fmt) {
 // Vertex buffer base index in Metal argument table (must match submit decoder)
 static constexpr uint32_t kVertexBufferBaseIndex = 30;
 
+// ---------------------------------------------------------------------------
+// Helper: map RHI BlendFactor ordinal → MTLBlendFactor
+// ---------------------------------------------------------------------------
+static MTLBlendFactor mapBlendFactor(uint32_t f) {
+    switch (f) {
+        case 0:  return MTLBlendFactorZero;
+        case 1:  return MTLBlendFactorOne;
+        case 2:  return MTLBlendFactorSourceColor;
+        case 3:  return MTLBlendFactorOneMinusSourceColor;
+        case 4:  return MTLBlendFactorDestinationColor;
+        case 5:  return MTLBlendFactorOneMinusDestinationColor;
+        case 6:  return MTLBlendFactorSourceAlpha;
+        case 7:  return MTLBlendFactorOneMinusSourceAlpha;
+        case 8:  return MTLBlendFactorDestinationAlpha;
+        case 9:  return MTLBlendFactorOneMinusDestinationAlpha;
+        case 10: return MTLBlendFactorBlendColor;
+        case 11: return MTLBlendFactorOneMinusBlendColor;
+        case 12: return MTLBlendFactorSourceAlphaSaturated;
+        default: return MTLBlendFactorOne;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helper: map RHI BlendOp ordinal → MTLBlendOperation
+// ---------------------------------------------------------------------------
+static MTLBlendOperation mapBlendOp(uint32_t op) {
+    switch (op) {
+        case 0:  return MTLBlendOperationAdd;
+        case 1:  return MTLBlendOperationSubtract;
+        case 2:  return MTLBlendOperationReverseSubtract;
+        case 3:  return MTLBlendOperationMin;
+        case 4:  return MTLBlendOperationMax;
+        default: return MTLBlendOperationAdd;
+    }
+}
+
 // ── Command buffer opcode constants (must match command_buffer.zig) ────────
 enum RhiOpCode : uint8_t {
     OP_BEGIN_RENDER_PASS  = 0,
@@ -396,6 +432,17 @@ uint32_t guava_metal_rhi_create_graphics_pipeline(
         pd.vertexFunction   = vit->second;
         pd.fragmentFunction = fit->second;
         pd.colorAttachments[0].pixelFormat = mapPixelFormat(desc->color_format);
+
+        // ── Blend state ───────────────────────────────────────────────
+        if (desc->blend_enabled) {
+            pd.colorAttachments[0].blendingEnabled             = YES;
+            pd.colorAttachments[0].sourceRGBBlendFactor        = mapBlendFactor(desc->src_color_blend);
+            pd.colorAttachments[0].destinationRGBBlendFactor   = mapBlendFactor(desc->dst_color_blend);
+            pd.colorAttachments[0].rgbBlendOperation           = mapBlendOp(desc->color_blend_op);
+            pd.colorAttachments[0].sourceAlphaBlendFactor      = mapBlendFactor(desc->src_alpha_blend);
+            pd.colorAttachments[0].destinationAlphaBlendFactor = mapBlendFactor(desc->dst_alpha_blend);
+            pd.colorAttachments[0].alphaBlendOperation         = mapBlendOp(desc->alpha_blend_op);
+        }
 
         if (desc->depth_format != 0) {
             pd.depthAttachmentPixelFormat = mapPixelFormat(desc->depth_format);
