@@ -44,6 +44,8 @@ pub const VertexUniforms = extern struct {
 };
 
 pub const csm_cascade_count = 4;
+pub const max_directional_lights = 4;
+pub const max_point_lights = 16;
 
 pub const BasePassUniforms = extern struct {
     base_color_factor: [4]f32,
@@ -51,11 +53,12 @@ pub const BasePassUniforms = extern struct {
     pbr_factors: [4]f32, // x: metallic, y: roughness, z: alpha_cutoff, w: output alpha multiplier
     has_textures: [4]u32, // x: base_color, y: metallic_roughness, z: normal, w: occlusion
     camera_world_position: [4]f32,
-    light_direction: [4]f32,
-    light_color_intensity: [4]f32,
+    dir_light_directions: [max_directional_lights][4]f32, // xyz = direction, w = 0
+    dir_light_colors: [max_directional_lights][4]f32, // rgb = color, w = intensity
     light_space_matrix: [16]f32,
-    point_light_position_radius: [4]f32,
-    point_light_color_intensity: [4]f32,
+    point_light_positions: [max_point_lights][4]f32, // xyz = position, w = range
+    point_light_colors: [max_point_lights][4]f32, // rgb = color, w = intensity
+    light_counts: [4]u32, // x: dir_count, y: point_count
     ambient_color: [4]f32,
     shadow_params: [4]f32, // x: bias, yzw: preview tint color
     ibl_params: [4]f32, // x: use_ibl (0/1), y: ibl_intensity, z: preview tint strength, w: unused

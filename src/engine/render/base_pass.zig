@@ -125,16 +125,6 @@ pub const BasePass = struct {
         else
             self.pipelineFor(settings.target, .fill, true);
 
-        const main_light = if (prepared_scene.lights.directional_lights.len > 0)
-            prepared_scene.lights.directional_lights[0]
-        else
-            mesh_pass_mod.DirectionalLightBlock{ .direction = vec3.normalize(.{ 0.3, -0.9, -0.2 }), .color = .{ 1.0, 0.98, 0.92 }, .intensity = 1.6 };
-
-        const point_light = if (prepared_scene.lights.point_lights.len > 0)
-            prepared_scene.lights.point_lights[0]
-        else
-            mesh_pass_mod.PointLightBlock{ .position = .{ 0.0, 0.0, 0.0 }, .color = .{ 1.0, 0.95, 0.9 }, .intensity = 0.0, .range = 1.0 };
-
         var shadow_bg: ?rhi_mod.BindGroup = null;
         defer if (shadow_bg) |*bind_group| {
             device.releaseBindGroup(bind_group);
@@ -190,8 +180,6 @@ pub const BasePass = struct {
                     prepared_scene,
                     prepared_scene.opaque_meshes,
                     settings,
-                    main_light,
-                    point_light,
                     use_metal_combined_bindings,
                     false,
                 ));
@@ -205,8 +193,6 @@ pub const BasePass = struct {
                     prepared_scene,
                     prepared_scene.transparent_meshes,
                     settings,
-                    main_light,
-                    point_light,
                     use_metal_combined_bindings,
                     true,
                 ));
@@ -221,8 +207,6 @@ pub const BasePass = struct {
                         prepared_scene,
                         prepared_scene.opaque_meshes,
                         settings,
-                        main_light,
-                        point_light,
                         use_metal_combined_bindings,
                         false,
                     ));
@@ -238,8 +222,6 @@ pub const BasePass = struct {
                         prepared_scene,
                         prepared_scene.transparent_meshes,
                         settings,
-                        main_light,
-                        point_light,
                         use_metal_combined_bindings,
                         true,
                     ));
@@ -258,8 +240,6 @@ pub const BasePass = struct {
         prepared_scene: *const mesh_pass_mod.PreparedScene,
         items: []const mesh_pass_mod.DrawItem,
         settings: DrawSettings,
-        main_light: mesh_pass_mod.DirectionalLightBlock,
-        point_light: mesh_pass_mod.PointLightBlock,
         use_metal_combined_bindings: bool,
         transparent_pass: bool,
     ) !mesh_pass_mod.DrawStats {
@@ -277,8 +257,6 @@ pub const BasePass = struct {
                 item,
                 prepared_scene,
                 settings,
-                main_light,
-                point_light,
                 transparent_pass,
             );
 
@@ -336,22 +314,50 @@ pub const BasePass = struct {
         item: mesh_pass_mod.DrawItem,
         prepared_scene: *const mesh_pass_mod.PreparedScene,
         settings: DrawSettings,
-        main_light: mesh_pass_mod.DirectionalLightBlock,
-        point_light: mesh_pass_mod.PointLightBlock,
         transparent_pass: bool,
     ) mesh_pass_mod.BasePassUniforms {
         _ = self;
+
+        // Fill directional light arrays (up to max_directional_lights)
+        var dir_directions: [mesh_pass_mod.max_directional_lights][4]f32 = .{.{ 0, 0, 0, 0 }} ** mesh_pass_mod.max_directional_lights;
+        var dir_colors: [mesh_pass_mod.max_directional_lights][4]f32 = .{.{ 0, 0, 0, 0 }} ** mesh_pass_mod.max_directional_lights;
+        const dir_count = @min(prepared_scene.lights.directional_lights.len, mesh_pass_mod.max_directional_lights);
+        for (0..dir_count) |i| {
+            const dl = prepared_scene.lights.directional_lights[i];
+            dir_directions[i] = .{ dl.direction[0], dl.direction[1], dl.direction[2], 0.0 };
+            dir_colors[i] = .{ dl.color[0], dl.color[1], dl.color[2], dl.intensity };
+        }
+        // If no directional lights in scene, provide a default primary light
+        if (dir_count == 0) {
+            const default_dir = vec3.normalize(.{ 0.3, -0.9, -0.2 });
+            dir_directions[0] = .{ default_dir[0], default_dir[1], default_dir[2], 0.0 };
+            dir_colors[0] = .{ 1.0, 0.98, 0.92, 1.6 };
+        }
+
+        // Fill point light arrays (up to max_point_lights)
+        var pt_positions: [mesh_pass_mod.max_point_lights][4]f32 = .{.{ 0, 0, 0, 0 }} ** mesh_pass_mod.max_point_lights;
+        var pt_colors: [mesh_pass_mod.max_point_lights][4]f32 = .{.{ 0, 0, 0, 0 }} ** mesh_pass_mod.max_point_lights;
+        const pt_count = @min(prepared_scene.lights.point_lights.len, mesh_pass_mod.max_point_lights);
+        for (0..pt_count) |i| {
+            const pl = prepared_scene.lights.point_lights[i];
+            pt_positions[i] = .{ pl.position[0], pl.position[1], pl.position[2], pl.range };
+            pt_colors[i] = .{ pl.color[0], pl.color[1], pl.color[2], pl.intensity };
+        }
+
+        const actual_dir_count: u32 = if (dir_count == 0) 1 else @intCast(dir_count);
+
         var fragment_uniforms = mesh_pass_mod.BasePassUniforms{
             .base_color_factor = item.base_color_factor,
             .emissive_factor = item.emissive_factor,
             .pbr_factors = item.pbr_factors,
             .has_textures = item.has_textures,
             .camera_world_position = prepared_scene.camera_world_position,
-            .light_direction = .{ main_light.direction[0], main_light.direction[1], main_light.direction[2], 0.0 },
-            .light_color_intensity = .{ main_light.color[0], main_light.color[1], main_light.color[2], main_light.intensity },
+            .dir_light_directions = dir_directions,
+            .dir_light_colors = dir_colors,
             .light_space_matrix = prepared_scene.light_space_matrix,
-            .point_light_position_radius = .{ point_light.position[0], point_light.position[1], point_light.position[2], point_light.range },
-            .point_light_color_intensity = .{ point_light.color[0], point_light.color[1], point_light.color[2], point_light.intensity },
+            .point_light_positions = pt_positions,
+            .point_light_colors = pt_colors,
+            .light_counts = .{ actual_dir_count, @intCast(pt_count), 0, 0 },
             .ambient_color = prepared_scene.ambient_color,
             .shadow_params = .{ 0.005, 0.0, 0.0, 0.0 }, // bias
             .ibl_params = item.ibl_params,
@@ -361,16 +367,14 @@ pub const BasePass = struct {
         };
 
         if (settings.render_mode == .unlit) {
-            fragment_uniforms.light_color_intensity = .{ 0.0, 0.0, 0.0, 0.0 };
-            fragment_uniforms.point_light_color_intensity = .{ 0.0, 0.0, 0.0, 0.0 };
+            fragment_uniforms.light_counts = .{ 0, 0, 0, 0 };
             fragment_uniforms.ambient_color = .{ 1.0, 1.0, 1.0, 1.0 };
             fragment_uniforms.ibl_params = .{ 0.0, 0.0, 0.0, 0.0 };
         } else if (settings.render_mode == .wireframe) {
             fragment_uniforms.base_color_factor = settings.override_base_color orelse .{ 0.08, 0.08, 0.08, 1.0 };
             fragment_uniforms.emissive_factor = .{ 0.0, 0.0, 0.0, 0.0 };
             fragment_uniforms.has_textures = .{ 0, 0, 0, 0 };
-            fragment_uniforms.light_color_intensity = .{ 0.0, 0.0, 0.0, 0.0 };
-            fragment_uniforms.point_light_color_intensity = .{ 0.0, 0.0, 0.0, 0.0 };
+            fragment_uniforms.light_counts = .{ 0, 0, 0, 0 };
             fragment_uniforms.ambient_color = .{ 1.0, 1.0, 1.0, 1.0 };
             fragment_uniforms.ibl_params = .{ 0.0, 0.0, 0.0, 0.0 };
         }
