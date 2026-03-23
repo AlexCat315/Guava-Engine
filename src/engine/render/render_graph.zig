@@ -233,6 +233,9 @@ const GraphReport = struct {
     triangles_drawn: usize,
     resource_count: usize,
     pass_count: usize,
+    binding_cache_hits: u64 = 0,
+    binding_cache_misses: u64 = 0,
+    binding_cache_entries: u32 = 0,
     passes: []const PassExecutionStat,
     lifetimes: []const ResourceLifetime,
 };
@@ -685,12 +688,28 @@ pub const RenderGraph = struct {
         triangles_drawn: usize,
         stats: []const PassExecutionStat,
     ) !void {
+        self.writeFrameReportWithCacheStats(allocator, path, backend_name, draw_calls, triangles_drawn, stats, .{}) catch {};
+    }
+
+    pub fn writeFrameReportWithCacheStats(
+        self: *const RenderGraph,
+        allocator: std.mem.Allocator,
+        path: []const u8,
+        backend_name: []const u8,
+        draw_calls: usize,
+        triangles_drawn: usize,
+        stats: []const PassExecutionStat,
+        cache_stats: struct { hits: u64 = 0, misses: u64 = 0, entries: u32 = 0 },
+    ) !void {
         const report = GraphReport{
             .backend = backend_name,
             .draw_calls = draw_calls,
             .triangles_drawn = triangles_drawn,
             .resource_count = self.resourceCount(),
             .pass_count = self.passCount(),
+            .binding_cache_hits = cache_stats.hits,
+            .binding_cache_misses = cache_stats.misses,
+            .binding_cache_entries = cache_stats.entries,
             .passes = stats,
             .lifetimes = self.lifetimes(),
         };

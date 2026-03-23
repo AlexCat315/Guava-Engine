@@ -309,6 +309,7 @@ fn drawEffectParameters(viewport_state: *EditorViewportState, node: *PostProcess
 
         switch (node.effect) {
             .bloom => {
+                _ = props.boolean("RHI v2 Path", &viewport_state.bloom_use_rhi_v2);
                 _ = props.float("Threshold", &viewport_state.bloom_threshold, 0.1, 0.0, 10.0);
                 _ = props.float("Intensity", &viewport_state.bloom_intensity, 0.1, 0.0, 5.0);
             },

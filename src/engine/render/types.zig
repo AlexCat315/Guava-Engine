@@ -39,6 +39,7 @@ pub const EditorViewportState = struct {
     exposure: f32 = 1.0,
     // Bloom 先作为视口级后处理 MVP，避免和场景相机资源耦合。
     bloom_enabled: bool = false,
+    bloom_use_rhi_v2: bool = false,
     bloom_threshold: f32 = 1.0,
     bloom_intensity: f32 = 0.35,
     // SSAO 环境光遮蔽

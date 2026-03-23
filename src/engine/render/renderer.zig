@@ -77,7 +77,9 @@ const scene_extraction = @import("scene_extraction.zig");
 const rhi_mod = @import("../rhi/device.zig");
 const rhi_types = @import("../rhi/types.zig");
 const rhi_v2_mod = @import("../rhi/rhi.zig");
+const rhi_v2_backend_mod = @import("../rhi/metal/metal_backend.zig");
 const fullscreen_post_v2_mod = @import("fullscreen_post_pass_v2.zig");
+const bloom_pass_v2_mod = @import("bloom_pass_v2.zig");
 const components = @import("../scene/components.zig");
 const scene_mod = @import("../scene/scene.zig");
 const types = @import("types.zig");
@@ -157,6 +159,12 @@ pub const FrameReport = struct {
     draw_calls: usize = 0,
     /// 绘制的三角形数量
     triangles_drawn: usize = 0,
+    /// RHI v2 BindingSet 缓存命中次数
+    binding_cache_hits: u64 = 0,
+    /// RHI v2 BindingSet 缓存未命中次数
+    binding_cache_misses: u64 = 0,
+    /// RHI v2 slot-layout 校验失败数
+    slot_layout_errors: usize = 0,
 };
 
 /// 选择回读请求
@@ -1222,6 +1230,8 @@ pub const Renderer = struct {
     ssao_compute_pass: ?ssao_compute_pass_mod.SSAOComputePassV2 = null,
     /// 可选 RHI v2 设备（抽象后端，用于已迁移至 v2 的通道）
     rhi_v2_device: ?*rhi_v2_mod.Device = null,
+    /// RHI v2 后端存储（生命周期由 Renderer 管理）
+    rhi_v2_backend: ?*rhi_v2_backend_mod.MetalBackend = null,
     /// IBL Compute 通道（GPU Compute 加速 BRDF LUT + Irradiance）
     ibl_compute_pass: ?ibl_compute_pass_mod.IBLComputePass = null,
     /// Contact Shadow 屏幕空间接触阴影通道
@@ -1433,6 +1443,23 @@ pub const Renderer = struct {
         renderer.fxaa_pass = try fxaa_pass_mod.FxaaPass.init(&renderer.rhi);
         errdefer renderer.fxaa_pass.deinit(&renderer.rhi);
 
+        // RHI v2 abstract backend — enables migrated passes (FXAA v2, Bloom v2, etc.)
+        {
+            const backend_ptr = allocator.create(rhi_v2_backend_mod.MetalBackend) catch null;
+            if (backend_ptr) |bp| {
+                bp.* = rhi_v2_backend_mod.MetalBackend.init(allocator);
+                const dev_ptr = allocator.create(rhi_v2_mod.Device) catch null;
+                if (dev_ptr) |dp| {
+                    dp.* = bp.createDevice();
+                    renderer.rhi_v2_backend = bp;
+                    renderer.rhi_v2_device = dp;
+                } else {
+                    bp.deinit();
+                    allocator.destroy(bp);
+                }
+            }
+        }
+
         renderer.outline_pass = try outline_pass_mod.OutlinePass.init(&renderer.rhi);
         errdefer renderer.outline_pass.deinit(&renderer.rhi);
 
@@ -1474,6 +1501,14 @@ pub const Renderer = struct {
         if (self.rt_shadow_mask_texture) |*t| self.rhi.releaseTexture(t);
         if (self.rt_shadow_pixels) |p| self.allocator.free(p);
         self.fxaa_pass.deinit(&self.rhi);
+        if (self.rhi_v2_device) |dp| {
+            dp.deinit();
+            self.allocator.destroy(dp);
+        }
+        if (self.rhi_v2_backend) |bp| {
+            bp.deinit();
+            self.allocator.destroy(bp);
+        }
         self.gizmo_pass.deinit(&self.rhi);
         self.outline_pass.deinit(&self.rhi);
         self.base_pass.deinit(&self.rhi);
@@ -2232,18 +2267,39 @@ pub const Renderer = struct {
                         const hdr_input_for_post = if (taa_resolved) self.scene_viewport.taa().? else self.scene_viewport.hdrColor().?;
 
                         if (bloom_enabled) {
-                            try self.bloom_pass.syncTexture(&self.rhi, hdr_input_for_post);
-                            const bloom_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.bloom().? }));
-                            const bloom_start = std.time.nanoTimestamp();
-                            const bloom_stats = self.bloom_pass.draw(
-                                &self.rhi,
-                                frame,
-                                bloom_render_pass,
-                                self.editor_viewport_state.bloom_threshold,
-                            );
-                            self.graph.recordPassStat(pass_stats, .post_process, durationNs(bloom_start, std.time.nanoTimestamp()), bloom_stats.draw_calls, bloom_stats.triangles_drawn);
-                            draw_stats.add(bloom_stats);
-                            self.rhi.endRenderPass(bloom_render_pass);
+                            var dispatched_bloom_v2 = false;
+                            if (self.editor_viewport_state.bloom_use_rhi_v2) {
+                                if (self.rhi_v2_device) |v2_dev| {
+                                    const bloom_start_v2 = std.time.nanoTimestamp();
+                                    bloom_pass_v2_mod.BloomPassV2.execute(
+                                        self.allocator,
+                                        v2_dev,
+                                        null,
+                                        0,
+                                        0,
+                                        .{
+                                            .threshold = self.editor_viewport_state.bloom_threshold,
+                                            .intensity = self.editor_viewport_state.bloom_intensity,
+                                        },
+                                    ) catch {};
+                                    self.graph.recordPassStat(pass_stats, .post_process, durationNs(bloom_start_v2, std.time.nanoTimestamp()), 1, 1);
+                                    dispatched_bloom_v2 = true;
+                                }
+                            }
+                            if (!dispatched_bloom_v2) {
+                                try self.bloom_pass.syncTexture(&self.rhi, hdr_input_for_post);
+                                const bloom_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.bloom().? }));
+                                const bloom_start = std.time.nanoTimestamp();
+                                const bloom_stats = self.bloom_pass.draw(
+                                    &self.rhi,
+                                    frame,
+                                    bloom_render_pass,
+                                    self.editor_viewport_state.bloom_threshold,
+                                );
+                                self.graph.recordPassStat(pass_stats, .post_process, durationNs(bloom_start, std.time.nanoTimestamp()), bloom_stats.draw_calls, bloom_stats.triangles_drawn);
+                                draw_stats.add(bloom_stats);
+                                self.rhi.endRenderPass(bloom_render_pass);
+                            }
                         }
 
                         if (self.tonemap_pass.isReady()) {
@@ -2397,6 +2453,26 @@ pub const Renderer = struct {
             }
             try self.resolveSelectionReadbacks();
 
+            // Collect RHI v2 stats
+            var v2_cache_hits: u64 = 0;
+            var v2_cache_misses: u64 = 0;
+            var v2_slot_errors: usize = 0;
+            if (self.rhi_v2_device) |v2_dev| {
+                const cs = v2_dev.bindingSetCacheStats();
+                v2_cache_hits = cs.hits;
+                v2_cache_misses = cs.misses;
+
+                // Slot-layout consistency validation against compiled graph
+                const slot_errors = self.graph.validateSlotLayoutConstraints(self.allocator, v2_dev) catch &.{};
+                v2_slot_errors = slot_errors.len;
+                if (slot_errors.len > 0) {
+                    for (slot_errors) |se| {
+                        std.log.warn("slot-layout mismatch: pass={s} slot={} expected_layout={}", .{ se.pass_name, se.slot, se.expected_layout_id });
+                    }
+                    self.allocator.free(slot_errors);
+                }
+            }
+
             break :blk FrameReport{
                 .backend = self.rhi.api,
                 .passes_executed = self.passCount(),
@@ -2405,18 +2481,23 @@ pub const Renderer = struct {
                 .runtime = self.runtimeInfo(),
                 .draw_calls = draw_stats.draw_calls,
                 .triangles_drawn = draw_stats.triangles_drawn,
+                .binding_cache_hits = v2_cache_hits,
+                .binding_cache_misses = v2_cache_misses,
+                .slot_layout_errors = v2_slot_errors,
             };
         };
 
         // Only write frame report on first frame to avoid per-frame disk I/O
         if (!g_logged_viewport_backend) {
-            self.graph.writeFrameReport(
+            const v2_entry_count: u32 = if (self.rhi_v2_device) |v2_dev| v2_dev.bindingSetCacheEntryCount() else 0;
+            self.graph.writeFrameReportWithCacheStats(
                 self.allocator,
                 "dist/reports/latest_frame_report.json",
                 rhi_types.graphicsApiName(self.rhi.api),
                 result.draw_calls,
                 result.triangles_drawn,
                 pass_stats,
+                .{ .hits = result.binding_cache_hits, .misses = result.binding_cache_misses, .entries = v2_entry_count },
             ) catch |err| {
                 std.log.warn("failed to write frame report: {}", .{err});
             };

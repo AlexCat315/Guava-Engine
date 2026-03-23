@@ -5,6 +5,7 @@ const rhi = @import("rhi/rhi.zig");
 const binding_cache = @import("rhi/binding_cache.zig");
 const ssao_v2 = @import("render/ssao_compute_pass_v2.zig");
 const fullscreen_post_v2 = @import("render/fullscreen_post_pass_v2.zig");
+const bloom_pass_v2 = @import("render/bloom_pass_v2.zig");
 const render_graph = @import("render/render_graph.zig");
 
 test "metal backend compute queue submission path" {
@@ -155,4 +156,25 @@ test "render graph slot-layout constraint validation catches missing layout" {
     defer std.testing.allocator.free(errors);
     try std.testing.expectEqual(@as(usize, 1), errors.len);
     try std.testing.expectEqualStrings("BadPass", errors[0].pass_name);
+}
+
+test "bloom pass v2 two-set pipeline submission" {
+    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
+    defer backend.deinit();
+
+    var device = backend.createDevice();
+    defer device.deinit();
+
+    try bloom_pass_v2.BloomPassV2.execute(
+        std.testing.allocator,
+        &device,
+        null,
+        5001,
+        5002,
+        .{ .threshold = 0.8, .intensity = 0.5 },
+    );
+    try std.testing.expectEqual(rhi.QueueClass.graphics, backend.last_submit_queue.?);
+
+    // Verify cache was populated: 2 binding sets created
+    try std.testing.expect(device.bindingSetCacheEntryCount() >= 2);
 }
