@@ -11,6 +11,7 @@ pub const MetalBackend = struct {
     next_shader_module_id: u32 = 1,
     next_graphics_pipeline_id: u32 = 1,
     next_compute_pipeline_id: u32 = 1,
+    next_sampler_id: u32 = 1,
     resource_state_bits: std.AutoHashMap(u32, u32),
     resource_owner_queue: std.AutoHashMap(u32, rhi.QueueClass),
     last_submit_queue: ?rhi.QueueClass = null,
@@ -198,6 +199,26 @@ fn destroyComputePipeline(ctx: *anyopaque, pipeline: rhi.ComputePipeline) void {
     _ = pipeline;
 }
 
+fn createSampler(ctx: *anyopaque, desc: rhi.SamplerDesc) rhi.Error!rhi.Sampler {
+    _ = desc;
+    var backend: *MetalBackend = @ptrCast(@alignCast(ctx));
+    const id = backend.next_sampler_id;
+    backend.next_sampler_id += 1;
+    return .{ .id = id };
+}
+
+fn destroySampler(ctx: *anyopaque, sampler: rhi.Sampler) void {
+    _ = ctx;
+    _ = sampler;
+}
+
+fn uploadBufferData(ctx: *anyopaque, buffer: rhi.Buffer, offset: u64, data: []const u8) rhi.Error!void {
+    _ = ctx;
+    _ = buffer;
+    _ = offset;
+    _ = data;
+}
+
 const device_vtable = rhi.DeviceVTable{
     .create_buffer = createBuffer,
     .create_texture = createTexture,
@@ -213,6 +234,9 @@ const device_vtable = rhi.DeviceVTable{
     .create_compute_pipeline = createComputePipeline,
     .destroy_graphics_pipeline = destroyGraphicsPipeline,
     .destroy_compute_pipeline = destroyComputePipeline,
+    .create_sampler = createSampler,
+    .destroy_sampler = destroySampler,
+    .upload_buffer_data = uploadBufferData,
 };
 
 test "metal backend handles compute queue barrier ownership transfer" {

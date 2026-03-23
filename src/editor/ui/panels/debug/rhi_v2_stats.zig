@@ -98,12 +98,15 @@ pub fn drawRhiV2StatsWindow(state: *EditorState, layer_context: *engine.core.Lay
         gui.labelText("Tonemap", if (vs.tonemap_use_rhi_v2) "v2" else "legacy");
         gui.labelText("Contact Shadow", if (vs.contact_shadows_use_rhi_v2) "v2" else "legacy");
         gui.labelText("DOF", if (vs.dof_use_rhi_v2) "v2" else "legacy");
-        gui.labelText("SSR", "v2 prototype");
+        gui.labelText("SSR", if (vs.ssr_use_rhi_v2) "v2" else "legacy");
+        gui.labelText("Volumetric Fog", if (vs.volumetric_fog_use_rhi_v2) "v2" else "legacy");
     }
 
     // ── V2 Infrastructure ──────────────────────────────────────────
     if (gui.collapsingHeader("V2 Infrastructure", false)) {
         gui.labelText("Pipeline Creation", "shader + gfx + compute");
+        gui.labelText("Sampler", "create + destroy");
+        gui.labelText("Buffer Upload", "uploadBufferData");
         gui.labelText("Command Buffer", "encode + decode + submit");
         gui.labelText("Binding Cache", "FIFO eviction (max 1024)");
         gui.labelText("State Tracker", "barrier + ownership");

@@ -83,6 +83,8 @@ const bloom_pass_v2_mod = @import("bloom_pass_v2.zig");
 const tonemap_pass_v2_mod = @import("tonemap_pass_v2.zig");
 const contact_shadow_v2_mod = @import("contact_shadow_pass_v2.zig");
 const dof_pass_v2_mod = @import("dof_pass_v2.zig");
+const ssr_pass_v2_mod = @import("ssr_pass_v2.zig");
+const volumetric_fog_v2_mod = @import("volumetric_fog_pass_v2.zig");
 const components = @import("../scene/components.zig");
 const scene_mod = @import("../scene/scene.zig");
 const types = @import("types.zig");
@@ -2109,37 +2111,75 @@ pub const Renderer = struct {
                         // Volumetric fog: composite onto HDR color before bloom/tonemap
                         const fog_enabled = self.editor_viewport_state.volumetric_fog_enabled and self.volumetric_fog_pass.isReady() and self.scene_viewport.hdrColor() != null;
                         if (fog_enabled) {
-                            if (self.shadow_map.depth_textures[0]) |*shadow_tex| {
-                                try self.volumetric_fog_pass.syncTextures(&self.rhi, self.scene_viewport.depth().?, shadow_tex);
-                                const fog_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(.{ .texture = self.scene_viewport.hdrColor().? }));
-
-                                const inv_vp = mat4_mod.inverse(prepared_scene.view_projection) orelse mat4_mod.identity();
-
-                                // Extract directional light data
-                                var light_dir = [4]f32{ 0.0, -1.0, 0.0, 0.0 };
-                                var light_col = [4]f32{ 1.0, 1.0, 1.0, 1.0 };
-                                if (prepared_scene.lights.directional_lights.len > 0) {
-                                    const main_light = prepared_scene.lights.directional_lights[0];
-                                    light_dir = .{ main_light.direction[0], main_light.direction[1], main_light.direction[2], 0.0 };
-                                    light_col = .{ main_light.color[0], main_light.color[1], main_light.color[2], main_light.intensity };
+                            var dispatched_fog_v2 = false;
+                            if (self.editor_viewport_state.volumetric_fog_use_rhi_v2) {
+                                if (self.rhi_v2_device) |v2_dev| {
+                                    const inv_vp_fog = mat4_mod.inverse(prepared_scene.view_projection) orelse mat4_mod.identity();
+                                    var fog_light_dir = [4]f32{ 0.0, -1.0, 0.0, 0.0 };
+                                    var fog_light_col = [4]f32{ 1.0, 1.0, 1.0, 1.0 };
+                                    if (prepared_scene.lights.directional_lights.len > 0) {
+                                        const ml = prepared_scene.lights.directional_lights[0];
+                                        fog_light_dir = .{ ml.direction[0], ml.direction[1], ml.direction[2], 0.0 };
+                                        fog_light_col = .{ ml.color[0], ml.color[1], ml.color[2], ml.intensity };
+                                    }
+                                    const fog_start_v2 = std.time.nanoTimestamp();
+                                    volumetric_fog_v2_mod.VolumetricFogPassV2.execute(
+                                        self.allocator,
+                                        v2_dev,
+                                        null,
+                                        0,
+                                        0,
+                                        .{
+                                            .inv_view_projection = inv_vp_fog,
+                                            .light_space_matrix = prepared_scene.light_space_matrix,
+                                            .camera_position = prepared_scene.camera_world_position,
+                                            .light_direction = fog_light_dir,
+                                            .light_color = fog_light_col,
+                                            .fog_params = .{
+                                                self.editor_viewport_state.volumetric_fog_density,
+                                                self.editor_viewport_state.volumetric_fog_height_falloff,
+                                                self.editor_viewport_state.volumetric_fog_max_distance,
+                                                32.0,
+                                            },
+                                        },
+                                    ) catch {};
+                                    self.graph.recordPassStat(pass_stats, .post_process, durationNs(fog_start_v2, std.time.nanoTimestamp()), 1, 1);
+                                    dispatched_fog_v2 = true;
                                 }
+                            }
+                            if (!dispatched_fog_v2) {
+                                if (self.shadow_map.depth_textures[0]) |*shadow_tex| {
+                                    try self.volumetric_fog_pass.syncTextures(&self.rhi, self.scene_viewport.depth().?, shadow_tex);
+                                    const fog_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(.{ .texture = self.scene_viewport.hdrColor().? }));
 
-                                const fog_uniforms = volumetric_fog_pass_mod.VolumetricFogUniforms{
-                                    .inv_view_projection = inv_vp,
-                                    .light_space_matrix = prepared_scene.light_space_matrix,
-                                    .camera_position = prepared_scene.camera_world_position,
-                                    .light_direction = light_dir,
-                                    .light_color = light_col,
-                                    .fog_params = .{
-                                        self.editor_viewport_state.volumetric_fog_density,
-                                        self.editor_viewport_state.volumetric_fog_height_falloff,
-                                        self.editor_viewport_state.volumetric_fog_max_distance,
-                                        32.0,
-                                    },
-                                };
-                                const fog_stats = self.volumetric_fog_pass.draw(&self.rhi, frame, fog_render_pass, fog_uniforms);
-                                draw_stats.add(fog_stats);
-                                self.rhi.endRenderPass(fog_render_pass);
+                                    const inv_vp = mat4_mod.inverse(prepared_scene.view_projection) orelse mat4_mod.identity();
+
+                                    // Extract directional light data
+                                    var light_dir = [4]f32{ 0.0, -1.0, 0.0, 0.0 };
+                                    var light_col = [4]f32{ 1.0, 1.0, 1.0, 1.0 };
+                                    if (prepared_scene.lights.directional_lights.len > 0) {
+                                        const main_light = prepared_scene.lights.directional_lights[0];
+                                        light_dir = .{ main_light.direction[0], main_light.direction[1], main_light.direction[2], 0.0 };
+                                        light_col = .{ main_light.color[0], main_light.color[1], main_light.color[2], main_light.intensity };
+                                    }
+
+                                    const fog_uniforms = volumetric_fog_pass_mod.VolumetricFogUniforms{
+                                        .inv_view_projection = inv_vp,
+                                        .light_space_matrix = prepared_scene.light_space_matrix,
+                                        .camera_position = prepared_scene.camera_world_position,
+                                        .light_direction = light_dir,
+                                        .light_color = light_col,
+                                        .fog_params = .{
+                                            self.editor_viewport_state.volumetric_fog_density,
+                                            self.editor_viewport_state.volumetric_fog_height_falloff,
+                                            self.editor_viewport_state.volumetric_fog_max_distance,
+                                            32.0,
+                                        },
+                                    };
+                                    const fog_stats = self.volumetric_fog_pass.draw(&self.rhi, frame, fog_render_pass, fog_uniforms);
+                                    draw_stats.add(fog_stats);
+                                    self.rhi.endRenderPass(fog_render_pass);
+                                }
                             }
                         }
 
@@ -2278,6 +2318,39 @@ pub const Renderer = struct {
                                     const cs_composite_stats = self.contact_shadow_composite_pass.draw(&self.rhi, frame, cs_composite_pass, self.editor_viewport_state.contact_shadows_intensity);
                                     draw_stats.add(cs_composite_stats);
                                     self.rhi.endRenderPass(cs_composite_pass);
+                                }
+                            }
+                        }
+
+                        // ── SSR v2 dispatch ──────────────────────────────────
+                        if (self.editor_viewport_state.ssr_enabled) {
+                            if (self.editor_viewport_state.ssr_use_rhi_v2) {
+                                if (self.rhi_v2_device) |v2_dev| {
+                                    const mat4_ssr = @import("../math/mat4.zig");
+                                    const inv_proj_ssr = mat4_ssr.inverse(prepared_scene.projection_matrix) orelse mat4_ssr.identity();
+                                    const inv_view_ssr = mat4_ssr.inverse(prepared_scene.view_matrix) orelse mat4_ssr.identity();
+                                    const ssr_start_v2 = std.time.nanoTimestamp();
+                                    ssr_pass_v2_mod.SSRPassV2.execute(
+                                        self.allocator,
+                                        v2_dev,
+                                        null,
+                                        0,
+                                        0,
+                                        .{
+                                            .projection = prepared_scene.projection_matrix,
+                                            .inv_projection = inv_proj_ssr,
+                                            .view = prepared_scene.view_matrix,
+                                            .inv_view = inv_view_ssr,
+                                            .resolution = .{ @floatFromInt(self.scene_viewport.width), @floatFromInt(self.scene_viewport.height) },
+                                            .ray_step = self.editor_viewport_state.ssr_ray_step,
+                                            .ray_max_distance = self.editor_viewport_state.ssr_ray_max_distance,
+                                            .ray_thickness = self.editor_viewport_state.ssr_ray_thickness,
+                                            .intensity = self.editor_viewport_state.ssr_intensity,
+                                            .fade_distance = self.editor_viewport_state.ssr_fade_distance,
+                                            .edge_fade = self.editor_viewport_state.ssr_edge_fade,
+                                        },
+                                    ) catch {};
+                                    self.graph.recordPassStat(pass_stats, .post_process, durationNs(ssr_start_v2, std.time.nanoTimestamp()), 1, 1);
                                 }
                             }
                         }

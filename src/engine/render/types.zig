@@ -64,6 +64,7 @@ pub const EditorViewportState = struct {
     ssr_ray_thickness: f32 = 0.5,
     ssr_fade_distance: f32 = 10.0,
     ssr_edge_fade: f32 = 0.1,
+    ssr_use_rhi_v2: bool = false,
     // TAA 时域抗锯齿
     taa_enabled: bool = false,
     taa_blend_factor: f32 = 0.1,
@@ -107,6 +108,7 @@ pub const EditorViewportState = struct {
     tonemap_use_rhi_v2: bool = false,
     contact_shadows_use_rhi_v2: bool = false,
     dof_use_rhi_v2: bool = false,
+    volumetric_fog_use_rhi_v2: bool = false,
 };
 
 pub const SceneSnapshot = struct {

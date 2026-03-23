@@ -221,6 +221,9 @@ pub const DeviceVTable = struct {
     create_compute_pipeline: *const fn (ctx: *anyopaque, desc: ComputePipelineDesc) Error!ComputePipeline,
     destroy_graphics_pipeline: *const fn (ctx: *anyopaque, pipeline: GraphicsPipeline) void,
     destroy_compute_pipeline: *const fn (ctx: *anyopaque, pipeline: ComputePipeline) void,
+    create_sampler: *const fn (ctx: *anyopaque, desc: SamplerDesc) Error!Sampler,
+    destroy_sampler: *const fn (ctx: *anyopaque, sampler: Sampler) void,
+    upload_buffer_data: *const fn (ctx: *anyopaque, buffer: Buffer, offset: u64, data: []const u8) Error!void,
 };
 
 pub const Device = struct {
@@ -377,6 +380,18 @@ pub const Device = struct {
 
     pub fn destroyComputePipeline(self: *const Device, pipeline: ComputePipeline) void {
         self.vtable.destroy_compute_pipeline(self.ctx, pipeline);
+    }
+
+    pub fn createSampler(self: *const Device, desc: SamplerDesc) Error!Sampler {
+        return self.vtable.create_sampler(self.ctx, desc);
+    }
+
+    pub fn destroySampler(self: *const Device, sampler: Sampler) void {
+        self.vtable.destroy_sampler(self.ctx, sampler);
+    }
+
+    pub fn uploadBufferData(self: *const Device, buffer: Buffer, offset: u64, data: []const u8) Error!void {
+        return self.vtable.upload_buffer_data(self.ctx, buffer, offset, data);
     }
 
     pub fn resolvePipelineLayout(

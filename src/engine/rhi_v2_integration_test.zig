@@ -11,6 +11,7 @@ const tonemap_pass_v2 = @import("render/tonemap_pass_v2.zig");
 const contact_shadow_v2 = @import("render/contact_shadow_pass_v2.zig");
 const dof_pass_v2 = @import("render/dof_pass_v2.zig");
 const ssr_pass_v2 = @import("render/ssr_pass_v2.zig");
+const volumetric_fog_v2 = @import("render/volumetric_fog_pass_v2.zig");
 const render_graph = @import("render/render_graph.zig");
 
 test "metal backend compute queue submission path" {
@@ -487,4 +488,59 @@ test "pipeline creation and destruction round-trip" {
     // Destroy — should not panic
     device.destroyGraphicsPipeline(gfx);
     device.destroyComputePipeline(cmp);
+}
+
+test "volumetric fog pass v2 five-set pipeline submission" {
+    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
+    defer backend.deinit();
+
+    var device = backend.createDevice();
+    defer device.deinit();
+
+    try volumetric_fog_v2.VolumetricFogPassV2.execute(
+        std.testing.allocator,
+        &device,
+        null,
+        0,
+        0,
+        .{},
+    );
+
+    const stats = device.bindingSetCacheStats();
+    try std.testing.expect(stats.misses >= 5); // 5 binding sets (depth, shadow, sampler, shadow_sampler, uniform)
+}
+
+test "sampler creation and destruction round-trip" {
+    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
+    defer backend.deinit();
+
+    var device = backend.createDevice();
+    defer device.deinit();
+
+    const s1 = try device.createSampler(.{});
+    const s2 = try device.createSampler(.{ .min_filter = .nearest, .mag_filter = .nearest });
+    try std.testing.expect(s1.id != s2.id);
+
+    // Destroy — should not panic
+    device.destroySampler(s1);
+    device.destroySampler(s2);
+}
+
+test "buffer upload data round-trip" {
+    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
+    defer backend.deinit();
+
+    var device = backend.createDevice();
+    defer device.deinit();
+
+    const buf = try device.createBuffer(.{
+        .size = 256,
+        .usage = .{ .uniform = true },
+        .label = "test_upload_buf",
+    });
+    defer device.destroyBuffer(buf);
+
+    const data = [_]u8{ 1, 2, 3, 4 };
+    // uploadBufferData is a stub — should not error
+    try device.uploadBufferData(buf, 0, &data);
 }

@@ -327,6 +327,7 @@ fn drawEffectParameters(viewport_state: *EditorViewportState, node: *PostProcess
                 _ = props.float("Intensity", &viewport_state.ssr_intensity, 0.1, 0.0, 2.0);
                 _ = props.float("Ray Step", &viewport_state.ssr_ray_step, 0.01, 0.01, 1.0);
                 _ = props.float("Max Distance", &viewport_state.ssr_ray_max_distance, 1.0, 10.0, 500.0);
+                _ = props.boolean("RHI v2 Path", &viewport_state.ssr_use_rhi_v2);
             },
             .taa => {
                 _ = props.float("Blend Factor", &viewport_state.taa_blend_factor, 0.01, 0.0, 1.0);
