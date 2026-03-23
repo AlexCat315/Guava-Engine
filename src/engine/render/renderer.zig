@@ -2951,6 +2951,7 @@ pub const Renderer = struct {
 
         // Convert RGBA to PPM (RGB)
         var ppm_data = try allocator.alloc(u8, 128 + pixel_count * 3);
+        defer allocator.free(ppm_data);
         var fbs = std.io.fixedBufferStream(ppm_data);
         const writer = fbs.writer();
         try writer.print("P6\n{d} {d}\n255\n", .{ width, height });
