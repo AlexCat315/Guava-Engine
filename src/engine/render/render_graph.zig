@@ -18,7 +18,7 @@
 //! Thread-safety: Not thread-safe. Compile must complete before rendering begins.
 
 const std = @import("std");
-const rhi_v2 = @import("../rhi/rhi.zig");
+const rhi = @import("../rhi/rhi.zig");
 
 /// GPU queue type for pass execution.
 pub const QueueClass = enum {
@@ -125,7 +125,7 @@ pub const RenderPass = struct {
     inputs: []const PassResourceUse = &.{},
     /// Resources written by this pass; compile() adds output barriers for subsequent readers.
     outputs: []const PassResourceUse = &.{},
-    /// Binding slot-layout constraints: which RHI v2 binding layout each slot must use.
+    /// Binding slot-layout constraints: which RHI binding layout each slot must use.
     binding_constraints: []const SlotLayoutConstraint = &.{},
 };
 
@@ -571,8 +571,8 @@ pub const RenderGraph = struct {
     pub fn encodeBarrierPlansToCommandBuffer(
         self: *const RenderGraph,
         allocator: std.mem.Allocator,
-        device: *const rhi_v2.Device,
-        cmd: *rhi_v2.CommandBuffer,
+        device: *const rhi.Device,
+        cmd: *rhi.CommandBuffer,
     ) !void {
         _ = device;
         const plans = try self.buildBarrierPlanAlloc(allocator);
@@ -598,12 +598,12 @@ pub const RenderGraph = struct {
     };
 
     /// Validate all compiled passes' binding slot-layout constraints against
-    /// the pipeline layouts registered on the given RHI v2 device.
+    /// the pipeline layouts registered on the given RHI device.
     /// Returns a list of mismatches (empty = all good).
     pub fn validateSlotLayoutConstraints(
         self: *const RenderGraph,
         allocator: std.mem.Allocator,
-        device: *const rhi_v2.Device,
+        device: *const rhi.Device,
     ) ![]SlotLayoutValidationError {
         const compiled = self.compiled orelse return allocator.alloc(SlotLayoutValidationError, 0);
 
@@ -815,11 +815,11 @@ fn accessToBarrierState(access: ResourceAccess, kind: ResourceKind) BarrierState
 
 fn barrierStateToBits(state: BarrierState) u32 {
     return switch (state) {
-        .unknown => (rhi_v2.ResourceStates{}).asBits(),
-        .shader_read => (rhi_v2.ResourceStates{ .shader_resource = true }).asBits(),
-        .shader_write => (rhi_v2.ResourceStates{ .unordered_access = true }).asBits(),
-        .shader_read_write => (rhi_v2.ResourceStates{ .shader_resource = true, .unordered_access = true }).asBits(),
-        .present => (rhi_v2.ResourceStates{ .present = true }).asBits(),
+        .unknown => (rhi.ResourceStates{}).asBits(),
+        .shader_read => (rhi.ResourceStates{ .shader_resource = true }).asBits(),
+        .shader_write => (rhi.ResourceStates{ .unordered_access = true }).asBits(),
+        .shader_read_write => (rhi.ResourceStates{ .shader_resource = true, .unordered_access = true }).asBits(),
+        .present => (rhi.ResourceStates{ .present = true }).asBits(),
     };
 }
 

@@ -312,7 +312,6 @@ fn drawEffectParameters(viewport_state: *EditorViewportState, node: *PostProcess
 
         switch (node.effect) {
             .bloom => {
-                _ = props.boolean("RHI v2 Path", &viewport_state.bloom_use_rhi_v2);
                 _ = props.float("Threshold", &viewport_state.bloom_threshold, 0.1, 0.0, 10.0);
                 _ = props.float("Intensity", &viewport_state.bloom_intensity, 0.1, 0.0, 5.0);
             },
@@ -327,7 +326,6 @@ fn drawEffectParameters(viewport_state: *EditorViewportState, node: *PostProcess
                 _ = props.float("Intensity", &viewport_state.ssr_intensity, 0.1, 0.0, 2.0);
                 _ = props.float("Ray Step", &viewport_state.ssr_ray_step, 0.01, 0.01, 1.0);
                 _ = props.float("Max Distance", &viewport_state.ssr_ray_max_distance, 1.0, 10.0, 500.0);
-                _ = props.boolean("RHI v2 Path", &viewport_state.ssr_use_rhi_v2);
             },
             .taa => {
                 _ = props.float("Blend Factor", &viewport_state.taa_blend_factor, 0.01, 0.0, 1.0);
@@ -338,10 +336,9 @@ fn drawEffectParameters(viewport_state: *EditorViewportState, node: *PostProcess
                 _ = props.float("Focus Distance", &viewport_state.dof_focus_distance, 1.0, 0.0, 100.0);
                 _ = props.float("Focus Range", &viewport_state.dof_focus_range, 0.5, 0.0, 50.0);
                 _ = props.float("Blur Radius", &viewport_state.dof_blur_radius, 1.0, 0.0, 50.0);
-                _ = props.boolean("RHI v2 Path", &viewport_state.dof_use_rhi_v2);
             },
             .fxaa => {
-                _ = props.boolean("RHI v2 Path", &viewport_state.fxaa_use_rhi_v2);
+                gui.text("No additional parameters");
             },
             .color_grading => {
                 gui.text("No additional parameters");
@@ -351,10 +348,9 @@ fn drawEffectParameters(viewport_state: *EditorViewportState, node: *PostProcess
                 _ = props.float("Thickness", &viewport_state.contact_shadows_thickness, 0.01, 0.01, 0.5);
                 _ = props.float("Intensity", &viewport_state.contact_shadows_intensity, 0.05, 0.0, 1.0);
                 _ = props.float("Bias", &viewport_state.contact_shadows_bias, 0.005, 0.0, 0.1);
-                _ = props.boolean("RHI v2 Path", &viewport_state.contact_shadows_use_rhi_v2);
             },
             .tonemap => {
-                _ = props.boolean("RHI v2 Path", &viewport_state.tonemap_use_rhi_v2);
+                gui.text("No additional parameters");
             },
         }
     }

@@ -22,7 +22,7 @@ const physics_visualization = @import("../ui/panels/rendering/physics_visualizat
 const post_process_editor = @import("../ui/panels/rendering/post_process_editor.zig");
 const prefab_editor = @import("../ui/panels/assets/prefab_editor.zig");
 const camera_bookmarks = @import("../ui/panels/viewport/camera_bookmarks.zig");
-const rhi_v2_stats = @import("../ui/panels/debug/rhi_v2_stats.zig");
+const rhi_stats = @import("../ui/panels/debug/rhi_stats.zig");
 
 fn initEditorStyle() void {
     // Phase 2 shell redesign:
@@ -298,8 +298,8 @@ pub const EditorLayer = struct {
                 try camera_bookmarks.drawCameraBookmarkWindow(&self.state, layer_context, bm);
             }
         }
-        if (self.state.rhi_v2_stats_open) {
-            rhi_v2_stats.drawRhiV2StatsWindow(&self.state, layer_context);
+        if (self.state.rhi_stats_open) {
+            rhi_stats.drawRhiStatsWindow(&self.state, layer_context);
         }
     }
 };

@@ -54,7 +54,6 @@ const base_pass_mod = @import("base_pass.zig");
 const shadow_pass_mod = @import("shadow_pass.zig");
 const skybox_pass_mod = @import("skybox_pass.zig");
 const bloom_pass_mod = @import("bloom_pass.zig");
-const fxaa_pass_mod = @import("fxaa_pass.zig");
 const tonemap_pass_mod = @import("tonemap_pass.zig");
 const depth_prepass_mod = @import("depth_prepass.zig");
 const id_pass_mod = @import("id_pass.zig");
@@ -62,11 +61,14 @@ const gizmo_pass_mod = @import("gizmo_pass.zig");
 const outline_pass_mod = @import("outline_pass.zig");
 const volumetric_fog_pass_mod = @import("volumetric_fog_pass.zig");
 const ssao_pass_mod = @import("ssao_pass.zig");
-const ssao_compute_pass_mod = @import("ssao_compute_pass_v2_runtime.zig");
+const ssao_compute_pass_mod = @import("ssao_compute_pass_runtime.zig");
 const ibl_compute_pass_mod = @import("ibl_compute_pass.zig");
 const contact_shadow_pass_mod = @import("contact_shadow_pass.zig");
 const taa_pass_mod = @import("taa_pass.zig");
 const rt_shadow_composite_pass_mod = @import("rt_shadow_composite_pass.zig");
+const dof_pass_mod = @import("dof_pass.zig");
+const ssr_pass_mod = @import("ssr_pass.zig");
+const fullscreen_post_mod = @import("fullscreen_post_pass.zig");
 const platform_mod = @import("../core/platform.zig");
 const selection_history_mod = @import("selection_history.zig");
 const imgui_mod = @import("../ui/imgui.zig");
@@ -76,17 +78,10 @@ const mesh_pass_mod = @import("mesh_pass.zig");
 const scene_extraction = @import("scene_extraction.zig");
 const rhi_mod = @import("../rhi/device.zig");
 const rhi_types = @import("../rhi/types.zig");
-const rhi_v2_mod = @import("../rhi/rhi.zig");
-const rhi_v2_backend_mod = @import("../rhi/metal/metal_backend.zig");
+const rhi_api = @import("../rhi/rhi.zig");
+const rhi_mock_backend_mod = @import("../rhi/metal/metal_backend.zig");
 const metal_device_mod = @import("../rhi/metal/metal_device.zig");
 const sdl = @import("../platform/sdl.zig").c;
-const fullscreen_post_v2_mod = @import("fullscreen_post_pass_v2.zig");
-const bloom_pass_v2_mod = @import("bloom_pass_v2.zig");
-const tonemap_pass_v2_mod = @import("tonemap_pass_v2.zig");
-const contact_shadow_v2_mod = @import("contact_shadow_pass_v2.zig");
-const dof_pass_v2_mod = @import("dof_pass_v2.zig");
-const ssr_pass_v2_mod = @import("ssr_pass_v2.zig");
-const volumetric_fog_v2_mod = @import("volumetric_fog_pass_v2.zig");
 const components = @import("../scene/components.zig");
 const scene_mod = @import("../scene/scene.zig");
 const types = @import("types.zig");
@@ -166,17 +161,17 @@ pub const FrameReport = struct {
     draw_calls: usize = 0,
     /// 绘制的三角形数量
     triangles_drawn: usize = 0,
-    /// RHI v2 BindingSet 缓存命中次数
+    /// RHI BindingSet 缓存命中次数
     binding_cache_hits: u64 = 0,
-    /// RHI v2 BindingSet 缓存未命中次数
+    /// RHI BindingSet 缓存未命中次数
     binding_cache_misses: u64 = 0,
-    /// RHI v2 slot-layout 校验失败数
+    /// RHI slot-layout 校验失败数
     slot_layout_errors: usize = 0,
-    /// 本帧 RHI v2 缓存命中增量
+    /// 本帧 RHI 缓存命中增量
     binding_cache_hits_delta: u64 = 0,
-    /// 本帧 RHI v2 缓存未命中增量
+    /// 本帧 RHI 缓存未命中增量
     binding_cache_misses_delta: u64 = 0,
-    /// 本帧 RHI v2 缓存淘汰增量
+    /// 本帧 RHI 缓存淘汰增量
     binding_cache_evictions_delta: u64 = 0,
 };
 
@@ -1227,34 +1222,24 @@ pub const Renderer = struct {
     base_pass: base_pass_mod.BasePass,
     /// 天空盒通道
     skybox_pass: ?skybox_pass_mod.SkyboxPass = null,
-    /// 泛光后处理通道
-    bloom_pass: bloom_pass_mod.BloomPass,
-    /// FXAA 抗锯齿通道
-    fxaa_pass: fxaa_pass_mod.FxaaPass,
     /// 轮廓通道（选中物体高亮）
     outline_pass: outline_pass_mod.OutlinePass,
     /// Gizmo 通道（编辑器可视化）
     gizmo_pass: gizmo_pass_mod.GizmoPass,
-    /// 体积雾通道
-    volumetric_fog_pass: volumetric_fog_pass_mod.VolumetricFogPass,
     /// SSAO 后处理通道
     ssao_pass: ssao_pass_mod.SSAOPass,
     /// SSAO Compute 通道（GPU Compute 加速）
-    ssao_compute_pass: ?ssao_compute_pass_mod.SSAOComputePassV2 = null,
-    /// 可选 RHI v2 设备（抽象后端，用于已迁移至 v2 的通道）
-    rhi_v2_device: ?*rhi_v2_mod.Device = null,
-    /// RHI v2 mock 后端存储（仅测试用；生产环境使用 real Metal）
-    rhi_v2_backend: ?*rhi_v2_backend_mod.MetalBackend = null,
+    ssao_compute_pass: ?ssao_compute_pass_mod.SSAOComputePass = null,
+    /// RHI 设备（抽象后端）
+    rhi_device: ?*rhi_api.Device = null,
+    /// RHI mock 后端存储（仅测试用；生产环境使用 real Metal）
+    rhi_mock_backend: ?*rhi_mock_backend_mod.MetalBackend = null,
     /// Real Metal backend device（生产环境使用）
-    rhi_v2_metal_device: ?*metal_device_mod.MetalDevice = null,
+    rhi_metal_device: ?*metal_device_mod.MetalDevice = null,
     /// SDL Metal view handle（需要在 deinit 时销毁）
     sdl_metal_view: sdl.SDL_MetalView = null,
     /// IBL Compute 通道（GPU Compute 加速 BRDF LUT + Irradiance）
     ibl_compute_pass: ?ibl_compute_pass_mod.IBLComputePass = null,
-    /// Contact Shadow 屏幕空间接触阴影通道
-    contact_shadow_pass: contact_shadow_pass_mod.ContactShadowPass,
-    /// Contact Shadow 合成通道 — 乘法混合到 HDR 缓冲
-    contact_shadow_composite_pass: rt_shadow_composite_pass_mod.RtShadowCompositePass,
     /// TAA 抗锯齿通道
     taa_pass: taa_pass_mod.TAAPass,
     /// RT 阴影合成通道
@@ -1268,8 +1253,6 @@ pub const Renderer = struct {
     rt_shadow_width: u32 = 0,
     rt_shadow_height: u32 = 0,
     rt_shadow_last_vp: [16]f32 = mat4_mod.identity(),
-    /// 色调映射通道
-    tonemap_pass: tonemap_pass_mod.TonemapPass,
     /// 选择历史管理
     selection_history: SelectionHistory,
     /// 选择是否已初始化
@@ -1358,20 +1341,14 @@ pub const Renderer = struct {
             .shadow_pass = undefined,
             .base_pass = undefined,
             .skybox_pass = undefined,
-            .bloom_pass = undefined,
-            .fxaa_pass = undefined,
             .outline_pass = undefined,
             .gizmo_pass = undefined,
-            .volumetric_fog_pass = undefined,
             .ssao_pass = undefined,
             .ssao_compute_pass = null,
             .ibl_compute_pass = null,
-            .contact_shadow_pass = undefined,
-            .contact_shadow_composite_pass = undefined,
             .taa_pass = undefined,
             .rt_shadow_composite_pass = undefined,
             .ssao_composite_pass = undefined,
-            .tonemap_pass = undefined,
             .selection_history = SelectionHistory.init(allocator, 64),
             .material_thumbnail_cache = std.StringHashMap(MaterialThumbnailCacheEntry).init(allocator),
             .material_thumbnail_preview = undefined,
@@ -1410,24 +1387,15 @@ pub const Renderer = struct {
         renderer.base_pass = try base_pass_mod.BasePass.init(&renderer.rhi);
         errdefer renderer.base_pass.deinit(&renderer.rhi);
 
-        renderer.tonemap_pass = try tonemap_pass_mod.TonemapPass.init(&renderer.rhi);
-        errdefer renderer.tonemap_pass.deinit(&renderer.rhi);
-
         renderer.skybox_pass = try skybox_pass_mod.SkyboxPass.init(&renderer.rhi);
         errdefer if (renderer.skybox_pass) |*pass| {
             pass.deinit(&renderer.rhi);
         };
 
-        renderer.bloom_pass = try bloom_pass_mod.BloomPass.init(&renderer.rhi);
-        errdefer renderer.bloom_pass.deinit(&renderer.rhi);
-
-        renderer.volumetric_fog_pass = try volumetric_fog_pass_mod.VolumetricFogPass.init(&renderer.rhi);
-        errdefer renderer.volumetric_fog_pass.deinit(&renderer.rhi);
-
         renderer.ssao_pass = try ssao_pass_mod.SSAOPass.init(&renderer.rhi);
         errdefer renderer.ssao_pass.deinit(&renderer.rhi);
 
-        renderer.ssao_compute_pass = ssao_compute_pass_mod.SSAOComputePassV2.init(&renderer.rhi) catch |err| blk: {
+        renderer.ssao_compute_pass = ssao_compute_pass_mod.SSAOComputePass.init(&renderer.rhi) catch |err| blk: {
             std.log.warn("SSAO compute pass init failed (falling back to fragment): {}", .{err});
             break :blk null;
         };
@@ -1441,12 +1409,6 @@ pub const Renderer = struct {
             break :blk p;
         };
 
-        renderer.contact_shadow_pass = try contact_shadow_pass_mod.ContactShadowPass.init(&renderer.rhi);
-        errdefer renderer.contact_shadow_pass.deinit(&renderer.rhi);
-
-        renderer.contact_shadow_composite_pass = try rt_shadow_composite_pass_mod.RtShadowCompositePass.init(&renderer.rhi);
-        errdefer renderer.contact_shadow_composite_pass.deinit(&renderer.rhi);
-
         renderer.taa_pass = try taa_pass_mod.TAAPass.init(&renderer.rhi);
         errdefer renderer.taa_pass.deinit(&renderer.rhi);
 
@@ -1457,17 +1419,14 @@ pub const Renderer = struct {
         renderer.ssao_composite_pass = try rt_shadow_composite_pass_mod.RtShadowCompositePass.init(&renderer.rhi);
         errdefer renderer.ssao_composite_pass.deinit(&renderer.rhi);
 
-        renderer.fxaa_pass = try fxaa_pass_mod.FxaaPass.init(&renderer.rhi);
-        errdefer renderer.fxaa_pass.deinit(&renderer.rhi);
-
-        // RHI v2 Metal backend — real GPU via ObjC++ bridge on macOS,
-        // falls back to mock MetalBackend if real init fails.
-        rhi_v2_init: {
+        // RHI Metal backend — real GPU via ObjC++ bridge on macOS,
+        // falls back to mock MetalBackend otherwise.
+        rhi_init: {
             if (comptime @import("builtin").os.tag == .macos) {
-                const md_ptr = allocator.create(metal_device_mod.MetalDevice) catch break :rhi_v2_init;
+                const md_ptr = allocator.create(metal_device_mod.MetalDevice) catch break :rhi_init;
                 const md = metal_device_mod.MetalDevice.init(allocator) orelse {
                     allocator.destroy(md_ptr);
-                    break :rhi_v2_init;
+                    break :rhi_init;
                 };
                 md_ptr.* = md;
 
@@ -1480,17 +1439,17 @@ pub const Renderer = struct {
                     }
                 }
 
-                const dev_ptr = allocator.create(rhi_v2_mod.Device) catch {
+                const dev_ptr = allocator.create(rhi_api.Device) catch {
                     md_ptr.deinit();
                     allocator.destroy(md_ptr);
-                    break :rhi_v2_init;
+                    break :rhi_init;
                 };
                 dev_ptr.* = md_ptr.createDevice();
-                renderer.rhi_v2_metal_device = md_ptr;
-                renderer.rhi_v2_device = dev_ptr;
+                renderer.rhi_metal_device = md_ptr;
+                renderer.rhi_device = dev_ptr;
 
-                // Pre-create tonemap v2 layouts
-                if (tonemap_pass_v2_mod.TonemapPassV2.createLayouts(dev_ptr)) |layouts| {
+                // Pre-create tonemap layouts
+                if (tonemap_pass_mod.TonemapPass.createLayouts(dev_ptr)) |layouts| {
                     if (dev_ptr.resolvePipelineLayout(&.{ layouts.hdr_layout, layouts.bloom_layout, layouts.uniform_layout })) |_| {
                         renderer.graph.setPassBindingConstraints(.tonemap_pass, &.{
                             .{ .slot = 0, .expected_layout_id = layouts.hdr_layout.id },
@@ -1501,18 +1460,18 @@ pub const Renderer = struct {
                 } else |_| {}
             } else {
                 // Non-macOS: use mock backend
-                const backend_ptr = allocator.create(rhi_v2_backend_mod.MetalBackend) catch break :rhi_v2_init;
-                backend_ptr.* = rhi_v2_backend_mod.MetalBackend.init(allocator);
-                const dev_ptr = allocator.create(rhi_v2_mod.Device) catch {
+                const backend_ptr = allocator.create(rhi_mock_backend_mod.MetalBackend) catch break :rhi_init;
+                backend_ptr.* = rhi_mock_backend_mod.MetalBackend.init(allocator);
+                const dev_ptr = allocator.create(rhi_api.Device) catch {
                     backend_ptr.deinit();
                     allocator.destroy(backend_ptr);
-                    break :rhi_v2_init;
+                    break :rhi_init;
                 };
                 dev_ptr.* = backend_ptr.createDevice();
-                renderer.rhi_v2_backend = backend_ptr;
-                renderer.rhi_v2_device = dev_ptr;
+                renderer.rhi_mock_backend = backend_ptr;
+                renderer.rhi_device = dev_ptr;
 
-                if (tonemap_pass_v2_mod.TonemapPassV2.createLayouts(dev_ptr)) |layouts| {
+                if (tonemap_pass_mod.TonemapPass.createLayouts(dev_ptr)) |layouts| {
                     if (dev_ptr.resolvePipelineLayout(&.{ layouts.hdr_layout, layouts.bloom_layout, layouts.uniform_layout })) |_| {
                         renderer.graph.setPassBindingConstraints(.tonemap_pass, &.{
                             .{ .slot = 0, .expected_layout_id = layouts.hdr_layout.id },
@@ -1548,35 +1507,29 @@ pub const Renderer = struct {
         self.material_thumbnail_preview.deinit();
         self.thumbnail_scene_cache.deinit(&self.rhi);
         self.preview_scene_cache.deinit(&self.rhi);
-        self.tonemap_pass.deinit(&self.rhi);
         if (self.skybox_pass) |*pass| {
             pass.deinit(&self.rhi);
         }
-        self.bloom_pass.deinit(&self.rhi);
-        self.volumetric_fog_pass.deinit(&self.rhi);
         self.ssao_pass.deinit(&self.rhi);
         if (self.ssao_compute_pass) |*p| p.deinit(&self.rhi);
         if (self.ibl_compute_pass) |*p| p.deinit(&self.rhi);
-        self.contact_shadow_pass.deinit(&self.rhi);
-        self.contact_shadow_composite_pass.deinit(&self.rhi);
         self.taa_pass.deinit(&self.rhi);
         self.rt_shadow_composite_pass.deinit(&self.rhi);
         self.ssao_composite_pass.deinit(&self.rhi);
         if (self.rt_shadow_mask_texture) |*t| self.rhi.releaseTexture(t);
         if (self.rt_shadow_pixels) |p| self.allocator.free(p);
-        self.fxaa_pass.deinit(&self.rhi);
-        if (self.rhi_v2_device) |dp| {
+        if (self.rhi_device) |dp| {
             dp.deinit();
             self.allocator.destroy(dp);
         }
-        if (self.rhi_v2_metal_device) |md| {
+        if (self.rhi_metal_device) |md| {
             md.deinit();
             self.allocator.destroy(md);
         }
         if (self.sdl_metal_view != null) {
             sdl.SDL_Metal_DestroyView(self.sdl_metal_view);
         }
-        if (self.rhi_v2_backend) |bp| {
+        if (self.rhi_mock_backend) |bp| {
             bp.deinit();
             self.allocator.destroy(bp);
         }
@@ -1859,12 +1812,12 @@ pub const Renderer = struct {
             if (can_render_scene) {
                 if (!g_logged_viewport_backend) {
                     render_log.info(
-                        "draw frame backend={s} viewport_active={} swapchain={} tonemap_ready={} skybox_ready={}",
+                        "draw frame backend={s} viewport_active={} swapchain={} rhi_device={} skybox_ready={}",
                         .{
                             @tagName(self.rhi.api),
                             viewport_active,
                             has_swapchain,
-                            self.tonemap_pass.isReady(),
+                            self.rhi_device != null,
                             if (self.skybox_pass) |*pass| pass.isReady() else false,
                         },
                     );
@@ -2158,82 +2111,44 @@ pub const Renderer = struct {
                         }
 
                         // Volumetric fog: composite onto HDR color before bloom/tonemap
-                        const fog_enabled = self.editor_viewport_state.volumetric_fog_enabled and self.volumetric_fog_pass.isReady() and self.scene_viewport.hdrColor() != null;
+                        const fog_enabled = self.editor_viewport_state.volumetric_fog_enabled and self.scene_viewport.hdrColor() != null;
                         if (fog_enabled) {
-                            var dispatched_fog_v2 = false;
-                            if (self.editor_viewport_state.volumetric_fog_use_rhi_v2) {
-                                if (self.rhi_v2_device) |v2_dev| {
-                                    const inv_vp_fog = mat4_mod.inverse(prepared_scene.view_projection) orelse mat4_mod.identity();
-                                    var fog_light_dir = [4]f32{ 0.0, -1.0, 0.0, 0.0 };
-                                    var fog_light_col = [4]f32{ 1.0, 1.0, 1.0, 1.0 };
-                                    if (prepared_scene.lights.directional_lights.len > 0) {
-                                        const ml = prepared_scene.lights.directional_lights[0];
-                                        fog_light_dir = .{ ml.direction[0], ml.direction[1], ml.direction[2], 0.0 };
-                                        fog_light_col = .{ ml.color[0], ml.color[1], ml.color[2], ml.intensity };
-                                    }
-                                    const fog_start_v2 = std.time.nanoTimestamp();
-                                    volumetric_fog_v2_mod.VolumetricFogPassV2.execute(
-                                        self.allocator,
-                                        v2_dev,
-                                        null,
-                                        0,
-                                        0,
-                                        .{
-                                            .inv_view_projection = inv_vp_fog,
-                                            .light_space_matrix = prepared_scene.light_space_matrix,
-                                            .camera_position = prepared_scene.camera_world_position,
-                                            .light_direction = fog_light_dir,
-                                            .light_color = fog_light_col,
-                                            .fog_params = .{
-                                                self.editor_viewport_state.volumetric_fog_density,
-                                                self.editor_viewport_state.volumetric_fog_height_falloff,
-                                                self.editor_viewport_state.volumetric_fog_max_distance,
-                                                32.0,
-                                            },
-                                        },
-                                    ) catch {};
-                                    self.graph.recordPassStat(pass_stats, .post_process, durationNs(fog_start_v2, std.time.nanoTimestamp()), 1, 1);
-                                    dispatched_fog_v2 = true;
+                            if (self.rhi_device) |dev| {
+                                const inv_vp_fog = mat4_mod.inverse(prepared_scene.view_projection) orelse mat4_mod.identity();
+                                var fog_light_dir = [4]f32{ 0.0, -1.0, 0.0, 0.0 };
+                                var fog_light_col = [4]f32{ 1.0, 1.0, 1.0, 1.0 };
+                                if (prepared_scene.lights.directional_lights.len > 0) {
+                                    const ml = prepared_scene.lights.directional_lights[0];
+                                    fog_light_dir = .{ ml.direction[0], ml.direction[1], ml.direction[2], 0.0 };
+                                    fog_light_col = .{ ml.color[0], ml.color[1], ml.color[2], ml.intensity };
                                 }
-                            }
-                            if (!dispatched_fog_v2) {
-                                if (self.shadow_map.depth_textures[0]) |*shadow_tex| {
-                                    try self.volumetric_fog_pass.syncTextures(&self.rhi, self.scene_viewport.depth().?, shadow_tex);
-                                    const fog_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(.{ .texture = self.scene_viewport.hdrColor().? }));
-
-                                    const inv_vp = mat4_mod.inverse(prepared_scene.view_projection) orelse mat4_mod.identity();
-
-                                    // Extract directional light data
-                                    var light_dir = [4]f32{ 0.0, -1.0, 0.0, 0.0 };
-                                    var light_col = [4]f32{ 1.0, 1.0, 1.0, 1.0 };
-                                    if (prepared_scene.lights.directional_lights.len > 0) {
-                                        const main_light = prepared_scene.lights.directional_lights[0];
-                                        light_dir = .{ main_light.direction[0], main_light.direction[1], main_light.direction[2], 0.0 };
-                                        light_col = .{ main_light.color[0], main_light.color[1], main_light.color[2], main_light.intensity };
-                                    }
-
-                                    const fog_uniforms = volumetric_fog_pass_mod.VolumetricFogUniforms{
-                                        .inv_view_projection = inv_vp,
+                                const fog_start = std.time.nanoTimestamp();
+                                volumetric_fog_pass_mod.VolumetricFogPass.execute(
+                                    self.allocator,
+                                    dev,
+                                    null,
+                                    0,
+                                    0,
+                                    .{
+                                        .inv_view_projection = inv_vp_fog,
                                         .light_space_matrix = prepared_scene.light_space_matrix,
                                         .camera_position = prepared_scene.camera_world_position,
-                                        .light_direction = light_dir,
-                                        .light_color = light_col,
+                                        .light_direction = fog_light_dir,
+                                        .light_color = fog_light_col,
                                         .fog_params = .{
                                             self.editor_viewport_state.volumetric_fog_density,
                                             self.editor_viewport_state.volumetric_fog_height_falloff,
                                             self.editor_viewport_state.volumetric_fog_max_distance,
                                             32.0,
                                         },
-                                    };
-                                    const fog_stats = self.volumetric_fog_pass.draw(&self.rhi, frame, fog_render_pass, fog_uniforms);
-                                    draw_stats.add(fog_stats);
-                                    self.rhi.endRenderPass(fog_render_pass);
-                                }
+                                    },
+                                ) catch {};
+                                self.graph.recordPassStat(pass_stats, .post_process, durationNs(fog_start, std.time.nanoTimestamp()), 1, 1);
                             }
                         }
 
-                        const bloom_enabled = self.editor_viewport_state.bloom_enabled and self.bloom_pass.isReady() and self.scene_viewport.bloom() != null;
-                        const fxaa_enabled = self.editor_viewport_state.fxaa_enabled and self.fxaa_pass.isReady() and self.scene_viewport.fxaa() != null;
+                        const bloom_enabled = self.editor_viewport_state.bloom_enabled and self.scene_viewport.bloom() != null;
+                        const fxaa_enabled = self.editor_viewport_state.fxaa_enabled and self.scene_viewport.fxaa() != null;
 
                         // SSAO: render ambient occlusion to ssao_texture
                         const ssao_enabled = self.editor_viewport_state.ssao_enabled and self.scene_viewport.ssao() != null and self.scene_viewport.depth() != null;
@@ -2259,9 +2174,9 @@ pub const Renderer = struct {
                                 },
                             };
 
-                            // Prefer V2 compute path when available; keep fragment path as legacy fallback.
+                            // Prefer compute path when available; keep fragment path as fallback.
                             const use_legacy_path = self.editor_viewport_state.ssao_use_legacy_path;
-                            var dispatched_v2 = false;
+                            var dispatched_compute = false;
                             if (!use_legacy_path) {
                                 if (self.ssao_compute_pass) |*compute_pass| {
                                     if (compute_pass.isReady()) {
@@ -2272,11 +2187,11 @@ pub const Renderer = struct {
                                             self.scene_viewport.ssao().?,
                                             ssao_uniforms,
                                         );
-                                        dispatched_v2 = true;
+                                        dispatched_compute = true;
                                     }
                                 }
                             }
-                            if (!dispatched_v2 and self.ssao_pass.isReady()) {
+                            if (!dispatched_compute and self.ssao_pass.isReady()) {
                                 try self.ssao_pass.syncTextures(&self.rhi, self.scene_viewport.depth().?, null);
                                 const ssao_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.ssao().? }));
                                 const ssao_stats = self.ssao_pass.draw(&self.rhi, frame, ssao_render_pass, ssao_uniforms);
@@ -2296,22 +2211,19 @@ pub const Renderer = struct {
                         }
 
                         // Contact Shadows: screen-space ray march for small-scale occlusion
-                        const cs_enabled = self.editor_viewport_state.contact_shadows_enabled and self.contact_shadow_pass.isReady() and self.scene_viewport.contactShadow() != null and self.scene_viewport.depth() != null;
+                        const cs_enabled = self.editor_viewport_state.contact_shadows_enabled and self.scene_viewport.contactShadow() != null and self.scene_viewport.depth() != null;
                         if (cs_enabled) {
-                            const use_cs_v2 = self.editor_viewport_state.contact_shadows_use_rhi_v2;
-                            if (use_cs_v2) cs_v2_blk: {
-                                const v2_dev = self.rhi_v2_device orelse break :cs_v2_blk;
-
+                            if (self.rhi_device) |dev| {
                                 const mat4_cs = @import("../math/mat4.zig");
                                 const inv_proj_cs = mat4_cs.inverse(prepared_scene.projection_matrix) orelse mat4_cs.identity();
-                                const cs_light_dir: [4]f32 = if (prepared_scene.lights.directional_lights.len > 0) cs_v2_ld: {
+                                const cs_light_dir: [4]f32 = if (prepared_scene.lights.directional_lights.len > 0) cs_ld: {
                                     const dl = prepared_scene.lights.directional_lights[0];
-                                    break :cs_v2_ld .{ dl.direction[0], dl.direction[1], dl.direction[2], 0.0 };
+                                    break :cs_ld .{ dl.direction[0], dl.direction[1], dl.direction[2], 0.0 };
                                 } else .{ 0.3, -0.9, -0.2, 0.0 };
 
-                                contact_shadow_v2_mod.ContactShadowPassV2.execute(
+                                contact_shadow_pass_mod.ContactShadowPass.execute(
                                     self.allocator,
-                                    v2_dev,
+                                    dev,
                                     &self.graph,
                                     0,
                                     0,
@@ -2328,79 +2240,39 @@ pub const Renderer = struct {
                                         .num_steps = @intCast(self.editor_viewport_state.contact_shadows_steps),
                                     },
                                 ) catch |err| {
-                                    std.log.warn("contact shadow v2 failed: {}", .{err});
+                                    std.log.warn("contact shadow failed: {}", .{err});
                                 };
-                            }
-                            if (!use_cs_v2) {
-                                try self.contact_shadow_pass.syncTextures(&self.rhi, self.scene_viewport.depth().?);
-                                const cs_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.contactShadow().? }));
-
-                                const mat4_cs = @import("../math/mat4.zig");
-                                const inv_proj_cs = mat4_cs.inverse(prepared_scene.projection_matrix) orelse mat4_cs.identity();
-
-                                // Use primary directional light direction (same as CSM)
-                                const cs_light_dir: [4]f32 = if (prepared_scene.lights.directional_lights.len > 0) cs_blk: {
-                                    const dl = prepared_scene.lights.directional_lights[0];
-                                    break :cs_blk .{ dl.direction[0], dl.direction[1], dl.direction[2], 0.0 };
-                                } else .{ 0.3, -0.9, -0.2, 0.0 };
-
-                                const cs_uniforms = contact_shadow_pass_mod.ContactShadowUniforms{
-                                    .projection = prepared_scene.projection_matrix,
-                                    .inv_projection = inv_proj_cs,
-                                    .view = prepared_scene.view_matrix,
-                                    .light_direction = cs_light_dir,
-                                    .resolution = .{ @floatFromInt(self.scene_viewport.width), @floatFromInt(self.scene_viewport.height) },
-                                    .max_distance = self.editor_viewport_state.contact_shadows_distance,
-                                    .thickness = self.editor_viewport_state.contact_shadows_thickness,
-                                    .intensity = self.editor_viewport_state.contact_shadows_intensity,
-                                    .bias = self.editor_viewport_state.contact_shadows_bias,
-                                    .num_steps = @intCast(self.editor_viewport_state.contact_shadows_steps),
-                                };
-                                const cs_stats = self.contact_shadow_pass.draw(&self.rhi, frame, cs_render_pass, cs_uniforms);
-                                draw_stats.add(cs_stats);
-                                self.rhi.endRenderPass(cs_render_pass);
-
-                                // Contact Shadow 合成: 乘法混合叠加到 HDR 缓冲
-                                if (self.contact_shadow_composite_pass.isReady() and self.scene_viewport.hdrColor() != null) {
-                                    try self.contact_shadow_composite_pass.syncTexture(&self.rhi, self.scene_viewport.contactShadow().?);
-                                    const cs_composite_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(.{ .texture = self.scene_viewport.hdrColor().? }));
-                                    const cs_composite_stats = self.contact_shadow_composite_pass.draw(&self.rhi, frame, cs_composite_pass, self.editor_viewport_state.contact_shadows_intensity);
-                                    draw_stats.add(cs_composite_stats);
-                                    self.rhi.endRenderPass(cs_composite_pass);
-                                }
                             }
                         }
 
-                        // ── SSR v2 dispatch ──────────────────────────────────
+                        // SSR dispatch
                         if (self.editor_viewport_state.ssr_enabled) {
-                            if (self.editor_viewport_state.ssr_use_rhi_v2) {
-                                if (self.rhi_v2_device) |v2_dev| {
-                                    const mat4_ssr = @import("../math/mat4.zig");
-                                    const inv_proj_ssr = mat4_ssr.inverse(prepared_scene.projection_matrix) orelse mat4_ssr.identity();
-                                    const inv_view_ssr = mat4_ssr.inverse(prepared_scene.view_matrix) orelse mat4_ssr.identity();
-                                    const ssr_start_v2 = std.time.nanoTimestamp();
-                                    ssr_pass_v2_mod.SSRPassV2.execute(
-                                        self.allocator,
-                                        v2_dev,
-                                        null,
-                                        0,
-                                        0,
-                                        .{
-                                            .projection = prepared_scene.projection_matrix,
-                                            .inv_projection = inv_proj_ssr,
-                                            .view = prepared_scene.view_matrix,
-                                            .inv_view = inv_view_ssr,
-                                            .resolution = .{ @floatFromInt(self.scene_viewport.width), @floatFromInt(self.scene_viewport.height) },
-                                            .ray_step = self.editor_viewport_state.ssr_ray_step,
-                                            .ray_max_distance = self.editor_viewport_state.ssr_ray_max_distance,
-                                            .ray_thickness = self.editor_viewport_state.ssr_ray_thickness,
-                                            .intensity = self.editor_viewport_state.ssr_intensity,
-                                            .fade_distance = self.editor_viewport_state.ssr_fade_distance,
-                                            .edge_fade = self.editor_viewport_state.ssr_edge_fade,
-                                        },
-                                    ) catch {};
-                                    self.graph.recordPassStat(pass_stats, .post_process, durationNs(ssr_start_v2, std.time.nanoTimestamp()), 1, 1);
-                                }
+                            if (self.rhi_device) |dev| {
+                                const mat4_ssr = @import("../math/mat4.zig");
+                                const inv_proj_ssr = mat4_ssr.inverse(prepared_scene.projection_matrix) orelse mat4_ssr.identity();
+                                const inv_view_ssr = mat4_ssr.inverse(prepared_scene.view_matrix) orelse mat4_ssr.identity();
+                                const ssr_start = std.time.nanoTimestamp();
+                                ssr_pass_mod.SSRPass.execute(
+                                    self.allocator,
+                                    dev,
+                                    null,
+                                    0,
+                                    0,
+                                    .{
+                                        .projection = prepared_scene.projection_matrix,
+                                        .inv_projection = inv_proj_ssr,
+                                        .view = prepared_scene.view_matrix,
+                                        .inv_view = inv_view_ssr,
+                                        .resolution = .{ @floatFromInt(self.scene_viewport.width), @floatFromInt(self.scene_viewport.height) },
+                                        .ray_step = self.editor_viewport_state.ssr_ray_step,
+                                        .ray_max_distance = self.editor_viewport_state.ssr_ray_max_distance,
+                                        .ray_thickness = self.editor_viewport_state.ssr_ray_thickness,
+                                        .intensity = self.editor_viewport_state.ssr_intensity,
+                                        .fade_distance = self.editor_viewport_state.ssr_fade_distance,
+                                        .edge_fade = self.editor_viewport_state.ssr_edge_fade,
+                                    },
+                                ) catch {};
+                                self.graph.recordPassStat(pass_stats, .post_process, durationNs(ssr_start, std.time.nanoTimestamp()), 1, 1);
                             }
                         }
 
@@ -2441,166 +2313,100 @@ pub const Renderer = struct {
                         }
 
                         // Select HDR input for bloom: use TAA output if resolved, otherwise raw HDR
-                        const hdr_input_for_post = if (taa_resolved) self.scene_viewport.taa().? else self.scene_viewport.hdrColor().?;
+                        const _hdr_input_for_post = if (taa_resolved) self.scene_viewport.taa().? else self.scene_viewport.hdrColor().?;
+                        _ = _hdr_input_for_post;
 
                         if (bloom_enabled) {
-                            var dispatched_bloom_v2 = false;
-                            if (self.editor_viewport_state.bloom_use_rhi_v2) {
-                                if (self.rhi_v2_device) |v2_dev| {
-                                    const bloom_start_v2 = std.time.nanoTimestamp();
-                                    bloom_pass_v2_mod.BloomPassV2.execute(
-                                        self.allocator,
-                                        v2_dev,
-                                        null,
-                                        0,
-                                        0,
-                                        .{
-                                            .threshold = self.editor_viewport_state.bloom_threshold,
-                                            .intensity = self.editor_viewport_state.bloom_intensity,
-                                        },
-                                    ) catch {};
-                                    self.graph.recordPassStat(pass_stats, .post_process, durationNs(bloom_start_v2, std.time.nanoTimestamp()), 1, 1);
-                                    dispatched_bloom_v2 = true;
-                                }
-                            }
-                            if (!dispatched_bloom_v2) {
-                                try self.bloom_pass.syncTexture(&self.rhi, hdr_input_for_post);
-                                const bloom_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.bloom().? }));
+                            if (self.rhi_device) |dev| {
                                 const bloom_start = std.time.nanoTimestamp();
-                                const bloom_stats = self.bloom_pass.draw(
-                                    &self.rhi,
-                                    frame,
-                                    bloom_render_pass,
-                                    self.editor_viewport_state.bloom_threshold,
-                                );
-                                self.graph.recordPassStat(pass_stats, .post_process, durationNs(bloom_start, std.time.nanoTimestamp()), bloom_stats.draw_calls, bloom_stats.triangles_drawn);
-                                draw_stats.add(bloom_stats);
-                                self.rhi.endRenderPass(bloom_render_pass);
+                                bloom_pass_mod.BloomPass.execute(
+                                    self.allocator,
+                                    dev,
+                                    null,
+                                    0,
+                                    0,
+                                    .{
+                                        .threshold = self.editor_viewport_state.bloom_threshold,
+                                        .intensity = self.editor_viewport_state.bloom_intensity,
+                                    },
+                                ) catch {};
+                                self.graph.recordPassStat(pass_stats, .post_process, durationNs(bloom_start, std.time.nanoTimestamp()), 1, 1);
                             }
                         }
 
-                        // ── DOF v2 dispatch ───────────────────────────────────
+                        // DOF dispatch
                         if (self.editor_viewport_state.dof_enabled) {
-                            if (self.editor_viewport_state.dof_use_rhi_v2) {
-                                if (self.rhi_v2_device) |v2_dev| {
-                                    const dof_start_v2 = std.time.nanoTimestamp();
-                                    dof_pass_v2_mod.DOFPassV2.execute(
-                                        self.allocator,
-                                        v2_dev,
-                                        null,
-                                        0,
-                                        0,
-                                        .{
-                                            .focus_distance = self.editor_viewport_state.dof_focus_distance,
-                                            .focus_range = self.editor_viewport_state.dof_focus_range,
-                                            .blur_radius = self.editor_viewport_state.dof_blur_radius,
-                                            .bokeh_radius = self.editor_viewport_state.dof_bokeh_radius,
-                                            .near_blur = self.editor_viewport_state.dof_near_blur,
-                                            .far_blur = self.editor_viewport_state.dof_far_blur,
-                                            .quality = self.editor_viewport_state.dof_quality,
-                                        },
-                                    ) catch {};
-                                    self.graph.recordPassStat(pass_stats, .post_process, durationNs(dof_start_v2, std.time.nanoTimestamp()), 1, 1);
-                                }
+                            if (self.rhi_device) |dev| {
+                                const dof_start = std.time.nanoTimestamp();
+                                dof_pass_mod.DOFPass.execute(
+                                    self.allocator,
+                                    dev,
+                                    null,
+                                    0,
+                                    0,
+                                    .{
+                                        .focus_distance = self.editor_viewport_state.dof_focus_distance,
+                                        .focus_range = self.editor_viewport_state.dof_focus_range,
+                                        .blur_radius = self.editor_viewport_state.dof_blur_radius,
+                                        .bokeh_radius = self.editor_viewport_state.dof_bokeh_radius,
+                                        .near_blur = self.editor_viewport_state.dof_near_blur,
+                                        .far_blur = self.editor_viewport_state.dof_far_blur,
+                                        .quality = self.editor_viewport_state.dof_quality,
+                                    },
+                                ) catch {};
+                                self.graph.recordPassStat(pass_stats, .post_process, durationNs(dof_start, std.time.nanoTimestamp()), 1, 1);
                             }
                         }
 
-                        if (self.tonemap_pass.isReady()) {
-                            const use_tonemap_v2 = self.editor_viewport_state.tonemap_use_rhi_v2;
-                            var dispatched_tonemap_v2 = false;
-                            if (use_tonemap_v2) {
-                                if (self.rhi_v2_device) |v2_dev| {
-                                    const tm_start = std.time.nanoTimestamp();
-                                    tonemap_pass_v2_mod.TonemapPassV2.execute(
-                                        self.allocator,
-                                        v2_dev,
-                                        null,
-                                        0,
-                                        0,
-                                        .{
-                                            .exposure_params = .{
-                                                @as(f32, if (self.editor_viewport_state.exposure_enabled) 1.0 else 0.0),
-                                                self.editor_viewport_state.exposure,
-                                                0.0,
-                                                0.0,
-                                            },
-                                            .bloom_params = .{
-                                                @as(f32, if (bloom_enabled) 1.0 else 0.0),
-                                                self.editor_viewport_state.bloom_intensity,
-                                                0.0,
-                                                0.0,
-                                            },
-                                            .color_grading_params = .{
-                                                @as(f32, if (self.editor_viewport_state.color_grading_enabled) 1.0 else 0.0),
-                                                self.editor_viewport_state.color_grading_saturation,
-                                                self.editor_viewport_state.color_grading_contrast,
-                                                self.editor_viewport_state.color_grading_gamma,
-                                            },
-                                            .lut_params = .{
-                                                @as(f32, if (self.editor_viewport_state.lut_enabled) 1.0 else 0.0),
-                                                self.editor_viewport_state.lut_intensity,
-                                                1.0,
-                                                0.0,
-                                            },
-                                        },
-                                    ) catch {};
-                                    self.graph.recordPassStat(pass_stats, .tonemap_pass, durationNs(tm_start, std.time.nanoTimestamp()), 1, 1);
-                                    dispatched_tonemap_v2 = true;
-                                }
-                            }
-                            if (!dispatched_tonemap_v2) {
-                                const bloom_input = if (bloom_enabled) self.scene_viewport.bloom().? else hdr_input_for_post;
-                                const lut_texture = self.tonemap_pass.lutTexture(self.editor_viewport_state.lut_preset) orelse return error.TextureNotFound;
-                                const tonemap_target: rhi_mod.ColorTarget = if (fxaa_enabled)
-                                    .{ .texture = self.scene_viewport.fxaa().? }
-                                else
-                                    scene_color_target;
-                                try self.tonemap_pass.syncTextures(&self.rhi, hdr_input_for_post, bloom_input, lut_texture);
-                                const tonemap_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(tonemap_target));
-                                self.tonemap_pass.draw(
-                                    &self.rhi,
-                                    frame,
-                                    tonemap_render_pass,
-                                    self.editor_viewport_state.exposure_enabled,
-                                    self.editor_viewport_state.exposure,
-                                    bloom_enabled,
-                                    self.editor_viewport_state.bloom_intensity,
-                                    self.editor_viewport_state.color_grading_enabled,
-                                    self.editor_viewport_state.color_grading_saturation,
-                                    self.editor_viewport_state.color_grading_contrast,
-                                    self.editor_viewport_state.color_grading_gamma,
-                                    self.editor_viewport_state.lut_enabled,
-                                    self.editor_viewport_state.lut_intensity,
-                                );
-                                self.rhi.endRenderPass(tonemap_render_pass);
-                            }
+                        if (self.rhi_device) |dev| {
+                            const tm_start = std.time.nanoTimestamp();
+                            tonemap_pass_mod.TonemapPass.execute(
+                                self.allocator,
+                                dev,
+                                null,
+                                0,
+                                0,
+                                .{
+                                    .exposure_params = .{
+                                        @as(f32, if (self.editor_viewport_state.exposure_enabled) 1.0 else 0.0),
+                                        self.editor_viewport_state.exposure,
+                                        0.0,
+                                        0.0,
+                                    },
+                                    .bloom_params = .{
+                                        @as(f32, if (bloom_enabled) 1.0 else 0.0),
+                                        self.editor_viewport_state.bloom_intensity,
+                                        0.0,
+                                        0.0,
+                                    },
+                                    .color_grading_params = .{
+                                        @as(f32, if (self.editor_viewport_state.color_grading_enabled) 1.0 else 0.0),
+                                        self.editor_viewport_state.color_grading_saturation,
+                                        self.editor_viewport_state.color_grading_contrast,
+                                        self.editor_viewport_state.color_grading_gamma,
+                                    },
+                                    .lut_params = .{
+                                        @as(f32, if (self.editor_viewport_state.lut_enabled) 1.0 else 0.0),
+                                        self.editor_viewport_state.lut_intensity,
+                                        1.0,
+                                        0.0,
+                                    },
+                                },
+                            ) catch {};
+                            self.graph.recordPassStat(pass_stats, .tonemap_pass, durationNs(tm_start, std.time.nanoTimestamp()), 1, 1);
                         }
 
                         if (fxaa_enabled) {
-                            const use_fxaa_v2 = self.editor_viewport_state.fxaa_use_rhi_v2;
-                            var dispatched_fxaa_v2 = false;
-                            if (use_fxaa_v2) {
-                                if (self.rhi_v2_device) |v2_dev| {
-                                    const fxaa_start_v2 = std.time.nanoTimestamp();
-                                    fullscreen_post_v2_mod.FullscreenPostPassV2.execute(
-                                        self.allocator,
-                                        v2_dev,
-                                        null,
-                                        0, // input resource id (fullscreen LDR image)
-                                        0, // output resource id (final target)
-                                    ) catch {};
-                                    self.graph.recordPassStat(pass_stats, .post_process, durationNs(fxaa_start_v2, std.time.nanoTimestamp()), 1, 1);
-                                    dispatched_fxaa_v2 = true;
-                                }
-                            }
-                            if (!dispatched_fxaa_v2) {
-                                try self.fxaa_pass.syncTexture(&self.rhi, self.scene_viewport.fxaa().?);
-                                const fxaa_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(scene_color_target));
+                            if (self.rhi_device) |dev| {
                                 const fxaa_start = std.time.nanoTimestamp();
-                                const fxaa_stats = self.fxaa_pass.draw(&self.rhi, fxaa_render_pass);
-                                self.graph.recordPassStat(pass_stats, .post_process, durationNs(fxaa_start, std.time.nanoTimestamp()), fxaa_stats.draw_calls, fxaa_stats.triangles_drawn);
-                                draw_stats.add(fxaa_stats);
-                                self.rhi.endRenderPass(fxaa_render_pass);
+                                fullscreen_post_mod.FullscreenPostPass.execute(
+                                    self.allocator,
+                                    dev,
+                                    null,
+                                    0,
+                                    0,
+                                ) catch {};
+                                self.graph.recordPassStat(pass_stats, .post_process, durationNs(fxaa_start, std.time.nanoTimestamp()), 1, 1);
                             }
                         }
                     }
@@ -2700,30 +2506,30 @@ pub const Renderer = struct {
             }
             try self.resolveSelectionReadbacks();
 
-            // Collect RHI v2 stats
-            var v2_cache_hits: u64 = 0;
-            var v2_cache_misses: u64 = 0;
-            var v2_delta_hits: u64 = 0;
-            var v2_delta_misses: u64 = 0;
-            var v2_delta_evictions: u64 = 0;
-            var v2_slot_errors: usize = 0;
-            if (self.rhi_v2_device) |v2_dev| {
-                const cs = v2_dev.bindingSetCacheStats();
-                v2_cache_hits = cs.hits;
-                v2_cache_misses = cs.misses;
-                const frame_delta = v2_dev.snapshotFrameStats();
-                v2_delta_hits = frame_delta.hits;
-                v2_delta_misses = frame_delta.misses;
-                v2_delta_evictions = frame_delta.evictions;
+            // Collect RHI stats
+            var cache_hits: u64 = 0;
+            var cache_misses: u64 = 0;
+            var delta_hits: u64 = 0;
+            var delta_misses: u64 = 0;
+            var delta_evictions: u64 = 0;
+            var slot_errors: usize = 0;
+            if (self.rhi_device) |dev| {
+                const cs = dev.bindingSetCacheStats();
+                cache_hits = cs.hits;
+                cache_misses = cs.misses;
+                const frame_delta = dev.snapshotFrameStats();
+                delta_hits = frame_delta.hits;
+                delta_misses = frame_delta.misses;
+                delta_evictions = frame_delta.evictions;
 
                 // Slot-layout consistency validation against compiled graph
-                const slot_errors = self.graph.validateSlotLayoutConstraints(self.allocator, v2_dev) catch &.{};
-                v2_slot_errors = slot_errors.len;
-                if (slot_errors.len > 0) {
-                    for (slot_errors) |se| {
+                const errs = self.graph.validateSlotLayoutConstraints(self.allocator, dev) catch &.{};
+                slot_errors = errs.len;
+                if (errs.len > 0) {
+                    for (errs) |se| {
                         std.log.warn("slot-layout mismatch: pass={s} slot={} expected_layout={}", .{ se.pass_name, se.slot, se.expected_layout_id });
                     }
-                    self.allocator.free(slot_errors);
+                    self.allocator.free(errs);
                 }
             }
 
@@ -2735,18 +2541,18 @@ pub const Renderer = struct {
                 .runtime = self.runtimeInfo(),
                 .draw_calls = draw_stats.draw_calls,
                 .triangles_drawn = draw_stats.triangles_drawn,
-                .binding_cache_hits = v2_cache_hits,
-                .binding_cache_misses = v2_cache_misses,
-                .slot_layout_errors = v2_slot_errors,
-                .binding_cache_hits_delta = v2_delta_hits,
-                .binding_cache_misses_delta = v2_delta_misses,
-                .binding_cache_evictions_delta = v2_delta_evictions,
+                .binding_cache_hits = cache_hits,
+                .binding_cache_misses = cache_misses,
+                .slot_layout_errors = slot_errors,
+                .binding_cache_hits_delta = delta_hits,
+                .binding_cache_misses_delta = delta_misses,
+                .binding_cache_evictions_delta = delta_evictions,
             };
         };
 
         // Only write frame report on first frame to avoid per-frame disk I/O
         if (!g_logged_viewport_backend) {
-            const v2_entry_count: u32 = if (self.rhi_v2_device) |v2_dev| v2_dev.bindingSetCacheEntryCount() else 0;
+            const entry_count: u32 = if (self.rhi_device) |dev| dev.bindingSetCacheEntryCount() else 0;
             self.graph.writeFrameReportWithCacheStats(
                 self.allocator,
                 "dist/reports/latest_frame_report.json",
@@ -2754,7 +2560,7 @@ pub const Renderer = struct {
                 result.draw_calls,
                 result.triangles_drawn,
                 pass_stats,
-                .{ .hits = result.binding_cache_hits, .misses = result.binding_cache_misses, .entries = v2_entry_count },
+                .{ .hits = result.binding_cache_hits, .misses = result.binding_cache_misses, .entries = entry_count },
             ) catch |err| {
                 std.log.warn("failed to write frame report: {}", .{err});
             };

@@ -3,30 +3,30 @@ const engine = @import("guava");
 const gui = @import("../../gui.zig");
 const EditorState = @import("../../../core/state.zig").EditorState;
 
-/// Draw the RHI v2 debug stats overlay panel.
-pub fn drawRhiV2StatsWindow(state: *EditorState, layer_context: *engine.core.LayerContext) void {
-    var open = state.rhi_v2_stats_open;
-    if (!gui.beginWindowOpen("RHI v2 Stats###rhi_v2_stats_panel", &open)) {
+/// Draw the RHI debug stats overlay panel.
+pub fn drawRhiStatsWindow(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+    var open = state.rhi_stats_open;
+    if (!gui.beginWindowOpen("RHI Stats###rhi_stats_panel", &open)) {
         gui.endWindow();
-        state.rhi_v2_stats_open = open;
+        state.rhi_stats_open = open;
         return;
     }
     defer {
         gui.endWindow();
-        state.rhi_v2_stats_open = open;
+        state.rhi_stats_open = open;
     }
 
     const renderer = layer_context.renderer;
-    const v2_dev = renderer.rhi_v2_device orelse {
-        gui.textWrapped("RHI v2 device not initialized.");
+    const dev = renderer.rhi_device orelse {
+        gui.textWrapped("RHI device not initialized.");
         return;
     };
 
     // ── Binding Cache ──────────────────────────────────────────────
     if (gui.collapsingHeader("Binding Set Cache", true)) {
-        const stats = v2_dev.bindingSetCacheStats();
-        const entries = v2_dev.bindingSetCacheEntryCount();
-        const frame_delta = stats.delta(v2_dev.prev_frame_stats);
+        const stats = dev.bindingSetCacheStats();
+        const entries = dev.bindingSetCacheEntryCount();
+        const frame_delta = stats.delta(dev.prev_frame_stats);
 
         var buf: [128]u8 = undefined;
 
@@ -62,7 +62,7 @@ pub fn drawRhiV2StatsWindow(state: *EditorState, layer_context: *engine.core.Lay
 
         gui.dummy(0.0, 4.0);
         if (gui.button("Reset Stats")) {
-            v2_dev.resetBindingSetCacheStats();
+            dev.resetBindingSetCacheStats();
         }
     }
 
@@ -70,7 +70,7 @@ pub fn drawRhiV2StatsWindow(state: *EditorState, layer_context: *engine.core.Lay
     if (gui.collapsingHeader("Slot-Layout Validation", true)) {
         const slot_errors = renderer.graph.validateSlotLayoutConstraints(
             renderer.allocator,
-            v2_dev,
+            dev,
         ) catch &.{};
         defer if (slot_errors.len > 0) renderer.allocator.free(slot_errors);
 
@@ -89,38 +89,38 @@ pub fn drawRhiV2StatsWindow(state: *EditorState, layer_context: *engine.core.Lay
         }
     }
 
-    // ── V2 Pass Migration Status ───────────────────────────────────
-    if (gui.collapsingHeader("V2 Pass Migration", true)) {
+    // ── RHI Pass Status ───────────────────────────────────────────
+    if (gui.collapsingHeader("RHI Pass Status", true)) {
         const vs = renderer.editor_viewport_state;
-        gui.labelText("SSAO", if (!vs.ssao_use_legacy_path) "v2 (compute)" else "legacy");
-        gui.labelText("FXAA", if (vs.fxaa_use_rhi_v2) "v2" else "legacy");
-        gui.labelText("Bloom", if (vs.bloom_use_rhi_v2) "v2" else "legacy");
-        gui.labelText("Tonemap", if (vs.tonemap_use_rhi_v2) "v2" else "legacy");
-        gui.labelText("Contact Shadow", if (vs.contact_shadows_use_rhi_v2) "v2" else "legacy");
-        gui.labelText("DOF", if (vs.dof_use_rhi_v2) "v2" else "legacy");
-        gui.labelText("SSR", if (vs.ssr_use_rhi_v2) "v2" else "legacy");
-        gui.labelText("Volumetric Fog", if (vs.volumetric_fog_use_rhi_v2) "v2" else "legacy");
+        gui.labelText("SSAO", if (!vs.ssao_use_legacy_path) "compute" else "legacy");
+        gui.labelText("FXAA", "RHI");
+        gui.labelText("Bloom", "RHI");
+        gui.labelText("Tonemap", "RHI");
+        gui.labelText("Contact Shadow", "RHI");
+        gui.labelText("DOF", "RHI");
+        gui.labelText("SSR", "RHI");
+        gui.labelText("Volumetric Fog", "RHI");
 
         gui.dummy(0.0, 4.0);
-        gui.textColored(.{ 0.6, 0.8, 1.0, 1.0 }, "Geometry / Misc (v2 prototype)");
-        gui.labelText("Depth Prepass", "v2");
-        gui.labelText("Shadow Pass", "v2");
-        gui.labelText("Outline", "v2");
-        gui.labelText("Skybox", "v2");
-        gui.labelText("TAA", "v2");
-        gui.labelText("IBL Compute", "v2 (BRDF + Irradiance)");
+        gui.textColored(.{ 0.6, 0.8, 1.0, 1.0 }, "Geometry / Misc");
+        gui.labelText("Depth Prepass", "RHI");
+        gui.labelText("Shadow Pass", "RHI");
+        gui.labelText("Outline", "RHI");
+        gui.labelText("Skybox", "RHI");
+        gui.labelText("TAA", "RHI");
+        gui.labelText("IBL Compute", "RHI (BRDF + Irradiance)");
 
         gui.dummy(0.0, 4.0);
-        gui.textColored(.{ 0.6, 0.8, 1.0, 1.0 }, "Final Passes (v2 prototype)");
-        gui.labelText("Gizmo", "v2 (line geometry)");
-        gui.labelText("ID Pass", "v2 (entity picking)");
-        gui.labelText("Omni Shadow", "v2 (6-face cubemap)");
-        gui.labelText("RT Shadow Composite", "v2 (fullscreen multiply)");
-        gui.labelText("Base Pass", "v2 (10-set PBR + IBL + CSM)");
+        gui.textColored(.{ 0.6, 0.8, 1.0, 1.0 }, "Final Passes");
+        gui.labelText("Gizmo", "RHI (line geometry)");
+        gui.labelText("ID Pass", "RHI (entity picking)");
+        gui.labelText("Omni Shadow", "RHI (6-face cubemap)");
+        gui.labelText("RT Shadow Composite", "RHI (fullscreen multiply)");
+        gui.labelText("Base Pass", "RHI (10-set PBR + IBL + CSM)");
     }
 
-    // ── V2 Infrastructure ──────────────────────────────────────────
-    if (gui.collapsingHeader("V2 Infrastructure", false)) {
+    // ── RHI Infrastructure ─────────────────────────────────────────
+    if (gui.collapsingHeader("RHI Infrastructure", false)) {
         gui.labelText("Pipeline Creation", "shader + gfx + compute");
         gui.labelText("Sampler", "create + destroy");
         gui.labelText("Buffer Upload", "uploadBufferData");

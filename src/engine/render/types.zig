@@ -39,7 +39,6 @@ pub const EditorViewportState = struct {
     exposure: f32 = 1.0,
     // Bloom 先作为视口级后处理 MVP，避免和场景相机资源耦合。
     bloom_enabled: bool = false,
-    bloom_use_rhi_v2: bool = false,
     bloom_threshold: f32 = 1.0,
     bloom_intensity: f32 = 0.35,
     // SSAO 环境光遮蔽
@@ -64,7 +63,6 @@ pub const EditorViewportState = struct {
     ssr_ray_thickness: f32 = 0.5,
     ssr_fade_distance: f32 = 10.0,
     ssr_edge_fade: f32 = 0.1,
-    ssr_use_rhi_v2: bool = false,
     // TAA 时域抗锯齿
     taa_enabled: bool = false,
     taa_blend_factor: f32 = 0.1,
@@ -90,7 +88,6 @@ pub const EditorViewportState = struct {
     color_grading_contrast: f32 = 1.0,
     color_grading_gamma: f32 = 1.0,
     fxaa_enabled: bool = false,
-    fxaa_use_rhi_v2: bool = false,
     // RT 增强阴影（光栅模式下用硬件 RT 替换 shadow map）
     rt_shadows_enabled: bool = false,
     rt_shadow_samples: u32 = 4,
@@ -105,10 +102,6 @@ pub const EditorViewportState = struct {
     lut_enabled: bool = false,
     lut_intensity: f32 = 1.0,
     lut_preset: EditorViewportLutPreset = .neutral,
-    tonemap_use_rhi_v2: bool = false,
-    contact_shadows_use_rhi_v2: bool = false,
-    dof_use_rhi_v2: bool = false,
-    volumetric_fog_use_rhi_v2: bool = false,
 };
 
 pub const SceneSnapshot = struct {

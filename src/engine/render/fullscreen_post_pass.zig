@@ -2,7 +2,7 @@ const std = @import("std");
 const rhi = @import("../rhi/rhi.zig");
 const render_graph = @import("render_graph.zig");
 
-pub const FullscreenPostPassV2 = struct {
+pub const FullscreenPostPass = struct {
     pub fn execute(
         allocator: std.mem.Allocator,
         device: *rhi.Device,

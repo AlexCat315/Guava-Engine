@@ -203,14 +203,14 @@ struct CmdBeginRenderPass  { uint32_t color_target_id; uint32_t depth_target_id;
 struct CmdBeginComputePass { uint32_t reserved; };
 struct CmdBeginCopyPass    { uint32_t reserved; };
 struct CmdSetBindingSet    { uint32_t slot; uint32_t set_id; };
-struct CmdSetVertexBuffer  { uint32_t slot; uint32_t buffer_id; uint64_t offset; };
-struct CmdSetIndexBuffer   { uint32_t buffer_id; uint64_t offset; uint32_t format; };
+struct CmdSetVertexBuffer  { uint32_t slot; uint32_t buffer_id; uint32_t offset; };
+struct CmdSetIndexBuffer   { uint32_t buffer_id; uint32_t offset; uint32_t format; };
 struct CmdSetPipeline      { uint32_t pipeline_id; };
 struct CmdDrawIndexed      { uint32_t index_count; uint32_t instance_count; uint32_t first_index; int32_t vertex_offset; uint32_t first_instance; };
-struct CmdDrawIndirect     { uint32_t buffer_id; uint64_t offset; uint32_t draw_count; };
+struct CmdDrawIndirect     { uint32_t buffer_id; uint32_t offset; uint32_t draw_count; };
 struct CmdDispatch         { uint32_t x; uint32_t y; uint32_t z; };
-struct CmdDispatchIndirect { uint32_t buffer_id; uint64_t offset; };
-struct CmdPipelineBarrier  { uint32_t resource_id; uint32_t src_state_bits; uint32_t dst_state_bits; uint8_t src_queue; uint8_t dst_queue; };
+struct CmdDispatchIndirect { uint32_t buffer_id; uint32_t offset; };
+struct CmdPipelineBarrier  { uint32_t resource_id; uint32_t src_state_bits; uint32_t dst_state_bits; uint8_t src_queue; uint8_t dst_queue; uint16_t _padding; };
 #pragma pack(pop)
 
 // Max entries per binding set slot in the Metal argument table
@@ -742,6 +742,10 @@ bool guava_metal_rhi_submit(void* raw, uint32_t queue_class,
 
             switch (static_cast<RhiOpCode>(opcode)) {
             case OP_BEGIN_RENDER_PASS: {
+                // End any still-open encoder to avoid Metal assertion
+                if (renderEnc)  { [renderEnc endEncoding];  renderEnc  = nil; }
+                if (computeEnc) { [computeEnc endEncoding]; computeEnc = nil; }
+
                 auto cmd = dec.read<CmdBeginRenderPass>();
                 MTLRenderPassDescriptor* rpd =
                     [MTLRenderPassDescriptor renderPassDescriptor];
@@ -781,6 +785,10 @@ bool guava_metal_rhi_submit(void* raw, uint32_t queue_class,
                 break;
             }
             case OP_BEGIN_COMPUTE_PASS: {
+                // End any still-open encoder to avoid Metal assertion
+                if (renderEnc)  { [renderEnc endEncoding];  renderEnc  = nil; }
+                if (computeEnc) { [computeEnc endEncoding]; computeEnc = nil; }
+
                 dec.read<CmdBeginComputePass>(); // consume reserved field
                 computeEnc = [mtlCmd computeCommandEncoder];
                 break;

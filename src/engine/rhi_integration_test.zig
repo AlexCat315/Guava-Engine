@@ -4,25 +4,13 @@ const metal_backend = @import("rhi/metal/metal_backend.zig");
 const rhi = @import("rhi/rhi.zig");
 const binding_cache = @import("rhi/binding_cache.zig");
 const command_buffer = @import("rhi/command_buffer.zig");
-const ssao_v2 = @import("render/ssao_compute_pass_v2.zig");
-const fullscreen_post_v2 = @import("render/fullscreen_post_pass_v2.zig");
-const bloom_pass_v2 = @import("render/bloom_pass_v2.zig");
-const tonemap_pass_v2 = @import("render/tonemap_pass_v2.zig");
-const contact_shadow_v2 = @import("render/contact_shadow_pass_v2.zig");
-const dof_pass_v2 = @import("render/dof_pass_v2.zig");
-const ssr_pass_v2 = @import("render/ssr_pass_v2.zig");
-const volumetric_fog_v2 = @import("render/volumetric_fog_pass_v2.zig");
-const depth_prepass_v2 = @import("render/depth_prepass_v2.zig");
-const shadow_pass_v2 = @import("render/shadow_pass_v2.zig");
-const outline_pass_v2 = @import("render/outline_pass_v2.zig");
-const skybox_pass_v2 = @import("render/skybox_pass_v2.zig");
-const taa_pass_v2 = @import("render/taa_pass_v2.zig");
-const ibl_compute_pass_v2 = @import("render/ibl_compute_pass_v2.zig");
-const gizmo_pass_v2 = @import("render/gizmo_pass_v2.zig");
-const id_pass_v2 = @import("render/id_pass_v2.zig");
-const omni_shadow_pass_v2 = @import("render/omni_shadow_pass_v2.zig");
-const rt_shadow_composite_pass_v2 = @import("render/rt_shadow_composite_pass_v2.zig");
-const base_pass_v2 = @import("render/base_pass_v2.zig");
+const fullscreen_post = @import("render/fullscreen_post_pass.zig");
+const bloom_pass = @import("render/bloom_pass.zig");
+const tonemap_pass = @import("render/tonemap_pass.zig");
+const contact_shadow = @import("render/contact_shadow_pass.zig");
+const dof_pass = @import("render/dof_pass.zig");
+const ssr_pass = @import("render/ssr_pass.zig");
+const volumetric_fog = @import("render/volumetric_fog_pass.zig");
 const render_graph = @import("render/render_graph.zig");
 
 test "metal backend compute queue submission path" {
@@ -43,25 +31,14 @@ test "metal backend compute queue submission path" {
     try std.testing.expectEqual(rhi.QueueClass.compute, backend.last_submit_queue.?);
 }
 
-test "ssao compute pass v2 integration" {
+test "fullscreen post pass submits on graphics queue" {
     var backend = metal_backend.MetalBackend.init(std.testing.allocator);
     defer backend.deinit();
 
     var device = backend.createDevice();
     defer device.deinit();
 
-    try ssao_v2.SSAOComputePassV2.dispatchRhiV2(std.testing.allocator, &device, null, 3001, 8, 8);
-    try std.testing.expectEqual(rhi.QueueClass.compute, backend.last_submit_queue.?);
-}
-
-test "fullscreen post pass v2 submits on graphics queue" {
-    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
-    defer backend.deinit();
-
-    var device = backend.createDevice();
-    defer device.deinit();
-
-    try fullscreen_post_v2.FullscreenPostPassV2.execute(
+    try fullscreen_post.FullscreenPostPass.execute(
         std.testing.allocator,
         &device,
         null,
@@ -175,14 +152,14 @@ test "render graph slot-layout constraint validation catches missing layout" {
     try std.testing.expectEqualStrings("BadPass", errors[0].pass_name);
 }
 
-test "bloom pass v2 two-set pipeline submission" {
+test "bloom pass two-set pipeline submission" {
     var backend = metal_backend.MetalBackend.init(std.testing.allocator);
     defer backend.deinit();
 
     var device = backend.createDevice();
     defer device.deinit();
 
-    try bloom_pass_v2.BloomPassV2.execute(
+    try bloom_pass.BloomPass.execute(
         std.testing.allocator,
         &device,
         null,
@@ -220,14 +197,14 @@ test "binding set cache FIFO eviction at capacity" {
     try std.testing.expect(cache.getByHash(999_999) != null);
 }
 
-test "tonemap pass v2 three-set pipeline submission" {
+test "tonemap pass three-set pipeline submission" {
     var backend = metal_backend.MetalBackend.init(std.testing.allocator);
     defer backend.deinit();
 
     var device = backend.createDevice();
     defer device.deinit();
 
-    try tonemap_pass_v2.TonemapPassV2.execute(
+    try tonemap_pass.TonemapPass.execute(
         std.testing.allocator,
         &device,
         null,
@@ -347,14 +324,14 @@ test "command buffer encode-decode round-trip" {
     try std.testing.expectEqual(@as(?command_buffer.DecodedCommand, null), try dec.next());
 }
 
-test "contact shadow pass v2 two-set pipeline submission" {
+test "contact shadow pass two-set pipeline submission" {
     var backend = metal_backend.MetalBackend.init(std.testing.allocator);
     defer backend.deinit();
 
     var device = backend.createDevice();
     defer device.deinit();
 
-    try contact_shadow_v2.ContactShadowPassV2.execute(
+    try contact_shadow.ContactShadowPass.execute(
         std.testing.allocator,
         &device,
         null,
@@ -366,14 +343,14 @@ test "contact shadow pass v2 two-set pipeline submission" {
     try std.testing.expect(device.bindingSetCacheEntryCount() >= 2);
 }
 
-test "dof pass v2 three-subpass pipeline submission" {
+test "dof pass three-subpass pipeline submission" {
     var backend = metal_backend.MetalBackend.init(std.testing.allocator);
     defer backend.deinit();
 
     var device = backend.createDevice();
     defer device.deinit();
 
-    try dof_pass_v2.DOFPassV2.execute(
+    try dof_pass.DOFPass.execute(
         std.testing.allocator,
         &device,
         null,
@@ -421,14 +398,14 @@ test "binding set cache per-frame delta stats" {
     try std.testing.expectEqual(@as(u64, 0), delta3.evictions);
 }
 
-test "ssr pass v2 four-set pipeline submission" {
+test "ssr pass four-set pipeline submission" {
     var backend = metal_backend.MetalBackend.init(std.testing.allocator);
     defer backend.deinit();
 
     var device = backend.createDevice();
     defer device.deinit();
 
-    try ssr_pass_v2.SSRPassV2.execute(
+    try ssr_pass.SSRPass.execute(
         std.testing.allocator,
         &device,
         null,
@@ -501,14 +478,14 @@ test "pipeline creation and destruction round-trip" {
     device.destroyComputePipeline(cmp);
 }
 
-test "volumetric fog pass v2 five-set pipeline submission" {
+test "volumetric fog pass five-set pipeline submission" {
     var backend = metal_backend.MetalBackend.init(std.testing.allocator);
     defer backend.deinit();
 
     var device = backend.createDevice();
     defer device.deinit();
 
-    try volumetric_fog_v2.VolumetricFogPassV2.execute(
+    try volumetric_fog.VolumetricFogPass.execute(
         std.testing.allocator,
         &device,
         null,
@@ -556,138 +533,6 @@ test "buffer upload data round-trip" {
     try device.uploadBufferData(buf, 0, &data);
 }
 
-test "depth prepass v2 geometry submission with vertex/index buffers" {
-    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
-    defer backend.deinit();
-
-    var device = backend.createDevice();
-    defer device.deinit();
-
-    try depth_prepass_v2.DepthPrepassV2.execute(
-        std.testing.allocator,
-        &device,
-        100, // depth_target_id
-        1, // pipeline_id
-        10, // vertex_buffer_id
-        11, // index_buffer_id
-        36, // index_count (12 triangles)
-        .{},
-    );
-
-    try std.testing.expectEqual(rhi.QueueClass.graphics, backend.last_submit_queue.?);
-}
-
-test "shadow pass v2 geometry submission" {
-    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
-    defer backend.deinit();
-
-    var device = backend.createDevice();
-    defer device.deinit();
-
-    try shadow_pass_v2.ShadowPassV2.execute(
-        std.testing.allocator,
-        &device,
-        200, // shadow_map_target_id
-        2, // pipeline_id
-        20, // vertex_buffer_id
-        21, // index_buffer_id
-        72, // index_count
-        .{},
-    );
-
-    try std.testing.expectEqual(rhi.QueueClass.graphics, backend.last_submit_queue.?);
-}
-
-test "outline pass v2 three-set fullscreen submission" {
-    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
-    defer backend.deinit();
-
-    var device = backend.createDevice();
-    defer device.deinit();
-
-    try outline_pass_v2.OutlinePassV2.execute(
-        std.testing.allocator,
-        &device,
-        300, // color_target_id
-        3, // pipeline_id
-        .{},
-    );
-
-    const stats = device.bindingSetCacheStats();
-    try std.testing.expect(stats.misses >= 3);
-}
-
-test "skybox pass v2 three-set submission" {
-    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
-    defer backend.deinit();
-
-    var device = backend.createDevice();
-    defer device.deinit();
-
-    try skybox_pass_v2.SkyboxPassV2.execute(
-        std.testing.allocator,
-        &device,
-        400, // color_target_id
-        401, // depth_target_id
-        .{},
-    );
-
-    const stats = device.bindingSetCacheStats();
-    try std.testing.expect(stats.misses >= 3);
-}
-
-test "taa pass v2 six-set fullscreen submission" {
-    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
-    defer backend.deinit();
-
-    var device = backend.createDevice();
-    defer device.deinit();
-
-    try taa_pass_v2.TAAPassV2.execute(
-        std.testing.allocator,
-        &device,
-        500, // color_target_id
-        .{},
-    );
-
-    const stats = device.bindingSetCacheStats();
-    try std.testing.expect(stats.misses >= 6);
-}
-
-test "ibl compute pass v2 brdf lut generation" {
-    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
-    defer backend.deinit();
-
-    var device = backend.createDevice();
-    defer device.deinit();
-
-    try ibl_compute_pass_v2.IBLComputePassV2.executeBRDF(
-        std.testing.allocator,
-        &device,
-        .{},
-    );
-
-    try std.testing.expectEqual(rhi.QueueClass.compute, backend.last_submit_queue.?);
-}
-
-test "ibl compute pass v2 irradiance convolution" {
-    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
-    defer backend.deinit();
-
-    var device = backend.createDevice();
-    defer device.deinit();
-
-    try ibl_compute_pass_v2.IBLComputePassV2.executeIrradiance(
-        std.testing.allocator,
-        &device,
-        .{},
-    );
-
-    try std.testing.expectEqual(rhi.QueueClass.compute, backend.last_submit_queue.?);
-    const stats = device.bindingSetCacheStats();
-    try std.testing.expect(stats.misses >= 4); // env_map, sampler, output, uniform
-}
-
 test "command buffer set_vertex_buffer/set_index_buffer/set_pipeline round-trip" {
     var cmd = command_buffer.CommandBuffer.init(std.testing.allocator);
     defer cmd.deinit();
@@ -724,115 +569,4 @@ test "command buffer set_vertex_buffer/set_index_buffer/set_pipeline round-trip"
     try std.testing.expect(std.meta.activeTag(c5) == .end_render_pass);
 
     try std.testing.expectEqual(@as(?command_buffer.DecodedCommand, null), try decoder.next());
-}
-
-test "gizmo pass v2 single-set line geometry submission" {
-    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
-    defer backend.deinit();
-
-    var device = backend.createDevice();
-    defer device.deinit();
-
-    try gizmo_pass_v2.GizmoPassV2.execute(
-        std.testing.allocator,
-        &device,
-        900, // color_target_id
-        9, // pipeline_id
-        90, // vertex_buffer_id
-        6, // vertex_count
-        .{},
-    );
-
-    try std.testing.expectEqual(rhi.QueueClass.graphics, backend.last_submit_queue.?);
-    try std.testing.expect(device.bindingSetCacheEntryCount() >= 1);
-}
-
-test "id pass v2 two-set geometry submission" {
-    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
-    defer backend.deinit();
-
-    var device = backend.createDevice();
-    defer device.deinit();
-
-    try id_pass_v2.IdPassV2.execute(
-        std.testing.allocator,
-        &device,
-        1000, // id_texture_target_id
-        1001, // depth_target_id
-        10, // pipeline_id
-        100, // vertex_buffer_id
-        101, // index_buffer_id
-        36, // index_count
-        .{},
-        .{},
-    );
-
-    try std.testing.expectEqual(rhi.QueueClass.graphics, backend.last_submit_queue.?);
-    try std.testing.expect(device.bindingSetCacheEntryCount() >= 2);
-}
-
-test "omni shadow pass v2 six-face cubemap submission" {
-    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
-    defer backend.deinit();
-
-    var device = backend.createDevice();
-    defer device.deinit();
-
-    try omni_shadow_pass_v2.OmniShadowPassV2.execute(
-        std.testing.allocator,
-        &device,
-        1100, // cube_depth_target_id
-        11, // pipeline_id
-        110, // vertex_buffer_id
-        111, // index_buffer_id
-        36, // index_count
-        std.mem.zeroes([6][16]f32), // face_view_projections
-        std.mem.zeroes([16]f32), // model
-    );
-
-    try std.testing.expectEqual(rhi.QueueClass.graphics, backend.last_submit_queue.?);
-}
-
-test "rt shadow composite pass v2 three-set fullscreen submission" {
-    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
-    defer backend.deinit();
-
-    var device = backend.createDevice();
-    defer device.deinit();
-
-    try rt_shadow_composite_pass_v2.RTShadowCompositePassV2.execute(
-        std.testing.allocator,
-        &device,
-        1200, // color_target_id
-        0.8, // shadow_strength
-    );
-
-    try std.testing.expectEqual(rhi.QueueClass.graphics, backend.last_submit_queue.?);
-    try std.testing.expect(device.bindingSetCacheEntryCount() >= 3);
-}
-
-test "base pass v2 ten-set PBR submission" {
-    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
-    defer backend.deinit();
-
-    var device = backend.createDevice();
-    defer device.deinit();
-
-    try base_pass_v2.BasePassV2.execute(
-        std.testing.allocator,
-        &device,
-        1300, // color_target_id
-        1301, // depth_target_id
-        13, // pipeline_id
-        130, // vertex_buffer_id
-        131, // index_buffer_id
-        36, // index_count
-        .{},
-        .{},
-    );
-
-    try std.testing.expectEqual(rhi.QueueClass.graphics, backend.last_submit_queue.?);
-    // 10 binding sets: vtx uniform, frag uniform, 5 material textures, tex sampler,
-    // 4 CSM shadows, shadow sampler, 4 IBL textures, IBL sampler
-    try std.testing.expect(device.bindingSetCacheEntryCount() >= 10);
 }
