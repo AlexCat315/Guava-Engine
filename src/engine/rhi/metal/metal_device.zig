@@ -16,12 +16,14 @@ pub const MetalDevice = struct {
         // Lifecycle
         extern fn guava_metal_rhi_init() ?*anyopaque;
         extern fn guava_metal_rhi_destroy(ctx: *anyopaque) void;
+        // Layer configuration
+        extern fn guava_metal_rhi_set_layer(ctx: *anyopaque, layer: *anyopaque) void;
         // Resource creation
         extern fn guava_metal_rhi_create_buffer(ctx: *anyopaque, size: u64, usage_bits: u32, label: ?[*:0]const u8) u32;
         extern fn guava_metal_rhi_create_texture(ctx: *anyopaque, desc: *const TextureDescC, label: ?[*:0]const u8) u32;
         extern fn guava_metal_rhi_create_sampler(ctx: *anyopaque, desc: *const SamplerDescC) u32;
         extern fn guava_metal_rhi_create_shader_module(ctx: *anyopaque, stage: u32, format: u32, code: [*]const u8, code_len: u32, entry_point: [*:0]const u8) u32;
-        extern fn guava_metal_rhi_create_graphics_pipeline(ctx: *anyopaque, desc: *const GfxPipelineDescC) u32;
+        extern fn guava_metal_rhi_create_graphics_pipeline(ctx: *anyopaque, desc: *const GfxPipelineDescC, attrs: ?[*]const VertexAttributeC, buf_layouts: ?[*]const VertexBufferLayoutC) u32;
         extern fn guava_metal_rhi_create_compute_pipeline(ctx: *anyopaque, shader_id: u32) u32;
         // Resource destruction
         extern fn guava_metal_rhi_destroy_buffer(ctx: *anyopaque, id: u32) void;
@@ -70,6 +72,22 @@ pub const MetalDevice = struct {
         color_format: u32,
         depth_format: u32,
         primitive: u32,
+        depth_compare_op: u32,
+        depth_write_enabled: u32,
+        vertex_attr_count: u32,
+        vertex_buffer_layout_count: u32,
+    };
+
+    const VertexAttributeC = extern struct {
+        location: u32,
+        format: u32,
+        offset: u32,
+        buffer_index: u32,
+    };
+
+    const VertexBufferLayoutC = extern struct {
+        stride: u32,
+        step_rate: u32,
     };
 
     pub const BindingEntryC = extern struct {
@@ -113,6 +131,12 @@ pub const MetalDevice = struct {
     pub fn getDeviceName(self: *const MetalDevice) []const u8 {
         const name = bridge.guava_metal_rhi_get_device_name(self.bridge_ctx) orelse return "Unknown Metal Device";
         return std.mem.sliceTo(name, 0);
+    }
+
+    /// Configure the CAMetalLayer for swapchain rendering.
+    /// The layer pointer must be obtained from the window system (e.g. SDL_Metal_GetLayer).
+    pub fn setLayer(self: *MetalDevice, layer: *anyopaque) void {
+        bridge.guava_metal_rhi_set_layer(self.bridge_ctx, layer);
     }
 
     /// Register a binding set with the Metal bridge so it knows what resources
@@ -315,16 +339,62 @@ fn vtCreateShaderModule(ctx: *anyopaque, desc: rhi.ShaderModuleDesc) rhi.Error!r
 
 fn vtCreateGraphicsPipeline(ctx: *anyopaque, desc: rhi.GraphicsPipelineDesc) rhi.Error!rhi.GraphicsPipeline {
     const self: *MetalDevice = @ptrCast(@alignCast(ctx));
+
+    // Depth/stencil state
+    const ds = desc.depth_stencil orelse rhi.DepthStencilState{};
+    const depth_compare: u32 = @intFromEnum(ds.depth_compare);
+    const depth_write: u32 = if (ds.depth_write) 1 else 0;
+
+    // Vertex layout counts
+    const vl = desc.vertex_layout;
+    const attr_count: u32 = if (vl) |v| @intCast(v.attributes.len) else 0;
+    const buf_layout_count: u32 = if (vl) |v| @intCast(v.buffer_layouts.len) else 0;
+
     const c_desc = MetalDevice.GfxPipelineDescC{
         .vertex_shader_id = desc.vertex.id,
         .fragment_shader_id = desc.fragment.id,
         .color_format = @intFromEnum(desc.color_format),
         .depth_format = if (desc.depth_format) |df| @intFromEnum(df) else 0,
         .primitive = @intFromEnum(desc.primitive),
+        .depth_compare_op = depth_compare,
+        .depth_write_enabled = depth_write,
+        .vertex_attr_count = attr_count,
+        .vertex_buffer_layout_count = buf_layout_count,
     };
+
+    // Build FFI vertex attribute array
+    var c_attrs_buf: [32]MetalDevice.VertexAttributeC = undefined;
+    var c_layouts_buf: [8]MetalDevice.VertexBufferLayoutC = undefined;
+    var c_attrs_ptr: ?[*]const MetalDevice.VertexAttributeC = null;
+    var c_layouts_ptr: ?[*]const MetalDevice.VertexBufferLayoutC = null;
+
+    if (vl) |v| {
+        for (v.attributes, 0..) |attr, i| {
+            if (i >= c_attrs_buf.len) break;
+            c_attrs_buf[i] = .{
+                .location = attr.location,
+                .format = @intFromEnum(attr.format),
+                .offset = attr.offset,
+                .buffer_index = attr.buffer_index,
+            };
+        }
+        if (attr_count > 0) c_attrs_ptr = &c_attrs_buf;
+
+        for (v.buffer_layouts, 0..) |bl, i| {
+            if (i >= c_layouts_buf.len) break;
+            c_layouts_buf[i] = .{
+                .stride = bl.stride,
+                .step_rate = @intFromEnum(bl.step_rate),
+            };
+        }
+        if (buf_layout_count > 0) c_layouts_ptr = &c_layouts_buf;
+    }
+
     const id = MetalDevice.bridge.guava_metal_rhi_create_graphics_pipeline(
         self.bridge_ctx,
         &c_desc,
+        c_attrs_ptr,
+        c_layouts_ptr,
     );
     if (id == 0) return error.InvalidArgument;
     return .{ .id = id };

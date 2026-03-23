@@ -1,4 +1,5 @@
 #import <Metal/Metal.h>
+#import <QuartzCore/CAMetalLayer.h>
 #include <cstdio>
 #include <cstring>
 #include <unordered_map>
@@ -20,13 +21,17 @@ struct GuavaMetalRhiContext {
     id<MTLCommandQueue> graphics_queue;
     id<MTLCommandQueue> compute_queue;
 
+    // Swapchain state
+    CAMetalLayer*        metal_layer    = nil;
+    id<CAMetalDrawable>  current_drawable = nil;
+    uint32_t             swapchain_texture_id = 0; // texture ID for current drawable
+
     uint32_t next_buffer_id   = 1;
     uint32_t next_texture_id  = 1;
     uint32_t next_sampler_id  = 1;
     uint32_t next_shader_id   = 1;
     uint32_t next_gfx_pipe_id = 1;
     uint32_t next_cmp_pipe_id = 1;
-    uint32_t next_swapchain_id = 1;
 
     std::unordered_map<uint32_t, id<MTLBuffer>>               buffers;
     std::unordered_map<uint32_t, id<MTLTexture>>              textures;
@@ -35,6 +40,7 @@ struct GuavaMetalRhiContext {
     std::unordered_map<uint32_t, id<MTLRenderPipelineState>>  gfx_pipelines;
     std::unordered_map<uint32_t, id<MTLComputePipelineState>> cmp_pipelines;
     std::unordered_map<uint32_t, BindingSetData>              binding_sets;
+    std::unordered_map<uint32_t, id<MTLDepthStencilState>>    depth_stencil_states;
 
     // Shader libraries cached per shader module (for Metal library compilation)
     std::unordered_map<uint32_t, id<MTLLibrary>>              shader_libraries;
@@ -103,6 +109,38 @@ static uint32_t bytesPerPixel(uint32_t fmt) {
         default: return 4;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Helper: map RHI CompareOp ordinal → MTLCompareFunction
+// ---------------------------------------------------------------------------
+static MTLCompareFunction mapCompareOp(uint32_t op) {
+    switch (op) {
+        case 0:  return MTLCompareFunctionNever;
+        case 1:  return MTLCompareFunctionLess;
+        case 2:  return MTLCompareFunctionEqual;
+        case 3:  return MTLCompareFunctionLessEqual;
+        case 4:  return MTLCompareFunctionGreater;
+        case 5:  return MTLCompareFunctionNotEqual;
+        case 6:  return MTLCompareFunctionGreaterEqual;
+        case 7:  return MTLCompareFunctionAlways;
+        default: return MTLCompareFunctionAlways;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helper: map RHI VertexElementFormat ordinal → MTLVertexFormat
+// ---------------------------------------------------------------------------
+static MTLVertexFormat mapVertexFormat(uint32_t fmt) {
+    switch (fmt) {
+        case 0:  return MTLVertexFormatFloat2;
+        case 1:  return MTLVertexFormatFloat3;
+        case 2:  return MTLVertexFormatFloat4;
+        default: return MTLVertexFormatFloat3;
+    }
+}
+
+// Vertex buffer base index in Metal argument table (must match submit decoder)
+static constexpr uint32_t kVertexBufferBaseIndex = 30;
 
 // ── Command buffer opcode constants (must match command_buffer.zig) ────────
 enum RhiOpCode : uint8_t {
@@ -178,8 +216,26 @@ void guava_metal_rhi_destroy(void* raw) {
         ctx->gfx_pipelines.clear();
         ctx->cmp_pipelines.clear();
         ctx->binding_sets.clear();
+        ctx->depth_stencil_states.clear();
+        ctx->current_drawable = nil;
+        ctx->metal_layer = nil;
         delete ctx;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Swapchain layer configuration
+// ---------------------------------------------------------------------------
+
+void guava_metal_rhi_set_layer(void* raw, void* ca_metal_layer) {
+    auto* ctx = static_cast<GuavaMetalRhiContext*>(raw);
+    ctx->metal_layer = (__bridge CAMetalLayer*)ca_metal_layer;
+    ctx->metal_layer.device = ctx->device;
+    ctx->metal_layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+    ctx->metal_layer.framebufferOnly = YES;
+    fprintf(stderr, "[GuavaMetal] CAMetalLayer configured — size: %.0fx%.0f\n",
+            ctx->metal_layer.drawableSize.width,
+            ctx->metal_layer.drawableSize.height);
 }
 
 // ---------------------------------------------------------------------------
@@ -321,7 +377,9 @@ uint32_t guava_metal_rhi_create_shader_module(void* raw,
 }
 
 uint32_t guava_metal_rhi_create_graphics_pipeline(
-    void* raw, const GuavaMetalGraphicsPipelineDesc* desc) {
+    void* raw, const GuavaMetalGraphicsPipelineDesc* desc,
+    const GuavaMetalVertexAttribute* attrs,
+    const GuavaMetalVertexBufferLayout* buf_layouts) {
     @autoreleasepool {
         auto* ctx = static_cast<GuavaMetalRhiContext*>(raw);
 
@@ -343,6 +401,31 @@ uint32_t guava_metal_rhi_create_graphics_pipeline(
             pd.depthAttachmentPixelFormat = mapPixelFormat(desc->depth_format);
         }
 
+        // ── Vertex descriptor ─────────────────────────────────────────
+        if (desc->vertex_attr_count > 0 && attrs && buf_layouts) {
+            MTLVertexDescriptor* vd = [[MTLVertexDescriptor alloc] init];
+
+            for (uint32_t i = 0; i < desc->vertex_attr_count; i++) {
+                vd.attributes[attrs[i].location].format =
+                    mapVertexFormat(attrs[i].format);
+                vd.attributes[attrs[i].location].offset = attrs[i].offset;
+                vd.attributes[attrs[i].location].bufferIndex =
+                    kVertexBufferBaseIndex + attrs[i].buffer_index;
+            }
+
+            for (uint32_t i = 0; i < desc->vertex_buffer_layout_count; i++) {
+                vd.layouts[kVertexBufferBaseIndex + i].stride =
+                    buf_layouts[i].stride;
+                vd.layouts[kVertexBufferBaseIndex + i].stepFunction =
+                    (buf_layouts[i].step_rate == 0)
+                        ? MTLVertexStepFunctionPerVertex
+                        : MTLVertexStepFunctionPerInstance;
+                vd.layouts[kVertexBufferBaseIndex + i].stepRate = 1;
+            }
+
+            pd.vertexDescriptor = vd;
+        }
+
         NSError* err = nil;
         id<MTLRenderPipelineState> pso =
             [ctx->device newRenderPipelineStateWithDescriptor:pd error:&err];
@@ -352,9 +435,23 @@ uint32_t guava_metal_rhi_create_graphics_pipeline(
             return 0;
         }
 
-        uint32_t id = ctx->next_gfx_pipe_id++;
-        ctx->gfx_pipelines[id] = pso;
-        return id;
+        uint32_t pipe_id = ctx->next_gfx_pipe_id++;
+        ctx->gfx_pipelines[pipe_id] = pso;
+
+        // ── Depth/stencil state (paired with this pipeline) ───────────
+        if (desc->depth_format != 0) {
+            MTLDepthStencilDescriptor* dsd =
+                [[MTLDepthStencilDescriptor alloc] init];
+            dsd.depthCompareFunction = mapCompareOp(desc->depth_compare_op);
+            dsd.depthWriteEnabled = (desc->depth_write_enabled != 0);
+            id<MTLDepthStencilState> dss =
+                [ctx->device newDepthStencilStateWithDescriptor:dsd];
+            if (dss) {
+                ctx->depth_stencil_states[pipe_id] = dss;
+            }
+        }
+
+        return pipe_id;
     }
 }
 
@@ -408,6 +505,7 @@ void guava_metal_rhi_destroy_sampler(void* raw, uint32_t sampler_id) {
 void guava_metal_rhi_destroy_graphics_pipeline(void* raw, uint32_t id) {
     auto* ctx = static_cast<GuavaMetalRhiContext*>(raw);
     ctx->gfx_pipelines.erase(id);
+    ctx->depth_stencil_states.erase(id);
 }
 
 void guava_metal_rhi_destroy_compute_pipeline(void* raw, uint32_t id) {
@@ -661,6 +759,10 @@ bool guava_metal_rhi_submit(void* raw, uint32_t queue_class,
                     auto it = ctx->gfx_pipelines.find(cmd.pipeline_id);
                     if (it != ctx->gfx_pipelines.end())
                         [renderEnc setRenderPipelineState:it->second];
+                    // Also apply the paired depth/stencil state
+                    auto dit = ctx->depth_stencil_states.find(cmd.pipeline_id);
+                    if (dit != ctx->depth_stencil_states.end())
+                        [renderEnc setDepthStencilState:dit->second];
                 } else if (computeEnc) {
                     auto it = ctx->cmp_pipelines.find(cmd.pipeline_id);
                     if (it != ctx->cmp_pipelines.end())
@@ -776,24 +878,60 @@ bool guava_metal_rhi_submit(void* raw, uint32_t queue_class,
 }
 
 // ---------------------------------------------------------------------------
-// Swapchain (stub — needs CAMetalLayer from window system)
+// Swapchain — real CAMetalLayer drawable acquisition
 // ---------------------------------------------------------------------------
 
 bool guava_metal_rhi_acquire_swapchain(void* raw,
                                        uint32_t* out_id,
                                        uint32_t* out_width,
                                        uint32_t* out_height) {
-    auto* ctx = static_cast<GuavaMetalRhiContext*>(raw);
-    *out_id    = ctx->next_swapchain_id++;
-    *out_width = 1280;
-    *out_height = 720;
-    // TODO: get real drawable from CAMetalLayer
-    return true;
+    @autoreleasepool {
+        auto* ctx = static_cast<GuavaMetalRhiContext*>(raw);
+
+        if (!ctx->metal_layer) {
+            fprintf(stderr, "[GuavaMetal] acquire_swapchain: no CAMetalLayer configured\n");
+            return false;
+        }
+
+        id<CAMetalDrawable> drawable = [ctx->metal_layer nextDrawable];
+        if (!drawable) {
+            fprintf(stderr, "[GuavaMetal] acquire_swapchain: nextDrawable returned nil\n");
+            return false;
+        }
+
+        // Remove previous swapchain texture entry if any
+        if (ctx->swapchain_texture_id != 0) {
+            ctx->textures.erase(ctx->swapchain_texture_id);
+        }
+
+        // Register the drawable's texture in the texture map so render passes
+        // can reference it by ID like any other texture.
+        uint32_t tex_id = ctx->next_texture_id++;
+        ctx->textures[tex_id] = drawable.texture;
+        ctx->current_drawable = drawable;
+        ctx->swapchain_texture_id = tex_id;
+
+        CGSize sz = ctx->metal_layer.drawableSize;
+        *out_id    = tex_id;
+        *out_width = (uint32_t)sz.width;
+        *out_height = (uint32_t)sz.height;
+        return true;
+    }
 }
 
-bool guava_metal_rhi_present(void* /*raw*/, uint32_t /*swapchain_id*/) {
-    // TODO: [drawable present] after command buffer completion
-    return true;
+bool guava_metal_rhi_present(void* raw, uint32_t /*swapchain_id*/) {
+    @autoreleasepool {
+        auto* ctx = static_cast<GuavaMetalRhiContext*>(raw);
+
+        if (!ctx->current_drawable) {
+            fprintf(stderr, "[GuavaMetal] present: no current drawable\n");
+            return false;
+        }
+
+        [ctx->current_drawable present];
+        ctx->current_drawable = nil;
+        return true;
+    }
 }
 
 // ---------------------------------------------------------------------------

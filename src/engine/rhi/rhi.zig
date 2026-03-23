@@ -156,6 +156,28 @@ pub const PipelineLayoutDesc = struct {
     label: ?[]const u8 = null,
 };
 
+pub const DepthStencilState = struct {
+    depth_compare: rhi_types.CompareOp = .less,
+    depth_write: bool = true,
+};
+
+pub const VertexAttribute = struct {
+    location: u32,
+    format: rhi_types.VertexElementFormat,
+    offset: u32,
+    buffer_index: u32 = 0,
+};
+
+pub const VertexBufferLayout = struct {
+    stride: u32,
+    step_rate: rhi_types.VertexInputRate = .per_vertex,
+};
+
+pub const VertexLayoutDesc = struct {
+    attributes: []const VertexAttribute,
+    buffer_layouts: []const VertexBufferLayout,
+};
+
 pub const GraphicsPipelineDesc = struct {
     layout: PipelineLayout,
     vertex: ShaderModule,
@@ -163,6 +185,8 @@ pub const GraphicsPipelineDesc = struct {
     color_format: rhi_types.TextureFormat,
     depth_format: ?rhi_types.TextureFormat = .d32_float,
     primitive: rhi_types.PrimitiveType = .triangle_list,
+    depth_stencil: ?DepthStencilState = .{},
+    vertex_layout: ?VertexLayoutDesc = null,
 };
 
 pub const ComputePipelineDesc = struct {

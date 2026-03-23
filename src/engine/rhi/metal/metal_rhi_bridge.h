@@ -40,17 +40,38 @@ typedef struct {
     uint32_t address_w;
 } GuavaMetalSamplerDesc;
 
+// ── Vertex layout descriptors for pipeline creation ───────────────────────
+typedef struct {
+    uint32_t location;       // shader attribute index
+    uint32_t format;         // VertexElementFormat ordinal: 0=float2, 1=float3, 2=float4
+    uint32_t offset;         // byte offset within the vertex buffer
+    uint32_t buffer_index;   // vertex buffer slot (maps to Metal index 30+)
+} GuavaMetalVertexAttribute;
+
+typedef struct {
+    uint32_t stride;         // bytes per vertex
+    uint32_t step_rate;      // 0=per_vertex, 1=per_instance
+} GuavaMetalVertexBufferLayout;
+
 typedef struct {
     uint32_t vertex_shader_id;
     uint32_t fragment_shader_id;
-    uint32_t color_format;      // TextureFormat ordinal
-    uint32_t depth_format;      // TextureFormat ordinal (0=unknown=none)
-    uint32_t primitive;         // 0=triangle_list,...4=point_list
+    uint32_t color_format;          // TextureFormat ordinal
+    uint32_t depth_format;          // TextureFormat ordinal (0=unknown=none)
+    uint32_t primitive;             // 0=triangle_list,...4=point_list
+    uint32_t depth_compare_op;      // CompareOp ordinal (0=never..7=always)
+    uint32_t depth_write_enabled;   // bool
+    uint32_t vertex_attr_count;     // number of vertex attributes (0=no vertex layout)
+    uint32_t vertex_buffer_layout_count; // number of vertex buffer layouts
 } GuavaMetalGraphicsPipelineDesc;
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────
 void* guava_metal_rhi_init(void);
 void  guava_metal_rhi_destroy(void* ctx);
+
+// ── Swapchain layer configuration ─────────────────────────────────────────
+// Pass the CAMetalLayer* (as void*) obtained from the window system.
+void guava_metal_rhi_set_layer(void* ctx, void* ca_metal_layer);
 
 // ── Resource creation (returns ID > 0 on success, 0 on failure) ──────────
 uint32_t guava_metal_rhi_create_buffer(void* ctx, uint64_t size,
@@ -68,7 +89,11 @@ uint32_t guava_metal_rhi_create_shader_module(void* ctx,
                                               uint32_t code_len,
                                               const char* entry_point);
 uint32_t guava_metal_rhi_create_graphics_pipeline(
-    void* ctx, const GuavaMetalGraphicsPipelineDesc* desc);
+    void* ctx,
+    const GuavaMetalGraphicsPipelineDesc* desc,
+    const GuavaMetalVertexAttribute* attrs,         // NULL if no vertex layout
+    const GuavaMetalVertexBufferLayout* buf_layouts  // NULL if no vertex layout
+);
 uint32_t guava_metal_rhi_create_compute_pipeline(void* ctx,
                                                   uint32_t shader_id);
 
@@ -95,7 +120,9 @@ void guava_metal_rhi_register_binding_set(void* ctx, uint32_t set_id,
 bool guava_metal_rhi_submit(void* ctx, uint32_t queue_class,
                             const uint8_t* cmd_bytes, uint32_t cmd_len);
 
-// ── Swapchain (requires CAMetalLayer — stub until window integration) ─────
+// ── Swapchain ─────────────────────────────────────────────────────────────
+// Acquires the next drawable from the configured CAMetalLayer.
+// Returns the swapchain texture ID and dimensions.
 bool guava_metal_rhi_acquire_swapchain(void* ctx,
                                        uint32_t* out_id,
                                        uint32_t* out_width,
