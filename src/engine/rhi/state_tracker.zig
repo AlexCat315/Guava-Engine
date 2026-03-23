@@ -120,3 +120,34 @@ pub const StateTracker = struct {
         return out.toOwnedSlice(allocator);
     }
 };
+
+test "state tracker emits barrier on state change" {
+    var tracker = StateTracker.init(std.testing.allocator);
+    defer tracker.deinit();
+
+    const res = ResourceRef{ .kind = .texture, .id = 7 };
+    try tracker.setInitialState(res, ResourceStates{ .shader_resource = true });
+    try tracker.requireState(res, ResourceStates{ .unordered_access = true });
+
+    const barriers = try tracker.commitBarriers(std.testing.allocator);
+    defer std.testing.allocator.free(barriers);
+
+    try std.testing.expectEqual(@as(usize, 1), barriers.len);
+    try std.testing.expect(barriers[0].before.shader_resource);
+    try std.testing.expect(barriers[0].after.unordered_access);
+}
+
+test "state tracker merges repeated transitions" {
+    var tracker = StateTracker.init(std.testing.allocator);
+    defer tracker.deinit();
+
+    const res = ResourceRef{ .kind = .texture, .id = 42 };
+    try tracker.requireState(res, ResourceStates{ .shader_resource = true });
+    try tracker.requireState(res, ResourceStates{ .unordered_access = true });
+
+    const barriers = try tracker.commitBarriers(std.testing.allocator);
+    defer std.testing.allocator.free(barriers);
+
+    try std.testing.expectEqual(@as(usize, 1), barriers.len);
+    try std.testing.expect(barriers[0].after.shader_resource or barriers[0].after.unordered_access);
+}

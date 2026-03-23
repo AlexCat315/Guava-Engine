@@ -66,7 +66,12 @@ pub const DispatchIndirectCmd = extern struct {
 };
 
 pub const PipelineBarrierCmd = extern struct {
-    barrier_count: u32,
+    resource_id: u32,
+    src_state_bits: u32,
+    dst_state_bits: u32,
+    src_queue: u8,
+    dst_queue: u8,
+    _padding: u16 = 0,
 };
 
 pub const DecodedCommand = union(OpCode) {
@@ -207,8 +212,22 @@ pub const Decoder = struct {
         const size = @sizeOf(T);
         const end = self.cursor + size;
         if (end > self.bytes.len) return error.TruncatedStream;
-        const value: *const T = @ptrCast(@alignCast(self.bytes[self.cursor..end].ptr));
+        var value: T = undefined;
+        @memcpy(std.mem.asBytes(&value), self.bytes[self.cursor..end]);
         self.cursor = end;
-        return value.*;
+        return value;
     }
 };
+
+test "decoder readStruct handles unaligned stream" {
+    var bytes = std.ArrayList(u8).empty;
+    defer bytes.deinit(std.testing.allocator);
+
+    try bytes.append(std.testing.allocator, 0xFF); // intentional misalignment
+    const cmd = DrawIndexedCmd{ .index_count = 3, .instance_count = 1, .first_index = 0, .vertex_offset = 0, .first_instance = 0 };
+    try bytes.appendSlice(std.testing.allocator, std.mem.asBytes(&cmd));
+
+    var d = Decoder.init(bytes.items[1..]);
+    const decoded = try d.readStruct(DrawIndexedCmd);
+    try std.testing.expectEqual(cmd.index_count, decoded.index_count);
+}

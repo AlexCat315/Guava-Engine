@@ -6,16 +6,31 @@ const queue_mod = @import("../queue.zig");
 pub const MetalBackend = struct {
     allocator: std.mem.Allocator,
     next_swapchain_id: u32 = 1,
+    next_buffer_id: u32 = 1,
+    next_texture_id: u32 = 1,
+    resource_state_bits: std.AutoHashMap(u32, u32),
+    resource_owner_queue: std.AutoHashMap(u32, rhi.QueueClass),
+    last_submit_queue: ?rhi.QueueClass = null,
 
     pub fn init(allocator: std.mem.Allocator) MetalBackend {
-        return .{ .allocator = allocator };
+        return .{
+            .allocator = allocator,
+            .resource_state_bits = std.AutoHashMap(u32, u32).init(allocator),
+            .resource_owner_queue = std.AutoHashMap(u32, rhi.QueueClass).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *MetalBackend) void {
+        self.resource_state_bits.deinit();
+        self.resource_owner_queue.deinit();
+        self.* = undefined;
     }
 
     pub fn createDevice(self: *MetalBackend) rhi.Device {
-        return .{
-            .ctx = @ptrCast(self),
-            .vtable = &device_vtable,
-            .capabilities = .{
+        return rhi.Device.initWithCache(
+            @ptrCast(self),
+            &device_vtable,
+            .{
                 .compute = true,
                 .ray_tracing = true,
                 .indirect_draw = true,
@@ -24,12 +39,12 @@ pub const MetalBackend = struct {
                 .texture_cube_native = true,
                 .max_queues = .{ 1, 1, 1 },
             },
-        };
+            self.allocator,
+        );
     }
 
     pub fn translateAndSubmit(self: *MetalBackend, queue_class: rhi.QueueClass, soft_buf: *const command_buffer.CommandBuffer) !void {
-        _ = self;
-        _ = queue_class;
+        self.last_submit_queue = queue_class;
 
         var decoder = soft_buf.decoder();
         while (try decoder.next()) |cmd| {
@@ -45,16 +60,68 @@ pub const MetalBackend = struct {
                 .draw_indirect => |_| {},
                 .dispatch => |_| {},
                 .dispatch_indirect => |_| {},
-                .pipeline_barrier => |_| {},
+                .pipeline_barrier => |b| {
+                    const prev_state = self.resource_state_bits.get(b.resource_id) orelse 0;
+                    if (prev_state != 0 and prev_state != b.src_state_bits) {
+                        return error.SubmitFailed;
+                    }
+                    try self.resource_state_bits.put(b.resource_id, b.dst_state_bits);
+
+                    const src_q: rhi.QueueClass = @enumFromInt(@as(u8, b.src_queue));
+                    const dst_q: rhi.QueueClass = @enumFromInt(@as(u8, b.dst_queue));
+                    const owner = self.resource_owner_queue.get(b.resource_id) orelse src_q;
+                    if (owner != src_q) return error.SubmitFailed;
+                    try self.resource_owner_queue.put(b.resource_id, dst_q);
+                },
             }
         }
     }
 };
 
-fn submitQueue(ctx: *anyopaque, cmd: *const command_buffer.CommandBuffer, desc: queue_mod.SubmitDesc) !void {
+fn createBuffer(ctx: *anyopaque, desc: rhi.BufferDesc) rhi.Error!rhi.Buffer {
+    _ = desc;
+    var backend: *MetalBackend = @ptrCast(@alignCast(ctx));
+    const id = backend.next_buffer_id;
+    backend.next_buffer_id += 1;
+    return .{ .id = id };
+}
+
+fn createTexture(ctx: *anyopaque, desc: rhi.TextureDesc) rhi.Error!rhi.Texture {
+    _ = desc;
+    var backend: *MetalBackend = @ptrCast(@alignCast(ctx));
+    const id = backend.next_texture_id;
+    backend.next_texture_id += 1;
+    return .{ .id = id };
+}
+
+fn destroyBuffer(ctx: *anyopaque, buffer: rhi.Buffer) void {
+    var backend: *MetalBackend = @ptrCast(@alignCast(ctx));
+    _ = backend.resource_state_bits.remove(buffer.id);
+    _ = backend.resource_owner_queue.remove(buffer.id);
+}
+
+fn destroyTexture(ctx: *anyopaque, texture: rhi.Texture) void {
+    var backend: *MetalBackend = @ptrCast(@alignCast(ctx));
+    _ = backend.resource_state_bits.remove(texture.id);
+    _ = backend.resource_owner_queue.remove(texture.id);
+}
+
+fn submitGraphicsQueue(ctx: *anyopaque, cmd: *const command_buffer.CommandBuffer, desc: queue_mod.SubmitDesc) !void {
     _ = desc;
     var backend: *MetalBackend = @ptrCast(@alignCast(ctx));
     try backend.translateAndSubmit(.graphics, cmd);
+}
+
+fn submitComputeQueue(ctx: *anyopaque, cmd: *const command_buffer.CommandBuffer, desc: queue_mod.SubmitDesc) !void {
+    _ = desc;
+    var backend: *MetalBackend = @ptrCast(@alignCast(ctx));
+    try backend.translateAndSubmit(.compute, cmd);
+}
+
+fn submitTransferQueue(ctx: *anyopaque, cmd: *const command_buffer.CommandBuffer, desc: queue_mod.SubmitDesc) !void {
+    _ = desc;
+    var backend: *MetalBackend = @ptrCast(@alignCast(ctx));
+    try backend.translateAndSubmit(.transfer, cmd);
 }
 
 fn createCommandBuffer(ctx: *anyopaque, allocator: std.mem.Allocator) rhi.Error!command_buffer.CommandBuffer {
@@ -88,16 +155,41 @@ fn present(ctx: *anyopaque, image: rhi.SwapchainImage) rhi.Error!void {
 fn getQueue(ctx: *anyopaque, class: rhi.QueueClass) rhi.Error!rhi.Queue {
     _ = @as(*MetalBackend, @ptrCast(@alignCast(ctx)));
     return switch (class) {
-        .graphics => .{ .class = .graphics, .ctx = ctx, .submit_fn = submitQueue },
-        .compute => .{ .class = .compute, .ctx = ctx, .submit_fn = submitQueue },
-        .transfer => .{ .class = .transfer, .ctx = ctx, .submit_fn = submitQueue },
+        .graphics => .{ .class = .graphics, .ctx = ctx, .submit_fn = submitGraphicsQueue },
+        .compute => .{ .class = .compute, .ctx = ctx, .submit_fn = submitComputeQueue },
+        .transfer => .{ .class = .transfer, .ctx = ctx, .submit_fn = submitTransferQueue },
     };
 }
 
 const device_vtable = rhi.DeviceVTable{
+    .create_buffer = createBuffer,
+    .create_texture = createTexture,
+    .destroy_buffer = destroyBuffer,
+    .destroy_texture = destroyTexture,
     .create_command_buffer = createCommandBuffer,
     .acquire_swapchain_image = acquireSwapchainImage,
     .submit_command_buffer = submitCommandBuffer,
     .present = present,
     .get_queue = getQueue,
 };
+
+test "metal backend handles compute queue barrier ownership transfer" {
+    var backend = MetalBackend.init(std.testing.allocator);
+    defer backend.deinit();
+    var device = backend.createDevice();
+    defer device.deinit();
+
+    var cmd = try device.createCommandBuffer(std.testing.allocator);
+    defer cmd.deinit();
+
+    try cmd.encodePipelineBarrier(.{
+        .resource_id = 99,
+        .src_state_bits = 0,
+        .dst_state_bits = 1,
+        .src_queue = @intCast(@intFromEnum(rhi.QueueClass.compute)),
+        .dst_queue = @intCast(@intFromEnum(rhi.QueueClass.graphics)),
+    });
+
+    try device.submitCommandBuffer(.compute, &cmd, .{});
+    try std.testing.expectEqual(rhi.QueueClass.compute, backend.last_submit_queue.?);
+}

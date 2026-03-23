@@ -18,6 +18,7 @@
 //! Thread-safety: Not thread-safe. Compile must complete before rendering begins.
 
 const std = @import("std");
+const rhi_v2 = @import("../rhi/rhi.zig");
 
 /// GPU queue type for pass execution.
 pub const QueueClass = enum {
@@ -182,6 +183,8 @@ pub const BarrierPlan = struct {
     from_pass: u16,
     to_pass: u16,
     resource: u16,
+    src_queue: QueueClass,
+    dst_queue: QueueClass,
     src_state: BarrierState,
     dst_state: BarrierState,
     cross_queue: bool,
@@ -492,6 +495,8 @@ pub const RenderGraph = struct {
                 .from_pass = edge.from_pass,
                 .to_pass = edge.to_pass,
                 .resource = edge.resource,
+                .src_queue = compiled.execution[edge.from_pass].queue,
+                .dst_queue = compiled.execution[edge.to_pass].queue,
                 .src_state = accessToBarrierState(edge.previous_access, resource_node.kind),
                 .dst_state = accessToBarrierState(edge.next_access, resource_node.kind),
                 .cross_queue = edge.cross_queue,
@@ -515,6 +520,26 @@ pub const RenderGraph = struct {
             };
         }
         return stats;
+    }
+
+    pub fn encodeBarrierPlansToCommandBuffer(
+        self: *const RenderGraph,
+        allocator: std.mem.Allocator,
+        device: *const rhi_v2.Device,
+        cmd: *rhi_v2.CommandBuffer,
+    ) !void {
+        _ = device;
+        const plans = try self.buildBarrierPlanAlloc(allocator);
+        defer allocator.free(plans);
+        for (plans) |plan| {
+            try cmd.encodePipelineBarrier(.{
+                .resource_id = plan.resource,
+                .src_state_bits = barrierStateToBits(plan.src_state),
+                .dst_state_bits = barrierStateToBits(plan.dst_state),
+                .src_queue = @intCast(@intFromEnum(plan.src_queue)),
+                .dst_queue = @intCast(@intFromEnum(plan.dst_queue)),
+            });
+        }
     }
 
     pub fn recordPassStat(
@@ -671,6 +696,16 @@ fn accessToBarrierState(access: ResourceAccess, kind: ResourceKind) BarrierState
         .read => .shader_read,
         .write => .shader_write,
         .read_write => .shader_read_write,
+    };
+}
+
+fn barrierStateToBits(state: BarrierState) u32 {
+    return switch (state) {
+        .unknown => (rhi_v2.ResourceStates{}).asBits(),
+        .shader_read => (rhi_v2.ResourceStates{ .shader_resource = true }).asBits(),
+        .shader_write => (rhi_v2.ResourceStates{ .unordered_access = true }).asBits(),
+        .shader_read_write => (rhi_v2.ResourceStates{ .shader_resource = true, .unordered_access = true }).asBits(),
+        .present => (rhi_v2.ResourceStates{ .present = true }).asBits(),
     };
 }
 

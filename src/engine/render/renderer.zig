@@ -3233,8 +3233,8 @@ pub const Renderer = struct {
             .bounces = bounces,
         };
 
-        if (!backend.traceRays(&params, mrt.trace_pixels.?)) {
-            render_log.err("{s} trace failed", .{rt_backend.backendName()});
+        if (!rt_dev.traceRays(&params, mrt.trace_pixels.?)) {
+            render_log.err("{s} trace failed", .{rt_device_mod.RtDevice.backendName()});
             return false;
         }
         mrt.needs_retrace = false;

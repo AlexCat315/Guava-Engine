@@ -2,6 +2,7 @@ const std = @import("std");
 const command_buffer = @import("command_buffer.zig");
 const queue_mod = @import("queue.zig");
 const state_tracker = @import("state_tracker.zig");
+const binding_cache = @import("binding_cache.zig");
 const rhi_types = @import("types.zig");
 
 pub const Error = error{
@@ -37,8 +38,24 @@ pub const SwapchainImage = struct { id: u32, width: u32, height: u32 };
 
 pub const BufferDesc = struct {
     size: u64,
-    usage: u32,
+    usage: BufferUsageFlags,
     label: ?[]const u8 = null,
+};
+
+pub const BufferUsageFlags = packed struct(u32) {
+    vertex: bool = false,
+    index: bool = false,
+    uniform: bool = false,
+    storage_read: bool = false,
+    storage_write: bool = false,
+    indirect: bool = false,
+    transfer_src: bool = false,
+    transfer_dst: bool = false,
+    _padding: u24 = 0,
+
+    pub fn bits(self: BufferUsageFlags) u32 {
+        return @bitCast(self);
+    }
 };
 
 pub const TextureDimension = enum {
@@ -56,9 +73,25 @@ pub const TextureDesc = struct {
     mip_levels: u32 = 1,
     sample_count: u32 = 1,
     format: rhi_types.TextureFormat,
-    usage: u32,
+    usage: TextureUsageFlags,
     dimension: TextureDimension = .d2,
     label: ?[]const u8 = null,
+};
+
+pub const TextureUsageFlags = packed struct(u32) {
+    sampled: bool = false,
+    color_target: bool = false,
+    depth_stencil_target: bool = false,
+    storage_read: bool = false,
+    storage_write: bool = false,
+    transfer_src: bool = false,
+    transfer_dst: bool = false,
+    present: bool = false,
+    _padding: u24 = 0,
+
+    pub fn bits(self: TextureUsageFlags) u32 {
+        return @bitCast(self);
+    }
 };
 
 pub const SamplerDesc = struct {
@@ -173,6 +206,10 @@ pub const Capabilities = struct {
 };
 
 pub const DeviceVTable = struct {
+    create_buffer: *const fn (ctx: *anyopaque, desc: BufferDesc) Error!Buffer,
+    create_texture: *const fn (ctx: *anyopaque, desc: TextureDesc) Error!Texture,
+    destroy_buffer: *const fn (ctx: *anyopaque, buffer: Buffer) void,
+    destroy_texture: *const fn (ctx: *anyopaque, texture: Texture) void,
     create_command_buffer: *const fn (ctx: *anyopaque, allocator: std.mem.Allocator) Error!command_buffer.CommandBuffer,
     acquire_swapchain_image: *const fn (ctx: *anyopaque) Error!SwapchainImage,
     submit_command_buffer: *const fn (ctx: *anyopaque, queue: QueueClass, cmd: *const command_buffer.CommandBuffer, desc: SubmitDesc) Error!void,
@@ -184,6 +221,36 @@ pub const Device = struct {
     ctx: *anyopaque,
     vtable: *const DeviceVTable,
     capabilities: Capabilities,
+    pipeline_layout_cache: binding_cache.PipelineLayoutCache,
+
+    pub fn initWithCache(ctx: *anyopaque, vtable: *const DeviceVTable, capabilities: Capabilities, allocator: std.mem.Allocator) Device {
+        return .{
+            .ctx = ctx,
+            .vtable = vtable,
+            .capabilities = capabilities,
+            .pipeline_layout_cache = binding_cache.PipelineLayoutCache.init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *Device) void {
+        self.pipeline_layout_cache.deinit();
+    }
+
+    pub fn createBuffer(self: *const Device, desc: BufferDesc) Error!Buffer {
+        return self.vtable.create_buffer(self.ctx, desc);
+    }
+
+    pub fn createTexture(self: *const Device, desc: TextureDesc) Error!Texture {
+        return self.vtable.create_texture(self.ctx, desc);
+    }
+
+    pub fn destroyBuffer(self: *const Device, buffer: Buffer) void {
+        self.vtable.destroy_buffer(self.ctx, buffer);
+    }
+
+    pub fn destroyTexture(self: *const Device, texture: Texture) void {
+        self.vtable.destroy_texture(self.ctx, texture);
+    }
 
     pub fn createCommandBuffer(self: *const Device, allocator: std.mem.Allocator) Error!command_buffer.CommandBuffer {
         return self.vtable.create_command_buffer(self.ctx, allocator);
@@ -203,6 +270,25 @@ pub const Device = struct {
 
     pub fn getQueue(self: *const Device, class: QueueClass) Error!Queue {
         return self.vtable.get_queue(self.ctx, class);
+    }
+
+    pub fn resolvePipelineLayout(
+        self: *Device,
+        binding_layouts: []const BindingLayout,
+    ) Error!PipelineLayout {
+        var ids = std.ArrayList(u32).init(self.pipeline_layout_cache.allocator);
+        defer ids.deinit();
+        for (binding_layouts) |layout| {
+            try ids.append(layout.id);
+        }
+
+        if (self.pipeline_layout_cache.get(ids.items)) |id| {
+            return .{ .id = id };
+        }
+
+        const id = self.pipeline_layout_cache.nextSyntheticId();
+        try self.pipeline_layout_cache.put(ids.items, id);
+        return .{ .id = id };
     }
 };
 

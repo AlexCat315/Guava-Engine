@@ -1,19 +1,16 @@
 const std = @import("std");
-
-pub const BufferHandle = struct {
-    id: u32,
-};
+const rhi = @import("rhi.zig");
 
 pub const SubAlloc = struct {
     cpu_slice: []u8,
     gpu_offset: u64,
-    buffer: BufferHandle,
+    buffer: rhi.Buffer,
 };
 
 pub const UploadRing = struct {
     const Chunk = struct {
         storage: []u8,
-        buffer: BufferHandle,
+        buffer: rhi.Buffer,
         offset: usize,
         capacity: usize,
         version: u64,
@@ -110,3 +107,27 @@ pub const UploadRing = struct {
         };
     }
 };
+
+test "upload ring reuses chunk after frame complete" {
+    var ring = UploadRing.init(std.testing.allocator, 64);
+    defer ring.deinit();
+
+    ring.beginFrame(1);
+    const a = try ring.suballocate(16, 8);
+    try std.testing.expect(a.buffer.id != 0);
+
+    try ring.onFrameComplete(1);
+    ring.beginFrame(2);
+    const b = try ring.suballocate(16, 8);
+    try std.testing.expectEqual(a.buffer.id, b.buffer.id);
+}
+
+test "upload ring creates new chunk when full" {
+    var ring = UploadRing.init(std.testing.allocator, 32);
+    defer ring.deinit();
+
+    ring.beginFrame(1);
+    const first = try ring.suballocate(24, 8);
+    const second = try ring.suballocate(24, 8);
+    try std.testing.expect(first.buffer.id != second.buffer.id);
+}
