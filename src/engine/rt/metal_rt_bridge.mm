@@ -27,12 +27,13 @@ struct RTParams {
     packed_float3 camera_origin;
     float _pad0;
     packed_float3 light_direction;
-    float _pad1;
+    float sun_angular_radius;       // 太阳角半径（弧度），控制软阴影半影宽度
     uint2 dimensions;
     uint samples;
     uint bounces;
     uint mode;       // 0 = path trace, 1 = shadow only
-    uint _pad2[3];
+    uint shadow_samples; // shadow-only 每像素采样数 (1=硬阴影, 4+=软阴影)
+    uint _pad2[2];
 };
 
 // ---- deterministic hash RNG (与 CPU 路径追踪保持一致) ----
@@ -58,6 +59,23 @@ static float3 random_hemisphere(float3 normal, uint seed) {
         hash_unit_float(seed ^ 0xa3d95fa1u) * 2.0f - 1.0f
     ));
     return normalize(normal + jitter);
+}
+
+// 在光方向周围的锥体内随机采样方向 (用于软阴影)
+static float3 sample_cone(float3 dir, float cone_angle, uint seed) {
+    if (cone_angle < 1e-6f) return dir;
+    // 构建切线空间
+    float3 up = (abs(dir.y) < 0.999f) ? float3(0,1,0) : float3(1,0,0);
+    float3 T = normalize(cross(up, dir));
+    float3 B = cross(dir, T);
+    // 均匀分布采样锥体
+    float u1 = hash_unit_float(seed ^ 0x3c84ef95u);
+    float u2 = hash_unit_float(seed ^ 0x7e6b2f31u);
+    float cos_max = cos(cone_angle);
+    float cos_theta = 1.0f - u1 * (1.0f - cos_max);
+    float sin_theta = sqrt(max(0.0f, 1.0f - cos_theta * cos_theta));
+    float phi = 2.0f * 3.14159265f * u2;
+    return normalize(sin_theta * cos(phi) * T + sin_theta * sin(phi) * B + cos_theta * dir);
 }
 
 static float3 sample_sky(float3 dir) {
@@ -128,19 +146,25 @@ kernel void raytrace_kernel(
             float  met   = tri.metallic;
             float  rough = tri.roughness;
 
-            // ---- shadow-only mode: primary ray + shadow ray → visibility ----
+            // ---- shadow-only mode: primary ray + N shadow rays → soft visibility ----
             if (params.mode == 1) {
-                float3 L = float3(params.light_direction);
-                ray shadow_ray;
-                shadow_ray.origin       = hit_pos + normal * 0.002f;
-                shadow_ray.direction    = L;
-                shadow_ray.min_distance = 0.001f;
-                shadow_ray.max_distance = 1e30f;
-                intersector<triangle_data> shadow_inter;
-                shadow_inter.accept_any_intersection(true);
-                auto shadow_hit = shadow_inter.intersect(shadow_ray, accel);
-                float vis = (shadow_hit.type == intersection_type::triangle) ? 0.0f : 1.0f;
-                accumulated += float3(vis);
+                float3 L = normalize(float3(params.light_direction));
+                uint n_shadow = max(1u, params.shadow_samples);
+                float total_vis = 0.0f;
+                for (uint si = 0; si < n_shadow; si++) {
+                    uint sseed2 = pixel_seed ^ (si * 0x9e3779b9u) ^ 0xa1b2c3d4u;
+                    float3 jittered_L = sample_cone(L, params.sun_angular_radius, sseed2);
+                    ray shadow_ray;
+                    shadow_ray.origin       = hit_pos + normal * 0.002f;
+                    shadow_ray.direction    = jittered_L;
+                    shadow_ray.min_distance = 0.001f;
+                    shadow_ray.max_distance = 1e30f;
+                    intersector<triangle_data> shadow_inter;
+                    shadow_inter.accept_any_intersection(true);
+                    auto shadow_hit = shadow_inter.intersect(shadow_ray, accel);
+                    total_vis += (shadow_hit.type == intersection_type::triangle) ? 0.0f : 1.0f;
+                }
+                accumulated += float3(total_vis / float(n_shadow));
                 break; // 仅需第一次命中
             }
 

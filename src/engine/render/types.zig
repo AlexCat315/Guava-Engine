@@ -80,8 +80,11 @@ pub const EditorViewportState = struct {
     color_grading_contrast: f32 = 1.0,
     color_grading_gamma: f32 = 1.0,
     fxaa_enabled: bool = false,
-    // RT 增强阴影（光栏模式下用硬件 RT 替换 shadow map）
+    // RT 增强阴影（光栅模式下用硬件 RT 替换 shadow map）
     rt_shadows_enabled: bool = false,
+    rt_shadow_samples: u32 = 4,
+    rt_shadow_strength: f32 = 0.85,
+    rt_shadow_softness: f32 = 0.02,
     // 体积雾
     volumetric_fog_enabled: bool = false,
     volumetric_fog_density: f32 = 0.02,

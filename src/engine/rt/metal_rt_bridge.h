@@ -25,13 +25,14 @@ typedef struct {
     float camera_origin[3];
     float _pad0;
     float light_direction[3];
-    float _pad1;
+    float sun_angular_radius;  /* 太阳角半径(弧度)，0=硬阴影 */
     uint32_t width;
     uint32_t height;
     uint32_t samples;
     uint32_t bounces;
-    uint32_t mode;      /* 0 = path trace, 1 = shadow only */
-    uint32_t _pad2[3];
+    uint32_t mode;             /* 0 = path trace, 1 = shadow only */
+    uint32_t shadow_samples;   /* shadow-only 每像素采样数 */
+    uint32_t _pad2[2];
 } GuavaRTParams;
 
 /// 创建 Metal RT 上下文。返回 NULL 表示当前设备不支持 Metal RT。

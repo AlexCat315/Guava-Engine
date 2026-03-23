@@ -142,6 +142,14 @@ pub fn drawRenderSettingsWindow(state: *EditorState, layer_context: *engine.core
     gui.separator();
     gui.text("RT Shadows");
     _ = gui.checkbox("##enable_rt_shadows", &state.viewport_rt_shadows_enabled);
+    if (state.viewport_rt_shadows_enabled) {
+        var shadow_samples_i32: i32 = @intCast(state.viewport_rt_shadow_samples);
+        if (gui.dragInt("Samples##rt_shadow", &shadow_samples_i32, 0.1, 1, 16)) {
+            state.viewport_rt_shadow_samples = @intCast(@max(1, shadow_samples_i32));
+        }
+        _ = gui.dragFloat("Strength##rt_shadow", &state.viewport_rt_shadow_strength, 0.005, 0.0, 1.0);
+        _ = gui.dragFloat("Softness##rt_shadow", &state.viewport_rt_shadow_softness, 0.001, 0.0, 0.1);
+    }
 
     gui.separator();
     gui.text("TAA");

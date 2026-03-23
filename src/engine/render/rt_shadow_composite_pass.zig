@@ -8,6 +8,10 @@ const FullscreenVertex = extern struct {
     position: [2]f32,
 };
 
+const ShadowCompositeUniforms = extern struct {
+    shadow_params: [4]f32 = .{ 0.85, 0.15, 0.0, 0.0 },
+};
+
 const fullscreen_triangle = [_]FullscreenVertex{
     .{ .position = .{ -1.0, -1.0 } },
     .{ .position = .{ 3.0, -1.0 } },
@@ -66,14 +70,21 @@ pub const RtShadowCompositePass = struct {
     pub fn draw(
         self: *RtShadowCompositePass,
         device: *rhi_mod.RhiDevice,
+        frame: rhi_mod.Frame,
         pass: rhi_mod.RenderPass,
+        shadow_strength: f32,
     ) mesh_pass_mod.DrawStats {
         var stats = mesh_pass_mod.DrawStats{};
         if (!self.isReady() or self.bind_group == null) return stats;
 
+        var uniforms = ShadowCompositeUniforms{
+            .shadow_params = .{ shadow_strength, 0.05, 0.0, 0.0 },
+        };
+
         device.bindGraphicsPipeline(pass, &self.pipeline.?);
         device.bindVertexBuffer(pass, 0, &self.fullscreen_vertex_buffer.?, 0);
         device.bindGroup(pass, &self.bind_group.?);
+        device.pushFragmentUniformData(frame, 0, std.mem.asBytes(&uniforms));
         device.drawPrimitives(pass, fullscreen_triangle.len, 1, 0, 0);
 
         stats.draw_calls = 1;

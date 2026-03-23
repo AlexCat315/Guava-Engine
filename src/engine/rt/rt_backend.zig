@@ -60,12 +60,15 @@ pub const RtParams = extern struct {
     camera_origin: [3]f32,
     _pad0: f32 = 0,
     light_direction: [3]f32,
-    _pad1: f32 = 0,
+    /// 太阳角半径 (弧度)，控制软阴影半影宽度。0 = 硬阴影。
+    sun_angular_radius: f32 = 0.0,
     width: u32,
     height: u32,
     samples: u32,
     bounces: u32,
     /// 0 = full path trace, 1 = shadow-only (输出屏幕空间阴影遮罩)
     mode: u32 = 0,
-    _pad2: [3]u32 = .{ 0, 0, 0 },
+    /// shadow-only 每像素采样数 (1=硬阴影, 4+=软阴影)
+    shadow_samples: u32 = 1,
+    _pad2: [2]u32 = .{ 0, 0 },
 };

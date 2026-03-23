@@ -1895,7 +1895,7 @@ pub const Renderer = struct {
                             if (self.rt_shadow_mask_texture) |*mask_tex| {
                                 try self.rt_shadow_composite_pass.syncTexture(&self.rhi, mask_tex);
                                 const rt_shadow_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(.{ .texture = self.scene_viewport.hdrColor().? }));
-                                const rt_shadow_stats = self.rt_shadow_composite_pass.draw(&self.rhi, rt_shadow_pass);
+                                const rt_shadow_stats = self.rt_shadow_composite_pass.draw(&self.rhi, frame, rt_shadow_pass, self.editor_viewport_state.rt_shadow_strength);
                                 draw_stats.add(rt_shadow_stats);
                                 self.rhi.endRenderPass(rt_shadow_pass);
                             }
@@ -2643,11 +2643,13 @@ pub const Renderer = struct {
                 prepared_scene.camera_world_position[2],
             },
             .light_direction = light_dir,
+            .sun_angular_radius = self.editor_viewport_state.rt_shadow_softness,
             .width = width,
             .height = height,
             .samples = 1,
             .bounces = 1,
             .mode = 1, // shadow-only
+            .shadow_samples = self.editor_viewport_state.rt_shadow_samples,
         };
 
         if (!backend.traceRays(&params, self.rt_shadow_pixels.?)) return false;
