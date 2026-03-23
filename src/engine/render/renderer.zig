@@ -80,6 +80,7 @@ const rhi_v2_mod = @import("../rhi/rhi.zig");
 const rhi_v2_backend_mod = @import("../rhi/metal/metal_backend.zig");
 const fullscreen_post_v2_mod = @import("fullscreen_post_pass_v2.zig");
 const bloom_pass_v2_mod = @import("bloom_pass_v2.zig");
+const tonemap_pass_v2_mod = @import("tonemap_pass_v2.zig");
 const components = @import("../scene/components.zig");
 const scene_mod = @import("../scene/scene.zig");
 const types = @import("types.zig");
@@ -1453,6 +1454,17 @@ pub const Renderer = struct {
                     dp.* = bp.createDevice();
                     renderer.rhi_v2_backend = bp;
                     renderer.rhi_v2_device = dp;
+
+                    // Pre-create tonemap v2 layouts and wire constraints into the compiled graph
+                    if (tonemap_pass_v2_mod.TonemapPassV2.createLayouts(dp)) |layouts| {
+                        if (dp.resolvePipelineLayout(&.{ layouts.hdr_layout, layouts.bloom_layout, layouts.uniform_layout })) |_| {
+                            renderer.graph.setPassBindingConstraints(.tonemap_pass, &.{
+                                .{ .slot = 0, .expected_layout_id = layouts.hdr_layout.id },
+                                .{ .slot = 1, .expected_layout_id = layouts.bloom_layout.id },
+                                .{ .slot = 2, .expected_layout_id = layouts.uniform_layout.id },
+                            }) catch {};
+                        } else |_| {}
+                    } else |_| {}
                 } else {
                     bp.deinit();
                     allocator.destroy(bp);
@@ -2303,30 +2315,74 @@ pub const Renderer = struct {
                         }
 
                         if (self.tonemap_pass.isReady()) {
-                            const bloom_input = if (bloom_enabled) self.scene_viewport.bloom().? else hdr_input_for_post;
-                            const lut_texture = self.tonemap_pass.lutTexture(self.editor_viewport_state.lut_preset) orelse return error.TextureNotFound;
-                            const tonemap_target: rhi_mod.ColorTarget = if (fxaa_enabled)
-                                .{ .texture = self.scene_viewport.fxaa().? }
-                            else
-                                scene_color_target;
-                            try self.tonemap_pass.syncTextures(&self.rhi, hdr_input_for_post, bloom_input, lut_texture);
-                            const tonemap_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(tonemap_target));
-                            self.tonemap_pass.draw(
-                                &self.rhi,
-                                frame,
-                                tonemap_render_pass,
-                                self.editor_viewport_state.exposure_enabled,
-                                self.editor_viewport_state.exposure,
-                                bloom_enabled,
-                                self.editor_viewport_state.bloom_intensity,
-                                self.editor_viewport_state.color_grading_enabled,
-                                self.editor_viewport_state.color_grading_saturation,
-                                self.editor_viewport_state.color_grading_contrast,
-                                self.editor_viewport_state.color_grading_gamma,
-                                self.editor_viewport_state.lut_enabled,
-                                self.editor_viewport_state.lut_intensity,
-                            );
-                            self.rhi.endRenderPass(tonemap_render_pass);
+                            const use_tonemap_v2 = self.editor_viewport_state.tonemap_use_rhi_v2;
+                            var dispatched_tonemap_v2 = false;
+                            if (use_tonemap_v2) {
+                                if (self.rhi_v2_device) |v2_dev| {
+                                    const tm_start = std.time.nanoTimestamp();
+                                    tonemap_pass_v2_mod.TonemapPassV2.execute(
+                                        self.allocator,
+                                        v2_dev,
+                                        null,
+                                        0,
+                                        0,
+                                        .{
+                                            .exposure_params = .{
+                                                @as(f32, if (self.editor_viewport_state.exposure_enabled) 1.0 else 0.0),
+                                                self.editor_viewport_state.exposure,
+                                                0.0,
+                                                0.0,
+                                            },
+                                            .bloom_params = .{
+                                                @as(f32, if (bloom_enabled) 1.0 else 0.0),
+                                                self.editor_viewport_state.bloom_intensity,
+                                                0.0,
+                                                0.0,
+                                            },
+                                            .color_grading_params = .{
+                                                @as(f32, if (self.editor_viewport_state.color_grading_enabled) 1.0 else 0.0),
+                                                self.editor_viewport_state.color_grading_saturation,
+                                                self.editor_viewport_state.color_grading_contrast,
+                                                self.editor_viewport_state.color_grading_gamma,
+                                            },
+                                            .lut_params = .{
+                                                @as(f32, if (self.editor_viewport_state.lut_enabled) 1.0 else 0.0),
+                                                self.editor_viewport_state.lut_intensity,
+                                                1.0,
+                                                0.0,
+                                            },
+                                        },
+                                    ) catch {};
+                                    self.graph.recordPassStat(pass_stats, .tonemap_pass, durationNs(tm_start, std.time.nanoTimestamp()), 1, 1);
+                                    dispatched_tonemap_v2 = true;
+                                }
+                            }
+                            if (!dispatched_tonemap_v2) {
+                                const bloom_input = if (bloom_enabled) self.scene_viewport.bloom().? else hdr_input_for_post;
+                                const lut_texture = self.tonemap_pass.lutTexture(self.editor_viewport_state.lut_preset) orelse return error.TextureNotFound;
+                                const tonemap_target: rhi_mod.ColorTarget = if (fxaa_enabled)
+                                    .{ .texture = self.scene_viewport.fxaa().? }
+                                else
+                                    scene_color_target;
+                                try self.tonemap_pass.syncTextures(&self.rhi, hdr_input_for_post, bloom_input, lut_texture);
+                                const tonemap_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(tonemap_target));
+                                self.tonemap_pass.draw(
+                                    &self.rhi,
+                                    frame,
+                                    tonemap_render_pass,
+                                    self.editor_viewport_state.exposure_enabled,
+                                    self.editor_viewport_state.exposure,
+                                    bloom_enabled,
+                                    self.editor_viewport_state.bloom_intensity,
+                                    self.editor_viewport_state.color_grading_enabled,
+                                    self.editor_viewport_state.color_grading_saturation,
+                                    self.editor_viewport_state.color_grading_contrast,
+                                    self.editor_viewport_state.color_grading_gamma,
+                                    self.editor_viewport_state.lut_enabled,
+                                    self.editor_viewport_state.lut_intensity,
+                                );
+                                self.rhi.endRenderPass(tonemap_render_pass);
+                            }
                         }
 
                         if (fxaa_enabled) {

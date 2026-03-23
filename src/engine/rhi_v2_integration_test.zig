@@ -6,6 +6,7 @@ const binding_cache = @import("rhi/binding_cache.zig");
 const ssao_v2 = @import("render/ssao_compute_pass_v2.zig");
 const fullscreen_post_v2 = @import("render/fullscreen_post_pass_v2.zig");
 const bloom_pass_v2 = @import("render/bloom_pass_v2.zig");
+const tonemap_pass_v2 = @import("render/tonemap_pass_v2.zig");
 const render_graph = @import("render/render_graph.zig");
 
 test "metal backend compute queue submission path" {
@@ -177,4 +178,91 @@ test "bloom pass v2 two-set pipeline submission" {
 
     // Verify cache was populated: 2 binding sets created
     try std.testing.expect(device.bindingSetCacheEntryCount() >= 2);
+}
+
+test "binding set cache FIFO eviction at capacity" {
+    var cache = binding_cache.BindingSetCache.init(std.testing.allocator);
+    defer cache.deinit();
+
+    // Fill cache to max_entries
+    const max = binding_cache.BindingSetCache.max_entries;
+    var i: u32 = 0;
+    while (i < max) : (i += 1) {
+        try cache.putByHash(@as(u64, i) + 1, cache.nextSyntheticId());
+    }
+    try std.testing.expectEqual(max, cache.entryCount());
+    try std.testing.expectEqual(@as(u64, 0), cache.stats.evictions);
+
+    // One more insert triggers eviction
+    try cache.putByHash(999_999, cache.nextSyntheticId());
+    try std.testing.expectEqual(max, cache.entryCount());
+    try std.testing.expectEqual(@as(u64, 1), cache.stats.evictions);
+
+    // The oldest hash (1) should be gone
+    try std.testing.expectEqual(@as(?u32, null), cache.getByHash(1));
+    // The newest should be present
+    try std.testing.expect(cache.getByHash(999_999) != null);
+}
+
+test "tonemap pass v2 three-set pipeline submission" {
+    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
+    defer backend.deinit();
+
+    var device = backend.createDevice();
+    defer device.deinit();
+
+    try tonemap_pass_v2.TonemapPassV2.execute(
+        std.testing.allocator,
+        &device,
+        null,
+        6001,
+        6002,
+        .{},
+    );
+    try std.testing.expectEqual(rhi.QueueClass.graphics, backend.last_submit_queue.?);
+
+    // 3 binding sets should be cached
+    try std.testing.expect(device.bindingSetCacheEntryCount() >= 3);
+}
+
+test "setPassBindingConstraints injects constraints into compiled graph" {
+    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
+    defer backend.deinit();
+
+    var device = backend.createDevice();
+    defer device.deinit();
+
+    const layout_id = try device.createBindingLayout(.{
+        .entries = &.{.{
+            .slot = 0,
+            .binding_type = .texture,
+            .stage = .fragment,
+        }},
+    });
+    _ = try device.resolvePipelineLayout(&.{layout_id});
+
+    var graph = render_graph.RenderGraph.init(std.testing.allocator);
+    defer graph.deinit();
+
+    _ = try graph.addResource(.{ .name = "Color", .kind = .scene_color });
+    try graph.addPass(.{
+        .name = "Tonemap",
+        .kind = .tonemap_pass,
+    });
+    try graph.compile();
+
+    // Before injection: no constraints → no errors (nothing to check)
+    const errors_before = try graph.validateSlotLayoutConstraints(std.testing.allocator, &device);
+    defer std.testing.allocator.free(errors_before);
+    try std.testing.expectEqual(@as(usize, 0), errors_before.len);
+
+    // Inject constraints at runtime
+    try graph.setPassBindingConstraints(.tonemap_pass, &.{
+        .{ .slot = 0, .expected_layout_id = layout_id.id },
+    });
+
+    // After injection with matching layout: still no errors
+    const errors_after = try graph.validateSlotLayoutConstraints(std.testing.allocator, &device);
+    defer std.testing.allocator.free(errors_after);
+    try std.testing.expectEqual(@as(usize, 0), errors_after.len);
 }

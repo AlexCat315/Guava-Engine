@@ -124,6 +124,9 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
         if (gui.menuItem(state.text(.settings), null, state.settings_open, true)) {
             state.settings_open = !state.settings_open;
         }
+        if (gui.menuItem("RHI v2 Stats", null, state.rhi_v2_stats_open, true)) {
+            state.rhi_v2_stats_open = !state.rhi_v2_stats_open;
+        }
         if (gui.beginMenu(state.text(.layout))) {
             defer gui.endMenu();
             if (gui.menuItem(state.text(.load_default_layout), null, false, true)) {

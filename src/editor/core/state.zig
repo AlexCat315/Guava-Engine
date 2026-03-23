@@ -394,6 +394,7 @@ pub const EditorState = struct {
     particle_editor_open: bool = false,
     physics_visualization_open: bool = false,
     post_process_editor_open: bool = false,
+    rhi_v2_stats_open: bool = false,
     prefab_editor_open: bool = false,
     camera_bookmarks_open: bool = false,
     script_editor_open: bool = false,

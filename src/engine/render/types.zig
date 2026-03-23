@@ -104,6 +104,7 @@ pub const EditorViewportState = struct {
     lut_enabled: bool = false,
     lut_intensity: f32 = 1.0,
     lut_preset: EditorViewportLutPreset = .neutral,
+    tonemap_use_rhi_v2: bool = false,
 };
 
 pub const SceneSnapshot = struct {

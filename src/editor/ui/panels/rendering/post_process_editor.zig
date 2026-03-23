@@ -16,6 +16,7 @@ pub const PostProcessEffect = enum {
     dof,
     color_grading,
     contact_shadows,
+    tonemap,
 };
 
 pub const PostProcessEffectNode = struct {
@@ -49,6 +50,7 @@ pub const PostProcessEffectNode = struct {
             .dof => "DOF",
             .color_grading => "Color Grading",
             .contact_shadows => "Contact Shadows",
+            .tonemap => "Tonemap",
         };
     }
 
@@ -62,6 +64,7 @@ pub const PostProcessEffectNode = struct {
             .dof => .{ 0.8, 0.6, 0.4, 1.0 },
             .color_grading => .{ 1.0, 0.6, 0.8, 1.0 },
             .contact_shadows => .{ 0.5, 0.5, 0.5, 1.0 },
+            .tonemap => .{ 1.0, 0.9, 0.5, 1.0 },
         };
     }
 };
@@ -346,6 +349,9 @@ fn drawEffectParameters(viewport_state: *EditorViewportState, node: *PostProcess
                 _ = props.float("Thickness", &viewport_state.contact_shadows_thickness, 0.01, 0.01, 0.5);
                 _ = props.float("Intensity", &viewport_state.contact_shadows_intensity, 0.05, 0.0, 1.0);
                 _ = props.float("Bias", &viewport_state.contact_shadows_bias, 0.005, 0.0, 0.1);
+            },
+            .tonemap => {
+                _ = props.boolean("RHI v2 Path", &viewport_state.tonemap_use_rhi_v2);
             },
         }
     }

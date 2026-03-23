@@ -393,6 +393,33 @@ pub const RenderGraph = struct {
         });
     }
 
+    /// Inject binding constraints into a compiled pass by kind.
+    /// Use this when layout IDs are only known after device initialization.
+    pub fn setPassBindingConstraints(
+        self: *RenderGraph,
+        kind: PassKind,
+        constraints: []const SlotLayoutConstraint,
+    ) !void {
+        // Update source pass first (owns the allocation).
+        for (self.passes.items) |*pass| {
+            if (pass.kind == kind) {
+                self.allocator.free(pass.binding_constraints);
+                pass.binding_constraints = try self.allocator.dupe(SlotLayoutConstraint, constraints);
+
+                // Compiled pass shares source pass pointer — update it too.
+                if (self.compiled) |*compiled| {
+                    for (compiled.execution) |*cp| {
+                        if (cp.kind == kind) {
+                            cp.binding_constraints = pass.binding_constraints;
+                            break;
+                        }
+                    }
+                }
+                return;
+            }
+        }
+    }
+
     /// Topologically compiles the render graph into an execution plan.
     ///
     /// Algorithm:

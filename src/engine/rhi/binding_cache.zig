@@ -66,8 +66,12 @@ pub const BindingSetCache = struct {
         hash: u64,
     };
 
+    pub const max_entries: u32 = 1024;
+
     allocator: std.mem.Allocator,
     map: std.AutoHashMap(Key, u32),
+    /// FIFO eviction ring: stores hashes in insertion order.
+    insertion_order: std.ArrayList(u64),
     next_id: u32 = 1,
     stats: BindingSetCacheStats = .{},
 
@@ -75,10 +79,12 @@ pub const BindingSetCache = struct {
         return .{
             .allocator = allocator,
             .map = std.AutoHashMap(Key, u32).init(allocator),
+            .insertion_order = std.ArrayList(u64).empty,
         };
     }
 
     pub fn deinit(self: *BindingSetCache) void {
+        self.insertion_order.deinit(self.allocator);
         self.map.deinit();
         self.* = undefined;
     }
@@ -93,7 +99,14 @@ pub const BindingSetCache = struct {
     }
 
     pub fn putByHash(self: *BindingSetCache, hash: u64, binding_set_id: u32) !void {
+        // Evict oldest entry when at capacity
+        if (self.map.count() >= max_entries and self.insertion_order.items.len > 0) {
+            const oldest_hash = self.insertion_order.orderedRemove(0);
+            _ = self.map.remove(.{ .hash = oldest_hash });
+            self.stats.evictions += 1;
+        }
         try self.map.put(.{ .hash = hash }, binding_set_id);
+        try self.insertion_order.append(self.allocator, hash);
     }
 
     pub fn nextSyntheticId(self: *BindingSetCache) u32 {
