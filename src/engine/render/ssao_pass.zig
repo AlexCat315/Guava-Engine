@@ -83,8 +83,8 @@ pub const SSAOPass = struct {
         depth_texture: *const rhi_mod.Texture,
         normal_texture: ?*const rhi_mod.Texture,
     ) !void {
-        const depth_handle = @intFromPtr(depth_texture.raw);
-        const normal_handle = if (normal_texture) |nt| @intFromPtr(nt.raw) else 0;
+        const depth_handle = depth_texture.id;
+        const normal_handle = if (normal_texture) |nt| nt.id else 0;
 
         if (self.bind_group != null and self.bound_depth_handle == depth_handle and self.bound_normal_handle == normal_handle) {
             return;

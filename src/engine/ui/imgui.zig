@@ -3,6 +3,8 @@ const rhi_mod = @import("../rhi/device.zig");
 const rhi_types = @import("../rhi/types.zig");
 const sdl = @import("../platform/sdl.zig").c;
 const window_mod = @import("../platform/window.zig");
+const command_buffer_mod = @import("../rhi/command_buffer.zig");
+const device_mod = @import("../rhi/device.zig");
 
 pub const c = @cImport({
     @cInclude("imgui_bridge.h");
@@ -135,7 +137,7 @@ pub const WindowFlags = struct {
 pub fn init(window: *window_mod.Window, device: *rhi_mod.RhiDevice) Error!void {
     if (!c.guava_imgui_init(
         @ptrCast(window.handle),
-        @ptrCast(device.raw),
+        @ptrCast(device.device),
         textureFormatToSdl(device.runtimeInfo().swapchain_format),
     )) {
         return error.ImGuiInitFailed;
@@ -184,12 +186,15 @@ pub fn editorPrefPathAlloc(allocator: std.mem.Allocator) (error{PreferencePathUn
     return allocator.dupe(u8, std.mem.span(pref_path));
 }
 
-pub fn render(command_buffer: *sdl.SDL_GPUCommandBuffer, render_pass: *sdl.SDL_GPURenderPass) void {
-    c.guava_imgui_render(@ptrCast(command_buffer), @ptrCast(render_pass));
+pub fn render(cmd_buffer: *const command_buffer_mod.CommandBuffer, render_pass: *const device_mod.RenderPass) void {
+    // TODO (Phase 4): Implement imgui drawing with new CommandBuffer encoding
+    _ = cmd_buffer;
+    _ = render_pass;
 }
 
-pub fn prepare(command_buffer: *sdl.SDL_GPUCommandBuffer) void {
-    c.guava_imgui_prepare(@ptrCast(command_buffer));
+pub fn prepare(cmd_buffer: *const command_buffer_mod.CommandBuffer) void {
+    // TODO (Phase 4): Implement imgui rendering with new CommandBuffer system
+    _ = cmd_buffer;
 }
 
 pub fn wantsCaptureMouse() bool {
@@ -365,7 +370,7 @@ pub fn imageButton(id: []const u8, texture: *const rhi_mod.Texture, width: f32, 
     return c.guava_imgui_image_button(
         id.ptr,
         id.len,
-        @ptrCast(texture.raw),
+        @ptrFromInt(@as(usize, texture.id)),
         width,
         height,
         bg_tint[0],
@@ -527,7 +532,7 @@ pub fn treeNodeEntity(
         id,
         label.ptr,
         label.len,
-        if (icon_texture) |value| @ptrCast(value.raw) else null,
+        if (icon_texture) |value| @ptrFromInt(@as(usize, value.id)) else null,
         icon_size,
         selected,
         leaf,
@@ -674,7 +679,7 @@ pub fn setScrollHereY(center_y_ratio: f32) void {
 }
 
 pub fn image(texture: *const rhi_mod.Texture, width: f32, height: f32) void {
-    c.guava_imgui_image(@ptrCast(texture.raw), width, height);
+    c.guava_imgui_image(@ptrFromInt(@as(usize, texture.id)), width, height);
 }
 
 pub fn drawViewCube(view: *const [16]f32, position: [2]f32, size: f32) ViewCubeResult {

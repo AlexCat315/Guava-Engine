@@ -106,10 +106,10 @@ pub const TAAPass = struct {
         velocity_texture: ?*const rhi_mod.Texture,
         depth_texture: ?*const rhi_mod.Texture,
     ) !void {
-        const color_handle = @intFromPtr(color_texture.raw);
-        const history_handle = if (self.history_texture) |ht| @intFromPtr(ht.raw) else 0;
-        const velocity_handle = if (velocity_texture) |vt| @intFromPtr(vt.raw) else 0;
-        const depth_handle = if (depth_texture) |dt| @intFromPtr(dt.raw) else 0;
+        const color_handle = color_texture.id;
+        const history_handle = if (self.history_texture) |ht| ht.id else 0;
+        const velocity_handle = if (velocity_texture) |vt| vt.id else 0;
+        const depth_handle = if (depth_texture) |dt| dt.id else 0;
 
         if (self.bind_group != null and
             self.bound_color_handle == color_handle and

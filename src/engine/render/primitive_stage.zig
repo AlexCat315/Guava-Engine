@@ -173,7 +173,7 @@ pub const PrimitiveStage = struct {
         }
 
         const camera_state = chooseCamera(scene);
-        const aspect_ratio = if (frame.height == 0) 1.0 else @as(f32, @floatFromInt(frame.width)) / @as(f32, @floatFromInt(frame.height));
+        const aspect_ratio = if (frame.swapchain_image.height == 0) 1.0 else @as(f32, @floatFromInt(frame.swapchain_image.width)) / @as(f32, @floatFromInt(frame.swapchain_image.height));
         const view_projection = math.mul(
             math.projectionForCamera(camera_state.camera, aspect_ratio),
             math.viewMatrix(camera_state.transform),

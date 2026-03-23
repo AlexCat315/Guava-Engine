@@ -1786,7 +1786,7 @@ pub const Renderer = struct {
         const result = blk: {
             const frame = try self.rhi.beginFrame();
             const clear = clearAndDepthForScene(snapshot, self.passCount());
-            const has_swapchain = frame.swapchain_texture != null;
+            const has_swapchain = frame.swapchain_image.id != 0;
 
             if (!self.depth_prepass.isReady() or !self.base_pass.isReady()) {
                 if (has_swapchain) {
@@ -1805,8 +1805,8 @@ pub const Renderer = struct {
 
             const viewport_active = self.scene_viewport.active();
             const can_render_scene = viewport_active or has_swapchain;
-            const render_width = if (viewport_active) self.scene_viewport.width else frame.width;
-            const render_height = if (viewport_active) self.scene_viewport.height else frame.height;
+            const render_width = if (viewport_active) self.scene_viewport.width else frame.swapchain_image.width;
+            const render_height = if (viewport_active) self.scene_viewport.height else frame.swapchain_image.height;
             var draw_stats = mesh_pass_mod.DrawStats{};
 
             if (can_render_scene) {
@@ -2476,7 +2476,7 @@ pub const Renderer = struct {
             draw_stats.add(thumbnail_stats);
 
             if (has_swapchain) {
-                imgui_mod.prepare(frame.command_buffer);
+                imgui_mod.prepare(&frame.command_buffer);
                 const ui_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
                     .color = .{
                         .target = .swapchain,
@@ -2487,7 +2487,7 @@ pub const Renderer = struct {
                     .depth = null,
                 });
                 const ui_start = std.time.nanoTimestamp();
-                imgui_mod.render(frame.command_buffer, ui_pass.raw);
+                imgui_mod.render(&frame.command_buffer, &ui_pass);
                 self.graph.recordPassStat(pass_stats, .ui_overlay, durationNs(ui_start, std.time.nanoTimestamp()), 0, 0);
                 self.rhi.endRenderPass(ui_pass);
             }
@@ -3452,118 +3452,19 @@ pub const Renderer = struct {
     ///
     /// Thread-safety: NOT thread-safe. Must be called from render thread.
     pub fn downloadFinalFrameAlloc(self: *Renderer, allocator: std.mem.Allocator) ![]u8 {
-        const texture = self.scene_viewport.color_texture orelse return error.TextureNotFound;
-        const width = texture.desc.width;
-        const height = texture.desc.height;
-        const pixel_count = width * height;
-        const byte_count = pixel_count * 4;
-
-        var transfer_buffer = try self.rhi.createTransferBuffer(.{
-            .size = byte_count,
-            .upload = false,
-        });
-        defer self.rhi.releaseTransferBuffer(&transfer_buffer);
-
-        const command_buffer = self.rhi.acquireCommandBuffer() orelse return error.CommandBufferAcquireFailed;
-        const copy_pass = try self.rhi.beginCopyPass(.{
-            .command_buffer = command_buffer,
-            .swapchain_texture = null,
-            .width = width,
-            .height = height,
-        });
-
-        const source = sdl.SDL_GPUTextureRegion{
-            .texture = texture.raw,
-            .mip_level = 0,
-            .layer = 0,
-            .x = 0,
-            .y = 0,
-            .z = 0,
-            .w = width,
-            .h = height,
-            .d = 1,
-        };
-        const destination = sdl.SDL_GPUTextureTransferInfo{
-            .transfer_buffer = transfer_buffer.raw,
-            .offset = 0,
-            .pixels_per_row = width,
-            .rows_per_layer = height,
-        };
-        sdl.SDL_DownloadFromGPUTexture(copy_pass.raw, &source, &destination);
-
-        self.rhi.endCopyPass(copy_pass);
-        if (!self.rhi.submitCommandBuffer(command_buffer)) return error.CommandBufferSubmitFailed;
-        _ = self.rhi.waitForIdle();
-
-        const rgba_data = try allocator.alloc(u8, byte_count);
-        defer allocator.free(rgba_data);
-        try self.rhi.readTransferBufferBytes(&transfer_buffer, rgba_data);
-
-        // Convert RGBA to PPM (RGB)
-        var ppm_data = try allocator.alloc(u8, 128 + pixel_count * 3);
-        defer allocator.free(ppm_data);
-        var fbs = std.io.fixedBufferStream(ppm_data);
-        const writer = fbs.writer();
-        try writer.print("P6\n{d} {d}\n255\n", .{ width, height });
-
-        // Batch convert RGBA to RGB and write all at once
-        const rgb_data = try allocator.alloc(u8, pixel_count * 3);
-        defer allocator.free(rgb_data);
-        var rgb_index: usize = 0;
-        var rgba_index: usize = 0;
-        while (rgba_index < rgba_data.len) : (rgba_index += 4) {
-            rgb_data[rgb_index] = rgba_data[rgba_index];
-            rgb_data[rgb_index + 1] = rgba_data[rgba_index + 1];
-            rgb_data[rgb_index + 2] = rgba_data[rgba_index + 2];
-            rgb_index += 3;
-        }
-        try writer.writeAll(rgb_data);
-        return try allocator.dupe(u8, ppm_data[0..fbs.pos]);
+        // TODO (Phase 4): Full rewrite for new RHI readback path.
+        _ = self;
+        _ = allocator;
+        return error.NotImplemented;
     }
 
     /// Download final frame pixels as raw BGRA byte data from the LDR color texture.
     /// Returns allocated byte slice (caller owns memory).
     pub fn downloadFramePixelsAlloc(self: *Renderer, allocator: std.mem.Allocator) !FramePixels {
-        const texture = self.scene_viewport.color_texture orelse return error.TextureNotFound;
-        const width = texture.desc.width;
-        const height = texture.desc.height;
-        const byte_count = width * height * 4;
-
-        var transfer_buffer = try self.rhi.createTransferBuffer(.{
-            .size = byte_count,
-            .upload = false,
-        });
-        defer self.rhi.releaseTransferBuffer(&transfer_buffer);
-
-        const command_buffer = self.rhi.acquireCommandBuffer() orelse return error.CommandBufferAcquireFailed;
-        const copy_pass = try self.rhi.beginCopyPass(.{
-            .command_buffer = command_buffer,
-            .swapchain_texture = null,
-            .width = width,
-            .height = height,
-        });
-
-        const source = sdl.SDL_GPUTextureRegion{
-            .texture = texture.raw,
-            .w = width,
-            .h = height,
-            .d = 1,
-        };
-        const destination = sdl.SDL_GPUTextureTransferInfo{
-            .transfer_buffer = transfer_buffer.raw,
-            .pixels_per_row = width,
-            .rows_per_layer = height,
-        };
-        sdl.SDL_DownloadFromGPUTexture(copy_pass.raw, &source, &destination);
-
-        self.rhi.endCopyPass(copy_pass);
-        if (!self.rhi.submitCommandBuffer(command_buffer)) return error.CommandBufferSubmitFailed;
-        _ = self.rhi.waitForIdle();
-
-        const data = try allocator.alloc(u8, byte_count);
-        try self.rhi.readTransferBufferBytes(&transfer_buffer, data);
-
-        return .{ .data = data, .width = width, .height = height };
+        // TODO (Phase 4): Full rewrite for new RHI readback path.
+        _ = self;
+        _ = allocator;
+        return error.NotImplemented;
     }
 
     pub const FramePixels = struct {

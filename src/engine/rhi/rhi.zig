@@ -249,6 +249,7 @@ pub const DeviceVTable = struct {
     create_sampler: *const fn (ctx: *anyopaque, desc: SamplerDesc) Error!Sampler,
     destroy_sampler: *const fn (ctx: *anyopaque, sampler: Sampler) void,
     upload_buffer_data: *const fn (ctx: *anyopaque, buffer: Buffer, offset: u64, data: []const u8) Error!void,
+    upload_texture_data: ?*const fn (ctx: *anyopaque, texture: Texture, data: []const u8, width: u32, height: u32, bytes_per_row: u32) Error!void = null,
     register_binding_set: ?*const fn (ctx: *anyopaque, set_id: u32, layout_entries: []const BindingLayoutEntry, set_entries: []const BindingSetEntry) void = null,
 };
 
@@ -424,6 +425,11 @@ pub const Device = struct {
 
     pub fn uploadBufferData(self: *const Device, buffer: Buffer, offset: u64, data: []const u8) Error!void {
         return self.vtable.upload_buffer_data(self.ctx, buffer, offset, data);
+    }
+
+    pub fn uploadTextureData(self: *const Device, texture: Texture, data: []const u8, width: u32, height: u32, bytes_per_row: u32) Error!void {
+        const func = self.vtable.upload_texture_data orelse return error.UnsupportedFeature;
+        return func(self.ctx, texture, data, width, height, bytes_per_row);
     }
 
     pub fn resolvePipelineLayout(

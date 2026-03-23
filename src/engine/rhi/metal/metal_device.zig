@@ -33,6 +33,7 @@ pub const MetalDevice = struct {
         extern fn guava_metal_rhi_destroy_compute_pipeline(ctx: *anyopaque, id: u32) void;
         // Data upload
         extern fn guava_metal_rhi_upload_buffer_data(ctx: *anyopaque, buffer_id: u32, offset: u64, data: [*]const u8, size: u64) bool;
+        extern fn guava_metal_rhi_upload_texture_data(ctx: *anyopaque, texture_id: u32, data: [*]const u8, size: u64, width: u32, height: u32, bytes_per_row: u32) bool;
         // Binding set registration
         extern fn guava_metal_rhi_register_binding_set(ctx: *anyopaque, set_id: u32, entries: [*]const BindingEntryC, count: u32) void;
         // Command submission
@@ -470,6 +471,19 @@ fn vtRegisterBindingSet(ctx: *anyopaque, set_id: u32, layout_entries: []const rh
     self.registerBindingSet(set_id, layout_entries, set_entries);
 }
 
+fn vtUploadTextureData(ctx: *anyopaque, texture: rhi.Texture, data: []const u8, width: u32, height: u32, bytes_per_row: u32) rhi.Error!void {
+    const self: *MetalDevice = @ptrCast(@alignCast(ctx));
+    if (!MetalDevice.bridge.guava_metal_rhi_upload_texture_data(
+        self.bridge_ctx,
+        texture.id,
+        data.ptr,
+        data.len,
+        width,
+        height,
+        bytes_per_row,
+    )) return error.InvalidArgument;
+}
+
 const device_vtable = rhi.DeviceVTable{
     .create_buffer = vtCreateBuffer,
     .create_texture = vtCreateTexture,
@@ -488,5 +502,6 @@ const device_vtable = rhi.DeviceVTable{
     .create_sampler = vtCreateSampler,
     .destroy_sampler = vtDestroySampler,
     .upload_buffer_data = vtUploadBufferData,
+    .upload_texture_data = vtUploadTextureData,
     .register_binding_set = vtRegisterBindingSet,
 };

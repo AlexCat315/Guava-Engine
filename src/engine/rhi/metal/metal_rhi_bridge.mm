@@ -195,6 +195,10 @@ enum RhiOpCode : uint8_t {
     OP_DISPATCH           = 12,
     OP_DISPATCH_INDIRECT  = 13,
     OP_PIPELINE_BARRIER   = 14,
+    OP_DRAW               = 15,
+    OP_PUSH_UNIFORM       = 16,
+    OP_SET_VIEWPORT       = 17,
+    OP_SET_SCISSOR        = 18,
 };
 
 // Packed command structs (must match command_buffer.zig extern struct layout)
@@ -211,6 +215,10 @@ struct CmdDrawIndirect     { uint32_t buffer_id; uint32_t offset; uint32_t draw_
 struct CmdDispatch         { uint32_t x; uint32_t y; uint32_t z; };
 struct CmdDispatchIndirect { uint32_t buffer_id; uint32_t offset; };
 struct CmdPipelineBarrier  { uint32_t resource_id; uint32_t src_state_bits; uint32_t dst_state_bits; uint8_t src_queue; uint8_t dst_queue; uint16_t _padding; };
+struct CmdDraw             { uint32_t vertex_count; uint32_t instance_count; uint32_t first_vertex; uint32_t first_instance; };
+struct CmdPushUniform      { uint8_t stage; uint8_t slot; uint16_t _pad; uint32_t data_len; /* followed by data_len bytes */ };
+struct CmdSetViewport      { float x; float y; float w; float h; float min_depth; float max_depth; };
+struct CmdSetScissor       { uint32_t x; uint32_t y; uint32_t w; uint32_t h; };
 #pragma pack(pop)
 
 // Max entries per binding set slot in the Metal argument table
@@ -578,6 +586,41 @@ bool guava_metal_rhi_upload_buffer_data(void* raw, uint32_t buffer_id,
     return true;
 }
 
+bool guava_metal_rhi_upload_texture_data(void* raw, uint32_t texture_id,
+                                         const uint8_t* data, uint64_t size,
+                                         uint32_t width, uint32_t height,
+                                         uint32_t bytes_per_row) {
+    @autoreleasepool {
+        auto* ctx = static_cast<GuavaMetalRhiContext*>(raw);
+        auto it = ctx->textures.find(texture_id);
+        if (it == ctx->textures.end()) return false;
+
+        id<MTLTexture> tex = it->second;
+
+        // Use a staging buffer + blit encoder for non-shared textures
+        id<MTLBuffer> staging = [ctx->device newBufferWithBytes:data
+                                                        length:(NSUInteger)size
+                                                       options:MTLResourceStorageModeShared];
+        if (!staging) return false;
+
+        id<MTLCommandBuffer> cmdBuf = [ctx->graphics_queue commandBuffer];
+        id<MTLBlitCommandEncoder> blit = [cmdBuf blitCommandEncoder];
+        [blit copyFromBuffer:staging
+                sourceOffset:0
+           sourceBytesPerRow:bytes_per_row
+         sourceBytesPerImage:(NSUInteger)(bytes_per_row * height)
+                  sourceSize:MTLSizeMake(width, height, 1)
+                   toTexture:tex
+            destinationSlice:0
+            destinationLevel:0
+           destinationOrigin:MTLOriginMake(0, 0, 0)];
+        [blit endEncoding];
+        [cmdBuf commit];
+        [cmdBuf waitUntilCompleted];
+        return true;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Binding set registration
 // ---------------------------------------------------------------------------
@@ -616,6 +659,15 @@ struct CmdDecoder {
             cursor += sizeof(T);
         }
         return val;
+    }
+
+    const uint8_t* peek(uint32_t n) const {
+        if (cursor + n > len) return nullptr;
+        return data + cursor;
+    }
+
+    void skip(uint32_t n) {
+        cursor = std::min(cursor + n, len);
     }
 };
 
@@ -915,6 +967,49 @@ bool guava_metal_rhi_submit(void* raw, uint32_t queue_class,
             }
             case OP_PIPELINE_BARRIER: {
                 dec.read<CmdPipelineBarrier>(); // state tracking only for now
+                break;
+            }
+            case OP_DRAW: {
+                auto cmd = dec.read<CmdDraw>();
+                if (renderEnc) {
+                    [renderEnc drawPrimitives:MTLPrimitiveTypeTriangle
+                                 vertexStart:cmd.first_vertex
+                                 vertexCount:cmd.vertex_count
+                               instanceCount:cmd.instance_count
+                                baseInstance:cmd.first_instance];
+                }
+                break;
+            }
+            case OP_PUSH_UNIFORM: {
+                auto hdr = dec.read<CmdPushUniform>();
+                const uint8_t* data = dec.peek(hdr.data_len);
+                if (!data) { return false; }
+                dec.skip(hdr.data_len);
+                if (renderEnc) {
+                    if (hdr.stage == 0) { // vertex
+                        [renderEnc setVertexBytes:data length:hdr.data_len atIndex:hdr.slot];
+                    } else if (hdr.stage == 1) { // fragment
+                        [renderEnc setFragmentBytes:data length:hdr.data_len atIndex:hdr.slot];
+                    }
+                } else if (computeEnc) {
+                    [computeEnc setBytes:data length:hdr.data_len atIndex:hdr.slot];
+                }
+                break;
+            }
+            case OP_SET_VIEWPORT: {
+                auto cmd = dec.read<CmdSetViewport>();
+                if (renderEnc) {
+                    MTLViewport vp = { cmd.x, cmd.y, cmd.w, cmd.h, cmd.min_depth, cmd.max_depth };
+                    [renderEnc setViewport:vp];
+                }
+                break;
+            }
+            case OP_SET_SCISSOR: {
+                auto cmd = dec.read<CmdSetScissor>();
+                if (renderEnc) {
+                    MTLScissorRect sr = { cmd.x, cmd.y, cmd.w, cmd.h };
+                    [renderEnc setScissorRect:sr];
+                }
                 break;
             }
             default:

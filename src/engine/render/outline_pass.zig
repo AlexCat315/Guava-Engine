@@ -63,7 +63,7 @@ pub const OutlinePass = struct {
         device: *rhi_mod.RhiDevice,
         id_texture: *const rhi_mod.Texture,
     ) !void {
-        const texture_handle = @intFromPtr(id_texture.raw);
+        const texture_handle = id_texture.id;
         if (self.bind_group != null and self.bound_texture_handle == texture_handle) {
             return;
         }

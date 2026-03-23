@@ -52,7 +52,7 @@ pub const RtShadowCompositePass = struct {
         device: *rhi_mod.RhiDevice,
         shadow_mask_texture: *const rhi_mod.Texture,
     ) !void {
-        const handle = @intFromPtr(shadow_mask_texture.raw);
+        const handle = shadow_mask_texture.id;
         if (self.bind_group != null and self.bound_texture_handle == handle) return;
 
         if (self.bind_group) |*bg| device.releaseBindGroup(bg);
