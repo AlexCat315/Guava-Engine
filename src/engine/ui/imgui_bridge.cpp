@@ -285,13 +285,13 @@ void build_default_dock_layout() {
 
   ImGuiID dock_main = g_dockspace_id;
 
-  // 1) Bottom workspace strip (Project / Console / Timeline tabs) — 22% height.
+  // 1) Bottom workspace strip (Project / Console / Timeline tabs) — 18% height.
   ImGuiID dock_bottom = ImGui::DockBuilderSplitNode(
-      dock_main, ImGuiDir_Down, 0.22f, nullptr, &dock_main);
+      dock_main, ImGuiDir_Down, 0.18f, nullptr, &dock_main);
 
-  // 2) Left sidebar: Scene hierarchy + Place Actors — 18% width.
+  // 2) Left sidebar: Scene hierarchy + Place Actors — 20% width.
   ImGuiID dock_left = ImGui::DockBuilderSplitNode(
-      dock_main, ImGuiDir_Left, 0.18f, nullptr, &dock_main);
+      dock_main, ImGuiDir_Left, 0.20f, nullptr, &dock_main);
 
   // 3) Right sidebar: Inspector (top 60%) + Jarvis Terminal (bottom 40%) — 26% width.
   ImGuiID dock_right = ImGui::DockBuilderSplitNode(
@@ -425,9 +425,9 @@ void apply_guava_editor_style(float content_scale) {
   colors[ImGuiCol_Border] = make_color(58, 64, 75, 120);
   colors[ImGuiCol_BorderShadow] = make_color(0, 0, 0, 0);
 
-  colors[ImGuiCol_FrameBg] = make_color(18, 19, 21);
-  colors[ImGuiCol_FrameBgHovered] = make_color(45, 90, 160, 160);
-  colors[ImGuiCol_FrameBgActive] = make_color(35, 70, 130, 180);
+  colors[ImGuiCol_FrameBg] = make_color(30, 32, 36);
+  colors[ImGuiCol_FrameBgHovered] = make_color(40, 55, 48);
+  colors[ImGuiCol_FrameBgActive] = make_color(30, 65, 48);
   colors[ImGuiCol_TitleBg] = make_color(22, 23, 26);
   colors[ImGuiCol_TitleBgActive] = make_color(30, 32, 36);
   colors[ImGuiCol_TitleBgCollapsed] = make_color(20, 21, 23, 180);
@@ -457,9 +457,9 @@ void apply_guava_editor_style(float content_scale) {
   colors[ImGuiCol_HeaderActive] = make_color(34, 205, 100, 160);
 
   // Tab colors
-  colors[ImGuiCol_TabHovered] = accent_ai_hover;
+  colors[ImGuiCol_TabHovered] = accent_green_hover;
   colors[ImGuiCol_TabActive] = accent_green;
-  colors[ImGuiCol_TabUnfocusedActive] = accent_ai_dim;
+  colors[ImGuiCol_TabUnfocusedActive] = accent_green_dim;
 
   colors[ImGuiCol_Button] = make_color(45, 48, 54);
   colors[ImGuiCol_ButtonHovered] = make_color(60, 65, 72);
@@ -483,7 +483,7 @@ void apply_guava_editor_style(float content_scale) {
   colors[ImGuiCol_TableBorderLight] = make_color(45, 49, 56);
   colors[ImGuiCol_TableRowBg] = make_color(0, 0, 0, 0);
   colors[ImGuiCol_TableRowBgAlt] = make_color(255, 255, 255, 8);
-  colors[ImGuiCol_TextSelectedBg] = make_color(34, 205, 100, 80);
+  colors[ImGuiCol_TextSelectedBg] = make_color(34, 205, 100, 100);
   colors[ImGuiCol_DragDropTarget] = accent_green_hover;
   colors[ImGuiCol_NavCursor] = accent_green;
   colors[ImGuiCol_NavWindowingHighlight] = make_color(255, 255, 255, 60);
@@ -1543,12 +1543,13 @@ guava_imgui_tree_node_entity(uint64_t id, const char *label, size_t label_len,
   if (selected) {
     const float pulse = 0.5f + 0.5f * std::sin(ImGui::GetTime() * 3.8f);
     const int glow_alpha = 68 + static_cast<int>(pulse * 72.0f);
+    // 使用全行宽度（row_min/row_max），避免高亮被表格列截断
     ImGui::GetWindowDrawList()->AddRect(
-        rect.Min, rect.Max, IM_COL32(114, 170, 255, glow_alpha), 4.0f, 0, 1.6f);
+        row_min, row_max, IM_COL32(34, 205, 100, glow_alpha), 4.0f, 0, 1.6f);
     ImGui::GetWindowDrawList()->AddRect(
-        ImVec2(rect.Min.x - 1.0f, rect.Min.y - 1.0f),
-        ImVec2(rect.Max.x + 1.0f, rect.Max.y + 1.0f),
-        IM_COL32(88, 144, 255, glow_alpha / 2), 5.0f, 0, 2.2f);
+        ImVec2(row_min.x - 1.0f, row_min.y - 1.0f),
+        ImVec2(row_max.x + 1.0f, row_max.y + 1.0f),
+        IM_COL32(34, 180, 90, glow_alpha / 2), 5.0f, 0, 2.2f);
   }
   return result;
 }

@@ -74,12 +74,11 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
     var selection_count_buffer: [32]u8 = undefined;
     const selection_count_text = try std.fmt.bufPrint(&selection_count_buffer, "{d}", .{layer_context.renderer.selectedEntities().len});
 
-    // 采用更精致、低调的筛选区域布局
+    // 精简筛选区域：过滤框 + 选中计数，无冗余按钮
     const controls_width = gui.contentRegionAvail()[0];
-    const show_full_ui = controls_width >= 280.0;
 
-    if (show_full_ui) {
-        gui.setNextItemWidth(controls_width * 0.45);
+    if (controls_width >= 180.0) {
+        gui.setNextItemWidth(controls_width - 40.0);
         _ = gui.inputTextWithHint("##scene_filter", state.text(.scene_filter), state.scene_filter_buffer[0..]);
         gui.sameLineEx(0.0, 8.0);
 
@@ -89,18 +88,6 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
         if (gui.isItemHovered()) {
             gui.setTooltip(state.text(.selection_count));
         }
-
-        gui.sameLineEx(controls_width - 72.0, 0.0);
-        if (gui.buttonEx(state.text(.scene_root), 34.0, 0.0)) {
-            try unparentSelection(state, layer_context);
-        }
-        if (gui.isItemHovered()) gui.setTooltip(state.text(.scene_root));
-
-        gui.sameLineEx(controls_width - 34.0, 4.0);
-        if (gui.buttonEx(state.text(.rename), 34.0, 0.0)) {
-            try beginSelectedHierarchyRename(state, layer_context);
-        }
-        if (gui.isItemHovered()) gui.setTooltip(state.text(.rename));
     } else {
         gui.setNextItemWidth(-1.0);
         _ = gui.inputTextWithHint("##scene_filter", state.text(.scene_filter), state.scene_filter_buffer[0..]);
@@ -208,7 +195,12 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
         }
         utils.syncInspectorNameBuffer(state, layer_context);
         if (!multi_select and layer_context.input.wasMouseDoubleClicked(.left)) {
-            camera.focusSelection(state, layer_context);
+            if (is_selected) {
+                // 双击已选中实体 → 进入重命名
+                beginHierarchyRename(state, layer_context.world, entity_id);
+            } else {
+                camera.focusSelection(state, layer_context);
+            }
         }
     }
 

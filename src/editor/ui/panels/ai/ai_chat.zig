@@ -267,6 +267,14 @@ fn drawProviderSettings(state: *EditorState) void {
         }
     }
 
+    // 统一 + 和 × 按钮样式，与 combo 保持一致的低调风格
+    const action_btn: [4]f32 = .{ 0.22, 0.24, 0.27, 1.0 };
+    const action_btn_hover: [4]f32 = .{ 0.30, 0.33, 0.37, 1.0 };
+    const action_btn_active: [4]f32 = .{ 0.13, 0.80, 0.39, 1.0 };
+    gui.pushStyleColor(.button, action_btn);
+    gui.pushStyleColor(.button_hovered, action_btn_hover);
+    gui.pushStyleColor(.button_active, action_btn_active);
+
     gui.sameLine();
     if (gui.buttonEx("+", btn_w, 0.0)) {
         if (state.ai_provider_count < state.ai_providers.len) {
@@ -276,14 +284,22 @@ fn drawProviderSettings(state: *EditorState) void {
         }
     }
 
+    gui.popStyleColor(3);
+
     gui.sameLine();
     const can_delete = state.ai_provider_count > 1;
-    if (!can_delete) {
-        gui.pushStyleColor(.button, .{ 0.25, 0.26, 0.28, 0.50 });
+    if (can_delete) {
+        gui.pushStyleColor(.button, action_btn);
+        gui.pushStyleColor(.button_hovered, .{ 0.50, 0.22, 0.22, 1.0 });
+        gui.pushStyleColor(.button_active, .{ 0.70, 0.20, 0.20, 1.0 });
+    } else {
+        gui.pushStyleColor(.button, .{ 0.20, 0.21, 0.23, 0.50 });
+        gui.pushStyleColor(.button_hovered, .{ 0.20, 0.21, 0.23, 0.50 });
+        gui.pushStyleColor(.button_active, .{ 0.20, 0.21, 0.23, 0.50 });
         gui.pushStyleColor(.text, .{ 0.38, 0.38, 0.40, 1.0 });
     }
-    const did_delete = gui.buttonEx("×", btn_w, 0.0);
-    if (!can_delete) gui.popStyleColor(2);
+    const did_delete = gui.buttonEx("\xc3\x97", btn_w, 0.0);
+    if (can_delete) gui.popStyleColor(3) else gui.popStyleColor(4);
     if (did_delete and can_delete) {
         var i = active_idx;
         while (i + 1 < state.ai_provider_count) : (i += 1) {

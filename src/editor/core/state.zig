@@ -384,6 +384,8 @@ pub const EditorState = struct {
     viewport_extent: [2]f32 = .{ 1.0, 1.0 }, // 使用 1x1 作为安全默认值，防止除零错误
     viewport_selection_press_active: bool = false,
     viewport_selection_press_mouse: [2]f32 = .{ 0.0, 0.0 },
+    viewport_context_menu_pending: bool = false,
+    viewport_context_menu_mouse: [2]f32 = .{ 0.0, 0.0 },
     active_drag_payload: ?ActiveDragPayload = null,
     pending_viewport_drop: ?PendingViewportDrop = null,
 

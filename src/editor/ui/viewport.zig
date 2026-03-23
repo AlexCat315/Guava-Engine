@@ -137,8 +137,8 @@ fn drawViewportToolbarStrip(state: *EditorState, layer_context: *engine.core.Lay
 
     // 右侧工具组：Undo Source + AI Status + AI Chat + Settings + Transform Space
     // 宽度经过压缩以允许工具栏在 ≥680px 时显示完整布局
-    const undo_source_width: f32 = 100.0;
-    const ai_status_width: f32 = 180.0;
+    const undo_source_width: f32 = 96.0;
+    const ai_status_width: f32 = 160.0;
     const settings_icon: f32 = 28.0;
     const transform_icon: f32 = 28.0;
     const ai_chat_icon: f32 = 28.0;
@@ -263,18 +263,18 @@ fn drawToolbarUndoSourceChip(state: *EditorState) void {
     else
         timeline_mod.TimelineSource.human;
     const label = if (!has_entry)
-        "Undo Source: n/a"
+        "Undo: —"
     else if (source == .ai)
-        "Undo Source: AI"
+        "Undo: AI"
     else
-        "Undo Source: Human";
+        "Undo: Human";
 
     gui.pushStyleColor(.button, .{ 0.16, 0.17, 0.19, 0.92 });
     gui.pushStyleColor(.button_hovered, .{ 0.16, 0.17, 0.19, 0.92 });
     gui.pushStyleColor(.button_active, .{ 0.16, 0.17, 0.19, 0.92 });
     gui.pushStyleColor(.text, source.colorRgba());
     defer gui.popStyleColor(4);
-    _ = gui.buttonEx(label, 132.0, 0.0);
+    _ = gui.buttonEx(label, 96.0, 0.0);
 }
 
 fn drawToolbarAiStatusCapsule(state: *EditorState) void {
@@ -296,17 +296,19 @@ fn drawToolbarAiStatusCapsule(state: *EditorState) void {
         "Bridge unavailable";
 
     var detail_short_buffer: [112]u8 = undefined;
-    const detail_short: []const u8 = if (detail.len <= 36)
+    const detail_short: []const u8 = if (detail.len <= 16)
         detail
     else blk: {
-        const prefix_len = @min(@as(usize, 33), detail.len);
+        const prefix_len: usize = @min(13, detail.len);
         @memcpy(detail_short_buffer[0..prefix_len], detail[0..prefix_len]);
-        @memcpy(detail_short_buffer[prefix_len .. prefix_len + 3], "...");
+        detail_short_buffer[prefix_len] = '.';
+        detail_short_buffer[prefix_len + 1] = '.';
+        detail_short_buffer[prefix_len + 2] = '.';
         break :blk detail_short_buffer[0 .. prefix_len + 3];
     };
 
     var label_buffer: [192]u8 = undefined;
-    const label = std.fmt.bufPrint(&label_buffer, "AI: {s} | {s}", .{ stage_label, detail_short }) catch "AI: Status";
+    const label = std.fmt.bufPrint(&label_buffer, "AI: {s}", .{detail_short}) catch "AI";
 
     const bg: [4]f32 = if (store == null)
         .{ 0.32, 0.20, 0.20, 0.92 }
@@ -323,7 +325,7 @@ fn drawToolbarAiStatusCapsule(state: *EditorState) void {
     gui.pushStyleColor(.button_hovered, bg);
     gui.pushStyleColor(.button_active, bg);
     defer gui.popStyleColor(3);
-    _ = gui.buttonEx(label, 304.0, 0.0);
+    _ = gui.buttonEx(label, 160.0, 0.0);
     if (gui.isItemHovered()) {
         var tip_buffer: [448]u8 = undefined;
         const tip = std.fmt.bufPrint(&tip_buffer, "Stage: {s}\nDetail: {s}", .{ stage_label, detail }) catch detail;
@@ -396,6 +398,9 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
         try ai_collaboration.drawViewportCollaborationOverlay(state, layer_context);
         drawViewportViewCube(state, layer_context);
         logViewportStateChange(state, layer_context);
+
+        // 视口右键上下文菜单
+        try drawViewportContextMenu(state, layer_context);
     } else {
         gui.text(state.text(.viewport_target_is_not_ready_yet));
         logViewportStateChange(state, layer_context);
@@ -629,6 +634,61 @@ fn selectionUpdateModeForInput(input: *const engine.core.InputState) engine.rend
         .toggle
     else
         .replace;
+}
+
+/// 视口右键上下文菜单（仅在右键无拖拽时弹出，不干扰摄像机操作）
+fn drawViewportContextMenu(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const input = layer_context.input;
+    const context_menu_id = "viewport_context_menu";
+
+    // 右键按下时记录位置
+    if (input.wasMousePressed(.right) and state.viewport_hovered and
+        !state.viewport_overlay_hovered and !input.modifiers.alt)
+    {
+        state.viewport_context_menu_pending = true;
+        state.viewport_context_menu_mouse = input.mouse_position;
+    }
+
+    // 右键释放时判断是否为无拖拽点击（阈值 4px）
+    if (state.viewport_context_menu_pending and !input.isMouseDown(.right)) {
+        defer {
+            state.viewport_context_menu_pending = false;
+        }
+        const dx = input.mouse_position[0] - state.viewport_context_menu_mouse[0];
+        const dy = input.mouse_position[1] - state.viewport_context_menu_mouse[1];
+        if (dx * dx + dy * dy <= 16.0) {
+            gui.openPopup(context_menu_id);
+        }
+    }
+
+    if (gui.beginPopup(context_menu_id)) {
+        defer gui.endPopup();
+        const has_selection = layer_context.renderer.selectedEntities().len > 0;
+
+        if (gui.menuItem(state.text(.focus), "F", false, has_selection)) {
+            camera.focusSelection(state, layer_context);
+        }
+        gui.separator();
+        if (gui.menuItem(state.text(.select_tool), "Q", state.manipulation_mode == .none, true)) {
+            try manipulation.selectTool(state, layer_context);
+        }
+        if (gui.menuItem(state.text(.move_tool), "W", state.manipulation_mode == .translate, true)) {
+            try manipulation.beginManipulation(state, layer_context, .translate);
+        }
+        if (gui.menuItem(state.text(.rotate_tool), "E", state.manipulation_mode == .rotate, true)) {
+            try manipulation.beginManipulation(state, layer_context, .rotate);
+        }
+        if (gui.menuItem(state.text(.scale_tool), "R", state.manipulation_mode == .scale, true)) {
+            try manipulation.beginManipulation(state, layer_context, .scale);
+        }
+        gui.separator();
+        if (gui.menuItem(state.text(.delete), null, false, has_selection)) {
+            try history.deleteSelection(state, layer_context);
+        }
+        if (gui.menuItem(state.text(.duplicate), null, false, has_selection)) {
+            try history.duplicateSelection(state, layer_context);
+        }
+    }
 }
 
 pub fn drawEditorUi(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
