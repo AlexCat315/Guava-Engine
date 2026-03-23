@@ -65,4 +65,7 @@ pub const RtParams = extern struct {
     height: u32,
     samples: u32,
     bounces: u32,
+    /// 0 = full path trace, 1 = shadow-only (输出屏幕空间阴影遮罩)
+    mode: u32 = 0,
+    _pad2: [3]u32 = .{ 0, 0, 0 },
 };

@@ -30,6 +30,8 @@ typedef struct {
     uint32_t height;
     uint32_t samples;
     uint32_t bounces;
+    uint32_t mode;      /* 0 = path trace, 1 = shadow only */
+    uint32_t _pad2[3];
 } GuavaRTParams;
 
 /// 创建 Metal RT 上下文。返回 NULL 表示当前设备不支持 Metal RT。

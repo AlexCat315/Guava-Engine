@@ -14,7 +14,6 @@ pub const EditorViewportRenderMode = enum {
 pub const EditorViewportPipelineMode = enum {
     raster,
     path_trace,
-    hardware_rt,
 };
 
 pub const EditorViewportLutPreset = enum {
@@ -81,6 +80,8 @@ pub const EditorViewportState = struct {
     color_grading_contrast: f32 = 1.0,
     color_grading_gamma: f32 = 1.0,
     fxaa_enabled: bool = false,
+    // RT 增强阴影（光栏模式下用硬件 RT 替换 shadow map）
+    rt_shadows_enabled: bool = false,
     // 体积雾
     volumetric_fog_enabled: bool = false,
     volumetric_fog_density: f32 = 0.02,

@@ -31,6 +31,8 @@ struct RTParams {
     uint2 dimensions;
     uint samples;
     uint bounces;
+    uint mode;       // 0 = path trace, 1 = shadow only
+    uint _pad2[3];
 };
 
 // ---- deterministic hash RNG (与 CPU 路径追踪保持一致) ----
@@ -126,11 +128,39 @@ kernel void raytrace_kernel(
             float  met   = tri.metallic;
             float  rough = tri.roughness;
 
+            // ---- shadow-only mode: primary ray + shadow ray → visibility ----
+            if (params.mode == 1) {
+                float3 L = float3(params.light_direction);
+                ray shadow_ray;
+                shadow_ray.origin       = hit_pos + normal * 0.002f;
+                shadow_ray.direction    = L;
+                shadow_ray.min_distance = 0.001f;
+                shadow_ray.max_distance = 1e30f;
+                intersector<triangle_data> shadow_inter;
+                shadow_inter.accept_any_intersection(true);
+                auto shadow_hit = shadow_inter.intersect(shadow_ray, accel);
+                float vis = (shadow_hit.type == intersection_type::triangle) ? 0.0f : 1.0f;
+                accumulated += float3(vis);
+                break; // 仅需第一次命中
+            }
+
             // emissive
             if ((emis.x + emis.y + emis.z) > 0.001f) radiance += throughput * emis;
 
-            // direct lighting
+            // direct lighting — trace shadow ray for accurate shadows
             float3 L = float3(params.light_direction);
+            float shadow_vis = 1.0f;
+            {
+                ray shadow_ray;
+                shadow_ray.origin       = hit_pos + normal * 0.002f;
+                shadow_ray.direction    = L;
+                shadow_ray.min_distance = 0.001f;
+                shadow_ray.max_distance = 1e30f;
+                intersector<triangle_data> shadow_inter;
+                shadow_inter.accept_any_intersection(true);
+                auto shadow_hit = shadow_inter.intersect(shadow_ray, accel);
+                if (shadow_hit.type == intersection_type::triangle) shadow_vis = 0.0f;
+            }
             float NdotL = saturate(dot(normal, L));
             float3 diffuse = alb * NdotL * (1.0f - met);
             float3 H = normalize(L - direction);
@@ -141,7 +171,7 @@ kernel void raytrace_kernel(
                 alb.x * met + (1.0f - met) * spec_val,
                 alb.y * met + (1.0f - met) * spec_val,
                 alb.z * met + (1.0f - met) * spec_val);
-            float3 direct = diffuse + spec_c * NdotL;
+            float3 direct = (diffuse + spec_c * NdotL) * shadow_vis;
             float3 ambient = alb * 0.08f;
             radiance += throughput * (direct + ambient);
 
@@ -156,14 +186,20 @@ kernel void raytrace_kernel(
     }
     accumulated /= float(params.samples);
 
-    // linear → sRGB, BGRA output
-    float3 srgb = pow(saturate(accumulated), 1.0f / 2.2f);
     uint idx = tid.y * params.dimensions.x + tid.x;
-    output[idx] = uchar4(
-        uchar(srgb.z * 255.0f),  // B
-        uchar(srgb.y * 255.0f),  // G
-        uchar(srgb.x * 255.0f),  // R
-        255);                      // A
+    if (params.mode == 1) {
+        // shadow-only: output grayscale visibility (no gamma, linear)
+        uchar v = uchar(saturate(accumulated.x) * 255.0f);
+        output[idx] = uchar4(v, v, v, 255);
+    } else {
+        // full path trace: linear → sRGB, BGRA output
+        float3 srgb = pow(saturate(accumulated), 1.0f / 2.2f);
+        output[idx] = uchar4(
+            uchar(srgb.z * 255.0f),  // B
+            uchar(srgb.y * 255.0f),  // G
+            uchar(srgb.x * 255.0f),  // R
+            255);                      // A
+    }
 }
 )METAL";
 

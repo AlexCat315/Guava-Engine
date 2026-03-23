@@ -225,7 +225,6 @@ fn drawViewportModeZone(state: *EditorState, layer_context: *engine.core.LayerCo
 
     const raster_active = state.viewport_pipeline_mode == .raster;
     const path_trace_active = state.viewport_pipeline_mode == .path_trace;
-    const hw_rt_active = state.viewport_pipeline_mode == .hardware_rt;
 
     if (drawModeButton("Raster##viewport_mode_raster", raster_active, 98.0)) {
         state.viewport_pipeline_mode = .raster;
@@ -237,11 +236,6 @@ fn drawViewportModeZone(state: *EditorState, layer_context: *engine.core.LayerCo
         // 切换到 PathTrace 时强制同步当前场景状态并重新渲染，
         // 而 Raster 模式中的操作不会影响 PathTrace 渐进状态。
         layer_context.renderer.resetPathTraceState();
-    }
-    gui.sameLine();
-    if (drawModeButton("HW RT##viewport_mode_hwrt", hw_rt_active, 98.0)) {
-        state.viewport_pipeline_mode = .hardware_rt;
-        state.viewport_render_mode = .textured;
     }
 }
 
@@ -729,7 +723,6 @@ fn syncViewportState(state: *EditorState, layer_context: *engine.core.LayerConte
         .pipeline_mode = switch (state.viewport_pipeline_mode) {
             .raster => .raster,
             .path_trace => .path_trace,
-            .hardware_rt => .hardware_rt,
         },
         .path_trace_samples = state.viewport_path_trace_samples,
         .path_trace_bounces = state.viewport_path_trace_bounces,
@@ -752,6 +745,7 @@ fn syncViewportState(state: *EditorState, layer_context: *engine.core.LayerConte
         .color_grading_contrast = state.viewport_color_grading_contrast,
         .color_grading_gamma = state.viewport_color_grading_gamma,
         .fxaa_enabled = state.viewport_fxaa_enabled,
+        .rt_shadows_enabled = state.viewport_rt_shadows_enabled,
         .taa_enabled = state.viewport_taa_enabled,
         .lut_enabled = state.viewport_lut_enabled,
         .lut_intensity = state.viewport_lut_intensity,

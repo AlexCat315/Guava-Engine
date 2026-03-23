@@ -140,6 +140,10 @@ pub fn drawRenderSettingsWindow(state: *EditorState, layer_context: *engine.core
     _ = gui.checkbox(state.text(.enable_fxaa), &state.viewport_fxaa_enabled);
 
     gui.separator();
+    gui.text("RT Shadows");
+    _ = gui.checkbox("##enable_rt_shadows", &state.viewport_rt_shadows_enabled);
+
+    gui.separator();
     gui.text("TAA");
     _ = gui.checkbox("##enable_taa", &state.viewport_taa_enabled);
 

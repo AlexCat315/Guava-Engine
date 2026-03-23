@@ -63,6 +63,7 @@ const outline_pass_mod = @import("outline_pass.zig");
 const volumetric_fog_pass_mod = @import("volumetric_fog_pass.zig");
 const ssao_pass_mod = @import("ssao_pass.zig");
 const taa_pass_mod = @import("taa_pass.zig");
+const rt_shadow_composite_pass_mod = @import("rt_shadow_composite_pass.zig");
 const platform_mod = @import("../core/platform.zig");
 const selection_history_mod = @import("selection_history.zig");
 const imgui_mod = @import("../ui/imgui.zig");
@@ -218,8 +219,8 @@ fn previewRenderMode(render_mode: types.EditorViewportRenderMode) types.EditorVi
 }
 
 fn effectiveViewportRenderMode(state: types.EditorViewportState) types.EditorViewportRenderMode {
-    if (state.pipeline_mode == .path_trace or state.pipeline_mode == .hardware_rt) {
-        // PathTrace / Hardware RT 模式下仍返回 textured，以保持依赖渲染模式分支的代码路径稳定。
+    if (state.pipeline_mode == .path_trace) {
+        // PathTrace 模式下仍返回 textured，以保持依赖渲染模式分支的代码路径稳定。
         return .textured;
     }
     return state.render_mode;
@@ -1160,6 +1161,15 @@ pub const Renderer = struct {
     ssao_pass: ssao_pass_mod.SSAOPass,
     /// TAA 抗锯齿通道
     taa_pass: taa_pass_mod.TAAPass,
+    /// RT 阴影合成通道
+    rt_shadow_composite_pass: rt_shadow_composite_pass_mod.RtShadowCompositePass,
+    /// RT 阴影遮罩纹理（屏幕分辨率，BGRA8）
+    rt_shadow_mask_texture: ?rhi_mod.Texture = null,
+    /// RT 阴影遮罩像素缓冲 (CPU 侧)
+    rt_shadow_pixels: ?[]u8 = null,
+    rt_shadow_width: u32 = 0,
+    rt_shadow_height: u32 = 0,
+    rt_shadow_last_vp: [16]f32 = mat4_mod.identity(),
     /// 色调映射通道
     tonemap_pass: tonemap_pass_mod.TonemapPass,
     /// 选择历史管理
@@ -1257,6 +1267,7 @@ pub const Renderer = struct {
             .volumetric_fog_pass = undefined,
             .ssao_pass = undefined,
             .taa_pass = undefined,
+            .rt_shadow_composite_pass = undefined,
             .tonemap_pass = undefined,
             .selection_history = SelectionHistory.init(allocator, 64),
             .material_thumbnail_cache = std.StringHashMap(MaterialThumbnailCacheEntry).init(allocator),
@@ -1316,6 +1327,9 @@ pub const Renderer = struct {
         renderer.taa_pass = try taa_pass_mod.TAAPass.init(&renderer.rhi);
         errdefer renderer.taa_pass.deinit(&renderer.rhi);
 
+        renderer.rt_shadow_composite_pass = try rt_shadow_composite_pass_mod.RtShadowCompositePass.init(&renderer.rhi);
+        errdefer renderer.rt_shadow_composite_pass.deinit(&renderer.rhi);
+
         renderer.fxaa_pass = try fxaa_pass_mod.FxaaPass.init(&renderer.rhi);
         errdefer renderer.fxaa_pass.deinit(&renderer.rhi);
 
@@ -1351,6 +1365,9 @@ pub const Renderer = struct {
         self.volumetric_fog_pass.deinit(&self.rhi);
         self.ssao_pass.deinit(&self.rhi);
         self.taa_pass.deinit(&self.rhi);
+        self.rt_shadow_composite_pass.deinit(&self.rhi);
+        if (self.rt_shadow_mask_texture) |*t| self.rhi.releaseTexture(t);
+        if (self.rt_shadow_pixels) |p| self.allocator.free(p);
         self.fxaa_pass.deinit(&self.rhi);
         self.gizmo_pass.deinit(&self.rhi);
         self.outline_pass.deinit(&self.rhi);
@@ -1478,6 +1495,13 @@ pub const Renderer = struct {
         self.path_trace_state.last_samples = 0;
         self.path_trace_state.last_bounces = 0;
         self.path_trace_state.last_resolution_scale = 0.0;
+        // 同时重置 HW RT 状态，使 GPU 路径也从头开始
+        self.hw_rt_state.reset(self.allocator);
+        self.hw_rt_state.needs_retrace = true;
+        self.hw_rt_state.last_view_projection = mat4_mod.identity();
+        self.hw_rt_state.last_samples = 0;
+        self.hw_rt_state.last_bounces = 0;
+        self.hw_rt_state.last_resolution_scale = 0.0;
     }
 
     pub fn setEditorViewportState(self: *Renderer, state: EditorViewportState) void {
@@ -1721,7 +1745,6 @@ pub const Renderer = struct {
                 }
 
                 const path_trace_viewport = viewport_active and self.editor_viewport_state.pipeline_mode == .path_trace;
-                const hw_rt_viewport = viewport_active and self.editor_viewport_state.pipeline_mode == .hardware_rt;
 
                 // scene_color_target 在所有模式下都需要（用于 overlay passes: gizmo, outline, debug）
                 const scene_color_target: rhi_mod.ColorTarget = if (viewport_active)
@@ -1731,12 +1754,8 @@ pub const Renderer = struct {
 
                 if (path_trace_viewport) {
                     const path_trace_start = std.time.nanoTimestamp();
-                    try self.renderCpuPathTraceViewport(&prepared_scene, scene);
+                    try self.renderPathTraceViewport(&prepared_scene, scene);
                     self.graph.recordPassStat(pass_stats, .base_pass, durationNs(path_trace_start, std.time.nanoTimestamp()), 0, 0);
-                } else if (hw_rt_viewport) {
-                    const hw_rt_start = std.time.nanoTimestamp();
-                    try self.renderHardwareRTViewport(&prepared_scene, scene);
-                    self.graph.recordPassStat(pass_stats, .base_pass, durationNs(hw_rt_start, std.time.nanoTimestamp()), 0, 0);
                 } else {
                     const scene_hdr_color_target: rhi_mod.ColorTarget = if (viewport_active)
                         .{ .texture = self.scene_viewport.hdrColor().? }
@@ -1758,12 +1777,21 @@ pub const Renderer = struct {
                         };
                     };
 
+                    // RT Shadows: 当 rt_shadows_enabled 且硬件 RT 可用时，
+                    // 用 RT 阴影遮罩替换 shadow map，跳过常规阴影渲染。
+                    const rt_shadows_active = viewport_active and
+                        self.editor_viewport_state.rt_shadows_enabled and
+                        self.tryRenderRtShadows(&prepared_scene, scene, self.scene_viewport.width, self.scene_viewport.height);
+
                     if (self.shadow_pass.isReady()) {
                         const shadow_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.shadowOnly(&self.shadow_map.depth_texture.?));
-                        const shadow_start = std.time.nanoTimestamp();
-                        const shadow_stats = self.shadow_pass.draw(&self.rhi, frame, shadow_render_pass, &prepared_scene, light_space_matrix);
-                        self.graph.recordPassStat(pass_stats, .shadow_map, durationNs(shadow_start, std.time.nanoTimestamp()), shadow_stats.draw_calls, shadow_stats.triangles_drawn);
-                        draw_stats.add(shadow_stats);
+                        if (!rt_shadows_active) {
+                            const shadow_start = std.time.nanoTimestamp();
+                            const shadow_stats = self.shadow_pass.draw(&self.rhi, frame, shadow_render_pass, &prepared_scene, light_space_matrix);
+                            self.graph.recordPassStat(pass_stats, .shadow_map, durationNs(shadow_start, std.time.nanoTimestamp()), shadow_stats.draw_calls, shadow_stats.triangles_drawn);
+                            draw_stats.add(shadow_stats);
+                        }
+                        // RT shadows active → render pass 仅清除 depth=1.0，mesh shader 得到 shadow=1.0
                         self.rhi.endRenderPass(shadow_render_pass);
                     }
 
@@ -1862,6 +1890,17 @@ pub const Renderer = struct {
                     self.rhi.endRenderPass(scene_pass);
 
                     if (viewport_active) {
+                        // RT Shadow Composite: 乘法混合 RT 阴影遮罩到 HDR 颜色缓冲
+                        if (rt_shadows_active and self.rt_shadow_composite_pass.isReady() and self.scene_viewport.hdrColor() != null) {
+                            if (self.rt_shadow_mask_texture) |*mask_tex| {
+                                try self.rt_shadow_composite_pass.syncTexture(&self.rhi, mask_tex);
+                                const rt_shadow_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(.{ .texture = self.scene_viewport.hdrColor().? }));
+                                const rt_shadow_stats = self.rt_shadow_composite_pass.draw(&self.rhi, rt_shadow_pass);
+                                draw_stats.add(rt_shadow_stats);
+                                self.rhi.endRenderPass(rt_shadow_pass);
+                            }
+                        }
+
                         // Volumetric fog: composite onto HDR color before bloom/tonemap
                         const fog_enabled = self.editor_viewport_state.volumetric_fog_enabled and self.volumetric_fog_pass.isReady() and self.scene_viewport.hdrColor() != null;
                         if (fog_enabled) {
@@ -2107,7 +2146,7 @@ pub const Renderer = struct {
             }
 
             if (self.pending_selection_readbacks.items.len > 0) {
-                const id_pick_available = can_render_scene and self.id_pass.texture() != null and !(viewport_active and (self.editor_viewport_state.pipeline_mode == .path_trace or self.editor_viewport_state.pipeline_mode == .hardware_rt));
+                const id_pick_available = can_render_scene and self.id_pass.texture() != null and !(viewport_active and self.editor_viewport_state.pipeline_mode == .path_trace);
                 if (id_pick_available) {
                     const id_texture = self.id_pass.texture().?;
                     try self.enqueueSelectionReadbacks(frame, id_texture);
@@ -2147,7 +2186,7 @@ pub const Renderer = struct {
         return result;
     }
 
-    fn renderCpuPathTraceViewport(self: *Renderer, prepared_scene: *const mesh_pass_mod.PreparedScene, scene: *scene_mod.Scene) !void {
+    fn renderPathTraceViewport(self: *Renderer, prepared_scene: *const mesh_pass_mod.PreparedScene, scene: *scene_mod.Scene) !void {
         const target = self.scene_viewport.color() orelse return;
         const width = target.desc.width;
         const height = target.desc.height;
@@ -2158,6 +2197,13 @@ pub const Renderer = struct {
         const resolution_scale = std.math.clamp(self.editor_viewport_state.path_trace_resolution_scale, 0.25, 1.0);
         const trace_width = @max(@as(u32, 1), @as(u32, @intFromFloat(@as(f32, @floatFromInt(width)) * resolution_scale)));
         const trace_height = @max(@as(u32, 1), @as(u32, @intFromFloat(@as(f32, @floatFromInt(height)) * resolution_scale)));
+
+        // --- 尝试 GPU 硬件加速路径追踪 ---
+        if (self.tryRenderHwRtPath(prepared_scene, scene, target, width, height, trace_width, trace_height, samples, bounces, resolution_scale)) {
+            return;
+        }
+
+        // --- 回退到 CPU 渐进式路径追踪 ---
 
         if (!g_logged_path_trace_active) {
             render_log.info("CPU path trace viewport active (progressive)", .{});
@@ -2483,33 +2529,178 @@ pub const Renderer = struct {
     }
 
     // ==================================================================
-    // Hardware RT — GPU 硬件加速路径追踪 (macOS=Metal, 未来 Win/Linux=Vulkan)
+    // RT Shadows — 光栅模式下的硬件 RT 阴影遮罩
     // ==================================================================
 
-    fn renderHardwareRTViewport(self: *Renderer, prepared_scene: *const mesh_pass_mod.PreparedScene, scene: *scene_mod.Scene) !void {
+    /// 尝试渲染 RT 阴影遮罩用于光栅模式。成功返回 true，遮罩纹理可用于合成。
+    fn tryRenderRtShadows(
+        self: *Renderer,
+        prepared_scene: *const mesh_pass_mod.PreparedScene,
+        scene: *scene_mod.Scene,
+        width: u32,
+        height: u32,
+    ) bool {
+        if (width == 0 or height == 0) return false;
+
+        // 懒初始化硬件 RT 后端
+        if (self.hw_rt_backend == null) {
+            self.hw_rt_backend = rt_backend.HardwareRtBackend.init();
+            if (self.hw_rt_backend == null) return false;
+        }
+
+        var backend = &self.hw_rt_backend.?;
+        var mrt = &self.hw_rt_state;
+
+        // --- 变化检测 ---
+        const vp_changed = !std.mem.eql(u8, std.mem.asBytes(&prepared_scene.view_projection), std.mem.asBytes(&self.rt_shadow_last_vp));
+        if (vp_changed) {
+            self.rt_shadow_last_vp = prepared_scene.view_projection;
+        } else if (self.rt_shadow_mask_texture != null and self.rt_shadow_width == width and self.rt_shadow_height == height) {
+            return true; // 已缓存的遮罩仍然有效
+        }
+
+        // --- 构建三角形数据 (复用 hw_rt_state) ---
+        if (mrt.triangles == null) {
+            var triangle_list: std.ArrayListUnmanaged(rt_backend.RtTriangle) = .empty;
+            defer triangle_list.deinit(self.allocator);
+
+            for (prepared_scene.opaque_meshes) |item| {
+                const mesh_res = if (handles.isValid(item.mesh_handle))
+                    scene.resources.mesh(item.mesh_handle)
+                else
+                    null;
+                if (mesh_res) |mesh| {
+                    const indices = mesh.indices;
+                    const vertices = mesh.vertices;
+                    const albedo = [3]f32{
+                        std.math.clamp(item.base_color_factor[0], 0.02, 1.0),
+                        std.math.clamp(item.base_color_factor[1], 0.02, 1.0),
+                        std.math.clamp(item.base_color_factor[2], 0.02, 1.0),
+                    };
+                    const emissive = [3]f32{
+                        item.emissive_factor[0] * item.emissive_factor[3],
+                        item.emissive_factor[1] * item.emissive_factor[3],
+                        item.emissive_factor[2] * item.emissive_factor[3],
+                    };
+                    const metallic = std.math.clamp(item.pbr_factors[0], 0.0, 1.0);
+                    const roughness = std.math.clamp(item.pbr_factors[1], 0.04, 1.0);
+
+                    var i: usize = 0;
+                    while (i + 2 < indices.len) : (i += 3) {
+                        const idx0 = indices[i];
+                        const idx1 = indices[i + 1];
+                        const idx2 = indices[i + 2];
+                        if (idx0 >= vertices.len or idx1 >= vertices.len or idx2 >= vertices.len) continue;
+
+                        triangle_list.append(self.allocator, .{
+                            .v0 = transformPoint(item.model, vertices[idx0].position),
+                            .v1 = transformPoint(item.model, vertices[idx1].position),
+                            .v2 = transformPoint(item.model, vertices[idx2].position),
+                            .n0 = transformNormal(item.model, vertices[idx0].normal),
+                            .n1 = transformNormal(item.model, vertices[idx1].normal),
+                            .n2 = transformNormal(item.model, vertices[idx2].normal),
+                            .albedo = albedo,
+                            .emissive = emissive,
+                            .metallic = metallic,
+                            .roughness = roughness,
+                        }) catch return false;
+                    }
+                }
+            }
+
+            if (triangle_list.items.len == 0) return false;
+
+            mrt.triangles = self.allocator.dupe(rt_backend.RtTriangle, triangle_list.items) catch return false;
+            mrt.accel_built = false;
+        }
+
+        // --- 构建加速结构 ---
+        if (!mrt.accel_built) {
+            if (!backend.buildAccelerationStructure(mrt.triangles.?)) return false;
+            mrt.accel_built = true;
+        }
+
+        // --- 分配像素缓冲 ---
+        const needed = @as(usize, width) * height * 4;
+        if (self.rt_shadow_pixels == null or self.rt_shadow_width != width or self.rt_shadow_height != height) {
+            if (self.rt_shadow_pixels) |p| self.allocator.free(p);
+            self.rt_shadow_pixels = self.allocator.alloc(u8, needed) catch return false;
+            self.rt_shadow_width = width;
+            self.rt_shadow_height = height;
+        }
+
+        // --- 光线追踪 (shadow only) ---
+        const light_dir: [3]f32 = if (prepared_scene.lights.directional_lights.len > 0)
+            vec3.normalize(vec3.scale(prepared_scene.lights.directional_lights[0].direction, -1.0))
+        else
+            vec3.normalize(.{ 0.38, 0.82, 0.42 });
+
+        var params = rt_backend.RtParams{
+            .inv_view_projection = mat4_mod.inverse(prepared_scene.view_projection) orelse mat4_mod.identity(),
+            .camera_origin = .{
+                prepared_scene.camera_world_position[0],
+                prepared_scene.camera_world_position[1],
+                prepared_scene.camera_world_position[2],
+            },
+            .light_direction = light_dir,
+            .width = width,
+            .height = height,
+            .samples = 1,
+            .bounces = 1,
+            .mode = 1, // shadow-only
+        };
+
+        if (!backend.traceRays(&params, self.rt_shadow_pixels.?)) return false;
+
+        // --- 管理 GPU 纹理 ---
+        if (self.rt_shadow_mask_texture == null or
+            self.rt_shadow_mask_texture.?.desc.width != width or
+            self.rt_shadow_mask_texture.?.desc.height != height)
+        {
+            if (self.rt_shadow_mask_texture) |*t| self.rhi.releaseTexture(t);
+            self.rt_shadow_mask_texture = self.rhi.createTexture(.{
+                .width = width,
+                .height = height,
+                .format = .bgra8_unorm,
+                .usage = rhi_types.TextureUsage.sampler,
+            }) catch return false;
+        }
+
+        self.rhi.uploadTextureData(&self.rt_shadow_mask_texture.?, self.rt_shadow_pixels.?, width, height) catch return false;
+        return true;
+    }
+
+    // ==================================================================
+    // Hardware RT — GPU 硬件加速路径追踪内部调度（自动集成在 PathTrace 模式中）
+    // ==================================================================
+
+    /// 尝试使用 GPU 硬件加速路径追踪。成功返回 true，不可用返回 false。
+    fn tryRenderHwRtPath(
+        self: *Renderer,
+        prepared_scene: *const mesh_pass_mod.PreparedScene,
+        scene: *scene_mod.Scene,
+        target: anytype,
+        width: u32,
+        height: u32,
+        trace_width: u32,
+        trace_height: u32,
+        samples: u32,
+        bounces: u32,
+        resolution_scale: f32,
+    ) bool {
         // 懒初始化硬件 RT 后端
         if (self.hw_rt_backend == null) {
             self.hw_rt_backend = rt_backend.HardwareRtBackend.init();
             if (self.hw_rt_backend == null) {
-                render_log.warn("{s} not available, falling back to CPU path trace", .{rt_backend.backendName()});
-                try self.renderCpuPathTraceViewport(prepared_scene, scene);
-                return;
+                if (!g_logged_path_trace_active) {
+                    render_log.info("{s} not available, using CPU path trace", .{rt_backend.backendName()});
+                }
+                return false;
             }
-            render_log.info("{s} backend initialized", .{rt_backend.backendName()});
+            render_log.info("{s} backend initialized — GPU path trace active", .{rt_backend.backendName()});
         }
 
         var backend = &self.hw_rt_backend.?;
-        const target = self.scene_viewport.color() orelse return;
-        const width = target.desc.width;
-        const height = target.desc.height;
-        if (width == 0 or height == 0) return;
-
-        const samples = std.math.clamp(self.editor_viewport_state.path_trace_samples, 1, 64);
-        const bounces = std.math.clamp(self.editor_viewport_state.path_trace_bounces, 1, 8);
-        const resolution_scale = std.math.clamp(self.editor_viewport_state.path_trace_resolution_scale, 0.25, 1.0);
-        const trace_width = @max(@as(u32, 1), @as(u32, @intFromFloat(@as(f32, @floatFromInt(width)) * resolution_scale)));
-        const trace_height = @max(@as(u32, 1), @as(u32, @intFromFloat(@as(f32, @floatFromInt(height)) * resolution_scale)));
-
         var mrt = &self.hw_rt_state;
 
         // --- 变化检测 ---
@@ -2534,23 +2725,23 @@ pub const Renderer = struct {
         mrt.last_resolution_scale = resolution_scale;
 
         // --- 分配缓冲区 ---
-        if (mrt.trace_pixels == null) {
-            mrt.trace_pixels = try self.allocator.alloc(u8, @as(usize, trace_width) * trace_height * 4);
+        mrt.trace_pixels = mrt.trace_pixels orelse self.allocator.alloc(u8, @as(usize, trace_width) * trace_height * 4) catch return false;
+        if (mrt.trace_width != trace_width or mrt.trace_height != trace_height) {
             @memset(mrt.trace_pixels.?, 0);
             mrt.trace_width = trace_width;
             mrt.trace_height = trace_height;
         }
-        if (mrt.display_pixels == null) {
-            mrt.display_pixels = try self.allocator.alloc(u8, @as(usize, width) * height * 4);
+        mrt.display_pixels = mrt.display_pixels orelse self.allocator.alloc(u8, @as(usize, width) * height * 4) catch return false;
+        if (mrt.target_width != width or mrt.target_height != height) {
             @memset(mrt.display_pixels.?, 0);
             mrt.target_width = width;
             mrt.target_height = height;
         }
 
-        // 若无变化且已追踪完成,直接上传缓存
+        // 若无变化且已追踪完成，直接上传缓存
         if (!mrt.needs_retrace and mrt.accel_built) {
-            try self.rhi.uploadTextureData(target, mrt.display_pixels.?, width, height);
-            return;
+            self.rhi.uploadTextureData(target, mrt.display_pixels.?, width, height) catch return false;
+            return true;
         }
 
         // --- 构建/重建三角形数据 ---
@@ -2586,7 +2777,7 @@ pub const Renderer = struct {
                         const idx2 = indices[i + 2];
                         if (idx0 >= vertices.len or idx1 >= vertices.len or idx2 >= vertices.len) continue;
 
-                        try triangle_list.append(self.allocator, .{
+                        triangle_list.append(self.allocator, .{
                             .v0 = transformPoint(item.model, vertices[idx0].position),
                             .v1 = transformPoint(item.model, vertices[idx1].position),
                             .v2 = transformPoint(item.model, vertices[idx2].position),
@@ -2597,14 +2788,14 @@ pub const Renderer = struct {
                             .emissive = emissive,
                             .metallic = metallic,
                             .roughness = roughness,
-                        });
+                        }) catch return false;
                     }
                 }
             }
 
             // 无网格时显示地面平面
             if (triangle_list.items.len == 0) {
-                try triangle_list.append(self.allocator, .{
+                triangle_list.append(self.allocator, .{
                     .v0 = .{ -5.0, 0.0, -5.0 },
                     .v1 = .{ 5.0, 0.0, -5.0 },
                     .v2 = .{ 5.0, 0.0, 5.0 },
@@ -2615,8 +2806,8 @@ pub const Renderer = struct {
                     .emissive = .{ 0.0, 0.0, 0.0 },
                     .metallic = 0.0,
                     .roughness = 0.8,
-                });
-                try triangle_list.append(self.allocator, .{
+                }) catch return false;
+                triangle_list.append(self.allocator, .{
                     .v0 = .{ -5.0, 0.0, -5.0 },
                     .v1 = .{ 5.0, 0.0, 5.0 },
                     .v2 = .{ -5.0, 0.0, 5.0 },
@@ -2627,10 +2818,10 @@ pub const Renderer = struct {
                     .emissive = .{ 0.0, 0.0, 0.0 },
                     .metallic = 0.0,
                     .roughness = 0.8,
-                });
+                }) catch return false;
             }
 
-            mrt.triangles = try self.allocator.dupe(rt_backend.RtTriangle, triangle_list.items);
+            mrt.triangles = self.allocator.dupe(rt_backend.RtTriangle, triangle_list.items) catch return false;
             mrt.accel_built = false;
         }
 
@@ -2638,7 +2829,7 @@ pub const Renderer = struct {
         if (!mrt.accel_built) {
             if (!backend.buildAccelerationStructure(mrt.triangles.?)) {
                 render_log.err("{s} acceleration structure build failed", .{rt_backend.backendName()});
-                return;
+                return false;
             }
             mrt.accel_built = true;
         }
@@ -2665,7 +2856,7 @@ pub const Renderer = struct {
 
         if (!backend.traceRays(&params, mrt.trace_pixels.?)) {
             render_log.err("{s} trace failed", .{rt_backend.backendName()});
-            return;
+            return false;
         }
         mrt.needs_retrace = false;
 
@@ -2687,7 +2878,8 @@ pub const Renderer = struct {
             }
         }
 
-        try self.rhi.uploadTextureData(target, display_pixels, width, height);
+        self.rhi.uploadTextureData(target, display_pixels, width, height) catch return false;
+        return true;
     }
 
     /// Downloads the final rendered frame from GPU to CPU as RGBA8 pixels.
