@@ -109,6 +109,14 @@ pub fn drawRhiV2StatsWindow(state: *EditorState, layer_context: *engine.core.Lay
         gui.labelText("Skybox", "v2");
         gui.labelText("TAA", "v2");
         gui.labelText("IBL Compute", "v2 (BRDF + Irradiance)");
+
+        gui.dummy(0.0, 4.0);
+        gui.textColored(.{ 0.6, 0.8, 1.0, 1.0 }, "Final Passes (v2 prototype)");
+        gui.labelText("Gizmo", "v2 (line geometry)");
+        gui.labelText("ID Pass", "v2 (entity picking)");
+        gui.labelText("Omni Shadow", "v2 (6-face cubemap)");
+        gui.labelText("RT Shadow Composite", "v2 (fullscreen multiply)");
+        gui.labelText("Base Pass", "v2 (10-set PBR + IBL + CSM)");
     }
 
     // ── V2 Infrastructure ──────────────────────────────────────────

@@ -18,6 +18,11 @@ const outline_pass_v2 = @import("render/outline_pass_v2.zig");
 const skybox_pass_v2 = @import("render/skybox_pass_v2.zig");
 const taa_pass_v2 = @import("render/taa_pass_v2.zig");
 const ibl_compute_pass_v2 = @import("render/ibl_compute_pass_v2.zig");
+const gizmo_pass_v2 = @import("render/gizmo_pass_v2.zig");
+const id_pass_v2 = @import("render/id_pass_v2.zig");
+const omni_shadow_pass_v2 = @import("render/omni_shadow_pass_v2.zig");
+const rt_shadow_composite_pass_v2 = @import("render/rt_shadow_composite_pass_v2.zig");
+const base_pass_v2 = @import("render/base_pass_v2.zig");
 const render_graph = @import("render/render_graph.zig");
 
 test "metal backend compute queue submission path" {
@@ -719,4 +724,115 @@ test "command buffer set_vertex_buffer/set_index_buffer/set_pipeline round-trip"
     try std.testing.expect(std.meta.activeTag(c5) == .end_render_pass);
 
     try std.testing.expectEqual(@as(?command_buffer.DecodedCommand, null), try decoder.next());
+}
+
+test "gizmo pass v2 single-set line geometry submission" {
+    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
+    defer backend.deinit();
+
+    var device = backend.createDevice();
+    defer device.deinit();
+
+    try gizmo_pass_v2.GizmoPassV2.execute(
+        std.testing.allocator,
+        &device,
+        900, // color_target_id
+        9, // pipeline_id
+        90, // vertex_buffer_id
+        6, // vertex_count
+        .{},
+    );
+
+    try std.testing.expectEqual(rhi.QueueClass.graphics, backend.last_submit_queue.?);
+    try std.testing.expect(device.bindingSetCacheEntryCount() >= 1);
+}
+
+test "id pass v2 two-set geometry submission" {
+    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
+    defer backend.deinit();
+
+    var device = backend.createDevice();
+    defer device.deinit();
+
+    try id_pass_v2.IdPassV2.execute(
+        std.testing.allocator,
+        &device,
+        1000, // id_texture_target_id
+        1001, // depth_target_id
+        10, // pipeline_id
+        100, // vertex_buffer_id
+        101, // index_buffer_id
+        36, // index_count
+        .{},
+        .{},
+    );
+
+    try std.testing.expectEqual(rhi.QueueClass.graphics, backend.last_submit_queue.?);
+    try std.testing.expect(device.bindingSetCacheEntryCount() >= 2);
+}
+
+test "omni shadow pass v2 six-face cubemap submission" {
+    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
+    defer backend.deinit();
+
+    var device = backend.createDevice();
+    defer device.deinit();
+
+    try omni_shadow_pass_v2.OmniShadowPassV2.execute(
+        std.testing.allocator,
+        &device,
+        1100, // cube_depth_target_id
+        11, // pipeline_id
+        110, // vertex_buffer_id
+        111, // index_buffer_id
+        36, // index_count
+        std.mem.zeroes([6][16]f32), // face_view_projections
+        std.mem.zeroes([16]f32), // model
+    );
+
+    try std.testing.expectEqual(rhi.QueueClass.graphics, backend.last_submit_queue.?);
+}
+
+test "rt shadow composite pass v2 three-set fullscreen submission" {
+    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
+    defer backend.deinit();
+
+    var device = backend.createDevice();
+    defer device.deinit();
+
+    try rt_shadow_composite_pass_v2.RTShadowCompositePassV2.execute(
+        std.testing.allocator,
+        &device,
+        1200, // color_target_id
+        0.8, // shadow_strength
+    );
+
+    try std.testing.expectEqual(rhi.QueueClass.graphics, backend.last_submit_queue.?);
+    try std.testing.expect(device.bindingSetCacheEntryCount() >= 3);
+}
+
+test "base pass v2 ten-set PBR submission" {
+    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
+    defer backend.deinit();
+
+    var device = backend.createDevice();
+    defer device.deinit();
+
+    try base_pass_v2.BasePassV2.execute(
+        std.testing.allocator,
+        &device,
+        1300, // color_target_id
+        1301, // depth_target_id
+        13, // pipeline_id
+        130, // vertex_buffer_id
+        131, // index_buffer_id
+        36, // index_count
+        .{},
+        .{},
+    );
+
+    try std.testing.expectEqual(rhi.QueueClass.graphics, backend.last_submit_queue.?);
+    // 10 binding sets: vtx uniform, frag uniform, 5 material textures, tex sampler,
+    // 4 CSM shadows, shadow sampler, 4 IBL textures, IBL sampler
+    try std.testing.expect(device.bindingSetCacheEntryCount() >= 10);
 }
