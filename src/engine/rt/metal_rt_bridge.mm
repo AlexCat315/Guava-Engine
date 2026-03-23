@@ -16,10 +16,20 @@ using namespace raytracing;
 struct RTTriangle {
     packed_float3 v0, v1, v2;
     packed_float3 n0, n1, n2;
+    packed_float2 uv0, uv1, uv2;
     packed_float3 albedo;
     packed_float3 emissive;
     float metallic;
     float roughness;
+    int texture_index;
+    uint _tri_pad;
+};
+
+struct RTTextureMeta {
+    uint offset;  // byte offset in packed BGRA8 pixel buffer
+    uint width;
+    uint height;
+    uint _pad;
 };
 
 struct RTParams {
@@ -85,12 +95,68 @@ static float3 sample_sky(float3 dir) {
                   0.24f + 0.58f * horizon);
 }
 
+// 从打包纹理图集中双线性采样 (BGRA8)
+static float3 sample_texture_atlas(
+    device const uchar4* atlas,
+    constant RTTextureMeta* meta,
+    int tex_index,
+    float u_in, float v_in
+) {
+    constant RTTextureMeta& tm = meta[tex_index];
+    uint tw = tm.width;
+    uint th = tm.height;
+    uint base = tm.offset / 4; // uchar4 offset
+
+    // wrap UV to [0,1)
+    float u = u_in - floor(u_in);
+    float v = v_in - floor(v_in);
+    if (u < 0.0f) u += 1.0f;
+    if (v < 0.0f) v += 1.0f;
+
+    float fx = u * float(tw) - 0.5f;
+    float fy = v * float(th) - 0.5f;
+    int x0 = int(floor(fx));
+    int y0 = int(floor(fy));
+    float frac_x = fx - floor(fx);
+    float frac_y = fy - floor(fy);
+
+    int iw = int(tw);
+    int ih = int(th);
+    uint x0u = uint(((x0 % iw) + iw) % iw);
+    uint y0u = uint(((y0 % ih) + ih) % ih);
+    uint x1u = uint((((x0 + 1) % iw) + iw) % iw);
+    uint y1u = uint((((y0 + 1) % ih) + ih) % ih);
+
+    // read 4 texels (BGRA8 → linear RGB via pow 2.2)
+    float3 c00, c10, c01, c11;
+    {
+        uchar4 px = atlas[base + y0u * tw + x0u];
+        c00 = float3(pow(float(px.z)/255.0f,2.2f), pow(float(px.y)/255.0f,2.2f), pow(float(px.x)/255.0f,2.2f));
+    }
+    {
+        uchar4 px = atlas[base + y0u * tw + x1u];
+        c10 = float3(pow(float(px.z)/255.0f,2.2f), pow(float(px.y)/255.0f,2.2f), pow(float(px.x)/255.0f,2.2f));
+    }
+    {
+        uchar4 px = atlas[base + y1u * tw + x0u];
+        c01 = float3(pow(float(px.z)/255.0f,2.2f), pow(float(px.y)/255.0f,2.2f), pow(float(px.x)/255.0f,2.2f));
+    }
+    {
+        uchar4 px = atlas[base + y1u * tw + x1u];
+        c11 = float3(pow(float(px.z)/255.0f,2.2f), pow(float(px.y)/255.0f,2.2f), pow(float(px.x)/255.0f,2.2f));
+    }
+
+    return mix(mix(c00, c10, frac_x), mix(c01, c11, frac_x), frac_y);
+}
+
 kernel void raytrace_kernel(
     uint2                          tid        [[thread_position_in_grid]],
     constant RTParams&             params     [[buffer(0)]],
     device uchar4*                 output     [[buffer(1)]],
     constant RTTriangle*           triangles  [[buffer(2)]],
-    primitive_acceleration_structure accel     [[buffer(3)]]
+    primitive_acceleration_structure accel     [[buffer(3)]],
+    device const uchar4*           tex_atlas  [[buffer(4)]],
+    constant RTTextureMeta*        tex_meta   [[buffer(5)]]
 ) {
     if (tid.x >= params.dimensions.x || tid.y >= params.dimensions.y) return;
 
@@ -141,7 +207,17 @@ kernel void raytrace_kernel(
             float3 normal = normalize(
                 float3(tri.n0) * w0 + float3(tri.n1) * bary.x + float3(tri.n2) * bary.y);
             float3 hit_pos = origin + direction * hit.distance;
-            float3 alb   = float3(tri.albedo);
+
+            // UV 插值 + 纹理采样
+            float2 hit_uv = float2(tri.uv0) * w0 + float2(tri.uv1) * bary.x + float2(tri.uv2) * bary.y;
+            float3 alb;
+            if (tri.texture_index >= 0) {
+                float3 tex_color = sample_texture_atlas(tex_atlas, tex_meta, tri.texture_index, hit_uv.x, hit_uv.y);
+                alb = tex_color * float3(tri.albedo);
+            } else {
+                alb = float3(tri.albedo);
+            }
+
             float3 emis  = float3(tri.emissive);
             float  met   = tri.metallic;
             float  rough = tri.roughness;
@@ -239,9 +315,12 @@ struct GuavaMetalRTContext {
     id<MTLBuffer>                   triangleDataBuffer;
     id<MTLBuffer>                   outputBuffer;
     id<MTLBuffer>                   paramsBuffer;
+    id<MTLBuffer>                   textureAtlasBuffer;
+    id<MTLBuffer>                   textureMetaBuffer;
     uint32_t                        triangleCount;
     uint32_t                        outputWidth;
     uint32_t                        outputHeight;
+    uint32_t                        textureCount;
     bool                            supported;
     bool                            accelBuilt;
 };
@@ -304,9 +383,12 @@ extern "C" GuavaMetalRTContext* guava_metal_rt_init(void) {
         ctx->triangleDataBuffer   = nil;
         ctx->outputBuffer  = nil;
         ctx->paramsBuffer  = nil;
+        ctx->textureAtlasBuffer = nil;
+        ctx->textureMetaBuffer  = nil;
         ctx->triangleCount = 0;
         ctx->outputWidth   = 0;
         ctx->outputHeight  = 0;
+        ctx->textureCount  = 0;
         ctx->supported     = true;
         ctx->accelBuilt    = false;
 
@@ -407,6 +489,40 @@ extern "C" bool guava_metal_rt_build_accel(GuavaMetalRTContext* ctx,
 }
 
 // ---------------------------------------------------------------------------
+// guava_metal_rt_upload_textures
+// ---------------------------------------------------------------------------
+extern "C" bool guava_metal_rt_upload_textures(GuavaMetalRTContext* ctx,
+                                               const uint8_t* pixel_data,
+                                               uint32_t pixel_data_size,
+                                               const GuavaRTTextureMeta* meta,
+                                               uint32_t texture_count) {
+    if (!ctx || !ctx->supported) return false;
+    if (texture_count == 0 || !pixel_data || pixel_data_size == 0) {
+        ctx->textureAtlasBuffer = nil;
+        ctx->textureMetaBuffer  = nil;
+        ctx->textureCount       = 0;
+        return true;
+    }
+
+    @autoreleasepool {
+        id<MTLDevice> dev = ctx->device;
+
+        ctx->textureAtlasBuffer = [dev newBufferWithBytes:pixel_data
+                                                   length:pixel_data_size
+                                                  options:MTLResourceStorageModeShared];
+        if (!ctx->textureAtlasBuffer) return false;
+
+        ctx->textureMetaBuffer = [dev newBufferWithBytes:meta
+                                                  length:(size_t)texture_count * sizeof(GuavaRTTextureMeta)
+                                                 options:MTLResourceStorageModeShared];
+        if (!ctx->textureMetaBuffer) return false;
+
+        ctx->textureCount = texture_count;
+        return true;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // guava_metal_rt_trace
 // ---------------------------------------------------------------------------
 extern "C" bool guava_metal_rt_trace(GuavaMetalRTContext* ctx,
@@ -450,6 +566,21 @@ extern "C" bool guava_metal_rt_trace(GuavaMetalRTContext* ctx,
         [enc setBuffer:ctx->triangleDataBuffer offset:0 atIndex:2];
         [enc setAccelerationStructure:ctx->accel atBufferIndex:3];
 
+        // 纹理图集 + 元数据 (可选 — 无纹理时绑定空 1 字节缓冲)
+        if (ctx->textureAtlasBuffer && ctx->textureMetaBuffer && ctx->textureCount > 0) {
+            [enc setBuffer:ctx->textureAtlasBuffer offset:0 atIndex:4];
+            [enc setBuffer:ctx->textureMetaBuffer  offset:0 atIndex:5];
+        } else {
+            // 绑定空缓冲避免 Metal 验证错误
+            static id<MTLBuffer> emptyBuf = nil;
+            if (!emptyBuf) {
+                emptyBuf = [ctx->device newBufferWithLength:16
+                                                    options:MTLResourceStorageModeShared];
+            }
+            [enc setBuffer:emptyBuf offset:0 atIndex:4];
+            [enc setBuffer:emptyBuf offset:0 atIndex:5];
+        }
+
         // Metal 要求 compute encoder 声明加速结构引用的资源
         [enc useResource:ctx->vertexPositionBuffer usage:MTLResourceUsageRead];
 
@@ -481,6 +612,8 @@ extern "C" void guava_metal_rt_destroy(GuavaMetalRTContext* ctx) {
         ctx->accel                = nil;
         ctx->vertexPositionBuffer = nil;
         ctx->triangleDataBuffer   = nil;
+        ctx->textureAtlasBuffer   = nil;
+        ctx->textureMetaBuffer    = nil;
         ctx->outputBuffer         = nil;
         ctx->paramsBuffer         = nil;
         ctx->pipeline             = nil;

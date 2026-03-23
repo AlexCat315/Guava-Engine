@@ -371,6 +371,7 @@ pub const EditorState = struct {
     viewport_rt_shadow_samples: u32 = 4,
     viewport_rt_shadow_strength: f32 = 0.85,
     viewport_rt_shadow_softness: f32 = 0.02,
+    viewport_rt_shadow_resolution_scale: f32 = 1.0,
     viewport_taa_enabled: bool = false,
     viewport_lut_enabled: bool = false,
     viewport_lut_intensity: f32 = 1.0,

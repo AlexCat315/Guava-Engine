@@ -9,14 +9,25 @@ extern "C" {
 
 typedef struct GuavaMetalRTContext GuavaMetalRTContext;
 
+/// 纹理元数据 — 描述纹理在打包像素缓冲中的位置/尺寸
+typedef struct {
+    uint32_t offset;  /* 字节偏移 (BGRA8 像素缓冲) */
+    uint32_t width;
+    uint32_t height;
+    uint32_t _pad;
+} GuavaRTTextureMeta;
+
 /// 三角形数据 — 与 Zig RtTriangle / Metal RTTriangle 完全对齐
 typedef struct {
     float v0[3], v1[3], v2[3];
     float n0[3], n1[3], n2[3];
+    float uv0[2], uv1[2], uv2[2];
     float albedo[3];
     float emissive[3];
     float metallic;
     float roughness;
+    int32_t texture_index;
+    uint32_t _tri_pad;
 } GuavaRTTriangle;
 
 /// 光追渲染参数 — 与 Zig RtParams / Metal RTParams 完全对齐
@@ -52,6 +63,14 @@ bool guava_metal_rt_trace(GuavaMetalRTContext* ctx,
                           const GuavaRTParams* params,
                           uint8_t* output_pixels,
                           uint32_t output_size);
+
+/// 上传纹理图集数据到 GPU。pixel_data 为所有纹理像素 (BGRA8) 紧密排列，
+/// meta 为每张纹理的偏移/尺寸元数据。
+bool guava_metal_rt_upload_textures(GuavaMetalRTContext* ctx,
+                                    const uint8_t* pixel_data,
+                                    uint32_t pixel_data_size,
+                                    const GuavaRTTextureMeta* meta,
+                                    uint32_t texture_count);
 
 /// 销毁上下文，释放所有 Metal 资源。
 void guava_metal_rt_destroy(GuavaMetalRTContext* ctx);

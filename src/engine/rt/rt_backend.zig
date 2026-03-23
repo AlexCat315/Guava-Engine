@@ -40,6 +40,14 @@ pub fn backendName() []const u8 {
     };
 }
 
+/// 纹理元数据 — 描述纹理在打包像素缓冲中的位置/尺寸
+pub const RtTextureMeta = extern struct {
+    offset: u32, // 字节偏移 (在打包 BGRA8 像素缓冲中)
+    width: u32,
+    height: u32,
+    _pad: u32 = 0,
+};
+
 /// 光追三角形 — 与 C 桥接层 GuavaRTTriangle 完全对齐 (extern struct)。
 pub const RtTriangle = extern struct {
     v0: [3]f32,
@@ -48,10 +56,15 @@ pub const RtTriangle = extern struct {
     n0: [3]f32,
     n1: [3]f32,
     n2: [3]f32,
+    uv0: [2]f32 = .{ 0, 0 },
+    uv1: [2]f32 = .{ 0, 0 },
+    uv2: [2]f32 = .{ 0, 0 },
     albedo: [3]f32,
     emissive: [3]f32,
     metallic: f32,
     roughness: f32,
+    texture_index: i32 = -1,
+    _tri_pad: u32 = 0,
 };
 
 /// 光追渲染参数 — 与 C 桥接层 GuavaRTParams 完全对齐 (extern struct)。

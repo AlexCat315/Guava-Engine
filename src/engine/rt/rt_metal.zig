@@ -19,6 +19,7 @@ const MetalRtImpl = struct {
     extern fn guava_metal_rt_is_supported(ctx: *anyopaque) bool;
     extern fn guava_metal_rt_build_accel(ctx: *anyopaque, triangles: [*]const rt.RtTriangle, count: u32) bool;
     extern fn guava_metal_rt_trace(ctx: *anyopaque, params: *const rt.RtParams, output: [*]u8, size: u32) bool;
+    extern fn guava_metal_rt_upload_textures(ctx: *anyopaque, pixel_data: [*]const u8, pixel_data_size: u32, meta: [*]const rt.RtTextureMeta, texture_count: u32) bool;
     extern fn guava_metal_rt_destroy(ctx: *anyopaque) void;
 
     pub fn init() ?MetalRtImpl {
@@ -38,6 +39,13 @@ const MetalRtImpl = struct {
     pub fn traceRays(self: *MetalRtImpl, params: *const rt.RtParams, output: []u8) bool {
         if (output.len == 0) return false;
         return guava_metal_rt_trace(self.ctx, params, output.ptr, @intCast(output.len));
+    }
+
+    pub fn uploadTextures(self: *MetalRtImpl, pixel_data: []const u8, meta: []const rt.RtTextureMeta) bool {
+        if (meta.len == 0) {
+            return guava_metal_rt_upload_textures(self.ctx, undefined, 0, undefined, 0);
+        }
+        return guava_metal_rt_upload_textures(self.ctx, pixel_data.ptr, @intCast(pixel_data.len), meta.ptr, @intCast(meta.len));
     }
 
     pub fn deinit(self: *MetalRtImpl) void {
@@ -60,6 +68,9 @@ const MetalRtStub = struct {
         return false;
     }
     pub fn traceRays(_: *MetalRtStub, _: *const rt.RtParams, _: []u8) bool {
+        return false;
+    }
+    pub fn uploadTextures(_: *MetalRtStub, _: []const u8, _: []const rt.RtTextureMeta) bool {
         return false;
     }
     pub fn deinit(_: *MetalRtStub) void {}

@@ -85,6 +85,7 @@ pub const EditorViewportState = struct {
     rt_shadow_samples: u32 = 4,
     rt_shadow_strength: f32 = 0.85,
     rt_shadow_softness: f32 = 0.02,
+    rt_shadow_resolution_scale: f32 = 1.0,
     // 体积雾
     volumetric_fog_enabled: bool = false,
     volumetric_fog_density: f32 = 0.02,

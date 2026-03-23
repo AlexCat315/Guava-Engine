@@ -149,6 +149,7 @@ pub fn drawRenderSettingsWindow(state: *EditorState, layer_context: *engine.core
         }
         _ = gui.dragFloat("Strength##rt_shadow", &state.viewport_rt_shadow_strength, 0.005, 0.0, 1.0);
         _ = gui.dragFloat("Softness##rt_shadow", &state.viewport_rt_shadow_softness, 0.001, 0.0, 0.1);
+        _ = gui.dragFloat("Resolution##rt_shadow", &state.viewport_rt_shadow_resolution_scale, 0.05, 0.25, 1.0);
     }
 
     gui.separator();

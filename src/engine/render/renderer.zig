@@ -311,6 +311,9 @@ const PathTraceProgressiveState = struct {
 /// 硬件 RT 渲染状态（GPU 光追，与平台无关）
 const HwRtState = struct {
     triangles: ?[]rt_backend.RtTriangle = null,
+    texture_atlas: ?[]u8 = null,
+    texture_meta: ?[]rt_backend.RtTextureMeta = null,
+    textures_uploaded: bool = false,
     trace_pixels: ?[]u8 = null,
     display_pixels: ?[]u8 = null,
     trace_width: u32 = 0,
@@ -326,13 +329,20 @@ const HwRtState = struct {
 
     fn reset(self: *HwRtState, allocator: std.mem.Allocator) void {
         if (self.triangles) |t| allocator.free(t);
+        if (self.texture_atlas) |a| allocator.free(a);
+        if (self.texture_meta) |m| allocator.free(m);
         self.triangles = null;
+        self.texture_atlas = null;
+        self.texture_meta = null;
+        self.textures_uploaded = false;
         self.accel_built = false;
         self.needs_retrace = true;
     }
 
     fn deinit(self: *HwRtState, allocator: std.mem.Allocator) void {
         if (self.triangles) |t| allocator.free(t);
+        if (self.texture_atlas) |a| allocator.free(a);
+        if (self.texture_meta) |m| allocator.free(m);
         if (self.trace_pixels) |p| allocator.free(p);
         if (self.display_pixels) |p| allocator.free(p);
         self.* = .{};
@@ -815,6 +825,8 @@ const ShadowMapState = struct {
     size: u32 = 2048,
     depth_texture: ?rhi_mod.Texture = null,
     sampler: ?rhi_mod.Sampler = null,
+    /// true = shadow map depth already cleared to 1.0 for RT shadow bypass
+    cleared_for_rt: bool = false,
 
     fn init(device: *rhi_mod.RhiDevice) !ShadowMapState {
         const size: u32 = 2048;
@@ -1784,15 +1796,23 @@ pub const Renderer = struct {
                         self.tryRenderRtShadows(&prepared_scene, scene, self.scene_viewport.width, self.scene_viewport.height);
 
                     if (self.shadow_pass.isReady()) {
-                        const shadow_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.shadowOnly(&self.shadow_map.depth_texture.?));
-                        if (!rt_shadows_active) {
+                        if (rt_shadows_active) {
+                            // RT shadows 激活：首次清除 depth=1.0（mesh shader 得到 shadow=1.0），
+                            // 后续帧完全跳过 shadow pass
+                            if (!self.shadow_map.cleared_for_rt) {
+                                const shadow_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.shadowOnly(&self.shadow_map.depth_texture.?));
+                                self.rhi.endRenderPass(shadow_render_pass);
+                                self.shadow_map.cleared_for_rt = true;
+                            }
+                        } else {
+                            self.shadow_map.cleared_for_rt = false;
+                            const shadow_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.shadowOnly(&self.shadow_map.depth_texture.?));
                             const shadow_start = std.time.nanoTimestamp();
                             const shadow_stats = self.shadow_pass.draw(&self.rhi, frame, shadow_render_pass, &prepared_scene, light_space_matrix);
                             self.graph.recordPassStat(pass_stats, .shadow_map, durationNs(shadow_start, std.time.nanoTimestamp()), shadow_stats.draw_calls, shadow_stats.triangles_drawn);
                             draw_stats.add(shadow_stats);
+                            self.rhi.endRenderPass(shadow_render_pass);
                         }
-                        // RT shadows active → render pass 仅清除 depth=1.0，mesh shader 得到 shadow=1.0
-                        self.rhi.endRenderPass(shadow_render_pass);
                     }
 
                     if (self.id_pass.isReady()) {
@@ -2564,6 +2584,11 @@ pub const Renderer = struct {
             var triangle_list: std.ArrayListUnmanaged(rt_backend.RtTriangle) = .empty;
             defer triangle_list.deinit(self.allocator);
 
+            var texture_list = std.ArrayList(struct { pixels: []const u8, width: u32, height: u32 }).empty;
+            defer texture_list.deinit(self.allocator);
+            var texture_index_map = std.AutoHashMap(u32, i32).init(self.allocator);
+            defer texture_index_map.deinit();
+
             for (prepared_scene.opaque_meshes) |item| {
                 const mesh_res = if (handles.isValid(item.mesh_handle))
                     scene.resources.mesh(item.mesh_handle)
@@ -2585,6 +2610,27 @@ pub const Renderer = struct {
                     const metallic = std.math.clamp(item.pbr_factors[0], 0.0, 1.0);
                     const roughness = std.math.clamp(item.pbr_factors[1], 0.04, 1.0);
 
+                    const tex_idx: i32 = blk_tex: {
+                        if (item.has_textures[0] == 0) break :blk_tex @as(i32, -1);
+                        const entity = scene.getEntityConst(item.entity_id) orelse break :blk_tex @as(i32, -1);
+                        const mat_comp = entity.material orelse break :blk_tex @as(i32, -1);
+                        const mat_handle = mat_comp.handle orelse break :blk_tex @as(i32, -1);
+                        const mat_res = scene.resources.material(mat_handle) orelse break :blk_tex @as(i32, -1);
+                        const tex_handle = mat_res.base_color_texture orelse break :blk_tex @as(i32, -1);
+                        const tex_key = @intFromEnum(tex_handle);
+                        if (texture_index_map.get(tex_key)) |existing| break :blk_tex existing;
+                        const tex_res = scene.resources.texture(tex_handle) orelse break :blk_tex @as(i32, -1);
+                        if (tex_res.pixels.len == 0 or tex_res.width == 0 or tex_res.height == 0) break :blk_tex @as(i32, -1);
+                        const idx_i32: i32 = @intCast(texture_list.items.len);
+                        texture_list.append(self.allocator, .{
+                            .pixels = tex_res.pixels,
+                            .width = tex_res.width,
+                            .height = tex_res.height,
+                        }) catch break :blk_tex @as(i32, -1);
+                        texture_index_map.put(tex_key, idx_i32) catch break :blk_tex @as(i32, -1);
+                        break :blk_tex idx_i32;
+                    };
+
                     var i: usize = 0;
                     while (i + 2 < indices.len) : (i += 3) {
                         const idx0 = indices[i];
@@ -2599,10 +2645,14 @@ pub const Renderer = struct {
                             .n0 = transformNormal(item.model, vertices[idx0].normal),
                             .n1 = transformNormal(item.model, vertices[idx1].normal),
                             .n2 = transformNormal(item.model, vertices[idx2].normal),
+                            .uv0 = vertices[idx0].uv,
+                            .uv1 = vertices[idx1].uv,
+                            .uv2 = vertices[idx2].uv,
                             .albedo = albedo,
                             .emissive = emissive,
                             .metallic = metallic,
                             .roughness = roughness,
+                            .texture_index = tex_idx,
                         }) catch return false;
                     }
                 }
@@ -2612,6 +2662,26 @@ pub const Renderer = struct {
 
             mrt.triangles = self.allocator.dupe(rt_backend.RtTriangle, triangle_list.items) catch return false;
             mrt.accel_built = false;
+
+            // 打包纹理图集
+            if (texture_list.items.len > 0) {
+                var total_size: usize = 0;
+                for (texture_list.items) |tex| total_size += tex.pixels.len;
+                const atlas = self.allocator.alloc(u8, total_size) catch return false;
+                const meta = self.allocator.alloc(rt_backend.RtTextureMeta, texture_list.items.len) catch {
+                    self.allocator.free(atlas);
+                    return false;
+                };
+                var offset: u32 = 0;
+                for (texture_list.items, 0..) |tex, ti| {
+                    @memcpy(atlas[offset..][0..tex.pixels.len], tex.pixels);
+                    meta[ti] = .{ .offset = offset, .width = tex.width, .height = tex.height };
+                    offset += @intCast(tex.pixels.len);
+                }
+                mrt.texture_atlas = atlas;
+                mrt.texture_meta = meta;
+            }
+            mrt.textures_uploaded = false;
         }
 
         // --- 构建加速结构 ---
@@ -2620,13 +2690,28 @@ pub const Renderer = struct {
             mrt.accel_built = true;
         }
 
-        // --- 分配像素缓冲 ---
-        const needed = @as(usize, width) * height * 4;
-        if (self.rt_shadow_pixels == null or self.rt_shadow_width != width or self.rt_shadow_height != height) {
+        // --- 上传纹理图集到 GPU ---
+        if (!mrt.textures_uploaded) {
+            if (mrt.texture_atlas != null and mrt.texture_meta != null) {
+                _ = backend.uploadTextures(mrt.texture_atlas.?, mrt.texture_meta.?);
+            } else {
+                _ = backend.uploadTextures(&.{}, &.{});
+            }
+            mrt.textures_uploaded = true;
+        }
+
+        // --- 分辨率缩放 ---
+        const scale = std.math.clamp(self.editor_viewport_state.rt_shadow_resolution_scale, 0.25, 1.0);
+        const trace_w: u32 = @max(1, @as(u32, @intFromFloat(@as(f32, @floatFromInt(width)) * scale)));
+        const trace_h: u32 = @max(1, @as(u32, @intFromFloat(@as(f32, @floatFromInt(height)) * scale)));
+
+        // --- 分配像素缓冲 (trace 尺寸) ---
+        const trace_needed = @as(usize, trace_w) * trace_h * 4;
+        if (self.rt_shadow_pixels == null or self.rt_shadow_width != trace_w or self.rt_shadow_height != trace_h) {
             if (self.rt_shadow_pixels) |p| self.allocator.free(p);
-            self.rt_shadow_pixels = self.allocator.alloc(u8, needed) catch return false;
-            self.rt_shadow_width = width;
-            self.rt_shadow_height = height;
+            self.rt_shadow_pixels = self.allocator.alloc(u8, trace_needed) catch return false;
+            self.rt_shadow_width = trace_w;
+            self.rt_shadow_height = trace_h;
         }
 
         // --- 光线追踪 (shadow only) ---
@@ -2644,8 +2729,8 @@ pub const Renderer = struct {
             },
             .light_direction = light_dir,
             .sun_angular_radius = self.editor_viewport_state.rt_shadow_softness,
-            .width = width,
-            .height = height,
+            .width = trace_w,
+            .height = trace_h,
             .samples = 1,
             .bounces = 1,
             .mode = 1, // shadow-only
@@ -2653,6 +2738,42 @@ pub const Renderer = struct {
         };
 
         if (!backend.traceRays(&params, self.rt_shadow_pixels.?)) return false;
+
+        // --- 上采样 (如果 trace 分辨率 < 输出分辨率) ---
+        const upload_pixels: []u8 = if (trace_w == width and trace_h == height)
+            self.rt_shadow_pixels.?
+        else blk: {
+            const full_size = @as(usize, width) * height * 4;
+            const upscaled = self.allocator.alloc(u8, full_size) catch return false;
+            // 双线性插值上采样
+            const tw_f: f32 = @floatFromInt(trace_w);
+            const th_f: f32 = @floatFromInt(trace_h);
+            const src = self.rt_shadow_pixels.?;
+            for (0..height) |y| {
+                const sy = @as(f32, @floatFromInt(y)) * th_f / @as(f32, @floatFromInt(height));
+                const y0: u32 = @intFromFloat(@floor(sy));
+                const y1: u32 = @min(y0 + 1, trace_h - 1);
+                const fy = sy - @floor(sy);
+                for (0..width) |x| {
+                    const sx = @as(f32, @floatFromInt(x)) * tw_f / @as(f32, @floatFromInt(width));
+                    const x0: u32 = @intFromFloat(@floor(sx));
+                    const x1: u32 = @min(x0 + 1, trace_w - 1);
+                    const fx = sx - @floor(sx);
+                    const dst_off = (y * width + x) * 4;
+                    inline for (0..4) |ch| {
+                        const c00: f32 = @floatFromInt(src[(@as(usize, y0) * trace_w + x0) * 4 + ch]);
+                        const c10: f32 = @floatFromInt(src[(@as(usize, y0) * trace_w + x1) * 4 + ch]);
+                        const c01: f32 = @floatFromInt(src[(@as(usize, y1) * trace_w + x0) * 4 + ch]);
+                        const c11: f32 = @floatFromInt(src[(@as(usize, y1) * trace_w + x1) * 4 + ch]);
+                        const top = c00 + (c10 - c00) * fx;
+                        const bot = c01 + (c11 - c01) * fx;
+                        upscaled[dst_off + ch] = @intFromFloat(std.math.clamp(top + (bot - top) * fy, 0, 255));
+                    }
+                }
+            }
+            break :blk upscaled;
+        };
+        defer if (trace_w != width or trace_h != height) self.allocator.free(upload_pixels);
 
         // --- 管理 GPU 纹理 ---
         if (self.rt_shadow_mask_texture == null or
@@ -2668,7 +2789,7 @@ pub const Renderer = struct {
             }) catch return false;
         }
 
-        self.rhi.uploadTextureData(&self.rt_shadow_mask_texture.?, self.rt_shadow_pixels.?, width, height) catch return false;
+        self.rhi.uploadTextureData(&self.rt_shadow_mask_texture.?, upload_pixels, width, height) catch return false;
         return true;
     }
 
@@ -2751,6 +2872,11 @@ pub const Renderer = struct {
             var triangle_list: std.ArrayListUnmanaged(rt_backend.RtTriangle) = .empty;
             defer triangle_list.deinit(self.allocator);
 
+            var texture_list = std.ArrayList(struct { pixels: []const u8, width: u32, height: u32 }).empty;
+            defer texture_list.deinit(self.allocator);
+            var texture_index_map = std.AutoHashMap(u32, i32).init(self.allocator);
+            defer texture_index_map.deinit();
+
             for (prepared_scene.opaque_meshes) |item| {
                 const mesh_res = if (handles.isValid(item.mesh_handle))
                     scene.resources.mesh(item.mesh_handle)
@@ -2772,6 +2898,27 @@ pub const Renderer = struct {
                     const metallic = std.math.clamp(item.pbr_factors[0], 0.0, 1.0);
                     const roughness = std.math.clamp(item.pbr_factors[1], 0.04, 1.0);
 
+                    const tex_idx: i32 = blk_tex: {
+                        if (item.has_textures[0] == 0) break :blk_tex @as(i32, -1);
+                        const entity = scene.getEntityConst(item.entity_id) orelse break :blk_tex @as(i32, -1);
+                        const mat_comp = entity.material orelse break :blk_tex @as(i32, -1);
+                        const mat_handle = mat_comp.handle orelse break :blk_tex @as(i32, -1);
+                        const mat_res = scene.resources.material(mat_handle) orelse break :blk_tex @as(i32, -1);
+                        const tex_handle = mat_res.base_color_texture orelse break :blk_tex @as(i32, -1);
+                        const tex_key = @intFromEnum(tex_handle);
+                        if (texture_index_map.get(tex_key)) |existing| break :blk_tex existing;
+                        const tex_res = scene.resources.texture(tex_handle) orelse break :blk_tex @as(i32, -1);
+                        if (tex_res.pixels.len == 0 or tex_res.width == 0 or tex_res.height == 0) break :blk_tex @as(i32, -1);
+                        const idx_i32: i32 = @intCast(texture_list.items.len);
+                        texture_list.append(self.allocator, .{
+                            .pixels = tex_res.pixels,
+                            .width = tex_res.width,
+                            .height = tex_res.height,
+                        }) catch break :blk_tex @as(i32, -1);
+                        texture_index_map.put(tex_key, idx_i32) catch break :blk_tex @as(i32, -1);
+                        break :blk_tex idx_i32;
+                    };
+
                     var i: usize = 0;
                     while (i + 2 < indices.len) : (i += 3) {
                         const idx0 = indices[i];
@@ -2786,10 +2933,14 @@ pub const Renderer = struct {
                             .n0 = transformNormal(item.model, vertices[idx0].normal),
                             .n1 = transformNormal(item.model, vertices[idx1].normal),
                             .n2 = transformNormal(item.model, vertices[idx2].normal),
+                            .uv0 = vertices[idx0].uv,
+                            .uv1 = vertices[idx1].uv,
+                            .uv2 = vertices[idx2].uv,
                             .albedo = albedo,
                             .emissive = emissive,
                             .metallic = metallic,
                             .roughness = roughness,
+                            .texture_index = tex_idx,
                         }) catch return false;
                     }
                 }
@@ -2825,6 +2976,26 @@ pub const Renderer = struct {
 
             mrt.triangles = self.allocator.dupe(rt_backend.RtTriangle, triangle_list.items) catch return false;
             mrt.accel_built = false;
+
+            // 打包纹理图集
+            if (texture_list.items.len > 0) {
+                var total_size: usize = 0;
+                for (texture_list.items) |tex| total_size += tex.pixels.len;
+                const atlas = self.allocator.alloc(u8, total_size) catch return false;
+                const meta = self.allocator.alloc(rt_backend.RtTextureMeta, texture_list.items.len) catch {
+                    self.allocator.free(atlas);
+                    return false;
+                };
+                var offset: u32 = 0;
+                for (texture_list.items, 0..) |tex, ti| {
+                    @memcpy(atlas[offset..][0..tex.pixels.len], tex.pixels);
+                    meta[ti] = .{ .offset = offset, .width = tex.width, .height = tex.height };
+                    offset += @intCast(tex.pixels.len);
+                }
+                mrt.texture_atlas = atlas;
+                mrt.texture_meta = meta;
+            }
+            mrt.textures_uploaded = false;
         }
 
         // --- 构建加速结构 ---
@@ -2834,6 +3005,16 @@ pub const Renderer = struct {
                 return false;
             }
             mrt.accel_built = true;
+        }
+
+        // --- 上传纹理图集到 GPU ---
+        if (!mrt.textures_uploaded) {
+            if (mrt.texture_atlas != null and mrt.texture_meta != null) {
+                _ = backend.uploadTextures(mrt.texture_atlas.?, mrt.texture_meta.?);
+            } else {
+                _ = backend.uploadTextures(&.{}, &.{});
+            }
+            mrt.textures_uploaded = true;
         }
 
         // --- 光线追踪 ---

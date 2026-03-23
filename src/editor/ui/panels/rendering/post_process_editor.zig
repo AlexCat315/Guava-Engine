@@ -287,6 +287,7 @@ fn drawPreviewPanel(viewport_state: *EditorViewportState) void {
         _ = props.boolean("SSR", &viewport_state.ssr_enabled);
         _ = props.boolean("TAA", &viewport_state.taa_enabled);
         _ = props.boolean("DOF", &viewport_state.dof_enabled);
+        _ = props.boolean("RT Shadows", &viewport_state.rt_shadows_enabled);
     }
 }
 

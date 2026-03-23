@@ -749,6 +749,7 @@ fn syncViewportState(state: *EditorState, layer_context: *engine.core.LayerConte
         .rt_shadow_samples = state.viewport_rt_shadow_samples,
         .rt_shadow_strength = state.viewport_rt_shadow_strength,
         .rt_shadow_softness = state.viewport_rt_shadow_softness,
+        .rt_shadow_resolution_scale = state.viewport_rt_shadow_resolution_scale,
         .taa_enabled = state.viewport_taa_enabled,
         .lut_enabled = state.viewport_lut_enabled,
         .lut_intensity = state.viewport_lut_intensity,
