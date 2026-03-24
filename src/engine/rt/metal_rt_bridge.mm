@@ -43,7 +43,10 @@ struct RTParams {
     uint bounces;
     uint mode;       // 0 = path trace, 1 = shadow only
     uint shadow_samples; // shadow-only 每像素采样数 (1=硬阴影, 4+=软阴影)
-    uint _pad2[2];
+    int environment_texture_index;
+    uint _pad2;
+    float4 exposure_params;
+    float4 color_grading_params;
 };
 
 // ---- deterministic hash RNG (与 CPU 路径追踪保持一致) ----
@@ -93,6 +96,10 @@ static float3 sample_sky(float3 dir) {
     return float3(0.12f + 0.42f * horizon,
                   0.18f + 0.48f * horizon,
                   0.24f + 0.58f * horizon);
+}
+
+static float3 reflect_vec(float3 incident, float3 normal) {
+    return incident - 2.0f * dot(incident, normal) * normal;
 }
 
 // 从打包纹理图集中双线性采样 (BGRA8)
@@ -149,6 +156,21 @@ static float3 sample_texture_atlas(
     return mix(mix(c00, c10, frac_x), mix(c01, c11, frac_x), frac_y);
 }
 
+static float3 sample_environment(
+    device const uchar4* atlas,
+    constant RTTextureMeta* meta,
+    int env_tex_index,
+    float3 dir
+) {
+    if (env_tex_index >= 0) {
+        float3 nd = normalize(dir);
+        float u = atan2(nd.z, nd.x) / (2.0f * 3.14159265f) + 0.5f;
+        float v = 0.5f - asin(clamp(nd.y, -1.0f, 1.0f)) / 3.14159265f;
+        return sample_texture_atlas(atlas, meta, env_tex_index, u, v);
+    }
+    return sample_sky(dir);
+}
+
 kernel void raytrace_kernel(
     uint2                          tid        [[thread_position_in_grid]],
     constant RTParams&             params     [[buffer(0)]],
@@ -196,7 +218,7 @@ kernel void raytrace_kernel(
 
             auto hit = inter.intersect(r, accel);
             if (hit.type != intersection_type::triangle) {
-                radiance += throughput * sample_sky(direction);
+                radiance += throughput * sample_environment(tex_atlas, tex_meta, params.environment_texture_index, direction);
                 break;
             }
 
@@ -247,7 +269,8 @@ kernel void raytrace_kernel(
             // emissive
             if ((emis.x + emis.y + emis.z) > 0.001f) radiance += throughput * emis;
 
-            // direct lighting — trace shadow ray for accurate shadows
+            // direct lighting — keep this cheap, reflective look mainly comes
+            // from bounce path so Metal RT and CPU PT stay visually aligned.
             float3 L = float3(params.light_direction);
             float shadow_vis = 1.0f;
             {
@@ -263,23 +286,34 @@ kernel void raytrace_kernel(
             }
             float NdotL = saturate(dot(normal, L));
             float3 diffuse = alb * NdotL * (1.0f - met);
+            float3 dielectric_f0 = float3(0.04f);
+            float3 specular_tint = mix(dielectric_f0, alb, met);
             float3 H = normalize(L - direction);
             float NdotH = saturate(dot(normal, H));
-            float sp = max(2.0f, 2.0f / (rough * rough + 0.001f));
-            float spec_val = pow(NdotH, sp) * (1.0f - rough) * 0.4f;
-            float3 spec_c = float3(
-                alb.x * met + (1.0f - met) * spec_val,
-                alb.y * met + (1.0f - met) * spec_val,
-                alb.z * met + (1.0f - met) * spec_val);
+            float sp = max(8.0f, 10.0f + (1.0f - rough) * 120.0f);
+            float spec_val = pow(NdotH, sp) * (0.1f + 0.9f * (1.0f - rough));
+            float3 spec_c = specular_tint * spec_val;
             float3 direct = (diffuse + spec_c * NdotL) * shadow_vis;
-            float3 ambient = alb * 0.08f;
+            float3 ambient = alb * (0.03f + 0.04f * (1.0f - met));
             radiance += throughput * (direct + ambient);
 
-            // bounce
-            throughput *= alb * 0.5f;
-            if (length(throughput) < 0.02f) break;
+            // bounce selection: metals prefer reflection, dielectrics diffuse.
             uint bseed = sseed ^ (bounce * 0x9e3779b9u);
-            direction = random_hemisphere(normal, bseed);
+            float specular_chance = clamp(0.08f + met * 0.84f + (1.0f - rough) * 0.06f, 0.05f, 0.97f);
+            float3 reflected = normalize(reflect_vec(direction, normal));
+            float3 glossy = normalize(mix(reflected, random_hemisphere(reflected, bseed ^ 0x51c8e12du), rough * rough));
+            float3 diffuse_dir = random_hemisphere(normal, bseed ^ 0xa241b3c1u);
+            bool choose_specular = hash_unit_float(bseed ^ 0x6b84221fu) < specular_chance;
+
+            if (choose_specular) {
+                direction = (dot(glossy, normal) > 0.0f) ? glossy : reflected;
+                throughput *= specular_tint * (0.92f / specular_chance);
+            } else {
+                direction = diffuse_dir;
+                throughput *= (alb * (1.0f - met)) * (0.85f / max(1.0f - specular_chance, 0.05f));
+            }
+
+            if (length(throughput) < 0.02f) break;
             origin    = hit_pos + normal * 0.002f;
         }
         accumulated += radiance;
@@ -292,13 +326,12 @@ kernel void raytrace_kernel(
         uchar v = uchar(saturate(accumulated.x) * 255.0f);
         output[idx] = uchar4(v, v, v, 255);
     } else {
-        // full path trace: linear → sRGB, BGRA output
-        float3 srgb = pow(saturate(accumulated), 1.0f / 2.2f);
+        float3 linear = saturate(accumulated);
         output[idx] = uchar4(
-            uchar(srgb.z * 255.0f),  // B
-            uchar(srgb.y * 255.0f),  // G
-            uchar(srgb.x * 255.0f),  // R
-            255);                      // A
+            uchar(linear.z * 255.0f),  // B
+            uchar(linear.y * 255.0f),  // G
+            uchar(linear.x * 255.0f),  // R
+            255);
     }
 }
 )METAL";

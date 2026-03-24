@@ -41,6 +41,7 @@ pub const ResourceLibrary = struct {
     plane_mesh: ?handles.MeshHandle = null,
     default_material: ?handles.MaterialHandle = null,
     white_texture: ?handles.TextureHandle = null,
+    default_albedo_texture: ?handles.TextureHandle = null,
 
     pub fn init(allocator: std.mem.Allocator, job_system: ?*job_system_mod.JobSystem) ResourceLibrary {
         return .{
@@ -455,6 +456,33 @@ pub const ResourceLibrary = struct {
         return self.white_texture.?;
     }
 
+    pub fn ensureDefaultAlbedoTexture(self: *ResourceLibrary) !handles.TextureHandle {
+        if (self.default_albedo_texture) |handle| {
+            return handle;
+        }
+
+        const pixels = [_]u8{
+            0xDB, 0xDB, 0xE0, 0xFF,
+            0xBE, 0xC2, 0xC8, 0xFF,
+            0xBE, 0xC2, 0xC8, 0xFF,
+            0xDB, 0xDB, 0xE0, 0xFF,
+        };
+
+        self.default_albedo_texture = try self.createTexture(.{
+            .name = "DefaultAlbedo2x2",
+            .width = 2,
+            .height = 2,
+            .pixels = pixels[0..],
+        });
+        _ = try self.bindTextureAssetRecord(self.default_albedo_texture.?, try builtinRecord(
+            self,
+            .texture,
+            "builtin://texture/default-albedo",
+            "DefaultAlbedo2x2",
+        ));
+        return self.default_albedo_texture.?;
+    }
+
     pub fn ensureDefaultMaterial(self: *ResourceLibrary) !handles.MaterialHandle {
         if (self.default_material) |handle| {
             return handle;
@@ -463,7 +491,7 @@ pub const ResourceLibrary = struct {
         self.default_material = try self.createMaterial(.{
             .name = "DefaultMaterial",
             .base_color_factor = .{ 1.0, 1.0, 1.0, 1.0 },
-            .base_color_texture = try self.ensureWhiteTexture(),
+            .base_color_texture = try self.ensureDefaultAlbedoTexture(),
             .metallic_factor = 0.0,
             .roughness_factor = 0.82,
             .ibl_intensity = 0.18,

@@ -83,5 +83,8 @@ pub const RtParams = extern struct {
     mode: u32 = 0,
     /// shadow-only 每像素采样数 (1=硬阴影, 4+=软阴影)
     shadow_samples: u32 = 1,
-    _pad2: [2]u32 = .{ 0, 0 },
+    environment_texture_index: i32 = -1,
+    _pad2: u32 = 0,
+    exposure_params: [4]f32 = .{ 0.0, 1.0, 0.0, 0.0 },
+    color_grading_params: [4]f32 = .{ 0.0, 1.0, 1.0, 1.0 },
 };
