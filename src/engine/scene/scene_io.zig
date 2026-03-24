@@ -50,6 +50,17 @@ const MaterialRecord = struct {
     shading: components.ShadingModel,
     base_color_factor: [4]f32,
     base_color_texture_asset_id: ?[]const u8 = null,
+    metallic_roughness_texture_asset_id: ?[]const u8 = null,
+    normal_texture_asset_id: ?[]const u8 = null,
+    occlusion_texture_asset_id: ?[]const u8 = null,
+    emissive_texture_asset_id: ?[]const u8 = null,
+    emissive_factor: [3]f32 = .{ 0.0, 0.0, 0.0 },
+    metallic_factor: f32 = 0.0,
+    roughness_factor: f32 = 0.5,
+    alpha_cutoff: f32 = 0.5,
+    double_sided: bool = false,
+    use_ibl: bool = true,
+    ibl_intensity: f32 = 1.0,
 };
 
 const SkeletonJointRecord = struct {
@@ -124,6 +135,11 @@ const MaterialComponentRecord = struct {
     asset_id: ?[]const u8 = null,
     shading: components.ShadingModel = .pbr_metallic_roughness,
     base_color_factor: [4]f32 = .{ 1.0, 1.0, 1.0, 1.0 },
+    emissive_factor: [3]f32 = .{ 0.0, 0.0, 0.0 },
+    metallic_factor: f32 = 1.0,
+    roughness_factor: f32 = 1.0,
+    alpha_cutoff: f32 = 0.5,
+    double_sided: bool = false,
 };
 
 const ScriptComponentRecord = struct {
@@ -540,6 +556,11 @@ fn buildSceneFile(allocator: std.mem.Allocator, world: *const world_mod.World) !
                     null,
                 .shading = material.shading,
                 .base_color_factor = material.base_color_factor,
+                .emissive_factor = material.emissive_factor,
+                .metallic_factor = material.metallic_factor,
+                .roughness_factor = material.roughness_factor,
+                .alpha_cutoff = material.alpha_cutoff,
+                .double_sided = material.double_sided,
             }
         else
             null;
@@ -805,6 +826,29 @@ fn deserializeWorldV4FromSlice(allocator: std.mem.Allocator, world: *world_mod.W
                 findTextureHandle(texture_bindings.items, texture_asset_id) orelse return error.TextureAssetNotFound
             else
                 null,
+            .metallic_roughness_texture = if (material.metallic_roughness_texture_asset_id) |texture_asset_id|
+                findTextureHandle(texture_bindings.items, texture_asset_id) orelse return error.TextureAssetNotFound
+            else
+                null,
+            .normal_texture = if (material.normal_texture_asset_id) |texture_asset_id|
+                findTextureHandle(texture_bindings.items, texture_asset_id) orelse return error.TextureAssetNotFound
+            else
+                null,
+            .occlusion_texture = if (material.occlusion_texture_asset_id) |texture_asset_id|
+                findTextureHandle(texture_bindings.items, texture_asset_id) orelse return error.TextureAssetNotFound
+            else
+                null,
+            .emissive_texture = if (material.emissive_texture_asset_id) |texture_asset_id|
+                findTextureHandle(texture_bindings.items, texture_asset_id) orelse return error.TextureAssetNotFound
+            else
+                null,
+            .emissive_factor = material.emissive_factor,
+            .metallic_factor = material.metallic_factor,
+            .roughness_factor = material.roughness_factor,
+            .alpha_cutoff = material.alpha_cutoff,
+            .double_sided = material.double_sided,
+            .use_ibl = material.use_ibl,
+            .ibl_intensity = material.ibl_intensity,
         });
         try bindMaterialAssetFromScene(allocator, world, &scene, material.asset_id, material.name, handle);
         applyBuiltinMaterialHandle(&world.resources, material.name, handle);
@@ -1060,6 +1104,11 @@ fn deserializeWorldV4FromSlice(allocator: std.mem.Allocator, world: *world_mod.W
                         null,
                     .shading = material_component.shading,
                     .base_color_factor = material_component.base_color_factor,
+                    .emissive_factor = material_component.emissive_factor,
+                    .metallic_factor = material_component.metallic_factor,
+                    .roughness_factor = material_component.roughness_factor,
+                    .alpha_cutoff = material_component.alpha_cutoff,
+                    .double_sided = material_component.double_sided,
                 }
             else
                 null,
@@ -1286,6 +1335,22 @@ fn ensureMaterialRecord(
         try ensureTextureRecord(allocator, world, texture_handle, texture_asset_ids, texture_records, asset_records)
     else
         null;
+    const metallic_roughness_texture_asset_id = if (material.metallic_roughness_texture) |texture_handle|
+        try ensureTextureRecord(allocator, world, texture_handle, texture_asset_ids, texture_records, asset_records)
+    else
+        null;
+    const normal_texture_asset_id = if (material.normal_texture) |texture_handle|
+        try ensureTextureRecord(allocator, world, texture_handle, texture_asset_ids, texture_records, asset_records)
+    else
+        null;
+    const occlusion_texture_asset_id = if (material.occlusion_texture) |texture_handle|
+        try ensureTextureRecord(allocator, world, texture_handle, texture_asset_ids, texture_records, asset_records)
+    else
+        null;
+    const emissive_texture_asset_id = if (material.emissive_texture) |texture_handle|
+        try ensureTextureRecord(allocator, world, texture_handle, texture_asset_ids, texture_records, asset_records)
+    else
+        null;
 
     const asset_record = try ensureMaterialAssetRecord(allocator, world, handle, material, base_color_texture_asset_id);
     const asset_id = try ensureSceneAssetRecord(asset_records, allocator, asset_record);
@@ -1296,6 +1361,17 @@ fn ensureMaterialRecord(
         .shading = material.shading,
         .base_color_factor = material.base_color_factor,
         .base_color_texture_asset_id = base_color_texture_asset_id,
+        .metallic_roughness_texture_asset_id = metallic_roughness_texture_asset_id,
+        .normal_texture_asset_id = normal_texture_asset_id,
+        .occlusion_texture_asset_id = occlusion_texture_asset_id,
+        .emissive_texture_asset_id = emissive_texture_asset_id,
+        .emissive_factor = material.emissive_factor,
+        .metallic_factor = material.metallic_factor,
+        .roughness_factor = material.roughness_factor,
+        .alpha_cutoff = material.alpha_cutoff,
+        .double_sided = material.double_sided,
+        .use_ibl = material.use_ibl,
+        .ibl_intensity = material.ibl_intensity,
     });
     try material_asset_ids.put(handle, asset_id);
     return asset_id;

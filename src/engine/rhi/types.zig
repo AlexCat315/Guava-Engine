@@ -151,6 +151,7 @@ pub const TextureFormat = enum {
     rgba8_unorm,
     bgra8_unorm,
     bgra8_unorm_srgb,
+    rgba8_unorm_srgb,
     rgba16_float,
     rgba32_float,
     d24_unorm,
@@ -160,7 +161,7 @@ pub const TextureFormat = enum {
     pub fn bytesPerPixel(self: TextureFormat) u32 {
         return switch (self) {
             .r8_unorm => 1,
-            .rgba8_unorm, .bgra8_unorm, .bgra8_unorm_srgb, .d24_unorm, .d32_float => 4,
+            .rgba8_unorm, .bgra8_unorm, .bgra8_unorm_srgb, .rgba8_unorm_srgb, .d24_unorm, .d32_float => 4,
             .d24_unorm_s8_uint => 4,
             .rgba16_float => 8,
             .rgba32_float => 16,

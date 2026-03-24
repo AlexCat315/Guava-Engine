@@ -4069,14 +4069,27 @@ pub const Renderer = struct {
     ///
     /// Thread-safety: NOT thread-safe. Must be called from render thread.
     pub fn downloadFinalFrameAlloc(self: *Renderer, allocator: std.mem.Allocator) ![]u8 {
-        var pixels = try self.downloadFramePixelsAlloc(allocator);
-        var i: usize = 0;
-        while (i < pixels.data.len) : (i += 4) {
-            const b = pixels.data[i + 0];
-            pixels.data[i + 0] = pixels.data[i + 2];
-            pixels.data[i + 2] = b;
+        const pixels = try self.downloadFramePixelsAlloc(allocator);
+        defer allocator.free(pixels.data);
+
+        // Build PPM P6: "P6\n<width> <height>\n255\n<RGB data>"
+        const rgb_size = @as(usize, pixels.width) * @as(usize, pixels.height) * 3;
+        var header_buf: [64]u8 = undefined;
+        const header = std.fmt.bufPrint(&header_buf, "P6\n{d} {d}\n255\n", .{ pixels.width, pixels.height }) catch return error.HeaderOverflow;
+
+        const ppm = try allocator.alloc(u8, header.len + rgb_size);
+        @memcpy(ppm[0..header.len], header);
+
+        // Convert BGRA (4 bpp) → RGB (3 bpp) in one pass
+        var src: usize = 0;
+        var dst: usize = header.len;
+        while (src + 3 < pixels.data.len) : (src += 4) {
+            ppm[dst + 0] = pixels.data[src + 2]; // R (from BGRA position 2)
+            ppm[dst + 1] = pixels.data[src + 1]; // G
+            ppm[dst + 2] = pixels.data[src + 0]; // B (from BGRA position 0)
+            dst += 3;
         }
-        return pixels.data;
+        return ppm;
     }
 
     /// Download final frame pixels as raw BGRA byte data from the LDR color texture.

@@ -869,6 +869,32 @@ pub const MeshSceneCache = struct {
         opaque_meshes: *std.ArrayList(DrawItem),
         transparent_meshes: *std.ArrayList(DrawItem),
     ) !void {
+        // Pre-warm the texture cache so that all unique textures are uploaded
+        // before any DrawItem stores a pointer into self.textures.items.
+        // Without this, ensureTexture() may grow the ArrayList during DrawItem
+        // creation, invalidating pointers stored in earlier DrawItems.
+        for (render_world.meshes.items) |render_mesh| {
+            if (render_mesh.material) |material_comp| {
+                if (material_comp.handle) |mat_handle| {
+                    if (world.resources.material(mat_handle)) |material| {
+                        inline for (.{
+                            material.base_color_texture,
+                            material.metallic_roughness_texture,
+                            material.normal_texture,
+                            material.occlusion_texture,
+                            material.emissive_texture,
+                        }) |maybe_tex| {
+                            if (maybe_tex) |h| {
+                                if (world.resources.texture(h)) |tex| {
+                                    _ = try self.ensureTexture(device, h, tex);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         for (render_world.meshes.items) |render_mesh| {
             if (preview_roots) |roots| {
                 if (!entityMatchesPreviewRoots(world, render_mesh.entity_id, roots)) {

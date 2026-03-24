@@ -54,18 +54,19 @@ struct GuavaMetalRhiContext {
 static MTLPixelFormat mapPixelFormat(uint32_t fmt) {
     // Must match types.zig TextureFormat enum ordering:
     // unknown=0, r8_unorm=1, rgba8_unorm=2, bgra8_unorm=3,
-    // bgra8_unorm_srgb=4, rgba16_float=5, rgba32_float=6,
-    // d24_unorm=7, d24_unorm_s8_uint=8, d32_float=9
+    // bgra8_unorm_srgb=4, rgba8_unorm_srgb=5, rgba16_float=6,
+    // rgba32_float=7, d24_unorm=8, d24_unorm_s8_uint=9, d32_float=10
     switch (fmt) {
         case 1:  return MTLPixelFormatR8Unorm;
         case 2:  return MTLPixelFormatRGBA8Unorm;
         case 3:  return MTLPixelFormatBGRA8Unorm;
         case 4:  return MTLPixelFormatBGRA8Unorm_sRGB;
-        case 5:  return MTLPixelFormatRGBA16Float;
-        case 6:  return MTLPixelFormatRGBA32Float;
-        case 7:  return MTLPixelFormatDepth24Unorm_Stencil8; // closest on macOS
-        case 8:  return MTLPixelFormatDepth24Unorm_Stencil8;
-        case 9:  return MTLPixelFormatDepth32Float;
+        case 5:  return MTLPixelFormatRGBA8Unorm_sRGB;
+        case 6:  return MTLPixelFormatRGBA16Float;
+        case 7:  return MTLPixelFormatRGBA32Float;
+        case 8:  return MTLPixelFormatDepth24Unorm_Stencil8; // closest on macOS
+        case 9:  return MTLPixelFormatDepth24Unorm_Stencil8;
+        case 10: return MTLPixelFormatDepth32Float;
         default: return MTLPixelFormatRGBA8Unorm;
     }
 }
@@ -105,9 +106,10 @@ static uint32_t bytesPerPixel(uint32_t fmt) {
         case 2:  return 4;   // rgba8_unorm
         case 3:  return 4;   // bgra8_unorm
         case 4:  return 4;   // bgra8_unorm_srgb
-        case 5:  return 8;   // rgba16_float
-        case 6:  return 16;  // rgba32_float
-        case 9:  return 4;   // d32_float
+        case 5:  return 4;   // rgba8_unorm_srgb
+        case 6:  return 8;   // rgba16_float
+        case 7:  return 16;  // rgba32_float
+        case 10: return 4;   // d32_float
         default: return 4;
     }
 }

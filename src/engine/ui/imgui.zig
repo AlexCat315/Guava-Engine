@@ -782,6 +782,7 @@ fn textureFormatToBridge(format: rhi_types.TextureFormat) u32 {
         .bgra8_unorm => 3,
         .bgra8_unorm_srgb => 4,
         .rgba8_unorm => 2,
+        .rgba8_unorm_srgb => 5,
         else => 3,
     };
 }
