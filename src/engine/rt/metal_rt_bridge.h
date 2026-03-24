@@ -51,6 +51,9 @@ typedef struct {
     uint32_t _pad2;
     float exposure_params[4];
     float color_grading_params[4];
+    uint32_t _pad3;
+    uint32_t _pad4;
+    uint32_t _pad5;
 } GuavaRTParams;
 
 /// 创建 Metal RT 上下文。返回 NULL 表示当前设备不支持 Metal RT。

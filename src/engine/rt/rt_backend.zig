@@ -91,4 +91,7 @@ pub const RtParams = extern struct {
     _pad2: u32 = 0,
     exposure_params: [4]f32 = .{ 0.0, 1.0, 0.0, 0.0 },
     color_grading_params: [4]f32 = .{ 0.0, 1.0, 1.0, 1.0 },
+    _pad3: u32 = 0,
+    _pad4: u32 = 0,
+    _pad5: u32 = 0,
 };

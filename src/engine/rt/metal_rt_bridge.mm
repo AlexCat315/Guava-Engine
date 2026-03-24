@@ -49,8 +49,11 @@ struct RTParams {
     uint output_is_half;
     int environment_texture_index;
     uint _pad2;
-    float4 exposure_params;
-    float4 color_grading_params;
+    packed_float4 exposure_params;
+    packed_float4 color_grading_params;
+    uint _pad3;
+    uint _pad4;
+    uint _pad5;
 };
 
 // ---- deterministic hash RNG (与 CPU 路径追踪保持一致) ----
@@ -136,13 +139,15 @@ static float3 read_texel_texture_atlas(
         return float3(float(f16[0]), float(f16[1]), float(f16[2]));
     }
     const uint px_off = base + index * 4u;
-    float b = float(atlas[px_off + 0]) / 255.0f;
-    float g = float(atlas[px_off + 1]) / 255.0f;
-    float r = float(atlas[px_off + 2]) / 255.0f;
+    float byte0 = float(atlas[px_off + 0]) / 255.0f;
+    float byte1 = float(atlas[px_off + 1]) / 255.0f;
+    float byte2 = float(atlas[px_off + 2]) / 255.0f;
     if (tm.format == TEXFMT_BGRA8_UNORM || tm.format == TEXFMT_BGRA8_UNORM_SRGB) {
-        return float3(pow(r, 2.2f), pow(g, 2.2f), pow(b, 2.2f));
+        // BGRA: byte0=B, byte1=G, byte2=R
+        return float3(pow(byte2, 2.2f), pow(byte1, 2.2f), pow(byte0, 2.2f));
     }
-    return float3(r, g, b);
+    // RGBA: byte0=R, byte1=G, byte2=B
+    return float3(pow(byte0, 2.2f), pow(byte1, 2.2f), pow(byte2, 2.2f));
 }
 
 // 从打包纹理图集中双线性采样 (BGRA8)
