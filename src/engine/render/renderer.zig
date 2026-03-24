@@ -945,8 +945,8 @@ const material_thumbnail_jobs_per_frame: usize = 2;
 const material_thumbnail_cache_limit: usize = 48;
 const selection_readback_bytes: u32 = 4;
 const material_thumbnail_clear_color = [4]f32{ 0.075, 0.08, 0.09, 1.0 };
-const ghost_preview_tint_color = [4]f32{ 0.28, 0.94, 0.62, 0.42 };
-const ghost_preview_tint_strength: f32 = 0.45;
+const ghost_preview_tint_color = [4]f32{ 0.72, 0.86, 0.78, 0.14 };
+const ghost_preview_tint_strength: f32 = 0.12;
 const thumbnail_viewport_state = EditorViewportState{
     .render_mode = .textured,
     .show_grid = false,
@@ -1975,6 +1975,16 @@ pub const Renderer = struct {
                         self.editor_viewport_state.rt_shadows_enabled and
                         self.tryRenderRtShadows(&prepared_scene, scene, self.scene_viewport.width, self.scene_viewport.height);
 
+                    if (rt_shadows_active) {
+                        prepared_scene.rt_shadow_mask = if (self.rt_shadow_mask_texture) |*mask| mask else null;
+                        prepared_scene.rt_shadow_strength = self.editor_viewport_state.rt_shadow_strength;
+                        prepared_scene.rt_shadow_ambient_floor = 0.05;
+                    } else {
+                        prepared_scene.rt_shadow_mask = null;
+                        prepared_scene.rt_shadow_strength = 1.0;
+                        prepared_scene.rt_shadow_ambient_floor = 0.05;
+                    }
+
                     if (self.shadow_pass.isReady()) {
                         if (rt_shadows_active) {
                             // RT shadows 激活：首次清除 depth=1.0（mesh shader 得到 shadow=1.0），
@@ -2056,6 +2066,9 @@ pub const Renderer = struct {
                     }
 
                     if (has_prepared_preview_scene) {
+                        prepared_preview_scene.rt_shadow_mask = prepared_scene.rt_shadow_mask;
+                        prepared_preview_scene.rt_shadow_strength = prepared_scene.rt_shadow_strength;
+                        prepared_preview_scene.rt_shadow_ambient_floor = prepared_scene.rt_shadow_ambient_floor;
                         const preview_opaque_start = std.time.nanoTimestamp();
                         const preview_opaque_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_preview_scene, .{
                             .render_mode = previewRenderMode(active_render_mode),
@@ -2064,7 +2077,6 @@ pub const Renderer = struct {
                             .blend_opaque = true,
                             .alpha_multiplier = ghost_preview_tint_color[3],
                             .preview_tint_strength = ghost_preview_tint_strength,
-                            .override_base_color = ghost_preview_tint_color,
                         });
                         self.graph.recordPassStat(pass_stats, .base_pass, durationNs(preview_opaque_start, std.time.nanoTimestamp()), preview_opaque_stats.draw_calls, preview_opaque_stats.triangles_drawn);
                         draw_stats.add(preview_opaque_stats);
@@ -2087,7 +2099,6 @@ pub const Renderer = struct {
                             .phase = .transparent_pass,
                             .alpha_multiplier = ghost_preview_tint_color[3],
                             .preview_tint_strength = ghost_preview_tint_strength,
-                            .override_base_color = ghost_preview_tint_color,
                         });
                         self.graph.recordPassStat(pass_stats, .transparent, durationNs(preview_transparent_start, std.time.nanoTimestamp()), preview_transparent_stats.draw_calls, preview_transparent_stats.triangles_drawn);
                         draw_stats.add(preview_transparent_stats);
@@ -2096,16 +2107,6 @@ pub const Renderer = struct {
                     self.rhi.endRenderPass(scene_pass);
 
                     if (viewport_active) {
-                        // RT Shadow Composite: 乘法混合 RT 阴影遮罩到颜色缓冲
-                        if (rt_shadows_active and self.rt_shadow_composite_pass.isReady() and self.scene_viewport.hdrColor() != null) {
-                            if (self.rt_shadow_mask_texture) |*mask_tex| {
-                                try self.rt_shadow_composite_pass.syncTexture(&self.rhi, mask_tex);
-                                const rt_shadow_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(.{ .texture = self.scene_viewport.hdrColor().? }));
-                                const rt_shadow_stats = self.rt_shadow_composite_pass.draw(&self.rhi, frame, rt_shadow_pass, self.editor_viewport_state.rt_shadow_strength);
-                                draw_stats.add(rt_shadow_stats);
-                                self.rhi.endRenderPass(rt_shadow_pass);
-                            }
-                        }
 
                         // Volumetric fog: composite onto HDR color before bloom/tonemap
                         const fog_enabled = self.editor_viewport_state.volumetric_fog_enabled and self.scene_viewport.hdrColor() != null;

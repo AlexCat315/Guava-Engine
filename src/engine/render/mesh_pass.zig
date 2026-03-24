@@ -61,6 +61,7 @@ pub const BasePassUniforms = extern struct {
     light_counts: [4]u32, // x: dir_count, y: point_count
     ambient_color: [4]f32,
     shadow_params: [4]f32, // x: bias, yzw: preview tint color
+    rt_shadow_params: [4]f32, // x: enabled (0/1), y: strength, z: ambient floor, w: unused
     ibl_params: [4]f32, // x: use_ibl (0/1), y: ibl_intensity, z: preview tint strength, w: unused
     cascade_matrices: [csm_cascade_count][16]f32,
     cascade_splits: [4]f32, // view-space far distance per cascade
@@ -133,6 +134,9 @@ pub const PreparedScene = struct {
     shadow_maps: [csm_cascade_count]?*const rhi_mod.Texture = .{ null, null, null, null },
     shadow_sampler: ?*const rhi_mod.Sampler,
     texture_sampler: ?*const rhi_mod.Sampler,
+    rt_shadow_mask: ?*const rhi_mod.Texture = null,
+    rt_shadow_strength: f32 = 1.0,
+    rt_shadow_ambient_floor: f32 = 0.05,
     environment_map: ?*const rhi_mod.Texture = null,
     irradiance_map: ?*const rhi_mod.Texture = null,
     prefiltered_env_map: ?*const rhi_mod.Texture = null,
@@ -424,6 +428,9 @@ pub const MeshSceneCache = struct {
             .shadow_maps = reference.shadow_maps,
             .shadow_sampler = reference.shadow_sampler,
             .texture_sampler = reference.texture_sampler,
+            .rt_shadow_mask = reference.rt_shadow_mask,
+            .rt_shadow_strength = reference.rt_shadow_strength,
+            .rt_shadow_ambient_floor = reference.rt_shadow_ambient_floor,
             .environment_map = reference.environment_map,
             .irradiance_map = reference.irradiance_map,
             .prefiltered_env_map = reference.prefiltered_env_map,

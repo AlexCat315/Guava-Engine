@@ -133,6 +133,10 @@ pub const BasePass = struct {
         defer if (ibl_bg) |*bind_group| {
             device.releaseBindGroup(bind_group);
         };
+        var rt_shadow_bg: ?rhi_mod.BindGroup = null;
+        defer if (rt_shadow_bg) |*bind_group| {
+            device.releaseBindGroup(bind_group);
+        };
         if (!use_metal_combined_bindings) {
             if (prepared_scene.shadow_maps[0]) |_| {
                 const shadow_bindings = [_]rhi_mod.TextureSamplerBinding{
@@ -167,6 +171,21 @@ pub const BasePass = struct {
                     .slot_offset = 9,
                 });
                 device.bindGroup(pass, &ibl_bg.?);
+            }
+
+            if (prepared_scene.texture_sampler != null) {
+                const rt_shadow_texture = prepared_scene.rt_shadow_mask orelse prepared_scene.brdf_lut orelse prepared_scene.environment_map orelse prepared_scene.irradiance_map;
+                if (rt_shadow_texture) |texture| {
+                    const rt_bindings = [_]rhi_mod.TextureSamplerBinding{
+                        .{ .texture = texture, .sampler = prepared_scene.texture_sampler.? },
+                    };
+                    rt_shadow_bg = try device.createBindGroup(.{
+                        .stage = .fragment,
+                        .texture_sampler_bindings = rt_bindings[0..],
+                        .slot_offset = 13,
+                    });
+                    device.bindGroup(pass, &rt_shadow_bg.?);
+                }
             }
         }
 
@@ -272,6 +291,7 @@ pub const BasePass = struct {
                 const prefiltered_env_map = prepared_scene.prefiltered_env_map orelse return error.TextureNotFound;
                 const brdf_lut = prepared_scene.brdf_lut orelse return error.TextureNotFound;
                 const environment_map = prepared_scene.environment_map orelse return error.TextureNotFound;
+                const rt_shadow_texture = prepared_scene.rt_shadow_mask orelse brdf_lut;
 
                 const combined_bindings = [_]rhi_mod.TextureSamplerBinding{
                     .{ .texture = item.material_textures[0], .sampler = texture_sampler }, // binding 0: u_base_color_map
@@ -287,6 +307,7 @@ pub const BasePass = struct {
                     .{ .texture = prefiltered_env_map, .sampler = texture_sampler }, // binding 10: u_prefiltered_env_map
                     .{ .texture = brdf_lut, .sampler = texture_sampler }, // binding 11: u_brdf_lut
                     .{ .texture = environment_map, .sampler = texture_sampler }, // binding 12: u_environment_map
+                    .{ .texture = rt_shadow_texture, .sampler = texture_sampler }, // binding 13: u_rt_shadow_mask
                 };
                 var combined_bg = try device.createBindGroup(.{
                     .stage = .fragment,
@@ -360,6 +381,12 @@ pub const BasePass = struct {
             .light_counts = .{ actual_dir_count, @intCast(pt_count), 0, 0 },
             .ambient_color = prepared_scene.ambient_color,
             .shadow_params = .{ 0.0025, 0.0, 0.0, 0.0 }, // bias
+            .rt_shadow_params = .{
+                if (prepared_scene.rt_shadow_mask != null) 1.0 else 0.0,
+                prepared_scene.rt_shadow_strength,
+                prepared_scene.rt_shadow_ambient_floor,
+                0.0,
+            },
             .ibl_params = item.ibl_params,
             .cascade_matrices = prepared_scene.cascade_matrices,
             .cascade_splits = prepared_scene.cascade_splits,
@@ -369,6 +396,7 @@ pub const BasePass = struct {
         if (settings.render_mode == .unlit) {
             fragment_uniforms.light_counts = .{ 0, 0, 0, 0 };
             fragment_uniforms.ambient_color = .{ 1.0, 1.0, 1.0, 1.0 };
+            fragment_uniforms.rt_shadow_params = .{ 0.0, 0.0, 0.0, 0.0 };
             fragment_uniforms.ibl_params = .{ 0.0, 0.0, 0.0, 0.0 };
         } else if (settings.render_mode == .wireframe) {
             fragment_uniforms.base_color_factor = settings.override_base_color orelse .{ 0.08, 0.08, 0.08, 1.0 };
@@ -376,6 +404,7 @@ pub const BasePass = struct {
             fragment_uniforms.has_textures = .{ 0, 0, 0, 0 };
             fragment_uniforms.light_counts = .{ 0, 0, 0, 0 };
             fragment_uniforms.ambient_color = .{ 1.0, 1.0, 1.0, 1.0 };
+            fragment_uniforms.rt_shadow_params = .{ 0.0, 0.0, 0.0, 0.0 };
             fragment_uniforms.ibl_params = .{ 0.0, 0.0, 0.0, 0.0 };
         }
 
