@@ -493,6 +493,13 @@ pub const RhiDevice = struct {
         return self.runtime_info;
     }
 
+    pub fn activeCommandBuffer(self: *RhiDevice) ?*command_buffer.CommandBuffer {
+        if (self.current_frame) |*frame| {
+            return &frame.command_buffer;
+        }
+        return null;
+    }
+
     pub fn waitForIdle(self: *RhiDevice) bool {
         _ = self;
         // Not implemented in new RHI - stub
@@ -529,27 +536,16 @@ pub const RhiDevice = struct {
 
     pub fn cancelFrame(self: *RhiDevice, frame: Frame) Error!void {
         const active = self.current_frame orelse frame;
-        if (!commandBuffersShareStorage(active.command_buffer, frame.command_buffer)) {
-            var frame_cmd = frame.command_buffer;
-            frame_cmd.deinit();
-        }
         var cmd_mut = active.command_buffer;
         cmd_mut.deinit();
         self.current_frame = null;
     }
 
     pub fn submitFrame(self: *RhiDevice, frame: Frame) Error!void {
-        var active = self.current_frame orelse frame;
-        if (!commandBuffersShareStorage(active.command_buffer, frame.command_buffer) and frame.command_buffer.rawBytes().len > 0) {
-            active.command_buffer.opcodes.appendSlice(self.allocator, frame.command_buffer.rawBytes()) catch return error.OutOfMemory;
-        }
+        const active = self.current_frame orelse frame;
         try self.device.submitCommandBuffer(.graphics, &active.command_buffer, .{});
         const swapchain_image = active.swapchain_image;
         try self.device.present(swapchain_image);
-        if (!commandBuffersShareStorage(active.command_buffer, frame.command_buffer)) {
-            var frame_cmd = frame.command_buffer;
-            frame_cmd.deinit();
-        }
         var cmd_mut = active.command_buffer;
         cmd_mut.deinit();
         self.advanceFrame();
@@ -558,17 +554,10 @@ pub const RhiDevice = struct {
     }
 
     pub fn submitFrameAndAcquireFence(self: *RhiDevice, frame: Frame) Error!Fence {
-        var active = self.current_frame orelse frame;
-        if (!commandBuffersShareStorage(active.command_buffer, frame.command_buffer) and frame.command_buffer.rawBytes().len > 0) {
-            active.command_buffer.opcodes.appendSlice(self.allocator, frame.command_buffer.rawBytes()) catch return error.OutOfMemory;
-        }
+        const active = self.current_frame orelse frame;
         try self.device.submitCommandBuffer(.graphics, &active.command_buffer, .{});
         const swapchain_image = active.swapchain_image;
         try self.device.present(swapchain_image);
-        if (!commandBuffersShareStorage(active.command_buffer, frame.command_buffer)) {
-            var frame_cmd = frame.command_buffer;
-            frame_cmd.deinit();
-        }
         var cmd_mut = active.command_buffer;
         cmd_mut.deinit();
         self.advanceFrame();
@@ -636,6 +625,11 @@ pub const RhiDevice = struct {
             .color_target_id = color_id,
             .depth_target_id = depth_id,
             .clear_mask = clear_mask,
+            .clear_r = desc.color.clear_color[0],
+            .clear_g = desc.color.clear_color[1],
+            .clear_b = desc.color.clear_color[2],
+            .clear_a = desc.color.clear_color[3],
+            .clear_depth = if (desc.depth) |d| d.clear_depth else 1.0,
         }) catch |err| {
             return switch (err) {
                 error.InvalidOpcode => error.RenderPassBeginFailed,
@@ -1268,8 +1262,4 @@ fn copyCStringSlice(dest: []u8, src: []const u8) void {
     if (n + 1 < dest.len) {
         @memset(dest[n + 1 ..], 0);
     }
-}
-
-fn commandBuffersShareStorage(a: command_buffer.CommandBuffer, b: command_buffer.CommandBuffer) bool {
-    return a.opcodes.items.ptr == b.opcodes.items.ptr;
 }

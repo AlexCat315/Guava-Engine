@@ -2476,7 +2476,8 @@ pub const Renderer = struct {
             draw_stats.add(thumbnail_stats);
 
             if (has_swapchain) {
-                imgui_mod.prepare(&frame.command_buffer);
+                const ui_cmd = self.rhi.activeCommandBuffer() orelse return error.CommandBufferAcquireFailed;
+                imgui_mod.prepare(ui_cmd);
                 const ui_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
                     .color = .{
                         .target = .swapchain,
@@ -2487,7 +2488,7 @@ pub const Renderer = struct {
                     .depth = null,
                 });
                 const ui_start = std.time.nanoTimestamp();
-                imgui_mod.render(&frame.command_buffer, &ui_pass);
+                imgui_mod.render(ui_cmd, &ui_pass);
                 self.graph.recordPassStat(pass_stats, .ui_overlay, durationNs(ui_start, std.time.nanoTimestamp()), 0, 0);
                 self.rhi.endRenderPass(ui_pass);
             }

@@ -33,6 +33,11 @@ pub const BeginRenderPassCmd = extern struct {
     color_target_id: u32,
     depth_target_id: u32,
     clear_mask: u32,
+    clear_r: f32 = 0.0,
+    clear_g: f32 = 0.0,
+    clear_b: f32 = 0.0,
+    clear_a: f32 = 1.0,
+    clear_depth: f32 = 1.0,
 };
 
 pub const BeginComputePassCmd = extern struct {

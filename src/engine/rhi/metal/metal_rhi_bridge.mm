@@ -205,7 +205,16 @@ enum RhiOpCode : uint8_t {
 
 // Packed command structs (must match command_buffer.zig extern struct layout)
 #pragma pack(push, 1)
-struct CmdBeginRenderPass  { uint32_t color_target_id; uint32_t depth_target_id; uint32_t clear_mask; };
+struct CmdBeginRenderPass  {
+    uint32_t color_target_id;
+    uint32_t depth_target_id;
+    uint32_t clear_mask;
+    float clear_r;
+    float clear_g;
+    float clear_b;
+    float clear_a;
+    float clear_depth;
+};
 struct CmdBeginComputePass { uint32_t reserved; };
 struct CmdBeginCopyPass    { uint32_t reserved; };
 struct CmdSetBindingSet    { uint32_t slot; uint32_t set_id; };
@@ -866,7 +875,7 @@ bool guava_metal_rhi_submit(void* raw, uint32_t queue_class,
                                                : MTLLoadActionLoad;
                     rpd.colorAttachments[0].storeAction = MTLStoreActionStore;
                     rpd.colorAttachments[0].clearColor =
-                        MTLClearColorMake(0, 0, 0, 1);
+                        MTLClearColorMake(cmd.clear_r, cmd.clear_g, cmd.clear_b, cmd.clear_a);
                 }
 
                 // Look up depth target texture
@@ -877,7 +886,7 @@ bool guava_metal_rhi_submit(void* raw, uint32_t queue_class,
                         (cmd.clear_mask & 0x2) ? MTLLoadActionClear
                                                : MTLLoadActionLoad;
                     rpd.depthAttachment.storeAction = MTLStoreActionStore;
-                    rpd.depthAttachment.clearDepth = 1.0;
+                    rpd.depthAttachment.clearDepth = cmd.clear_depth;
                 }
 
                 renderEnc = [mtlCmd renderCommandEncoderWithDescriptor:rpd];
