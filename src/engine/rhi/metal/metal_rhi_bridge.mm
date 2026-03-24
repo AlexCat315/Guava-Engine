@@ -739,11 +739,14 @@ static void applyBindingSetRender(GuavaMetalRhiContext* ctx,
                                   id<MTLRenderCommandEncoder> enc,
                                   uint32_t pipeline_slot,
                                   uint32_t set_id) {
+    (void)pipeline_slot;
     auto it = ctx->binding_sets.find(set_id);
     if (it == ctx->binding_sets.end()) return;
 
     for (auto& e : it->second.entries) {
-        uint32_t mtl_index = pipeline_slot * kEntriesPerSlot + e.slot;
+        // Slots coming from the Zig RHI path are already absolute Metal indices.
+        // Applying an extra set-based offset double-shifts bindings and breaks sampling.
+        uint32_t mtl_index = e.slot;
 
         switch (e.resource_type) {
             case 3: { // uniform_buffer
@@ -801,11 +804,14 @@ static void applyBindingSetCompute(GuavaMetalRhiContext* ctx,
                                    id<MTLComputeCommandEncoder> enc,
                                    uint32_t pipeline_slot,
                                    uint32_t set_id) {
+    (void)pipeline_slot;
     auto it = ctx->binding_sets.find(set_id);
     if (it == ctx->binding_sets.end()) return;
 
     for (auto& e : it->second.entries) {
-        uint32_t mtl_index = pipeline_slot * kEntriesPerSlot + e.slot;
+        // Slots coming from the Zig RHI path are already absolute Metal indices.
+        // Applying an extra set-based offset double-shifts bindings and breaks sampling.
+        uint32_t mtl_index = e.slot;
 
         switch (e.resource_type) {
             case 3: case 4: { // uniform/storage buffer

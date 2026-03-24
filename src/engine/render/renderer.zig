@@ -1952,10 +1952,10 @@ pub const Renderer = struct {
                     try self.renderPathTraceViewport(&prepared_scene, scene);
                     self.graph.recordPassStat(pass_stats, .base_pass, durationNs(path_trace_start, std.time.nanoTimestamp()), 0, 0);
                 } else {
-                    const scene_hdr_color_target: rhi_mod.ColorTarget = if (viewport_active)
-                        .{ .texture = self.scene_viewport.hdrColor().? }
-                    else
-                        .swapchain;
+                    // NOTE: tonemap v2 pass currently uses placeholder resources and does NOT
+                    // perform real HDR→LDR conversion. Render directly to the LDR color target
+                    // so the viewport displays the scene correctly.
+                    const scene_hdr_color_target = scene_color_target;
                     const scene_depth_target: ?rhi_mod.DepthAttachmentDesc = blk_depth: {
                         const depth_texture = if (viewport_active)
                             self.scene_viewport.depth().?
@@ -2042,7 +2042,7 @@ pub const Renderer = struct {
                     const opaque_start = std.time.nanoTimestamp();
                     const opaque_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene, .{
                         .render_mode = active_render_mode,
-                        .target = if (viewport_active) .hdr else .ldr,
+                        .target = .ldr,
                         .phase = .opaque_pass,
                     });
                     self.graph.recordPassStat(pass_stats, .base_pass, durationNs(opaque_start, std.time.nanoTimestamp()), opaque_stats.draw_calls, opaque_stats.triangles_drawn);
@@ -2062,7 +2062,7 @@ pub const Renderer = struct {
                         const preview_opaque_start = std.time.nanoTimestamp();
                         const preview_opaque_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_preview_scene, .{
                             .render_mode = previewRenderMode(active_render_mode),
-                            .target = .hdr,
+                            .target = .ldr,
                             .phase = .opaque_pass,
                             .blend_opaque = true,
                             .alpha_multiplier = ghost_preview_tint_color[3],
@@ -2076,7 +2076,7 @@ pub const Renderer = struct {
                     const transparent_start = std.time.nanoTimestamp();
                     const transparent_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene, .{
                         .render_mode = active_render_mode,
-                        .target = if (viewport_active) .hdr else .ldr,
+                        .target = .ldr,
                         .phase = .transparent_pass,
                     });
                     self.graph.recordPassStat(pass_stats, .transparent, durationNs(transparent_start, std.time.nanoTimestamp()), transparent_stats.draw_calls, transparent_stats.triangles_drawn);
@@ -2086,7 +2086,7 @@ pub const Renderer = struct {
                         const preview_transparent_start = std.time.nanoTimestamp();
                         const preview_transparent_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_preview_scene, .{
                             .render_mode = previewRenderMode(active_render_mode),
-                            .target = .hdr,
+                            .target = .ldr,
                             .phase = .transparent_pass,
                             .alpha_multiplier = ghost_preview_tint_color[3],
                             .preview_tint_strength = ghost_preview_tint_strength,
@@ -2099,11 +2099,11 @@ pub const Renderer = struct {
                     self.rhi.endRenderPass(scene_pass);
 
                     if (viewport_active) {
-                        // RT Shadow Composite: 乘法混合 RT 阴影遮罩到 HDR 颜色缓冲
-                        if (rt_shadows_active and self.rt_shadow_composite_pass.isReady() and self.scene_viewport.hdrColor() != null) {
+                        // RT Shadow Composite: 乘法混合 RT 阴影遮罩到颜色缓冲
+                        if (rt_shadows_active and self.rt_shadow_composite_pass.isReady() and self.scene_viewport.color() != null) {
                             if (self.rt_shadow_mask_texture) |*mask_tex| {
                                 try self.rt_shadow_composite_pass.syncTexture(&self.rhi, mask_tex);
-                                const rt_shadow_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(.{ .texture = self.scene_viewport.hdrColor().? }));
+                                const rt_shadow_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(.{ .texture = self.scene_viewport.color().? }));
                                 const rt_shadow_stats = self.rt_shadow_composite_pass.draw(&self.rhi, frame, rt_shadow_pass, self.editor_viewport_state.rt_shadow_strength);
                                 draw_stats.add(rt_shadow_stats);
                                 self.rhi.endRenderPass(rt_shadow_pass);
@@ -2111,7 +2111,7 @@ pub const Renderer = struct {
                         }
 
                         // Volumetric fog: composite onto HDR color before bloom/tonemap
-                        const fog_enabled = self.editor_viewport_state.volumetric_fog_enabled and self.scene_viewport.hdrColor() != null;
+                        const fog_enabled = self.editor_viewport_state.volumetric_fog_enabled and self.scene_viewport.color() != null;
                         if (fog_enabled) {
                             if (self.rhi_device) |dev| {
                                 const inv_vp_fog = mat4_mod.inverse(prepared_scene.view_projection) orelse mat4_mod.identity();
@@ -2199,11 +2199,11 @@ pub const Renderer = struct {
                                 self.rhi.endRenderPass(ssao_render_pass);
                             }
 
-                            // SSAO 合成: 将 SSAO 纹理以乘法混合叠加到 HDR 颜色缓冲，
+                            // SSAO 合成: 将 SSAO 纹理以乘法混合叠加到颜色缓冲，
                             // 使遮蔽区域（角落/缝隙）自然变暗，增强场景接地感。
-                            if (self.ssao_composite_pass.isReady() and self.scene_viewport.hdrColor() != null) {
+                            if (self.ssao_composite_pass.isReady() and self.scene_viewport.color() != null) {
                                 try self.ssao_composite_pass.syncTexture(&self.rhi, self.scene_viewport.ssao().?);
-                                const ssao_composite_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(.{ .texture = self.scene_viewport.hdrColor().? }));
+                                const ssao_composite_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(.{ .texture = self.scene_viewport.color().? }));
                                 const ssao_composite_stats = self.ssao_composite_pass.draw(&self.rhi, frame, ssao_composite_render_pass, self.editor_viewport_state.ssao_intensity);
                                 draw_stats.add(ssao_composite_stats);
                                 self.rhi.endRenderPass(ssao_composite_render_pass);
@@ -2280,7 +2280,7 @@ pub const Renderer = struct {
                         var taa_resolved = false;
                         if (taa_enabled) {
                             try self.taa_pass.ensureHistoryTexture(&self.rhi, self.scene_viewport.width, self.scene_viewport.height);
-                            try self.taa_pass.syncTextures(&self.rhi, self.scene_viewport.hdrColor().?, null, self.scene_viewport.depth());
+                            try self.taa_pass.syncTextures(&self.rhi, self.scene_viewport.color().?, null, self.scene_viewport.depth());
                             const taa_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.taa().? }));
 
                             const inv_proj_taa = mat4_mod.inverse(unjittered_projection) orelse mat4_mod.identity();
@@ -2312,8 +2312,8 @@ pub const Renderer = struct {
                             self.taa_pass.advanceFrame();
                         }
 
-                        // Select HDR input for bloom: use TAA output if resolved, otherwise raw HDR
-                        const _hdr_input_for_post = if (taa_resolved) self.scene_viewport.taa().? else self.scene_viewport.hdrColor().?;
+                        // Select input for bloom: use TAA output if resolved, otherwise color buffer
+                        const _hdr_input_for_post = if (taa_resolved) self.scene_viewport.taa().? else self.scene_viewport.color().?;
                         _ = _hdr_input_for_post;
 
                         if (bloom_enabled) {
