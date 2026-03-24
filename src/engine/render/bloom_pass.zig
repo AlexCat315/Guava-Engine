@@ -1,114 +1,128 @@
 const std = @import("std");
-const rhi = @import("../rhi/rhi.zig");
-const render_graph = @import("render_graph.zig");
+const mesh_pass_mod = @import("mesh_pass.zig");
+const rhi_mod = @import("../rhi/device.zig");
+const shader_support = @import("shader_support.zig");
 
-/// Bloom post-process pass
-///
-/// Performs a single-pass bright-filter + downsample on the HDR input.
-/// Uses a uniform buffer for threshold parameters and a sampled texture
-/// binding — demonstrates the full binding-layout → pipeline-layout →
-/// binding-set → validation flow.
+const fullscreen_triangle_vertex_count: u32 = 3;
+
+pub const BloomUniforms = extern struct {
+    threshold_params: [4]f32 = .{ 1.0, 0.5, 0.0, 0.0 },
+};
+
 pub const BloomPass = struct {
-    pub const BloomParams = struct {
-        threshold: f32 = 1.0,
-        intensity: f32 = 0.35,
-        _pad: [2]f32 = .{ 0.0, 0.0 },
-    };
+    sampler: ?rhi_mod.Sampler = null,
+    bind_group: ?rhi_mod.BindGroup = null,
+    bound_hdr_handle: usize = 0,
+    pipeline: ?rhi_mod.GraphicsPipeline = null,
+    stages: ?shader_support.ProgramStages = null,
 
-    pub fn execute(
-        allocator: std.mem.Allocator,
-        device: *rhi.Device,
-        graph: ?*const render_graph.RenderGraph,
-        input_resource_id: u32,
-        output_resource_id: u32,
-        params: BloomParams,
+    pub fn init(device: *rhi_mod.RhiDevice) !BloomPass {
+        var pass = BloomPass{};
+        try pass.createResources(device);
+        return pass;
+    }
+
+    pub fn deinit(self: *BloomPass, device: *rhi_mod.RhiDevice) void {
+        if (self.bind_group) |*bind_group| {
+            device.releaseBindGroup(bind_group);
+        }
+        if (self.sampler) |*sampler| {
+            device.releaseSampler(sampler);
+        }
+        if (self.pipeline) |*pipeline| {
+            device.releaseGraphicsPipeline(pipeline);
+        }
+        if (self.stages) |*stages| {
+            stages.deinit(device);
+        }
+        self.* = undefined;
+    }
+
+    pub fn isReady(self: *const BloomPass) bool {
+        return self.pipeline != null and self.sampler != null;
+    }
+
+    pub fn syncTexture(
+        self: *BloomPass,
+        device: *rhi_mod.RhiDevice,
+        hdr_texture: *const rhi_mod.Texture,
     ) !void {
-        // V2 prototype: skip GPU submission when no valid render target is bound
-        if (output_resource_id == 0) return;
-        // Set 0: sampled HDR input
-        const sampled_layout = try device.createBindingLayout(.{
-            .entries = &.{.{
-                .slot = 0,
-                .binding_type = .texture,
-                .stage = .fragment,
-            }},
-            .label = "bloom_sampled_layout",
-        });
-
-        // Set 1: bloom uniform buffer
-        const uniform_layout = try device.createBindingLayout(.{
-            .entries = &.{.{
-                .slot = 0,
-                .binding_type = .uniform_buffer,
-                .stage = .fragment,
-            }},
-            .label = "bloom_uniform_layout",
-        });
-
-        const pipeline_layout = try device.resolvePipelineLayout(&.{ sampled_layout, uniform_layout });
-
-        const sampled_tex = try device.createTexture(.{
-            .width = 1,
-            .height = 1,
-            .format = .rgba16_float,
-            .usage = .{ .sampled = true },
-            .label = "bloom_input",
-        });
-        defer device.destroyTexture(sampled_tex);
-
-        const uniform_buf = try device.createBuffer(.{
-            .size = @sizeOf(BloomParams),
-            .usage = .{ .uniform = true },
-            .label = "bloom_params",
-        });
-        defer device.destroyBuffer(uniform_buf);
-
-        const sampled_set = try device.createBindingSetCached(sampled_layout, .{
-            .entries = &.{.{ .slot = 0, .resource = .{ .texture = sampled_tex } }},
-            .label = "bloom_input_set",
-        });
-
-        const uniform_set = try device.createBindingSetCached(uniform_layout, .{
-            .entries = &.{.{ .slot = 0, .resource = .{ .uniform_buffer = uniform_buf } }},
-            .label = "bloom_params_set",
-        });
-
-        try device.validateBindingSetForPipelineSlot(pipeline_layout, 0, sampled_set);
-        try device.validateBindingSetForPipelineSlot(pipeline_layout, 1, uniform_set);
-
-        _ = params;
-
-        var cmd = try device.createCommandBuffer(allocator);
-        defer cmd.deinit();
-
-        if (graph) |g| {
-            try g.encodeBarrierPlansToCommandBuffer(allocator, device, &cmd);
+        const hdr_handle = hdr_texture.id;
+        if (self.bind_group != null and self.bound_hdr_handle == hdr_handle) {
+            return;
         }
 
-        try cmd.encodePipelineBarrier(.{
-            .resource_id = input_resource_id,
-            .src_state_bits = (rhi.ResourceStates{ .unordered_access = true }).asBits(),
-            .dst_state_bits = (rhi.ResourceStates{ .shader_resource = true }).asBits(),
-            .src_queue = @intCast(@intFromEnum(rhi.QueueClass.graphics)),
-            .dst_queue = @intCast(@intFromEnum(rhi.QueueClass.graphics)),
-        });
+        if (self.bind_group) |*bind_group| {
+            device.releaseBindGroup(bind_group);
+        }
 
-        try cmd.encodeBeginRenderPass(.{
-            .color_target_id = output_resource_id,
-            .depth_target_id = 0,
-            .clear_mask = 0,
+        const bindings = [_]rhi_mod.TextureSamplerBinding{
+            .{ .texture = hdr_texture, .sampler = &self.sampler.? },
+        };
+        self.bind_group = try device.createBindGroup(.{
+            .stage = .fragment,
+            .texture_sampler_bindings = bindings[0..],
         });
-        try cmd.encodeSetBindingSet(.{ .slot = 0, .set_id = sampled_set.id });
-        try cmd.encodeSetBindingSet(.{ .slot = 1, .set_id = uniform_set.id });
-        try cmd.encodeDrawIndexed(.{
-            .index_count = 3,
-            .instance_count = 1,
-            .first_index = 0,
-            .vertex_offset = 0,
-            .first_instance = 0,
-        });
-        try cmd.encodeEndRenderPass();
+        self.bound_hdr_handle = hdr_handle;
+    }
 
-        try device.submitCommandBuffer(.graphics, &cmd, .{});
+    pub fn draw(
+        self: *BloomPass,
+        device: *rhi_mod.RhiDevice,
+        frame: rhi_mod.Frame,
+        pass: rhi_mod.RenderPass,
+        uniforms: BloomUniforms,
+    ) mesh_pass_mod.DrawStats {
+        var stats = mesh_pass_mod.DrawStats{};
+        if (!self.isReady() or self.bind_group == null) {
+            return stats;
+        }
+
+        device.bindGraphicsPipeline(pass, &self.pipeline.?);
+        device.bindGroup(pass, &self.bind_group.?);
+        device.pushFragmentUniformData(frame, 0, std.mem.asBytes(&uniforms));
+        device.drawPrimitives(pass, fullscreen_triangle_vertex_count, 1, 0, 0);
+
+        stats.draw_calls = 1;
+        stats.triangles_drawn = 1;
+        return stats;
+    }
+
+    fn createResources(self: *BloomPass, device: *rhi_mod.RhiDevice) !void {
+        self.sampler = try device.createSampler(.{
+            .min_filter = .linear,
+            .mag_filter = .linear,
+            .mipmap_mode = .linear,
+            .address_mode_u = .clamp_to_edge,
+            .address_mode_v = .clamp_to_edge,
+            .address_mode_w = .clamp_to_edge,
+        });
+        errdefer if (self.sampler) |*sampler| {
+            device.releaseSampler(sampler);
+        };
+
+        self.stages = try shader_support.loadProgramStages(device, "bloom");
+        errdefer if (self.stages) |*stages| {
+            stages.deinit(device);
+        };
+
+        const vertex_layouts = [_]rhi_mod.VertexBufferLayoutDesc{};
+        const vertex_attributes = [_]rhi_mod.VertexAttributeDesc{};
+
+        self.pipeline = try device.createGraphicsPipeline(.{
+            .vertex_shader = &self.stages.?.vertex,
+            .fragment_shader = &self.stages.?.fragment,
+            .vertex_buffer_layouts = vertex_layouts[0..],
+            .vertex_attributes = vertex_attributes[0..],
+            .color_format = .rgba16_float,
+            .depth_format = null,
+            .primitive_type = .triangle_list,
+            .fill_mode = .fill,
+            .cull_mode = .none,
+            .front_face = .counter_clockwise,
+            .depth_compare = .always,
+            .depth_test = false,
+            .depth_write = false,
+        });
     }
 };

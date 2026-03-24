@@ -559,6 +559,24 @@ pub fn drawStatusBarWindow(state: *EditorState, layer_context: *engine.core.Laye
 pub fn handleViewportSelection(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const input = layer_context.input;
     if (input.wasMousePressed(.left)) {
+        // Gizmo axis click: test on press so drag can begin immediately
+        if (state.manipulation_mode != .none and
+            state.viewport_has_image and state.viewport_hovered and
+            !state.viewport_overlay_hovered and !input.modifiers.alt and
+            !state.manipulation_drag_active)
+        {
+            if (viewportPixelUnderMouse(state, layer_context)) |pixel| {
+                const viewport_size = layer_context.renderer.sceneViewportSize();
+                if (camera.activeCameraRayFromViewportPixel(state, layer_context, pixel, viewport_size)) |ray| {
+                    if (manipulation.hitTestGizmo(state, layer_context, ray)) |hit| {
+                        viewport_log.info("gizmo axis click axis={s} mode={s}", .{ @tagName(hit.axis), @tagName(hit.mode) });
+                        try manipulation.beginManipulationFromGizmoClick(state, layer_context, hit);
+                        return;
+                    }
+                }
+            }
+        }
+
         state.viewport_selection_press_active = canBeginViewportSelection(state, input);
         if (state.viewport_selection_press_active) {
             state.viewport_selection_press_mouse = input.mouse_position;

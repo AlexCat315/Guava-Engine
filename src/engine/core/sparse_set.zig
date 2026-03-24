@@ -113,7 +113,7 @@ pub fn SparseSet(comptime T: type) type {
             return self.getPtr(entity_id).?;
         }
 
-        pub fn iterator(self: *const Self) Iterator(T) {
+        pub fn iterator(self: *const Self) Iterator {
             return .{
                 .dense = self.dense,
                 .dense_entities = self.dense_entities,
@@ -138,7 +138,7 @@ pub fn SparseSet(comptime T: type) type {
                 };
             }
 
-            pub fn nextPtr(self: *Iterator) ?struct { entity_id: EntityId, component: *T } {
+            pub fn nextPtr(self: *Iterator) ?struct { entity_id: EntityId, component: *const T } {
                 if (self.index >= self.len) return null;
                 const i = self.index;
                 self.index += 1;
@@ -169,7 +169,7 @@ test "SparseSet basic operations" {
 
     try set.insert(2, 200);
     try testing.expect(set.contains(2));
-    try set.remove(2);
+    set.remove(2);
     try testing.expect(!set.contains(2));
 }
 

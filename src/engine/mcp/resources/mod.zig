@@ -1237,7 +1237,7 @@ fn stringifyAlloc(allocator: std.mem.Allocator, value: anytype) ![]u8 {
 }
 
 test "SnapshotStore publishes read-only hierarchy, selection, and entity snapshots" {
-    var store = SnapshotStore.init(std.testing.allocator, null, null);
+    var store = SnapshotStore.init(std.testing.allocator, null, null, null);
     defer store.deinit();
 
     var world = scene_mod.World.init(std.testing.allocator, null);
@@ -1281,7 +1281,7 @@ test "SnapshotStore exposes collaboration context and preview resources" {
     var collaboration = collaboration_mod.Store.init(std.testing.allocator);
     defer collaboration.deinit();
 
-    var store = SnapshotStore.init(std.testing.allocator, &collaboration, null);
+    var store = SnapshotStore.init(std.testing.allocator, &collaboration, null, null);
     defer store.deinit();
 
     var world = scene_mod.World.init(std.testing.allocator, null);
@@ -1325,7 +1325,7 @@ test "resource templates advertise dynamic entity snapshots" {
 }
 
 test "SnapshotStore exposes schema resource for AI-facing component contracts" {
-    var store = SnapshotStore.init(std.testing.allocator, null, null);
+    var store = SnapshotStore.init(std.testing.allocator, null, null, null);
     defer store.deinit();
 
     var world = scene_mod.World.init(std.testing.allocator, null);
@@ -1341,7 +1341,7 @@ test "SnapshotStore exposes schema resource for AI-facing component contracts" {
 }
 
 test "SnapshotStore exposes scene, prefab, material, and tool schemas" {
-    var store = SnapshotStore.init(std.testing.allocator, null, null);
+    var store = SnapshotStore.init(std.testing.allocator, null, null, null);
     defer store.deinit();
 
     var world = scene_mod.World.init(std.testing.allocator, null);

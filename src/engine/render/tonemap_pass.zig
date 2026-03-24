@@ -1,13 +1,10 @@
 const std = @import("std");
-const rhi = @import("../rhi/rhi.zig");
-const render_graph = @import("render_graph.zig");
+const mesh_pass_mod = @import("mesh_pass.zig");
+const rhi_mod = @import("../rhi/device.zig");
+const shader_support = @import("shader_support.zig");
 
-/// Tonemap post-process pass
-///
-/// Three binding sets:
-///   Set 0 — HDR scene color (sampled texture)
-///   Set 1 — Bloom buffer    (sampled texture)
-///   Set 2 — Tonemap params  (uniform buffer: exposure, bloom, color grading, LUT)
+const fullscreen_triangle_vertex_count: u32 = 3;
+
 pub const TonemapPass = struct {
     pub const TonemapParams = extern struct {
         exposure_params: [4]f32 = .{ 0.0, 1.0, 0.0, 0.0 },
@@ -16,143 +13,136 @@ pub const TonemapPass = struct {
         lut_params: [4]f32 = .{ 0.0, 1.0, 0.0, 0.0 },
     };
 
-    /// Returns the three binding layout IDs created for this pass (for constraint wiring).
-    pub const LayoutIds = struct {
-        hdr_layout: rhi.BindingLayout,
-        bloom_layout: rhi.BindingLayout,
-        uniform_layout: rhi.BindingLayout,
-    };
+    sampler: ?rhi_mod.Sampler = null,
+    bind_group: ?rhi_mod.BindGroup = null,
+    bound_hdr_handle: usize = 0,
+    bound_bloom_handle: usize = 0,
+    bound_lut_handle: usize = 0,
+    pipeline: ?rhi_mod.GraphicsPipeline = null,
+    stages: ?shader_support.ProgramStages = null,
 
-    pub fn createLayouts(device: *rhi.Device) !LayoutIds {
-        const hdr_layout = try device.createBindingLayout(.{
-            .entries = &.{.{
-                .slot = 0,
-                .binding_type = .texture,
-                .stage = .fragment,
-            }},
-            .label = "tonemap_hdr_layout",
-        });
-
-        const bloom_layout = try device.createBindingLayout(.{
-            .entries = &.{.{
-                .slot = 0,
-                .binding_type = .texture,
-                .stage = .fragment,
-            }},
-            .label = "tonemap_bloom_layout",
-        });
-
-        const uniform_layout = try device.createBindingLayout(.{
-            .entries = &.{.{
-                .slot = 0,
-                .binding_type = .uniform_buffer,
-                .stage = .fragment,
-            }},
-            .label = "tonemap_uniform_layout",
-        });
-
-        return .{
-            .hdr_layout = hdr_layout,
-            .bloom_layout = bloom_layout,
-            .uniform_layout = uniform_layout,
-        };
+    pub fn init(device: *rhi_mod.RhiDevice) !TonemapPass {
+        var pass = TonemapPass{};
+        try pass.createResources(device);
+        return pass;
     }
 
-    pub fn execute(
-        allocator: std.mem.Allocator,
-        device: *rhi.Device,
-        graph: ?*const render_graph.RenderGraph,
-        input_resource_id: u32,
-        output_resource_id: u32,
-        params: TonemapParams,
+    pub fn deinit(self: *TonemapPass, device: *rhi_mod.RhiDevice) void {
+        if (self.bind_group) |*bind_group| {
+            device.releaseBindGroup(bind_group);
+        }
+        if (self.sampler) |*sampler| {
+            device.releaseSampler(sampler);
+        }
+        if (self.pipeline) |*pipeline| {
+            device.releaseGraphicsPipeline(pipeline);
+        }
+        if (self.stages) |*stages| {
+            stages.deinit(device);
+        }
+        self.* = undefined;
+    }
+
+    pub fn isReady(self: *const TonemapPass) bool {
+        return self.pipeline != null and self.sampler != null;
+    }
+
+    pub fn syncTextures(
+        self: *TonemapPass,
+        device: *rhi_mod.RhiDevice,
+        hdr_texture: *const rhi_mod.Texture,
+        bloom_texture: ?*const rhi_mod.Texture,
+        lut_texture: ?*const rhi_mod.Texture,
     ) !void {
-        // V2 prototype: skip GPU submission when no valid render target is bound
-        if (output_resource_id == 0) return;
-        const layouts = try createLayouts(device);
+        const bloom_tex = bloom_texture orelse hdr_texture;
+        const lut_tex = lut_texture orelse hdr_texture;
 
-        const pipeline_layout = try device.resolvePipelineLayout(&.{
-            layouts.hdr_layout,
-            layouts.bloom_layout,
-            layouts.uniform_layout,
-        });
-
-        // Placeholder resources
-        const hdr_tex = try device.createTexture(.{
-            .width = 1,
-            .height = 1,
-            .format = .rgba16_float,
-            .usage = .{ .sampled = true },
-            .label = "tonemap_hdr_in",
-        });
-        defer device.destroyTexture(hdr_tex);
-
-        const bloom_tex = try device.createTexture(.{
-            .width = 1,
-            .height = 1,
-            .format = .rgba16_float,
-            .usage = .{ .sampled = true },
-            .label = "tonemap_bloom_in",
-        });
-        defer device.destroyTexture(bloom_tex);
-
-        const uniform_buf = try device.createBuffer(.{
-            .size = @sizeOf(TonemapParams),
-            .usage = .{ .uniform = true },
-            .label = "tonemap_params",
-        });
-        defer device.destroyBuffer(uniform_buf);
-
-        const hdr_set = try device.createBindingSetCached(layouts.hdr_layout, .{
-            .entries = &.{.{ .slot = 0, .resource = .{ .texture = hdr_tex } }},
-            .label = "tonemap_hdr_set",
-        });
-        const bloom_set = try device.createBindingSetCached(layouts.bloom_layout, .{
-            .entries = &.{.{ .slot = 0, .resource = .{ .texture = bloom_tex } }},
-            .label = "tonemap_bloom_set",
-        });
-        const uniform_set = try device.createBindingSetCached(layouts.uniform_layout, .{
-            .entries = &.{.{ .slot = 0, .resource = .{ .uniform_buffer = uniform_buf } }},
-            .label = "tonemap_params_set",
-        });
-
-        try device.validateBindingSetForPipelineSlot(pipeline_layout, 0, hdr_set);
-        try device.validateBindingSetForPipelineSlot(pipeline_layout, 1, bloom_set);
-        try device.validateBindingSetForPipelineSlot(pipeline_layout, 2, uniform_set);
-
-        _ = params;
-
-        var cmd = try device.createCommandBuffer(allocator);
-        defer cmd.deinit();
-
-        if (graph) |g| {
-            try g.encodeBarrierPlansToCommandBuffer(allocator, device, &cmd);
+        const hdr_handle = hdr_texture.id;
+        const bloom_handle = bloom_tex.id;
+        const lut_handle = lut_tex.id;
+        if (self.bind_group != null and
+            self.bound_hdr_handle == hdr_handle and
+            self.bound_bloom_handle == bloom_handle and
+            self.bound_lut_handle == lut_handle)
+        {
+            return;
         }
 
-        try cmd.encodePipelineBarrier(.{
-            .resource_id = input_resource_id,
-            .src_state_bits = (rhi.ResourceStates{ .unordered_access = true }).asBits(),
-            .dst_state_bits = (rhi.ResourceStates{ .shader_resource = true }).asBits(),
-            .src_queue = @intCast(@intFromEnum(rhi.QueueClass.graphics)),
-            .dst_queue = @intCast(@intFromEnum(rhi.QueueClass.graphics)),
-        });
+        if (self.bind_group) |*bind_group| {
+            device.releaseBindGroup(bind_group);
+        }
 
-        try cmd.encodeBeginRenderPass(.{
-            .color_target_id = output_resource_id,
-            .depth_target_id = 0,
-            .clear_mask = 0,
+        const bindings = [3]rhi_mod.TextureSamplerBinding{
+            .{ .texture = hdr_texture, .sampler = &self.sampler.? },
+            .{ .texture = bloom_tex, .sampler = &self.sampler.? },
+            .{ .texture = lut_tex, .sampler = &self.sampler.? },
+        };
+        self.bind_group = try device.createBindGroup(.{
+            .stage = .fragment,
+            .texture_sampler_bindings = bindings[0..],
         });
-        try cmd.encodeSetBindingSet(.{ .slot = 0, .set_id = hdr_set.id });
-        try cmd.encodeSetBindingSet(.{ .slot = 1, .set_id = bloom_set.id });
-        try cmd.encodeSetBindingSet(.{ .slot = 2, .set_id = uniform_set.id });
-        try cmd.encodeDrawIndexed(.{
-            .index_count = 3,
-            .instance_count = 1,
-            .first_index = 0,
-            .vertex_offset = 0,
-            .first_instance = 0,
-        });
-        try cmd.encodeEndRenderPass();
+        self.bound_hdr_handle = hdr_handle;
+        self.bound_bloom_handle = bloom_handle;
+        self.bound_lut_handle = lut_handle;
+    }
 
-        try device.submitCommandBuffer(.graphics, &cmd, .{});
+    pub fn draw(
+        self: *TonemapPass,
+        device: *rhi_mod.RhiDevice,
+        frame: rhi_mod.Frame,
+        pass: rhi_mod.RenderPass,
+        params: TonemapParams,
+    ) mesh_pass_mod.DrawStats {
+        var stats = mesh_pass_mod.DrawStats{};
+        if (!self.isReady() or self.bind_group == null) {
+            return stats;
+        }
+
+        device.bindGraphicsPipeline(pass, &self.pipeline.?);
+        device.bindGroup(pass, &self.bind_group.?);
+        device.pushFragmentUniformData(frame, 0, std.mem.asBytes(&params));
+        device.drawPrimitives(pass, fullscreen_triangle_vertex_count, 1, 0, 0);
+
+        stats.draw_calls = 1;
+        stats.triangles_drawn = 1;
+        return stats;
+    }
+
+    fn createResources(self: *TonemapPass, device: *rhi_mod.RhiDevice) !void {
+        self.sampler = try device.createSampler(.{
+            .min_filter = .linear,
+            .mag_filter = .linear,
+            .mipmap_mode = .linear,
+            .address_mode_u = .clamp_to_edge,
+            .address_mode_v = .clamp_to_edge,
+            .address_mode_w = .clamp_to_edge,
+        });
+        errdefer if (self.sampler) |*sampler| {
+            device.releaseSampler(sampler);
+        };
+
+        self.stages = try shader_support.loadProgramStages(device, "tonemap");
+        errdefer if (self.stages) |*stages| {
+            stages.deinit(device);
+        };
+
+        const vertex_layouts = [_]rhi_mod.VertexBufferLayoutDesc{};
+        const vertex_attributes = [_]rhi_mod.VertexAttributeDesc{};
+
+        self.pipeline = try device.createGraphicsPipeline(.{
+            .vertex_shader = &self.stages.?.vertex,
+            .fragment_shader = &self.stages.?.fragment,
+            .vertex_buffer_layouts = vertex_layouts[0..],
+            .vertex_attributes = vertex_attributes[0..],
+            .color_format = .bgra8_unorm_srgb,
+            .depth_format = null,
+            .primitive_type = .triangle_list,
+            .fill_mode = .fill,
+            .cull_mode = .none,
+            .front_face = .counter_clockwise,
+            .depth_compare = .always,
+            .depth_test = false,
+            .depth_write = false,
+        });
     }
 };

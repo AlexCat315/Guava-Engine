@@ -13,6 +13,7 @@ const scene_hierarchy = @import("../ui/panels/scene/scene_hierarchy.zig");
 
 const ManipulationMode = state_mod.ManipulationMode;
 const TransformSpace = state_mod.TransformSpace;
+const AxisConstraint = state_mod.AxisConstraint;
 
 pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const input = layer_context.input;
@@ -670,6 +671,180 @@ fn rotateZ(radians: f32, vector: [3]f32) [3]f32 {
         vector[0] * s + vector[1] * c,
         vector[2],
     };
+}
+
+// ── Gizmo axis click interaction ─────────────────────────────────────────────
+
+/// Result of a gizmo ray hit test.
+pub const GizmoHitResult = struct {
+    axis: AxisConstraint,
+    mode: ManipulationMode,
+    distance: f32,
+};
+
+/// Compute the gizmo visual scale matching gizmo_pass.scaleForSelection.
+fn gizmoScale(camera_position: [3]f32, target_position: [3]f32) f32 {
+    const dx = camera_position[0] - target_position[0];
+    const dy = camera_position[1] - target_position[1];
+    const dz = camera_position[2] - target_position[2];
+    const distance = std.math.sqrt(dx * dx + dy * dy + dz * dz);
+    return std.math.clamp(distance * 0.18, 0.7, 3.4);
+}
+
+/// Ray-capsule distance test: returns the closest approach distance of a ray to
+/// a line segment (axis_start → axis_end), or null if the closest point is not
+/// within `threshold` world units.
+fn rayAxisDistance(
+    ray_origin: [3]f32,
+    ray_direction: [3]f32,
+    axis_start: [3]f32,
+    axis_end: [3]f32,
+) f32 {
+    // Direction vectors
+    const d = ray_direction;
+    const e = vec3.sub(axis_end, axis_start);
+    const w = vec3.sub(ray_origin, axis_start);
+
+    const a = vec3.dot(d, d);
+    const b = vec3.dot(d, e);
+    const c = vec3.dot(e, e);
+    const d_val = vec3.dot(d, w);
+    const e_val = vec3.dot(e, w);
+
+    const denom = a * c - b * b;
+    if (@abs(denom) < 1e-8) {
+        // Parallel lines — use distance from ray origin to segment
+        const t_seg = std.math.clamp(-e_val / @max(c, 1e-8), 0.0, 1.0);
+        const closest_on_seg = vec3.add(axis_start, vec3.scale(e, t_seg));
+        return vec3.length(vec3.sub(closest_on_seg, ray_origin));
+    }
+
+    var t_ray = (b * e_val - c * d_val) / denom;
+    var t_seg = (a * e_val - b * d_val) / denom;
+
+    // Clamp segment parameter to [0, 1]
+    t_seg = std.math.clamp(t_seg, 0.0, 1.0);
+    // Recompute ray parameter for clamped segment point (must be non-negative)
+    t_ray = @max((b * t_seg + d_val) / @max(a, 1e-8), 0.0);
+
+    const closest_on_ray = vec3.add(ray_origin, vec3.scale(d, t_ray));
+    const closest_on_seg = vec3.add(axis_start, vec3.scale(e, t_seg));
+
+    return vec3.length(vec3.sub(closest_on_ray, closest_on_seg));
+}
+
+/// Test a world-space ray against the gizmo geometry for the selected entity.
+/// Returns the best axis hit, or null if nothing was clicked.
+pub fn hitTestGizmo(
+    state: *const EditorState,
+    layer_context: *engine.core.LayerContext,
+    ray: engine.scene.Ray,
+) ?GizmoHitResult {
+    // Only test when a manipulation tool is active AND an entity is selected
+    if (state.manipulation_mode == .none) return null;
+    const entity_id = layer_context.renderer.selectedEntity() orelse return null;
+    if (state.editor_camera != null and entity_id == state.editor_camera.?) return null;
+
+    const entity_transform = switch (state.manipulation_target) {
+        .main_world => layer_context.world.worldTransformConst(entity_id) orelse return null,
+        .staged_preview => if (state.ai_preview_runtime) |*runtime|
+            runtime.world.worldTransformConst(entity_id) orelse return null
+        else
+            return null,
+    };
+
+    const cam_transform = camera.activeCameraTransform(state, layer_context);
+    const scale = gizmoScale(cam_transform.translation, entity_transform.translation);
+    const threshold = scale * 0.12; // click tolerance in world units
+
+    const rotation_euler = switch (state.transform_space) {
+        .local => quat.toEuler(entity_transform.rotation),
+        .world => [3]f32{ 0.0, 0.0, 0.0 },
+    };
+
+    const mode: ManipulationMode = state.manipulation_mode;
+    const origin = entity_transform.translation;
+
+    // Build the three axis directions in world space (considering transform space)
+    const axes = [3][3]f32{
+        rotateVec3Euler(rotation_euler, .{ 1.0, 0.0, 0.0 }),
+        rotateVec3Euler(rotation_euler, .{ 0.0, 1.0, 0.0 }),
+        rotateVec3Euler(rotation_euler, .{ 0.0, 0.0, 1.0 }),
+    };
+    const axis_ids = [3]AxisConstraint{ .x, .y, .z };
+
+    var best: ?GizmoHitResult = null;
+    const ray_dir = vec3.normalize(ray.direction);
+
+    switch (mode) {
+        .translate, .scale => {
+            // Test ray against each axis line segment (length = scale in world)
+            for (axes, axis_ids) |axis_dir, axis_id| {
+                const axis_end = vec3.add(origin, vec3.scale(axis_dir, scale));
+                const dist = rayAxisDistance(ray.origin, ray_dir, origin, axis_end);
+                if (dist < threshold) {
+                    if (best == null or dist < best.?.distance) {
+                        best = .{ .axis = axis_id, .mode = mode, .distance = dist };
+                    }
+                }
+            }
+            // Test center region (free axis) — a sphere around origin
+            const to_origin = vec3.sub(origin, ray.origin);
+            const t = vec3.dot(to_origin, ray_dir);
+            const closest = vec3.add(ray.origin, vec3.scale(ray_dir, @max(t, 0.0)));
+            const center_dist = vec3.length(vec3.sub(closest, origin));
+            if (center_dist < scale * 0.22) {
+                if (best == null or center_dist < best.?.distance) {
+                    best = .{ .axis = .free, .mode = mode, .distance = center_dist };
+                }
+            }
+        },
+        .rotate => {
+            // Test ray against each rotation ring (radius = 0.9 * scale)
+            const ring_radius = 0.9 * scale;
+            const ring_threshold = scale * 0.14;
+            for (axes, axis_ids) |axis_normal, axis_id| {
+                // Intersect ray with the plane of the ring
+                const n_dot_d = vec3.dot(axis_normal, ray_dir);
+                if (@abs(n_dot_d) < 1e-6) continue; // ray parallel to ring plane
+                const t_plane = vec3.dot(vec3.sub(origin, ray.origin), axis_normal) / n_dot_d;
+                if (t_plane < 0) continue;
+                const hit_point = vec3.add(ray.origin, vec3.scale(ray_dir, t_plane));
+                const dist_from_center = vec3.length(vec3.sub(hit_point, origin));
+                const ring_dist = @abs(dist_from_center - ring_radius);
+                if (ring_dist < ring_threshold) {
+                    if (best == null or ring_dist < best.?.distance) {
+                        best = .{ .axis = axis_id, .mode = mode, .distance = ring_dist };
+                    }
+                }
+            }
+        },
+        .none => {},
+    }
+
+    return best;
+}
+
+/// Begin manipulation from a gizmo click (mouse-hold drag mode, not keyboard mode).
+pub fn beginManipulationFromGizmoClick(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    hit: GizmoHitResult,
+) !void {
+    state.manipulation_mode = hit.mode;
+    state.manipulation_axis = hit.axis;
+    state.manipulation_entity = null;
+    state.manipulation_target = .main_world;
+    state.manipulation_drag_active = false;
+    state.manipulation_keyboard_mode = false;
+    state.manipulation_started_from_ui = false;
+    state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
+    state.manipulation_accumulated_delta = .{ 0.0, 0.0 };
+    clearManipulationSnapshot(state);
+    try syncManipulationTarget(state, layer_context);
+    syncGizmoState(state, layer_context);
+    try history.refreshWindowTitle(state, layer_context);
+    ai_collaboration.noteManipulationBegin(state);
 }
 
 test "manipulationAxisVector rotates constrained local axes" {

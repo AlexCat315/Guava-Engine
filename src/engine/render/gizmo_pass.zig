@@ -509,7 +509,7 @@ fn composeModelMatrix(
     );
 }
 
-fn scaleForSelection(camera_world_position: [4]f32, target_position: [3]f32) f32 {
+pub fn scaleForSelection(camera_world_position: [4]f32, target_position: [3]f32) f32 {
     const dx = camera_world_position[0] - target_position[0];
     const dy = camera_world_position[1] - target_position[1];
     const dz = camera_world_position[2] - target_position[2];
@@ -517,7 +517,7 @@ fn scaleForSelection(camera_world_position: [4]f32, target_position: [3]f32) f32
     return std.math.clamp(distance * 0.18, 0.7, 3.4);
 }
 
-fn rotationForSpace(selected_transform: components.Transform, space: EditorGizmoSpace) [3]f32 {
+pub fn rotationForSpace(selected_transform: components.Transform, space: EditorGizmoSpace) [3]f32 {
     const quat = @import("../math/quat.zig");
     return switch (space) {
         .local => quat.toEuler(selected_transform.rotation),

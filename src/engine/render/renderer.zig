@@ -1242,6 +1242,10 @@ pub const Renderer = struct {
     ibl_compute_pass: ?ibl_compute_pass_mod.IBLComputePass = null,
     /// TAA 抗锯齿通道
     taa_pass: taa_pass_mod.TAAPass,
+    /// Bloom 后处理通道
+    bloom_pass: bloom_pass_mod.BloomPass,
+    /// Tonemap 后处理通道
+    tonemap_pass: tonemap_pass_mod.TonemapPass,
     /// RT 阴影合成通道
     rt_shadow_composite_pass: rt_shadow_composite_pass_mod.RtShadowCompositePass,
     /// SSAO 环境光遮蔽合成通道 — 将 SSAO 纹理以乘法混合叠加到 HDR 缓冲
@@ -1347,6 +1351,8 @@ pub const Renderer = struct {
             .ssao_compute_pass = null,
             .ibl_compute_pass = null,
             .taa_pass = undefined,
+            .bloom_pass = undefined,
+            .tonemap_pass = undefined,
             .rt_shadow_composite_pass = undefined,
             .ssao_composite_pass = undefined,
             .selection_history = SelectionHistory.init(allocator, 64),
@@ -1412,6 +1418,12 @@ pub const Renderer = struct {
         renderer.taa_pass = try taa_pass_mod.TAAPass.init(&renderer.rhi);
         errdefer renderer.taa_pass.deinit(&renderer.rhi);
 
+        renderer.bloom_pass = try bloom_pass_mod.BloomPass.init(&renderer.rhi);
+        errdefer renderer.bloom_pass.deinit(&renderer.rhi);
+
+        renderer.tonemap_pass = try tonemap_pass_mod.TonemapPass.init(&renderer.rhi);
+        errdefer renderer.tonemap_pass.deinit(&renderer.rhi);
+
         renderer.rt_shadow_composite_pass = try rt_shadow_composite_pass_mod.RtShadowCompositePass.init(&renderer.rhi);
         errdefer renderer.rt_shadow_composite_pass.deinit(&renderer.rhi);
 
@@ -1448,16 +1460,6 @@ pub const Renderer = struct {
                 renderer.rhi_metal_device = md_ptr;
                 renderer.rhi_device = dev_ptr;
 
-                // Pre-create tonemap layouts
-                if (tonemap_pass_mod.TonemapPass.createLayouts(dev_ptr)) |layouts| {
-                    if (dev_ptr.resolvePipelineLayout(&.{ layouts.hdr_layout, layouts.bloom_layout, layouts.uniform_layout })) |_| {
-                        renderer.graph.setPassBindingConstraints(.tonemap_pass, &.{
-                            .{ .slot = 0, .expected_layout_id = layouts.hdr_layout.id },
-                            .{ .slot = 1, .expected_layout_id = layouts.bloom_layout.id },
-                            .{ .slot = 2, .expected_layout_id = layouts.uniform_layout.id },
-                        }) catch {};
-                    } else |_| {}
-                } else |_| {}
             } else {
                 // Non-macOS: use mock backend
                 const backend_ptr = allocator.create(rhi_mock_backend_mod.MetalBackend) catch break :rhi_init;
@@ -1471,15 +1473,6 @@ pub const Renderer = struct {
                 renderer.rhi_mock_backend = backend_ptr;
                 renderer.rhi_device = dev_ptr;
 
-                if (tonemap_pass_mod.TonemapPass.createLayouts(dev_ptr)) |layouts| {
-                    if (dev_ptr.resolvePipelineLayout(&.{ layouts.hdr_layout, layouts.bloom_layout, layouts.uniform_layout })) |_| {
-                        renderer.graph.setPassBindingConstraints(.tonemap_pass, &.{
-                            .{ .slot = 0, .expected_layout_id = layouts.hdr_layout.id },
-                            .{ .slot = 1, .expected_layout_id = layouts.bloom_layout.id },
-                            .{ .slot = 2, .expected_layout_id = layouts.uniform_layout.id },
-                        }) catch {};
-                    } else |_| {}
-                } else |_| {}
             }
         }
 
@@ -1514,6 +1507,8 @@ pub const Renderer = struct {
         if (self.ssao_compute_pass) |*p| p.deinit(&self.rhi);
         if (self.ibl_compute_pass) |*p| p.deinit(&self.rhi);
         self.taa_pass.deinit(&self.rhi);
+        self.bloom_pass.deinit(&self.rhi);
+        self.tonemap_pass.deinit(&self.rhi);
         self.rt_shadow_composite_pass.deinit(&self.rhi);
         self.ssao_composite_pass.deinit(&self.rhi);
         if (self.rt_shadow_mask_texture) |*t| self.rhi.releaseTexture(t);
@@ -1894,7 +1889,7 @@ pub const Renderer = struct {
                     const texel_size = @as(f32, @floatFromInt(self.shadow_map.size));
 
                     // Compute cascade splits (practical-split-scheme, lambda=0.7)
-                    const splits = computeCascadeSplits(cam_near, cam_far, csm_cascade_count, 0.7);
+                    const splits = computeCascadeSplits(cam_near, cam_far, csm_cascade_count, 0.82);
                     self.shadow_map.cascade_splits = splits;
 
                     // Compute per-cascade matrices
@@ -1956,10 +1951,10 @@ pub const Renderer = struct {
                     try self.renderPathTraceViewport(&prepared_scene, scene);
                     self.graph.recordPassStat(pass_stats, .base_pass, durationNs(path_trace_start, std.time.nanoTimestamp()), 0, 0);
                 } else {
-                    // NOTE: tonemap v2 pass currently uses placeholder resources and does NOT
-                    // perform real HDR→LDR conversion. Render directly to the LDR color target
-                    // so the viewport displays the scene correctly.
-                    const scene_hdr_color_target = scene_color_target;
+                    const scene_hdr_color_target: rhi_mod.ColorTarget = if (viewport_active)
+                        .{ .texture = self.scene_viewport.hdrColor().? }
+                    else
+                        scene_color_target;
                     const scene_depth_target: ?rhi_mod.DepthAttachmentDesc = blk_depth: {
                         const depth_texture = if (viewport_active)
                             self.scene_viewport.depth().?
@@ -2046,7 +2041,7 @@ pub const Renderer = struct {
                     const opaque_start = std.time.nanoTimestamp();
                     const opaque_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene, .{
                         .render_mode = active_render_mode,
-                        .target = .ldr,
+                        .target = if (viewport_active) .hdr else .ldr,
                         .phase = .opaque_pass,
                     });
                     self.graph.recordPassStat(pass_stats, .base_pass, durationNs(opaque_start, std.time.nanoTimestamp()), opaque_stats.draw_calls, opaque_stats.triangles_drawn);
@@ -2066,7 +2061,7 @@ pub const Renderer = struct {
                         const preview_opaque_start = std.time.nanoTimestamp();
                         const preview_opaque_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_preview_scene, .{
                             .render_mode = previewRenderMode(active_render_mode),
-                            .target = .ldr,
+                            .target = if (viewport_active) .hdr else .ldr,
                             .phase = .opaque_pass,
                             .blend_opaque = true,
                             .alpha_multiplier = ghost_preview_tint_color[3],
@@ -2080,7 +2075,7 @@ pub const Renderer = struct {
                     const transparent_start = std.time.nanoTimestamp();
                     const transparent_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene, .{
                         .render_mode = active_render_mode,
-                        .target = .ldr,
+                        .target = if (viewport_active) .hdr else .ldr,
                         .phase = .transparent_pass,
                     });
                     self.graph.recordPassStat(pass_stats, .transparent, durationNs(transparent_start, std.time.nanoTimestamp()), transparent_stats.draw_calls, transparent_stats.triangles_drawn);
@@ -2090,7 +2085,7 @@ pub const Renderer = struct {
                         const preview_transparent_start = std.time.nanoTimestamp();
                         const preview_transparent_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_preview_scene, .{
                             .render_mode = previewRenderMode(active_render_mode),
-                            .target = .ldr,
+                            .target = if (viewport_active) .hdr else .ldr,
                             .phase = .transparent_pass,
                             .alpha_multiplier = ghost_preview_tint_color[3],
                             .preview_tint_strength = ghost_preview_tint_strength,
@@ -2104,10 +2099,10 @@ pub const Renderer = struct {
 
                     if (viewport_active) {
                         // RT Shadow Composite: 乘法混合 RT 阴影遮罩到颜色缓冲
-                        if (rt_shadows_active and self.rt_shadow_composite_pass.isReady() and self.scene_viewport.color() != null) {
+                        if (rt_shadows_active and self.rt_shadow_composite_pass.isReady() and self.scene_viewport.hdrColor() != null) {
                             if (self.rt_shadow_mask_texture) |*mask_tex| {
                                 try self.rt_shadow_composite_pass.syncTexture(&self.rhi, mask_tex);
-                                const rt_shadow_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(.{ .texture = self.scene_viewport.color().? }));
+                                const rt_shadow_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(.{ .texture = self.scene_viewport.hdrColor().? }));
                                 const rt_shadow_stats = self.rt_shadow_composite_pass.draw(&self.rhi, frame, rt_shadow_pass, self.editor_viewport_state.rt_shadow_strength);
                                 draw_stats.add(rt_shadow_stats);
                                 self.rhi.endRenderPass(rt_shadow_pass);
@@ -2115,7 +2110,7 @@ pub const Renderer = struct {
                         }
 
                         // Volumetric fog: composite onto HDR color before bloom/tonemap
-                        const fog_enabled = self.editor_viewport_state.volumetric_fog_enabled and self.scene_viewport.color() != null;
+                        const fog_enabled = self.editor_viewport_state.volumetric_fog_enabled and self.scene_viewport.hdrColor() != null;
                         if (fog_enabled) {
                             if (self.rhi_device) |dev| {
                                 const inv_vp_fog = mat4_mod.inverse(prepared_scene.view_projection) orelse mat4_mod.identity();
@@ -2205,9 +2200,9 @@ pub const Renderer = struct {
 
                             // SSAO 合成: 将 SSAO 纹理以乘法混合叠加到颜色缓冲，
                             // 使遮蔽区域（角落/缝隙）自然变暗，增强场景接地感。
-                            if (self.ssao_composite_pass.isReady() and self.scene_viewport.color() != null) {
+                            if (self.ssao_composite_pass.isReady() and self.scene_viewport.hdrColor() != null) {
                                 try self.ssao_composite_pass.syncTexture(&self.rhi, self.scene_viewport.ssao().?);
-                                const ssao_composite_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(.{ .texture = self.scene_viewport.color().? }));
+                                const ssao_composite_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(.{ .texture = self.scene_viewport.hdrColor().? }));
                                 const ssao_composite_stats = self.ssao_composite_pass.draw(&self.rhi, frame, ssao_composite_render_pass, self.editor_viewport_state.ssao_intensity);
                                 draw_stats.add(ssao_composite_stats);
                                 self.rhi.endRenderPass(ssao_composite_render_pass);
@@ -2284,7 +2279,7 @@ pub const Renderer = struct {
                         var taa_resolved = false;
                         if (taa_enabled) {
                             try self.taa_pass.ensureHistoryTexture(&self.rhi, self.scene_viewport.width, self.scene_viewport.height);
-                            try self.taa_pass.syncTextures(&self.rhi, self.scene_viewport.color().?, null, self.scene_viewport.depth());
+                            try self.taa_pass.syncTextures(&self.rhi, self.scene_viewport.hdrColor().?, null, self.scene_viewport.depth());
                             const taa_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.taa().? }));
 
                             const inv_proj_taa = mat4_mod.inverse(unjittered_projection) orelse mat4_mod.identity();
@@ -2316,26 +2311,24 @@ pub const Renderer = struct {
                             self.taa_pass.advanceFrame();
                         }
 
-                        // Select input for bloom: use TAA output if resolved, otherwise color buffer
-                        const _hdr_input_for_post = if (taa_resolved) self.scene_viewport.taa().? else self.scene_viewport.color().?;
-                        _ = _hdr_input_for_post;
+                        // Select input for bloom/tonemap: use TAA output if resolved, otherwise HDR scene color.
+                        const hdr_input_for_post = if (taa_resolved) self.scene_viewport.taa().? else self.scene_viewport.hdrColor().?;
 
                         if (bloom_enabled) {
-                            if (self.rhi_device) |dev| {
-                                const bloom_start = std.time.nanoTimestamp();
-                                bloom_pass_mod.BloomPass.execute(
-                                    self.allocator,
-                                    dev,
-                                    null,
-                                    0,
-                                    0,
-                                    .{
-                                        .threshold = self.editor_viewport_state.bloom_threshold,
-                                        .intensity = self.editor_viewport_state.bloom_intensity,
-                                    },
-                                ) catch {};
-                                self.graph.recordPassStat(pass_stats, .post_process, durationNs(bloom_start, std.time.nanoTimestamp()), 1, 1);
-                            }
+                            try self.bloom_pass.syncTexture(&self.rhi, hdr_input_for_post);
+                            const bloom_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.bloom().? }));
+                            const bloom_start = std.time.nanoTimestamp();
+                            const bloom_stats = self.bloom_pass.draw(&self.rhi, frame, bloom_render_pass, .{
+                                .threshold_params = .{
+                                    self.editor_viewport_state.bloom_threshold,
+                                    0.5,
+                                    0.0,
+                                    0.0,
+                                },
+                            });
+                            draw_stats.add(bloom_stats);
+                            self.graph.recordPassStat(pass_stats, .post_process, durationNs(bloom_start, std.time.nanoTimestamp()), bloom_stats.draw_calls, bloom_stats.triangles_drawn);
+                            self.rhi.endRenderPass(bloom_render_pass);
                         }
 
                         // DOF dispatch
@@ -2362,43 +2355,43 @@ pub const Renderer = struct {
                             }
                         }
 
-                        if (self.rhi_device) |dev| {
-                            const tm_start = std.time.nanoTimestamp();
-                            tonemap_pass_mod.TonemapPass.execute(
-                                self.allocator,
-                                dev,
-                                null,
-                                0,
-                                0,
-                                .{
-                                    .exposure_params = .{
-                                        @as(f32, if (self.editor_viewport_state.exposure_enabled) 1.0 else 0.0),
-                                        self.editor_viewport_state.exposure,
-                                        0.0,
-                                        0.0,
-                                    },
-                                    .bloom_params = .{
-                                        @as(f32, if (bloom_enabled) 1.0 else 0.0),
-                                        self.editor_viewport_state.bloom_intensity,
-                                        0.0,
-                                        0.0,
-                                    },
-                                    .color_grading_params = .{
-                                        @as(f32, if (self.editor_viewport_state.color_grading_enabled) 1.0 else 0.0),
-                                        self.editor_viewport_state.color_grading_saturation,
-                                        self.editor_viewport_state.color_grading_contrast,
-                                        self.editor_viewport_state.color_grading_gamma,
-                                    },
-                                    .lut_params = .{
-                                        @as(f32, if (self.editor_viewport_state.lut_enabled) 1.0 else 0.0),
-                                        self.editor_viewport_state.lut_intensity,
-                                        1.0,
-                                        0.0,
-                                    },
-                                },
-                            ) catch {};
-                            self.graph.recordPassStat(pass_stats, .tonemap_pass, durationNs(tm_start, std.time.nanoTimestamp()), 1, 1);
-                        }
+                        try self.tonemap_pass.syncTextures(
+                            &self.rhi,
+                            hdr_input_for_post,
+                            if (bloom_enabled) self.scene_viewport.bloom().? else null,
+                            null,
+                        );
+                        const tm_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.color().? }));
+                        const tm_start = std.time.nanoTimestamp();
+                        const tonemap_stats = self.tonemap_pass.draw(&self.rhi, frame, tm_render_pass, .{
+                            .exposure_params = .{
+                                @as(f32, if (self.editor_viewport_state.exposure_enabled) 1.0 else 0.0),
+                                self.editor_viewport_state.exposure,
+                                0.0,
+                                0.0,
+                            },
+                            .bloom_params = .{
+                                @as(f32, if (bloom_enabled) 1.0 else 0.0),
+                                self.editor_viewport_state.bloom_intensity,
+                                0.0,
+                                0.0,
+                            },
+                            .color_grading_params = .{
+                                @as(f32, if (self.editor_viewport_state.color_grading_enabled) 1.0 else 0.0),
+                                self.editor_viewport_state.color_grading_saturation,
+                                self.editor_viewport_state.color_grading_contrast,
+                                self.editor_viewport_state.color_grading_gamma,
+                            },
+                            .lut_params = .{
+                                0.0,
+                                self.editor_viewport_state.lut_intensity,
+                                0.0,
+                                0.0,
+                            },
+                        });
+                        draw_stats.add(tonemap_stats);
+                        self.graph.recordPassStat(pass_stats, .tonemap_pass, durationNs(tm_start, std.time.nanoTimestamp()), tonemap_stats.draw_calls, tonemap_stats.triangles_drawn);
+                        self.rhi.endRenderPass(tm_render_pass);
 
                         if (fxaa_enabled) {
                             if (self.rhi_device) |dev| {
@@ -4096,7 +4089,7 @@ fn computeCascadeMatrix(
     cam_near: f32,
     cam_far: f32,
     light_dir: [3]f32,
-    texel_size: f32,
+    shadow_resolution: f32,
 ) [16]f32 {
     const mat4 = @import("../math/mat4.zig");
 
@@ -4137,43 +4130,40 @@ fn computeCascadeMatrix(
     center = vec3.scale(center, 1.0 / 8.0);
 
     // Build light view looking at cascade center
-    const light_pos = vec3.sub(center, vec3.scale(light_dir, 50.0)); // back away from center
+    const light_pos = vec3.sub(center, vec3.scale(light_dir, split_far + 50.0));
     const light_view = mat4.lookAt(light_pos, center, shadowViewUpVector(light_dir));
 
-    // Transform world corners into light view space, compute AABB
-    var min_x: f32 = std.math.floatMax(f32);
-    var min_y: f32 = std.math.floatMax(f32);
+    // Transform world corners into light view space and build a stable square footprint.
+    var center_ls = transformPoint4(light_view, .{ center[0], center[1], center[2], 1.0 });
     var min_z: f32 = std.math.floatMax(f32);
-    var max_x: f32 = -std.math.floatMax(f32);
-    var max_y: f32 = -std.math.floatMax(f32);
     var max_z: f32 = -std.math.floatMax(f32);
+    var radius: f32 = 0.0;
     for (world_corners) |corner| {
         const lv = transformPoint4(light_view, .{ corner[0], corner[1], corner[2], 1.0 });
-        min_x = @min(min_x, lv[0]);
-        max_x = @max(max_x, lv[0]);
-        min_y = @min(min_y, lv[1]);
-        max_y = @max(max_y, lv[1]);
         min_z = @min(min_z, lv[2]);
         max_z = @max(max_z, lv[2]);
+        const dx = lv[0] - center_ls[0];
+        const dy = lv[1] - center_ls[1];
+        radius = @max(radius, @sqrt(dx * dx + dy * dy));
     }
+    radius = @ceil(radius * 16.0) / 16.0;
 
     // Extend Z range to catch shadow casters behind the camera
     const z_range = max_z - min_z;
-    min_z -= z_range * 2.0;
+    min_z -= z_range * 2.5;
+    max_z += z_range * 0.25;
 
     // Snap to texel grid to prevent shadow swimming when the camera moves
-    if (texel_size > 0) {
-        const world_units_per_texel_x = (max_x - min_x) / texel_size;
-        const world_units_per_texel_y = (max_y - min_y) / texel_size;
-        if (world_units_per_texel_x > 0) {
-            min_x = @floor(min_x / world_units_per_texel_x) * world_units_per_texel_x;
-            max_x = @floor(max_x / world_units_per_texel_x) * world_units_per_texel_x;
-        }
-        if (world_units_per_texel_y > 0) {
-            min_y = @floor(min_y / world_units_per_texel_y) * world_units_per_texel_y;
-            max_y = @floor(max_y / world_units_per_texel_y) * world_units_per_texel_y;
-        }
+    if (shadow_resolution > 0 and radius > 0) {
+        const world_units_per_texel = (radius * 2.0) / shadow_resolution;
+        center_ls[0] = @floor(center_ls[0] / world_units_per_texel) * world_units_per_texel;
+        center_ls[1] = @floor(center_ls[1] / world_units_per_texel) * world_units_per_texel;
     }
+
+    const min_x = center_ls[0] - radius;
+    const max_x = center_ls[0] + radius;
+    const min_y = center_ls[1] - radius;
+    const max_y = center_ls[1] + radius;
 
     const light_proj = mat4.orthographicOffCenter(min_x, max_x, min_y, max_y, min_z, max_z);
     return mat4.mul(light_proj, light_view);
