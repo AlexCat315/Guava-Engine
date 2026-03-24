@@ -42,6 +42,7 @@ struct GuavaMetalRhiContext {
     std::unordered_map<uint32_t, id<MTLComputePipelineState>> cmp_pipelines;
     std::unordered_map<uint32_t, BindingSetData>              binding_sets;
     std::unordered_map<uint32_t, id<MTLDepthStencilState>>    depth_stencil_states;
+    std::unordered_map<uint32_t, MTLPrimitiveType>             pipeline_primitives;
 
     // Shader libraries cached per shader module (for Metal library compilation)
     std::unordered_map<uint32_t, id<MTLLibrary>>              shader_libraries;
@@ -503,6 +504,7 @@ uint32_t guava_metal_rhi_create_graphics_pipeline(
 
         uint32_t pipe_id = ctx->next_gfx_pipe_id++;
         ctx->gfx_pipelines[pipe_id] = pso;
+        ctx->pipeline_primitives[pipe_id] = mapPrimitive(desc->primitive);
 
         // ── Depth/stencil state (paired with this pipeline) ───────────
         if (desc->depth_format != 0) {
@@ -572,6 +574,7 @@ void guava_metal_rhi_destroy_graphics_pipeline(void* raw, uint32_t id) {
     auto* ctx = static_cast<GuavaMetalRhiContext*>(raw);
     ctx->gfx_pipelines.erase(id);
     ctx->depth_stencil_states.erase(id);
+    ctx->pipeline_primitives.erase(id);
 }
 
 void guava_metal_rhi_destroy_compute_pipeline(void* raw, uint32_t id) {
@@ -868,6 +871,7 @@ bool guava_metal_rhi_submit(void* raw, uint32_t queue_class,
         id<MTLBuffer> current_index_buffer = nil;
         uint64_t      current_index_offset = 0;
         MTLIndexType   current_index_type  = MTLIndexTypeUInt32;
+        MTLPrimitiveType current_primitive = MTLPrimitiveTypeTriangle;
 
         while (dec.hasMore()) {
             uint8_t opcode = dec.readU8();
@@ -948,6 +952,9 @@ bool guava_metal_rhi_submit(void* raw, uint32_t queue_class,
                     auto it = ctx->gfx_pipelines.find(cmd.pipeline_id);
                     if (it != ctx->gfx_pipelines.end())
                         [renderEnc setRenderPipelineState:it->second];
+                    auto pit = ctx->pipeline_primitives.find(cmd.pipeline_id);
+                    if (pit != ctx->pipeline_primitives.end())
+                        current_primitive = pit->second;
                     // Also apply the paired depth/stencil state
                     auto dit = ctx->depth_stencil_states.find(cmd.pipeline_id);
                     if (dit != ctx->depth_stencil_states.end())
@@ -998,7 +1005,7 @@ bool guava_metal_rhi_submit(void* raw, uint32_t queue_class,
                 if (renderEnc && current_index_buffer) {
                     uint32_t idx_size = (current_index_type == MTLIndexTypeUInt16)
                                             ? 2 : 4;
-                    [renderEnc drawIndexedPrimitives:MTLPrimitiveTypeTriangle
+                    [renderEnc drawIndexedPrimitives:current_primitive
                                          indexCount:cmd.index_count
                                           indexType:current_index_type
                                         indexBuffer:current_index_buffer
@@ -1017,7 +1024,7 @@ bool guava_metal_rhi_submit(void* raw, uint32_t queue_class,
                     if (it != ctx->buffers.end()) {
                         // Metal indirect draw uses MTLDrawIndexedPrimitivesIndirectArguments
                         // For now, draw_count=1 indirect
-                        [renderEnc drawPrimitives:MTLPrimitiveTypeTriangle
+                        [renderEnc drawPrimitives:current_primitive
                                    indirectBuffer:it->second
                              indirectBufferOffset:(NSUInteger)cmd.offset];
                     }
@@ -1054,7 +1061,7 @@ bool guava_metal_rhi_submit(void* raw, uint32_t queue_class,
             case OP_DRAW: {
                 auto cmd = dec.read<CmdDraw>();
                 if (renderEnc) {
-                    [renderEnc drawPrimitives:MTLPrimitiveTypeTriangle
+                    [renderEnc drawPrimitives:current_primitive
                                  vertexStart:cmd.first_vertex
                                  vertexCount:cmd.vertex_count
                                instanceCount:cmd.instance_count

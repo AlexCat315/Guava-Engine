@@ -118,9 +118,10 @@ pub const GizmoPass = struct {
     center_cross_vertex_buffer: ?rhi_mod.Buffer = null,
     box_vertex_buffer: ?rhi_mod.Buffer = null,
     ring_vertex_buffer: ?rhi_mod.Buffer = null,
-    /// Temporary per-frame buffer for drawWorldLines.  Kept alive until the
-    /// next frame so the Metal command buffer can reference it after encoding.
-    temp_world_line_buffer: ?rhi_mod.Buffer = null,
+    /// Temporary per-frame buffers for drawWorldLines.  Kept alive until the
+    /// next frame so the Metal command buffer can reference them after encoding.
+    temp_world_line_buffers: [8]rhi_mod.Buffer = undefined,
+    temp_world_line_count: u32 = 0,
     pipeline: ?rhi_mod.GraphicsPipeline = null,
     stages: ?shader_support.ProgramStages = null,
 
@@ -131,9 +132,11 @@ pub const GizmoPass = struct {
     }
 
     pub fn deinit(self: *GizmoPass, device: *rhi_mod.RhiDevice) void {
-        if (self.temp_world_line_buffer) |*buffer| {
-            device.releaseBuffer(buffer);
+        var i: u32 = 0;
+        while (i < self.temp_world_line_count) : (i += 1) {
+            device.releaseBuffer(&self.temp_world_line_buffers[i]);
         }
+        self.temp_world_line_count = 0;
         if (self.ring_vertex_buffer) |*buffer| {
             device.releaseBuffer(buffer);
         }
@@ -165,6 +168,16 @@ pub const GizmoPass = struct {
             self.center_cross_vertex_buffer != null and
             self.box_vertex_buffer != null and
             self.ring_vertex_buffer != null;
+    }
+
+    /// Release all temporary world-line buffers from the previous frame.
+    /// Call this once per frame BEFORE any drawWorldLines calls.
+    pub fn releaseWorldLineBuffers(self: *GizmoPass, device: *rhi_mod.RhiDevice) void {
+        var i: u32 = 0;
+        while (i < self.temp_world_line_count) : (i += 1) {
+            device.releaseBuffer(&self.temp_world_line_buffers[i]);
+        }
+        self.temp_world_line_count = 0;
     }
 
     pub fn draw(
@@ -224,12 +237,21 @@ pub const GizmoPass = struct {
         }
 
         const buffer = try createVertexBuffer(device, vertices);
-        // Release the previous frame's temp buffer now that its commands have
-        // been submitted, then keep the new buffer alive until next frame.
-        if (self.temp_world_line_buffer) |*old| {
-            device.releaseBuffer(old);
+        // Keep the buffer alive until next frame so the Metal command buffer
+        // can reference it after encoding.  All previous frame's buffers are
+        // released on the first call of a new frame via releaseWorldLineBuffers.
+        if (self.temp_world_line_count < self.temp_world_line_buffers.len) {
+            self.temp_world_line_buffers[self.temp_world_line_count] = buffer;
+            self.temp_world_line_count += 1;
+        } else {
+            // Array full: release the oldest buffer and shift
+            device.releaseBuffer(&self.temp_world_line_buffers[0]);
+            var j: usize = 0;
+            while (j < self.temp_world_line_buffers.len - 1) : (j += 1) {
+                self.temp_world_line_buffers[j] = self.temp_world_line_buffers[j + 1];
+            }
+            self.temp_world_line_buffers[self.temp_world_line_buffers.len - 1] = buffer;
         }
-        self.temp_world_line_buffer = buffer;
 
         const model = math.identity();
         device.bindGraphicsPipeline(pass, &self.pipeline.?);

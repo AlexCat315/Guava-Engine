@@ -159,10 +159,16 @@ pub fn beginManipulation(
     state.manipulation_entity = null;
     state.manipulation_target = .main_world;
     state.manipulation_drag_active = false;
+    state.manipulation_keyboard_mode = true;
     state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
     state.manipulation_accumulated_delta = .{ 0.0, 0.0 }; // 重置累计偏移量
     clearManipulationSnapshot(state);
     try syncManipulationTarget(state, layer_context);
+    // Blender-style: start drag immediately when entering mode via keyboard,
+    // so mouse movement transforms the object without needing a click-hold.
+    if (state.manipulation_entity != null) {
+        state.manipulation_drag_active = true;
+    }
     syncGizmoState(state, layer_context);
     try history.refreshWindowTitle(state, layer_context);
     ai_collaboration.noteManipulationBegin(state);
@@ -181,6 +187,7 @@ pub fn endManipulation(state: *EditorState) void {
     state.manipulation_entity = null;
     state.manipulation_target = .main_world;
     state.manipulation_drag_active = false;
+    state.manipulation_keyboard_mode = false;
     state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
     state.manipulation_accumulated_delta = .{ 0.0, 0.0 };
     state.manipulation_started_from_ui = false;
@@ -250,6 +257,48 @@ fn clearManipulationSnapshot(state: *EditorState) void {
 
 pub fn applyManipulation(state: *EditorState, layer_context: *engine.core.LayerContext) void {
     const input = layer_context.input;
+
+    // Keyboard-mode (Blender-style): mouse moves freely, left-click confirms,
+    // right-click cancels.  Do NOT commit on mouse release.
+    if (state.manipulation_keyboard_mode and state.manipulation_drag_active) {
+        // Right-click or Escape → cancel
+        if (input.wasMousePressed(.right)) {
+            cancelManipulation(state, layer_context);
+            return;
+        }
+        // Left-click → confirm (commit history and end)
+        if (input.wasMousePressed(.left)) {
+            commitManipulation(state, layer_context) catch |err| {
+                std.log.err("Failed to commit keyboard manipulation: {}", .{err});
+            };
+            return;
+        }
+
+        const entity_id = state.manipulation_entity orelse return;
+        // Accumulate mouse delta and apply transform
+        state.manipulation_drag_accumulator[0] += input.mouse_delta[0];
+        state.manipulation_drag_accumulator[1] += input.mouse_delta[1];
+        state.manipulation_accumulated_delta[0] += input.mouse_delta[0];
+        state.manipulation_accumulated_delta[1] += input.mouse_delta[1];
+
+        var entity_transform = state.manipulation_origin;
+        switch (state.manipulation_mode) {
+            .none => {},
+            .translate => applyTranslate(state, layer_context, &entity_transform),
+            .rotate => applyRotate(state, &entity_transform),
+            .scale => applyScale(state, &entity_transform),
+        }
+        switch (state.manipulation_target) {
+            .main_world => _ = layer_context.world.setEntityWorldTransform(entity_id, entity_transform),
+            .staged_preview => {
+                if (state.ai_preview_runtime) |*runtime| {
+                    _ = runtime.world.setEntityWorldTransform(entity_id, entity_transform);
+                    runtime.world.updateHierarchy();
+                }
+            },
+        }
+        return;
+    }
 
     // 1. ALWAYS reset UI interaction lock on mouse release to prevent deadlocks
     if (!input.isMouseDown(.left)) {

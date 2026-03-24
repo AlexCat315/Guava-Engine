@@ -16,6 +16,20 @@ pub fn executeQueuedCommands(layer_context: *engine.core.LayerContext) ![]engine
     return queue.executeAll(layer_context.world);
 }
 
+/// Flush the deferred history snapshot if one was requested by a previous
+/// subtree delta command.  Call this once at the start of each editor frame,
+/// before any interaction handling, so the snapshot is up-to-date for the next
+/// history operation without causing a stutter on the frame the delta was
+/// recorded.
+pub fn tickDeferredSnapshot(state: *EditorState, world: *engine.scene.World) void {
+    if (state.history_snapshot_needs_refresh) {
+        state.history_snapshot_needs_refresh = false;
+        refreshCurrentHistorySnapshot(state, world) catch |err| {
+            std.log.err("history: deferred snapshot refresh failed: {}", .{err});
+        };
+    }
+}
+
 pub fn captureSnapshot(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     return captureSnapshotWithSource(state, layer_context, .human);
 }
@@ -922,7 +936,10 @@ fn pushSubtreeDeltaCommand(
     errdefer command.deinit(allocator);
 
     try pushCommand(state, command, .human);
-    try refreshCurrentHistorySnapshot(state, layer_context.world);
+    // Defer the expensive full-world serialization to the next frame to avoid
+    // a stutter on mouse release.  The snapshot will be refreshed at the start
+    // of the next editor update before any new history operations.
+    state.history_snapshot_needs_refresh = true;
 }
 
 fn applyCommand(

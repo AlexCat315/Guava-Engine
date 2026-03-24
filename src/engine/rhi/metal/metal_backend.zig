@@ -67,6 +67,11 @@ pub const MetalBackend = struct {
                 .draw_indirect => |_| {},
                 .dispatch => |_| {},
                 .dispatch_indirect => |_| {},
+                .draw => |_| {},
+                .push_uniform => |_| {},
+                .set_viewport => |_| {},
+                .set_scissor => |_| {},
+                .imgui_draw => {},
                 .pipeline_barrier => |b| {
                     const prev_state = self.resource_state_bits.get(b.resource_id) orelse 0;
                     if (prev_state != 0 and prev_state != b.src_state_bits) {

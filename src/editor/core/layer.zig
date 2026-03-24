@@ -222,6 +222,7 @@ pub const EditorLayer = struct {
         const self: *EditorLayer = @ptrCast(@alignCast(context));
 
         ai_collaboration.beginFrame(&self.state);
+        history.tickDeferredSnapshot(&self.state, layer_context.world);
         try vfx_runtime.update(layer_context);
         try history.pruneMissingSelection(&self.state, layer_context);
         utils.pruneFrozenEntities(&self.state, layer_context.world);

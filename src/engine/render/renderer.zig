@@ -1779,6 +1779,10 @@ pub const Renderer = struct {
     pub fn drawFrame(self: *Renderer, scene: *scene_mod.Scene, physics_state_opt: ?*physics_mod.PhysicsState) !FrameReport {
         try self.resolveSelectionReadbacks();
 
+        // Release temporary world-line buffers from the previous frame now
+        // that the GPU has finished using them.
+        self.gizmo_pass.releaseWorldLineBuffers(&self.rhi);
+
         const pass_stats = try self.graph.allocatePassStats(self.allocator);
         defer self.allocator.free(pass_stats);
 
@@ -4203,13 +4207,18 @@ fn resolveEnvironmentTextures(
         .brdf_lut = null,
     };
 
-    const environment_asset_id = findSceneEnvironmentAssetId(&scene.resources) orelse {
+    const borrowed_id = findSceneEnvironmentAssetId(&scene.resources) orelse {
         if (!g_logged_environment_status) {
             render_log.warn("no HDR environment asset found; using fallback environment textures", .{});
             g_logged_environment_status = true;
         }
         return;
     };
+    // Dupe the ID because loadTextureAsset → upsertOwned may free the original
+    // registry record's id string, leaving a dangling slice.
+    const environment_asset_id = self.allocator.dupe(u8, borrowed_id) catch return;
+    defer self.allocator.free(environment_asset_id);
+
     if (!g_logged_environment_status) {
         render_log.info("environment asset selected: {s}", .{environment_asset_id});
         g_logged_environment_status = true;
