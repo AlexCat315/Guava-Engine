@@ -720,9 +720,13 @@ fn readTexelLinear(tex: PathTraceTexture, x: u32, y: u32) [3]f32 {
         else => blk: {
             const idx = pixel_index * 4;
             if (idx + 3 >= tex.pixels.len) break :blk [3]f32{ 0.5, 0.5, 0.5 };
-            const b = @as(f32, @floatFromInt(tex.pixels[idx + 0])) / 255.0;
-            const g = @as(f32, @floatFromInt(tex.pixels[idx + 1])) / 255.0;
-            const r = @as(f32, @floatFromInt(tex.pixels[idx + 2])) / 255.0;
+            const is_bgra = (tex.format == .bgra8_unorm or tex.format == .bgra8_unorm_srgb);
+            const r_byte = tex.pixels[idx + if (is_bgra) @as(usize, 2) else @as(usize, 0)];
+            const g_byte = tex.pixels[idx + 1];
+            const b_byte = tex.pixels[idx + if (is_bgra) @as(usize, 0) else @as(usize, 2)];
+            const r = @as(f32, @floatFromInt(r_byte)) / 255.0;
+            const g = @as(f32, @floatFromInt(g_byte)) / 255.0;
+            const b = @as(f32, @floatFromInt(b_byte)) / 255.0;
             break :blk .{
                 std.math.pow(f32, r, 2.2),
                 std.math.pow(f32, g, 2.2),
@@ -2426,7 +2430,7 @@ pub const Renderer = struct {
                         const depth_prepass_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.colorWithDepth(base_pass_target, clear.color, scene_depth_target));
                         const depth_start = std.time.nanoTimestamp();
                         const depth_stats = if (active_render_mode != .wireframe)
-                            self.depth_prepass.draw(&self.rhi, frame, depth_prepass_pass, &prepared_scene)
+                            self.depth_prepass.draw(&self.rhi, frame, depth_prepass_pass, &prepared_scene, if (viewport_active) .hdr else .ldr)
                         else
                             mesh_pass_mod.DrawStats{};
                         self.graph.recordPassStat(pass_stats, .depth_prepass, durationNs(depth_start, std.time.nanoTimestamp()), depth_stats.draw_calls, depth_stats.triangles_drawn);
@@ -2472,7 +2476,7 @@ pub const Renderer = struct {
                         scene_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.colorWithDepth(base_pass_target, clear.color, scene_depth_target));
                         const depth_start = std.time.nanoTimestamp();
                         const depth_stats = if (active_render_mode != .wireframe)
-                            self.depth_prepass.draw(&self.rhi, frame, scene_pass, &prepared_scene)
+                            self.depth_prepass.draw(&self.rhi, frame, scene_pass, &prepared_scene, if (viewport_active) .hdr else .ldr)
                         else
                             mesh_pass_mod.DrawStats{};
                         self.graph.recordPassStat(pass_stats, .depth_prepass, durationNs(depth_start, std.time.nanoTimestamp()), depth_stats.draw_calls, depth_stats.triangles_drawn);
@@ -3036,6 +3040,8 @@ pub const Renderer = struct {
 
         if (vp_changed or params_changed or environment_changed or scene_changed) {
             pt.reset(self.allocator);
+            if (pt.trace_linear_rgb) |buffer| @memset(buffer, 0);
+            if (pt.display_pixels) |buffer| @memset(buffer, 0);
         }
 
         if (size_changed) {
@@ -4221,7 +4227,7 @@ pub const Renderer = struct {
                 },
             });
 
-            const depth_stats = self.depth_prepass.draw(&self.rhi, frame, render_pass, &prepared_scene);
+            const depth_stats = self.depth_prepass.draw(&self.rhi, frame, render_pass, &prepared_scene, .ldr);
             stats.add(depth_stats);
             const base_stats = try self.base_pass.draw(&self.rhi, frame, render_pass, &prepared_scene, .{
                 .render_mode = thumbnail_viewport_state.render_mode,

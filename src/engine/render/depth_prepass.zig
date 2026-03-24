@@ -3,9 +3,11 @@ const mesh_pass_mod = @import("mesh_pass.zig");
 const rhi_mod = @import("../rhi/device.zig");
 const rhi_types = @import("../rhi/types.zig");
 const shader_support = @import("shader_support.zig");
+const base_pass_mod = @import("base_pass.zig");
 
 pub const DepthPrepass = struct {
-    pipeline: ?rhi_mod.GraphicsPipeline = null,
+    pipeline_hdr: ?rhi_mod.GraphicsPipeline = null,
+    pipeline_ldr: ?rhi_mod.GraphicsPipeline = null,
     stages: ?shader_support.ProgramStages = null,
 
     pub fn init(device: *rhi_mod.RhiDevice) !DepthPrepass {
@@ -15,7 +17,10 @@ pub const DepthPrepass = struct {
     }
 
     pub fn deinit(self: *DepthPrepass, device: *rhi_mod.RhiDevice) void {
-        if (self.pipeline) |*pipeline| {
+        if (self.pipeline_ldr) |*pipeline| {
+            device.releaseGraphicsPipeline(pipeline);
+        }
+        if (self.pipeline_hdr) |*pipeline| {
             device.releaseGraphicsPipeline(pipeline);
         }
         if (self.stages) |*stages| {
@@ -25,7 +30,7 @@ pub const DepthPrepass = struct {
     }
 
     pub fn isReady(self: *const DepthPrepass) bool {
-        return self.pipeline != null;
+        return self.pipeline_hdr != null and self.pipeline_ldr != null;
     }
 
     pub fn draw(
@@ -34,13 +39,18 @@ pub const DepthPrepass = struct {
         frame: rhi_mod.Frame,
         pass: rhi_mod.RenderPass,
         prepared_scene: *const mesh_pass_mod.PreparedScene,
+        target: base_pass_mod.DrawTarget,
     ) mesh_pass_mod.DrawStats {
         var stats = mesh_pass_mod.DrawStats{};
         if (!self.isReady()) {
             return stats;
         }
 
-        device.bindGraphicsPipeline(pass, &self.pipeline.?);
+        const pipeline = switch (target) {
+            .hdr => &self.pipeline_hdr.?,
+            .ldr => &self.pipeline_ldr.?,
+        };
+        device.bindGraphicsPipeline(pass, pipeline);
         for (prepared_scene.opaque_meshes) |item| {
             var vertex_uniforms = mesh_pass_mod.VertexUniforms{
                 .view_projection = prepared_scene.view_projection,
@@ -93,12 +103,26 @@ pub const DepthPrepass = struct {
             },
         };
 
-        self.pipeline = try device.createGraphicsPipeline(.{
+        self.pipeline_hdr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .rgba16_float);
+        errdefer if (self.pipeline_hdr) |*pipeline| {
+            device.releaseGraphicsPipeline(pipeline);
+        };
+        self.pipeline_ldr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .bgra8_unorm_srgb);
+    }
+
+    fn createPipeline(
+        self: *DepthPrepass,
+        device: *rhi_mod.RhiDevice,
+        vertex_layouts: []const rhi_mod.VertexBufferLayoutDesc,
+        vertex_attributes: []const rhi_mod.VertexAttributeDesc,
+        color_format: rhi_types.TextureFormat,
+    ) !rhi_mod.GraphicsPipeline {
+        return device.createGraphicsPipeline(.{
             .vertex_shader = &self.stages.?.vertex,
             .fragment_shader = &self.stages.?.fragment,
-            .vertex_buffer_layouts = vertex_layouts[0..],
-            .vertex_attributes = vertex_attributes[0..],
-            .color_format = device.runtimeInfo().swapchain_format,
+            .vertex_buffer_layouts = vertex_layouts,
+            .vertex_attributes = vertex_attributes,
+            .color_format = color_format,
             .depth_format = .d32_float,
             .primitive_type = .triangle_list,
             .fill_mode = .fill,

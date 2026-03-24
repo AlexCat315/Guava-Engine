@@ -451,7 +451,11 @@ uint32_t guava_metal_rhi_create_graphics_pipeline(
             [[MTLRenderPipelineDescriptor alloc] init];
         pd.vertexFunction   = vit->second;
         pd.fragmentFunction = fit->second;
-        pd.colorAttachments[0].pixelFormat = mapPixelFormat(desc->color_format);
+        if (desc->color_format != 0) {
+            pd.colorAttachments[0].pixelFormat = mapPixelFormat(desc->color_format);
+        } else {
+            pd.colorAttachments[0].pixelFormat = MTLPixelFormatInvalid;
+        }
 
         // ── Blend state ───────────────────────────────────────────────
         if (desc->blend_enabled) {

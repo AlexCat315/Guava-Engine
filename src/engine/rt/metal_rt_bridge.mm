@@ -114,10 +114,10 @@ static bool refract_vec(float3 incident, float3 normal, float eta, thread float3
     return true;
 }
 
-static constexpr uint TEXFMT_BGRA8_UNORM = 3u;
-static constexpr uint TEXFMT_BGRA8_UNORM_SRGB = 4u;
-static constexpr uint TEXFMT_RGBA16_FLOAT = 5u;
-static constexpr uint TEXFMT_RGBA32_FLOAT = 6u;
+constant uint TEXFMT_BGRA8_UNORM = 3u;
+constant uint TEXFMT_BGRA8_UNORM_SRGB = 4u;
+constant uint TEXFMT_RGBA16_FLOAT = 5u;
+constant uint TEXFMT_RGBA32_FLOAT = 6u;
 
 static float3 read_texel_texture_atlas(
     device const uchar* atlas,
@@ -155,7 +155,6 @@ static float3 sample_texture_atlas(
     constant RTTextureMeta& tm = meta[tex_index];
     uint tw = tm.width;
     uint th = tm.height;
-    uint base = tm.offset;
 
     // wrap UV to [0,1)
     float u = u_in - floor(u_in);
@@ -186,7 +185,7 @@ static float3 sample_texture_atlas(
 }
 
 static float3 sample_environment(
-    device const uchar4* atlas,
+    device const uchar* atlas,
     constant RTTextureMeta* meta,
     int env_tex_index,
     float3 dir

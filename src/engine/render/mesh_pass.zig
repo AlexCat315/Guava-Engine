@@ -186,6 +186,11 @@ const CachedMesh = struct {
 const CachedTexture = struct {
     handle: handles.TextureHandle,
     texture: rhi_mod.Texture,
+    source_pixels_ptr: usize,
+    source_pixels_len: usize,
+    source_width: u32,
+    source_height: u32,
+    source_format: rhi_types.TextureFormat,
 };
 
 const CachedMaterial = struct {
@@ -639,6 +644,35 @@ pub const MeshSceneCache = struct {
     ) !*rhi_mod.Texture {
         for (self.textures.items) |*cached| {
             if (cached.handle == handle) {
+                const src_ptr = if (texture.pixels.len > 0) @intFromPtr(texture.pixels.ptr) else 0;
+                const source_changed = cached.source_pixels_ptr != src_ptr or
+                    cached.source_pixels_len != texture.pixels.len or
+                    cached.source_width != texture.width or
+                    cached.source_height != texture.height or
+                    cached.source_format != texture.format;
+
+                if (source_changed) {
+                    const size_or_format_changed =
+                        cached.texture.desc.width != texture.width or
+                        cached.texture.desc.height != texture.height or
+                        cached.texture.desc.format != texture.format;
+
+                    if (size_or_format_changed) {
+                        device.releaseTexture(&cached.texture);
+                        cached.texture = try device.createTexture(.{
+                            .width = texture.width,
+                            .height = texture.height,
+                            .format = texture.format,
+                            .usage = rhi_types.TextureUsage.sampler,
+                        });
+                    }
+                    try device.uploadTextureData(&cached.texture, texture.pixels, texture.width, texture.height);
+                    cached.source_pixels_ptr = src_ptr;
+                    cached.source_pixels_len = texture.pixels.len;
+                    cached.source_width = texture.width;
+                    cached.source_height = texture.height;
+                    cached.source_format = texture.format;
+                }
                 return &cached.texture;
             }
         }
@@ -658,6 +692,11 @@ pub const MeshSceneCache = struct {
         try self.textures.append(self.allocator, .{
             .handle = handle,
             .texture = gpu_texture,
+            .source_pixels_ptr = if (texture.pixels.len > 0) @intFromPtr(texture.pixels.ptr) else 0,
+            .source_pixels_len = texture.pixels.len,
+            .source_width = texture.width,
+            .source_height = texture.height,
+            .source_format = texture.format,
         });
         return &self.textures.items[self.textures.items.len - 1].texture;
     }
