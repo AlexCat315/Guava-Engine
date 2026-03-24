@@ -3747,7 +3747,7 @@ pub const Renderer = struct {
         if (self.editor_viewport_state.show_grid) {
             var grid_lines = std.ArrayList(gizmo_pass_mod.WorldLineVertex).empty;
             defer grid_lines.deinit(self.allocator);
-            try appendGridLines(self.allocator, &grid_lines);
+            try appendGridLines(self.allocator, &grid_lines, prepared_scene.camera_world_position);
             // Darker grid color (0.12, 0.14, 0.18) - subtle gray that won't compete with scene objects
             const grid_stats = try self.gizmo_pass.drawWorldLines(
                 &self.rhi,
@@ -3815,14 +3815,21 @@ pub const Renderer = struct {
     fn appendGridLines(
         allocator: std.mem.Allocator,
         lines: *std.ArrayList(gizmo_pass_mod.WorldLineVertex),
+        camera_world_position: [4]f32,
     ) !void {
-        // Reduced grid extent from 16 to 12 - less visual clutter
-        const half_extent: i32 = 12;
-        var index: i32 = -half_extent;
-        while (index <= half_extent) : (index += 1) {
-            const offset = @as(f32, @floatFromInt(index));
-            try appendLine(allocator, lines, .{ offset, 0.0, -@as(f32, @floatFromInt(half_extent)) }, .{ offset, 0.0, @as(f32, @floatFromInt(half_extent)) });
-            try appendLine(allocator, lines, .{ -@as(f32, @floatFromInt(half_extent)), 0.0, offset }, .{ @as(f32, @floatFromInt(half_extent)), 0.0, offset });
+        const spacing: f32 = 1.0;
+        const half_cells: i32 = 80;
+        const extent = @as(f32, @floatFromInt(half_cells)) * spacing;
+        const center_x = @floor(camera_world_position[0] / spacing) * spacing;
+        const center_z = @floor(camera_world_position[2] / spacing) * spacing;
+
+        var index: i32 = -half_cells;
+        while (index <= half_cells) : (index += 1) {
+            const offset = @as(f32, @floatFromInt(index)) * spacing;
+            const x = center_x + offset;
+            const z = center_z + offset;
+            try appendLine(allocator, lines, .{ x, 0.0, center_z - extent }, .{ x, 0.0, center_z + extent });
+            try appendLine(allocator, lines, .{ center_x - extent, 0.0, z }, .{ center_x + extent, 0.0, z });
         }
     }
 

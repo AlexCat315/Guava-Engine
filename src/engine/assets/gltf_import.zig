@@ -647,6 +647,8 @@ fn cookModelRecord(
         defer bin_data.deinit(allocator);
 
         for (cooked.meshes) |*mesh| {
+            const owned_vertices = mesh.vertices;
+            const owned_indices = mesh.indices;
             const vert_bytes = std.mem.sliceAsBytes(mesh.vertices);
             const idx_bytes = std.mem.sliceAsBytes(mesh.indices);
             mesh.vertex_byte_offset = @intCast(bin_data.items.len);
@@ -655,6 +657,8 @@ fn cookModelRecord(
             mesh.index_byte_offset = @intCast(bin_data.items.len);
             mesh.index_count = @intCast(mesh.indices.len);
             try bin_data.appendSlice(allocator, idx_bytes);
+            allocator.free(owned_vertices);
+            allocator.free(owned_indices);
             // Clear inline data — binary sidecar is the source of truth
             mesh.vertices = &.{};
             mesh.indices = &.{};

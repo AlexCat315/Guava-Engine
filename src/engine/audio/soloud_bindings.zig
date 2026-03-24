@@ -63,7 +63,7 @@ pub fn init(soloud: *Soloud) !void {
     if (result != 0) {
         // 输出 SoLoud 内部错误描述以便排查后端初始化失败原因
         const err_str = getErrorString(soloud, result);
-        std.log.err("SoLoud init failed (code {d}): {s}", .{ result, err_str });
+        std.log.warn("SoLoud init failed (code {d}): {s}", .{ result, err_str });
         return Error.SoloudError;
     }
 }

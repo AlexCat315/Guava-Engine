@@ -28,6 +28,10 @@ extern "C" bool guava_imgui_metal_backend_render(void *command_buffer,
     return false;
   }
 
+  if (ImGui::GetCurrentContext() == nullptr) {
+    return false;
+  }
+
   ImDrawData *draw_data = ImGui::GetDrawData();
   if (draw_data == nullptr || draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f) {
     return false;

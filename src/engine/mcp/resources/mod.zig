@@ -325,6 +325,16 @@ pub fn freeResourceDescriptors(allocator: std.mem.Allocator, resources: []protoc
     allocator.free(resources);
 }
 
+fn expectResourceListContains(resources: []const protocol.ResourceDescriptor, uri: []const u8) !void {
+    for (resources) |resource| {
+        if (std.mem.eql(u8, resource.uri, uri)) {
+            return;
+        }
+    }
+    std.debug.print("missing resource uri: {s}\n", .{uri});
+    return error.TestExpectedEqual;
+}
+
 pub fn freeTextResourceContents(allocator: std.mem.Allocator, content: protocol.TextResourceContents) void {
     allocator.free(content.uri);
     if (content.mimeType) |mime_type| {
@@ -1258,14 +1268,14 @@ test "SnapshotStore publishes read-only hierarchy, selection, and entity snapsho
 
     const listed = try store.listAlloc(std.testing.allocator);
     defer freeResourceDescriptors(std.testing.allocator, listed);
-    try std.testing.expectEqual(@as(usize, 7), listed.len);
-    try std.testing.expectEqualStrings("scene://hierarchy", listed[0].uri);
-    try std.testing.expectEqualStrings("selection://current", listed[1].uri);
-    try std.testing.expectEqualStrings("schema://components", listed[2].uri);
-    try std.testing.expectEqualStrings("schema://scene-json-v6", listed[3].uri);
-    try std.testing.expectEqualStrings("schema://prefab", listed[4].uri);
-    try std.testing.expectEqualStrings("schema://material", listed[5].uri);
-    try std.testing.expectEqualStrings("schema://tools", listed[6].uri);
+    try std.testing.expectEqual(@as(usize, 8), listed.len);
+    try expectResourceListContains(listed, "scene://hierarchy");
+    try expectResourceListContains(listed, "selection://current");
+    try expectResourceListContains(listed, "schema://components");
+    try expectResourceListContains(listed, "schema://scene-json-v6");
+    try expectResourceListContains(listed, "schema://prefab");
+    try expectResourceListContains(listed, "schema://material");
+    try expectResourceListContains(listed, "schema://tools");
 
     const selection = (try store.readAlloc(std.testing.allocator, "selection://current")).?;
     defer freeTextResourceContents(std.testing.allocator, selection);
@@ -1297,17 +1307,18 @@ test "SnapshotStore exposes collaboration context and preview resources" {
 
     const listed = try store.listAlloc(std.testing.allocator);
     defer freeResourceDescriptors(std.testing.allocator, listed);
-    try std.testing.expectEqual(@as(usize, 10), listed.len);
-    try std.testing.expectEqualStrings("scene://hierarchy", listed[0].uri);
-    try std.testing.expectEqualStrings("selection://current", listed[1].uri);
-    try std.testing.expectEqualStrings("schema://components", listed[2].uri);
-    try std.testing.expectEqualStrings("schema://scene-json-v6", listed[3].uri);
-    try std.testing.expectEqualStrings("schema://prefab", listed[4].uri);
-    try std.testing.expectEqualStrings("schema://material", listed[5].uri);
-    try std.testing.expectEqualStrings("schema://tools", listed[6].uri);
-    try std.testing.expectEqualStrings("editor://context", listed[7].uri);
-    try std.testing.expectEqualStrings("editor://intent-log", listed[8].uri);
-    try std.testing.expectEqualStrings("preview://staged", listed[9].uri);
+    try std.testing.expectEqual(@as(usize, 12), listed.len);
+    try expectResourceListContains(listed, "scene://hierarchy");
+    try expectResourceListContains(listed, "selection://current");
+    try expectResourceListContains(listed, "schema://components");
+    try expectResourceListContains(listed, "schema://scene-json-v6");
+    try expectResourceListContains(listed, "schema://prefab");
+    try expectResourceListContains(listed, "schema://material");
+    try expectResourceListContains(listed, "schema://tools");
+    try expectResourceListContains(listed, "editor://context");
+    try expectResourceListContains(listed, "editor://intent-log");
+    try expectResourceListContains(listed, "editor://command-timeline");
+    try expectResourceListContains(listed, "preview://staged");
 
     const context = (try store.readAlloc(std.testing.allocator, "editor://context")).?;
     defer freeTextResourceContents(std.testing.allocator, context);

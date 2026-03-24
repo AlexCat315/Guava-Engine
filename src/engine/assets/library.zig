@@ -464,6 +464,9 @@ pub const ResourceLibrary = struct {
             .name = "DefaultMaterial",
             .base_color_factor = .{ 1.0, 1.0, 1.0, 1.0 },
             .base_color_texture = try self.ensureWhiteTexture(),
+            .metallic_factor = 0.0,
+            .roughness_factor = 0.82,
+            .ibl_intensity = 0.18,
         });
         _ = try self.bindMaterialAssetRecord(self.default_material.?, try builtinRecord(
             self,

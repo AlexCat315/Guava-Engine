@@ -42,9 +42,9 @@ const FragmentUniforms = extern struct {
     color: [4]f32,
 };
 
-const ring_segment_count = 48;
+const ring_segment_count = 64;
 
-const axis_vertices = [_]GizmoVertex{
+const line_axis_vertices = [_]GizmoVertex{
     .{ .position = .{ 0.0, 0.0, 0.0 } },
     .{ .position = .{ 1.0, 0.0, 0.0 } },
     .{ .position = .{ 0.0, 0.0, 0.0 } },
@@ -53,76 +53,28 @@ const axis_vertices = [_]GizmoVertex{
     .{ .position = .{ 0.0, 0.0, 1.0 } },
 };
 
-const translate_arrow_vertices = [_]GizmoVertex{
-    .{ .position = .{ 0.0, 0.0, 0.0 } },
-    .{ .position = .{ 1.0, 0.0, 0.0 } },
-    .{ .position = .{ 1.0, 0.0, 0.0 } },
-    .{ .position = .{ 0.82, 0.08, 0.0 } },
-    .{ .position = .{ 1.0, 0.0, 0.0 } },
-    .{ .position = .{ 0.82, -0.08, 0.0 } },
-    .{ .position = .{ 0.0, 0.0, 0.0 } },
-    .{ .position = .{ 0.0, 1.0, 0.0 } },
-    .{ .position = .{ 0.0, 1.0, 0.0 } },
-    .{ .position = .{ 0.08, 0.82, 0.0 } },
-    .{ .position = .{ 0.0, 1.0, 0.0 } },
-    .{ .position = .{ -0.08, 0.82, 0.0 } },
-    .{ .position = .{ 0.0, 0.0, 0.0 } },
-    .{ .position = .{ 0.0, 0.0, 1.0 } },
-    .{ .position = .{ 0.0, 0.0, 1.0 } },
-    .{ .position = .{ 0.0, 0.08, 0.82 } },
-    .{ .position = .{ 0.0, 0.0, 1.0 } },
-    .{ .position = .{ 0.0, -0.08, 0.82 } },
-};
-
-const center_cross_vertices = [_]GizmoVertex{
-    .{ .position = .{ -0.18, 0.0, 0.0 } },
-    .{ .position = .{ 0.18, 0.0, 0.0 } },
-    .{ .position = .{ 0.0, -0.18, 0.0 } },
-    .{ .position = .{ 0.0, 0.18, 0.0 } },
-    .{ .position = .{ 0.0, 0.0, -0.18 } },
-    .{ .position = .{ 0.0, 0.0, 0.18 } },
-};
-
-const box_vertices = [_]GizmoVertex{
-    .{ .position = .{ -0.24, -0.24, -0.24 } },
-    .{ .position = .{ 0.24, -0.24, -0.24 } },
-    .{ .position = .{ 0.24, -0.24, -0.24 } },
-    .{ .position = .{ 0.24, 0.24, -0.24 } },
-    .{ .position = .{ 0.24, 0.24, -0.24 } },
-    .{ .position = .{ -0.24, 0.24, -0.24 } },
-    .{ .position = .{ -0.24, 0.24, -0.24 } },
-    .{ .position = .{ -0.24, -0.24, -0.24 } },
-    .{ .position = .{ -0.24, -0.24, 0.24 } },
-    .{ .position = .{ 0.24, -0.24, 0.24 } },
-    .{ .position = .{ 0.24, -0.24, 0.24 } },
-    .{ .position = .{ 0.24, 0.24, 0.24 } },
-    .{ .position = .{ 0.24, 0.24, 0.24 } },
-    .{ .position = .{ -0.24, 0.24, 0.24 } },
-    .{ .position = .{ -0.24, 0.24, 0.24 } },
-    .{ .position = .{ -0.24, -0.24, 0.24 } },
-    .{ .position = .{ -0.24, -0.24, -0.24 } },
-    .{ .position = .{ -0.24, -0.24, 0.24 } },
-    .{ .position = .{ 0.24, -0.24, -0.24 } },
-    .{ .position = .{ 0.24, -0.24, 0.24 } },
-    .{ .position = .{ 0.24, 0.24, -0.24 } },
-    .{ .position = .{ 0.24, 0.24, 0.24 } },
-    .{ .position = .{ -0.24, 0.24, -0.24 } },
-    .{ .position = .{ -0.24, 0.24, 0.24 } },
-};
-
+const translate_axis_vertices = buildTranslateAxisVertices();
+const scale_axis_vertices = buildScaleAxisVertices();
+const center_cube_vertices = buildCenterCubeVertices();
 const ring_vertices = buildRingVertices();
 
+const translate_axis_vertex_count = translate_axis_vertices.len;
+const scale_axis_vertex_count = scale_axis_vertices.len;
+const center_cube_vertex_count = center_cube_vertices.len;
+const ring_vertex_count = ring_vertices.len;
+
 pub const GizmoPass = struct {
-    axis_vertex_buffer: ?rhi_mod.Buffer = null,
-    translate_arrow_vertex_buffer: ?rhi_mod.Buffer = null,
-    center_cross_vertex_buffer: ?rhi_mod.Buffer = null,
-    box_vertex_buffer: ?rhi_mod.Buffer = null,
+    line_axis_vertex_buffer: ?rhi_mod.Buffer = null,
+    translate_axis_vertex_buffer: ?rhi_mod.Buffer = null,
+    scale_axis_vertex_buffer: ?rhi_mod.Buffer = null,
+    center_cube_vertex_buffer: ?rhi_mod.Buffer = null,
     ring_vertex_buffer: ?rhi_mod.Buffer = null,
     /// Temporary per-frame buffers for drawWorldLines.  Kept alive until the
     /// next frame so the Metal command buffer can reference them after encoding.
     temp_world_line_buffers: [8]rhi_mod.Buffer = undefined,
     temp_world_line_count: u32 = 0,
-    pipeline: ?rhi_mod.GraphicsPipeline = null,
+    line_pipeline: ?rhi_mod.GraphicsPipeline = null,
+    triangle_pipeline: ?rhi_mod.GraphicsPipeline = null,
     stages: ?shader_support.ProgramStages = null,
 
     pub fn init(device: *rhi_mod.RhiDevice) !GizmoPass {
@@ -140,19 +92,22 @@ pub const GizmoPass = struct {
         if (self.ring_vertex_buffer) |*buffer| {
             device.releaseBuffer(buffer);
         }
-        if (self.box_vertex_buffer) |*buffer| {
+        if (self.center_cube_vertex_buffer) |*buffer| {
             device.releaseBuffer(buffer);
         }
-        if (self.center_cross_vertex_buffer) |*buffer| {
+        if (self.scale_axis_vertex_buffer) |*buffer| {
             device.releaseBuffer(buffer);
         }
-        if (self.translate_arrow_vertex_buffer) |*buffer| {
+        if (self.translate_axis_vertex_buffer) |*buffer| {
             device.releaseBuffer(buffer);
         }
-        if (self.axis_vertex_buffer) |*buffer| {
+        if (self.line_axis_vertex_buffer) |*buffer| {
             device.releaseBuffer(buffer);
         }
-        if (self.pipeline) |*pipeline| {
+        if (self.triangle_pipeline) |*pipeline| {
+            device.releaseGraphicsPipeline(pipeline);
+        }
+        if (self.line_pipeline) |*pipeline| {
             device.releaseGraphicsPipeline(pipeline);
         }
         if (self.stages) |*stages| {
@@ -162,11 +117,12 @@ pub const GizmoPass = struct {
     }
 
     pub fn isReady(self: *const GizmoPass) bool {
-        return self.pipeline != null and
-            self.axis_vertex_buffer != null and
-            self.translate_arrow_vertex_buffer != null and
-            self.center_cross_vertex_buffer != null and
-            self.box_vertex_buffer != null and
+        return self.triangle_pipeline != null and
+            self.line_pipeline != null and
+            self.line_axis_vertex_buffer != null and
+            self.translate_axis_vertex_buffer != null and
+            self.scale_axis_vertex_buffer != null and
+            self.center_cube_vertex_buffer != null and
             self.ring_vertex_buffer != null;
     }
 
@@ -198,20 +154,20 @@ pub const GizmoPass = struct {
         const base_translation = selected_transform.translation;
         const base_rotation = rotationForSpace(selected_transform, state.space);
 
-        device.bindGraphicsPipeline(pass, &self.pipeline.?);
+        device.bindGraphicsPipeline(pass, &self.triangle_pipeline.?);
 
         switch (state.mode) {
             .idle => {
                 self.drawTranslateAxes(device, frame, pass, prepared_scene.view_projection, base_translation, base_rotation, gizmo_scale * 0.92, state.axis, false, &stats);
-                self.drawCenterCross(device, frame, pass, prepared_scene.view_projection, base_translation, base_rotation, gizmo_scale, centerColor(.idle), &stats);
+                self.drawCenterCube(device, frame, pass, prepared_scene.view_projection, base_translation, base_rotation, gizmo_scale * 0.34, centerColor(.idle), &stats);
             },
             .translate => {
                 self.drawTranslateAxes(device, frame, pass, prepared_scene.view_projection, base_translation, base_rotation, gizmo_scale, state.axis, true, &stats);
-                self.drawCenterCross(device, frame, pass, prepared_scene.view_projection, base_translation, base_rotation, gizmo_scale, centerColor(.translate), &stats);
+                self.drawCenterCube(device, frame, pass, prepared_scene.view_projection, base_translation, base_rotation, gizmo_scale * 0.38, centerColor(.translate), &stats);
             },
             .rotate => {
                 self.drawRotateRings(device, frame, pass, prepared_scene.view_projection, base_translation, base_rotation, gizmo_scale, state.axis, &stats);
-                self.drawCenterCross(device, frame, pass, prepared_scene.view_projection, base_translation, base_rotation, gizmo_scale * 0.9, centerColor(.rotate), &stats);
+                self.drawCenterCube(device, frame, pass, prepared_scene.view_projection, base_translation, base_rotation, gizmo_scale * 0.3, centerColor(.rotate), &stats);
             },
             .scale => {
                 self.drawScaleAxes(device, frame, pass, prepared_scene.view_projection, base_translation, base_rotation, gizmo_scale, state.axis, &stats);
@@ -254,29 +210,29 @@ pub const GizmoPass = struct {
         }
 
         const model = math.identity();
-        device.bindGraphicsPipeline(pass, &self.pipeline.?);
-        self.drawShape(device, frame, pass, buffer, 0, vertices.len, view_projection, model, color, &stats);
+        device.bindGraphicsPipeline(pass, &self.line_pipeline.?);
+        self.drawShape(device, frame, pass, buffer, 0, vertices.len, view_projection, model, color, .lines, &stats);
         return stats;
     }
 
     fn createResources(self: *GizmoPass, device: *rhi_mod.RhiDevice) !void {
-        self.axis_vertex_buffer = try createVertexBuffer(device, axis_vertices[0..]);
-        errdefer if (self.axis_vertex_buffer) |*buffer| {
+        self.line_axis_vertex_buffer = try createVertexBuffer(device, line_axis_vertices[0..]);
+        errdefer if (self.line_axis_vertex_buffer) |*buffer| {
             device.releaseBuffer(buffer);
         };
 
-        self.translate_arrow_vertex_buffer = try createVertexBuffer(device, translate_arrow_vertices[0..]);
-        errdefer if (self.translate_arrow_vertex_buffer) |*buffer| {
+        self.translate_axis_vertex_buffer = try createVertexBuffer(device, translate_axis_vertices[0..]);
+        errdefer if (self.translate_axis_vertex_buffer) |*buffer| {
             device.releaseBuffer(buffer);
         };
 
-        self.center_cross_vertex_buffer = try createVertexBuffer(device, center_cross_vertices[0..]);
-        errdefer if (self.center_cross_vertex_buffer) |*buffer| {
+        self.scale_axis_vertex_buffer = try createVertexBuffer(device, scale_axis_vertices[0..]);
+        errdefer if (self.scale_axis_vertex_buffer) |*buffer| {
             device.releaseBuffer(buffer);
         };
 
-        self.box_vertex_buffer = try createVertexBuffer(device, box_vertices[0..]);
-        errdefer if (self.box_vertex_buffer) |*buffer| {
+        self.center_cube_vertex_buffer = try createVertexBuffer(device, center_cube_vertices[0..]);
+        errdefer if (self.center_cube_vertex_buffer) |*buffer| {
             device.releaseBuffer(buffer);
         };
 
@@ -306,7 +262,7 @@ pub const GizmoPass = struct {
             },
         };
 
-        self.pipeline = try device.createGraphicsPipeline(.{
+        self.line_pipeline = try device.createGraphicsPipeline(.{
             .vertex_shader = &self.stages.?.vertex,
             .fragment_shader = &self.stages.?.fragment,
             .vertex_buffer_layouts = vertex_layouts[0..],
@@ -314,6 +270,22 @@ pub const GizmoPass = struct {
             .color_format = device.runtimeInfo().swapchain_format,
             .depth_format = null,
             .primitive_type = .line_list,
+            .fill_mode = .fill,
+            .cull_mode = .none,
+            .front_face = .counter_clockwise,
+            .depth_compare = .always,
+            .depth_test = false,
+            .depth_write = false,
+        });
+
+        self.triangle_pipeline = try device.createGraphicsPipeline(.{
+            .vertex_shader = &self.stages.?.vertex,
+            .fragment_shader = &self.stages.?.fragment,
+            .vertex_buffer_layouts = vertex_layouts[0..],
+            .vertex_attributes = vertex_attributes[0..],
+            .color_format = device.runtimeInfo().swapchain_format,
+            .depth_format = null,
+            .primitive_type = .triangle_list,
             .fill_mode = .fill,
             .cull_mode = .none,
             .front_face = .counter_clockwise,
@@ -340,10 +312,9 @@ pub const GizmoPass = struct {
         const x_color = axisColor(.x, constrained_axis, mode);
         const y_color = axisColor(.y, constrained_axis, mode);
         const z_color = axisColor(.z, constrained_axis, mode);
-        const model = composeModelMatrix(translation, rotation, .{ gizmo_scale, gizmo_scale, gizmo_scale }, .{ 0.0, 0.0, 0.0 });
-        self.drawShape(device, frame, pass, self.translate_arrow_vertex_buffer.?, 0, 6, view_projection, model, x_color, stats);
-        self.drawShape(device, frame, pass, self.translate_arrow_vertex_buffer.?, 6, 6, view_projection, model, y_color, stats);
-        self.drawShape(device, frame, pass, self.translate_arrow_vertex_buffer.?, 12, 6, view_projection, model, z_color, stats);
+        self.drawAxisMesh(device, frame, pass, self.translate_axis_vertex_buffer.?, translate_axis_vertex_count, view_projection, translation, rotation, .{ 0.0, 0.0, 0.0 }, gizmo_scale, x_color, stats);
+        self.drawAxisMesh(device, frame, pass, self.translate_axis_vertex_buffer.?, translate_axis_vertex_count, view_projection, translation, rotation, .{ 0.0, 0.0, std.math.pi * 0.5 }, gizmo_scale, y_color, stats);
+        self.drawAxisMesh(device, frame, pass, self.translate_axis_vertex_buffer.?, translate_axis_vertex_count, view_projection, translation, rotation, .{ 0.0, -std.math.pi * 0.5, 0.0 }, gizmo_scale, z_color, stats);
     }
 
     fn drawScaleAxes(
@@ -361,10 +332,9 @@ pub const GizmoPass = struct {
         const x_color = axisColor(.x, constrained_axis, .scale);
         const y_color = axisColor(.y, constrained_axis, .scale);
         const z_color = axisColor(.z, constrained_axis, .scale);
-        const model = composeModelMatrix(translation, rotation, .{ gizmo_scale, gizmo_scale, gizmo_scale }, .{ 0.0, 0.0, 0.0 });
-        self.drawShape(device, frame, pass, self.axis_vertex_buffer.?, 0, 2, view_projection, model, x_color, stats);
-        self.drawShape(device, frame, pass, self.axis_vertex_buffer.?, 2, 2, view_projection, model, y_color, stats);
-        self.drawShape(device, frame, pass, self.axis_vertex_buffer.?, 4, 2, view_projection, model, z_color, stats);
+        self.drawAxisMesh(device, frame, pass, self.scale_axis_vertex_buffer.?, scale_axis_vertex_count, view_projection, translation, rotation, .{ 0.0, 0.0, 0.0 }, gizmo_scale, x_color, stats);
+        self.drawAxisMesh(device, frame, pass, self.scale_axis_vertex_buffer.?, scale_axis_vertex_count, view_projection, translation, rotation, .{ 0.0, 0.0, std.math.pi * 0.5 }, gizmo_scale, y_color, stats);
+        self.drawAxisMesh(device, frame, pass, self.scale_axis_vertex_buffer.?, scale_axis_vertex_count, view_projection, translation, rotation, .{ 0.0, -std.math.pi * 0.5, 0.0 }, gizmo_scale, z_color, stats);
     }
 
     fn drawRotateRings(
@@ -382,13 +352,45 @@ pub const GizmoPass = struct {
         const x_color = axisColor(.x, constrained_axis, .rotate);
         const y_color = axisColor(.y, constrained_axis, .rotate);
         const z_color = axisColor(.z, constrained_axis, .rotate);
-        const x_model = composeModelMatrix(translation, rotation, .{ gizmo_scale, gizmo_scale, gizmo_scale }, .{ 0.0, std.math.pi * 0.5, 0.0 });
-        const y_model = composeModelMatrix(translation, rotation, .{ gizmo_scale, gizmo_scale, gizmo_scale }, .{ std.math.pi * 0.5, 0.0, 0.0 });
-        const z_model = composeModelMatrix(translation, rotation, .{ gizmo_scale, gizmo_scale, gizmo_scale }, .{ 0.0, 0.0, 0.0 });
+        self.drawRingCluster(device, frame, pass, view_projection, translation, rotation, gizmo_scale, .{ 0.0, std.math.pi * 0.5, 0.0 }, x_color, stats);
+        self.drawRingCluster(device, frame, pass, view_projection, translation, rotation, gizmo_scale, .{ std.math.pi * 0.5, 0.0, 0.0 }, y_color, stats);
+        self.drawRingCluster(device, frame, pass, view_projection, translation, rotation, gizmo_scale, .{ 0.0, 0.0, 0.0 }, z_color, stats);
+    }
 
-        self.drawShape(device, frame, pass, self.ring_vertex_buffer.?, 0, ring_vertices.len, view_projection, x_model, x_color, stats);
-        self.drawShape(device, frame, pass, self.ring_vertex_buffer.?, 0, ring_vertices.len, view_projection, y_model, y_color, stats);
-        self.drawShape(device, frame, pass, self.ring_vertex_buffer.?, 0, ring_vertices.len, view_projection, z_model, z_color, stats);
+    fn drawAxisMesh(
+        self: *GizmoPass,
+        device: *rhi_mod.RhiDevice,
+        frame: rhi_mod.Frame,
+        pass: rhi_mod.RenderPass,
+        buffer: rhi_mod.Buffer,
+        vertex_count: usize,
+        view_projection: [16]f32,
+        translation: [3]f32,
+        rotation: [3]f32,
+        extra_rotation: [3]f32,
+        gizmo_scale: f32,
+        color: [4]f32,
+        stats: *mesh_pass_mod.DrawStats,
+    ) void {
+        const model = composeModelMatrix(translation, rotation, .{ gizmo_scale, gizmo_scale, gizmo_scale }, extra_rotation);
+        self.drawShape(device, frame, pass, buffer, 0, vertex_count, view_projection, model, color, .triangles, stats);
+    }
+
+    fn drawRingCluster(
+        self: *GizmoPass,
+        device: *rhi_mod.RhiDevice,
+        frame: rhi_mod.Frame,
+        pass: rhi_mod.RenderPass,
+        view_projection: [16]f32,
+        translation: [3]f32,
+        rotation: [3]f32,
+        gizmo_scale: f32,
+        extra_rotation: [3]f32,
+        color: [4]f32,
+        stats: *mesh_pass_mod.DrawStats,
+    ) void {
+        const model = composeModelMatrix(translation, rotation, .{ gizmo_scale, gizmo_scale, gizmo_scale }, extra_rotation);
+        self.drawShape(device, frame, pass, self.ring_vertex_buffer.?, 0, ring_vertex_count, view_projection, model, color, .triangles, stats);
     }
 
     fn drawScaleBox(
@@ -402,11 +404,10 @@ pub const GizmoPass = struct {
         gizmo_scale: f32,
         stats: *mesh_pass_mod.DrawStats,
     ) void {
-        const model = composeModelMatrix(translation, rotation, .{ gizmo_scale, gizmo_scale, gizmo_scale }, .{ 0.0, 0.0, 0.0 });
-        self.drawShape(device, frame, pass, self.box_vertex_buffer.?, 0, box_vertices.len, view_projection, model, centerColor(.scale), stats);
+        self.drawCenterCube(device, frame, pass, view_projection, translation, rotation, gizmo_scale * 0.42, centerColor(.scale), stats);
     }
 
-    fn drawCenterCross(
+    fn drawCenterCube(
         self: *GizmoPass,
         device: *rhi_mod.RhiDevice,
         frame: rhi_mod.Frame,
@@ -419,7 +420,7 @@ pub const GizmoPass = struct {
         stats: *mesh_pass_mod.DrawStats,
     ) void {
         const model = composeModelMatrix(translation, rotation, .{ gizmo_scale, gizmo_scale, gizmo_scale }, .{ 0.0, 0.0, 0.0 });
-        self.drawShape(device, frame, pass, self.center_cross_vertex_buffer.?, 0, center_cross_vertices.len, view_projection, model, color, stats);
+        self.drawShape(device, frame, pass, self.center_cube_vertex_buffer.?, 0, center_cube_vertex_count, view_projection, model, color, .triangles, stats);
     }
 
     fn drawShape(
@@ -433,6 +434,7 @@ pub const GizmoPass = struct {
         view_projection: [16]f32,
         model: [16]f32,
         color: [4]f32,
+        primitive: enum { lines, triangles },
         stats: *mesh_pass_mod.DrawStats,
     ) void {
         _ = self;
@@ -449,6 +451,9 @@ pub const GizmoPass = struct {
         device.pushFragmentUniformData(frame, 0, std.mem.asBytes(&fragment_uniforms));
         device.drawPrimitives(pass, @intCast(vertex_count), 1, @intCast(first_vertex), 0);
         stats.draw_calls += 1;
+        if (primitive == .triangles) {
+            stats.triangles_drawn += vertex_count / 3;
+        }
     }
 };
 
@@ -465,28 +470,86 @@ fn createVertexBuffer(device: *rhi_mod.RhiDevice, vertices: []const GizmoVertex)
     return buffer;
 }
 
-fn buildRingVertices() [ring_segment_count * 2]GizmoVertex {
-    var vertices: [ring_segment_count * 2]GizmoVertex = undefined;
+fn buildTranslateAxisVertices() [48]GizmoVertex {
+    var vertices: [48]GizmoVertex = undefined;
     var index: usize = 0;
-    while (index < ring_segment_count) : (index += 1) {
-        const angle_start = (@as(f32, @floatFromInt(index)) / @as(f32, @floatFromInt(ring_segment_count))) * std.math.tau;
-        const angle_end = (@as(f32, @floatFromInt(index + 1)) / @as(f32, @floatFromInt(ring_segment_count))) * std.math.tau;
-        vertices[index * 2] = .{
-            .position = .{
-                std.math.cos(angle_start) * 0.9,
-                std.math.sin(angle_start) * 0.9,
-                0.0,
-            },
-        };
-        vertices[index * 2 + 1] = .{
-            .position = .{
-                std.math.cos(angle_end) * 0.9,
-                std.math.sin(angle_end) * 0.9,
-                0.0,
-            },
-        };
+    appendBox(vertices[0..], &index, .{ 0.0, -0.032, -0.032 }, .{ 0.76, 0.032, 0.032 });
+    appendPyramidX(vertices[0..], &index, 0.76, 1.0, 0.12, 0.12);
+    return vertices;
+}
+
+fn buildScaleAxisVertices() [72]GizmoVertex {
+    var vertices: [72]GizmoVertex = undefined;
+    var index: usize = 0;
+    appendBox(vertices[0..], &index, .{ 0.0, -0.03, -0.03 }, .{ 0.82, 0.03, 0.03 });
+    appendBox(vertices[0..], &index, .{ 0.82, -0.085, -0.085 }, .{ 1.0, 0.085, 0.085 });
+    return vertices;
+}
+
+fn buildCenterCubeVertices() [36]GizmoVertex {
+    var vertices: [36]GizmoVertex = undefined;
+    var index: usize = 0;
+    appendBox(vertices[0..], &index, .{ -0.18, -0.18, -0.18 }, .{ 0.18, 0.18, 0.18 });
+    return vertices;
+}
+
+fn buildRingVertices() [ring_segment_count * 6]GizmoVertex {
+    var vertices: [ring_segment_count * 6]GizmoVertex = undefined;
+    var index: usize = 0;
+    var segment: usize = 0;
+    while (segment < ring_segment_count) : (segment += 1) {
+        const angle_start = (@as(f32, @floatFromInt(segment)) / @as(f32, @floatFromInt(ring_segment_count))) * std.math.tau;
+        const angle_end = (@as(f32, @floatFromInt(segment + 1)) / @as(f32, @floatFromInt(ring_segment_count))) * std.math.tau;
+        const inner_start = [3]f32{ std.math.cos(angle_start) * 0.84, std.math.sin(angle_start) * 0.84, 0.0 };
+        const outer_start = [3]f32{ std.math.cos(angle_start) * 0.98, std.math.sin(angle_start) * 0.98, 0.0 };
+        const inner_end = [3]f32{ std.math.cos(angle_end) * 0.84, std.math.sin(angle_end) * 0.84, 0.0 };
+        const outer_end = [3]f32{ std.math.cos(angle_end) * 0.98, std.math.sin(angle_end) * 0.98, 0.0 };
+        appendQuad(vertices[0..], &index, inner_start, outer_start, outer_end, inner_end);
     }
     return vertices;
+}
+
+fn appendBox(vertices: []GizmoVertex, index: *usize, min_corner: [3]f32, max_corner: [3]f32) void {
+    const p000 = [3]f32{ min_corner[0], min_corner[1], min_corner[2] };
+    const p001 = [3]f32{ min_corner[0], min_corner[1], max_corner[2] };
+    const p010 = [3]f32{ min_corner[0], max_corner[1], min_corner[2] };
+    const p011 = [3]f32{ min_corner[0], max_corner[1], max_corner[2] };
+    const p100 = [3]f32{ max_corner[0], min_corner[1], min_corner[2] };
+    const p101 = [3]f32{ max_corner[0], min_corner[1], max_corner[2] };
+    const p110 = [3]f32{ max_corner[0], max_corner[1], min_corner[2] };
+    const p111 = [3]f32{ max_corner[0], max_corner[1], max_corner[2] };
+
+    appendQuad(vertices, index, p001, p101, p111, p011);
+    appendQuad(vertices, index, p100, p000, p010, p110);
+    appendQuad(vertices, index, p000, p001, p011, p010);
+    appendQuad(vertices, index, p101, p100, p110, p111);
+    appendQuad(vertices, index, p010, p011, p111, p110);
+    appendQuad(vertices, index, p000, p100, p101, p001);
+}
+
+fn appendPyramidX(vertices: []GizmoVertex, index: *usize, base_x: f32, tip_x: f32, half_y: f32, half_z: f32) void {
+    const base00 = [3]f32{ base_x, -half_y, -half_z };
+    const base01 = [3]f32{ base_x, -half_y, half_z };
+    const base10 = [3]f32{ base_x, half_y, -half_z };
+    const base11 = [3]f32{ base_x, half_y, half_z };
+    const tip = [3]f32{ tip_x, 0.0, 0.0 };
+
+    appendTriangle(vertices, index, base00, base01, tip);
+    appendTriangle(vertices, index, base01, base11, tip);
+    appendTriangle(vertices, index, base11, base10, tip);
+    appendTriangle(vertices, index, base10, base00, tip);
+}
+
+fn appendQuad(vertices: []GizmoVertex, index: *usize, a: [3]f32, b: [3]f32, c: [3]f32, d: [3]f32) void {
+    appendTriangle(vertices, index, a, b, c);
+    appendTriangle(vertices, index, a, c, d);
+}
+
+fn appendTriangle(vertices: []GizmoVertex, index: *usize, a: [3]f32, b: [3]f32, c: [3]f32) void {
+    vertices[index.*] = .{ .position = a };
+    vertices[index.* + 1] = .{ .position = b };
+    vertices[index.* + 2] = .{ .position = c };
+    index.* += 3;
 }
 
 fn composeModelMatrix(
@@ -514,7 +577,7 @@ pub fn scaleForSelection(camera_world_position: [4]f32, target_position: [3]f32)
     const dy = camera_world_position[1] - target_position[1];
     const dz = camera_world_position[2] - target_position[2];
     const distance = std.math.sqrt(dx * dx + dy * dy + dz * dz);
-    return std.math.clamp(distance * 0.18, 0.7, 3.4);
+    return std.math.clamp(distance * 0.2, 0.9, 3.8);
 }
 
 pub fn rotationForSpace(selected_transform: components.Transform, space: EditorGizmoSpace) [3]f32 {
@@ -539,14 +602,14 @@ fn axisColor(axis: EditorGizmoAxis, constrained_axis: EditorGizmoAxis, mode: Edi
             color[1] = @min(color[1] * 1.2, 1.0);
             color[2] = @min(color[2] * 1.2, 1.0);
         } else {
-            color[0] *= 0.35;
-            color[1] *= 0.35;
-            color[2] *= 0.35;
+            color[0] *= 0.45;
+            color[1] *= 0.45;
+            color[2] *= 0.45;
         }
     } else if (mode == .idle) {
-        color[0] *= 0.82;
-        color[1] *= 0.82;
-        color[2] *= 0.82;
+        color[0] *= 0.92;
+        color[1] *= 0.92;
+        color[2] *= 0.92;
     }
 
     return color;

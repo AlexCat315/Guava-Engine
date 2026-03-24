@@ -755,7 +755,7 @@ pub fn hitTestGizmo(
 
     const cam_transform = camera.activeCameraTransform(state, layer_context);
     const scale = gizmoScale(cam_transform.translation, entity_transform.translation);
-    const threshold = scale * 0.12; // click tolerance in world units
+    const threshold = scale * 0.18; // click tolerance in world units
 
     const rotation_euler = switch (state.transform_space) {
         .local => quat.toEuler(entity_transform.rotation),
@@ -793,7 +793,7 @@ pub fn hitTestGizmo(
             const t = vec3.dot(to_origin, ray_dir);
             const closest = vec3.add(ray.origin, vec3.scale(ray_dir, @max(t, 0.0)));
             const center_dist = vec3.length(vec3.sub(closest, origin));
-            if (center_dist < scale * 0.22) {
+            if (center_dist < scale * 0.28) {
                 if (best == null or center_dist < best.?.distance) {
                     best = .{ .axis = .free, .mode = mode, .distance = center_dist };
                 }
@@ -802,7 +802,7 @@ pub fn hitTestGizmo(
         .rotate => {
             // Test ray against each rotation ring (radius = 0.9 * scale)
             const ring_radius = 0.9 * scale;
-            const ring_threshold = scale * 0.14;
+            const ring_threshold = scale * 0.19;
             for (axes, axis_ids) |axis_normal, axis_id| {
                 // Intersect ray with the plane of the ring
                 const n_dot_d = vec3.dot(axis_normal, ray_dir);

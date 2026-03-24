@@ -112,7 +112,7 @@ pub const AudioRuntime = struct {
 
         // 初始化 SoLoud
         soloud_bindings.init(soloud) catch |err| {
-            std.debug.print("[ERROR] Failed to initialize SoLoud: {}\n", .{err});
+            std.log.warn("Failed to initialize SoLoud runtime: {}", .{err});
             return err;
         };
 

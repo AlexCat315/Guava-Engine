@@ -361,8 +361,8 @@ pub const EditorState = struct {
     viewport_exposure: f32 = 1.0,
     // Bloom 作为 HDR 预览后处理参数，默认关闭，避免改变现有项目观感。
     viewport_bloom_enabled: bool = false,
-    viewport_bloom_threshold: f32 = 1.0,
-    viewport_bloom_intensity: f32 = 0.35,
+    viewport_bloom_threshold: f32 = 1.1,
+    viewport_bloom_intensity: f32 = 0.22,
     // Color Grading 作为视口预览参数，不写回场景资源。
     viewport_color_grading_enabled: bool = false,
     viewport_color_grading_saturation: f32 = 1.0,

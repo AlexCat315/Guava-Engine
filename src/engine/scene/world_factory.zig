@@ -172,9 +172,24 @@ pub fn createVfxEntity(
 /// 引导场景：创建相机、太阳光、地面和主角方块
 pub fn bootstrap3D(self: anytype) !void {
     const quat = @import("../math/quat.zig");
-    const default_material = try self.resources.ensureDefaultMaterial();
     const plane_mesh = try self.resources.ensurePrimitiveMesh(.plane);
     const cube_mesh = try self.resources.ensurePrimitiveMesh(.cube);
+    const ground_material = try self.resources.createMaterial(.{
+        .name = "BootstrapGroundMaterial",
+        .base_color_factor = .{ 0.56, 0.57, 0.59, 1.0 },
+        .metallic_factor = 0.0,
+        .roughness_factor = 0.97,
+        .use_ibl = false,
+        .ibl_intensity = 0.0,
+    });
+    const hero_material = try self.resources.createMaterial(.{
+        .name = "BootstrapHeroMaterial",
+        .base_color_factor = .{ 0.82, 0.83, 0.85, 1.0 },
+        .metallic_factor = 0.0,
+        .roughness_factor = 0.74,
+        .use_ibl = false,
+        .ibl_intensity = 0.0,
+    });
 
     _ = try self.createEntity(.{
         .name = "MainCamera",
@@ -188,7 +203,8 @@ pub fn bootstrap3D(self: anytype) !void {
         .name = "Sun",
         .light = .{
             .kind = .directional,
-            .intensity = 4.0,
+            .color = .{ 1.0, 0.985, 0.95 },
+            .intensity = 3.25,
         },
         .local_transform = .{
             .rotation = quat.fromEuler(.{ -0.9, 0.6, 0.0 }),
@@ -205,13 +221,13 @@ pub fn bootstrap3D(self: anytype) !void {
             .motion_type = .static,
         },
         .box_collider = .{
-            .half_extents = .{ 5.0, 0.1, 5.0 },
+            .half_extents = .{ 500.0, 0.1, 500.0 },
         },
         .material = .{
-            .handle = default_material,
+            .handle = ground_material,
         },
         .local_transform = .{
-            .scale = .{ 10.0, 1.0, 10.0 },
+            .scale = .{ 1000.0, 1.0, 1000.0 },
         },
     });
 
@@ -228,7 +244,7 @@ pub fn bootstrap3D(self: anytype) !void {
             .half_extents = .{ 0.5, 0.5, 0.5 },
         },
         .material = .{
-            .handle = default_material,
+            .handle = hero_material,
         },
         .local_transform = .{
             .translation = .{ 0.0, 1.0, 0.0 },
