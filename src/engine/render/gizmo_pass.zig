@@ -118,6 +118,9 @@ pub const GizmoPass = struct {
     center_cross_vertex_buffer: ?rhi_mod.Buffer = null,
     box_vertex_buffer: ?rhi_mod.Buffer = null,
     ring_vertex_buffer: ?rhi_mod.Buffer = null,
+    /// Temporary per-frame buffer for drawWorldLines.  Kept alive until the
+    /// next frame so the Metal command buffer can reference it after encoding.
+    temp_world_line_buffer: ?rhi_mod.Buffer = null,
     pipeline: ?rhi_mod.GraphicsPipeline = null,
     stages: ?shader_support.ProgramStages = null,
 
@@ -128,6 +131,9 @@ pub const GizmoPass = struct {
     }
 
     pub fn deinit(self: *GizmoPass, device: *rhi_mod.RhiDevice) void {
+        if (self.temp_world_line_buffer) |*buffer| {
+            device.releaseBuffer(buffer);
+        }
         if (self.ring_vertex_buffer) |*buffer| {
             device.releaseBuffer(buffer);
         }
@@ -218,10 +224,12 @@ pub const GizmoPass = struct {
         }
 
         const buffer = try createVertexBuffer(device, vertices);
-        defer {
-            var owned = buffer;
-            device.releaseBuffer(&owned);
+        // Release the previous frame's temp buffer now that its commands have
+        // been submitted, then keep the new buffer alive until next frame.
+        if (self.temp_world_line_buffer) |*old| {
+            device.releaseBuffer(old);
         }
+        self.temp_world_line_buffer = buffer;
 
         const model = math.identity();
         device.bindGraphicsPipeline(pass, &self.pipeline.?);
