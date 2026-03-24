@@ -728,8 +728,18 @@ pub const MeshSceneCache = struct {
         const material_handle = material_value.handle orelse return state;
         const material = scene.resources.material(material_handle) orelse return state;
 
-        state.base_color_factor = material.base_color_factor;
-        state.emissive_factor = .{ material.emissive_factor[0], material.emissive_factor[1], material.emissive_factor[2], 1.0 };
+        state.base_color_factor = .{
+            material.base_color_factor[0] * material_value.base_color_factor[0],
+            material.base_color_factor[1] * material_value.base_color_factor[1],
+            material.base_color_factor[2] * material_value.base_color_factor[2],
+            material.base_color_factor[3] * material_value.base_color_factor[3],
+        };
+        state.emissive_factor = .{
+            material.emissive_factor[0],
+            material.emissive_factor[1],
+            material.emissive_factor[2],
+            1.0,
+        };
         state.pbr_factors = .{ material.metallic_factor, material.roughness_factor, material.alpha_cutoff, 0.0 };
         state.has_textures = .{
             if (material.base_color_texture != null) 1 else 0,

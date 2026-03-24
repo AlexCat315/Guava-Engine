@@ -14,7 +14,7 @@ typedef struct {
     uint32_t offset;  /* 字节偏移 (BGRA8 像素缓冲) */
     uint32_t width;
     uint32_t height;
-    uint32_t _pad;
+    uint32_t format;
 } GuavaRTTextureMeta;
 
 /// 三角形数据 — 与 Zig RtTriangle / Metal RTTriangle 完全对齐
@@ -26,6 +26,9 @@ typedef struct {
     float emissive[3];
     float metallic;
     float roughness;
+    float transmission;
+    float ior;
+    float thickness;
     int32_t texture_index;
     uint32_t _tri_pad;
 } GuavaRTTriangle;
@@ -43,6 +46,7 @@ typedef struct {
     uint32_t bounces;
     uint32_t mode;             /* 0 = path trace, 1 = shadow only */
     uint32_t shadow_samples;   /* shadow-only 每像素采样数 */
+    uint32_t output_is_half;   /* 1 = RGBA16F output, 0 = BGRA8 output */
     int32_t environment_texture_index;
     uint32_t _pad2;
     float exposure_params[4];
@@ -60,8 +64,8 @@ bool guava_metal_rt_build_accel(GuavaMetalRTContext* ctx,
                                 const GuavaRTTriangle* triangles,
                                 uint32_t triangle_count);
 
-/// 执行光线追踪，将 BGRA8 像素写入 output_pixels。
-/// output_size = width * height * 4。
+/// 执行光线追踪，将像素写入 output_pixels。
+/// output_size = width * height * (mode==1 ? 4 : (output_is_half ? 8 : 4))。
 bool guava_metal_rt_trace(GuavaMetalRTContext* ctx,
                           const GuavaRTParams* params,
                           uint8_t* output_pixels,

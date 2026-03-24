@@ -21,6 +21,9 @@ struct RTTriangle {
     packed_float3 emissive;
     float metallic;
     float roughness;
+    float transmission;
+    float ior;
+    float thickness;
     int texture_index;
     uint _tri_pad;
 };
@@ -29,7 +32,7 @@ struct RTTextureMeta {
     uint offset;  // byte offset in packed BGRA8 pixel buffer
     uint width;
     uint height;
-    uint _pad;
+    uint format;
 };
 
 struct RTParams {
@@ -43,6 +46,7 @@ struct RTParams {
     uint bounces;
     uint mode;       // 0 = path trace, 1 = shadow only
     uint shadow_samples; // shadow-only 每像素采样数 (1=硬阴影, 4+=软阴影)
+    uint output_is_half;
     int environment_texture_index;
     uint _pad2;
     float4 exposure_params;
@@ -102,9 +106,48 @@ static float3 reflect_vec(float3 incident, float3 normal) {
     return incident - 2.0f * dot(incident, normal) * normal;
 }
 
+static bool refract_vec(float3 incident, float3 normal, float eta, thread float3& out_dir) {
+    float cos_i = clamp(-dot(normal, incident), -1.0f, 1.0f);
+    float k = 1.0f - eta * eta * (1.0f - cos_i * cos_i);
+    if (k < 0.0f) return false;
+    out_dir = eta * incident + (eta * cos_i - sqrt(k)) * normal;
+    return true;
+}
+
+static constexpr uint TEXFMT_BGRA8_UNORM = 3u;
+static constexpr uint TEXFMT_BGRA8_UNORM_SRGB = 4u;
+static constexpr uint TEXFMT_RGBA16_FLOAT = 5u;
+static constexpr uint TEXFMT_RGBA32_FLOAT = 6u;
+
+static float3 read_texel_texture_atlas(
+    device const uchar* atlas,
+    constant RTTextureMeta& tm,
+    uint tx,
+    uint ty
+) {
+    uint index = ty * tm.width + tx;
+    uint base = tm.offset;
+    if (tm.format == TEXFMT_RGBA32_FLOAT) {
+        device const float* f32 = reinterpret_cast<device const float*>(atlas + base + index * 16u);
+        return float3(f32[0], f32[1], f32[2]);
+    }
+    if (tm.format == TEXFMT_RGBA16_FLOAT) {
+        device const half* f16 = reinterpret_cast<device const half*>(atlas + base + index * 8u);
+        return float3(float(f16[0]), float(f16[1]), float(f16[2]));
+    }
+    const uint px_off = base + index * 4u;
+    float b = float(atlas[px_off + 0]) / 255.0f;
+    float g = float(atlas[px_off + 1]) / 255.0f;
+    float r = float(atlas[px_off + 2]) / 255.0f;
+    if (tm.format == TEXFMT_BGRA8_UNORM || tm.format == TEXFMT_BGRA8_UNORM_SRGB) {
+        return float3(pow(r, 2.2f), pow(g, 2.2f), pow(b, 2.2f));
+    }
+    return float3(r, g, b);
+}
+
 // 从打包纹理图集中双线性采样 (BGRA8)
 static float3 sample_texture_atlas(
-    device const uchar4* atlas,
+    device const uchar* atlas,
     constant RTTextureMeta* meta,
     int tex_index,
     float u_in, float v_in
@@ -112,7 +155,7 @@ static float3 sample_texture_atlas(
     constant RTTextureMeta& tm = meta[tex_index];
     uint tw = tm.width;
     uint th = tm.height;
-    uint base = tm.offset / 4; // uchar4 offset
+    uint base = tm.offset;
 
     // wrap UV to [0,1)
     float u = u_in - floor(u_in);
@@ -134,24 +177,10 @@ static float3 sample_texture_atlas(
     uint x1u = uint((((x0 + 1) % iw) + iw) % iw);
     uint y1u = uint((((y0 + 1) % ih) + ih) % ih);
 
-    // read 4 texels (BGRA8 → linear RGB via pow 2.2)
-    float3 c00, c10, c01, c11;
-    {
-        uchar4 px = atlas[base + y0u * tw + x0u];
-        c00 = float3(pow(float(px.z)/255.0f,2.2f), pow(float(px.y)/255.0f,2.2f), pow(float(px.x)/255.0f,2.2f));
-    }
-    {
-        uchar4 px = atlas[base + y0u * tw + x1u];
-        c10 = float3(pow(float(px.z)/255.0f,2.2f), pow(float(px.y)/255.0f,2.2f), pow(float(px.x)/255.0f,2.2f));
-    }
-    {
-        uchar4 px = atlas[base + y1u * tw + x0u];
-        c01 = float3(pow(float(px.z)/255.0f,2.2f), pow(float(px.y)/255.0f,2.2f), pow(float(px.x)/255.0f,2.2f));
-    }
-    {
-        uchar4 px = atlas[base + y1u * tw + x1u];
-        c11 = float3(pow(float(px.z)/255.0f,2.2f), pow(float(px.y)/255.0f,2.2f), pow(float(px.x)/255.0f,2.2f));
-    }
+    float3 c00 = read_texel_texture_atlas(atlas, tm, x0u, y0u);
+    float3 c10 = read_texel_texture_atlas(atlas, tm, x1u, y0u);
+    float3 c01 = read_texel_texture_atlas(atlas, tm, x0u, y1u);
+    float3 c11 = read_texel_texture_atlas(atlas, tm, x1u, y1u);
 
     return mix(mix(c00, c10, frac_x), mix(c01, c11, frac_x), frac_y);
 }
@@ -174,10 +203,10 @@ static float3 sample_environment(
 kernel void raytrace_kernel(
     uint2                          tid        [[thread_position_in_grid]],
     constant RTParams&             params     [[buffer(0)]],
-    device uchar4*                 output     [[buffer(1)]],
+    device uchar*                  output     [[buffer(1)]],
     constant RTTriangle*           triangles  [[buffer(2)]],
     primitive_acceleration_structure accel     [[buffer(3)]],
-    device const uchar4*           tex_atlas  [[buffer(4)]],
+    device const uchar*            tex_atlas  [[buffer(4)]],
     constant RTTextureMeta*        tex_meta   [[buffer(5)]]
 ) {
     if (tid.x >= params.dimensions.x || tid.y >= params.dimensions.y) return;
@@ -228,6 +257,8 @@ kernel void raytrace_kernel(
             float w0 = 1.0f - bary.x - bary.y;
             float3 normal = normalize(
                 float3(tri.n0) * w0 + float3(tri.n1) * bary.x + float3(tri.n2) * bary.y);
+            bool front_face = dot(direction, normal) < 0.0f;
+            float3 shade_n = front_face ? normal : -normal;
             float3 hit_pos = origin + direction * hit.distance;
 
             // UV 插值 + 纹理采样
@@ -243,6 +274,8 @@ kernel void raytrace_kernel(
             float3 emis  = float3(tri.emissive);
             float  met   = tri.metallic;
             float  rough = tri.roughness;
+            float  transmission = clamp(tri.transmission, 0.0f, 0.96f);
+            float  thickness = max(tri.thickness, 0.0f);
 
             // ---- shadow-only mode: primary ray + N shadow rays → soft visibility ----
             if (params.mode == 1) {
@@ -284,37 +317,58 @@ kernel void raytrace_kernel(
                 auto shadow_hit = shadow_inter.intersect(shadow_ray, accel);
                 if (shadow_hit.type == intersection_type::triangle) shadow_vis = 0.0f;
             }
-            float NdotL = saturate(dot(normal, L));
+            float NdotL = saturate(dot(shade_n, L));
             float3 diffuse = alb * NdotL * (1.0f - met);
             float3 dielectric_f0 = float3(0.04f);
             float3 specular_tint = mix(dielectric_f0, alb, met);
             float3 H = normalize(L - direction);
-            float NdotH = saturate(dot(normal, H));
+            float NdotH = saturate(dot(shade_n, H));
             float sp = max(8.0f, 10.0f + (1.0f - rough) * 120.0f);
             float spec_val = pow(NdotH, sp) * (0.1f + 0.9f * (1.0f - rough));
             float3 spec_c = specular_tint * spec_val;
-            float3 direct = (diffuse + spec_c * NdotL) * shadow_vis;
-            float3 ambient = alb * (0.03f + 0.04f * (1.0f - met));
+            float surface_lighting_weight = 1.0f - transmission * 0.85f;
+            float3 direct = (diffuse + spec_c * NdotL) * shadow_vis * surface_lighting_weight;
+            float3 ambient = alb * (0.03f + 0.04f * (1.0f - met)) * surface_lighting_weight;
             radiance += throughput * (direct + ambient);
 
-            // bounce selection: metals prefer reflection, dielectrics diffuse.
+            // bounce selection: transmission/reflection/diffuse
             uint bseed = sseed ^ (bounce * 0x9e3779b9u);
             float specular_chance = clamp(0.08f + met * 0.84f + (1.0f - rough) * 0.06f, 0.05f, 0.97f);
-            float3 reflected = normalize(reflect_vec(direction, normal));
+            float transmission_chance = clamp(transmission * (1.0f - met), 0.0f, 0.92f);
+            float3 reflected = normalize(reflect_vec(direction, shade_n));
             float3 glossy = normalize(mix(reflected, random_hemisphere(reflected, bseed ^ 0x51c8e12du), rough * rough));
-            float3 diffuse_dir = random_hemisphere(normal, bseed ^ 0xa241b3c1u);
+            float3 diffuse_dir = random_hemisphere(shade_n, bseed ^ 0xa241b3c1u);
             bool choose_specular = hash_unit_float(bseed ^ 0x6b84221fu) < specular_chance;
+            bool choose_transmission = transmission_chance > 0.0f && hash_unit_float(bseed ^ 0xb5297a4du) < transmission_chance;
 
-            if (choose_specular) {
-                direction = (dot(glossy, normal) > 0.0f) ? glossy : reflected;
+            if (choose_transmission) {
+                float eta = front_face ? (1.0f / max(tri.ior, 1.01f)) : max(tri.ior, 1.01f);
+                float3 refr_dir;
+                if (refract_vec(direction, shade_n, eta, refr_dir)) {
+                    direction = normalize(refr_dir);
+                } else {
+                    direction = reflected;
+                }
+                float3 transmission_tint = mix(float3(1.0f), alb, 0.2f);
+                if (thickness > 1e-4f) {
+                    float ndot = max(abs(dot(direction, shade_n)), 0.2f);
+                    float optical_distance = thickness / ndot;
+                    float3 sigma_a = max(float3(0.0f), 1.0f - alb) * 2.2f;
+                    throughput *= exp(-sigma_a * optical_distance);
+                }
+                throughput *= transmission_tint * (0.96f / max(transmission_chance, 0.05f));
+                origin = hit_pos + direction * 0.002f;
+            } else if (choose_specular) {
+                direction = (dot(glossy, shade_n) > 0.0f) ? glossy : reflected;
                 throughput *= specular_tint * (0.92f / specular_chance);
+                origin = hit_pos + shade_n * 0.002f;
             } else {
                 direction = diffuse_dir;
                 throughput *= (alb * (1.0f - met)) * (0.85f / max(1.0f - specular_chance, 0.05f));
+                origin = hit_pos + shade_n * 0.002f;
             }
 
             if (length(throughput) < 0.02f) break;
-            origin    = hit_pos + normal * 0.002f;
         }
         accumulated += radiance;
     }
@@ -324,14 +378,25 @@ kernel void raytrace_kernel(
     if (params.mode == 1) {
         // shadow-only: output grayscale visibility (no gamma, linear)
         uchar v = uchar(saturate(accumulated.x) * 255.0f);
-        output[idx] = uchar4(v, v, v, 255);
+        uint base = idx * 4;
+        output[base + 0] = v;
+        output[base + 1] = v;
+        output[base + 2] = v;
+        output[base + 3] = 255;
+    } else if (params.output_is_half != 0u) {
+        device half* output_half = (device half*)output;
+        uint hbase = idx * 4;
+        output_half[hbase + 0] = half(clamp(accumulated.x, -65504.0f, 65504.0f));
+        output_half[hbase + 1] = half(clamp(accumulated.y, -65504.0f, 65504.0f));
+        output_half[hbase + 2] = half(clamp(accumulated.z, -65504.0f, 65504.0f));
+        output_half[hbase + 3] = half(1.0f);
     } else {
         float3 linear = saturate(accumulated);
-        output[idx] = uchar4(
-            uchar(linear.z * 255.0f),  // B
-            uchar(linear.y * 255.0f),  // G
-            uchar(linear.x * 255.0f),  // R
-            255);
+        uint base = idx * 4;
+        output[base + 0] = uchar(linear.z * 255.0f);  // B
+        output[base + 1] = uchar(linear.y * 255.0f);  // G
+        output[base + 2] = uchar(linear.x * 255.0f);  // R
+        output[base + 3] = 255;
     }
 }
 )METAL";
@@ -353,6 +418,7 @@ struct GuavaMetalRTContext {
     uint32_t                        triangleCount;
     uint32_t                        outputWidth;
     uint32_t                        outputHeight;
+    uint32_t                        outputBytesPerPixel;
     uint32_t                        textureCount;
     bool                            supported;
     bool                            accelBuilt;
@@ -421,6 +487,7 @@ extern "C" GuavaMetalRTContext* guava_metal_rt_init(void) {
         ctx->triangleCount = 0;
         ctx->outputWidth   = 0;
         ctx->outputHeight  = 0;
+        ctx->outputBytesPerPixel = 0;
         ctx->textureCount  = 0;
         ctx->supported     = true;
         ctx->accelBuilt    = false;
@@ -567,18 +634,20 @@ extern "C" bool guava_metal_rt_trace(GuavaMetalRTContext* ctx,
     @autoreleasepool {
         const uint32_t w = params->width;
         const uint32_t h = params->height;
-        const uint32_t needed = w * h * 4;
+        const uint32_t bytes_per_pixel = (params->mode == 1) ? 4 : ((params->output_is_half != 0) ? 8 : 4);
+        const uint32_t needed = w * h * bytes_per_pixel;
         if (output_size < needed) return false;
 
         id<MTLDevice> dev = ctx->device;
 
         // ---- output buffer ----
-        if (!ctx->outputBuffer || ctx->outputWidth != w || ctx->outputHeight != h) {
+        if (!ctx->outputBuffer || ctx->outputWidth != w || ctx->outputHeight != h || ctx->outputBytesPerPixel != bytes_per_pixel) {
             ctx->outputBuffer = [dev newBufferWithLength:needed
                                                  options:MTLResourceStorageModeShared];
             if (!ctx->outputBuffer) return false;
             ctx->outputWidth  = w;
             ctx->outputHeight = h;
+            ctx->outputBytesPerPixel = bytes_per_pixel;
         }
 
         // ---- params buffer ----

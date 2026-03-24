@@ -263,6 +263,9 @@ const PathTraceTriangle = struct {
     emissive: [3]f32,
     metallic: f32,
     roughness: f32,
+    transmission: f32,
+    ior: f32,
+    thickness: f32,
     texture_index: i32, // -1 = no texture, >=0 = index into PathTraceTextureCache.textures
 };
 
@@ -270,6 +273,7 @@ const PathTraceTexture = struct {
     pixels: []const u8, // borrowed pointer (owned by TextureResource)
     width: u32,
     height: u32,
+    format: rhi_types.TextureFormat,
 };
 
 const PathTraceEnvironment = struct {
@@ -287,7 +291,7 @@ const PathTraceMesh = struct {
 const PathTraceProgressiveState = struct {
     current_scanline: u32 = 0,
     complete: bool = false,
-    trace_pixels: ?[]u8 = null,
+    trace_linear_rgb: ?[]f32 = null,
     display_pixels: ?[]u8 = null,
     trace_width: u32 = 0,
     trace_height: u32 = 0,
@@ -331,7 +335,7 @@ const PathTraceProgressiveState = struct {
     }
 
     fn deinit(self: *PathTraceProgressiveState, allocator: std.mem.Allocator) void {
-        if (self.trace_pixels) |p| allocator.free(p);
+        if (self.trace_linear_rgb) |p| allocator.free(p);
         if (self.display_pixels) |p| allocator.free(p);
         if (self.triangles) |t| allocator.free(t);
         if (self.meshes) |m| allocator.free(m);
@@ -616,6 +620,16 @@ fn reflectVector(incident: [3]f32, normal: [3]f32) [3]f32 {
     return vec3.sub(incident, vec3.scale(normal, 2.0 * vec3.dot(incident, normal)));
 }
 
+fn refractVector(incident: [3]f32, normal: [3]f32, eta: f32) ?[3]f32 {
+    const cos_i = std.math.clamp(-vec3.dot(normal, incident), -1.0, 1.0);
+    const k = 1.0 - eta * eta * (1.0 - cos_i * cos_i);
+    if (k < 0.0) return null;
+    return vec3.add(
+        vec3.scale(incident, eta),
+        vec3.scale(normal, eta * cos_i - std.math.sqrt(k)),
+    );
+}
+
 fn resolvePathTraceEnvironment(resources: *const assets_lib.ResourceLibrary) PathTraceEnvironment {
     const asset_id = findSceneEnvironmentAssetId(resources) orelse return .{};
     const handle = resources.textureHandleByAssetId(asset_id) orelse return .{};
@@ -630,11 +644,12 @@ fn resolvePathTraceEnvironment(resources: *const assets_lib.ResourceLibrary) Pat
             .pixels = texture.pixels,
             .width = texture.width,
             .height = texture.height,
+            .format = texture.format,
         },
     };
 }
 
-/// bilinear sample a BGRA8 CPU texture, return linear RGB [0,1]
+/// bilinear sample a CPU texture, return linear RGB
 fn sampleTextureBilinear(tex: PathTraceTexture, u_in: f32, v_in: f32) [3]f32 {
     // Wrap UVs to [0,1)
     var u = u_in - @floor(u_in);
@@ -655,10 +670,10 @@ fn sampleTextureBilinear(tex: PathTraceTexture, u_in: f32, v_in: f32) [3]f32 {
     const x1: u32 = @intCast(@mod(x0_i + 1, w) + (if (@mod(x0_i + 1, w) < 0) w else @as(i32, 0)));
     const y1: u32 = @intCast(@mod(y0_i + 1, h) + (if (@mod(y0_i + 1, h) < 0) h else @as(i32, 0)));
 
-    const c00 = readTexelBgra(tex, x0, y0);
-    const c10 = readTexelBgra(tex, x1, y0);
-    const c01 = readTexelBgra(tex, x0, y1);
-    const c11 = readTexelBgra(tex, x1, y1);
+    const c00 = readTexelLinear(tex, x0, y0);
+    const c10 = readTexelLinear(tex, x1, y0);
+    const c01 = readTexelLinear(tex, x0, y1);
+    const c11 = readTexelLinear(tex, x1, y1);
     return .{
         (c00[0] * (1.0 - frac_x) + c10[0] * frac_x) * (1.0 - frac_y) + (c01[0] * (1.0 - frac_x) + c11[0] * frac_x) * frac_y,
         (c00[1] * (1.0 - frac_x) + c10[1] * frac_x) * (1.0 - frac_y) + (c01[1] * (1.0 - frac_x) + c11[1] * frac_x) * frac_y,
@@ -666,17 +681,54 @@ fn sampleTextureBilinear(tex: PathTraceTexture, u_in: f32, v_in: f32) [3]f32 {
     };
 }
 
-fn readTexelBgra(tex: PathTraceTexture, x: u32, y: u32) [3]f32 {
-    const idx = (@as(usize, y) * @as(usize, tex.width) + @as(usize, x)) * 4;
-    if (idx + 3 >= tex.pixels.len) return [3]f32{ 0.5, 0.5, 0.5 };
-    // BGRA8 → linear RGB (approximate sRGB→linear via pow 2.2)
-    const b = @as(f32, @floatFromInt(tex.pixels[idx + 0])) / 255.0;
-    const g = @as(f32, @floatFromInt(tex.pixels[idx + 1])) / 255.0;
-    const r = @as(f32, @floatFromInt(tex.pixels[idx + 2])) / 255.0;
-    return .{
-        std.math.pow(f32, r, 2.2),
-        std.math.pow(f32, g, 2.2),
-        std.math.pow(f32, b, 2.2),
+fn readTexelLinear(tex: PathTraceTexture, x: u32, y: u32) [3]f32 {
+    const pixel_index = @as(usize, y) * @as(usize, tex.width) + @as(usize, x);
+    return switch (tex.format) {
+        .rgba32_float => blk: {
+            const idx = pixel_index * 16;
+            if (idx + 15 >= tex.pixels.len) break :blk [3]f32{ 0.5, 0.5, 0.5 };
+            const r_bits: u32 = @as(u32, tex.pixels[idx + 0]) |
+                (@as(u32, tex.pixels[idx + 1]) << 8) |
+                (@as(u32, tex.pixels[idx + 2]) << 16) |
+                (@as(u32, tex.pixels[idx + 3]) << 24);
+            const g_bits: u32 = @as(u32, tex.pixels[idx + 4]) |
+                (@as(u32, tex.pixels[idx + 5]) << 8) |
+                (@as(u32, tex.pixels[idx + 6]) << 16) |
+                (@as(u32, tex.pixels[idx + 7]) << 24);
+            const b_bits: u32 = @as(u32, tex.pixels[idx + 8]) |
+                (@as(u32, tex.pixels[idx + 9]) << 8) |
+                (@as(u32, tex.pixels[idx + 10]) << 16) |
+                (@as(u32, tex.pixels[idx + 11]) << 24);
+            break :blk .{
+                @bitCast(r_bits),
+                @bitCast(g_bits),
+                @bitCast(b_bits),
+            };
+        },
+        .rgba16_float => blk: {
+            const idx = pixel_index * 8;
+            if (idx + 7 >= tex.pixels.len) break :blk [3]f32{ 0.5, 0.5, 0.5 };
+            const r_bits: u16 = @as(u16, tex.pixels[idx + 0]) | (@as(u16, tex.pixels[idx + 1]) << 8);
+            const g_bits: u16 = @as(u16, tex.pixels[idx + 2]) | (@as(u16, tex.pixels[idx + 3]) << 8);
+            const b_bits: u16 = @as(u16, tex.pixels[idx + 4]) | (@as(u16, tex.pixels[idx + 5]) << 8);
+            break :blk .{
+                @as(f32, @floatCast(@as(f16, @bitCast(r_bits)))),
+                @as(f32, @floatCast(@as(f16, @bitCast(g_bits)))),
+                @as(f32, @floatCast(@as(f16, @bitCast(b_bits)))),
+            };
+        },
+        else => blk: {
+            const idx = pixel_index * 4;
+            if (idx + 3 >= tex.pixels.len) break :blk [3]f32{ 0.5, 0.5, 0.5 };
+            const b = @as(f32, @floatFromInt(tex.pixels[idx + 0])) / 255.0;
+            const g = @as(f32, @floatFromInt(tex.pixels[idx + 1])) / 255.0;
+            const r = @as(f32, @floatFromInt(tex.pixels[idx + 2])) / 255.0;
+            break :blk .{
+                std.math.pow(f32, r, 2.2),
+                std.math.pow(f32, g, 2.2),
+                std.math.pow(f32, b, 2.2),
+            };
+        },
     };
 }
 
@@ -742,6 +794,8 @@ fn pathTraceRay(
             w0 * tri.n0[1] + hit_u * tri.n1[1] + hit_v * tri.n2[1],
             w0 * tri.n0[2] + hit_u * tri.n1[2] + hit_v * tri.n2[2],
         });
+        const front_face = vec3.dot(direction, normal) < 0.0;
+        const shading_normal = if (front_face) normal else vec3.scale(normal, -1.0);
 
         // Emissive contribution
         const emissive_strength = tri.emissive[0] + tri.emissive[1] + tri.emissive[2];
@@ -766,95 +820,99 @@ fn pathTraceRay(
 
         // Direct lighting stays cheap; reflective look mainly comes from the
         // bounce path so metals can see the same environment source as Raster.
-        const n_dot_l = std.math.clamp(vec3.dot(normal, light_direction), 0.0, 1.0);
+        const n_dot_l = std.math.clamp(vec3.dot(shading_normal, light_direction), 0.0, 1.0);
         const diffuse = vec3.scale(surface_albedo, n_dot_l * (1.0 - tri.metallic));
         const dielectric_f0 = [3]f32{ 0.04, 0.04, 0.04 };
         const specular_tint = mixVec3(dielectric_f0, surface_albedo, tri.metallic);
         const halfway = vec3.normalize(vec3.add(light_direction, vec3.scale(direction, -1.0)));
-        const n_dot_h = std.math.clamp(vec3.dot(normal, halfway), 0.0, 1.0);
+        const n_dot_h = std.math.clamp(vec3.dot(shading_normal, halfway), 0.0, 1.0);
         const spec_power = @max(8.0, 10.0 + (1.0 - tri.roughness) * 120.0);
         const spec = std.math.pow(f32, n_dot_h, spec_power) * (0.1 + 0.9 * (1.0 - tri.roughness));
         const spec_color = vec3.scale(specular_tint, spec);
 
+        const transmission = std.math.clamp(tri.transmission, 0.0, 0.96);
+        const thickness = @max(tri.thickness, 0.0);
+        const surface_lighting_weight = 1.0 - transmission * 0.85;
         const direct_light = [3]f32{
-            diffuse[0] + spec_color[0] * n_dot_l,
-            diffuse[1] + spec_color[1] * n_dot_l,
-            diffuse[2] + spec_color[2] * n_dot_l,
+            (diffuse[0] + spec_color[0] * n_dot_l) * surface_lighting_weight,
+            (diffuse[1] + spec_color[1] * n_dot_l) * surface_lighting_weight,
+            (diffuse[2] + spec_color[2] * n_dot_l) * surface_lighting_weight,
         };
 
         // Keep ambient low; let the environment map carry the overall scene tone.
-        const ambient = vec3.scale(surface_albedo, 0.03 + 0.04 * (1.0 - tri.metallic));
+        const ambient = vec3.scale(surface_albedo, (0.03 + 0.04 * (1.0 - tri.metallic)) * surface_lighting_weight);
         const combined = vec3.add(direct_light, ambient);
         radiance = vec3.add(radiance, vec3.mul(throughput, combined));
 
         // Bounce: shared material semantics, not a separate "Path Trace only" shading model.
         const seed = seed_base ^ (bounce *% 0x9e3779b9);
         const specular_chance = std.math.clamp(0.08 + tri.metallic * 0.84 + (1.0 - tri.roughness) * 0.06, 0.05, 0.97);
-        const reflected = vec3.normalize(reflectVector(direction, normal));
+        const reflected = vec3.normalize(reflectVector(direction, shading_normal));
         const glossy = vec3.normalize(mixVec3(reflected, randomHemisphereDirection(reflected, seed ^ 0x51c8e12d), tri.roughness * tri.roughness));
-        const diffuse_dir = randomHemisphereDirection(normal, seed ^ 0xa241b3c1);
+        const diffuse_dir = randomHemisphereDirection(shading_normal, seed ^ 0xa241b3c1);
         const choose_specular = hashUnitFloat(seed ^ 0x6b84221f) < specular_chance;
+        const transmission_chance = std.math.clamp(transmission * (1.0 - tri.metallic), 0.0, 0.92);
+        const choose_transmission = transmission_chance > 0.0 and hashUnitFloat(seed ^ 0xb5297a4d) < transmission_chance;
 
-        if (choose_specular) {
-            direction = if (vec3.dot(glossy, normal) > 0.0) glossy else reflected;
+        if (choose_transmission) {
+            const eta = if (front_face) 1.0 / @max(tri.ior, 1.01) else @max(tri.ior, 1.01);
+            const refracted = refractVector(direction, shading_normal, eta);
+            const transmission_tint = mixVec3(.{ 1.0, 1.0, 1.0 }, surface_albedo, 0.2);
+            if (refracted) |refract_dir| {
+                direction = vec3.normalize(refract_dir);
+            } else {
+                direction = reflected;
+            }
+            if (thickness > 0.0001) {
+                const ndot = @max(@abs(vec3.dot(direction, shading_normal)), 0.2);
+                const optical_distance = thickness / ndot;
+                const sigma_a = .{
+                    @max(0.0, 1.0 - surface_albedo[0]) * 2.2,
+                    @max(0.0, 1.0 - surface_albedo[1]) * 2.2,
+                    @max(0.0, 1.0 - surface_albedo[2]) * 2.2,
+                };
+                throughput = vec3.mul(throughput, .{
+                    std.math.exp(-sigma_a[0] * optical_distance),
+                    std.math.exp(-sigma_a[1] * optical_distance),
+                    std.math.exp(-sigma_a[2] * optical_distance),
+                });
+            }
+            throughput = vec3.scale(vec3.mul(throughput, transmission_tint), 0.96 / @max(transmission_chance, 0.05));
+            origin = vec3.add(hit_pos, vec3.scale(direction, 0.002));
+        } else if (choose_specular) {
+            direction = if (vec3.dot(glossy, shading_normal) > 0.0) glossy else reflected;
             throughput = vec3.scale(vec3.mul(throughput, specular_tint), 0.92 / specular_chance);
+            origin = vec3.add(hit_pos, vec3.scale(shading_normal, 0.002));
         } else {
             direction = diffuse_dir;
             throughput = vec3.scale(
                 vec3.mul(throughput, vec3.scale(surface_albedo, 1.0 - tri.metallic)),
                 0.85 / @max(1.0 - specular_chance, 0.05),
             );
+            origin = vec3.add(hit_pos, vec3.scale(shading_normal, 0.002));
         }
 
         if (vec3.length(throughput) < 0.02) {
             break;
         }
-        origin = vec3.add(hit_pos, vec3.scale(normal, 0.002));
     }
 
     return radiance;
 }
 
-fn linearToBgra8(color: [3]f32) [4]u8 {
-    const clamped = [3]f32{
-        std.math.clamp(color[0], 0.0, 1.0),
-        std.math.clamp(color[1], 0.0, 1.0),
-        std.math.clamp(color[2], 0.0, 1.0),
-    };
-    return .{
-        @as(u8, @intFromFloat(clamped[2] * 255.0)),
-        @as(u8, @intFromFloat(clamped[1] * 255.0)),
-        @as(u8, @intFromFloat(clamped[0] * 255.0)),
-        255,
-    };
-}
-
 fn writeF16Le(out: []u8, offset: usize, value: f32) void {
-    const clamped = std.math.clamp(value, 0.0, 65504.0);
+    const clamped = std.math.clamp(value, -65504.0, 65504.0);
     const bits: u16 = @bitCast(@as(f16, @floatCast(clamped)));
     out[offset + 0] = @as(u8, @truncate(bits));
     out[offset + 1] = @as(u8, @truncate(bits >> 8));
 }
 
-fn uploadLinearBgra8ToHdrTexture(self: *Renderer, target: *const rhi_mod.Texture, pixels: []const u8, width: u32, height: u32) !void {
-    const pixel_count = @as(usize, width) * @as(usize, height);
-    const hdr_pixels = try self.allocator.alloc(u8, pixel_count * 8);
-    defer self.allocator.free(hdr_pixels);
-
-    var i: usize = 0;
-    while (i < pixel_count) : (i += 1) {
-        const src = i * 4;
-        const dst = i * 8;
-        const r = @as(f32, @floatFromInt(pixels[src + 2])) / 255.0;
-        const g = @as(f32, @floatFromInt(pixels[src + 1])) / 255.0;
-        const b = @as(f32, @floatFromInt(pixels[src + 0])) / 255.0;
-        writeF16Le(hdr_pixels, dst + 0, r);
-        writeF16Le(hdr_pixels, dst + 2, g);
-        writeF16Le(hdr_pixels, dst + 4, b);
-        writeF16Le(hdr_pixels, dst + 6, 1.0);
-    }
-
-    try self.rhi.uploadTextureData(target, hdr_pixels, width, height);
+fn writeHdrPixelRgba16f(out: []u8, pixel_index: usize, rgb: [3]f32) void {
+    const dst = pixel_index * 8;
+    writeF16Le(out, dst + 0, rgb[0]);
+    writeF16Le(out, dst + 2, rgb[1]);
+    writeF16Le(out, dst + 4, rgb[2]);
+    writeF16Le(out, dst + 6, 1.0);
 }
 
 const SceneViewportState = struct {
@@ -2982,9 +3040,9 @@ pub const Renderer = struct {
 
         if (size_changed) {
             pt.reset(self.allocator);
-            if (pt.trace_pixels) |p| self.allocator.free(p);
+            if (pt.trace_linear_rgb) |p| self.allocator.free(p);
             if (pt.display_pixels) |p| self.allocator.free(p);
-            pt.trace_pixels = null;
+            pt.trace_linear_rgb = null;
             pt.display_pixels = null;
         }
 
@@ -2998,14 +3056,14 @@ pub const Renderer = struct {
         pt.environment_texture = path_trace_environment.texture;
 
         // --- 分配/复用持久缓冲区 ---
-        if (pt.trace_pixels == null) {
-            pt.trace_pixels = try self.allocator.alloc(u8, @as(usize, trace_width) * trace_height * 4);
-            @memset(pt.trace_pixels.?, 0);
+        if (pt.trace_linear_rgb == null) {
+            pt.trace_linear_rgb = try self.allocator.alloc(f32, @as(usize, trace_width) * @as(usize, trace_height) * 3);
+            @memset(pt.trace_linear_rgb.?, 0);
             pt.trace_width = trace_width;
             pt.trace_height = trace_height;
         }
         if (pt.display_pixels == null) {
-            pt.display_pixels = try self.allocator.alloc(u8, @as(usize, width) * height * 4);
+            pt.display_pixels = try self.allocator.alloc(u8, @as(usize, width) * height * 8);
             @memset(pt.display_pixels.?, 0);
             pt.target_width = width;
             pt.target_height = height;
@@ -3013,7 +3071,7 @@ pub const Renderer = struct {
 
         // 如果已经渲染完成，直接上传缓存结果
         if (pt.complete) {
-            try uploadLinearBgra8ToHdrTexture(self, target, pt.display_pixels.?, width, height);
+            try self.rhi.uploadTextureData(target, pt.display_pixels.?, width, height);
             return;
         }
 
@@ -3079,6 +3137,9 @@ pub const Renderer = struct {
                         };
                         var metallic = std.math.clamp(item.pbr_factors[0], 0.0, 1.0);
                         var roughness = std.math.clamp(item.pbr_factors[1], 0.04, 1.0);
+                        var transmission = std.math.clamp(1.0 - opacity, 0.0, 0.96);
+                        var ior: f32 = 1.5;
+                        var thickness: f32 = std.math.clamp((1.0 - opacity) * 0.75 + 0.05, 0.01, 2.0);
 
                         if (batch.is_transparent) {
                             albedo = vec3.scale(albedo, opacity);
@@ -3097,12 +3158,18 @@ pub const Renderer = struct {
                                 albedo = vec3.scale(albedo, 0.06);
                                 metallic = 0.0;
                                 roughness = 1.0;
+                                transmission = 0.0;
+                                thickness = 0.0;
                             },
                             .lambert => {
                                 metallic = 0.0;
                                 roughness = @max(roughness, 0.65);
+                                ior = 1.45;
+                                thickness = std.math.clamp(thickness * 0.5, 0.0, 1.0);
                             },
-                            .pbr_metallic_roughness => {},
+                            .pbr_metallic_roughness => {
+                                ior = 1.52;
+                            },
                         }
 
                         // 解析 base_color 纹理（如果存在）
@@ -3120,6 +3187,7 @@ pub const Renderer = struct {
                                 .pixels = tex_res.pixels,
                                 .width = tex_res.width,
                                 .height = tex_res.height,
+                                .format = tex_res.format,
                             });
                             try texture_index_map.put(tex_key, idx_i32);
                             break :blk_tex idx_i32;
@@ -3161,6 +3229,9 @@ pub const Renderer = struct {
                                 .emissive = emissive,
                                 .metallic = metallic,
                                 .roughness = roughness,
+                                .transmission = transmission,
+                                .ior = ior,
+                                .thickness = thickness,
                                 .texture_index = tex_idx,
                             });
                         }
@@ -3193,6 +3264,9 @@ pub const Renderer = struct {
                     .emissive = .{ 0.0, 0.0, 0.0 },
                     .metallic = 0.0,
                     .roughness = 0.8,
+                    .transmission = 0.0,
+                    .ior = 1.5,
+                    .thickness = 0.0,
                     .texture_index = -1,
                 });
                 try triangle_list.append(self.allocator, .{
@@ -3209,6 +3283,9 @@ pub const Renderer = struct {
                     .emissive = .{ 0.0, 0.0, 0.0 },
                     .metallic = 0.0,
                     .roughness = 0.8,
+                    .transmission = 0.0,
+                    .ior = 1.5,
+                    .thickness = 0.0,
                     .texture_index = -1,
                 });
                 try mesh_list.append(self.allocator, .{
@@ -3250,7 +3327,7 @@ pub const Renderer = struct {
         // --- 渐进追踪：每帧只渲染时间预算内的扫描行 ---
         const budget_ns: i128 = 8_000_000; // 8ms
         const start_time = std.time.nanoTimestamp();
-        const trace_pixels = pt.trace_pixels.?;
+        const trace_linear = pt.trace_linear_rgb.?;
         const triangles = pt.triangles.?;
         const meshes = pt.meshes.?;
         const pt_textures = pt.textures orelse &[_]PathTraceTexture{};
@@ -3298,7 +3375,7 @@ pub const Renderer = struct {
                 }
 
                 traced_color = vec3.scale(traced_color, 1.0 / @as(f32, @floatFromInt(pt.cached_samples)));
-                const bgra = linearToBgra8(traced_color);
+                const hdr_rgb = traced_color;
 
                 var fy: u32 = 0;
                 while (fy < pt.sample_step and y + fy < trace_height) : (fy += 1) {
@@ -3306,11 +3383,11 @@ pub const Renderer = struct {
                     while (fx < pt.sample_step and x + fx < trace_width) : (fx += 1) {
                         const out_x = x + fx;
                         const out_y = y + fy;
-                        const pixel_index: usize = (@as(usize, out_y) * @as(usize, trace_width) + @as(usize, out_x)) * 4;
-                        trace_pixels[pixel_index + 0] = bgra[0];
-                        trace_pixels[pixel_index + 1] = bgra[1];
-                        trace_pixels[pixel_index + 2] = bgra[2];
-                        trace_pixels[pixel_index + 3] = bgra[3];
+                        const pixel_index: usize = @as(usize, out_y) * @as(usize, trace_width) + @as(usize, out_x);
+                        const linear_index: usize = pixel_index * 3;
+                        trace_linear[linear_index + 0] = hdr_rgb[0];
+                        trace_linear[linear_index + 1] = hdr_rgb[1];
+                        trace_linear[linear_index + 2] = hdr_rgb[2];
                     }
                 }
             }
@@ -3325,7 +3402,7 @@ pub const Renderer = struct {
             pt.complete = true;
         }
 
-        // --- 上采样 trace_pixels → display_pixels ---
+        // --- 上采样 trace_linear → display_pixels (RGBA16F) ---
         const display_pixels = pt.display_pixels.?;
         var out_y: u32 = 0;
         while (out_y < height) : (out_y += 1) {
@@ -3335,16 +3412,17 @@ pub const Renderer = struct {
             while (out_x < width) : (out_x += 1) {
                 const src_x_u64 = (@as(u64, out_x) * @as(u64, trace_width)) / @as(u64, width);
                 const src_x: u32 = @min(trace_width - 1, @as(u32, @intCast(src_x_u64)));
-                const src_index: usize = (@as(usize, src_y) * @as(usize, trace_width) + @as(usize, src_x)) * 4;
-                const dst_index: usize = (@as(usize, out_y) * @as(usize, width) + @as(usize, out_x)) * 4;
-                display_pixels[dst_index + 0] = trace_pixels[src_index + 0];
-                display_pixels[dst_index + 1] = trace_pixels[src_index + 1];
-                display_pixels[dst_index + 2] = trace_pixels[src_index + 2];
-                display_pixels[dst_index + 3] = trace_pixels[src_index + 3];
+                const src_index: usize = (@as(usize, src_y) * @as(usize, trace_width) + @as(usize, src_x)) * 3;
+                const dst_pixel: usize = @as(usize, out_y) * @as(usize, width) + @as(usize, out_x);
+                writeHdrPixelRgba16f(display_pixels, dst_pixel, .{
+                    trace_linear[src_index + 0],
+                    trace_linear[src_index + 1],
+                    trace_linear[src_index + 2],
+                });
             }
         }
 
-        try uploadLinearBgra8ToHdrTexture(self, target, display_pixels, width, height);
+        try self.rhi.uploadTextureData(target, display_pixels, width, height);
     }
 
     // ==================================================================
@@ -3387,7 +3465,7 @@ pub const Renderer = struct {
             var triangle_list: std.ArrayListUnmanaged(rt_backend.RtTriangle) = .empty;
             defer triangle_list.deinit(self.allocator);
 
-            var texture_list = std.ArrayList(struct { pixels: []const u8, width: u32, height: u32 }).empty;
+            var texture_list = std.ArrayList(struct { pixels: []const u8, width: u32, height: u32, format: rhi_types.TextureFormat }).empty;
             defer texture_list.deinit(self.allocator);
             var texture_index_map = std.AutoHashMap(u32, i32).init(self.allocator);
             defer texture_index_map.deinit();
@@ -3429,6 +3507,7 @@ pub const Renderer = struct {
                             .pixels = tex_res.pixels,
                             .width = tex_res.width,
                             .height = tex_res.height,
+                            .format = tex_res.format,
                         }) catch break :blk_tex @as(i32, -1);
                         texture_index_map.put(tex_key, idx_i32) catch break :blk_tex @as(i32, -1);
                         break :blk_tex idx_i32;
@@ -3660,13 +3739,13 @@ pub const Renderer = struct {
         mrt.last_scene_signature = scene_signature;
 
         // --- 分配缓冲区 ---
-        mrt.trace_pixels = mrt.trace_pixels orelse self.allocator.alloc(u8, @as(usize, trace_width) * trace_height * 4) catch return false;
+        mrt.trace_pixels = mrt.trace_pixels orelse self.allocator.alloc(u8, @as(usize, trace_width) * trace_height * 8) catch return false;
         if (mrt.trace_width != trace_width or mrt.trace_height != trace_height) {
             @memset(mrt.trace_pixels.?, 0);
             mrt.trace_width = trace_width;
             mrt.trace_height = trace_height;
         }
-        mrt.display_pixels = mrt.display_pixels orelse self.allocator.alloc(u8, @as(usize, width) * height * 4) catch return false;
+        mrt.display_pixels = mrt.display_pixels orelse self.allocator.alloc(u8, @as(usize, width) * height * 8) catch return false;
         if (mrt.target_width != width or mrt.target_height != height) {
             @memset(mrt.display_pixels.?, 0);
             mrt.target_width = width;
@@ -3675,7 +3754,7 @@ pub const Renderer = struct {
 
         // 若无变化且已追踪完成，直接上传缓存
         if (!mrt.needs_retrace and mrt.accel_built) {
-            uploadLinearBgra8ToHdrTexture(self, target, mrt.display_pixels.?, width, height) catch return false;
+            self.rhi.uploadTextureData(target, mrt.display_pixels.?, width, height) catch return false;
             return true;
         }
 
@@ -3684,7 +3763,7 @@ pub const Renderer = struct {
             var triangle_list: std.ArrayListUnmanaged(rt_backend.RtTriangle) = .empty;
             defer triangle_list.deinit(self.allocator);
 
-            var texture_list = std.ArrayList(struct { pixels: []const u8, width: u32, height: u32 }).empty;
+            var texture_list = std.ArrayList(struct { pixels: []const u8, width: u32, height: u32, format: rhi_types.TextureFormat }).empty;
             defer texture_list.deinit(self.allocator);
             var texture_index_map = std.AutoHashMap(u32, i32).init(self.allocator);
             defer texture_index_map.deinit();
@@ -3739,6 +3818,9 @@ pub const Renderer = struct {
                         };
                         var metallic = std.math.clamp(item.pbr_factors[0], 0.0, 1.0);
                         var roughness = std.math.clamp(item.pbr_factors[1], 0.04, 1.0);
+                        var transmission = std.math.clamp(1.0 - opacity, 0.0, 0.96);
+                        var ior: f32 = 1.5;
+                        var thickness: f32 = std.math.clamp((1.0 - opacity) * 0.75 + 0.05, 0.01, 2.0);
 
                         if (batch.is_transparent) {
                             albedo = vec3.scale(albedo, opacity);
@@ -3757,12 +3839,18 @@ pub const Renderer = struct {
                                 albedo = vec3.scale(albedo, 0.06);
                                 metallic = 0.0;
                                 roughness = 1.0;
+                                transmission = 0.0;
+                                thickness = 0.0;
                             },
                             .lambert => {
                                 metallic = 0.0;
                                 roughness = @max(roughness, 0.65);
+                                ior = 1.45;
+                                thickness = std.math.clamp(thickness * 0.5, 0.0, 1.0);
                             },
-                            .pbr_metallic_roughness => {},
+                            .pbr_metallic_roughness => {
+                                ior = 1.52;
+                            },
                         }
 
                         const tex_idx: i32 = blk_tex: {
@@ -3778,6 +3866,7 @@ pub const Renderer = struct {
                                 .pixels = tex_res.pixels,
                                 .width = tex_res.width,
                                 .height = tex_res.height,
+                                .format = tex_res.format,
                             }) catch break :blk_tex @as(i32, -1);
                             texture_index_map.put(tex_key, idx_i32) catch break :blk_tex @as(i32, -1);
                             break :blk_tex idx_i32;
@@ -3806,6 +3895,9 @@ pub const Renderer = struct {
                                 .emissive = emissive,
                                 .metallic = metallic,
                                 .roughness = roughness,
+                                .transmission = transmission,
+                                .ior = ior,
+                                .thickness = thickness,
                                 .texture_index = tex_idx,
                             }) catch return false;
                         }
@@ -3826,6 +3918,9 @@ pub const Renderer = struct {
                     .emissive = .{ 0.0, 0.0, 0.0 },
                     .metallic = 0.0,
                     .roughness = 0.8,
+                    .transmission = 0.0,
+                    .ior = 1.5,
+                    .thickness = 0.0,
                 }) catch return false;
                 triangle_list.append(self.allocator, .{
                     .v0 = .{ -5.0, 0.0, -5.0 },
@@ -3838,6 +3933,9 @@ pub const Renderer = struct {
                     .emissive = .{ 0.0, 0.0, 0.0 },
                     .metallic = 0.0,
                     .roughness = 0.8,
+                    .transmission = 0.0,
+                    .ior = 1.5,
+                    .thickness = 0.0,
                 }) catch return false;
             }
 
@@ -3847,6 +3945,7 @@ pub const Renderer = struct {
                     .pixels = environment_texture.pixels,
                     .width = environment_texture.width,
                     .height = environment_texture.height,
+                    .format = environment_texture.format,
                 }) catch return false;
             }
 
@@ -3865,7 +3964,12 @@ pub const Renderer = struct {
                 var offset: u32 = 0;
                 for (texture_list.items, 0..) |tex, ti| {
                     @memcpy(atlas[offset..][0..tex.pixels.len], tex.pixels);
-                    meta[ti] = .{ .offset = offset, .width = tex.width, .height = tex.height };
+                    meta[ti] = .{
+                        .offset = offset,
+                        .width = tex.width,
+                        .height = tex.height,
+                        .format = @intFromEnum(tex.format),
+                    };
                     offset += @intCast(tex.pixels.len);
                 }
                 mrt.texture_atlas = atlas;
@@ -3911,6 +4015,7 @@ pub const Renderer = struct {
             .height = trace_height,
             .samples = samples,
             .bounces = bounces,
+            .output_is_half = 1,
             .environment_texture_index = mrt.environment_texture_index,
         };
 
@@ -3929,16 +4034,13 @@ pub const Renderer = struct {
             var out_x: u32 = 0;
             while (out_x < width) : (out_x += 1) {
                 const src_x: u32 = @min(trace_width - 1, @as(u32, @intCast((@as(u64, out_x) * @as(u64, trace_width)) / @as(u64, width))));
-                const src_idx: usize = (@as(usize, src_y) * @as(usize, trace_width) + @as(usize, src_x)) * 4;
-                const dst_idx: usize = (@as(usize, out_y) * @as(usize, width) + @as(usize, out_x)) * 4;
-                display_pixels[dst_idx + 0] = trace_pixels[src_idx + 0];
-                display_pixels[dst_idx + 1] = trace_pixels[src_idx + 1];
-                display_pixels[dst_idx + 2] = trace_pixels[src_idx + 2];
-                display_pixels[dst_idx + 3] = trace_pixels[src_idx + 3];
+                const src_idx: usize = (@as(usize, src_y) * @as(usize, trace_width) + @as(usize, src_x)) * 8;
+                const dst_idx: usize = (@as(usize, out_y) * @as(usize, width) + @as(usize, out_x)) * 8;
+                @memcpy(display_pixels[dst_idx .. dst_idx + 8], trace_pixels[src_idx .. src_idx + 8]);
             }
         }
 
-        uploadLinearBgra8ToHdrTexture(self, target, display_pixels, width, height) catch return false;
+        self.rhi.uploadTextureData(target, display_pixels, width, height) catch return false;
         return true;
     }
 

@@ -45,7 +45,7 @@ pub const RtTextureMeta = extern struct {
     offset: u32, // 字节偏移 (在打包 BGRA8 像素缓冲中)
     width: u32,
     height: u32,
-    _pad: u32 = 0,
+    format: u32 = 0,
 };
 
 /// 光追三角形 — 与 C 桥接层 GuavaRTTriangle 完全对齐 (extern struct)。
@@ -63,6 +63,9 @@ pub const RtTriangle = extern struct {
     emissive: [3]f32,
     metallic: f32,
     roughness: f32,
+    transmission: f32 = 0.0,
+    ior: f32 = 1.5,
+    thickness: f32 = 0.0,
     texture_index: i32 = -1,
     _tri_pad: u32 = 0,
 };
@@ -83,6 +86,7 @@ pub const RtParams = extern struct {
     mode: u32 = 0,
     /// shadow-only 每像素采样数 (1=硬阴影, 4+=软阴影)
     shadow_samples: u32 = 1,
+    output_is_half: u32 = 0,
     environment_texture_index: i32 = -1,
     _pad2: u32 = 0,
     exposure_params: [4]f32 = .{ 0.0, 1.0, 0.0, 0.0 },
