@@ -83,7 +83,7 @@ enum {
   GUAVA_IMGUI_VIEW_CUBE_DRAGGING = 1 << 10,
 };
 
-bool guava_imgui_init(SDL_Window *window, SDL_GPUDevice *device,
+bool guava_imgui_init(SDL_Window *window, void *metal_bridge_ctx,
                       SDL_GPUTextureFormat color_target_format);
 void guava_imgui_shutdown(void);
 void guava_imgui_process_event(const SDL_Event *event);
@@ -94,9 +94,11 @@ void guava_imgui_load_animation_layout(void);
 void guava_imgui_save_layout(void);
 bool guava_imgui_save_layout_to_path(const char *path, size_t path_len);
 bool guava_imgui_load_layout_from_path(const char *path, size_t path_len);
-void guava_imgui_prepare(SDL_GPUCommandBuffer *command_buffer);
-void guava_imgui_render(SDL_GPUCommandBuffer *command_buffer,
-                        SDL_GPURenderPass *render_pass);
+void guava_imgui_prepare(void);
+void guava_imgui_render(void);
+bool guava_imgui_metal_backend_render(void *command_buffer,
+                                      void *render_encoder,
+                                      void *render_pass_desc);
 bool guava_imgui_want_capture_mouse(void);
 bool guava_imgui_want_capture_keyboard(void);
 bool guava_imgui_want_text_input(void);

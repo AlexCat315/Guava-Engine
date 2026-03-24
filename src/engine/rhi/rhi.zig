@@ -250,6 +250,7 @@ pub const DeviceVTable = struct {
     destroy_sampler: *const fn (ctx: *anyopaque, sampler: Sampler) void,
     upload_buffer_data: *const fn (ctx: *anyopaque, buffer: Buffer, offset: u64, data: []const u8) Error!void,
     upload_texture_data: ?*const fn (ctx: *anyopaque, texture: Texture, data: []const u8, width: u32, height: u32, bytes_per_row: u32) Error!void = null,
+    read_texture_data: ?*const fn (ctx: *anyopaque, texture: Texture, width: u32, height: u32, bytes_per_row: u32, out_data: []u8) Error!void = null,
     register_binding_set: ?*const fn (ctx: *anyopaque, set_id: u32, layout_entries: []const BindingLayoutEntry, set_entries: []const BindingSetEntry) void = null,
 };
 
@@ -430,6 +431,11 @@ pub const Device = struct {
     pub fn uploadTextureData(self: *const Device, texture: Texture, data: []const u8, width: u32, height: u32, bytes_per_row: u32) Error!void {
         const func = self.vtable.upload_texture_data orelse return error.UnsupportedFeature;
         return func(self.ctx, texture, data, width, height, bytes_per_row);
+    }
+
+    pub fn readTextureData(self: *const Device, texture: Texture, width: u32, height: u32, bytes_per_row: u32, out_data: []u8) Error!void {
+        const func = self.vtable.read_texture_data orelse return error.UnsupportedFeature;
+        return func(self.ctx, texture, width, height, bytes_per_row, out_data);
     }
 
     pub fn resolvePipelineLayout(

@@ -3452,19 +3452,31 @@ pub const Renderer = struct {
     ///
     /// Thread-safety: NOT thread-safe. Must be called from render thread.
     pub fn downloadFinalFrameAlloc(self: *Renderer, allocator: std.mem.Allocator) ![]u8 {
-        // TODO (Phase 4): Full rewrite for new RHI readback path.
-        _ = self;
-        _ = allocator;
-        return error.NotImplemented;
+        var pixels = try self.downloadFramePixelsAlloc(allocator);
+        var i: usize = 0;
+        while (i < pixels.data.len) : (i += 4) {
+            const b = pixels.data[i + 0];
+            pixels.data[i + 0] = pixels.data[i + 2];
+            pixels.data[i + 2] = b;
+        }
+        return pixels.data;
     }
 
     /// Download final frame pixels as raw BGRA byte data from the LDR color texture.
     /// Returns allocated byte slice (caller owns memory).
     pub fn downloadFramePixelsAlloc(self: *Renderer, allocator: std.mem.Allocator) !FramePixels {
-        // TODO (Phase 4): Full rewrite for new RHI readback path.
-        _ = self;
-        _ = allocator;
-        return error.NotImplemented;
+        const texture = self.scene_viewport.color_texture orelse return error.TextureNotFound;
+        const width = texture.desc.width;
+        const height = texture.desc.height;
+        const row_bytes = width * 4;
+        const byte_count = row_bytes * height;
+
+        const data = try allocator.alloc(u8, byte_count);
+        errdefer allocator.free(data);
+
+        try self.rhi.readTextureData(&texture, row_bytes, data);
+
+        return .{ .data = data, .width = width, .height = height };
     }
 
     pub const FramePixels = struct {

@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <vector>
 #include "metal_rhi_bridge.h"
+#include "../../ui/imgui_bridge.h"
 
 // ---------------------------------------------------------------------------
 // Metal RHI Bridge — real Metal API implementation
@@ -199,6 +200,7 @@ enum RhiOpCode : uint8_t {
     OP_PUSH_UNIFORM       = 16,
     OP_SET_VIEWPORT       = 17,
     OP_SET_SCISSOR        = 18,
+    OP_IMGUI_DRAW         = 19,
 };
 
 // Packed command structs (must match command_buffer.zig extern struct layout)
@@ -621,6 +623,49 @@ bool guava_metal_rhi_upload_texture_data(void* raw, uint32_t texture_id,
     }
 }
 
+bool guava_metal_rhi_read_texture_data(void* raw, uint32_t texture_id,
+                                                                             uint32_t width, uint32_t height,
+                                                                             uint32_t bytes_per_row,
+                                                                             uint8_t* out_data, uint64_t out_size) {
+        @autoreleasepool {
+                auto* ctx = static_cast<GuavaMetalRhiContext*>(raw);
+                auto it = ctx->textures.find(texture_id);
+                if (it == ctx->textures.end()) return false;
+                if (!out_data) return false;
+
+                const uint64_t needed = (uint64_t)bytes_per_row * (uint64_t)height;
+                if (out_size < needed) return false;
+
+                id<MTLTexture> tex = it->second;
+                id<MTLBuffer> staging = [ctx->device newBufferWithLength:(NSUInteger)needed
+                                                                                                                    options:MTLResourceStorageModeShared];
+                if (!staging) return false;
+
+                id<MTLCommandBuffer> cmdBuf = [ctx->graphics_queue commandBuffer];
+                id<MTLBlitCommandEncoder> blit = [cmdBuf blitCommandEncoder];
+                [blit copyFromTexture:tex
+                                    sourceSlice:0
+                                    sourceLevel:0
+                                 sourceOrigin:MTLOriginMake(0, 0, 0)
+                                     sourceSize:MTLSizeMake(width, height, 1)
+                                         toBuffer:staging
+                        destinationOffset:0
+             destinationBytesPerRow:bytes_per_row
+         destinationBytesPerImage:(NSUInteger)needed];
+                [blit endEncoding];
+                [cmdBuf commit];
+                [cmdBuf waitUntilCompleted];
+
+                memcpy(out_data, [staging contents], (size_t)needed);
+                return true;
+        }
+}
+
+void* guava_metal_rhi_get_mtl_device(void* raw) {
+        auto* ctx = static_cast<GuavaMetalRhiContext*>(raw);
+        return (__bridge void*)ctx->device;
+}
+
 // ---------------------------------------------------------------------------
 // Binding set registration
 // ---------------------------------------------------------------------------
@@ -783,6 +828,7 @@ bool guava_metal_rhi_submit(void* raw, uint32_t queue_class,
 
         id<MTLRenderCommandEncoder>  renderEnc  = nil;
         id<MTLComputeCommandEncoder> computeEnc = nil;
+        MTLRenderPassDescriptor* current_rpd = nil;
 
         // Remembered index buffer state for draw_indexed
         id<MTLBuffer> current_index_buffer = nil;
@@ -826,6 +872,7 @@ bool guava_metal_rhi_submit(void* raw, uint32_t queue_class,
                 }
 
                 renderEnc = [mtlCmd renderCommandEncoderWithDescriptor:rpd];
+                current_rpd = rpd;
                 break;
             }
             case OP_END_RENDER_PASS: {
@@ -833,6 +880,7 @@ bool guava_metal_rhi_submit(void* raw, uint32_t queue_class,
                     [renderEnc endEncoding];
                     renderEnc = nil;
                 }
+                current_rpd = nil;
                 current_index_buffer = nil;
                 break;
             }
@@ -1009,6 +1057,16 @@ bool guava_metal_rhi_submit(void* raw, uint32_t queue_class,
                 if (renderEnc) {
                     MTLScissorRect sr = { cmd.x, cmd.y, cmd.w, cmd.h };
                     [renderEnc setScissorRect:sr];
+                }
+                break;
+            }
+            case OP_IMGUI_DRAW: {
+                if (renderEnc && current_rpd) {
+                    (void)guava_imgui_metal_backend_render(
+                        (__bridge void*)mtlCmd,
+                        (__bridge void*)renderEnc,
+                        (__bridge void*)current_rpd
+                    );
                 }
                 break;
             }

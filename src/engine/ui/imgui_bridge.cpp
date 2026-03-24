@@ -7,9 +7,11 @@
 #include <string>
 
 #include "backends/imgui_impl_sdl3.h"
-#include "backends/imgui_impl_sdlgpu3.h"
 #include "imgui.h"
 #include "imgui_internal.h"
+
+extern "C" bool guava_imgui_metal_backend_init(void *metal_bridge_ctx);
+extern "C" void guava_imgui_metal_backend_shutdown(void);
 
 namespace {
 
@@ -593,7 +595,7 @@ void draw_window_control_icon(ImDrawList *draw_list, ImRect rect, uint32_t kind,
 
 } // namespace
 
-extern "C" bool guava_imgui_init(SDL_Window *window, SDL_GPUDevice *device,
+extern "C" bool guava_imgui_init(SDL_Window *window, void *metal_bridge_ctx,
                                  SDL_GPUTextureFormat color_target_format) {
   if (g_imgui_initialized) {
     return true;
@@ -622,19 +624,12 @@ extern "C" bool guava_imgui_init(SDL_Window *window, SDL_GPUDevice *device,
 
   apply_guava_editor_style(main_scale);
 
-  if (!ImGui_ImplSDL3_InitForSDLGPU(window)) {
+  if (!ImGui_ImplSDL3_InitForMetal(window)) {
     ImGui::DestroyContext();
     return false;
   }
 
-  ImGui_ImplSDLGPU3_InitInfo init_info = {};
-  init_info.Device = device;
-  init_info.ColorTargetFormat = color_target_format;
-  init_info.MSAASamples = SDL_GPU_SAMPLECOUNT_1;
-  init_info.SwapchainComposition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
-  init_info.PresentMode = SDL_GPU_PRESENTMODE_VSYNC;
-
-  if (!ImGui_ImplSDLGPU3_Init(&init_info)) {
+  if (!guava_imgui_metal_backend_init(metal_bridge_ctx)) {
     ImGui_ImplSDL3_Shutdown();
     ImGui::DestroyContext();
     return false;
@@ -649,7 +644,7 @@ extern "C" void guava_imgui_shutdown(void) {
     return;
   }
 
-  ImGui_ImplSDLGPU3_Shutdown();
+  guava_imgui_metal_backend_shutdown();
   ImGui_ImplSDL3_Shutdown();
   ImGui::DestroyContext();
   g_draw_data = nullptr;
@@ -668,7 +663,6 @@ extern "C" void guava_imgui_new_frame(void) {
   if (!g_imgui_initialized) {
     return;
   }
-  ImGui_ImplSDLGPU3_NewFrame();
   ImGui_ImplSDL3_NewFrame();
   ImGui::NewFrame();
 }
@@ -759,7 +753,7 @@ extern "C" bool guava_imgui_load_layout_from_path(const char *path,
   return true;
 }
 
-extern "C" void guava_imgui_prepare(SDL_GPUCommandBuffer *command_buffer) {
+extern "C" void guava_imgui_prepare(void) {
   if (!g_imgui_initialized) {
     return;
   }
@@ -771,19 +765,14 @@ extern "C" void guava_imgui_prepare(SDL_GPUCommandBuffer *command_buffer) {
       g_draw_data->DisplaySize.y <= 0.0f) {
     return;
   }
-
-  ImGui_ImplSDLGPU3_PrepareDrawData(g_draw_data, command_buffer);
 }
 
-extern "C" void guava_imgui_render(SDL_GPUCommandBuffer *command_buffer,
-                                   SDL_GPURenderPass *render_pass) {
+extern "C" void guava_imgui_render(void) {
   if (!g_imgui_initialized || g_draw_data == nullptr ||
       g_draw_data->DisplaySize.x <= 0.0f ||
       g_draw_data->DisplaySize.y <= 0.0f) {
     return;
   }
-
-  ImGui_ImplSDLGPU3_RenderDrawData(g_draw_data, command_buffer, render_pass);
 }
 
 extern "C" bool guava_imgui_want_capture_mouse(void) {

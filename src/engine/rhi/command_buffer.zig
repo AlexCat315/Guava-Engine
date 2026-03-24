@@ -26,6 +26,7 @@ pub const OpCode = enum(u8) {
     push_uniform,
     set_viewport,
     set_scissor,
+    imgui_draw,
 };
 
 pub const BeginRenderPassCmd = extern struct {
@@ -148,6 +149,7 @@ pub const DecodedCommand = union(OpCode) {
     push_uniform: PushUniformCmd,
     set_viewport: SetViewportCmd,
     set_scissor: SetScissorCmd,
+    imgui_draw: void,
 };
 
 pub const CommandBuffer = struct {
@@ -264,6 +266,10 @@ pub const CommandBuffer = struct {
         try self.writeStruct(SetScissorCmd, cmd);
     }
 
+    pub fn encodeImguiDraw(self: *CommandBuffer) Error!void {
+        try self.writeOp(.imgui_draw);
+    }
+
     pub fn decoder(self: *const CommandBuffer) Decoder {
         return Decoder.init(self.opcodes.items);
     }
@@ -325,6 +331,7 @@ pub const Decoder = struct {
             },
             .set_viewport => .{ .set_viewport = try self.readStruct(SetViewportCmd) },
             .set_scissor => .{ .set_scissor = try self.readStruct(SetScissorCmd) },
+            .imgui_draw => .{ .imgui_draw = {} },
         };
     }
 

@@ -116,6 +116,17 @@ void guava_metal_rhi_destroy_compute_pipeline(void* ctx, uint32_t id);
 bool guava_metal_rhi_upload_buffer_data(void* ctx, uint32_t buffer_id,
                                         uint64_t offset,
                                         const uint8_t* data, uint64_t size);
+bool guava_metal_rhi_upload_texture_data(void* ctx, uint32_t texture_id,
+                                         const uint8_t* data, uint64_t size,
+                                         uint32_t width, uint32_t height,
+                                         uint32_t bytes_per_row);
+bool guava_metal_rhi_read_texture_data(void* ctx, uint32_t texture_id,
+                                       uint32_t width, uint32_t height,
+                                       uint32_t bytes_per_row,
+                                       uint8_t* out_data, uint64_t out_size);
+
+// Returns id<MTLDevice> as opaque pointer.
+void* guava_metal_rhi_get_mtl_device(void* ctx);
 
 // ── Binding set registration ──────────────────────────────────────────────
 void guava_metal_rhi_register_binding_set(void* ctx, uint32_t set_id,

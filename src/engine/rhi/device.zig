@@ -827,6 +827,12 @@ pub const RhiDevice = struct {
         try self.device.uploadTextureData(.{ .id = texture.id }, data, width, height, pixels_per_row);
     }
 
+    pub fn readTextureData(self: *RhiDevice, texture: *const Texture, bytes_per_row: u32, destination: []u8) Error!void {
+        const width = texture.desc.width;
+        const height = texture.desc.height;
+        try self.device.readTextureData(.{ .id = texture.id }, width, height, bytes_per_row, destination);
+    }
+
     pub fn downloadTexturePixel(_: *RhiDevice, pass: CopyPass, texture: *const Texture, transfer_buffer: *const TransferBuffer, x: u32, y: u32) void {
         _ = pass;
         _ = texture;
@@ -860,11 +866,21 @@ pub const RhiDevice = struct {
     }
 
     pub fn readTexturePixel(self: *RhiDevice, texture: *const Texture, x: u32, y: u32) Error![4]u8 {
-        _ = self;
-        _ = texture;
-        _ = x;
-        _ = y;
-        return error.TransferBufferMapFailed;
+        var all: [4]u8 = .{ 0, 0, 0, 0 };
+        if (x >= texture.desc.width or y >= texture.desc.height) return error.InvalidArgument;
+
+        const row_bytes = texture.desc.width * 4;
+        const needed = row_bytes * texture.desc.height;
+        const temp = try self.allocator.alloc(u8, needed);
+        defer self.allocator.free(temp);
+
+        try self.readTextureData(texture, row_bytes, temp);
+        const off = (y * row_bytes) + (x * 4);
+        all[0] = temp[off + 0];
+        all[1] = temp[off + 1];
+        all[2] = temp[off + 2];
+        all[3] = temp[off + 3];
+        return all;
     }
 
     pub fn isFenceSignaled(self: *RhiDevice, fence: *const Fence) bool {

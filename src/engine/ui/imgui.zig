@@ -5,6 +5,7 @@ const sdl = @import("../platform/sdl.zig").c;
 const window_mod = @import("../platform/window.zig");
 const command_buffer_mod = @import("../rhi/command_buffer.zig");
 const device_mod = @import("../rhi/device.zig");
+const metal_device_mod = @import("../rhi/metal/metal_device.zig");
 
 pub const c = @cImport({
     @cInclude("imgui_bridge.h");
@@ -135,9 +136,10 @@ pub const WindowFlags = struct {
 };
 
 pub fn init(window: *window_mod.Window, device: *rhi_mod.RhiDevice) Error!void {
+    const metal_dev: *metal_device_mod.MetalDevice = @ptrCast(@alignCast(device.device.ctx));
     if (!c.guava_imgui_init(
         @ptrCast(window.handle),
-        @ptrCast(device.device),
+        metal_dev.bridge_ctx,
         textureFormatToSdl(device.runtimeInfo().swapchain_format),
     )) {
         return error.ImGuiInitFailed;
@@ -187,14 +189,14 @@ pub fn editorPrefPathAlloc(allocator: std.mem.Allocator) (error{PreferencePathUn
 }
 
 pub fn render(cmd_buffer: *const command_buffer_mod.CommandBuffer, render_pass: *const device_mod.RenderPass) void {
-    // TODO (Phase 4): Implement imgui drawing with new CommandBuffer encoding
-    _ = cmd_buffer;
     _ = render_pass;
+    const cmd_mut = @constCast(cmd_buffer);
+    cmd_mut.encodeImguiDraw() catch {};
 }
 
 pub fn prepare(cmd_buffer: *const command_buffer_mod.CommandBuffer) void {
-    // TODO (Phase 4): Implement imgui rendering with new CommandBuffer system
     _ = cmd_buffer;
+    c.guava_imgui_prepare();
 }
 
 pub fn wantsCaptureMouse() bool {
