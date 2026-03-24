@@ -744,9 +744,18 @@ static void applyBindingSetRender(GuavaMetalRhiContext* ctx,
     if (it == ctx->binding_sets.end()) return;
 
     for (auto& e : it->second.entries) {
-        // Slots coming from the Zig RHI path are already absolute Metal indices.
-        // Applying an extra set-based offset double-shifts bindings and breaks sampling.
+        // Zig RHI interleaves texture (even slots) and sampler (odd slots) in
+        // createBindGroup.  Metal has independent index spaces for textures,
+        // samplers, and buffers.  spirv-cross --msl maps GLSL binding N to
+        // texture(N) and sampler(N).  So we remap: for textures/samplers
+        // created via createBindGroup (interleaved), Metal index = slot / 2.
+        // Buffers and storage resources use the slot directly.
         uint32_t mtl_index = e.slot;
+        // For texture/sampler created via createBindGroup's interleaved scheme,
+        // remap to the correct Metal index (slot/2).
+        if (e.resource_type <= 2) { // sampler(0), texture(1), storage_texture(2)
+            mtl_index = e.slot / 2;
+        }
 
         switch (e.resource_type) {
             case 3: { // uniform_buffer
@@ -809,9 +818,10 @@ static void applyBindingSetCompute(GuavaMetalRhiContext* ctx,
     if (it == ctx->binding_sets.end()) return;
 
     for (auto& e : it->second.entries) {
-        // Slots coming from the Zig RHI path are already absolute Metal indices.
-        // Applying an extra set-based offset double-shifts bindings and breaks sampling.
         uint32_t mtl_index = e.slot;
+        if (e.resource_type <= 2) {
+            mtl_index = e.slot / 2;
+        }
 
         switch (e.resource_type) {
             case 3: case 4: { // uniform/storage buffer

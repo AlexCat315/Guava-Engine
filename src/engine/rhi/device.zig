@@ -913,6 +913,10 @@ pub const RhiDevice = struct {
         defer set_entries.deinit(self.allocator);
 
         for (desc.texture_sampler_bindings, 0..) |binding, i| {
+            // Interleave texture/sampler at consecutive slots for layout validation.
+            // Metal apply-side remaps: texture slot N → Metal texture index N/2,
+            // sampler slot N → Metal sampler index N/2, since Metal has independent
+            // index spaces and spirv-cross maps GLSL binding K to texture(K)+sampler(K).
             const base_slot = desc.slot_offset + @as(u32, @intCast(i * 2));
             const tex_slot = base_slot;
             const samp_slot = base_slot + 1;
