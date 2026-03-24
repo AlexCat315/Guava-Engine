@@ -102,6 +102,8 @@ pub const SamplerDesc = struct {
     address_mode_u: rhi_types.SamplerAddressMode = .repeat,
     address_mode_v: rhi_types.SamplerAddressMode = .repeat,
     address_mode_w: rhi_types.SamplerAddressMode = .repeat,
+    enable_compare: bool = false,
+    compare_op: rhi_types.CompareOp = .always,
 };
 
 pub const ShaderModuleDesc = struct {

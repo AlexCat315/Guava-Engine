@@ -825,6 +825,8 @@ pub const RhiDevice = struct {
             .address_mode_u = desc.address_mode_u,
             .address_mode_v = desc.address_mode_v,
             .address_mode_w = desc.address_mode_w,
+            .enable_compare = desc.enable_compare,
+            .compare_op = desc.compare_op,
         };
         const sampler = try self.device.createSampler(rhi_desc);
         return .{

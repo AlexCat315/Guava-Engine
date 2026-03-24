@@ -67,6 +67,8 @@ pub const MetalDevice = struct {
         address_u: u32,
         address_v: u32,
         address_w: u32,
+        enable_compare: u32,
+        compare_op: u32,
     };
 
     const GfxPipelineDescC = extern struct {
@@ -450,6 +452,8 @@ fn vtCreateSampler(ctx: *anyopaque, desc: rhi.SamplerDesc) rhi.Error!rhi.Sampler
         .address_u = @intFromEnum(desc.address_mode_u),
         .address_v = @intFromEnum(desc.address_mode_v),
         .address_w = @intFromEnum(desc.address_mode_w),
+        .enable_compare = if (desc.enable_compare) 1 else 0,
+        .compare_op = @intFromEnum(desc.compare_op),
     };
     const id = MetalDevice.bridge.guava_metal_rhi_create_sampler(self.bridge_ctx, &c_desc);
     if (id == 0) return error.OutOfMemory;

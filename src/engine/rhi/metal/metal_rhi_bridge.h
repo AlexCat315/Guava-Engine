@@ -38,6 +38,8 @@ typedef struct {
     uint32_t address_u;     // 0=repeat, 1=mirrored_repeat, 2=clamp_to_edge
     uint32_t address_v;
     uint32_t address_w;
+    uint32_t enable_compare; // 0=disabled, 1=enabled (for shadow samplers)
+    uint32_t compare_op;     // CompareOp ordinal (0=never..7=always)
 } GuavaMetalSamplerDesc;
 
 // ── Vertex layout descriptors for pipeline creation ───────────────────────

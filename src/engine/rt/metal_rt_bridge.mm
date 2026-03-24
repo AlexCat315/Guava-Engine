@@ -119,8 +119,9 @@ static bool refract_vec(float3 incident, float3 normal, float eta, thread float3
 
 constant uint TEXFMT_BGRA8_UNORM = 3u;
 constant uint TEXFMT_BGRA8_UNORM_SRGB = 4u;
-constant uint TEXFMT_RGBA16_FLOAT = 5u;
-constant uint TEXFMT_RGBA32_FLOAT = 6u;
+constant uint TEXFMT_RGBA8_UNORM_SRGB = 5u;
+constant uint TEXFMT_RGBA16_FLOAT = 6u;
+constant uint TEXFMT_RGBA32_FLOAT = 7u;
 
 static float3 read_texel_texture_atlas(
     device const uchar* atlas,

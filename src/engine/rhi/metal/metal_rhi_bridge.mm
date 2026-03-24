@@ -380,6 +380,10 @@ uint32_t guava_metal_rhi_create_sampler(void* raw,
         sd.tAddressMode = mapAddressMode(desc->address_v);
         sd.rAddressMode = mapAddressMode(desc->address_w);
 
+        if (desc->enable_compare) {
+            sd.compareFunction = mapCompareOp(desc->compare_op);
+        }
+
         id<MTLSamplerState> sampler = [ctx->device newSamplerStateWithDescriptor:sd];
         if (!sampler) return 0;
 
