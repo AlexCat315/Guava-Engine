@@ -1057,14 +1057,35 @@ bool guava_metal_rhi_submit(void* raw, uint32_t queue_class,
                 const uint8_t* data = dec.peek(hdr.data_len);
                 if (!data) { return false; }
                 dec.skip(hdr.data_len);
+                // Metal setVertexBytes/setFragmentBytes has a 4096-byte limit.
+                // For larger data, fall back to a temporary buffer.
+                static const NSUInteger kMaxInlineBytes = 4096;
                 if (renderEnc) {
-                    if (hdr.stage == 0) { // vertex
-                        [renderEnc setVertexBytes:data length:hdr.data_len atIndex:hdr.slot];
-                    } else if (hdr.stage == 1) { // fragment
-                        [renderEnc setFragmentBytes:data length:hdr.data_len atIndex:hdr.slot];
+                    if (hdr.data_len <= kMaxInlineBytes) {
+                        if (hdr.stage == 0) {
+                            [renderEnc setVertexBytes:data length:hdr.data_len atIndex:hdr.slot];
+                        } else if (hdr.stage == 1) {
+                            [renderEnc setFragmentBytes:data length:hdr.data_len atIndex:hdr.slot];
+                        }
+                    } else {
+                        id<MTLBuffer> tmpBuf = [ctx->device newBufferWithBytes:data
+                                                                       length:hdr.data_len
+                                                                      options:MTLResourceStorageModeShared];
+                        if (hdr.stage == 0) {
+                            [renderEnc setVertexBuffer:tmpBuf offset:0 atIndex:hdr.slot];
+                        } else if (hdr.stage == 1) {
+                            [renderEnc setFragmentBuffer:tmpBuf offset:0 atIndex:hdr.slot];
+                        }
                     }
                 } else if (computeEnc) {
-                    [computeEnc setBytes:data length:hdr.data_len atIndex:hdr.slot];
+                    if (hdr.data_len <= kMaxInlineBytes) {
+                        [computeEnc setBytes:data length:hdr.data_len atIndex:hdr.slot];
+                    } else {
+                        id<MTLBuffer> tmpBuf = [ctx->device newBufferWithBytes:data
+                                                                       length:hdr.data_len
+                                                                      options:MTLResourceStorageModeShared];
+                        [computeEnc setBuffer:tmpBuf offset:0 atIndex:hdr.slot];
+                    }
                 }
                 break;
             }
