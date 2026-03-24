@@ -5,7 +5,6 @@
 #include <stdint.h>
 
 #include <SDL3/SDL.h>
-#include <SDL3/SDL_gpu.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -84,7 +83,7 @@ enum {
 };
 
 bool guava_imgui_init(SDL_Window *window, void *metal_bridge_ctx,
-                      SDL_GPUTextureFormat color_target_format);
+                      uint32_t color_target_format);
 void guava_imgui_shutdown(void);
 void guava_imgui_process_event(const SDL_Event *event);
 void guava_imgui_new_frame(void);
@@ -149,7 +148,7 @@ bool guava_imgui_button(const char *label, size_t label_len);
 bool guava_imgui_button_ex(const char *label, size_t label_len, float width,
                            float height);
 bool guava_imgui_image_button(const char *id, size_t id_len,
-                              SDL_GPUTexture *texture, float width,
+                              void *texture, float width,
                               float height, float bg_r, float bg_g, float bg_b,
                               float bg_a, float tint_r, float tint_g,
                               float tint_b, float tint_a);
@@ -195,7 +194,7 @@ void guava_imgui_push_id_u64(uint64_t value);
 void guava_imgui_pop_id(void);
 uint32_t guava_imgui_tree_node_entity(uint64_t id, const char *label,
                                       size_t label_len,
-                                      SDL_GPUTexture *icon_texture,
+                                      void *icon_texture,
                                       float icon_size, bool selected, bool leaf,
                                       bool default_open, char *rename_buffer,
                                       size_t rename_buffer_size,
@@ -245,7 +244,7 @@ float guava_imgui_get_frame_height(void);
 float guava_imgui_get_time(void);
 void guava_imgui_set_scroll_here_y(float center_y_ratio);
 void guava_imgui_set_tooltip(const char *text, size_t text_len);
-void guava_imgui_image(SDL_GPUTexture *texture, float width, float height);
+void guava_imgui_image(void *texture, float width, float height);
 uint32_t guava_imgui_draw_view_cube(const float view[16], float x, float y,
                                     float size, float out_drag_delta[2]);
 

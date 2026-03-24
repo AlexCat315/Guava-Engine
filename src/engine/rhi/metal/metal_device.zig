@@ -35,6 +35,7 @@ pub const MetalDevice = struct {
         extern fn guava_metal_rhi_upload_buffer_data(ctx: *anyopaque, buffer_id: u32, offset: u64, data: [*]const u8, size: u64) bool;
         extern fn guava_metal_rhi_upload_texture_data(ctx: *anyopaque, texture_id: u32, data: [*]const u8, size: u64, width: u32, height: u32, bytes_per_row: u32) bool;
         extern fn guava_metal_rhi_read_texture_data(ctx: *anyopaque, texture_id: u32, width: u32, height: u32, bytes_per_row: u32, out_data: [*]u8, out_size: u64) bool;
+        extern fn guava_metal_rhi_get_texture_handle(ctx: *anyopaque, texture_id: u32) ?*anyopaque;
         // Binding set registration
         extern fn guava_metal_rhi_register_binding_set(ctx: *anyopaque, set_id: u32, entries: [*]const BindingEntryC, count: u32) void;
         // Command submission
@@ -140,6 +141,10 @@ pub const MetalDevice = struct {
     pub fn getDeviceName(self: *const MetalDevice) []const u8 {
         const name = bridge.guava_metal_rhi_get_device_name(self.bridge_ctx) orelse return "Unknown Metal Device";
         return std.mem.sliceTo(name, 0);
+    }
+
+    pub fn getTextureHandle(self: *const MetalDevice, texture_id: u32) ?*anyopaque {
+        return bridge.guava_metal_rhi_get_texture_handle(self.bridge_ctx, texture_id);
     }
 
     /// Configure the CAMetalLayer for swapchain rendering.

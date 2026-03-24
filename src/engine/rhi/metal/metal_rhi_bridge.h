@@ -127,6 +127,8 @@ bool guava_metal_rhi_read_texture_data(void* ctx, uint32_t texture_id,
 
 // Returns id<MTLDevice> as opaque pointer.
 void* guava_metal_rhi_get_mtl_device(void* ctx);
+// Returns id<MTLTexture> as opaque pointer for a texture ID.
+void* guava_metal_rhi_get_texture_handle(void* ctx, uint32_t texture_id);
 
 // ── Binding set registration ──────────────────────────────────────────────
 void guava_metal_rhi_register_binding_set(void* ctx, uint32_t set_id,

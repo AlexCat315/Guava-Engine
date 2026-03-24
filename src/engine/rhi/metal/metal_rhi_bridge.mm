@@ -666,6 +666,15 @@ void* guava_metal_rhi_get_mtl_device(void* raw) {
         return (__bridge void*)ctx->device;
 }
 
+void* guava_metal_rhi_get_texture_handle(void* raw, uint32_t texture_id) {
+    auto* ctx = static_cast<GuavaMetalRhiContext*>(raw);
+    auto it = ctx->textures.find(texture_id);
+    if (it == ctx->textures.end()) {
+        return nullptr;
+    }
+    return (__bridge void*)it->second;
+}
+
 // ---------------------------------------------------------------------------
 // Binding set registration
 // ---------------------------------------------------------------------------

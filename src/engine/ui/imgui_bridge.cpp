@@ -596,7 +596,8 @@ void draw_window_control_icon(ImDrawList *draw_list, ImRect rect, uint32_t kind,
 } // namespace
 
 extern "C" bool guava_imgui_init(SDL_Window *window, void *metal_bridge_ctx,
-                                 SDL_GPUTextureFormat color_target_format) {
+                                 uint32_t color_target_format) {
+  (void)color_target_format;
   if (g_imgui_initialized) {
     return true;
   }
@@ -1078,7 +1079,7 @@ extern "C" bool guava_imgui_button_ex(const char *label, size_t label_len,
 }
 
 extern "C" bool guava_imgui_image_button(const char *id, size_t id_len,
-                                         SDL_GPUTexture *texture, float width,
+                                         void *texture, float width,
                                          float height, float bg_r, float bg_g,
                                          float bg_b, float bg_a, float tint_r,
                                          float tint_g, float tint_b,
@@ -1437,7 +1438,7 @@ extern "C" void guava_imgui_pop_id(void) {
 
 extern "C" uint32_t
 guava_imgui_tree_node_entity(uint64_t id, const char *label, size_t label_len,
-                             SDL_GPUTexture *icon_texture, float icon_size,
+                             void *icon_texture, float icon_size,
                              bool selected, bool leaf, bool default_open,
                              char *rename_buffer, size_t rename_buffer_size,
                              bool request_rename_focus) {
@@ -1824,7 +1825,7 @@ extern "C" void guava_imgui_set_scroll_here_y(float center_y_ratio) {
   ImGui::SetScrollHereY(center_y_ratio);
 }
 
-extern "C" void guava_imgui_image(SDL_GPUTexture *texture, float width,
+extern "C" void guava_imgui_image(void *texture, float width,
                                   float height) {
   if (!g_imgui_initialized || texture == nullptr) {
     return;

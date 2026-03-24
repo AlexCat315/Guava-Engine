@@ -4,9 +4,12 @@ const std = @import("std");
 const builtin = @import("builtin");
 const platform_mod = @import("../core/platform.zig");
 const window_mod = @import("../platform/window.zig");
+const sdl = @import("../platform/sdl.zig").c;
 const types = @import("types.zig");
 const rhi = @import("rhi.zig");
 const command_buffer = @import("command_buffer.zig");
+const metal_device_mod = @import("metal/metal_device.zig");
+const metal_backend_mod = @import("metal/metal_backend.zig");
 
 // Combined error set that includes both old and new RHI errors
 pub const Error = error{
@@ -179,6 +182,8 @@ pub const BindGroup = struct {
     storage_buffer_ids: []const u32,
     storage_texture_ids: []const u32,
     slot_offset: u32 = 0,
+    layout: ?rhi.BindingLayout = null,
+    set: ?rhi.BindingSet = null,
 };
 
 // NEW: Frame now holds swapchain_image ID instead of SDL command buffer
@@ -267,6 +272,12 @@ pub const RhiDevice = struct {
     bind_state: BindGroupState = .{},
     // Current frame state
     current_frame: ?Frame = null,
+    default_binding_layout: ?rhi.BindingLayout = null,
+    default_pipeline_layout: ?rhi.PipelineLayout = null,
+    owned_device: bool = false,
+    owned_metal_device: ?*metal_device_mod.MetalDevice = null,
+    owned_mock_backend: ?*metal_backend_mod.MetalBackend = null,
+    sdl_metal_view: sdl.SDL_MetalView = null,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -274,14 +285,79 @@ pub const RhiDevice = struct {
         window: *window_mod.Window,
         config: types.DeviceConfig,
     ) Error!RhiDevice {
-        _ = allocator;
         _ = platform;
-        _ = config;
-        _ = window;
+        if (builtin.os.tag == .macos) {
+            const md_ptr = allocator.create(metal_device_mod.MetalDevice) catch return error.OutOfMemory;
+            errdefer allocator.destroy(md_ptr);
 
-        // NOTE: New RHI device initialization happens in renderer.zig
-        // For now, return error - caller must provide initialized device
-        return error.DeviceCreateFailed;
+            const md = metal_device_mod.MetalDevice.init(allocator) orelse return error.DeviceCreateFailed;
+            md_ptr.* = md;
+            errdefer md_ptr.deinit();
+
+            var metal_view: sdl.SDL_MetalView = null;
+            metal_view = sdl.SDL_Metal_CreateView(window.handle);
+            if (metal_view) |view| {
+                if (sdl.SDL_Metal_GetLayer(view)) |layer| {
+                    md_ptr.setLayer(layer);
+                }
+            }
+
+            const dev_ptr = allocator.create(rhi.Device) catch return error.OutOfMemory;
+            errdefer allocator.destroy(dev_ptr);
+            dev_ptr.* = md_ptr.createDevice();
+
+            var out = RhiDevice{
+                .allocator = allocator,
+                .device = dev_ptr,
+                .api = .metal,
+                .runtime_info = .{
+                    .backend = .metal,
+                    .drawable_width = window.drawable_width,
+                    .drawable_height = window.drawable_height,
+                    .swapchain_format = .bgra8_unorm,
+                    .depth_format = .d32_float,
+                    .has_depth = true,
+                },
+                .owned_device = true,
+                .owned_metal_device = md_ptr,
+                .sdl_metal_view = metal_view,
+            };
+            out.setFramesInFlight(config.frames_in_flight);
+            copyCStringSlice(out.runtime_info.device_name[0..], md_ptr.getDeviceName());
+            copyCStringSlice(out.runtime_info.driver_name[0..], "Metal");
+            copyCStringSlice(out.runtime_info.driver_info[0..], "Guava Metal RHI");
+            return out;
+        }
+
+        const backend_ptr = allocator.create(metal_backend_mod.MetalBackend) catch return error.OutOfMemory;
+        errdefer allocator.destroy(backend_ptr);
+        backend_ptr.* = metal_backend_mod.MetalBackend.init(allocator);
+        errdefer backend_ptr.deinit();
+
+        const dev_ptr = allocator.create(rhi.Device) catch return error.OutOfMemory;
+        errdefer allocator.destroy(dev_ptr);
+        dev_ptr.* = backend_ptr.createDevice();
+
+        var out = RhiDevice{
+            .allocator = allocator,
+            .device = dev_ptr,
+            .api = .metal,
+            .runtime_info = .{
+                .backend = .metal,
+                .drawable_width = window.drawable_width,
+                .drawable_height = window.drawable_height,
+                .swapchain_format = .bgra8_unorm,
+                .depth_format = .d32_float,
+                .has_depth = true,
+            },
+            .owned_device = true,
+            .owned_mock_backend = backend_ptr,
+        };
+        out.setFramesInFlight(config.frames_in_flight);
+        copyCStringSlice(out.runtime_info.device_name[0..], "Mock Metal Device");
+        copyCStringSlice(out.runtime_info.driver_name[0..], "Mock");
+        copyCStringSlice(out.runtime_info.driver_info[0..], "Guava Mock RHI");
+        return out;
     }
 
     pub fn initWithDevice(
@@ -291,11 +367,28 @@ pub const RhiDevice = struct {
         return .{
             .allocator = allocator,
             .device = device,
+            .owned_device = false,
         };
     }
 
     pub fn deinit(self: *RhiDevice) void {
         self.releaseAllDepthTextures();
+        if (self.owned_device) {
+            self.device.deinit();
+            self.allocator.destroy(self.device);
+
+            if (self.owned_metal_device) |md| {
+                md.deinit();
+                self.allocator.destroy(md);
+            }
+            if (self.sdl_metal_view != null) {
+                sdl.SDL_Metal_DestroyView(self.sdl_metal_view);
+            }
+            if (self.owned_mock_backend) |mb| {
+                mb.deinit();
+                self.allocator.destroy(mb);
+            }
+        }
         self.* = undefined;
     }
 
@@ -426,36 +519,61 @@ pub const RhiDevice = struct {
         const swapchain_image = try self.device.acquireSwapchainImage();
         const cmd = try self.device.createCommandBuffer(self.allocator);
         try self.resize(swapchain_image.width, swapchain_image.height);
-        return .{
+        const frame: Frame = .{
             .swapchain_image = swapchain_image,
             .command_buffer = cmd,
         };
+        self.current_frame = frame;
+        return frame;
     }
 
     pub fn cancelFrame(self: *RhiDevice, frame: Frame) Error!void {
-        _ = self;
-        var cmd_mut = frame.command_buffer;
+        const active = self.current_frame orelse frame;
+        if (!commandBuffersShareStorage(active.command_buffer, frame.command_buffer)) {
+            var frame_cmd = frame.command_buffer;
+            frame_cmd.deinit();
+        }
+        var cmd_mut = active.command_buffer;
         cmd_mut.deinit();
+        self.current_frame = null;
     }
 
     pub fn submitFrame(self: *RhiDevice, frame: Frame) Error!void {
-        try self.device.submitCommandBuffer(.graphics, &frame.command_buffer, .{});
-        const swapchain_image = frame.swapchain_image;
+        var active = self.current_frame orelse frame;
+        if (!commandBuffersShareStorage(active.command_buffer, frame.command_buffer) and frame.command_buffer.rawBytes().len > 0) {
+            active.command_buffer.opcodes.appendSlice(self.allocator, frame.command_buffer.rawBytes()) catch return error.OutOfMemory;
+        }
+        try self.device.submitCommandBuffer(.graphics, &active.command_buffer, .{});
+        const swapchain_image = active.swapchain_image;
         try self.device.present(swapchain_image);
-        var cmd_mut = frame.command_buffer;
+        if (!commandBuffersShareStorage(active.command_buffer, frame.command_buffer)) {
+            var frame_cmd = frame.command_buffer;
+            frame_cmd.deinit();
+        }
+        var cmd_mut = active.command_buffer;
         cmd_mut.deinit();
         self.advanceFrame();
         self.depth_texture = self.depth_textures[self.current_depth_index];
+        self.current_frame = null;
     }
 
     pub fn submitFrameAndAcquireFence(self: *RhiDevice, frame: Frame) Error!Fence {
-        try self.device.submitCommandBuffer(.graphics, &frame.command_buffer, .{});
-        const swapchain_image = frame.swapchain_image;
+        var active = self.current_frame orelse frame;
+        if (!commandBuffersShareStorage(active.command_buffer, frame.command_buffer) and frame.command_buffer.rawBytes().len > 0) {
+            active.command_buffer.opcodes.appendSlice(self.allocator, frame.command_buffer.rawBytes()) catch return error.OutOfMemory;
+        }
+        try self.device.submitCommandBuffer(.graphics, &active.command_buffer, .{});
+        const swapchain_image = active.swapchain_image;
         try self.device.present(swapchain_image);
-        var cmd_mut = frame.command_buffer;
+        if (!commandBuffersShareStorage(active.command_buffer, frame.command_buffer)) {
+            var frame_cmd = frame.command_buffer;
+            frame_cmd.deinit();
+        }
+        var cmd_mut = active.command_buffer;
         cmd_mut.deinit();
         self.advanceFrame();
         self.depth_texture = self.depth_textures[self.current_depth_index];
+        self.current_frame = null;
         return .{}; // STUB - fence not yet implemented
     }
 
@@ -496,11 +614,13 @@ pub const RhiDevice = struct {
     }
 
     pub fn beginRenderPassWithDesc(self: *RhiDevice, frame: Frame, desc: RenderPassDesc) Error!RenderPass {
-        _ = self;
-        var cmd_mut = frame.command_buffer;
+        if (self.current_frame == null) {
+            self.current_frame = frame;
+        }
+        var cmd_mut = &self.current_frame.?.command_buffer;
 
         const color_id = switch (desc.color.target) {
-            .swapchain => frame.swapchain_image.id,
+            .swapchain => self.current_frame.?.swapchain_image.id,
             .texture => |texture| texture.id,
         };
 
@@ -528,9 +648,10 @@ pub const RhiDevice = struct {
     }
 
     pub fn endRenderPass(self: *RhiDevice, pass: RenderPass) void {
-        _ = self;
+        if (self.current_frame) |*frame| {
+            frame.command_buffer.encodeEndRenderPass() catch {};
+        }
         _ = pass;
-        // Render pass encoding happens via command buffer
     }
 
     pub fn beginCopyPass(self: *RhiDevice, frame: Frame) Error!CopyPass {
@@ -553,22 +674,29 @@ pub const RhiDevice = struct {
         rw_storage_textures: []const *const Texture,
         rw_storage_buffers: []const *const Buffer,
     ) Error!ComputePass {
-        _ = self;
-        _ = frame;
+        if (self.current_frame == null) {
+            self.current_frame = frame;
+        }
+        if (self.current_frame) |*active| {
+            active.command_buffer.encodeBeginComputePass(.{}) catch return error.CommandBufferAcquireFailed;
+        }
         _ = rw_storage_textures;
         _ = rw_storage_buffers;
         return .{};
     }
 
     pub fn endComputePass(self: *RhiDevice, pass: ComputePass) void {
-        _ = self;
+        if (self.current_frame) |*frame| {
+            frame.command_buffer.encodeEndComputePass() catch {};
+        }
         _ = pass;
     }
 
     pub fn bindComputePipeline(self: *RhiDevice, pass: ComputePass, pipeline: *const ComputePipeline) void {
-        _ = self;
+        if (self.current_frame) |*frame| {
+            frame.command_buffer.encodeSetPipeline(.{ .pipeline_id = pipeline.id }) catch {};
+        }
         _ = pass;
-        _ = pipeline;
     }
 
     pub fn bindComputeSamplers(self: *RhiDevice, pass: ComputePass, first_slot: u32, bindings: []const TextureSamplerBinding) void {
@@ -593,18 +721,17 @@ pub const RhiDevice = struct {
     }
 
     pub fn dispatchCompute(self: *RhiDevice, pass: ComputePass, groupcount_x: u32, groupcount_y: u32, groupcount_z: u32) void {
-        _ = self;
+        if (self.current_frame) |*frame| {
+            frame.command_buffer.encodeDispatch(.{ .x = groupcount_x, .y = groupcount_y, .z = groupcount_z }) catch {};
+        }
         _ = pass;
-        _ = groupcount_x;
-        _ = groupcount_y;
-        _ = groupcount_z;
     }
 
     pub fn pushComputeUniformData(self: *RhiDevice, frame: Frame, slot: u32, data: []const u8) void {
-        _ = self;
         _ = frame;
-        _ = slot;
-        _ = data;
+        if (self.current_frame) |*active| {
+            active.command_buffer.encodePushUniform(2, @intCast(slot), data) catch {};
+        }
     }
 
     pub fn blitTexture(self: *RhiDevice, frame: Frame, src: *const Texture, dst: *const Texture) void {
@@ -637,14 +764,23 @@ pub const RhiDevice = struct {
     }
 
     pub fn createTransferBuffer(self: *RhiDevice, desc: types.TransferBufferDesc) Error!TransferBuffer {
-        _ = self;
-        _ = desc;
-        return error.TransferBufferCreateFailed; // Not implemented in new RHI
+        const usage = rhi.BufferUsageFlags{
+            .transfer_src = desc.upload,
+            .transfer_dst = !desc.upload,
+            .storage_read = true,
+            .storage_write = true,
+        };
+        const buf = try self.device.createBuffer(.{
+            .size = desc.size,
+            .usage = usage,
+            .label = desc.label,
+        });
+        return .{ .id = buf.id, .desc = desc };
     }
 
     pub fn releaseTransferBuffer(self: *RhiDevice, transfer_buffer: *TransferBuffer) void {
-        _ = self;
-        _ = transfer_buffer;
+        self.device.destroyBuffer(.{ .id = transfer_buffer.id });
+        transfer_buffer.* = undefined;
     }
 
     pub fn createTexture(self: *RhiDevice, desc: types.TextureDesc) Error!Texture {
@@ -709,9 +845,46 @@ pub const RhiDevice = struct {
     }
 
     pub fn createGraphicsPipeline(self: *RhiDevice, desc: GraphicsPipelineDesc) Error!GraphicsPipeline {
-        _ = self;
-        _ = desc;
-        return error.PipelineCreateFailed; // Complex - requires full implementation
+        const layout = try self.ensureDefaultPipelineLayout();
+
+        var attrs = std.ArrayList(rhi.VertexAttribute).empty;
+        defer attrs.deinit(self.allocator);
+        for (desc.vertex_attributes) |a| {
+            attrs.append(self.allocator, .{
+                .location = a.location,
+                .format = a.format,
+                .offset = a.offset,
+                .buffer_index = a.buffer_slot,
+            }) catch return error.OutOfMemory;
+        }
+
+        var buffer_layouts = std.ArrayList(rhi.VertexBufferLayout).empty;
+        defer buffer_layouts.deinit(self.allocator);
+        for (desc.vertex_buffer_layouts) |l| {
+            buffer_layouts.append(self.allocator, .{
+                .stride = l.stride,
+                .step_rate = l.input_rate,
+            }) catch return error.OutOfMemory;
+        }
+
+        const pipeline = try self.device.createGraphicsPipeline(.{
+            .layout = layout,
+            .vertex = .{ .id = desc.vertex_shader.id },
+            .fragment = .{ .id = desc.fragment_shader.id },
+            .color_format = desc.color_format orelse self.runtime_info.swapchain_format,
+            .depth_format = desc.depth_format,
+            .primitive = desc.primitive_type,
+            .depth_stencil = if (desc.depth_test)
+                .{ .depth_compare = desc.depth_compare, .depth_write = desc.depth_write }
+            else
+                null,
+            .vertex_layout = if (attrs.items.len > 0 or buffer_layouts.items.len > 0)
+                .{ .attributes = attrs.items, .buffer_layouts = buffer_layouts.items }
+            else
+                null,
+            .blend_state = desc.blend_state,
+        });
+        return .{ .id = pipeline.id };
     }
 
     pub fn releaseGraphicsPipeline(self: *RhiDevice, pipeline: *GraphicsPipeline) void {
@@ -720,9 +893,18 @@ pub const RhiDevice = struct {
     }
 
     pub fn createComputePipeline(self: *RhiDevice, desc: ComputePipelineDesc) Error!ComputePipeline {
-        _ = self;
-        _ = desc;
-        return error.ComputePipelineCreateFailed;
+        const layout = try self.ensureDefaultPipelineLayout();
+        const shader = try self.device.createShaderModule(.{
+            .stage = .compute,
+            .format = desc.format,
+            .code = desc.code,
+            .entry_point = desc.entry_point,
+        });
+        const pipeline = try self.device.createComputePipeline(.{
+            .layout = layout,
+            .shader = shader,
+        });
+        return .{ .id = pipeline.id };
     }
 
     pub fn releaseComputePipeline(self: *RhiDevice, pipeline: *ComputePipeline) void {
@@ -731,9 +913,58 @@ pub const RhiDevice = struct {
     }
 
     pub fn createBindGroup(self: *RhiDevice, desc: BindGroupDesc) Error!BindGroup {
-        _ = self;
-        _ = desc;
-        return error.OutOfMemory; // Requires new binding set infrastructure
+        var layout_entries = std.ArrayList(rhi.BindingLayoutEntry).empty;
+        defer layout_entries.deinit(self.allocator);
+        var set_entries = std.ArrayList(rhi.BindingSetEntry).empty;
+        defer set_entries.deinit(self.allocator);
+
+        for (desc.texture_sampler_bindings, 0..) |binding, i| {
+            const base_slot = desc.slot_offset + @as(u32, @intCast(i * 2));
+            const tex_slot = base_slot;
+            const samp_slot = base_slot + 1;
+            layout_entries.append(self.allocator, .{ .slot = tex_slot, .binding_type = .texture, .stage = desc.stage }) catch return error.OutOfMemory;
+            set_entries.append(self.allocator, .{ .slot = tex_slot, .resource = .{ .texture = .{ .id = binding.texture.id } } }) catch return error.OutOfMemory;
+
+            layout_entries.append(self.allocator, .{ .slot = samp_slot, .binding_type = .sampler, .stage = desc.stage }) catch return error.OutOfMemory;
+            set_entries.append(self.allocator, .{ .slot = samp_slot, .resource = .{ .sampler = .{ .id = binding.sampler.id } } }) catch return error.OutOfMemory;
+        }
+
+        var next_slot = desc.slot_offset + (@as(u32, @intCast(desc.texture_sampler_bindings.len)) * 2);
+        for (desc.storage_buffers) |buffer| {
+            layout_entries.append(self.allocator, .{ .slot = next_slot, .binding_type = .storage_buffer, .stage = desc.stage }) catch return error.OutOfMemory;
+            set_entries.append(self.allocator, .{ .slot = next_slot, .resource = .{ .storage_buffer = .{ .id = buffer.id } } }) catch return error.OutOfMemory;
+            next_slot += 1;
+        }
+        for (desc.storage_textures) |texture| {
+            layout_entries.append(self.allocator, .{ .slot = next_slot, .binding_type = .storage_texture, .stage = desc.stage }) catch return error.OutOfMemory;
+            set_entries.append(self.allocator, .{ .slot = next_slot, .resource = .{ .storage_texture = .{ .id = texture.id } } }) catch return error.OutOfMemory;
+            next_slot += 1;
+        }
+
+        if (layout_entries.items.len == 0) {
+            return .{
+                .stage = desc.stage,
+                .texture_sampler_slots = &.{},
+                .texture_sampler_samplers = &.{},
+                .storage_buffer_ids = &.{},
+                .storage_texture_ids = &.{},
+                .slot_offset = desc.slot_offset,
+            };
+        }
+
+        const layout = try self.device.createBindingLayout(.{ .entries = layout_entries.items, .label = "legacy_bind_group_layout" });
+        const set = try self.device.createBindingSetCached(layout, .{ .entries = set_entries.items, .label = "legacy_bind_group" });
+
+        return .{
+            .stage = desc.stage,
+            .texture_sampler_slots = &.{},
+            .texture_sampler_samplers = &.{},
+            .storage_buffer_ids = &.{},
+            .storage_texture_ids = &.{},
+            .slot_offset = desc.slot_offset,
+            .layout = layout,
+            .set = set,
+        };
     }
 
     pub fn releaseBindGroup(self: *RhiDevice, bind_group: *BindGroup) void {
@@ -746,64 +977,76 @@ pub const RhiDevice = struct {
     // ────────────────────────────────────────────────────────────────────
 
     pub fn bindGraphicsPipeline(self: *RhiDevice, pass: RenderPass, pipeline: *const GraphicsPipeline) void {
-        _ = self;
+        if (self.current_frame) |*frame| {
+            frame.command_buffer.encodeSetPipeline(.{ .pipeline_id = pipeline.id }) catch {};
+        }
         _ = pass;
-        _ = pipeline;
     }
 
     pub fn bindVertexBuffer(self: *RhiDevice, pass: RenderPass, slot: u32, buffer: *const Buffer, offset: u32) void {
-        _ = self;
+        if (self.current_frame) |*frame| {
+            frame.command_buffer.encodeSetVertexBuffer(.{ .slot = slot, .buffer_id = buffer.id, .offset = offset }) catch {};
+        }
         _ = pass;
-        _ = slot;
-        _ = buffer;
-        _ = offset;
     }
 
     pub fn bindIndexBuffer(self: *RhiDevice, pass: RenderPass, buffer: *const Buffer, index_size: types.IndexElementSize, offset: u32) void {
-        _ = self;
+        if (self.current_frame) |*frame| {
+            const fmt: u32 = switch (index_size) {
+                .u16 => 0,
+                .u32 => 1,
+            };
+            frame.command_buffer.encodeSetIndexBuffer(.{ .buffer_id = buffer.id, .offset = offset, .format = fmt }) catch {};
+        }
         _ = pass;
-        _ = buffer;
-        _ = index_size;
-        _ = offset;
     }
 
     pub fn bindGroup(self: *RhiDevice, pass: RenderPass, bind_group: *const BindGroup) void {
-        _ = self;
+        if (self.current_frame) |*frame| {
+            if (bind_group.set) |set| {
+                frame.command_buffer.encodeSetBindingSet(.{ .slot = bind_group.slot_offset, .set_id = set.id }) catch {};
+            }
+        }
         _ = pass;
-        _ = bind_group;
     }
 
     pub fn pushVertexUniformData(self: *RhiDevice, frame: Frame, slot: u32, data: []const u8) void {
-        _ = self;
         _ = frame;
-        _ = slot;
-        _ = data;
+        if (self.current_frame) |*active| {
+            active.command_buffer.encodePushUniform(0, @intCast(slot), data) catch {};
+        }
     }
 
     pub fn pushFragmentUniformData(self: *RhiDevice, frame: Frame, slot: u32, data: []const u8) void {
-        _ = self;
         _ = frame;
-        _ = slot;
-        _ = data;
+        if (self.current_frame) |*active| {
+            active.command_buffer.encodePushUniform(1, @intCast(slot), data) catch {};
+        }
     }
 
     pub fn drawPrimitives(self: *RhiDevice, pass: RenderPass, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) void {
-        _ = self;
+        if (self.current_frame) |*frame| {
+            frame.command_buffer.encodeDraw(.{
+                .vertex_count = vertex_count,
+                .instance_count = instance_count,
+                .first_vertex = first_vertex,
+                .first_instance = first_instance,
+            }) catch {};
+        }
         _ = pass;
-        _ = vertex_count;
-        _ = instance_count;
-        _ = first_vertex;
-        _ = first_instance;
     }
 
     pub fn drawIndexedPrimitives(self: *RhiDevice, pass: RenderPass, index_count: u32, instance_count: u32, first_index: u32, vertex_offset: i32, first_instance: u32) void {
-        _ = self;
+        if (self.current_frame) |*frame| {
+            frame.command_buffer.encodeDrawIndexed(.{
+                .index_count = index_count,
+                .instance_count = instance_count,
+                .first_index = first_index,
+                .vertex_offset = vertex_offset,
+                .first_instance = first_instance,
+            }) catch {};
+        }
         _ = pass;
-        _ = index_count;
-        _ = instance_count;
-        _ = first_index;
-        _ = vertex_offset;
-        _ = first_instance;
     }
 
     // ────────────────────────────────────────────────────────────────────
@@ -957,9 +1200,7 @@ pub const RhiDevice = struct {
         bind_group: *const BindGroup,
         state: *BindGroupState,
     ) void {
-        _ = self;
-        _ = pass;
-        _ = bind_group;
+        self.bindGroup(pass, bind_group);
         _ = state;
     }
 
@@ -969,9 +1210,7 @@ pub const RhiDevice = struct {
         pipeline: *const GraphicsPipeline,
         state: *BindGroupState,
     ) void {
-        _ = self;
-        _ = pass;
-        _ = pipeline;
+        self.bindGraphicsPipeline(pass, pipeline);
         _ = state;
     }
 
@@ -983,11 +1222,7 @@ pub const RhiDevice = struct {
         offset: u32,
         state: *BindGroupState,
     ) void {
-        _ = self;
-        _ = pass;
-        _ = slot;
-        _ = buffer;
-        _ = offset;
+        self.bindVertexBuffer(pass, slot, buffer, offset);
         _ = state;
     }
 
@@ -999,11 +1234,42 @@ pub const RhiDevice = struct {
         offset: u32,
         state: *BindGroupState,
     ) void {
-        _ = self;
-        _ = pass;
-        _ = buffer;
-        _ = index_size;
-        _ = offset;
+        self.bindIndexBuffer(pass, buffer, index_size, offset);
         _ = state;
     }
+
+    fn ensureDefaultPipelineLayout(self: *RhiDevice) Error!rhi.PipelineLayout {
+        if (self.default_pipeline_layout) |layout| return layout;
+
+        const layout = if (self.default_binding_layout) |existing| blk: {
+            break :blk existing;
+        } else blk_new: {
+            const binding_layout = try self.device.createBindingLayout(.{
+                .entries = &.{.{ .slot = 0, .binding_type = .uniform_buffer, .stage = .vertex }},
+                .label = "legacy_default_binding_layout",
+            });
+            self.default_binding_layout = binding_layout;
+            break :blk_new binding_layout;
+        };
+
+        const pipeline_layout = try self.device.resolvePipelineLayout(&.{layout});
+        self.default_pipeline_layout = pipeline_layout;
+        return pipeline_layout;
+    }
 };
+
+fn copyCStringSlice(dest: []u8, src: []const u8) void {
+    if (dest.len == 0) return;
+    const n = @min(dest.len - 1, src.len);
+    if (n > 0) {
+        @memcpy(dest[0..n], src[0..n]);
+    }
+    dest[n] = 0;
+    if (n + 1 < dest.len) {
+        @memset(dest[n + 1 ..], 0);
+    }
+}
+
+fn commandBuffersShareStorage(a: command_buffer.CommandBuffer, b: command_buffer.CommandBuffer) bool {
+    return a.opcodes.items.ptr == b.opcodes.items.ptr;
+}

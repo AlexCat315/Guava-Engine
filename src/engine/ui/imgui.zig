@@ -7,6 +7,8 @@ const command_buffer_mod = @import("../rhi/command_buffer.zig");
 const device_mod = @import("../rhi/device.zig");
 const metal_device_mod = @import("../rhi/metal/metal_device.zig");
 
+var g_metal_device: ?*metal_device_mod.MetalDevice = null;
+
 pub const c = @cImport({
     @cInclude("imgui_bridge.h");
 });
@@ -137,17 +139,20 @@ pub const WindowFlags = struct {
 
 pub fn init(window: *window_mod.Window, device: *rhi_mod.RhiDevice) Error!void {
     const metal_dev: *metal_device_mod.MetalDevice = @ptrCast(@alignCast(device.device.ctx));
+    g_metal_device = metal_dev;
     if (!c.guava_imgui_init(
         @ptrCast(window.handle),
         metal_dev.bridge_ctx,
-        textureFormatToSdl(device.runtimeInfo().swapchain_format),
+        textureFormatToBridge(device.runtimeInfo().swapchain_format),
     )) {
+        g_metal_device = null;
         return error.ImGuiInitFailed;
     }
 }
 
 pub fn shutdown() void {
     c.guava_imgui_shutdown();
+    g_metal_device = null;
 }
 
 pub fn processEvent(raw_event: *const sdl.SDL_Event) void {
@@ -369,10 +374,11 @@ pub fn buttonEx(label: []const u8, width: f32, height: f32) bool {
 }
 
 pub fn imageButton(id: []const u8, texture: *const rhi_mod.Texture, width: f32, height: f32, bg_tint: [4]f32, icon_tint: [4]f32) bool {
+    const native_texture = resolveNativeTextureHandle(texture) orelse return false;
     return c.guava_imgui_image_button(
         id.ptr,
         id.len,
-        @ptrFromInt(@as(usize, texture.id)),
+        native_texture,
         width,
         height,
         bg_tint[0],
@@ -530,11 +536,12 @@ pub fn treeNodeEntity(
     rename_buffer: ?[]u8,
     request_rename_focus: bool,
 ) TreeNodeEntityResult {
+    const native_icon_texture = if (icon_texture) |value| resolveNativeTextureHandle(value) else null;
     const raw_state = c.guava_imgui_tree_node_entity(
         id,
         label.ptr,
         label.len,
-        if (icon_texture) |value| @ptrFromInt(@as(usize, value.id)) else null,
+        native_icon_texture,
         icon_size,
         selected,
         leaf,
@@ -681,7 +688,8 @@ pub fn setScrollHereY(center_y_ratio: f32) void {
 }
 
 pub fn image(texture: *const rhi_mod.Texture, width: f32, height: f32) void {
-    c.guava_imgui_image(@ptrFromInt(@as(usize, texture.id)), width, height);
+    const native_texture = resolveNativeTextureHandle(texture) orelse return;
+    c.guava_imgui_image(native_texture, width, height);
 }
 
 pub fn drawViewCube(view: *const [16]f32, position: [2]f32, size: f32) ViewCubeResult {
@@ -769,10 +777,16 @@ pub fn getContentRegionAvail() struct { x: f32, y: f32 } {
     return .{ .x = avail[0], .y = avail[1] };
 }
 
-fn textureFormatToSdl(format: rhi_types.TextureFormat) c.SDL_GPUTextureFormat {
+fn textureFormatToBridge(format: rhi_types.TextureFormat) u32 {
     return switch (format) {
-        .bgra8_unorm => @as(c.SDL_GPUTextureFormat, @intCast(c.SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM)),
-        .bgra8_unorm_srgb => @as(c.SDL_GPUTextureFormat, @intCast(c.SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB)),
-        else => @as(c.SDL_GPUTextureFormat, @intCast(c.SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM)),
+        .bgra8_unorm => 3,
+        .bgra8_unorm_srgb => 4,
+        .rgba8_unorm => 2,
+        else => 3,
     };
+}
+
+fn resolveNativeTextureHandle(texture: *const rhi_mod.Texture) ?*anyopaque {
+    const metal_dev = g_metal_device orelse return null;
+    return metal_dev.getTextureHandle(texture.id);
 }
