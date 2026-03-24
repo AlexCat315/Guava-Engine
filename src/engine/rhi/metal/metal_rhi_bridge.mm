@@ -286,7 +286,7 @@ void guava_metal_rhi_set_layer(void* raw, void* ca_metal_layer) {
     auto* ctx = static_cast<GuavaMetalRhiContext*>(raw);
     ctx->metal_layer = (__bridge CAMetalLayer*)ca_metal_layer;
     ctx->metal_layer.device = ctx->device;
-    ctx->metal_layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+    ctx->metal_layer.pixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
     ctx->metal_layer.framebufferOnly = YES;
     fprintf(stderr, "[GuavaMetal] CAMetalLayer configured — size: %.0fx%.0f\n",
             ctx->metal_layer.drawableSize.width,

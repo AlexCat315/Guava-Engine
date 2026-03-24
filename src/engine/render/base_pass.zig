@@ -457,7 +457,7 @@ pub const BasePass = struct {
         errdefer if (self.fill_pipeline_hdr) |*pipeline| {
             device.releaseGraphicsPipeline(pipeline);
         };
-        self.fill_pipeline_ldr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .bgra8_unorm, .fill, false, true);
+        self.fill_pipeline_ldr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .bgra8_unorm_srgb, .fill, false, true);
         errdefer if (self.fill_pipeline_ldr) |*pipeline| {
             device.releaseGraphicsPipeline(pipeline);
         };
@@ -465,7 +465,7 @@ pub const BasePass = struct {
         errdefer if (self.ghost_fill_pipeline_hdr) |*pipeline| {
             device.releaseGraphicsPipeline(pipeline);
         };
-        self.ghost_fill_pipeline_ldr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .bgra8_unorm, .ghost_fill, true, true);
+        self.ghost_fill_pipeline_ldr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .bgra8_unorm_srgb, .ghost_fill, true, true);
         errdefer if (self.ghost_fill_pipeline_ldr) |*pipeline| {
             device.releaseGraphicsPipeline(pipeline);
         };
@@ -473,7 +473,7 @@ pub const BasePass = struct {
         errdefer if (self.transparent_fill_pipeline_hdr) |*pipeline| {
             device.releaseGraphicsPipeline(pipeline);
         };
-        self.transparent_fill_pipeline_ldr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .bgra8_unorm, .fill, true, false);
+        self.transparent_fill_pipeline_ldr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .bgra8_unorm_srgb, .fill, true, false);
         errdefer if (self.transparent_fill_pipeline_ldr) |*pipeline| {
             device.releaseGraphicsPipeline(pipeline);
         };
@@ -481,7 +481,7 @@ pub const BasePass = struct {
         errdefer if (self.wireframe_pipeline_hdr) |*pipeline| {
             device.releaseGraphicsPipeline(pipeline);
         };
-        self.wireframe_pipeline_ldr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .bgra8_unorm, .wireframe, true, true);
+        self.wireframe_pipeline_ldr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .bgra8_unorm_srgb, .wireframe, true, true);
     }
 
     const PipelineMode = enum {

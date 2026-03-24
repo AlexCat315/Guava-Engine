@@ -756,7 +756,7 @@ const SceneViewportState = struct {
         self.fxaa_texture = try device.createTexture(.{
             .width = width,
             .height = height,
-            .format = .bgra8_unorm,
+            .format = .bgra8_unorm_srgb,
             .usage = rhi_types.TextureUsage.color_target | rhi_types.TextureUsage.sampler,
         });
         errdefer if (self.fxaa_texture) |*texture| {
@@ -767,7 +767,7 @@ const SceneViewportState = struct {
         self.color_texture = try device.createTexture(.{
             .width = width,
             .height = height,
-            .format = .bgra8_unorm,
+            .format = .bgra8_unorm_srgb,
             .usage = rhi_types.TextureUsage.color_target | rhi_types.TextureUsage.sampler,
         });
         errdefer if (self.color_texture) |*texture| {
@@ -982,7 +982,7 @@ const ThumbnailRenderTarget = struct {
         const color_texture = try device.createTexture(.{
             .width = material_thumbnail_dimension,
             .height = material_thumbnail_dimension,
-            .format = .bgra8_unorm,
+            .format = .bgra8_unorm_srgb,
             .usage = rhi_types.TextureUsage.color_target | rhi_types.TextureUsage.sampler,
         });
         errdefer {

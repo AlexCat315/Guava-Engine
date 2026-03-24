@@ -94,6 +94,8 @@ pub const VolumetricFogPass = struct {
         output_resource_id: u32,
         params: FogParams,
     ) !void {
+        // V2 prototype: skip GPU submission when no valid render target is bound
+        if (output_resource_id == 0) return;
         const layouts = try createLayouts(device);
 
         const pipeline_layout = try device.resolvePipelineLayout(&.{

@@ -23,6 +23,8 @@ pub const BloomPass = struct {
         output_resource_id: u32,
         params: BloomParams,
     ) !void {
+        // V2 prototype: skip GPU submission when no valid render target is bound
+        if (output_resource_id == 0) return;
         // Set 0: sampled HDR input
         const sampled_layout = try device.createBindingLayout(.{
             .entries = &.{.{

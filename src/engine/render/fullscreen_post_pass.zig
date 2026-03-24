@@ -10,6 +10,8 @@ pub const FullscreenPostPass = struct {
         input_resource_id: u32,
         output_resource_id: u32,
     ) !void {
+        // V2 prototype: skip GPU submission when no valid render target is bound
+        if (output_resource_id == 0) return;
         const sampled_layout = try device.createBindingLayout(.{
             .entries = &.{.{
                 .slot = 0,

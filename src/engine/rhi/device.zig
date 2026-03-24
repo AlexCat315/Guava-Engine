@@ -314,7 +314,7 @@ pub const RhiDevice = struct {
                     .backend = .metal,
                     .drawable_width = window.drawable_width,
                     .drawable_height = window.drawable_height,
-                    .swapchain_format = .bgra8_unorm,
+                    .swapchain_format = .bgra8_unorm_srgb,
                     .depth_format = .d32_float,
                     .has_depth = true,
                 },
@@ -346,7 +346,7 @@ pub const RhiDevice = struct {
                 .backend = .metal,
                 .drawable_width = window.drawable_width,
                 .drawable_height = window.drawable_height,
-                .swapchain_format = .bgra8_unorm,
+                .swapchain_format = .bgra8_unorm_srgb,
                 .depth_format = .d32_float,
                 .has_depth = true,
             },
@@ -1061,7 +1061,8 @@ pub const RhiDevice = struct {
         _ = rows_per_layer;
         const width = texture.desc.width;
         const height = texture.desc.height;
-        try self.device.uploadTextureData(.{ .id = texture.id }, data, width, height, pixels_per_row);
+        const bytes_per_row = pixels_per_row * texture.desc.format.bytesPerPixel();
+        try self.device.uploadTextureData(.{ .id = texture.id }, data, width, height, bytes_per_row);
     }
 
     pub fn readTextureData(self: *RhiDevice, texture: *const Texture, bytes_per_row: u32, destination: []u8) Error!void {
