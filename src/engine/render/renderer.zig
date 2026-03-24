@@ -1459,7 +1459,6 @@ pub const Renderer = struct {
                 dev_ptr.* = md_ptr.createDevice();
                 renderer.rhi_metal_device = md_ptr;
                 renderer.rhi_device = dev_ptr;
-
             } else {
                 // Non-macOS: use mock backend
                 const backend_ptr = allocator.create(rhi_mock_backend_mod.MetalBackend) catch break :rhi_init;
@@ -1472,7 +1471,6 @@ pub const Renderer = struct {
                 dev_ptr.* = backend_ptr.createDevice();
                 renderer.rhi_mock_backend = backend_ptr;
                 renderer.rhi_device = dev_ptr;
-
             }
         }
 
