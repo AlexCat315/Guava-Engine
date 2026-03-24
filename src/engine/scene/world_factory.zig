@@ -174,6 +174,17 @@ pub fn bootstrap3D(self: anytype) !void {
     const quat = @import("../math/quat.zig");
     const plane_mesh = try self.resources.ensurePrimitiveMesh(.plane);
     const cube_mesh = try self.resources.ensurePrimitiveMesh(.cube);
+    const hero_albedo = try self.resources.createTexture(.{
+        .name = "BootstrapHeroAlbedo",
+        .width = 2,
+        .height = 2,
+        .pixels = &[_]u8{
+            214, 214, 220, 255,
+            182, 186, 194, 255,
+            182, 186, 194, 255,
+            214, 214, 220, 255,
+        },
+    });
     const ground_material = try self.resources.createMaterial(.{
         .name = "BootstrapGroundMaterial",
         .base_color_factor = .{ 0.56, 0.57, 0.59, 1.0 },
@@ -184,11 +195,12 @@ pub fn bootstrap3D(self: anytype) !void {
     });
     const hero_material = try self.resources.createMaterial(.{
         .name = "BootstrapHeroMaterial",
-        .base_color_factor = .{ 0.82, 0.83, 0.85, 1.0 },
+        .base_color_factor = .{ 1.0, 1.0, 1.0, 1.0 },
+        .base_color_texture = hero_albedo,
         .metallic_factor = 0.0,
-        .roughness_factor = 0.74,
-        .use_ibl = false,
-        .ibl_intensity = 0.0,
+        .roughness_factor = 0.62,
+        .use_ibl = true,
+        .ibl_intensity = 0.2,
     });
 
     _ = try self.createEntity(.{

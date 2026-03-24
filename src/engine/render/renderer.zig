@@ -66,6 +66,7 @@ const ibl_compute_pass_mod = @import("ibl_compute_pass.zig");
 const contact_shadow_pass_mod = @import("contact_shadow_pass.zig");
 const taa_pass_mod = @import("taa_pass.zig");
 const rt_shadow_composite_pass_mod = @import("rt_shadow_composite_pass.zig");
+const rt_shadow_denoise_pass_mod = @import("rt_shadow_denoise_pass.zig");
 const dof_pass_mod = @import("dof_pass.zig");
 const ssr_pass_mod = @import("ssr_pass.zig");
 const fullscreen_post_mod = @import("fullscreen_post_pass.zig");
@@ -649,6 +650,7 @@ const SceneViewportState = struct {
     taa_texture: ?rhi_mod.Texture = null,
     ssao_texture: ?rhi_mod.Texture = null,
     contact_shadow_texture: ?rhi_mod.Texture = null,
+    rt_shadow_denoised_texture: ?rhi_mod.Texture = null,
     bloom_texture: ?rhi_mod.Texture = null,
     fxaa_texture: ?rhi_mod.Texture = null,
     color_texture: ?rhi_mod.Texture = null,
@@ -665,6 +667,9 @@ const SceneViewportState = struct {
             device.releaseTexture(texture);
         }
         if (self.contact_shadow_texture) |*texture| {
+            device.releaseTexture(texture);
+        }
+        if (self.rt_shadow_denoised_texture) |*texture| {
             device.releaseTexture(texture);
         }
         if (self.bloom_texture) |*texture| {
@@ -689,7 +694,7 @@ const SceneViewportState = struct {
         }
 
         if (self.color_texture) |color_texture| {
-            if (self.depth_texture != null and self.hdr_color_texture != null and self.taa_texture != null and self.ssao_texture != null and self.contact_shadow_texture != null and self.bloom_texture != null and self.fxaa_texture != null and color_texture.desc.width == width and color_texture.desc.height == height) {
+            if (self.depth_texture != null and self.hdr_color_texture != null and self.taa_texture != null and self.ssao_texture != null and self.contact_shadow_texture != null and self.rt_shadow_denoised_texture != null and self.bloom_texture != null and self.fxaa_texture != null and color_texture.desc.width == width and color_texture.desc.height == height) {
                 self.width = width;
                 self.height = height;
                 return;
@@ -740,6 +745,17 @@ const SceneViewportState = struct {
         errdefer if (self.contact_shadow_texture) |*texture| {
             device.releaseTexture(texture);
             self.contact_shadow_texture = null;
+        };
+
+        self.rt_shadow_denoised_texture = try device.createTexture(.{
+            .width = width,
+            .height = height,
+            .format = .r8_unorm,
+            .usage = rhi_types.TextureUsage.color_target | rhi_types.TextureUsage.sampler,
+        });
+        errdefer if (self.rt_shadow_denoised_texture) |*texture| {
+            device.releaseTexture(texture);
+            self.rt_shadow_denoised_texture = null;
         };
 
         self.bloom_texture = try device.createTexture(.{
@@ -841,6 +857,13 @@ const SceneViewportState = struct {
 
     fn contactShadow(self: *SceneViewportState) ?*const rhi_mod.Texture {
         if (self.contact_shadow_texture) |*texture| {
+            return texture;
+        }
+        return null;
+    }
+
+    fn rtShadowDenoised(self: *SceneViewportState) ?*const rhi_mod.Texture {
+        if (self.rt_shadow_denoised_texture) |*texture| {
             return texture;
         }
         return null;
@@ -1248,6 +1271,8 @@ pub const Renderer = struct {
     tonemap_pass: tonemap_pass_mod.TonemapPass,
     /// RT 阴影合成通道
     rt_shadow_composite_pass: rt_shadow_composite_pass_mod.RtShadowCompositePass,
+    /// RT 阴影双边去噪通道
+    rt_shadow_denoise_pass: rt_shadow_denoise_pass_mod.RtShadowDenoisePass,
     /// SSAO 环境光遮蔽合成通道 — 将 SSAO 纹理以乘法混合叠加到 HDR 缓冲
     ssao_composite_pass: rt_shadow_composite_pass_mod.RtShadowCompositePass,
     /// RT 阴影遮罩纹理（屏幕分辨率，BGRA8）
@@ -1354,6 +1379,7 @@ pub const Renderer = struct {
             .bloom_pass = undefined,
             .tonemap_pass = undefined,
             .rt_shadow_composite_pass = undefined,
+            .rt_shadow_denoise_pass = undefined,
             .ssao_composite_pass = undefined,
             .selection_history = SelectionHistory.init(allocator, 64),
             .material_thumbnail_cache = std.StringHashMap(MaterialThumbnailCacheEntry).init(allocator),
@@ -1426,6 +1452,9 @@ pub const Renderer = struct {
 
         renderer.rt_shadow_composite_pass = try rt_shadow_composite_pass_mod.RtShadowCompositePass.init(&renderer.rhi);
         errdefer renderer.rt_shadow_composite_pass.deinit(&renderer.rhi);
+
+        renderer.rt_shadow_denoise_pass = try rt_shadow_denoise_pass_mod.RtShadowDenoisePass.init(&renderer.rhi);
+        errdefer renderer.rt_shadow_denoise_pass.deinit(&renderer.rhi);
 
         // SSAO 合成通道复用 RT 阴影合成的 multiply-blend 管线
         renderer.ssao_composite_pass = try rt_shadow_composite_pass_mod.RtShadowCompositePass.init(&renderer.rhi);
@@ -1508,6 +1537,7 @@ pub const Renderer = struct {
         self.bloom_pass.deinit(&self.rhi);
         self.tonemap_pass.deinit(&self.rhi);
         self.rt_shadow_composite_pass.deinit(&self.rhi);
+        self.rt_shadow_denoise_pass.deinit(&self.rhi);
         self.ssao_composite_pass.deinit(&self.rhi);
         if (self.rt_shadow_mask_texture) |*t| self.rhi.releaseTexture(t);
         if (self.rt_shadow_pixels) |p| self.allocator.free(p);
@@ -1963,7 +1993,7 @@ pub const Renderer = struct {
                             .clear_depth = 1.0,
                             .clear_stencil = 0,
                             .load_op = .clear,
-                            .store_op = .dont_care,
+                            .store_op = if (viewport_active) .store else .dont_care,
                             .stencil_load_op = .dont_care,
                             .stencil_store_op = .dont_care,
                         };
@@ -1978,11 +2008,11 @@ pub const Renderer = struct {
                     if (rt_shadows_active) {
                         prepared_scene.rt_shadow_mask = if (self.rt_shadow_mask_texture) |*mask| mask else null;
                         prepared_scene.rt_shadow_strength = self.editor_viewport_state.rt_shadow_strength;
-                        prepared_scene.rt_shadow_ambient_floor = 0.05;
+                        prepared_scene.rt_shadow_ambient_floor = 0.12;
                     } else {
                         prepared_scene.rt_shadow_mask = null;
                         prepared_scene.rt_shadow_strength = 1.0;
-                        prepared_scene.rt_shadow_ambient_floor = 0.05;
+                        prepared_scene.rt_shadow_ambient_floor = 0.12;
                     }
 
                     if (self.shadow_pass.isReady()) {
@@ -2022,6 +2052,12 @@ pub const Renderer = struct {
                     }
 
                     const base_pass_target = if (viewport_active) scene_hdr_color_target else scene_color_target;
+                    const run_rt_shadow_denoise = rt_shadows_active and
+                        viewport_active and
+                        self.rt_shadow_mask_texture != null and
+                        self.rt_shadow_denoise_pass.isReady() and
+                        self.scene_viewport.rtShadowDenoised() != null and
+                        self.scene_viewport.depth() != null;
 
                     // TAA jitter: apply subpixel offset to projection matrix before rendering
                     const taa_enabled = viewport_active and self.editor_viewport_state.taa_enabled and self.taa_pass.isReady() and self.scene_viewport.taa() != null;
@@ -2036,15 +2072,64 @@ pub const Renderer = struct {
                         prepared_scene.view_projection = mat4_mod.mul(prepared_scene.projection_matrix, prepared_scene.view_matrix);
                     }
 
-                    const scene_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.colorWithDepth(base_pass_target, clear.color, scene_depth_target));
                     const active_render_mode = effectiveViewportRenderMode(self.editor_viewport_state);
-                    const depth_start = std.time.nanoTimestamp();
-                    const depth_stats = if (active_render_mode != .wireframe)
-                        self.depth_prepass.draw(&self.rhi, frame, scene_pass, &prepared_scene)
-                    else
-                        mesh_pass_mod.DrawStats{};
-                    self.graph.recordPassStat(pass_stats, .depth_prepass, durationNs(depth_start, std.time.nanoTimestamp()), depth_stats.draw_calls, depth_stats.triangles_drawn);
-                    draw_stats.add(depth_stats);
+                    var scene_pass: rhi_mod.RenderPass = undefined;
+                    if (run_rt_shadow_denoise) {
+                        const depth_prepass_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.colorWithDepth(base_pass_target, clear.color, scene_depth_target));
+                        const depth_start = std.time.nanoTimestamp();
+                        const depth_stats = if (active_render_mode != .wireframe)
+                            self.depth_prepass.draw(&self.rhi, frame, depth_prepass_pass, &prepared_scene)
+                        else
+                            mesh_pass_mod.DrawStats{};
+                        self.graph.recordPassStat(pass_stats, .depth_prepass, durationNs(depth_start, std.time.nanoTimestamp()), depth_stats.draw_calls, depth_stats.triangles_drawn);
+                        draw_stats.add(depth_stats);
+                        self.rhi.endRenderPass(depth_prepass_pass);
+
+                        try self.rt_shadow_denoise_pass.syncTextures(&self.rhi, &self.rt_shadow_mask_texture.?, self.scene_viewport.depth().?);
+                        const denoise_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.rtShadowDenoised().? }));
+                        const denoise_start = std.time.nanoTimestamp();
+                        const denoise_stats = self.rt_shadow_denoise_pass.draw(&self.rhi, frame, denoise_render_pass, .{
+                            .resolution = .{ @floatFromInt(self.scene_viewport.width), @floatFromInt(self.scene_viewport.height) },
+                            .inv_resolution = .{
+                                1.0 / @as(f32, @floatFromInt(self.scene_viewport.width)),
+                                1.0 / @as(f32, @floatFromInt(self.scene_viewport.height)),
+                            },
+                            .filter_params = .{ 2.0, 140.0, 2.0, 0.0 },
+                        });
+                        self.graph.recordPassStat(pass_stats, .post_process, durationNs(denoise_start, std.time.nanoTimestamp()), denoise_stats.draw_calls, denoise_stats.triangles_drawn);
+                        draw_stats.add(denoise_stats);
+                        self.rhi.endRenderPass(denoise_render_pass);
+
+                        prepared_scene.rt_shadow_mask = self.scene_viewport.rtShadowDenoised().?;
+
+                        const loaded_depth_target: rhi_mod.DepthAttachmentDesc = .{
+                            .texture = scene_depth_target.?.texture,
+                            .clear_depth = scene_depth_target.?.clear_depth,
+                            .clear_stencil = scene_depth_target.?.clear_stencil,
+                            .load_op = .load,
+                            .store_op = .store,
+                            .stencil_load_op = scene_depth_target.?.stencil_load_op,
+                            .stencil_store_op = scene_depth_target.?.stencil_store_op,
+                        };
+                        scene_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
+                            .color = .{
+                                .target = base_pass_target,
+                                .clear_color = clear.color,
+                                .load_op = .load,
+                                .store_op = .store,
+                            },
+                            .depth = loaded_depth_target,
+                        });
+                    } else {
+                        scene_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.colorWithDepth(base_pass_target, clear.color, scene_depth_target));
+                        const depth_start = std.time.nanoTimestamp();
+                        const depth_stats = if (active_render_mode != .wireframe)
+                            self.depth_prepass.draw(&self.rhi, frame, scene_pass, &prepared_scene)
+                        else
+                            mesh_pass_mod.DrawStats{};
+                        self.graph.recordPassStat(pass_stats, .depth_prepass, durationNs(depth_start, std.time.nanoTimestamp()), depth_stats.draw_calls, depth_stats.triangles_drawn);
+                        draw_stats.add(depth_stats);
+                    }
 
                     const opaque_start = std.time.nanoTimestamp();
                     const opaque_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene, .{
