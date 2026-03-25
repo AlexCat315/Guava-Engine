@@ -525,10 +525,7 @@ fn drawProviderSettings(state: *EditorState) void {
 var g_window_initialized = false;
 
 pub fn drawAiChatPanel(state: *EditorState) !void {
-    if (!state.ai_chat_open) {
-        g_window_initialized = false;
-        return;
-    }
+    if (!state.ai_chat_open) return;
 
     const window_title = "Jarvis AI##ai_chat_floating";
 
@@ -544,10 +541,7 @@ pub fn drawAiChatPanel(state: *EditorState) !void {
     const open = gui.beginWindowFlags(window_title, window_flags);
     defer gui.endWindow();
 
-    if (!open) {
-        g_window_initialized = false;
-        return;
-    }
+    if (!open) return;
 
     drawHeaderBar(state);
     drawProviderSettings(state);
