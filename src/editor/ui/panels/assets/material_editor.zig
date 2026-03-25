@@ -2,8 +2,10 @@ const std = @import("std");
 const engine = @import("guava");
 const gui = @import("../../gui.zig");
 const EditorState = @import("../../../core/state.zig").EditorState;
+const state_mod = @import("../../../core/state.zig");
 const utils = @import("../../../common/utils.zig");
 const history = @import("../../../actions/history.zig");
+const content_browser = @import("../../../assets/browser.zig");
 const inspector = @import("../scene/inspector.zig");
 const ui_icons = @import("../../icons.zig");
 const layout = @import("../../layout.zig");
@@ -126,25 +128,45 @@ pub fn drawMaterialEditorWindow(state: *EditorState, layer_context: *engine.core
 
     // Texture slot
     gui.text(state.text(.texture));
+    var texture_slot_text: []const u8 = state.text(.embedded);
+    var has_texture = false;
     if (entity.material.?.handle) |material_handle| {
         if (layer_context.world.assets().material(material_handle)) |material_resource| {
+            texture_slot_text = state.text(.none);
             if (material_resource.base_color_texture) |texture_handle| {
                 if (layer_context.world.assets().texture(texture_handle)) |texture_resource| {
-                    gui.text(texture_resource.name);
-                    gui.sameLine();
-                    if (gui.buttonEx(state.text(.clear_texture), 0.0, 0.0)) {
-                        if (try inspector.ensureEditableMaterialResource(state, layer_context, entity)) |mat_res| {
-                            mat_res.base_color_texture = null;
-                            entity.material.?.handle = inspector.materialHandleForEntity(state, entity);
-                            try history.captureSnapshot(state, layer_context);
-                        }
-                    }
+                    texture_slot_text = texture_resource.name;
+                    has_texture = true;
                 }
-            } else {
-                gui.text(state.text(.none));
             }
         }
-    } else {
-        gui.text(state.text(.embedded));
+    }
+
+    if (gui.buttonEx(texture_slot_text, -1.0, 0.0)) {
+        if (content_browser.selectedAssetCanUseAsTexture(state) and
+            try inspector.assignSelectedTextureToMaterial(state, layer_context, entity))
+        {
+            try history.captureSnapshot(state, layer_context);
+        }
+    }
+
+    var dropped_texture: u64 = 0;
+    if (gui.acceptDragDropPayloadU64(state_mod.asset_texture_drag_payload, &dropped_texture)) {
+        const asset_index: usize = @intCast(dropped_texture);
+        if (asset_index < state.asset_entries.items.len) {
+            if (try inspector.assignTextureEntryToMaterial(state, layer_context, entity, &state.asset_entries.items[asset_index])) {
+                try history.captureSnapshot(state, layer_context);
+            }
+        }
+    }
+
+    if (has_texture) {
+        if (gui.buttonEx(state.text(.clear_texture), 0.0, 0.0)) {
+            if (try inspector.ensureEditableMaterialResource(state, layer_context, entity)) |mat_res| {
+                mat_res.base_color_texture = null;
+                entity.material.?.handle = inspector.materialHandleForEntity(state, entity);
+                try history.captureSnapshot(state, layer_context);
+            }
+        }
     }
 }

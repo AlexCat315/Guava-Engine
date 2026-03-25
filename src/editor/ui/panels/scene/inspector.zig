@@ -2,6 +2,7 @@ const std = @import("std");
 const engine = @import("guava");
 const gui = @import("../../gui.zig");
 const EditorState = @import("../../../core/state.zig").EditorState;
+const state_mod = @import("../../../core/state.zig");
 const utils = @import("../../../common/utils.zig");
 const history = @import("../../../actions/history.zig");
 const manipulation = @import("../../../interaction/manipulation.zig");
@@ -64,6 +65,18 @@ const TransformResetTarget = enum {
     all,
 };
 
+const PropertyGridMode = enum {
+    table,
+    stacked,
+};
+
+const max_property_grid_depth = 8;
+const stacked_property_grid_min_width = 320.0;
+
+var property_grid_modes: [max_property_grid_depth]PropertyGridMode = undefined;
+var property_grid_depth: usize = 0;
+var transform_grid_mode: PropertyGridMode = .table;
+
 const AxisStyle = struct {
     background: [4]f32,
     text: [4]f32,
@@ -99,30 +112,45 @@ fn endInspectorSectionBody() void {
 }
 
 fn beginInspectorPropertyGrid(id: []const u8) bool {
-    if (!layout.beginInspectorPropertyTable(id, 0.38)) {
-        return false;
+    const available_width = gui.contentRegionAvail()[0];
+    var mode: PropertyGridMode = .stacked;
+    if (available_width >= stacked_property_grid_min_width and property_grid_depth < max_property_grid_depth and layout.beginInspectorPropertyTable(id, 0.38)) {
+        mode = .table;
     }
-    gui.pushStyleVarVec2(.item_spacing, .{ 10.0, 8.0 });
+    if (property_grid_depth < max_property_grid_depth) {
+        property_grid_modes[property_grid_depth] = mode;
+        property_grid_depth += 1;
+    }
+
+    const item_spacing: [2]f32 = if (mode == .table) .{ 10.0, 8.0 } else .{ 10.0, 6.0 };
+    gui.pushStyleVarVec2(.item_spacing, item_spacing);
     return true;
 }
 
 fn endInspectorPropertyGrid() void {
+    if (property_grid_depth == 0) {
+        return;
+    }
+    property_grid_depth -= 1;
+    const mode = property_grid_modes[property_grid_depth];
     gui.popStyleVar(1);
-    layout.endInspectorPropertyTable();
+    if (mode == .table) {
+        layout.endInspectorPropertyTable();
+    }
 }
 
 fn drawInspectorTextRow(label: []const u8, value: []const u8) void {
-    layout.drawInspectorPropertyRow(label, null);
+    drawInspectorPropertyLabel(label, null);
     gui.textWrapped(value);
 }
 
 fn drawInspectorInputTextRow(label: []const u8, widget_id: []const u8, hint: []const u8, buffer: []u8) bool {
-    layout.drawInspectorPropertyRow(label, null);
+    drawInspectorPropertyLabel(label, null);
     return gui.inputTextWithHint(widget_id, hint, buffer);
 }
 
 fn drawInspectorCheckboxRow(label: []const u8, widget_id: []const u8, value: *bool) bool {
-    layout.drawInspectorPropertyRow(label, null);
+    drawInspectorPropertyLabel(label, null);
     return gui.checkbox(widget_id, value);
 }
 
@@ -134,7 +162,7 @@ fn drawInspectorFloatRow(
     min_value: f32,
     max_value: f32,
 ) bool {
-    layout.drawInspectorPropertyRow(label, null);
+    drawInspectorPropertyLabel(label, null);
     return gui.dragFloat(widget_id, value, speed, min_value, max_value);
 }
 
@@ -146,20 +174,47 @@ fn drawInspectorFloat3Row(
     min_value: f32,
     max_value: f32,
 ) bool {
-    layout.drawInspectorPropertyRow(label, null);
+    drawInspectorPropertyLabel(label, null);
     return gui.dragFloat3(widget_id, value, speed, min_value, max_value);
 }
 
 fn beginInspectorComboRow(label: []const u8, widget_id: []const u8, preview: []const u8) bool {
-    layout.drawInspectorPropertyRow(label, null);
+    drawInspectorPropertyLabel(label, null);
     return gui.beginCombo(widget_id, preview);
+}
+
+fn drawInspectorPropertyLabel(label: []const u8, label_color: ?[4]f32) void {
+    if (currentPropertyGridMode() == .table) {
+        layout.drawInspectorPropertyRow(label, label_color);
+        return;
+    }
+
+    const default_dimmed = [4]f32{ 0.64, 0.68, 0.74, 1.0 };
+    if (label_color) |color| {
+        gui.pushStyleColor(.text, color);
+        defer gui.popStyleColor(1);
+    } else {
+        gui.pushStyleColor(.text, default_dimmed);
+        defer gui.popStyleColor(1);
+    }
+    gui.alignTextToFramePadding();
+    gui.text(label);
+    gui.dummy(0.0, 2.0);
+    gui.setNextItemWidth(-1.0);
+}
+
+fn currentPropertyGridMode() PropertyGridMode {
+    if (property_grid_depth == 0) {
+        return .table;
+    }
+    return property_grid_modes[property_grid_depth - 1];
 }
 
 pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     var title_buffer: [80]u8 = undefined;
     const title = try state.windowLabel(&title_buffer, .details, "details_panel");
     // 检查器面板需要足够宽度显示属性名 + 输入控件
-    gui.setNextWindowSizeConstraints(.{ 260.0, 120.0 }, .{ std.math.floatMax(f32), std.math.floatMax(f32) });
+    gui.setNextWindowSizeConstraints(.{ 220.0, 120.0 }, .{ std.math.floatMax(f32), std.math.floatMax(f32) });
     _ = gui.beginWindow(title);
     defer gui.endWindow();
 
@@ -202,15 +257,8 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
         defer endInspectorPropertyGrid();
         drawInspectorTextRow(state.text(.selection_count), selection_count_text);
         drawInspectorTextRow(state.text(.entity_id), entity_id_text);
-        // Entity name - emphasized with bright color
-        gui.tableNextRow();
-        gui.tableNextColumn();
-        gui.pushStyleColor(.text, .{ 0.88, 0.92, 0.98, 1.0 });
-        gui.alignTextToFramePadding();
-        gui.text(entity.name);
-        gui.popStyleColor(1);
-        gui.tableNextColumn();
-        gui.setNextItemWidth(-1.0);
+        // Entity name stays readable in both table and stacked fallback layouts.
+        drawInspectorPropertyLabel(entity.name, .{ 0.88, 0.92, 0.98, 1.0 });
         // 在 AI preview 模式下，不允许直接重命名（改动应走 AI command path）
         if (inspector_source == .main_world) {
             _ = gui.inputTextWithHint("##inspector_entity_name", state.text(.name), state.inspector_name_buffer[0..]);
@@ -374,8 +422,15 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
             });
             gui.dummy(0.0, 6.0);
 
-            if (gui.beginTable("transform_grid", 4)) {
-                defer gui.endTable();
+            const transform_grid_available_width = gui.contentRegionAvail()[0];
+            const transform_grid_use_table = transform_grid_available_width >= 360.0 and gui.beginTable("transform_grid", 4);
+            transform_grid_mode = if (transform_grid_use_table) .table else .stacked;
+            defer {
+                if (transform_grid_use_table) {
+                    gui.endTable();
+                }
+            }
+            if (transform_grid_use_table) {
                 gui.tableSetupColumn("##transform_label", false, 42.0);
                 gui.tableSetupColumn("##transform_x", true, 1.0);
                 gui.tableSetupColumn("##transform_y", true, 1.0);
@@ -453,6 +508,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                     }
                 }
             }
+            transform_grid_mode = .table;
         }
     }
 
@@ -569,8 +625,9 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                     defer gui.popStyleVar(1);
                     if (gui.buttonEx(state.text(.assign_selected_texture), 0.0, 0.0)) {
                         if (entity_material_write) |em| {
-                            try assignSelectedTextureToMaterial(state, layer_context, em);
-                            try history.captureSnapshot(state, layer_context);
+                            if (try assignSelectedTextureToMaterial(state, layer_context, em)) {
+                                try history.captureSnapshot(state, layer_context);
+                            }
                         }
                     }
                     gui.sameLine();
@@ -597,7 +654,9 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                     defer endInspectorPropertyGrid();
                     drawInspectorTextRow(state.text(.resource), resource_text);
                     drawInspectorTextRow(scope_label, scope_value);
-                    drawInspectorTextRow(state.text(.texture), texture_text);
+                    if (try drawMaterialTextureSlotRow(state, layer_context, entity_material_write, texture_text)) {
+                        try history.captureSnapshot(state, layer_context);
+                    }
 
                     if (beginInspectorComboRow(state.text(.shading), "##material_shading", utils.shadingLabel(state, effective_shading))) {
                         defer gui.endCombo();
@@ -1757,6 +1816,27 @@ fn drawTransformTableRow(
 ) !EditRowResult {
     var result = EditRowResult{};
 
+    if (transform_grid_mode == .stacked) {
+        gui.alignTextToFramePadding();
+        gui.text(row_label);
+        gui.dummy(0.0, 3.0);
+
+        const x_result = try drawAxisDragField(id_prefix, "x", "X", &values[0], axis_x_style, speed, min_value, max_value);
+        result.changed = result.changed or x_result.changed;
+        result.committed = result.committed or x_result.committed;
+
+        gui.dummy(0.0, 4.0);
+        const y_result = try drawAxisDragField(id_prefix, "y", "Y", &values[1], axis_y_style, speed, min_value, max_value);
+        result.changed = result.changed or y_result.changed;
+        result.committed = result.committed or y_result.committed;
+
+        gui.dummy(0.0, 4.0);
+        const z_result = try drawAxisDragField(id_prefix, "z", "Z", &values[2], axis_z_style, speed, min_value, max_value);
+        result.changed = result.changed or z_result.changed;
+        result.committed = result.committed or z_result.committed;
+        return result;
+    }
+
     gui.tableNextRow();
     gui.tableNextColumn();
     gui.alignTextToFramePadding();
@@ -2105,10 +2185,19 @@ pub fn assignSelectedTextureToMaterial(
     state: *EditorState,
     layer_context: *engine.core.LayerContext,
     entity: *engine.scene.Entity,
-) !void {
-    const entry = content_browser.selectedAsset(state) orelse return;
+) !bool {
+    const entry = content_browser.selectedAsset(state) orelse return false;
+    return assignTextureEntryToMaterial(state, layer_context, entity, entry);
+}
+
+pub fn assignTextureEntryToMaterial(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity: *engine.scene.Entity,
+    entry: *const state_mod.AssetEntry,
+) !bool {
     if (entry.kind != .texture) {
-        return;
+        return false;
     }
 
     const texture_handle = try importTextureAsset(state, layer_context, entry.id, entry.path);
@@ -2117,7 +2206,45 @@ pub fn assignSelectedTextureToMaterial(
         if (entity.material) |*material_component| {
             material_component.handle = materialHandleForEntity(state, entity);
         }
+        return true;
     }
+    return false;
+}
+
+fn drawMaterialTextureSlotRow(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity: ?*engine.scene.Entity,
+    texture_text: []const u8,
+) !bool {
+    drawInspectorPropertyLabel(state.text(.texture), null);
+    const clicked = gui.buttonEx(texture_text, -1.0, 0.0);
+
+    var changed = false;
+    if (entity) |target_entity| {
+        if (clicked and content_browser.selectedAssetCanUseAsTexture(state)) {
+            changed = (try assignSelectedTextureToMaterial(state, layer_context, target_entity)) or changed;
+        }
+        changed = (try acceptDroppedTextureAssetForMaterialSlot(state, layer_context, target_entity)) or changed;
+    }
+    return changed;
+}
+
+fn acceptDroppedTextureAssetForMaterialSlot(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity: *engine.scene.Entity,
+) !bool {
+    var dropped_texture: u64 = 0;
+    if (!gui.acceptDragDropPayloadU64(state_mod.asset_texture_drag_payload, &dropped_texture)) {
+        return false;
+    }
+
+    const asset_index: usize = @intCast(dropped_texture);
+    if (asset_index >= state.asset_entries.items.len) {
+        return false;
+    }
+    return assignTextureEntryToMaterial(state, layer_context, entity, &state.asset_entries.items[asset_index]);
 }
 
 pub fn importTextureAsset(

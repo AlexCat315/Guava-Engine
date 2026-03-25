@@ -280,6 +280,7 @@ pub const EditorState = struct {
     light_component_clipboard: ?engine.scene.Light = null,
     vfx_component_clipboard: ?engine.scene.Vfx = null,
     playback_state: PlaybackState = .stopped,
+    play_mode_active: bool = false,
     transform_space: TransformSpace = .local,
     manipulation_target: ManipulationTarget = .main_world,
     undo_stack: std.ArrayList(command_mod.EditorCommand) = .empty,

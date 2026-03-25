@@ -223,6 +223,7 @@ pub const locale = blk: {
             .select = "Select",
             .run = "Run",
             .pause = "Pause",
+            .stop = "Stop",
             .step = "Step",
             .render_settings = "Render Settings",
             .viewport_debug_overlay = "Viewport Debug Overlay",

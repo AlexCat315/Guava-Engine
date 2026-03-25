@@ -35,9 +35,7 @@ pub const PlaybackController = struct {
 
     pub fn setState(self: *PlaybackController, next: PlaybackState) void {
         self.state = next;
-        if (next == .playing) {
-            self.pending_steps = 0;
-        }
+        self.pending_steps = 0;
     }
 
     pub fn requestStep(self: *PlaybackController) void {
@@ -123,5 +121,9 @@ test "PlaybackController advances only while playing or stepping" {
     try std.testing.expect(controller.shouldAdvance());
 
     controller.setState(.stopped);
+    try std.testing.expect(!controller.shouldAdvance());
+
+    controller.requestStep();
+    controller.setState(.paused);
     try std.testing.expect(!controller.shouldAdvance());
 }

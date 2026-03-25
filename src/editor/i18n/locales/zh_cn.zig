@@ -223,6 +223,7 @@ pub const locale = blk: {
             .select = "选择",
             .run = "运行",
             .pause = "暂停",
+            .stop = "停止",
             .step = "步进",
             .render_settings = "渲染设置",
             .viewport_debug_overlay = "视口调试浮层",

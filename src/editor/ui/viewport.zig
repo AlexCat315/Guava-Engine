@@ -23,7 +23,7 @@ const viewport_status = @import("panels/viewport/viewport_status.zig");
 const ai_chat = @import("panels/ai/ai_chat.zig");
 const ui_icons = @import("icons.zig");
 const layout = @import("layout.zig");
-const PlaybackState = @import("../core/state.zig").PlaybackState;
+const playback_session = @import("../core/playback_session.zig");
 const viewport_log = std.log.scoped(.viewport_input);
 
 var g_last_viewport_hovered: ?bool = null;
@@ -84,18 +84,8 @@ fn drawOverlayIconButton(
     return clicked;
 }
 
-fn setPlaybackState(state: *EditorState, layer_context: *engine.core.LayerContext, playback_state: PlaybackState) void {
-    state.playback_state = playback_state;
-    layer_context.playback_controller.setState(playback_state);
-}
-
-fn stepPlayback(state: *EditorState, layer_context: *engine.core.LayerContext) void {
-    state.playback_state = .paused;
-    layer_context.playback_controller.requestStep();
-}
-
-fn syncPlaybackState(state: *EditorState, layer_context: *engine.core.LayerContext) void {
-    state.playback_state = layer_context.playback_controller.state;
+fn syncPlaybackState(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    try playback_session.sync(state, layer_context);
 }
 
 fn drawViewportToolbarStrip(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -505,11 +495,16 @@ pub fn drawStatusBarWindow(state: *EditorState, layer_context: *engine.core.Laye
     else
         "/";
 
+    const status_context_ratio = viewport_status.statusBarContextRatio(window_width);
+    const status_metrics_ratio = 1.0 - status_context_ratio;
+    const context_width = window_width * status_context_ratio;
+    const metrics_width = @max(window_width - context_width, 0.0);
+
     var compact_path_buffer: [160]u8 = undefined;
     const compact_path = viewport_status.compactStatusPath(
         &compact_path_buffer,
         selected_path,
-        viewport_status.statusPathCharacterBudget(window_width),
+        viewport_status.statusPathCharacterBudget(context_width),
     );
 
     var metrics_buffer: [320]u8 = undefined;
@@ -522,7 +517,7 @@ pub fn drawStatusBarWindow(state: *EditorState, layer_context: *engine.core.Laye
         save_status,
         backend_text,
         memory_text,
-        window_width,
+        metrics_width,
     );
     const metrics_text = metrics_stream.getWritten();
 
@@ -535,7 +530,7 @@ pub fn drawStatusBarWindow(state: *EditorState, layer_context: *engine.core.Laye
         camera_text,
         mode_text,
         space_text,
-        window_width,
+        context_width,
     );
     const context_text = context_stream.getWritten();
 
@@ -544,8 +539,8 @@ pub fn drawStatusBarWindow(state: *EditorState, layer_context: *engine.core.Laye
     gui.setCursorPos(.{ 0.0, 3.0 });
     if (gui.beginTable("status_bar_layout", 2)) {
         defer gui.endTable();
-        gui.tableSetupColumn("##status_context", true, if (window_width >= 1280.0) 0.62 else 0.56);
-        gui.tableSetupColumn("##status_metrics", true, if (window_width >= 1280.0) 0.38 else 0.44);
+        gui.tableSetupColumn("##status_context", true, status_context_ratio);
+        gui.tableSetupColumn("##status_metrics", true, status_metrics_ratio);
         gui.tableNextRow();
         gui.tableNextColumn();
         gui.alignTextToFramePadding();
@@ -716,7 +711,7 @@ pub fn drawEditorUi(
 ) !void {
     syncViewportState(state, post_process_state, layer_context);
     try applyPendingViewportAssetDrop(state, layer_context);
-    syncPlaybackState(state, layer_context);
+    try syncPlaybackState(state, layer_context);
 
     // ── Shell Layer 1: Top Bar ────────────────────────────────────────────
     try menu_bar.drawMenuBar(state, layer_context);
@@ -1273,7 +1268,7 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
 }
 
 fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
-    const window_width = 126.0;
+    const window_width = 166.0;
     gui.setNextWindowPos(.{
         state.viewport_origin[0] + @max((state.viewport_extent[0] - window_width) * 0.5, 18.0),
         state.viewport_origin[1] + 10.0,
@@ -1306,7 +1301,7 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
         ui_icons.paths.toolbar.play,
         if (state.playback_state == .playing) activePlayPalette() else idlePlaybackPalette(),
     )) {
-        setPlaybackState(state, layer_context, .playing);
+        try playback_session.play(state, layer_context);
     }
     if (gui.isItemHovered() or (state.manipulation_started_from_ui and input.isMouseDown(.left))) state.viewport_overlay_hovered = true;
 
@@ -1322,7 +1317,7 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
         ui_icons.paths.toolbar.pause,
         if (state.playback_state == .paused) activePausePalette() else idlePlaybackPalette(),
     )) {
-        setPlaybackState(state, layer_context, .paused);
+        playback_session.pause(state, layer_context);
     }
     if (gui.isItemHovered() or (state.manipulation_started_from_ui and input.isMouseDown(.left))) state.viewport_overlay_hovered = true;
 
@@ -1338,7 +1333,23 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
         ui_icons.paths.toolbar.step,
         stepPlaybackPalette(),
     )) {
-        stepPlayback(state, layer_context);
+        try playback_session.step(state, layer_context);
+    }
+    if (gui.isItemHovered() or (state.manipulation_started_from_ui and input.isMouseDown(.left))) state.viewport_overlay_hovered = true;
+
+    gui.sameLine();
+    if (gui.isWindowHovered() and input.wasMousePressed(.left)) {
+        state.manipulation_started_from_ui = true;
+    }
+
+    if (try drawPlaybackToolbarIconButton(
+        state,
+        layer_context,
+        "viewport_stop",
+        ui_icons.paths.toolbar.stop,
+        if (state.play_mode_active or state.playback_state != .stopped) activePausePalette() else idlePlaybackPalette(),
+    )) {
+        playback_session.stop(state, layer_context);
     }
     if (gui.isItemHovered() or (state.manipulation_started_from_ui and input.isMouseDown(.left))) state.viewport_overlay_hovered = true;
 }

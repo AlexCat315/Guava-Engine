@@ -21,6 +21,7 @@ pub const paths = struct {
         pub const folder = "assets/ui/icons/heroicons/24/solid/squares-2x2.svg";
         pub const play = "assets/ui/icons/heroicons/24/solid/play.svg";
         pub const pause = "assets/ui/icons/heroicons/24/solid/pause.svg";
+        pub const stop = "assets/ui/icons/heroicons/24/solid/squares-2x2.svg";
         pub const step = "assets/ui/icons/heroicons/24/solid/forward.svg";
         pub const settings = "assets/ui/icons/heroicons/24/solid/cog-6-tooth.svg";
         pub const transform_global = "assets/ui/icons/filled/globe.svg";

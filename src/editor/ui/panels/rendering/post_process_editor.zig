@@ -8,6 +8,27 @@ const EditorState = @import("../../../core/state.zig").EditorState;
 const EditorViewportState = engine.render.EditorViewportState;
 const EditorViewportLutPreset = engine.render.EditorViewportLutPreset;
 
+const QuickAddItem = struct {
+    effect: PostProcessEffect,
+    label: []const u8,
+    hint: []const u8,
+};
+
+const PreviewToggleItem = struct {
+    label: []const u8,
+    hint: []const u8,
+    value: *bool,
+};
+
+const quick_add_items = [_]QuickAddItem{
+    .{ .effect = .bloom, .label = "Bloom", .hint = "Highlight glow" },
+    .{ .effect = .tonemap, .label = "Tonemap", .hint = "Exposure and LUT" },
+    .{ .effect = .taa, .label = "TAA", .hint = "Temporal resolve" },
+    .{ .effect = .ssr, .label = "SSR", .hint = "Screen-space reflections" },
+    .{ .effect = .ssgi, .label = "SSGI", .hint = "Screen-space GI" },
+    .{ .effect = .dof, .label = "DOF", .hint = "Depth of field" },
+};
+
 pub const PostProcessEffect = enum {
     bloom,
     fxaa,
@@ -111,7 +132,7 @@ pub const PostProcessPipelineEditorState = struct {
         node.deinit(self.allocator);
         if (self.selected_node_index) |*si| {
             if (si.* == index) {
-                si.* = null;
+                self.selected_node_index = null;
             } else if (si.* > index) {
                 si.* -= 1;
             }
@@ -153,33 +174,47 @@ pub fn drawPostProcessPipelineEditorWindow(
     }
     defer gui.endWindow();
 
-    drawPipelineToolbar(editor_state);
+    const node_count = editor_state.nodes.items.len;
+    const enabled_count = enabledEffectCount(viewport_state);
 
+    drawPipelineToolbar(editor_state, node_count, enabled_count);
     gui.separator();
 
     const content_region = gui.contentRegionAvail();
-    const graph_width = if (editor_state.show_preview) content_region[0] * editor_state.preview_split else content_region[0];
+    const has_nodes = node_count != 0;
+    const graph_width = if (editor_state.show_preview)
+        if (has_nodes)
+            content_region[0] * editor_state.preview_split
+        else
+            content_region[0] * 0.56
+    else
+        content_region[0];
 
     if (gui.beginChild("pipeline_graph", graph_width, -1.0, true)) {
-        drawPipelineGraph(editor_state);
+        drawPipelineGraph(editor_state, has_nodes);
     }
     gui.endChild();
 
     if (editor_state.show_preview) {
         gui.sameLine();
         if (gui.beginChild("pipeline_preview", -1.0, -1.0, true)) {
-            drawPreviewPanel(viewport_state);
+            drawPreviewPanel(viewport_state, enabled_count);
         }
         gui.endChild();
     }
 
-    if (editor_state.getSelectedNode()) |node| {
+    if (editor_state.selected_node_index) |selected_index| {
+        if (editor_state.getSelectedNode()) |node| {
+            gui.separator();
+            drawEffectParameters(editor_state, viewport_state, selected_index, node);
+        }
+    } else if (node_count != 0) {
         gui.separator();
-        drawEffectParameters(viewport_state, node);
+        drawEmptySelectionState();
     }
 }
 
-fn drawPipelineToolbar(editor_state: *PostProcessPipelineEditorState) void {
+fn drawPipelineToolbar(editor_state: *PostProcessPipelineEditorState, node_count: usize, enabled_count: usize) void {
     if (gui.button("Add Effect")) {
         gui.openPopup("add_effect_popup");
     }
@@ -201,11 +236,11 @@ fn drawPipelineToolbar(editor_state: *PostProcessPipelineEditorState) void {
         };
 
         for (effects) |effect| {
-            var name_buf: [32]u8 = undefined;
-            const name = std.fmt.bufPrint(&name_buf, "{s}", .{@tagName(effect)}) catch continue;
+            var name_buf: [48]u8 = undefined;
+            const name = std.fmt.bufPrint(&name_buf, "{s}", .{nodeLabel(effect)}) catch continue;
             if (gui.selectable(name, false, false, 0, 0)) {
-                const x = @as(f32, @floatFromInt(editor_state.nodes.items.len)) * 200.0;
-                _ = editor_state.addNode(effect, x, 100.0) catch {};
+                const x = @as(f32, @floatFromInt(editor_state.nodes.items.len)) * 180.0;
+                _ = addNodeAndSelect(editor_state, effect, x, 96.0);
             }
         }
     }
@@ -213,33 +248,46 @@ fn drawPipelineToolbar(editor_state: *PostProcessPipelineEditorState) void {
     gui.sameLine();
 
     if (gui.button("Clear All")) {
-        for (editor_state.nodes.items) |*node| {
-            node.deinit(editor_state.allocator);
-        }
-        editor_state.nodes.clearRetainingCapacity();
-        editor_state.selected_node_index = null;
+        clearAllNodes(editor_state);
     }
 
     gui.sameLine();
 
-    gui.text("Preview:");
+    gui.text("Preview");
     gui.sameLine();
     _ = gui.checkbox("##show_preview", &editor_state.show_preview);
 
     gui.sameLine();
+    var nodes_buf: [16]u8 = undefined;
+    const nodes_text = std.fmt.bufPrint(&nodes_buf, "{d}", .{node_count}) catch "?";
+    gui.labelText("Nodes", nodes_text);
 
-    gui.text("Nodes:");
     gui.sameLine();
-    var count_buf: [16]u8 = undefined;
-    const count_text = std.fmt.bufPrint(&count_buf, "{}", .{editor_state.nodes.items.len}) catch "?";
-    gui.text(count_text);
+    var enabled_buf: [16]u8 = undefined;
+    const enabled_text = std.fmt.bufPrint(&enabled_buf, "{d}", .{enabled_count}) catch "?";
+    gui.labelText("Active", enabled_text);
+
+    if (node_count == 0) {
+        gui.sameLine();
+        gui.textColored(.{ 0.62, 0.66, 0.71, 1.0 }, "Start with Bloom or Tonemap");
+    } else {
+        gui.sameLine();
+        gui.textColored(.{ 0.62, 0.66, 0.71, 1.0 }, "Drag nodes to reorder");
+    }
 }
 
-fn drawPipelineGraph(editor_state: *PostProcessPipelineEditorState) void {
+fn drawPipelineGraph(editor_state: *PostProcessPipelineEditorState, has_nodes: bool) void {
     const canvas_pos = gui.cursorScreenPos();
     const canvas_size = gui.contentRegionAvail();
 
     _ = gui.invisibleButton("canvas", canvas_size[0], canvas_size[1]);
+
+    if (!has_nodes) {
+        drawEmptyPipelineCanvas(editor_state, canvas_size);
+        return;
+    }
+
+    gui.textColored(.{ 0.62, 0.66, 0.71, 1.0 }, "Drag nodes to reposition them. Select one to edit its parameters.");
 
     for (editor_state.nodes.items, 0..) |*node, index| {
         const is_selected = editor_state.selected_node_index != null and editor_state.selected_node_index.? == index;
@@ -251,8 +299,8 @@ fn drawPipelineGraph(editor_state: *PostProcessPipelineEditorState) void {
 
         gui.setCursorScreenPos(node_pos);
 
-        const node_width: f32 = 120.0;
-        const node_height: f32 = 60.0;
+        const node_width: f32 = 164.0;
+        const node_height: f32 = 74.0;
 
         const color = node.getColor();
         const node_bg: [4]f32 = if (is_selected)
@@ -269,6 +317,16 @@ fn drawPipelineGraph(editor_state: *PostProcessPipelineEditorState) void {
 
         if (gui.beginChild(node_name, node_width, node_height, true)) {
             gui.text(node.getName());
+            var detail_buf: [64]u8 = undefined;
+            const detail_text = std.fmt.bufPrint(
+                &detail_buf,
+                "In {d}  Out {d}",
+                .{ node.input_connections.items.len, node.output_connections.items.len },
+            ) catch "";
+            gui.textColored(.{ 0.65, 0.68, 0.73, 1.0 }, detail_text);
+            if (is_selected) {
+                gui.textColored(.{ 0.92, 0.97, 0.80, 1.0 }, "Selected");
+            }
         }
         gui.endChild();
 
@@ -285,31 +343,109 @@ fn drawPipelineGraph(editor_state: *PostProcessPipelineEditorState) void {
     }
 }
 
-fn drawPreviewPanel(viewport_state: *EditorViewportState) void {
-    gui.text("Preview");
+fn drawEmptyPipelineCanvas(editor_state: *PostProcessPipelineEditorState, canvas_size: [2]f32) void {
+    const spacer = @max(canvas_size[1] * 0.12, 16.0);
+    gui.dummy(0.0, spacer);
+
+    gui.textColored(.{ 0.92, 0.95, 0.98, 1.0 }, "Start a pipeline");
+    gui.textWrapped("Add a node to begin shaping the viewport look. Bloom, Tonemap, TAA and SSR are the fastest way to validate the render stack.");
+
+    gui.dummy(0.0, 10.0);
+    const columns = layout.responsiveButtonColumns(quick_add_items.len, 128.0);
+    const width = layout.responsiveButtonWidth(columns);
+    for (quick_add_items, 0..) |item, index| {
+        if (index > 0) {
+            layout.advanceResponsiveRow(index, columns);
+        }
+        if (drawAccentButton(item.label, width, item.hint, false)) {
+            _ = addNodeAndSelect(editor_state, item.effect, @as(f32, @floatFromInt(editor_state.nodes.items.len)) * 180.0, 96.0);
+        }
+    }
+
+    gui.dummy(0.0, 10.0);
+    gui.textColored(.{ 0.62, 0.66, 0.71, 1.0 }, "Tip: select a node to edit parameters. Drag to reorder; preview toggles stay live.");
+}
+
+fn drawPreviewPanel(viewport_state: *EditorViewportState, enabled_count: usize) void {
+    gui.text("Live Preview");
     gui.separator();
 
-    if (props.beginPropertyGrid("preview_settings")) {
-        defer props.endPropertyGrid();
+    var status_buf: [64]u8 = undefined;
+    const status_text = std.fmt.bufPrint(&status_buf, "{d} effects enabled", .{enabled_count}) catch "0 effects enabled";
+    gui.textColored(.{ 0.62, 0.66, 0.71, 1.0 }, status_text);
 
-        _ = props.boolean("Manual Exposure", &viewport_state.exposure_enabled);
-        _ = props.boolean("Bloom", &viewport_state.bloom_enabled);
-        _ = props.boolean("Color Grading", &viewport_state.color_grading_enabled);
-        _ = props.boolean("FXAA", &viewport_state.fxaa_enabled);
-        _ = props.boolean("SSAO", &viewport_state.ssao_enabled);
-        _ = props.boolean("SSGI", &viewport_state.ssgi_enabled);
-        _ = props.boolean("SSR", &viewport_state.ssr_enabled);
-        _ = props.boolean("TAA", &viewport_state.taa_enabled);
-        _ = props.boolean("DOF", &viewport_state.dof_enabled);
-        _ = props.boolean("Contact Shadows", &viewport_state.contact_shadows_enabled);
-        _ = props.boolean("RT Shadows", &viewport_state.rt_shadows_enabled);
-        _ = props.boolean("LUT", &viewport_state.lut_enabled);
+    gui.dummy(0.0, 6.0);
+    gui.text("Core");
+    drawPreviewCoreControls(viewport_state);
+
+    gui.dummy(0.0, 6.0);
+    gui.text("Screen Space");
+    drawPreviewScreenControls(viewport_state);
+
+    gui.dummy(0.0, 8.0);
+    if (gui.button("Enable All")) {
+        setAllPreviewEffects(viewport_state, true);
+    }
+    gui.sameLine();
+    if (gui.button("Disable All")) {
+        setAllPreviewEffects(viewport_state, false);
     }
 }
 
-fn drawEffectParameters(viewport_state: *EditorViewportState, node: *PostProcessEffectNode) void {
+fn drawPreviewCoreControls(viewport_state: *EditorViewportState) void {
+    const items = [_]PreviewToggleItem{
+        .{ .label = "Manual Exposure", .hint = "HDR preview", .value = &viewport_state.exposure_enabled },
+        .{ .label = "Bloom", .hint = "Glow pass", .value = &viewport_state.bloom_enabled },
+        .{ .label = "Color Grading", .hint = "Tone shaping", .value = &viewport_state.color_grading_enabled },
+        .{ .label = "FXAA", .hint = "Fallback AA", .value = &viewport_state.fxaa_enabled },
+        .{ .label = "TAA", .hint = "Temporal AA", .value = &viewport_state.taa_enabled },
+        .{ .label = "LUT", .hint = "Look-up table", .value = &viewport_state.lut_enabled },
+    };
+    drawPreviewToggleGrid(items[0..], 138.0);
+}
+
+fn drawPreviewScreenControls(viewport_state: *EditorViewportState) void {
+    const items = [_]PreviewToggleItem{
+        .{ .label = "SSAO", .hint = "Ambient occlusion", .value = &viewport_state.ssao_enabled },
+        .{ .label = "SSGI", .hint = "Global illumination", .value = &viewport_state.ssgi_enabled },
+        .{ .label = "SSR", .hint = "Screen-space reflections", .value = &viewport_state.ssr_enabled },
+        .{ .label = "DOF", .hint = "Lens blur", .value = &viewport_state.dof_enabled },
+        .{ .label = "Contact Shadows", .hint = "Small-scale occlusion", .value = &viewport_state.contact_shadows_enabled },
+        .{ .label = "RT Shadows", .hint = "Hardware shadow path", .value = &viewport_state.rt_shadows_enabled },
+    };
+    drawPreviewToggleGrid(items[0..], 138.0);
+}
+
+fn drawPreviewToggleGrid(items: []const PreviewToggleItem, min_width_hint: f32) void {
+    const columns = layout.responsiveButtonColumns(items.len, min_width_hint);
+    const width = layout.responsiveButtonWidth(columns);
+    for (items, 0..) |item, index| {
+        if (index > 0) {
+            layout.advanceResponsiveRow(index, columns);
+        }
+        const active = item.value.*;
+        if (drawToggleChip(item.label, width, item.hint, active)) {
+            item.value.* = !active;
+        }
+    }
+}
+
+fn drawEffectParameters(
+    editor_state: *PostProcessPipelineEditorState,
+    viewport_state: *EditorViewportState,
+    selected_index: usize,
+    node: *PostProcessEffectNode,
+) void {
     gui.text("Effect Parameters");
+    gui.sameLine();
+    if (gui.button("Remove Node")) {
+        _ = editor_state.removeNode(selected_index);
+        return;
+    }
     gui.separator();
+
+    gui.textColored(.{ 0.62, 0.66, 0.71, 1.0 }, node.getName());
+    gui.textWrapped("These controls edit the live viewport state. The node graph is an ordering and selection surface.");
 
     if (props.beginPropertyGrid("effect_params")) {
         defer props.endPropertyGrid();
@@ -366,7 +502,7 @@ fn drawEffectParameters(viewport_state: *EditorViewportState, node: *PostProcess
                 }
             },
             .fxaa => {
-                gui.text("No additional parameters");
+                gui.textWrapped("No additional parameters.");
             },
             .color_grading => {
                 _ = props.float("Saturation", &viewport_state.color_grading_saturation, 0.01, 0.0, 2.0);
@@ -392,6 +528,122 @@ fn drawEffectParameters(viewport_state: *EditorViewportState, node: *PostProcess
             },
         }
     }
+}
+
+fn drawEmptySelectionState() void {
+    gui.text("No node selected");
+    gui.textWrapped("Pick a node in the graph to reveal its low-level controls.");
+}
+
+fn drawToggleChip(label: []const u8, width: f32, hint: []const u8, active: bool) bool {
+    const bg: [4]f32 = if (active)
+        .{ 0.20, 0.53, 0.36, 0.92 }
+    else
+        .{ 0.14, 0.16, 0.18, 0.82 };
+    const hovered: [4]f32 = if (active)
+        .{ 0.24, 0.62, 0.42, 0.96 }
+    else
+        .{ 0.20, 0.22, 0.25, 0.92 };
+    const pressed: [4]f32 = if (active)
+        .{ 0.12, 0.42, 0.28, 1.0 }
+    else
+        .{ 0.18, 0.20, 0.23, 1.0 };
+
+    gui.pushStyleColor(.button, bg);
+    gui.pushStyleColor(.button_hovered, hovered);
+    gui.pushStyleColor(.button_active, pressed);
+    defer gui.popStyleColor(3);
+
+    const clicked = gui.buttonEx(label, width, 0.0);
+    if (gui.isItemHovered() and hint.len != 0) {
+        gui.setTooltip(hint);
+    }
+    return clicked;
+}
+
+fn drawAccentButton(label: []const u8, width: f32, hint: []const u8, active: bool) bool {
+    const bg: [4]f32 = if (active)
+        .{ 0.20, 0.53, 0.36, 0.92 }
+    else
+        .{ 0.17, 0.20, 0.24, 0.88 };
+    const hovered: [4]f32 = if (active)
+        .{ 0.24, 0.62, 0.42, 0.96 }
+    else
+        .{ 0.22, 0.26, 0.30, 0.96 };
+    const pressed: [4]f32 = if (active)
+        .{ 0.12, 0.42, 0.28, 1.0 }
+    else
+        .{ 0.16, 0.18, 0.21, 1.0 };
+
+    gui.pushStyleColor(.button, bg);
+    gui.pushStyleColor(.button_hovered, hovered);
+    gui.pushStyleColor(.button_active, pressed);
+    defer gui.popStyleColor(3);
+
+    const clicked = gui.buttonEx(label, width, 0.0);
+    if (gui.isItemHovered() and hint.len != 0) {
+        gui.setTooltip(hint);
+    }
+    return clicked;
+}
+
+fn addNodeAndSelect(editor_state: *PostProcessPipelineEditorState, effect: PostProcessEffect, x: f32, y: f32) bool {
+    const index = editor_state.addNode(effect, x, y) catch return false;
+    editor_state.selected_node_index = index;
+    return true;
+}
+
+fn clearAllNodes(editor_state: *PostProcessPipelineEditorState) void {
+    for (editor_state.nodes.items) |*node| {
+        node.deinit(editor_state.allocator);
+    }
+    editor_state.nodes.clearRetainingCapacity();
+    editor_state.selected_node_index = null;
+}
+
+fn setAllPreviewEffects(viewport_state: *EditorViewportState, enabled: bool) void {
+    viewport_state.exposure_enabled = enabled;
+    viewport_state.bloom_enabled = enabled;
+    viewport_state.color_grading_enabled = enabled;
+    viewport_state.fxaa_enabled = enabled;
+    viewport_state.ssao_enabled = enabled;
+    viewport_state.ssgi_enabled = enabled;
+    viewport_state.ssr_enabled = enabled;
+    viewport_state.taa_enabled = enabled;
+    viewport_state.dof_enabled = enabled;
+    viewport_state.contact_shadows_enabled = enabled;
+    viewport_state.rt_shadows_enabled = enabled;
+    viewport_state.lut_enabled = enabled;
+}
+
+fn enabledEffectCount(viewport_state: *const EditorViewportState) usize {
+    return @intFromBool(viewport_state.exposure_enabled) +
+        @intFromBool(viewport_state.bloom_enabled) +
+        @intFromBool(viewport_state.color_grading_enabled) +
+        @intFromBool(viewport_state.fxaa_enabled) +
+        @intFromBool(viewport_state.ssao_enabled) +
+        @intFromBool(viewport_state.ssgi_enabled) +
+        @intFromBool(viewport_state.ssr_enabled) +
+        @intFromBool(viewport_state.taa_enabled) +
+        @intFromBool(viewport_state.dof_enabled) +
+        @intFromBool(viewport_state.contact_shadows_enabled) +
+        @intFromBool(viewport_state.rt_shadows_enabled) +
+        @intFromBool(viewport_state.lut_enabled);
+}
+
+fn nodeLabel(effect: PostProcessEffect) []const u8 {
+    return switch (effect) {
+        .bloom => "Bloom",
+        .fxaa => "FXAA",
+        .ssao => "SSAO",
+        .ssgi => "SSGI",
+        .ssr => "SSR",
+        .taa => "TAA",
+        .dof => "DOF",
+        .color_grading => "Color Grading",
+        .contact_shadows => "Contact Shadows",
+        .tonemap => "Tonemap",
+    };
 }
 
 fn drawLutPresetProperty(viewport_state: *EditorViewportState) void {

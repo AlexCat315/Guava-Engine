@@ -226,13 +226,7 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
                 if (entity.material == null) {
                     try inspector.addMaterialComponent(state, layer_context, entity);
                 }
-                const entry = state.asset_entries.items[asset_index];
-                const texture_handle = try inspector.importTextureAsset(state, layer_context, entry.id, entry.path);
-                if (try inspector.ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
-                    material_resource.base_color_texture = texture_handle;
-                    if (entity.material) |*material_component| {
-                        material_component.handle = inspector.materialHandleForEntity(state, entity);
-                    }
+                if (try inspector.assignTextureEntryToMaterial(state, layer_context, entity, &state.asset_entries.items[asset_index])) {
                     try history.captureSnapshot(state, layer_context);
                 }
             }

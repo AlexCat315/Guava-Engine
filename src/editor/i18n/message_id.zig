@@ -214,6 +214,7 @@ pub const MessageId = enum {
     select,
     run,
     pause,
+    stop,
     step,
     render_settings,
     viewport_debug_overlay,

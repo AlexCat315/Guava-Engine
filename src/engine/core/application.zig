@@ -171,6 +171,8 @@ pub const Application = struct {
     time_scale: f32 = 1.0,
     /// 游戏运行时状态机
     game_state: layer_mod.GameState = .game_start,
+    /// 播放模式快照（用于 Play/Stop 回滚）
+    play_mode_snapshot: ?PlayModeSnapshot = null,
     /// 物理时间累积器
     physics_accumulator_seconds: f32 = 0.0,
     /// 物理状态实例（替代全局变量）
@@ -273,6 +275,10 @@ pub const Application = struct {
             self.detachLayers();
         }
         self.layers.deinit();
+        if (self.play_mode_snapshot) |*snapshot| {
+            snapshot.deinit(self.allocator);
+            self.play_mode_snapshot = null;
+        }
         self.editor_utility_runtime.deinit();
         self.script_runtime.deinit();
         if (audio_mod.get() catch null) |audio_runtime| {
@@ -371,6 +377,8 @@ pub const Application = struct {
             if (self.playback_controller.state == .stopped and self.game_state != .game_start) {
                 self.game_state = .game_start;
             }
+
+            self.syncPlayModeState();
 
             if (should_advance_simulation) {
                 animator_system.update(&self.world, delta_seconds);
@@ -648,4 +656,260 @@ pub const Application = struct {
         self.script_runtime.bindWorld(&self.world);
         self.script_runtime.bindCommandQueue(&self.command_queue);
     }
+
+    fn syncPlayModeState(self: *Application) void {
+        switch (self.playback_controller.state) {
+            .playing => {
+                if (self.play_mode_snapshot == null) {
+                    self.enterPlayMode();
+                } else {
+                    self.game_state = .playing;
+                }
+            },
+            .paused => {
+                if (self.play_mode_snapshot != null) {
+                    self.game_state = .paused;
+                }
+            },
+            .stopped => {
+                if (self.play_mode_snapshot) |_| {
+                    self.exitPlayMode();
+                } else {
+                    self.game_state = .game_start;
+                }
+            },
+        }
+    }
+
+    fn enterPlayMode(self: *Application) void {
+        if (self.play_mode_snapshot != null) {
+            return;
+        }
+
+        const selection = self.renderer.selectedEntities();
+        const snapshot = capturePlayModeSnapshot(
+            self.allocator,
+            &self.world,
+            selection,
+            self.time_scale,
+            self.global_time,
+            self.physics_accumulator_seconds,
+        ) catch |err| {
+            std.log.err("play mode: failed to capture snapshot: {}", .{err});
+            self.playback_controller.setState(.stopped);
+            self.game_state = .game_start;
+            return;
+        };
+
+        self.play_mode_snapshot = snapshot;
+        self.game_state = .playing;
+    }
+
+    fn exitPlayMode(self: *Application) void {
+        var snapshot = self.play_mode_snapshot orelse {
+            self.game_state = .game_start;
+            return;
+        };
+
+        restorePlayModeWorld(
+            self.allocator,
+            &self.world,
+            &self.physics_state,
+            &self.script_runtime,
+            &snapshot,
+        ) catch |err| {
+            std.log.err("play mode: failed to restore world snapshot: {}", .{err});
+            self.game_state = .game_start;
+            return;
+        };
+
+        if (self.renderer.replaceSelectionMany(snapshot.selection)) {
+            self.global_time = snapshot.global_time;
+            self.time_scale = snapshot.time_scale;
+            self.game_state = snapshot.game_state;
+            self.physics_accumulator_seconds = snapshot.physics_accumulator_seconds;
+            self.playback_controller = snapshot.playback_controller;
+            const max_pending = self.command_queue.max_pending;
+            self.command_queue.deinit();
+            self.command_queue = command_queue_mod.CommandQueue.init(self.allocator);
+            self.command_queue.max_pending = max_pending;
+            snapshot.deinit(self.allocator);
+            self.play_mode_snapshot = null;
+        } else |err| {
+            std.log.err("play mode: failed to restore selection: {}", .{err});
+            self.game_state = .game_start;
+        }
+    }
 };
+
+const PlayModeSnapshot = struct {
+    world: []u8,
+    selection: []scene_mod.EntityId,
+    time_scale: f32,
+    global_time: f32,
+    physics_accumulator_seconds: f32,
+    playback_controller: layer_mod.PlaybackController,
+    game_state: layer_mod.GameState,
+
+    fn deinit(self: *PlayModeSnapshot, allocator: std.mem.Allocator) void {
+        allocator.free(self.world);
+        allocator.free(self.selection);
+        self.* = undefined;
+    }
+};
+
+fn capturePlayModeSnapshot(
+    allocator: std.mem.Allocator,
+    world: *const scene_mod.World,
+    selection: []const scene_mod.EntityId,
+    time_scale: f32,
+    global_time: f32,
+    physics_accumulator_seconds: f32,
+) !PlayModeSnapshot {
+    const world_snapshot = try scene_mod.serializeWorldAlloc(allocator, world);
+    errdefer allocator.free(world_snapshot);
+
+    const selection_snapshot = try allocator.dupe(scene_mod.EntityId, selection);
+    errdefer allocator.free(selection_snapshot);
+
+    return .{
+        .world = world_snapshot,
+        .selection = selection_snapshot,
+        .time_scale = time_scale,
+        .global_time = global_time,
+        .physics_accumulator_seconds = physics_accumulator_seconds,
+        .playback_controller = .{
+            .state = .stopped,
+            .pending_steps = 0,
+        },
+        .game_state = .game_start,
+    };
+}
+
+fn restorePlayModeWorld(
+    allocator: std.mem.Allocator,
+    world: *scene_mod.World,
+    physics_state: *physics_system.PhysicsState,
+    script_runtime: ?*script_system.ScriptRuntime,
+    snapshot: *const PlayModeSnapshot,
+) !void {
+    physics_state.deinitWorld(world);
+    if (script_runtime) |runtime| {
+        runtime.callDestroyAll(world);
+    }
+    try scene_mod.deserializeWorldFromSlice(allocator, world, snapshot.world);
+}
+
+test "play mode snapshot restores world and selection" {
+    var job_system = try job_system_mod.JobSystem.init(std.testing.allocator, 0);
+    defer job_system.deinit();
+
+    var world = scene_mod.World.init(std.testing.allocator, job_system);
+    defer world.deinit();
+    try world.bootstrap3D();
+
+    const entity_id = try world.createEntity(.{ .name = "Play Mode Entity" });
+    {
+        const entity = world.getEntity(entity_id).?;
+        entity.local_transform.translation = .{ 1.0, 2.0, 3.0 };
+        entity.visible = true;
+        world.markDirty(entity_id);
+    }
+
+    const selection = [_]scene_mod.EntityId{entity_id};
+    var snapshot = try capturePlayModeSnapshot(
+        std.testing.allocator,
+        &world,
+        selection[0..],
+        0.75,
+        12.5,
+        0.25,
+    );
+    defer snapshot.deinit(std.testing.allocator);
+
+    {
+        const entity = world.getEntity(entity_id).?;
+        entity.local_transform.translation = .{ 42.0, 24.0, 12.0 };
+        entity.visible = false;
+        world.markDirty(entity_id);
+    }
+
+    var physics_state = physics_system.PhysicsState.init(std.testing.allocator);
+    defer physics_state.deinit();
+
+    try restorePlayModeWorld(
+        std.testing.allocator,
+        &world,
+        &physics_state,
+        null,
+        &snapshot,
+    );
+
+    const restored = world.getEntityConst(entity_id).?;
+    try std.testing.expectEqualSlices(f32, &.{ 1.0, 2.0, 3.0 }, restored.local_transform.translation[0..]);
+    try std.testing.expect(restored.visible);
+    try std.testing.expectEqualSlices(scene_mod.EntityId, selection[0..], snapshot.selection);
+}
+
+test "play mode snapshot drops play-only entities and clears script runtime on stop" {
+    var world = scene_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+
+    const script_handle = try world.resources.createScript(.{
+        .source = "//!guava builtin=rotate axis=y speed_deg=90 local=true\n",
+        .language = .zig,
+    });
+    const scripted_entity = try world.createEntity(.{
+        .name = "Scripted During Play",
+        .script = .{
+            .script_handle = script_handle,
+            .language = .zig,
+        },
+    });
+
+    const selection = [_]scene_mod.EntityId{scripted_entity};
+    var snapshot = try capturePlayModeSnapshot(
+        std.testing.allocator,
+        &world,
+        selection[0..],
+        1.0,
+        0.0,
+        0.0,
+    );
+    defer snapshot.deinit(std.testing.allocator);
+
+    var runtime = script_system.ScriptRuntime.init(std.testing.allocator, .{
+        .enable_hot_reload = false,
+    });
+    defer runtime.deinit();
+    try runtime.initVMs();
+    runtime.bindWorld(&world);
+    runtime.reconcileWorld(&world);
+    try std.testing.expectEqual(@as(usize, 1), runtime.instances.count());
+    try std.testing.expect(world.getEntityConst(scripted_entity).?.script.?.instance_id != null);
+
+    _ = try world.createEntity(.{ .name = "Play Only Entity" });
+    world.getEntity(scripted_entity).?.local_transform.translation = .{ 9.0, 3.0, -2.0 };
+    world.markDirty(scripted_entity);
+
+    var physics_state = physics_system.PhysicsState.init(std.testing.allocator);
+    defer physics_state.deinit();
+
+    try restorePlayModeWorld(
+        std.testing.allocator,
+        &world,
+        &physics_state,
+        &runtime,
+        &snapshot,
+    );
+
+    try std.testing.expectEqual(@as(usize, 0), runtime.instances.count());
+    try std.testing.expectEqual(@as(usize, 1), world.entities.items.len);
+    try std.testing.expect(world.getEntityConst(scripted_entity) != null);
+    try std.testing.expect(world.getEntityConst(scripted_entity).?.script.?.instance_id == null);
+    try std.testing.expectEqualSlices(
+        f32,
+        &.{ 0.0, 0.0, 0.0 },
+        world.getEntityConst(scripted_entity).?.local_transform.translation[0..],
+    );
+}

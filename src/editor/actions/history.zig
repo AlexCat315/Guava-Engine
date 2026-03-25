@@ -22,6 +22,9 @@ pub fn executeQueuedCommands(layer_context: *engine.core.LayerContext) ![]engine
 /// history operation without causing a stutter on the frame the delta was
 /// recorded.
 pub fn tickDeferredSnapshot(state: *EditorState, world: *engine.scene.World) void {
+    if (state.play_mode_active) {
+        return;
+    }
     if (state.history_snapshot_needs_refresh) {
         state.history_snapshot_needs_refresh = false;
         refreshCurrentHistorySnapshot(state, world) catch |err| {
@@ -55,6 +58,9 @@ pub fn captureSnapshotWithSource(
     layer_context: *engine.core.LayerContext,
     source: command_mod.TimelineSource,
 ) !void {
+    if (state.play_mode_active) {
+        return;
+    }
     const allocator = state.allocator orelse return;
     const before = state.history_world_snapshot orelse {
         try refreshCurrentHistorySnapshot(state, layer_context.world);
@@ -94,6 +100,9 @@ pub fn appendTimelineEvent(
     detail: []const u8,
     command_kind: []const u8,
 ) !void {
+    if (state.play_mode_active) {
+        return;
+    }
     const allocator = state.allocator orelse return;
     try state.timeline_entries.append(allocator, .{
         .sequence = state.next_timeline_sequence,
@@ -141,6 +150,9 @@ pub fn clearSnapshotHistory(state: *EditorState) void {
 }
 
 pub fn undo(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    if (state.play_mode_active) {
+        return;
+    }
     const allocator = state.allocator orelse return;
     if (state.undo_stack.items.len == 0) {
         return;
@@ -156,6 +168,9 @@ pub fn undo(state: *EditorState, layer_context: *engine.core.LayerContext) !void
 }
 
 pub fn redo(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    if (state.play_mode_active) {
+        return;
+    }
     const allocator = state.allocator orelse return;
     if (state.redo_stack.items.len == 0) {
         return;
@@ -171,6 +186,9 @@ pub fn redo(state: *EditorState, layer_context: *engine.core.LayerContext) !void
 }
 
 pub fn timeTravelToCursor(state: *EditorState, layer_context: *engine.core.LayerContext, target_cursor: usize) !void {
+    if (state.play_mode_active) {
+        return;
+    }
     const total = state.undo_stack.items.len + state.redo_stack.items.len;
     const clamped_target = @min(target_cursor, total);
 
@@ -740,6 +758,12 @@ pub fn recordEntityMutation(
     before: command_mod.EntitySnapshot,
     selection_before: []const engine.scene.EntityId,
 ) !void {
+    if (state.play_mode_active) {
+        var owned_before = before;
+        const allocator = state.allocator orelse layer_context.world.allocator;
+        owned_before.deinit(allocator);
+        return;
+    }
     const allocator = state.allocator orelse layer_context.world.allocator;
     if (entitySubtreeRequiresSceneSnapshot(layer_context.world, before.id)) {
         var owned_before = before;
@@ -776,6 +800,10 @@ pub fn recordEntityBatchMutation(
     before_snapshots: *std.ArrayList(command_mod.EntitySnapshot),
     selection_before: []const engine.scene.EntityId,
 ) !void {
+    if (state.play_mode_active) {
+        deinitEntitySnapshots(state, before_snapshots);
+        return;
+    }
     const allocator = state.allocator orelse layer_context.world.allocator;
     for (before_snapshots.items) |before| {
         if (entitySubtreeRequiresSceneSnapshot(layer_context.world, before.id)) {
@@ -821,6 +849,9 @@ pub fn recordCreatedEntities(
     entity_ids: []const engine.scene.EntityId,
     selection_before: []const engine.scene.EntityId,
 ) !void {
+    if (state.play_mode_active) {
+        return;
+    }
     const allocator = state.allocator orelse layer_context.world.allocator;
     if (entityListRequiresSceneSnapshot(layer_context.world, entity_ids)) {
         try captureSnapshot(state, layer_context);
@@ -848,6 +879,10 @@ pub fn recordDeletedEntities(
     before_snapshots: *std.ArrayList(command_mod.EntitySnapshot),
     selection_before: []const engine.scene.EntityId,
 ) !void {
+    if (state.play_mode_active) {
+        deinitEntitySnapshots(state, before_snapshots);
+        return;
+    }
     const allocator = state.allocator orelse layer_context.world.allocator;
     var deltas = std.ArrayList(command_mod.SubtreeDelta).empty;
     errdefer deinitDeltaList(allocator, &deltas);
@@ -883,6 +918,13 @@ fn clearTimelineEntries(allocator: std.mem.Allocator, timeline: *std.ArrayList(c
     }
     timeline.deinit(allocator);
     timeline.* = .empty;
+}
+
+pub fn refreshSnapshotBaseline(state: *EditorState, world: *engine.scene.World) !void {
+    if (state.play_mode_active) {
+        return;
+    }
+    try refreshCurrentHistorySnapshot(state, world);
 }
 
 fn pushCommand(state: *EditorState, command: command_mod.EditorCommand, source: command_mod.TimelineSource) !void {
