@@ -105,6 +105,28 @@ fn initEditorStyle() void {
     gui.setStyleVarFloat(102, 5.0); // FrameRounding
 }
 
+fn seedPostProcessViewportState(state: *const EditorState, viewport_state: *engine.render.EditorViewportState) void {
+    viewport_state.exposure_enabled = state.viewport_exposure_enabled;
+    viewport_state.exposure = state.viewport_exposure;
+    viewport_state.bloom_enabled = state.viewport_bloom_enabled;
+    viewport_state.bloom_threshold = state.viewport_bloom_threshold;
+    viewport_state.bloom_intensity = state.viewport_bloom_intensity;
+    viewport_state.color_grading_enabled = state.viewport_color_grading_enabled;
+    viewport_state.color_grading_saturation = state.viewport_color_grading_saturation;
+    viewport_state.color_grading_contrast = state.viewport_color_grading_contrast;
+    viewport_state.color_grading_gamma = state.viewport_color_grading_gamma;
+    viewport_state.fxaa_enabled = state.viewport_fxaa_enabled;
+    viewport_state.rt_shadows_enabled = state.viewport_rt_shadows_enabled;
+    viewport_state.rt_shadow_samples = state.viewport_rt_shadow_samples;
+    viewport_state.rt_shadow_strength = state.viewport_rt_shadow_strength;
+    viewport_state.rt_shadow_softness = state.viewport_rt_shadow_softness;
+    viewport_state.rt_shadow_resolution_scale = state.viewport_rt_shadow_resolution_scale;
+    viewport_state.taa_enabled = state.viewport_taa_enabled;
+    viewport_state.lut_enabled = state.viewport_lut_enabled;
+    viewport_state.lut_intensity = state.viewport_lut_intensity;
+    viewport_state.lut_preset = state.viewport_lut_preset;
+}
+
 pub const EditorLayer = struct {
     state: EditorState = .{},
     animation_editor_state: ?animation_editor.AnimationEditorState = null,
@@ -154,6 +176,7 @@ pub const EditorLayer = struct {
         // Initialize tool panel states
         self.script_editor_state = script_editor.ScriptEditorState.init(layer_context.world.allocator);
         self.post_process_editor_state = post_process_editor.PostProcessPipelineEditorState.init(layer_context.world.allocator);
+        seedPostProcessViewportState(&self.state, &self.post_process_viewport_state);
         self.camera_bookmark_manager = camera_bookmarks.CameraBookmarkManager.init(layer_context.world.allocator);
 
         try camera.createEditorCamera(&self.state, layer_context);
@@ -237,7 +260,7 @@ pub const EditorLayer = struct {
             gui.saveLayout();
             self.state.dock_layout_initialized = true;
         }
-        try viewport.drawEditorUi(&self.state, layer_context);
+        try viewport.drawEditorUi(&self.state, &self.post_process_viewport_state, layer_context);
         try content_browser.flushMaterialThumbnailRequests(&self.state, layer_context);
         try manipulation.handleEditingShortcuts(&self.state, layer_context);
         manipulation.applyManipulation(&self.state, layer_context);

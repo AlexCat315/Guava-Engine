@@ -709,8 +709,12 @@ fn drawViewportContextMenu(state: *EditorState, layer_context: *engine.core.Laye
     }
 }
 
-pub fn drawEditorUi(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
-    syncViewportState(state, layer_context);
+pub fn drawEditorUi(
+    state: *EditorState,
+    post_process_state: *const engine.render.EditorViewportState,
+    layer_context: *engine.core.LayerContext,
+) !void {
+    syncViewportState(state, post_process_state, layer_context);
     try applyPendingViewportAssetDrop(state, layer_context);
     syncPlaybackState(state, layer_context);
 
@@ -797,7 +801,11 @@ fn viewportPixelUnderMouse(state: *const EditorState, layer_context: *const engi
     };
 }
 
-fn syncViewportState(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+fn syncViewportState(
+    state: *EditorState,
+    post_process_state: *const engine.render.EditorViewportState,
+    layer_context: *engine.core.LayerContext,
+) void {
     layer_context.renderer.setEditorViewportState(.{
         .pipeline_mode = switch (state.viewport_pipeline_mode) {
             .raster => .raster,
@@ -814,25 +822,71 @@ fn syncViewportState(state: *EditorState, layer_context: *engine.core.LayerConte
         .show_grid = state.viewport_show_grid,
         .show_bones = state.viewport_show_bones,
         .show_collision = state.viewport_show_collision,
-        .exposure_enabled = state.viewport_exposure_enabled,
-        .exposure = state.viewport_exposure,
-        .bloom_enabled = state.viewport_bloom_enabled,
-        .bloom_threshold = state.viewport_bloom_threshold,
-        .bloom_intensity = state.viewport_bloom_intensity,
-        .color_grading_enabled = state.viewport_color_grading_enabled,
-        .color_grading_saturation = state.viewport_color_grading_saturation,
-        .color_grading_contrast = state.viewport_color_grading_contrast,
-        .color_grading_gamma = state.viewport_color_grading_gamma,
-        .fxaa_enabled = state.viewport_fxaa_enabled,
-        .rt_shadows_enabled = state.viewport_rt_shadows_enabled,
-        .rt_shadow_samples = state.viewport_rt_shadow_samples,
-        .rt_shadow_strength = state.viewport_rt_shadow_strength,
-        .rt_shadow_softness = state.viewport_rt_shadow_softness,
-        .rt_shadow_resolution_scale = state.viewport_rt_shadow_resolution_scale,
-        .taa_enabled = state.viewport_taa_enabled,
-        .lut_enabled = state.viewport_lut_enabled,
-        .lut_intensity = state.viewport_lut_intensity,
-        .lut_preset = state.viewport_lut_preset,
+        .show_collision_bvh = post_process_state.show_collision_bvh,
+        .show_constraints = post_process_state.show_constraints,
+        .exposure_enabled = post_process_state.exposure_enabled,
+        .exposure = post_process_state.exposure,
+        .bloom_enabled = post_process_state.bloom_enabled,
+        .bloom_threshold = post_process_state.bloom_threshold,
+        .bloom_intensity = post_process_state.bloom_intensity,
+        .ssao_enabled = post_process_state.ssao_enabled,
+        .ssao_use_legacy_path = post_process_state.ssao_use_legacy_path,
+        .ssao_radius = post_process_state.ssao_radius,
+        .ssao_bias = post_process_state.ssao_bias,
+        .ssao_intensity = post_process_state.ssao_intensity,
+        .ssao_power = post_process_state.ssao_power,
+        .contact_shadows_enabled = post_process_state.contact_shadows_enabled,
+        .contact_shadows_distance = post_process_state.contact_shadows_distance,
+        .contact_shadows_thickness = post_process_state.contact_shadows_thickness,
+        .contact_shadows_intensity = post_process_state.contact_shadows_intensity,
+        .contact_shadows_bias = post_process_state.contact_shadows_bias,
+        .contact_shadows_steps = post_process_state.contact_shadows_steps,
+        .ssr_enabled = post_process_state.ssr_enabled,
+        .ssr_intensity = post_process_state.ssr_intensity,
+        .ssr_ray_step = post_process_state.ssr_ray_step,
+        .ssr_ray_max_distance = post_process_state.ssr_ray_max_distance,
+        .ssr_ray_thickness = post_process_state.ssr_ray_thickness,
+        .ssr_fade_distance = post_process_state.ssr_fade_distance,
+        .ssr_edge_fade = post_process_state.ssr_edge_fade,
+        .ssgi_enabled = post_process_state.ssgi_enabled,
+        .ssgi_radius = post_process_state.ssgi_radius,
+        .ssgi_intensity = post_process_state.ssgi_intensity,
+        .ssgi_bias = post_process_state.ssgi_bias,
+        .ssgi_ray_count = post_process_state.ssgi_ray_count,
+        .ssgi_step_count = post_process_state.ssgi_step_count,
+        .taa_enabled = post_process_state.taa_enabled,
+        .taa_blend_factor = post_process_state.taa_blend_factor,
+        .taa_motion_blur_scale = post_process_state.taa_motion_blur_scale,
+        .taa_feedback_min = post_process_state.taa_feedback_min,
+        .taa_feedback_max = post_process_state.taa_feedback_max,
+        .dof_enabled = post_process_state.dof_enabled,
+        .dof_focus_distance = post_process_state.dof_focus_distance,
+        .dof_focus_range = post_process_state.dof_focus_range,
+        .dof_blur_radius = post_process_state.dof_blur_radius,
+        .dof_bokeh_radius = post_process_state.dof_bokeh_radius,
+        .dof_near_blur = post_process_state.dof_near_blur,
+        .dof_far_blur = post_process_state.dof_far_blur,
+        .dof_quality = post_process_state.dof_quality,
+        .omni_shadow_enabled = post_process_state.omni_shadow_enabled,
+        .omni_shadow_resolution = post_process_state.omni_shadow_resolution,
+        .omni_shadow_far_plane = post_process_state.omni_shadow_far_plane,
+        .color_grading_enabled = post_process_state.color_grading_enabled,
+        .color_grading_saturation = post_process_state.color_grading_saturation,
+        .color_grading_contrast = post_process_state.color_grading_contrast,
+        .color_grading_gamma = post_process_state.color_grading_gamma,
+        .fxaa_enabled = post_process_state.fxaa_enabled,
+        .rt_shadows_enabled = post_process_state.rt_shadows_enabled,
+        .rt_shadow_samples = post_process_state.rt_shadow_samples,
+        .rt_shadow_strength = post_process_state.rt_shadow_strength,
+        .rt_shadow_softness = post_process_state.rt_shadow_softness,
+        .rt_shadow_resolution_scale = post_process_state.rt_shadow_resolution_scale,
+        .volumetric_fog_enabled = post_process_state.volumetric_fog_enabled,
+        .volumetric_fog_density = post_process_state.volumetric_fog_density,
+        .volumetric_fog_height_falloff = post_process_state.volumetric_fog_height_falloff,
+        .volumetric_fog_max_distance = post_process_state.volumetric_fog_max_distance,
+        .lut_enabled = post_process_state.lut_enabled,
+        .lut_intensity = post_process_state.lut_intensity,
+        .lut_preset = post_process_state.lut_preset,
     });
 }
 

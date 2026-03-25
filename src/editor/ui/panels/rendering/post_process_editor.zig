@@ -6,6 +6,7 @@ const props = @import("../../properties.zig");
 const EditorState = @import("../../../core/state.zig").EditorState;
 
 const EditorViewportState = engine.render.EditorViewportState;
+const EditorViewportLutPreset = engine.render.EditorViewportLutPreset;
 
 pub const PostProcessEffect = enum {
     bloom,
@@ -22,7 +23,6 @@ pub const PostProcessEffect = enum {
 
 pub const PostProcessEffectNode = struct {
     effect: PostProcessEffect,
-    enabled: bool = true,
     position: [2]f32 = .{ 0, 0 },
     input_connections: std.ArrayList(usize),
     output_connections: std.ArrayList(usize),
@@ -196,6 +196,8 @@ fn drawPipelineToolbar(editor_state: *PostProcessPipelineEditorState) void {
             .taa,
             .dof,
             .color_grading,
+            .contact_shadows,
+            .tonemap,
         };
 
         for (effects) |effect| {
@@ -267,10 +269,6 @@ fn drawPipelineGraph(editor_state: *PostProcessPipelineEditorState) void {
 
         if (gui.beginChild(node_name, node_width, node_height, true)) {
             gui.text(node.getName());
-
-            gui.text("Enabled:");
-            gui.sameLine();
-            _ = gui.checkbox("##enabled", &node.enabled);
         }
         gui.endChild();
 
@@ -294,7 +292,9 @@ fn drawPreviewPanel(viewport_state: *EditorViewportState) void {
     if (props.beginPropertyGrid("preview_settings")) {
         defer props.endPropertyGrid();
 
+        _ = props.boolean("Manual Exposure", &viewport_state.exposure_enabled);
         _ = props.boolean("Bloom", &viewport_state.bloom_enabled);
+        _ = props.boolean("Color Grading", &viewport_state.color_grading_enabled);
         _ = props.boolean("FXAA", &viewport_state.fxaa_enabled);
         _ = props.boolean("SSAO", &viewport_state.ssao_enabled);
         _ = props.boolean("SSGI", &viewport_state.ssgi_enabled);
@@ -303,17 +303,13 @@ fn drawPreviewPanel(viewport_state: *EditorViewportState) void {
         _ = props.boolean("DOF", &viewport_state.dof_enabled);
         _ = props.boolean("Contact Shadows", &viewport_state.contact_shadows_enabled);
         _ = props.boolean("RT Shadows", &viewport_state.rt_shadows_enabled);
+        _ = props.boolean("LUT", &viewport_state.lut_enabled);
     }
 }
 
 fn drawEffectParameters(viewport_state: *EditorViewportState, node: *PostProcessEffectNode) void {
     gui.text("Effect Parameters");
     gui.separator();
-
-    if (!node.enabled) {
-        gui.textColored(.{ 0.5, 0.5, 0.5, 1.0 }, "Effect disabled");
-        return;
-    }
 
     if (props.beginPropertyGrid("effect_params")) {
         defer props.endPropertyGrid();
@@ -334,14 +330,26 @@ fn drawEffectParameters(viewport_state: *EditorViewportState, node: *PostProcess
                 _ = props.float("Radius", &viewport_state.ssgi_radius, 0.1, 0.1, 10.0);
                 _ = props.float("Intensity", &viewport_state.ssgi_intensity, 0.1, 0.0, 10.0);
                 _ = props.float("Bias", &viewport_state.ssgi_bias, 0.01, 0.0, 1.0);
+                var ray_count: i32 = @intCast(viewport_state.ssgi_ray_count);
+                if (props.int("Ray Count", &ray_count, 1.0, 1, 64)) {
+                    viewport_state.ssgi_ray_count = @intCast(std.math.clamp(ray_count, 1, 64));
+                }
+                var step_count: i32 = @intCast(viewport_state.ssgi_step_count);
+                if (props.int("Step Count", &step_count, 1.0, 1, 64)) {
+                    viewport_state.ssgi_step_count = @intCast(std.math.clamp(step_count, 1, 64));
+                }
             },
             .ssr => {
                 _ = props.float("Intensity", &viewport_state.ssr_intensity, 0.1, 0.0, 2.0);
                 _ = props.float("Ray Step", &viewport_state.ssr_ray_step, 0.01, 0.01, 1.0);
                 _ = props.float("Max Distance", &viewport_state.ssr_ray_max_distance, 1.0, 10.0, 500.0);
+                _ = props.float("Ray Thickness", &viewport_state.ssr_ray_thickness, 0.01, 0.01, 2.0);
+                _ = props.float("Fade Distance", &viewport_state.ssr_fade_distance, 0.1, 0.0, 100.0);
+                _ = props.float("Edge Fade", &viewport_state.ssr_edge_fade, 0.01, 0.0, 1.0);
             },
             .taa => {
                 _ = props.float("Blend Factor", &viewport_state.taa_blend_factor, 0.01, 0.0, 1.0);
+                _ = props.float("Motion Blur Scale", &viewport_state.taa_motion_blur_scale, 0.01, 0.0, 2.0);
                 _ = props.float("Feedback Min", &viewport_state.taa_feedback_min, 0.01, 0.0, 1.0);
                 _ = props.float("Feedback Max", &viewport_state.taa_feedback_max, 0.01, 0.0, 1.0);
             },
@@ -349,22 +357,64 @@ fn drawEffectParameters(viewport_state: *EditorViewportState, node: *PostProcess
                 _ = props.float("Focus Distance", &viewport_state.dof_focus_distance, 1.0, 0.0, 100.0);
                 _ = props.float("Focus Range", &viewport_state.dof_focus_range, 0.5, 0.0, 50.0);
                 _ = props.float("Blur Radius", &viewport_state.dof_blur_radius, 1.0, 0.0, 50.0);
+                _ = props.float("Bokeh Radius", &viewport_state.dof_bokeh_radius, 0.5, 0.0, 32.0);
+                _ = props.float("Near Blur", &viewport_state.dof_near_blur, 0.1, 0.0, 50.0);
+                _ = props.float("Far Blur", &viewport_state.dof_far_blur, 0.5, 0.0, 250.0);
+                var quality: i32 = @intCast(viewport_state.dof_quality);
+                if (props.int("Quality", &quality, 1.0, 1, 8)) {
+                    viewport_state.dof_quality = @intCast(std.math.clamp(quality, 1, 8));
+                }
             },
             .fxaa => {
                 gui.text("No additional parameters");
             },
             .color_grading => {
-                gui.text("No additional parameters");
+                _ = props.float("Saturation", &viewport_state.color_grading_saturation, 0.01, 0.0, 2.0);
+                _ = props.float("Contrast", &viewport_state.color_grading_contrast, 0.01, 0.5, 2.0);
+                _ = props.float("Gamma", &viewport_state.color_grading_gamma, 0.01, 0.5, 2.0);
             },
             .contact_shadows => {
                 _ = props.float("Distance", &viewport_state.contact_shadows_distance, 0.05, 0.05, 2.0);
                 _ = props.float("Thickness", &viewport_state.contact_shadows_thickness, 0.01, 0.01, 0.5);
                 _ = props.float("Intensity", &viewport_state.contact_shadows_intensity, 0.05, 0.0, 1.0);
                 _ = props.float("Bias", &viewport_state.contact_shadows_bias, 0.005, 0.0, 0.1);
+                var steps: i32 = @intCast(viewport_state.contact_shadows_steps);
+                if (props.int("Steps", &steps, 1.0, 1, 64)) {
+                    viewport_state.contact_shadows_steps = @intCast(std.math.clamp(steps, 1, 64));
+                }
             },
             .tonemap => {
-                gui.text("No additional parameters");
+                _ = props.boolean("Manual Exposure", &viewport_state.exposure_enabled);
+                _ = props.float("Exposure", &viewport_state.exposure, 0.01, 0.1, 8.0);
+                _ = props.boolean("LUT", &viewport_state.lut_enabled);
+                _ = props.float("LUT Intensity", &viewport_state.lut_intensity, 0.01, 0.0, 1.0);
+                drawLutPresetProperty(viewport_state);
             },
         }
     }
+}
+
+fn drawLutPresetProperty(viewport_state: *EditorViewportState) void {
+    const preview = lutPresetLabel(viewport_state.lut_preset);
+    if (!props.combo("LUT Preset", preview)) {
+        return;
+    }
+    defer gui.endCombo();
+
+    const presets = [_]EditorViewportLutPreset{ .neutral, .warm, .cool, .filmic };
+    for (presets) |preset| {
+        const selected = viewport_state.lut_preset == preset;
+        if (gui.selectable(lutPresetLabel(preset), selected, false, 0.0, 0.0)) {
+            viewport_state.lut_preset = preset;
+        }
+    }
+}
+
+fn lutPresetLabel(preset: EditorViewportLutPreset) []const u8 {
+    return switch (preset) {
+        .neutral => "Neutral",
+        .warm => "Warm",
+        .cool => "Cool",
+        .filmic => "Filmic",
+    };
 }

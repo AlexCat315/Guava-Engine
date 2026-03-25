@@ -2,7 +2,6 @@ const std = @import("std");
 const engine = @import("guava");
 const gui = @import("../../gui.zig");
 const EditorState = @import("../../../core/state.zig").EditorState;
-const ViewportLutPreset = @import("../../../core/state.zig").ViewportLutPreset;
 const camera = @import("../../../interaction/camera.zig");
 const layout = @import("../../layout.zig");
 
@@ -82,93 +81,6 @@ pub fn drawRenderSettingsWindow(state: *EditorState, layer_context: *engine.core
     _ = gui.checkbox(state.text(.show_collision), &state.viewport_show_collision);
 
     gui.separator();
-    gui.text(state.text(.exposure));
-    _ = gui.checkbox(state.text(.manual_exposure), &state.viewport_exposure_enabled);
-    var exposure_value = state.viewport_exposure;
-    if (gui.dragFloat("##viewport_exposure", &exposure_value, 0.01, 0.1, 8.0)) {
-        state.viewport_exposure = exposure_value;
-    }
-    var exposure_buffer: [32]u8 = undefined;
-    const exposure_text = try std.fmt.bufPrint(&exposure_buffer, "{d:.2}x", .{state.viewport_exposure});
-    gui.labelText(state.text(.exposure), exposure_text);
-
-    gui.separator();
-    gui.text(state.text(.bloom));
-    _ = gui.checkbox(state.text(.enable_bloom), &state.viewport_bloom_enabled);
-    var bloom_threshold = state.viewport_bloom_threshold;
-    if (gui.dragFloat("##viewport_bloom_threshold", &bloom_threshold, 0.01, 0.1, 8.0)) {
-        state.viewport_bloom_threshold = bloom_threshold;
-    }
-    var bloom_threshold_buffer: [32]u8 = undefined;
-    const bloom_threshold_text = try std.fmt.bufPrint(&bloom_threshold_buffer, "{d:.2}", .{state.viewport_bloom_threshold});
-    gui.labelText(state.text(.bloom_threshold), bloom_threshold_text);
-    var bloom_intensity = state.viewport_bloom_intensity;
-    if (gui.dragFloat("##viewport_bloom_intensity", &bloom_intensity, 0.01, 0.0, 4.0)) {
-        state.viewport_bloom_intensity = bloom_intensity;
-    }
-    var bloom_intensity_buffer: [32]u8 = undefined;
-    const bloom_intensity_text = try std.fmt.bufPrint(&bloom_intensity_buffer, "{d:.2}x", .{state.viewport_bloom_intensity});
-    gui.labelText(state.text(.bloom_intensity), bloom_intensity_text);
-
-    gui.separator();
-    gui.text(state.text(.color_grading));
-    _ = gui.checkbox(state.text(.enable_color_grading), &state.viewport_color_grading_enabled);
-    var color_grading_saturation = state.viewport_color_grading_saturation;
-    if (gui.dragFloat("##viewport_color_grading_saturation", &color_grading_saturation, 0.01, 0.0, 2.0)) {
-        state.viewport_color_grading_saturation = color_grading_saturation;
-    }
-    var saturation_buffer: [32]u8 = undefined;
-    const saturation_text = try std.fmt.bufPrint(&saturation_buffer, "{d:.2}x", .{state.viewport_color_grading_saturation});
-    gui.labelText(state.text(.saturation), saturation_text);
-    var color_grading_contrast = state.viewport_color_grading_contrast;
-    if (gui.dragFloat("##viewport_color_grading_contrast", &color_grading_contrast, 0.01, 0.5, 2.0)) {
-        state.viewport_color_grading_contrast = color_grading_contrast;
-    }
-    var contrast_buffer: [32]u8 = undefined;
-    const contrast_text = try std.fmt.bufPrint(&contrast_buffer, "{d:.2}x", .{state.viewport_color_grading_contrast});
-    gui.labelText(state.text(.contrast), contrast_text);
-    var color_grading_gamma = state.viewport_color_grading_gamma;
-    if (gui.dragFloat("##viewport_color_grading_gamma", &color_grading_gamma, 0.01, 0.5, 2.0)) {
-        state.viewport_color_grading_gamma = color_grading_gamma;
-    }
-    var gamma_buffer: [32]u8 = undefined;
-    const gamma_text = try std.fmt.bufPrint(&gamma_buffer, "{d:.2}x", .{state.viewport_color_grading_gamma});
-    gui.labelText(state.text(.gamma), gamma_text);
-
-    gui.separator();
-    gui.text(state.text(.fxaa));
-    _ = gui.checkbox(state.text(.enable_fxaa), &state.viewport_fxaa_enabled);
-
-    gui.separator();
-    gui.text("RT Shadows");
-    _ = gui.checkbox("##enable_rt_shadows", &state.viewport_rt_shadows_enabled);
-    if (state.viewport_rt_shadows_enabled) {
-        var shadow_samples_i32: i32 = @intCast(state.viewport_rt_shadow_samples);
-        if (gui.dragInt("Samples##rt_shadow", &shadow_samples_i32, 0.1, 1, 16)) {
-            state.viewport_rt_shadow_samples = @intCast(@max(1, shadow_samples_i32));
-        }
-        _ = gui.dragFloat("Strength##rt_shadow", &state.viewport_rt_shadow_strength, 0.005, 0.0, 1.0);
-        _ = gui.dragFloat("Softness##rt_shadow", &state.viewport_rt_shadow_softness, 0.001, 0.0, 0.1);
-        _ = gui.dragFloat("Resolution##rt_shadow", &state.viewport_rt_shadow_resolution_scale, 0.05, 0.25, 1.0);
-    }
-
-    gui.separator();
-    gui.text("TAA");
-    _ = gui.checkbox("##enable_taa", &state.viewport_taa_enabled);
-
-    gui.separator();
-    gui.text(state.text(.lut));
-    _ = gui.checkbox(state.text(.enable_lut), &state.viewport_lut_enabled);
-    var lut_intensity = state.viewport_lut_intensity;
-    if (gui.dragFloat("##viewport_lut_intensity", &lut_intensity, 0.01, 0.0, 1.0)) {
-        state.viewport_lut_intensity = lut_intensity;
-    }
-    var lut_intensity_buffer: [32]u8 = undefined;
-    const lut_intensity_text = try std.fmt.bufPrint(&lut_intensity_buffer, "{d:.2}x", .{state.viewport_lut_intensity});
-    gui.labelText(state.text(.lut_intensity), lut_intensity_text);
-    drawLutPresetCombo(state);
-
-    gui.separator();
     gui.text(state.text(.coordinate_space));
     switch (drawButtonRow2(state.text(.local_space), state.text(.world_space), 112.0)) {
         .first => state.transform_space = .local,
@@ -219,31 +131,6 @@ fn drawButtonRow3(first: []const u8, second: []const u8, third: []const u8, min_
         return .third;
     }
     return .none;
-}
-
-fn drawLutPresetCombo(state: *EditorState) void {
-    const preview = lutPresetLabel(state, state.viewport_lut_preset);
-    if (!gui.beginCombo(state.text(.lut_preset), preview)) {
-        return;
-    }
-    defer gui.endCombo();
-
-    const presets = [_]ViewportLutPreset{ .neutral, .warm, .cool, .filmic };
-    for (presets) |preset| {
-        const selected = state.viewport_lut_preset == preset;
-        if (gui.selectable(lutPresetLabel(state, preset), selected, false, 0.0, 0.0)) {
-            state.viewport_lut_preset = preset;
-        }
-    }
-}
-
-fn lutPresetLabel(state: *const EditorState, preset: ViewportLutPreset) []const u8 {
-    return switch (preset) {
-        .neutral => state.text(.lut_neutral),
-        .warm => state.text(.lut_warm),
-        .cool => state.text(.lut_cool),
-        .filmic => state.text(.lut_filmic),
-    };
 }
 
 const PtQualityPreset = enum {
