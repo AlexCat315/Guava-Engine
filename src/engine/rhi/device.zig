@@ -10,6 +10,30 @@ const rhi = @import("rhi.zig");
 const command_buffer = @import("command_buffer.zig");
 const metal_device_mod = @import("metal/metal_device.zig");
 const metal_backend_mod = @import("metal/metal_backend.zig");
+const vulkan_device_mod = if (builtin.os.tag != .macos) @import("vulkan/vk_device.zig") else struct {
+    pub const VulkanDevice = struct {
+        allocator: std.mem.Allocator,
+        bridge_ctx: *anyopaque,
+        last_submit_queue: ?rhi.QueueClass = null,
+
+        pub fn init(_: std.mem.Allocator, _: bool) ?VulkanDevice {
+            return null;
+        }
+        pub fn deinit(_: *VulkanDevice) void {}
+        pub fn createDevice(_: *VulkanDevice) rhi.Device {
+            unreachable;
+        }
+        pub fn createSurface(_: *VulkanDevice, _: *anyopaque) bool {
+            return false;
+        }
+        pub fn createSwapchain(_: *VulkanDevice, _: u32, _: u32) bool {
+            return false;
+        }
+        pub fn getDeviceName(_: *const VulkanDevice) []const u8 {
+            return "N/A";
+        }
+    };
+};
 
 // Combined error set that includes both old and new RHI errors
 pub const Error = error{
@@ -276,6 +300,7 @@ pub const RhiDevice = struct {
     default_pipeline_layout: ?rhi.PipelineLayout = null,
     owned_device: bool = false,
     owned_metal_device: ?*metal_device_mod.MetalDevice = null,
+    owned_vulkan_device: ?*vulkan_device_mod.VulkanDevice = null,
     owned_mock_backend: ?*metal_backend_mod.MetalBackend = null,
     sdl_metal_view: sdl.SDL_MetalView = null,
 
@@ -329,6 +354,44 @@ pub const RhiDevice = struct {
             return out;
         }
 
+        // Non-macOS: try Vulkan first, then fall back to mock backend
+        if (vulkan_device_mod.VulkanDevice.init(allocator, config.enable_validation)) |vk| {
+            const vk_ptr = allocator.create(vulkan_device_mod.VulkanDevice) catch return error.OutOfMemory;
+            errdefer allocator.destroy(vk_ptr);
+            vk_ptr.* = vk;
+            errdefer vk_ptr.deinit();
+
+            // Create SDL Vulkan surface
+            _ = vk_ptr.createSurface(@ptrCast(window.handle));
+            _ = vk_ptr.createSwapchain(window.drawable_width, window.drawable_height);
+
+            const dev_ptr = allocator.create(rhi.Device) catch return error.OutOfMemory;
+            errdefer allocator.destroy(dev_ptr);
+            dev_ptr.* = vk_ptr.createDevice();
+
+            var out = RhiDevice{
+                .allocator = allocator,
+                .device = dev_ptr,
+                .api = .vulkan,
+                .runtime_info = .{
+                    .backend = .vulkan,
+                    .drawable_width = window.drawable_width,
+                    .drawable_height = window.drawable_height,
+                    .swapchain_format = .bgra8_unorm_srgb,
+                    .depth_format = .d32_float,
+                    .has_depth = true,
+                },
+                .owned_device = true,
+                .owned_vulkan_device = vk_ptr,
+            };
+            out.setFramesInFlight(config.frames_in_flight);
+            copyCStringSlice(out.runtime_info.device_name[0..], vk_ptr.getDeviceName());
+            copyCStringSlice(out.runtime_info.driver_name[0..], "Vulkan");
+            copyCStringSlice(out.runtime_info.driver_info[0..], "Guava Vulkan RHI");
+            return out;
+        }
+
+        // Fallback: mock backend
         const backend_ptr = allocator.create(metal_backend_mod.MetalBackend) catch return error.OutOfMemory;
         errdefer allocator.destroy(backend_ptr);
         backend_ptr.* = metal_backend_mod.MetalBackend.init(allocator);
@@ -380,6 +443,10 @@ pub const RhiDevice = struct {
             if (self.owned_metal_device) |md| {
                 md.deinit();
                 self.allocator.destroy(md);
+            }
+            if (self.owned_vulkan_device) |vd| {
+                vd.deinit();
+                self.allocator.destroy(vd);
             }
             if (self.sdl_metal_view != null) {
                 sdl.SDL_Metal_DestroyView(self.sdl_metal_view);
