@@ -202,6 +202,13 @@ pub const Entity = struct {
         if (self.script) |script| {
             freeScriptParameters(allocator, script.parameters);
         }
+        if (self.audio_source) |audio_source| {
+            if (audio_source.clip_asset_path) |path| {
+                if (path.len != 0) {
+                    allocator.free(path);
+                }
+            }
+        }
         if (self.prefab_instance_override) |*override| {
             override.deinit(allocator);
         }
@@ -212,6 +219,20 @@ fn cloneScriptComponent(allocator: std.mem.Allocator, script: ?components.Script
     const value = script orelse return null;
     var cloned = value;
     cloned.parameters = if (value.parameters.len != 0) try allocator.dupe(u8, value.parameters) else &.{};
+    return cloned;
+}
+
+fn cloneAudioSourceComponent(allocator: std.mem.Allocator, audio_source: ?components.AudioSource) !?components.AudioSource {
+    const value = audio_source orelse return null;
+    var cloned = value;
+    cloned.clip_asset_path = if (value.clip_asset_path) |path|
+        if (path.len != 0) try allocator.dupe(u8, path) else &.{}
+    else
+        null;
+    cloned.clip_handle = null;
+    cloned._voice_handle = null;
+    cloned._is_playing = false;
+    cloned._play_on_awake_consumed = false;
     return cloned;
 }
 
@@ -579,7 +600,7 @@ pub const World = struct {
             .light = desc.light,
             .vfx = desc.vfx,
             .script = try cloneScriptComponent(self.allocator, desc.script),
-            .audio_source = desc.audio_source,
+            .audio_source = try cloneAudioSourceComponent(self.allocator, desc.audio_source),
             .audio_listener = desc.audio_listener,
             .visible = desc.visible,
             .editor_only = desc.editor_only,

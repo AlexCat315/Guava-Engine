@@ -8,6 +8,7 @@ const components = @import("components.zig");
 const world_mod = @import("world.zig");
 
 const current_scene_version: u32 = 6;
+const runtime_scene_file_version: u32 = 7;
 
 const SceneHeader = struct {
     version: u32 = 1,
@@ -25,6 +26,34 @@ const SceneFile = struct {
     animation_clips: []AnimationClipRecord = &.{},
     scripts: []ScriptRecord = &.{},
     entities: []EntityRecord,
+};
+
+pub const SceneRuntimeState = struct {
+    global_time: f32 = 0.0,
+    time_scale: f32 = 1.0,
+    physics_accumulator_seconds: f32 = 0.0,
+    playback_state: SceneRuntimePlaybackState = .stopped,
+    game_state: SceneRuntimeGameState = .game_start,
+};
+
+pub const SceneRuntimePlaybackState = enum(u32) {
+    stopped = 0,
+    playing = 1,
+    paused = 2,
+};
+
+pub const SceneRuntimeGameState = enum(u32) {
+    game_start = 0,
+    playing = 1,
+    paused = 2,
+    game_over = 3,
+    quit = 4,
+};
+
+const SceneRuntimeFile = struct {
+    version: u32 = runtime_scene_file_version,
+    scene: SceneFile,
+    runtime_state: SceneRuntimeState = .{},
 };
 
 const MeshRecord = struct {
@@ -407,6 +436,37 @@ const ScriptBinding = struct {
 };
 
 pub fn serializeWorldAlloc(allocator: std.mem.Allocator, world: *const world_mod.World) ![]u8 {
+    return try buildSceneFileAlloc(allocator, world);
+}
+
+pub fn serializeWorldWithRuntimeStateAlloc(
+    allocator: std.mem.Allocator,
+    world: *const world_mod.World,
+    runtime_state: SceneRuntimeState,
+) ![]u8 {
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const scene = try buildSceneFile(arena, world);
+
+    var output = std.ArrayList(u8).empty;
+    defer output.deinit(allocator);
+    var legacy_writer = output.writer(allocator);
+    var adapter_buffer: [4096]u8 = undefined;
+    var writer_adapter = legacy_writer.adaptToNewApi(&adapter_buffer);
+    try std.json.Stringify.value(SceneRuntimeFile{
+        .scene = scene,
+        .runtime_state = runtime_state,
+    }, .{ .whitespace = .indent_2 }, &writer_adapter.new_interface);
+    try writer_adapter.new_interface.flush();
+    if (writer_adapter.err) |err| {
+        return err;
+    }
+    return output.toOwnedSlice(allocator);
+}
+
+fn buildSceneFileAlloc(allocator: std.mem.Allocator, world: *const world_mod.World) ![]u8 {
     var arena_state = std.heap.ArenaAllocator.init(allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -435,7 +495,43 @@ pub fn deserializeWorldFromSlice(allocator: std.mem.Allocator, world: *world_mod
     switch (header_parse.value.version) {
         1, 2 => try deserializeLegacyWorldFromSlice(allocator, world, source),
         3, 4, 5, 6 => try deserializeWorldV4FromSlice(allocator, world, source),
+        runtime_scene_file_version => {
+            var parsed = try std.json.parseFromSlice(SceneRuntimeFile, allocator, source, .{
+                .ignore_unknown_fields = true,
+            });
+            defer parsed.deinit();
+            try deserializeWorldFromSceneFile(allocator, world, &parsed.value.scene);
+        },
         else => return error.UnsupportedSceneVersion,
+    }
+}
+
+pub fn deserializeWorldWithRuntimeStateFromSlice(
+    allocator: std.mem.Allocator,
+    world: *world_mod.World,
+    source: []const u8,
+    runtime_state: ?*SceneRuntimeState,
+) !void {
+    var header_parse = try std.json.parseFromSlice(SceneHeader, allocator, source, .{
+        .ignore_unknown_fields = true,
+    });
+    defer header_parse.deinit();
+
+    if (header_parse.value.version == runtime_scene_file_version) {
+        var parsed = try std.json.parseFromSlice(SceneRuntimeFile, allocator, source, .{
+            .ignore_unknown_fields = true,
+        });
+        defer parsed.deinit();
+        try deserializeWorldFromSceneFile(allocator, world, &parsed.value.scene);
+        if (runtime_state) |state| {
+            state.* = parsed.value.runtime_state;
+        }
+        return;
+    }
+
+    try deserializeWorldFromSlice(allocator, world, source);
+    if (runtime_state) |state| {
+        state.* = .{};
     }
 }
 
@@ -464,6 +560,35 @@ pub fn loadWorldFromPath(
     const source = try std.fs.cwd().readFileAlloc(allocator, path, 128 * 1024 * 1024);
     defer allocator.free(source);
     try deserializeWorldFromSlice(allocator, world, source);
+}
+
+pub fn saveWorldWithRuntimeStateToPath(
+    allocator: std.mem.Allocator,
+    world: *const world_mod.World,
+    runtime_state: SceneRuntimeState,
+    path: []const u8,
+) !void {
+    const encoded = try serializeWorldWithRuntimeStateAlloc(allocator, world, runtime_state);
+    defer allocator.free(encoded);
+
+    if (std.fs.path.dirname(path)) |directory| {
+        try std.fs.cwd().makePath(directory);
+    }
+    try std.fs.cwd().writeFile(.{
+        .sub_path = path,
+        .data = encoded,
+    });
+}
+
+pub fn loadWorldWithRuntimeStateFromPath(
+    allocator: std.mem.Allocator,
+    world: *world_mod.World,
+    path: []const u8,
+    runtime_state: ?*SceneRuntimeState,
+) !void {
+    const source = try std.fs.cwd().readFileAlloc(allocator, path, 128 * 1024 * 1024);
+    defer allocator.free(source);
+    try deserializeWorldWithRuntimeStateFromSlice(allocator, world, source, runtime_state);
 }
 
 fn buildSceneFile(allocator: std.mem.Allocator, world: *const world_mod.World) !SceneFile {
@@ -779,6 +904,22 @@ fn buildSceneFile(allocator: std.mem.Allocator, world: *const world_mod.World) !
         .scripts = try script_records.toOwnedSlice(allocator),
         .entities = try entity_records.toOwnedSlice(allocator),
     };
+}
+
+fn deserializeWorldFromSceneFile(allocator: std.mem.Allocator, world: *world_mod.World, scene: *const SceneFile) anyerror!void {
+    var output = std.ArrayList(u8).empty;
+    defer output.deinit(allocator);
+    var legacy_writer = output.writer(allocator);
+    var adapter_buffer: [4096]u8 = undefined;
+    var writer_adapter = legacy_writer.adaptToNewApi(&adapter_buffer);
+    try std.json.Stringify.value(scene.*, .{ .whitespace = .indent_2 }, &writer_adapter.new_interface);
+    try writer_adapter.new_interface.flush();
+    if (writer_adapter.err) |err| {
+        return err;
+    }
+    const encoded = try output.toOwnedSlice(allocator);
+    defer allocator.free(encoded);
+    try deserializeWorldFromSlice(allocator, world, encoded);
 }
 
 fn deserializeWorldV4FromSlice(allocator: std.mem.Allocator, world: *world_mod.World, source: []const u8) !void {
@@ -2752,6 +2893,86 @@ test "scene save-load-resave is byte stable" {
     defer std.testing.allocator.free(second);
 
     try std.testing.expectEqualStrings(first, second);
+}
+
+test "scene runtime snapshot round-trips application state" {
+    var world = world_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+
+    const entity = try world.createEntity(.{
+        .name = "Runtime State Entity",
+    });
+    _ = entity;
+
+    const runtime_state = SceneRuntimeState{
+        .global_time = 42.5,
+        .time_scale = 0.5,
+        .physics_accumulator_seconds = 0.125,
+        .game_state = .paused,
+    };
+
+    const encoded = try serializeWorldWithRuntimeStateAlloc(std.testing.allocator, &world, runtime_state);
+    defer std.testing.allocator.free(encoded);
+
+    var loaded = world_mod.World.init(std.testing.allocator, null);
+    defer loaded.deinit();
+
+    var loaded_runtime_state: SceneRuntimeState = .{};
+    try deserializeWorldWithRuntimeStateFromSlice(std.testing.allocator, &loaded, encoded, &loaded_runtime_state);
+
+    try std.testing.expectEqual(runtime_state.game_state, loaded_runtime_state.game_state);
+    try std.testing.expectApproxEqAbs(runtime_state.global_time, loaded_runtime_state.global_time, 0.0001);
+    try std.testing.expectApproxEqAbs(runtime_state.time_scale, loaded_runtime_state.time_scale, 0.0001);
+    try std.testing.expectApproxEqAbs(runtime_state.physics_accumulator_seconds, loaded_runtime_state.physics_accumulator_seconds, 0.0001);
+    try std.testing.expectEqualStrings("Runtime State Entity", loaded.findEntityByName("Runtime State Entity").?.name);
+}
+
+test "scene runtime snapshot round-trips audio components" {
+    var world = world_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+
+    _ = try world.createEntity(.{
+        .name = "AudioEmitter",
+        .local_transform = .{ .translation = .{ 3.0, 1.0, -2.0 } },
+        .audio_source = .{
+            .clip_asset_path = "assets/audio/test.wav",
+            .volume = 0.35,
+            .spatial = true,
+            .looping = true,
+            .play_on_awake = true,
+            .min_distance = 2.0,
+            .max_distance = 40.0,
+            .doppler_factor = 0.5,
+        },
+    });
+    _ = try world.createEntity(.{
+        .name = "AudioListener",
+        .audio_listener = .{ .enabled = true },
+    });
+
+    const encoded = try serializeWorldWithRuntimeStateAlloc(std.testing.allocator, &world, .{
+        .global_time = 1.0,
+        .time_scale = 1.0,
+        .playback_state = .playing,
+        .game_state = .playing,
+    });
+    defer std.testing.allocator.free(encoded);
+
+    var loaded = world_mod.World.init(std.testing.allocator, null);
+    defer loaded.deinit();
+    try deserializeWorldFromSlice(std.testing.allocator, &loaded, encoded);
+
+    const emitter = loaded.findEntityByName("AudioEmitter").?;
+    const audio_source = emitter.audio_source.?;
+    try std.testing.expectEqualStrings("assets/audio/test.wav", audio_source.clip_asset_path.?);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.35), audio_source.volume, 0.0001);
+    try std.testing.expect(audio_source.spatial);
+    try std.testing.expect(audio_source.looping);
+    try std.testing.expect(audio_source.play_on_awake);
+    try std.testing.expectApproxEqAbs(@as(f32, 2.0), audio_source.min_distance, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 40.0), audio_source.max_distance, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), audio_source.doppler_factor, 0.0001);
+    try std.testing.expect(loaded.findEntityByName("AudioListener").?.audio_listener != null);
 }
 
 test "scene serialization round-trips parent relationships" {

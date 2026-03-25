@@ -626,7 +626,18 @@ pub fn saveScene(state: *EditorState, layer_context: *engine.core.LayerContext) 
 }
 
 pub fn saveScenePath(state: *EditorState, layer_context: *engine.core.LayerContext, path: []const u8) void {
-    engine.scene.saveWorldToPath(layer_context.world.allocator, layer_context.world, path) catch |err| {
+    engine.scene.saveWorldWithRuntimeStateToPath(
+        layer_context.world.allocator,
+        layer_context.world,
+        .{
+            .global_time = layer_context.global_time.*,
+            .time_scale = layer_context.time_scale.*,
+            .physics_accumulator_seconds = layer_context.physics_accumulator_seconds.*,
+            .playback_state = @enumFromInt(@intFromEnum(layer_context.playback_controller.state)),
+            .game_state = @enumFromInt(@intFromEnum(layer_context.game_state.*)),
+        },
+        path,
+    ) catch |err| {
         std.log.err("failed to save scene to {s}: {}", .{ path, err });
         return;
     };
@@ -662,10 +673,22 @@ pub fn newScene(state: *EditorState, layer_context: *engine.core.LayerContext) !
 pub fn loadScenePath(state: *EditorState, layer_context: *engine.core.LayerContext, path: []const u8) !void {
     manipulation.endManipulation(state);
     vfx_runtime.clearAll(layer_context);
-    engine.scene.loadWorldFromPath(layer_context.world.allocator, layer_context.world, path) catch |err| {
+    var runtime_state = engine.scene.SceneRuntimeState{};
+    engine.scene.loadWorldWithRuntimeStateFromPath(
+        layer_context.world.allocator,
+        layer_context.world,
+        path,
+        &runtime_state,
+    ) catch |err| {
         std.log.err("failed to load scene from {s}: {}", .{ path, err });
         return;
     };
+
+    layer_context.global_time.* = runtime_state.global_time;
+    layer_context.time_scale.* = runtime_state.time_scale;
+    layer_context.physics_accumulator_seconds.* = runtime_state.physics_accumulator_seconds;
+    layer_context.playback_controller.setState(@enumFromInt(@intFromEnum(runtime_state.playback_state)));
+    layer_context.game_state.* = @enumFromInt(@intFromEnum(runtime_state.game_state));
 
     try layer_context.renderer.resetSceneState();
     state.scene_camera = layer_context.world.primaryCameraEntity();

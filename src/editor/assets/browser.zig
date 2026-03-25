@@ -1158,6 +1158,12 @@ test "applyMaterialAssetToEntity assigns loaded material assets to entities" {
     var input: engine.core.InputState = undefined;
     var window: engine.platform.Window = undefined;
     var playback_controller = engine.core.PlaybackController{};
+    var game_state = engine.core.GameState.game_start;
+    var global_time: f32 = 0.0;
+    var time_scale: f32 = 1.0;
+    var physics_accumulator_seconds: f32 = 0.0;
+    var physics_state = engine.physics.PhysicsState.init(std.testing.allocator);
+    defer physics_state.deinit();
     var layer_context = engine.core.LayerContext{
         .world = &world,
         .scene = &scene,
@@ -1165,6 +1171,11 @@ test "applyMaterialAssetToEntity assigns loaded material assets to entities" {
         .input = &input,
         .window = &window,
         .playback_controller = &playback_controller,
+        .game_state = &game_state,
+        .global_time = &global_time,
+        .time_scale = &time_scale,
+        .physics_accumulator_seconds = &physics_accumulator_seconds,
+        .physics_state = &physics_state,
         .frame_index = 0,
         .delta_seconds = 0.0,
     };
@@ -1201,6 +1212,12 @@ test "applyMaterialAssetToEntity rejects unloaded material assets" {
     var input: engine.core.InputState = undefined;
     var window: engine.platform.Window = undefined;
     var playback_controller = engine.core.PlaybackController{};
+    var game_state = engine.core.GameState.game_start;
+    var global_time: f32 = 0.0;
+    var time_scale: f32 = 1.0;
+    var physics_accumulator_seconds: f32 = 0.0;
+    var physics_state = engine.physics.PhysicsState.init(std.testing.allocator);
+    defer physics_state.deinit();
     var layer_context = engine.core.LayerContext{
         .world = &world,
         .scene = &scene,
@@ -1208,6 +1225,11 @@ test "applyMaterialAssetToEntity rejects unloaded material assets" {
         .input = &input,
         .window = &window,
         .playback_controller = &playback_controller,
+        .game_state = &game_state,
+        .global_time = &global_time,
+        .time_scale = &time_scale,
+        .physics_accumulator_seconds = &physics_accumulator_seconds,
+        .physics_state = &physics_state,
         .frame_index = 0,
         .delta_seconds = 0.0,
     };

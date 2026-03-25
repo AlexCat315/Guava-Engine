@@ -1191,7 +1191,16 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
             if (gui.beginPopupContextItem("audio_source_context")) {
                 defer gui.endPopup();
                 if (gui.menuItem(state.text(.remove_audio_source_component), null, false, true)) {
-                    if (entity_mut) |em| em.audio_source = null;
+                    if (entity_mut) |em| {
+                        if (em.audio_source) |audio_source| {
+                            if (audio_source.clip_asset_path) |path| {
+                                if (path.len != 0) {
+                                    layer_context.world.allocator.free(path);
+                                }
+                            }
+                        }
+                        em.audio_source = null;
+                    }
                     try history.captureSnapshot(state, layer_context);
                     return;
                 }

@@ -434,7 +434,7 @@ pub const ScriptContext = struct {
 // 扩展 Entity 添加 hasComponent 和 getComponent 方法
 pub fn entityHasComponent(entity: *world_mod.Entity, comptime T: type) bool {
     const type_name = @typeName(T);
-    return if (comptime std.mem.eql(u8, type_name, "components.Transform")) true else if (comptime std.mem.eql(u8, type_name, "components.Camera")) entity.camera != null else if (comptime std.mem.eql(u8, type_name, "components.Mesh")) entity.mesh != null else if (comptime std.mem.eql(u8, type_name, "components.SkinnedMesh")) entity.skinned_mesh != null else if (comptime std.mem.eql(u8, type_name, "components.Animator")) entity.animator != null else if (comptime std.mem.eql(u8, type_name, "components.Rigidbody")) entity.rigidbody != null else if (comptime std.mem.eql(u8, type_name, "components.BoxCollider")) entity.box_collider != null else if (comptime std.mem.eql(u8, type_name, "components.SphereCollider")) entity.sphere_collider != null else if (comptime std.mem.eql(u8, type_name, "components.MeshCollider")) entity.mesh_collider != null else if (comptime std.mem.eql(u8, type_name, "components.Material")) entity.material != null else if (comptime std.mem.eql(u8, type_name, "components.Light")) entity.light != null else if (comptime std.mem.eql(u8, type_name, "components.Vfx")) entity.vfx != null else if (comptime std.mem.eql(u8, type_name, "script.types.Script") or std.mem.eql(u8, type_name, "components.Script")) entity.script != null else false;
+    return if (comptime std.mem.eql(u8, type_name, "components.Transform")) true else if (comptime std.mem.eql(u8, type_name, "components.Camera")) entity.camera != null else if (comptime std.mem.eql(u8, type_name, "components.Mesh")) entity.mesh != null else if (comptime std.mem.eql(u8, type_name, "components.SkinnedMesh")) entity.skinned_mesh != null else if (comptime std.mem.eql(u8, type_name, "components.Animator")) entity.animator != null else if (comptime std.mem.eql(u8, type_name, "components.Rigidbody")) entity.rigidbody != null else if (comptime std.mem.eql(u8, type_name, "components.BoxCollider")) entity.box_collider != null else if (comptime std.mem.eql(u8, type_name, "components.SphereCollider")) entity.sphere_collider != null else if (comptime std.mem.eql(u8, type_name, "components.MeshCollider")) entity.mesh_collider != null else if (comptime std.mem.eql(u8, type_name, "components.Material")) entity.material != null else if (comptime std.mem.eql(u8, type_name, "components.Light")) entity.light != null else if (comptime std.mem.eql(u8, type_name, "components.Vfx")) entity.vfx != null else if (comptime std.mem.endsWith(u8, type_name, "AudioSource")) entity.audio_source != null else if (comptime std.mem.endsWith(u8, type_name, "AudioListener")) entity.audio_listener != null else if (comptime std.mem.eql(u8, type_name, "script.types.Script") or std.mem.eql(u8, type_name, "components.Script")) entity.script != null else false;
 }
 
 pub fn entityGetComponent(entity: *world_mod.Entity, comptime T: type) ?*T {
@@ -463,8 +463,29 @@ pub fn entityGetComponent(entity: *world_mod.Entity, comptime T: type) ?*T {
         @ptrCast(entity.light)
     else if (comptime std.mem.eql(u8, type_name, "components.Vfx"))
         @ptrCast(entity.vfx)
+    else if (comptime std.mem.endsWith(u8, type_name, "AudioSource"))
+        if (entity.audio_source) |*audio_source| @ptrCast(audio_source) else null
+    else if (comptime std.mem.endsWith(u8, type_name, "AudioListener"))
+        if (entity.audio_listener) |*audio_listener| @ptrCast(audio_listener) else null
     else if (comptime std.mem.eql(u8, type_name, "script.types.Script") or std.mem.eql(u8, type_name, "components.Script"))
         @ptrCast(entity.script)
     else
         null;
+}
+
+test "entity component access includes audio components" {
+    var world = world_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+
+    const entity_id = try world.createEntity(.{
+        .name = "Audio Entity",
+        .audio_source = .{},
+        .audio_listener = .{},
+    });
+
+    const entity = world.getEntity(entity_id).?;
+    try std.testing.expect(entityHasComponent(entity, components.AudioSource));
+    try std.testing.expect(entityHasComponent(entity, components.AudioListener));
+    try std.testing.expect(entityGetComponent(entity, components.AudioSource) != null);
+    try std.testing.expect(entityGetComponent(entity, components.AudioListener) != null);
 }

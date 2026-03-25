@@ -383,10 +383,6 @@ pub const Application = struct {
             if (should_advance_simulation) {
                 animator_system.update(&self.world, delta_seconds);
                 self.advancePhysics(delta_seconds);
-                // 更新音频系统（3D 位置/监听器）
-                if (audio_mod.get() catch null) |audio_runtime| {
-                    audio_runtime.updateFromWorld(&self.world);
-                }
                 // 更新脚本系统（传递时间和输入）
                 self.updateScripts(delta_seconds);
                 try self.applyPendingCommands();
@@ -394,6 +390,12 @@ pub const Application = struct {
 
             // P1: Update hierarchy transforms and bounds once per frame
             self.world.updateHierarchy();
+
+            if (should_advance_simulation) {
+                if (audio_mod.get() catch null) |audio_runtime| {
+                    audio_runtime.updateFromWorld(&self.world);
+                }
+            }
 
             var layer_context = self.makeLayerContext(frames_rendered, delta_seconds);
             for (self.layers.layers.items, 0..) |layer, index| {
@@ -512,6 +514,9 @@ pub const Application = struct {
             .window = &self.window,
             .playback_controller = &self.playback_controller,
             .game_state = &self.game_state,
+            .global_time = &self.global_time,
+            .time_scale = &self.time_scale,
+            .physics_accumulator_seconds = &self.physics_accumulator_seconds,
             .physics_state = &self.physics_state,
             .frame_index = frame_index,
             .delta_seconds = delta_seconds,
@@ -691,9 +696,13 @@ pub const Application = struct {
             self.allocator,
             &self.world,
             selection,
-            self.time_scale,
-            self.global_time,
-            self.physics_accumulator_seconds,
+            .{
+                .global_time = self.global_time,
+                .time_scale = self.time_scale,
+                .physics_accumulator_seconds = self.physics_accumulator_seconds,
+                .playback_state = @enumFromInt(@intFromEnum(self.playback_controller.state)),
+                .game_state = @enumFromInt(@intFromEnum(self.game_state)),
+            },
         ) catch |err| {
             std.log.err("play mode: failed to capture snapshot: {}", .{err});
             self.playback_controller.setState(.stopped);
@@ -711,7 +720,7 @@ pub const Application = struct {
             return;
         };
 
-        restorePlayModeWorld(
+        const runtime_state = restorePlayModeWorld(
             self.allocator,
             &self.world,
             &self.physics_state,
@@ -724,10 +733,10 @@ pub const Application = struct {
         };
 
         if (self.renderer.replaceSelectionMany(snapshot.selection)) {
-            self.global_time = snapshot.global_time;
-            self.time_scale = snapshot.time_scale;
-            self.game_state = snapshot.game_state;
-            self.physics_accumulator_seconds = snapshot.physics_accumulator_seconds;
+            self.global_time = runtime_state.global_time;
+            self.time_scale = runtime_state.time_scale;
+            self.game_state = @enumFromInt(@intFromEnum(runtime_state.game_state));
+            self.physics_accumulator_seconds = runtime_state.physics_accumulator_seconds;
             self.playback_controller = snapshot.playback_controller;
             const max_pending = self.command_queue.max_pending;
             self.command_queue.deinit();
@@ -745,11 +754,8 @@ pub const Application = struct {
 const PlayModeSnapshot = struct {
     world: []u8,
     selection: []scene_mod.EntityId,
-    time_scale: f32,
-    global_time: f32,
-    physics_accumulator_seconds: f32,
+    runtime_state: scene_mod.SceneRuntimeState,
     playback_controller: layer_mod.PlaybackController,
-    game_state: layer_mod.GameState,
 
     fn deinit(self: *PlayModeSnapshot, allocator: std.mem.Allocator) void {
         allocator.free(self.world);
@@ -762,11 +768,9 @@ fn capturePlayModeSnapshot(
     allocator: std.mem.Allocator,
     world: *const scene_mod.World,
     selection: []const scene_mod.EntityId,
-    time_scale: f32,
-    global_time: f32,
-    physics_accumulator_seconds: f32,
+    runtime_state: scene_mod.SceneRuntimeState,
 ) !PlayModeSnapshot {
-    const world_snapshot = try scene_mod.serializeWorldAlloc(allocator, world);
+    const world_snapshot = try scene_mod.serializeWorldWithRuntimeStateAlloc(allocator, world, runtime_state);
     errdefer allocator.free(world_snapshot);
 
     const selection_snapshot = try allocator.dupe(scene_mod.EntityId, selection);
@@ -775,14 +779,11 @@ fn capturePlayModeSnapshot(
     return .{
         .world = world_snapshot,
         .selection = selection_snapshot,
-        .time_scale = time_scale,
-        .global_time = global_time,
-        .physics_accumulator_seconds = physics_accumulator_seconds,
+        .runtime_state = runtime_state,
         .playback_controller = .{
             .state = .stopped,
             .pending_steps = 0,
         },
-        .game_state = .game_start,
     };
 }
 
@@ -792,12 +793,14 @@ fn restorePlayModeWorld(
     physics_state: *physics_system.PhysicsState,
     script_runtime: ?*script_system.ScriptRuntime,
     snapshot: *const PlayModeSnapshot,
-) !void {
+) !scene_mod.SceneRuntimeState {
     physics_state.deinitWorld(world);
     if (script_runtime) |runtime| {
         runtime.callDestroyAll(world);
     }
-    try scene_mod.deserializeWorldFromSlice(allocator, world, snapshot.world);
+    var runtime_state: scene_mod.SceneRuntimeState = .{};
+    try scene_mod.deserializeWorldWithRuntimeStateFromSlice(allocator, world, snapshot.world, &runtime_state);
+    return runtime_state;
 }
 
 test "play mode snapshot restores world and selection" {
@@ -821,9 +824,12 @@ test "play mode snapshot restores world and selection" {
         std.testing.allocator,
         &world,
         selection[0..],
-        0.75,
-        12.5,
-        0.25,
+        .{
+            .global_time = 12.5,
+            .time_scale = 0.75,
+            .physics_accumulator_seconds = 0.25,
+            .game_state = .paused,
+        },
     );
     defer snapshot.deinit(std.testing.allocator);
 
@@ -837,7 +843,7 @@ test "play mode snapshot restores world and selection" {
     var physics_state = physics_system.PhysicsState.init(std.testing.allocator);
     defer physics_state.deinit();
 
-    try restorePlayModeWorld(
+    const runtime_state = try restorePlayModeWorld(
         std.testing.allocator,
         &world,
         &physics_state,
@@ -849,6 +855,10 @@ test "play mode snapshot restores world and selection" {
     try std.testing.expectEqualSlices(f32, &.{ 1.0, 2.0, 3.0 }, restored.local_transform.translation[0..]);
     try std.testing.expect(restored.visible);
     try std.testing.expectEqualSlices(scene_mod.EntityId, selection[0..], snapshot.selection);
+    try std.testing.expectApproxEqAbs(@as(f32, 12.5), runtime_state.global_time, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.75), runtime_state.time_scale, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.25), runtime_state.physics_accumulator_seconds, 0.0001);
+    try std.testing.expectEqual(@as(u32, @intFromEnum(layer_mod.GameState.paused)), @as(u32, @intFromEnum(runtime_state.game_state)));
 }
 
 test "play mode snapshot drops play-only entities and clears script runtime on stop" {
@@ -872,9 +882,12 @@ test "play mode snapshot drops play-only entities and clears script runtime on s
         std.testing.allocator,
         &world,
         selection[0..],
-        1.0,
-        0.0,
-        0.0,
+        .{
+            .global_time = 0.0,
+            .time_scale = 1.0,
+            .physics_accumulator_seconds = 0.0,
+            .game_state = .playing,
+        },
     );
     defer snapshot.deinit(std.testing.allocator);
 
@@ -895,7 +908,7 @@ test "play mode snapshot drops play-only entities and clears script runtime on s
     var physics_state = physics_system.PhysicsState.init(std.testing.allocator);
     defer physics_state.deinit();
 
-    try restorePlayModeWorld(
+    const runtime_state = try restorePlayModeWorld(
         std.testing.allocator,
         &world,
         &physics_state,
@@ -907,6 +920,7 @@ test "play mode snapshot drops play-only entities and clears script runtime on s
     try std.testing.expectEqual(@as(usize, 1), world.entities.items.len);
     try std.testing.expect(world.getEntityConst(scripted_entity) != null);
     try std.testing.expect(world.getEntityConst(scripted_entity).?.script.?.instance_id == null);
+    try std.testing.expectEqual(@as(u32, @intFromEnum(layer_mod.GameState.playing)), @as(u32, @intFromEnum(runtime_state.game_state)));
     try std.testing.expectEqualSlices(
         f32,
         &.{ 0.0, 0.0, 0.0 },

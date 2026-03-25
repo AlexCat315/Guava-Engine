@@ -922,14 +922,8 @@ pub export fn guava_wasm_host_audio_play(userdata: ?*anyopaque, entity_id_raw: u
     const entity = ctx.world.getEntity(entity_id) orelse return 0;
     const audio_src = &(entity.audio_source orelse return 0);
     const audio_runtime = @import("../audio/mod.zig").get() catch return 0;
-    const clip_handle = @intFromEnum(audio_src.clip_handle orelse return 0);
-    if (audio_src.spatial) {
-        const pos = entity.local_transform.translation;
-        audio_src._voice_handle = audio_runtime.playClip3d(clip_handle, pos, audio_src.volume, audio_src.looping) catch return 0;
-    } else {
-        audio_src._voice_handle = audio_runtime.playClip2d(clip_handle, audio_src.volume, audio_src.looping) catch return 0;
-    }
-    audio_src._is_playing = true;
+    const pos = ctx.world.worldTransform(entity_id) orelse entity.local_transform;
+    _ = audio_runtime.playEntitySource(entity_id, pos.translation, audio_src) catch return 0;
     return 1;
 }
 
@@ -952,6 +946,12 @@ pub export fn guava_wasm_host_audio_set_volume(userdata: ?*anyopaque, entity_id_
     const entity = ctx.world.getEntity(entity_id) orelse return;
     const audio_src = &(entity.audio_source orelse return);
     audio_src.volume = @max(0.0, @min(1.0, volume));
+    const audio_runtime = @import("../audio/mod.zig").get() catch return;
+    if (audio_src._voice_handle) |voice_handle| {
+        if (audio_runtime.isVoiceHandleActive(voice_handle)) {
+            audio_runtime.setVoiceVolume(voice_handle, audio_src.volume);
+        }
+    }
 }
 
 // ── Physics WASM API ──

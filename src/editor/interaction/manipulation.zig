@@ -907,15 +907,26 @@ test "translation snap uses accumulated drag from manipulation origin" {
     var renderer: engine.render.Renderer = undefined;
     var input = engine.core.InputState{};
     var playback = engine.core.PlaybackController{};
+    var game_state = engine.core.GameState.game_start;
+    var global_time: f32 = 0.0;
+    var time_scale: f32 = 1.0;
+    var physics_accumulator_seconds: f32 = 0.0;
+    var physics_state = engine.physics.PhysicsState.init(std.testing.allocator);
+    defer physics_state.deinit();
     var layer_context = engine.core.LayerContext{
         .world = &world,
         .scene = &world,
         .renderer = &renderer,
         .input = &input,
         .window = undefined,
+        .playback_controller = &playback,
+        .game_state = &game_state,
+        .global_time = &global_time,
+        .time_scale = &time_scale,
+        .physics_accumulator_seconds = &physics_accumulator_seconds,
+        .physics_state = &physics_state,
         .frame_index = 0,
         .delta_seconds = 1.0 / 60.0,
-        .playback_controller = &playback,
     };
 
     // The helper only reads the active camera transform, so no world state is needed here.

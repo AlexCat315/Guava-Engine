@@ -19,10 +19,15 @@ pub const VfxRuntimeParticle = @import("vfx_runtime.zig").VfxRuntimeParticle;
 pub const VfxRuntimeEmitter = @import("vfx_runtime.zig").VfxRuntimeEmitter;
 pub const AudioSource = @import("components.zig").AudioSource;
 pub const AudioListener = @import("components.zig").AudioListener;
+pub const SceneRuntimeState = @import("scene_io.zig").SceneRuntimeState;
 pub const serializeWorldAlloc = @import("scene_io.zig").serializeWorldAlloc;
+pub const serializeWorldWithRuntimeStateAlloc = @import("scene_io.zig").serializeWorldWithRuntimeStateAlloc;
 pub const deserializeWorldFromSlice = @import("scene_io.zig").deserializeWorldFromSlice;
+pub const deserializeWorldWithRuntimeStateFromSlice = @import("scene_io.zig").deserializeWorldWithRuntimeStateFromSlice;
 pub const saveWorldToPath = @import("scene_io.zig").saveWorldToPath;
+pub const saveWorldWithRuntimeStateToPath = @import("scene_io.zig").saveWorldWithRuntimeStateToPath;
 pub const loadWorldFromPath = @import("scene_io.zig").loadWorldFromPath;
+pub const loadWorldWithRuntimeStateFromPath = @import("scene_io.zig").loadWorldWithRuntimeStateFromPath;
 
 test {
     _ = @import("world.zig");

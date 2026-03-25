@@ -500,6 +500,8 @@ pub const AudioSource = struct {
     _voice_handle: ?u32 = null,
     /// 是否正在播放
     _is_playing: bool = false,
+    /// 是否已经消费过启动时自动播放
+    _play_on_awake_consumed: bool = false,
 };
 
 /// 音频监听器组件

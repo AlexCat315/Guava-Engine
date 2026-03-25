@@ -4,6 +4,7 @@
 //! 以及与 ECS 系统的集成。
 
 const std = @import("std");
+const components = @import("../scene/components.zig");
 const world_mod = @import("../scene/world.zig");
 const soloud_bindings = @import("./soloud_bindings.zig");
 
@@ -48,6 +49,8 @@ pub const PlayingInstance = struct {
     bus_id: BusId,
     pos: [3]f32 = .{ 0, 0, 0 },
     is_spatial: bool = false,
+    looping: bool = false,
+    entity_id: ?world_mod.EntityId = null,
     state: PlayState = .playing,
 };
 
@@ -200,16 +203,36 @@ pub const AudioRuntime = struct {
     /// 通过路径加载或获取已缓存的音频剪辑
     pub fn loadClipByPath(runtime: *AudioRuntime, path: [:0]const u8) !AudioClipHandle {
         if (runtime.clip_path_cache.get(path)) |existing_id| {
-            return existing_id;
+            if (runtime.clips.contains(existing_id)) {
+                return existing_id;
+            }
+            _ = runtime.clip_path_cache.remove(path);
         }
         const clip_id = try runtime.loadClip(path, path);
-        try runtime.clip_path_cache.put(path, clip_id);
+        const clip = runtime.clips.get(clip_id).?;
+        try runtime.clip_path_cache.put(clip.path, clip_id);
         return clip_id;
+    }
+
+    pub fn loadClipBySlice(runtime: *AudioRuntime, path: []const u8) !AudioClipHandle {
+        if (path.len == 0) {
+            return error.ClipNotFound;
+        }
+        if (runtime.clip_path_cache.get(path)) |existing_id| {
+            if (runtime.clips.contains(existing_id)) {
+                return existing_id;
+            }
+            _ = runtime.clip_path_cache.remove(path);
+        }
+        const path_z = try runtime.allocator.dupeZ(u8, path);
+        defer runtime.allocator.free(path_z);
+        return runtime.loadClipByPath(path_z);
     }
 
     /// 卸载音频剪辑
     pub fn unloadClip(runtime: *AudioRuntime, clip_id: AudioClipHandle) void {
         if (runtime.clips.fetchRemove(clip_id)) |kv| {
+            _ = runtime.clip_path_cache.remove(kv.value.path);
             kv.value.deinit(runtime.allocator);
             std.debug.print("[INF] audio: Unloaded audio clip (id={d})\n", .{clip_id});
         }
@@ -221,6 +244,16 @@ pub const AudioRuntime = struct {
         clip_id: AudioClipHandle,
         volume: f32,
         loop: bool,
+    ) !VoiceHandle {
+        return runtime.playClip2dForEntity(clip_id, volume, loop, null);
+    }
+
+    pub fn playClip2dForEntity(
+        runtime: *AudioRuntime,
+        clip_id: AudioClipHandle,
+        volume: f32,
+        loop: bool,
+        entity_id: ?world_mod.EntityId,
     ) !VoiceHandle {
         const clip = runtime.clips.get(clip_id) orelse return error.ClipNotFound;
 
@@ -242,6 +275,8 @@ pub const AudioRuntime = struct {
             .clip_id = clip_id,
             .bus_id = .sfx,
             .is_spatial = false,
+            .looping = loop,
+            .entity_id = entity_id,
         };
         try runtime.playing_instances.append(runtime.allocator, instance);
 
@@ -255,6 +290,17 @@ pub const AudioRuntime = struct {
         pos: [3]f32,
         volume: f32,
         loop: bool,
+    ) !VoiceHandle {
+        return runtime.playClip3dForEntity(clip_id, pos, volume, loop, null);
+    }
+
+    pub fn playClip3dForEntity(
+        runtime: *AudioRuntime,
+        clip_id: AudioClipHandle,
+        pos: [3]f32,
+        volume: f32,
+        loop: bool,
+        entity_id: ?world_mod.EntityId,
     ) !VoiceHandle {
         const clip = runtime.clips.get(clip_id) orelse return error.ClipNotFound;
 
@@ -286,9 +332,55 @@ pub const AudioRuntime = struct {
             .bus_id = .sfx,
             .pos = pos,
             .is_spatial = true,
+            .looping = loop,
+            .entity_id = entity_id,
         };
         try runtime.playing_instances.append(runtime.allocator, instance);
 
+        return voice;
+    }
+
+    pub fn ensureClipHandle(runtime: *AudioRuntime, audio_src: *components.AudioSource) !AudioClipHandle {
+        if (audio_src.clip_handle) |handle| {
+            const clip_id = @intFromEnum(handle);
+            if (runtime.clips.contains(clip_id)) {
+                return clip_id;
+            }
+            audio_src.clip_handle = null;
+        }
+
+        const path = audio_src.clip_asset_path orelse return error.ClipNotFound;
+        const clip_id = try runtime.loadClipBySlice(path);
+        audio_src.clip_handle = @enumFromInt(clip_id);
+        return clip_id;
+    }
+
+    pub fn isVoiceHandleActive(runtime: *AudioRuntime, voice_handle: ?VoiceHandle) bool {
+        const resolved = voice_handle orelse return false;
+        return soloud_bindings.isValidVoiceHandle(runtime.soloud, resolved);
+    }
+
+    pub fn playEntitySource(
+        runtime: *AudioRuntime,
+        entity_id: world_mod.EntityId,
+        pos: [3]f32,
+        audio_src: *components.AudioSource,
+    ) !VoiceHandle {
+        const clip_id = try runtime.ensureClipHandle(audio_src);
+
+        if (audio_src._voice_handle) |voice_handle| {
+            if (runtime.isVoiceHandleActive(voice_handle)) {
+                runtime.stopVoice(voice_handle);
+            }
+        }
+
+        const voice = if (audio_src.spatial)
+            try runtime.playClip3dForEntity(clip_id, pos, audio_src.volume, audio_src.looping, entity_id)
+        else
+            try runtime.playClip2dForEntity(clip_id, audio_src.volume, audio_src.looping, entity_id);
+
+        audio_src._voice_handle = voice;
+        audio_src._is_playing = true;
         return voice;
     }
 
@@ -382,50 +474,66 @@ pub const AudioRuntime = struct {
 
     /// 从 ECS 世界更新音频（每帧调用）
     pub fn updateFromWorld(runtime: *AudioRuntime, world: *world_mod.World) void {
-        // 解析 clip_asset_path → clip_handle（惰性加载）
+        runtime.stopOrphanedEntityVoices(world);
+        runtime.cleanupStoppedVoices(world);
+
+        if (findActiveListenerPosition(world)) |listener_pos| {
+            runtime.setListenerPosition(listener_pos, .{ 0, 0, 0 });
+        }
+
         for (world.entities.items) |*entity| {
-            if (entity.audio_source) |*audio_src| {
-                if (audio_src.clip_handle == null) {
-                    if (audio_src.clip_asset_path) |path| {
-                        if (path.len > 0) {
-                            if (runtime.clip_path_cache.get(path)) |cached_id| {
-                                audio_src.clip_handle = @enumFromInt(cached_id);
-                            }
-                        }
+            const audio_src = &(entity.audio_source orelse continue);
+            const pos = entityAudioPosition(world, entity.id);
+
+            const resolved_clip_id = runtime.ensureClipHandle(audio_src) catch null;
+
+            var restart_requested = false;
+            if (audio_src._voice_handle) |voice_handle| {
+                if (!runtime.isVoiceHandleActive(voice_handle)) {
+                    audio_src._voice_handle = null;
+                    audio_src._is_playing = false;
+                } else if (runtime.findPlayingInstance(voice_handle)) |instance| {
+                    if (resolved_clip_id == null or
+                        instance.clip_id != resolved_clip_id.? or
+                        instance.is_spatial != audio_src.spatial or
+                        instance.looping != audio_src.looping)
+                    {
+                        runtime.stopVoice(voice_handle);
+                        audio_src._voice_handle = null;
+                        audio_src._is_playing = false;
+                        restart_requested = true;
                     }
                 }
             }
-        }
 
-        // 更新监听器位置（从相机）
-        if (world.primaryCameraEntity()) |camera_id| {
-            if (world.getEntityConst(camera_id)) |entity| {
-                runtime.setListenerPosition(entity.local_transform.translation, .{ 0, 0, 0 });
+            if (audio_src._voice_handle == null and resolved_clip_id != null) {
+                if (restart_requested or shouldAutoStartSource(audio_src, true, false)) {
+                    _ = runtime.playEntitySource(entity.id, pos, audio_src) catch continue;
+                    if (audio_src.play_on_awake) {
+                        audio_src._play_on_awake_consumed = true;
+                    }
+                }
+            }
+
+            if (audio_src._voice_handle) |voice_handle| {
+                runtime.setVoiceVolume(voice_handle, audio_src.volume);
+                runtime.ensureTrackedInstance(
+                    voice_handle,
+                    resolved_clip_id orelse @intFromEnum(audio_src.clip_handle orelse continue),
+                    audio_src.spatial,
+                    audio_src.looping,
+                    entity.id,
+                    pos,
+                );
+                if (audio_src.spatial) {
+                    runtime.applySpatialSourceSettings(voice_handle, pos, audio_src);
+                }
+                audio_src._is_playing = runtime.isVoiceHandleActive(voice_handle);
             }
         }
 
-        // 更新 3D 音源位置
-        for (runtime.playing_instances.items) |*instance| {
-            if (instance.is_spatial) {
-                // 可以从实体获取位置更新
-                // 这里简化处理 - 实际应用中可以关联 AudioSource 实体
-                runtime.updateVoice3dPosition(instance.voice_handle, instance.pos, .{ 0, 0, 0 });
-            }
-        }
-
-        // 更新 3D 音频处理
         soloud_bindings.update3dAudio(runtime.soloud);
-
-        // 清理已停止的语音
-        var i: usize = 0;
-        while (i < runtime.playing_instances.items.len) {
-            const instance = runtime.playing_instances.items[i];
-            if (!soloud_bindings.isValidVoiceHandle(runtime.soloud, instance.voice_handle)) {
-                _ = runtime.playing_instances.orderedRemove(i);
-            } else {
-                i += 1;
-            }
-        }
+        runtime.cleanupStoppedVoices(world);
     }
 
     /// 获取混音器状态快照
@@ -453,7 +561,158 @@ pub const AudioRuntime = struct {
             .sfx_playing = sfx_playing,
         };
     }
+
+    fn findPlayingInstance(runtime: *AudioRuntime, voice_handle: VoiceHandle) ?*PlayingInstance {
+        for (runtime.playing_instances.items) |*instance| {
+            if (instance.voice_handle == voice_handle) {
+                return instance;
+            }
+        }
+        return null;
+    }
+
+    fn ensureTrackedInstance(
+        runtime: *AudioRuntime,
+        voice_handle: VoiceHandle,
+        clip_id: AudioClipHandle,
+        is_spatial: bool,
+        looping: bool,
+        entity_id: world_mod.EntityId,
+        pos: [3]f32,
+    ) void {
+        if (runtime.findPlayingInstance(voice_handle)) |instance| {
+            instance.clip_id = clip_id;
+            instance.is_spatial = is_spatial;
+            instance.looping = looping;
+            instance.entity_id = entity_id;
+            instance.pos = pos;
+            return;
+        }
+
+        runtime.playing_instances.append(runtime.allocator, .{
+            .voice_handle = voice_handle,
+            .clip_id = clip_id,
+            .bus_id = .sfx,
+            .pos = pos,
+            .is_spatial = is_spatial,
+            .looping = looping,
+            .entity_id = entity_id,
+        }) catch {};
+    }
+
+    fn applySpatialSourceSettings(
+        runtime: *AudioRuntime,
+        voice_handle: VoiceHandle,
+        pos: [3]f32,
+        audio_src: *const components.AudioSource,
+    ) void {
+        runtime.updateVoice3dPosition(voice_handle, pos, .{ 0, 0, 0 });
+        soloud_bindings.set3dSourceMinMaxDistance(
+            runtime.soloud,
+            voice_handle,
+            @max(0.0, audio_src.min_distance),
+            @max(audio_src.min_distance, audio_src.max_distance),
+        );
+        soloud_bindings.set3dSourceAttenuation(runtime.soloud, voice_handle, 0, 1.0);
+        soloud_bindings.set3dSourceDopplerFactor(runtime.soloud, voice_handle, @max(0.0, audio_src.doppler_factor));
+    }
+
+    fn stopOrphanedEntityVoices(runtime: *AudioRuntime, world: *world_mod.World) void {
+        var index: usize = 0;
+        while (index < runtime.playing_instances.items.len) {
+            const instance = runtime.playing_instances.items[index];
+            const entity_id = instance.entity_id orelse {
+                index += 1;
+                continue;
+            };
+
+            const entity = world.getEntity(entity_id);
+            const keep_voice = if (entity) |resolved_entity|
+                if (resolved_entity.audio_source) |audio_src|
+                    audio_src._voice_handle != null and audio_src._voice_handle.? == instance.voice_handle
+                else
+                    false
+            else
+                false;
+
+            if (!keep_voice) {
+                soloud_bindings.stop(runtime.soloud, instance.voice_handle);
+                _ = runtime.playing_instances.orderedRemove(index);
+                continue;
+            }
+
+            index += 1;
+        }
+    }
+
+    fn cleanupStoppedVoices(runtime: *AudioRuntime, world: *world_mod.World) void {
+        var index: usize = 0;
+        while (index < runtime.playing_instances.items.len) {
+            const instance = runtime.playing_instances.items[index];
+            if (!runtime.isVoiceHandleActive(instance.voice_handle)) {
+                if (instance.entity_id) |entity_id| {
+                    if (world.getEntity(entity_id)) |entity| {
+                        if (entity.audio_source) |*audio_src| {
+                            if (audio_src._voice_handle != null and audio_src._voice_handle.? == instance.voice_handle) {
+                                audio_src._voice_handle = null;
+                                audio_src._is_playing = false;
+                            }
+                        }
+                    }
+                }
+                _ = runtime.playing_instances.orderedRemove(index);
+                continue;
+            }
+
+            index += 1;
+        }
+    }
 };
+
+fn entityAudioPosition(world: *world_mod.World, entity_id: world_mod.EntityId) [3]f32 {
+    if (world.worldTransform(entity_id)) |transform| {
+        return transform.translation;
+    }
+    if (world.getEntityConst(entity_id)) |entity| {
+        return entity.local_transform.translation;
+    }
+    return .{ 0, 0, 0 };
+}
+
+fn findActiveListenerPosition(world: *world_mod.World) ?[3]f32 {
+    var first_enabled_listener: ?world_mod.EntityId = null;
+    for (world.entities.items) |entity| {
+        const listener = entity.audio_listener orelse continue;
+        if (!listener.enabled) {
+            continue;
+        }
+        if (first_enabled_listener == null) {
+            first_enabled_listener = entity.id;
+        }
+        if (entity.camera) |camera| {
+            if (camera.is_primary) {
+                return entityAudioPosition(world, entity.id);
+            }
+        }
+    }
+
+    if (first_enabled_listener) |entity_id| {
+        return entityAudioPosition(world, entity_id);
+    }
+
+    if (world.primaryCameraEntity()) |camera_id| {
+        return entityAudioPosition(world, camera_id);
+    }
+
+    return null;
+}
+
+fn shouldAutoStartSource(audio_src: *const components.AudioSource, clip_ready: bool, voice_active: bool) bool {
+    return clip_ready and
+        audio_src.play_on_awake and
+        !audio_src._play_on_awake_consumed and
+        !voice_active;
+}
 
 // ============ 音频剪辑 ============
 
@@ -497,3 +756,58 @@ pub const AudioClip = struct {
         allocator.free(clip.path);
     }
 };
+
+test "audio runtime prefers enabled listener over primary camera" {
+    var world = world_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+
+    _ = try world.createEntity(.{
+        .name = "PrimaryCamera",
+        .camera = .{ .is_primary = true },
+        .local_transform = .{ .translation = .{ 1.0, 2.0, 3.0 } },
+    });
+    _ = try world.createEntity(.{
+        .name = "AudioListener",
+        .audio_listener = .{ .enabled = true },
+        .local_transform = .{ .translation = .{ 4.0, 5.0, 6.0 } },
+    });
+
+    world.updateHierarchy();
+
+    const listener_pos = findActiveListenerPosition(&world).?;
+    try std.testing.expectEqualSlices(f32, &.{ 4.0, 5.0, 6.0 }, listener_pos[0..]);
+}
+
+test "audio runtime uses world transform for listener position" {
+    var world = world_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+
+    const parent_id = try world.createEntity(.{
+        .name = "Parent",
+        .local_transform = .{ .translation = .{ 1.0, 0.0, 0.0 } },
+    });
+    _ = try world.createEntity(.{
+        .name = "ChildListener",
+        .parent = parent_id,
+        .audio_listener = .{ .enabled = true },
+        .local_transform = .{ .translation = .{ 0.0, 2.0, 0.0 } },
+    });
+
+    world.updateHierarchy();
+
+    const listener_pos = findActiveListenerPosition(&world).?;
+    try std.testing.expectEqualSlices(f32, &.{ 1.0, 2.0, 0.0 }, listener_pos[0..]);
+}
+
+test "audio source auto start is consumed once" {
+    var audio_src = components.AudioSource{
+        .play_on_awake = true,
+    };
+
+    try std.testing.expect(shouldAutoStartSource(&audio_src, true, false));
+
+    audio_src._play_on_awake_consumed = true;
+    try std.testing.expect(!shouldAutoStartSource(&audio_src, true, false));
+    try std.testing.expect(!shouldAutoStartSource(&audio_src, false, false));
+    try std.testing.expect(!shouldAutoStartSource(&audio_src, true, true));
+}
