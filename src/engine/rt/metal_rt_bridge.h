@@ -17,6 +17,18 @@ typedef struct {
     uint32_t format;
 } GuavaRTTextureMeta;
 
+typedef enum {
+    GUAVA_RT_SAMPLING_TABLE_ENVIRONMENT_IMPORTANCE = 0,
+    GUAVA_RT_SAMPLING_TABLE_EMISSIVE_LIGHT = 1,
+} GuavaRTSamplingTableKind;
+
+typedef struct {
+    uint32_t offset;    /* 字节偏移 (采样表打包缓冲) */
+    uint32_t byte_size; /* 该表占用的字节数 */
+    uint32_t kind;      /* 见 GuavaRTSamplingTableKind */
+    uint32_t _pad;
+} GuavaRTSamplingTableMeta;
+
 /// 三角形数据 — 与 Zig RtTriangle / Metal RTTriangle 完全对齐
 typedef struct {
     float v0[3], v1[3], v2[3];
@@ -54,6 +66,13 @@ typedef struct {
     uint32_t _pad3;
     uint32_t _pad4;
     uint32_t _pad5;
+    uint32_t directional_light_count;
+    float directional_light_directions[4][3];
+    float directional_light_radiance[4][3];
+    uint32_t sampling_table_count;
+    uint32_t environment_importance_width;
+    uint32_t environment_importance_height;
+    float emissive_total_area;
 } GuavaRTParams;
 
 /// 创建 Metal RT 上下文。返回 NULL 表示当前设备不支持 Metal RT。
@@ -81,6 +100,13 @@ bool guava_metal_rt_upload_textures(GuavaMetalRTContext* ctx,
                                     uint32_t pixel_data_size,
                                     const GuavaRTTextureMeta* meta,
                                     uint32_t texture_count);
+
+/// 上传环境重要性数据与发光体采样表。
+bool guava_metal_rt_upload_sampling_tables(GuavaMetalRTContext* ctx,
+                                           const uint8_t* table_data,
+                                           uint32_t table_data_size,
+                                           const GuavaRTSamplingTableMeta* meta,
+                                           uint32_t table_count);
 
 /// 销毁上下文，释放所有 Metal 资源。
 void guava_metal_rt_destroy(GuavaMetalRTContext* ctx);

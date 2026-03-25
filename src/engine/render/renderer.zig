@@ -283,6 +283,17 @@ const PathTraceEnvironment = struct {
     texture: ?PathTraceTexture = null,
 };
 
+const PathTraceEnvImportance = extern struct {
+    q: f32,
+    pmf: f32,
+    alias: u32,
+};
+
+const PathTraceEmissiveLight = extern struct {
+    triangle_index: u32,
+    cdf: f32,
+};
+
 const PathTraceMesh = struct {
     aabb: AABB,
     tri_start: u32,
@@ -304,9 +315,15 @@ const PathTraceProgressiveState = struct {
     meshes: ?[]PathTraceMesh = null,
     textures: ?[]PathTraceTexture = null,
     environment_texture: ?PathTraceTexture = null,
+    environment_importance: ?[]PathTraceEnvImportance = null,
+    environment_importance_width: u32 = 0,
+    environment_importance_height: u32 = 0,
+    emissive_lights: ?[]PathTraceEmissiveLight = null,
+    emissive_total_area: f32 = 0.0,
     inv_view_projection: [16]f32 = mat4_mod.identity(),
     camera_origin: [3]f32 = .{ 0, 0, 0 },
     light_direction: [3]f32 = .{ 0, 1, 0 },
+    light_radiance: [3]f32 = .{ 0, 0, 0 },
     sample_step: u32 = 1,
     cached_samples: u32 = 0,
     cached_bounces: u32 = 0,
@@ -334,6 +351,17 @@ const PathTraceProgressiveState = struct {
             allocator.free(tex);
             self.textures = null;
         }
+        if (self.environment_importance) |items| {
+            allocator.free(items);
+            self.environment_importance = null;
+        }
+        if (self.emissive_lights) |items| {
+            allocator.free(items);
+            self.emissive_lights = null;
+        }
+        self.environment_importance_width = 0;
+        self.environment_importance_height = 0;
+        self.emissive_total_area = 0.0;
     }
 
     fn deinit(self: *PathTraceProgressiveState, allocator: std.mem.Allocator) void {
@@ -342,6 +370,8 @@ const PathTraceProgressiveState = struct {
         if (self.triangles) |t| allocator.free(t);
         if (self.meshes) |m| allocator.free(m);
         if (self.textures) |tex| allocator.free(tex);
+        if (self.environment_importance) |items| allocator.free(items);
+        if (self.emissive_lights) |items| allocator.free(items);
         self.* = .{};
     }
 };
@@ -352,6 +382,15 @@ const HwRtState = struct {
     texture_atlas: ?[]u8 = null,
     texture_meta: ?[]rt_backend.RtTextureMeta = null,
     textures_uploaded: bool = false,
+    sampling_table_data: ?[]u8 = null,
+    sampling_table_meta: ?[]rt_backend.RtSamplingTableMeta = null,
+    sampling_tables_uploaded: bool = false,
+    environment_importance: ?[]PathTraceEnvImportance = null,
+    emissive_lights: ?[]PathTraceEmissiveLight = null,
+    environment_importance_width: u32 = 0,
+    environment_importance_height: u32 = 0,
+    emissive_total_area: f32 = 0.0,
+    light_radiance: [3]f32 = .{ 0, 0, 0 },
     trace_pixels: ?[]u8 = null,
     display_pixels: ?[]u8 = null,
     trace_width: u32 = 0,
@@ -371,10 +410,22 @@ const HwRtState = struct {
         if (self.triangles) |t| allocator.free(t);
         if (self.texture_atlas) |a| allocator.free(a);
         if (self.texture_meta) |m| allocator.free(m);
+        if (self.sampling_table_data) |data| allocator.free(data);
+        if (self.sampling_table_meta) |meta| allocator.free(meta);
+        if (self.environment_importance) |items| allocator.free(items);
+        if (self.emissive_lights) |items| allocator.free(items);
         self.triangles = null;
         self.texture_atlas = null;
         self.texture_meta = null;
+        self.sampling_table_data = null;
+        self.sampling_table_meta = null;
+        self.environment_importance = null;
+        self.emissive_lights = null;
+        self.environment_importance_width = 0;
+        self.environment_importance_height = 0;
+        self.emissive_total_area = 0.0;
         self.textures_uploaded = false;
+        self.sampling_tables_uploaded = false;
         self.accel_built = false;
         self.needs_retrace = true;
         self.environment_texture_index = -1;
@@ -384,6 +435,10 @@ const HwRtState = struct {
         if (self.triangles) |t| allocator.free(t);
         if (self.texture_atlas) |a| allocator.free(a);
         if (self.texture_meta) |m| allocator.free(m);
+        if (self.sampling_table_data) |data| allocator.free(data);
+        if (self.sampling_table_meta) |meta| allocator.free(meta);
+        if (self.environment_importance) |items| allocator.free(items);
+        if (self.emissive_lights) |items| allocator.free(items);
         if (self.trace_pixels) |p| allocator.free(p);
         if (self.display_pixels) |p| allocator.free(p);
         self.* = .{};
@@ -738,13 +793,475 @@ fn readTexelLinear(tex: PathTraceTexture, x: u32, y: u32) [3]f32 {
     };
 }
 
-fn randomHemisphereDirection(normal: [3]f32, seed: u32) [3]f32 {
-    const jitter = vec3.normalize(.{
-        hashUnitFloat(seed ^ 0x68bc21eb) * 2.0 - 1.0,
-        hashUnitFloat(seed ^ 0x02e5be93) * 2.0 - 1.0,
-        hashUnitFloat(seed ^ 0xa3d95fa1) * 2.0 - 1.0,
+const PathTraceSceneHit = struct {
+    tri_index: usize,
+    t: f32,
+    u: f32,
+    v: f32,
+};
+
+const PathTraceBsdfProbabilities = struct {
+    diffuse: f32,
+    specular: f32,
+};
+
+const PathTraceBsdfEval = struct {
+    value: [3]f32,
+    pdf: f32,
+};
+
+const PathTraceDirectLightSample = struct {
+    direction: [3]f32,
+    radiance: [3]f32,
+    pdf: f32,
+    distance: f32,
+    delta: bool,
+};
+
+const TangentFrame = struct {
+    tangent: [3]f32,
+    bitangent: [3]f32,
+    normal: [3]f32,
+};
+
+fn sqr(value: f32) f32 {
+    return value * value;
+}
+
+fn luminance(rgb: [3]f32) f32 {
+    return rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+}
+
+fn maxComponent(rgb: [3]f32) f32 {
+    return @max(rgb[0], @max(rgb[1], rgb[2]));
+}
+
+fn oneMinusVec3(value: [3]f32) [3]f32 {
+    return .{ 1.0 - value[0], 1.0 - value[1], 1.0 - value[2] };
+}
+
+fn powerHeuristic(pdf_a: f32, pdf_b: f32) f32 {
+    const a2 = pdf_a * pdf_a;
+    const b2 = pdf_b * pdf_b;
+    const denom = a2 + b2;
+    if (denom <= 0.0) return 0.0;
+    return a2 / denom;
+}
+
+fn directionToEnvironmentUv(direction: [3]f32) [2]f32 {
+    const dir = vec3.normalize(direction);
+    return .{
+        std.math.atan2(dir[2], dir[0]) / (2.0 * std.math.pi) + 0.5,
+        0.5 - std.math.asin(std.math.clamp(dir[1], -1.0, 1.0)) / std.math.pi,
+    };
+}
+
+fn environmentUvToDirection(u: f32, v: f32) [3]f32 {
+    const phi = (u - 0.5) * (2.0 * std.math.pi);
+    const theta = std.math.clamp(v, 0.0, 1.0) * std.math.pi;
+    const sin_theta = std.math.sin(theta);
+    return vec3.normalize(.{
+        std.math.cos(phi) * sin_theta,
+        std.math.cos(theta),
+        std.math.sin(phi) * sin_theta,
     });
-    return vec3.normalize(vec3.add(normal, jitter));
+}
+
+fn triangleArea(tri: PathTraceTriangle) f32 {
+    return 0.5 * vec3.length(vec3.cross(vec3.sub(tri.v1, tri.v0), vec3.sub(tri.v2, tri.v0)));
+}
+
+fn triangleGeometricNormal(tri: PathTraceTriangle) [3]f32 {
+    return vec3.normalize(vec3.cross(vec3.sub(tri.v1, tri.v0), vec3.sub(tri.v2, tri.v0)));
+}
+
+fn tracePathTraceScene(
+    origin: [3]f32,
+    direction: [3]f32,
+    triangles: []const PathTraceTriangle,
+    meshes: []const PathTraceMesh,
+    t_min: f32,
+    t_max: f32,
+) ?PathTraceSceneHit {
+    var closest_t = t_max;
+    var best_hit: ?PathTraceSceneHit = null;
+
+    for (meshes) |mesh| {
+        if (mesh.aabb.rayIntersection(origin, direction, closest_t) == null) continue;
+        const end = mesh.tri_start + mesh.tri_count;
+        var tri_index = mesh.tri_start;
+        while (tri_index < end) : (tri_index += 1) {
+            const tri = triangles[tri_index];
+            if (intersectTriangle(origin, direction, tri, t_min, closest_t)) |hit| {
+                closest_t = hit.t;
+                best_hit = .{
+                    .tri_index = tri_index,
+                    .t = hit.t,
+                    .u = hit.u,
+                    .v = hit.v,
+                };
+            }
+        }
+    }
+
+    return best_hit;
+}
+
+fn isPathTraceOccluded(
+    origin: [3]f32,
+    direction: [3]f32,
+    max_distance: f32,
+    triangles: []const PathTraceTriangle,
+    meshes: []const PathTraceMesh,
+) bool {
+    return tracePathTraceScene(origin, direction, triangles, meshes, 0.001, max_distance) != null;
+}
+
+fn buildTangentFrame(normal: [3]f32) TangentFrame {
+    const up = if (@abs(normal[1]) < 0.999) [3]f32{ 0.0, 1.0, 0.0 } else [3]f32{ 1.0, 0.0, 0.0 };
+    const tangent = vec3.normalize(vec3.cross(up, normal));
+    return .{
+        .tangent = tangent,
+        .bitangent = vec3.cross(normal, tangent),
+        .normal = normal,
+    };
+}
+
+fn frameToWorld(frame: TangentFrame, local: [3]f32) [3]f32 {
+    return vec3.normalize(.{
+        frame.tangent[0] * local[0] + frame.bitangent[0] * local[1] + frame.normal[0] * local[2],
+        frame.tangent[1] * local[0] + frame.bitangent[1] * local[1] + frame.normal[1] * local[2],
+        frame.tangent[2] * local[0] + frame.bitangent[2] * local[1] + frame.normal[2] * local[2],
+    });
+}
+
+fn sampleCosineHemisphere(normal: [3]f32, seed: u32) [3]f32 {
+    const rand_u = hashUnitFloat(seed ^ 0x68bc21eb);
+    const rand_v = hashUnitFloat(seed ^ 0x02e5be93);
+    const r = std.math.sqrt(rand_u);
+    const phi = std.math.tau * rand_v;
+    const local = [3]f32{
+        r * std.math.cos(phi),
+        r * std.math.sin(phi),
+        std.math.sqrt(@max(0.0, 1.0 - rand_u)),
+    };
+    return frameToWorld(buildTangentFrame(normal), local);
+}
+
+fn sampleGGXHalfVector(normal: [3]f32, roughness: f32, seed: u32) [3]f32 {
+    const alpha = @max(roughness * roughness, 0.001);
+    const alpha2 = alpha * alpha;
+    const rand_u = hashUnitFloat(seed ^ 0xa3d95fa1);
+    const rand_v = hashUnitFloat(seed ^ 0x51c8e12d);
+    const phi = std.math.tau * rand_u;
+    const cos_theta = std.math.sqrt((1.0 - rand_v) / (1.0 + (alpha2 - 1.0) * rand_v));
+    const sin_theta = std.math.sqrt(@max(0.0, 1.0 - cos_theta * cos_theta));
+    const local = [3]f32{
+        std.math.cos(phi) * sin_theta,
+        std.math.sin(phi) * sin_theta,
+        cos_theta,
+    };
+    return frameToWorld(buildTangentFrame(normal), local);
+}
+
+fn distributionGGX(n_dot_h: f32, roughness: f32) f32 {
+    const alpha = @max(roughness * roughness, 0.001);
+    const alpha2 = alpha * alpha;
+    const n_dot_h2 = n_dot_h * n_dot_h;
+    const denom_term = n_dot_h2 * (alpha2 - 1.0) + 1.0;
+    return alpha2 / @max(std.math.pi * denom_term * denom_term, 0.000001);
+}
+
+fn geometrySchlickGGX(n_dot_x: f32, roughness: f32) f32 {
+    const r = roughness + 1.0;
+    const k = (r * r) * 0.125;
+    return n_dot_x / @max(n_dot_x * (1.0 - k) + k, 0.000001);
+}
+
+fn geometrySmithGGX(n_dot_v: f32, n_dot_l: f32, roughness: f32) f32 {
+    return geometrySchlickGGX(n_dot_v, roughness) * geometrySchlickGGX(n_dot_l, roughness);
+}
+
+fn fresnelSchlick(cos_theta: f32, f0: [3]f32) [3]f32 {
+    const factor = std.math.pow(f32, std.math.clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);
+    return .{
+        f0[0] + (1.0 - f0[0]) * factor,
+        f0[1] + (1.0 - f0[1]) * factor,
+        f0[2] + (1.0 - f0[2]) * factor,
+    };
+}
+
+fn computeOpaqueLobeProbabilities(
+    albedo: [3]f32,
+    metallic: f32,
+    transmission: f32,
+    fresnel_view: [3]f32,
+) PathTraceBsdfProbabilities {
+    const diffuse_weight = @max(
+        0.0,
+        maxComponent(albedo) * (1.0 - metallic) * (1.0 - transmission) * (1.0 - luminance(fresnel_view)),
+    );
+    const specular_weight = @max(0.0, luminance(fresnel_view) + metallic * 0.35 + 0.05);
+    const total = diffuse_weight + specular_weight;
+    if (total <= 0.000001) {
+        return .{ .diffuse = 1.0, .specular = 0.0 };
+    }
+    return .{
+        .diffuse = diffuse_weight / total,
+        .specular = specular_weight / total,
+    };
+}
+
+fn ggxSpecularPdf(normal: [3]f32, view_dir: [3]f32, light_dir: [3]f32, roughness: f32) f32 {
+    const half_vector = vec3.normalize(vec3.add(view_dir, light_dir));
+    const n_dot_h = std.math.clamp(vec3.dot(normal, half_vector), 0.0, 1.0);
+    const v_dot_h = std.math.clamp(vec3.dot(view_dir, half_vector), 0.0, 1.0);
+    if (n_dot_h <= 0.0 or v_dot_h <= 0.0) return 0.0;
+    return distributionGGX(n_dot_h, roughness) * n_dot_h / @max(4.0 * v_dot_h, 0.000001);
+}
+
+fn evaluateOpaqueBsdf(
+    albedo: [3]f32,
+    metallic: f32,
+    roughness: f32,
+    transmission: f32,
+    normal: [3]f32,
+    view_dir: [3]f32,
+    light_dir: [3]f32,
+) PathTraceBsdfEval {
+    const n_dot_v = std.math.clamp(vec3.dot(normal, view_dir), 0.0, 1.0);
+    const n_dot_l = std.math.clamp(vec3.dot(normal, light_dir), 0.0, 1.0);
+    if (n_dot_v <= 0.0 or n_dot_l <= 0.0) {
+        return .{ .value = .{ 0.0, 0.0, 0.0 }, .pdf = 0.0 };
+    }
+
+    const half_vector = vec3.normalize(vec3.add(view_dir, light_dir));
+    const n_dot_h = std.math.clamp(vec3.dot(normal, half_vector), 0.0, 1.0);
+    const v_dot_h = std.math.clamp(vec3.dot(view_dir, half_vector), 0.0, 1.0);
+    const opaque_weight = 1.0 - transmission;
+    const dielectric_f0 = [3]f32{ 0.04, 0.04, 0.04 };
+    const f0 = mixVec3(dielectric_f0, albedo, metallic);
+    const fresnel = fresnelSchlick(v_dot_h, f0);
+    const fresnel_view = fresnelSchlick(n_dot_v, f0);
+    const probabilities = computeOpaqueLobeProbabilities(albedo, metallic, transmission, fresnel_view);
+    const distribution = distributionGGX(n_dot_h, roughness);
+    const geometry = geometrySmithGGX(n_dot_v, n_dot_l, roughness);
+    const spec_scale = opaque_weight * distribution * geometry / @max(4.0 * n_dot_v * n_dot_l, 0.000001);
+    const specular = .{
+        fresnel[0] * spec_scale,
+        fresnel[1] * spec_scale,
+        fresnel[2] * spec_scale,
+    };
+    const diffuse_color = vec3.scale(albedo, (1.0 - metallic) * opaque_weight);
+    const diffuse = vec3.scale(vec3.mul(diffuse_color, oneMinusVec3(fresnel)), 1.0 / std.math.pi);
+    return .{
+        .value = vec3.add(diffuse, specular),
+        .pdf = probabilities.diffuse * (n_dot_l / std.math.pi) +
+            probabilities.specular * ggxSpecularPdf(normal, view_dir, light_dir, roughness),
+    };
+}
+
+fn directLightTypeCount(
+    light_radiance: [3]f32,
+    environment_texture: ?PathTraceTexture,
+    environment_importance: []const PathTraceEnvImportance,
+    emissive_lights: []const PathTraceEmissiveLight,
+    emissive_total_area: f32,
+) u32 {
+    var count: u32 = 0;
+    if (maxComponent(light_radiance) > 0.0001) count += 1;
+    if (environment_texture != null and environment_importance.len > 0) count += 1;
+    if (emissive_lights.len > 0 and emissive_total_area > 0.0) count += 1;
+    return count;
+}
+
+fn environmentDirectionPdf(
+    environment_importance: []const PathTraceEnvImportance,
+    table_width: u32,
+    table_height: u32,
+    direction: [3]f32,
+) f32 {
+    if (environment_importance.len == 0 or table_width == 0 or table_height == 0) return 0.0;
+    const uv = directionToEnvironmentUv(direction);
+    const x = @min(table_width - 1, @as(u32, @intFromFloat(uv[0] * @as(f32, @floatFromInt(table_width)))));
+    const y = @min(table_height - 1, @as(u32, @intFromFloat(uv[1] * @as(f32, @floatFromInt(table_height)))));
+    const cell_index: usize = @as(usize, y) * @as(usize, table_width) + @as(usize, x);
+    const pmf = environment_importance[cell_index].pmf;
+    const theta = std.math.clamp(uv[1], 0.0, 1.0) * std.math.pi;
+    const sin_theta = @max(std.math.sin(theta), 0.0001);
+    const solid_angle = (2.0 * std.math.pi / @as(f32, @floatFromInt(table_width))) *
+        (std.math.pi / @as(f32, @floatFromInt(table_height))) * sin_theta;
+    return pmf / @max(solid_angle, 0.000001);
+}
+
+fn sampleEnvironmentLight(
+    environment_texture: PathTraceTexture,
+    environment_importance: []const PathTraceEnvImportance,
+    table_width: u32,
+    table_height: u32,
+    seed: u32,
+) ?PathTraceDirectLightSample {
+    if (environment_importance.len == 0 or table_width == 0 or table_height == 0) return null;
+    const count_u32: u32 = @intCast(environment_importance.len);
+    const select = @min(
+        count_u32 - 1,
+        @as(u32, @intFromFloat(hashUnitFloat(seed ^ 0x3c84ef95) * @as(f32, @floatFromInt(count_u32)))),
+    );
+    const entry = environment_importance[select];
+    const resolved = if (hashUnitFloat(seed ^ 0x7e6b2f31) < entry.q) select else entry.alias;
+    const cell_x = resolved % table_width;
+    const cell_y = resolved / table_width;
+    const u = (@as(f32, @floatFromInt(cell_x)) + hashUnitFloat(seed ^ 0x0f9d13c1)) /
+        @as(f32, @floatFromInt(table_width));
+    const v = (@as(f32, @floatFromInt(cell_y)) + hashUnitFloat(seed ^ 0x92c313f7)) /
+        @as(f32, @floatFromInt(table_height));
+    const direction = environmentUvToDirection(u, v);
+    return .{
+        .direction = direction,
+        .radiance = sampleTextureBilinear(environment_texture, u, v),
+        .pdf = environmentDirectionPdf(environment_importance, table_width, table_height, direction),
+        .distance = 1.0e30,
+        .delta = false,
+    };
+}
+
+fn sampleEmissiveLight(
+    hit_pos: [3]f32,
+    current_tri_index: usize,
+    triangles: []const PathTraceTriangle,
+    emissive_lights: []const PathTraceEmissiveLight,
+    emissive_total_area: f32,
+    seed: u32,
+) ?PathTraceDirectLightSample {
+    if (emissive_lights.len == 0 or emissive_total_area <= 0.0) return null;
+    const pick = hashUnitFloat(seed ^ 0xe18f0c7b);
+    var chosen_index: usize = 0;
+    var low: usize = 0;
+    var high: usize = emissive_lights.len;
+    while (low < high) {
+        const mid = (low + high) / 2;
+        if (pick <= emissive_lights[mid].cdf) {
+            high = mid;
+        } else {
+            low = mid + 1;
+        }
+    }
+    chosen_index = @min(low, emissive_lights.len - 1);
+    const light = emissive_lights[chosen_index];
+    if (light.triangle_index == current_tri_index) return null;
+    const tri = triangles[light.triangle_index];
+    const sqrt_r1 = std.math.sqrt(hashUnitFloat(seed ^ 0x1451ad37));
+    const r2 = hashUnitFloat(seed ^ 0x45a18bc5);
+    const b0 = 1.0 - sqrt_r1;
+    const b1 = sqrt_r1 * (1.0 - r2);
+    const b2 = sqrt_r1 * r2;
+    const sample_pos = .{
+        tri.v0[0] * b0 + tri.v1[0] * b1 + tri.v2[0] * b2,
+        tri.v0[1] * b0 + tri.v1[1] * b1 + tri.v2[1] * b2,
+        tri.v0[2] * b0 + tri.v1[2] * b1 + tri.v2[2] * b2,
+    };
+    const to_light = vec3.sub(sample_pos, hit_pos);
+    const distance = vec3.length(to_light);
+    if (distance <= 0.002) return null;
+    const direction = vec3.scale(to_light, 1.0 / distance);
+    const light_normal = triangleGeometricNormal(tri);
+    const cos_light = @max(@abs(vec3.dot(vec3.scale(direction, -1.0), light_normal)), 0.0001);
+    return .{
+        .direction = direction,
+        .radiance = tri.emissive,
+        .pdf = (distance * distance) / @max(cos_light * emissive_total_area, 0.000001),
+        .distance = distance,
+        .delta = false,
+    };
+}
+
+fn emissiveDirectionPdf(
+    origin: [3]f32,
+    hit_pos: [3]f32,
+    tri: PathTraceTriangle,
+    emissive_total_area: f32,
+) f32 {
+    if (emissive_total_area <= 0.0) return 0.0;
+    const to_light = vec3.sub(hit_pos, origin);
+    const distance_sq = vec3.dot(to_light, to_light);
+    if (distance_sq <= 0.0) return 0.0;
+    const direction = vec3.normalize(to_light);
+    const light_normal = triangleGeometricNormal(tri);
+    const cos_light = @max(@abs(vec3.dot(vec3.scale(direction, -1.0), light_normal)), 0.0001);
+    return distance_sq / @max(cos_light * emissive_total_area, 0.000001);
+}
+
+fn sampleDirectLight(
+    hit_pos: [3]f32,
+    current_tri_index: usize,
+    triangles: []const PathTraceTriangle,
+    environment_texture: ?PathTraceTexture,
+    environment_importance: []const PathTraceEnvImportance,
+    environment_importance_width: u32,
+    environment_importance_height: u32,
+    emissive_lights: []const PathTraceEmissiveLight,
+    emissive_total_area: f32,
+    light_direction: [3]f32,
+    light_radiance: [3]f32,
+    seed: u32,
+) ?PathTraceDirectLightSample {
+    const light_type_count = directLightTypeCount(
+        light_radiance,
+        environment_texture,
+        environment_importance,
+        emissive_lights,
+        emissive_total_area,
+    );
+    if (light_type_count == 0) return null;
+
+    const selection = @min(
+        light_type_count - 1,
+        @as(u32, @intFromFloat(hashUnitFloat(seed ^ 0xa241b3c1) * @as(f32, @floatFromInt(light_type_count)))),
+    );
+    var cursor: u32 = 0;
+
+    if (maxComponent(light_radiance) > 0.0001) {
+        if (selection == cursor) {
+            return .{
+                .direction = light_direction,
+                .radiance = light_radiance,
+                .pdf = 1.0 / @as(f32, @floatFromInt(light_type_count)),
+                .distance = 1.0e30,
+                .delta = true,
+            };
+        }
+        cursor += 1;
+    }
+
+    if (environment_texture != null and environment_importance.len > 0) {
+        if (selection == cursor) {
+            var sample = sampleEnvironmentLight(
+                environment_texture.?,
+                environment_importance,
+                environment_importance_width,
+                environment_importance_height,
+                seed ^ 0x6b84221f,
+            ) orelse return null;
+            sample.pdf *= 1.0 / @as(f32, @floatFromInt(light_type_count));
+            return sample;
+        }
+        cursor += 1;
+    }
+
+    if (emissive_lights.len > 0 and emissive_total_area > 0.0 and selection == cursor) {
+        var sample = sampleEmissiveLight(
+            hit_pos,
+            current_tri_index,
+            triangles,
+            emissive_lights,
+            emissive_total_area,
+            seed ^ 0xb5297a4d,
+        ) orelse return null;
+        sample.pdf *= 1.0 / @as(f32, @floatFromInt(light_type_count));
+        return sample;
+    }
+
+    return null;
 }
 
 fn pathTraceRay(
@@ -754,7 +1271,13 @@ fn pathTraceRay(
     meshes: []const PathTraceMesh,
     textures: []const PathTraceTexture,
     environment_texture: ?PathTraceTexture,
+    environment_importance: []const PathTraceEnvImportance,
+    environment_importance_width: u32,
+    environment_importance_height: u32,
+    emissive_lights: []const PathTraceEmissiveLight,
+    emissive_total_area: f32,
     light_direction: [3]f32,
+    light_radiance: [3]f32,
     seed_base: u32,
     max_bounces: u32,
 ) [3]f32 {
@@ -762,58 +1285,56 @@ fn pathTraceRay(
     var direction = direction_start;
     var throughput = [3]f32{ 1.0, 1.0, 1.0 };
     var radiance = [3]f32{ 0.0, 0.0, 0.0 };
+    var previous_bsdf_pdf: f32 = 0.0;
+    var previous_was_delta = true;
 
     var bounce: u32 = 0;
     while (bounce < max_bounces) : (bounce += 1) {
-        var closest_t: f32 = 1.0e30;
-        var hit_tri: ?*const PathTraceTriangle = null;
-        var hit_u: f32 = 0.0;
-        var hit_v: f32 = 0.0;
-
-        // Per-mesh AABB early-out, then scan triangles
-        for (meshes) |mesh| {
-            if (mesh.aabb.rayIntersection(origin, direction, closest_t) == null) continue;
-            const end = mesh.tri_start + mesh.tri_count;
-            for (triangles[mesh.tri_start..end]) |*tri| {
-                if (intersectTriangle(origin, direction, tri.*, 0.001, closest_t)) |hit| {
-                    closest_t = hit.t;
-                    hit_tri = tri;
-                    hit_u = hit.u;
-                    hit_v = hit.v;
-                }
-            }
-        }
-
-        if (hit_tri == null) {
+        const scene_hit = tracePathTraceScene(origin, direction, triangles, meshes, 0.001, 1.0e30);
+        if (scene_hit == null) {
             const sky = sampleSky(direction, environment_texture);
-            radiance = vec3.add(radiance, vec3.mul(throughput, sky));
+            if (bounce == 0 or previous_was_delta or environment_texture == null) {
+                radiance = vec3.add(radiance, vec3.mul(throughput, sky));
+            } else {
+                const light_type_count = directLightTypeCount(
+                    light_radiance,
+                    environment_texture,
+                    environment_importance,
+                    emissive_lights,
+                    emissive_total_area,
+                );
+                const env_select_pdf = if (light_type_count > 0 and environment_texture != null and environment_importance.len > 0)
+                    1.0 / @as(f32, @floatFromInt(light_type_count))
+                else
+                    0.0;
+                const env_pdf = env_select_pdf * environmentDirectionPdf(
+                    environment_importance,
+                    environment_importance_width,
+                    environment_importance_height,
+                    direction,
+                );
+                const mis = powerHeuristic(previous_bsdf_pdf, env_pdf);
+                radiance = vec3.add(radiance, vec3.scale(vec3.mul(throughput, sky), mis));
+            }
             break;
         }
 
-        const tri = hit_tri.?;
-        const hit_pos = vec3.add(origin, vec3.scale(direction, closest_t));
-
-        // Interpolate vertex normal using barycentric coordinates
-        const w0 = 1.0 - hit_u - hit_v;
+        const hit = scene_hit.?;
+        const tri = triangles[hit.tri_index];
+        const hit_pos = vec3.add(origin, vec3.scale(direction, hit.t));
+        const w0 = 1.0 - hit.u - hit.v;
         const normal = vec3.normalize(.{
-            w0 * tri.n0[0] + hit_u * tri.n1[0] + hit_v * tri.n2[0],
-            w0 * tri.n0[1] + hit_u * tri.n1[1] + hit_v * tri.n2[1],
-            w0 * tri.n0[2] + hit_u * tri.n1[2] + hit_v * tri.n2[2],
+            w0 * tri.n0[0] + hit.u * tri.n1[0] + hit.v * tri.n2[0],
+            w0 * tri.n0[1] + hit.u * tri.n1[1] + hit.v * tri.n2[1],
+            w0 * tri.n0[2] + hit.u * tri.n1[2] + hit.v * tri.n2[2],
         });
         const front_face = vec3.dot(direction, normal) < 0.0;
         const shading_normal = if (front_face) normal else vec3.scale(normal, -1.0);
-
-        // Emissive contribution
-        const emissive_strength = tri.emissive[0] + tri.emissive[1] + tri.emissive[2];
-        if (emissive_strength > 0.001) {
-            radiance = vec3.add(radiance, vec3.mul(throughput, tri.emissive));
-        }
-
-        // Resolve surface albedo: texture sample * base_color_factor, or just factor
+        const view_dir = vec3.scale(direction, -1.0);
         const surface_albedo = blk_albedo: {
             if (tri.texture_index >= 0 and @as(usize, @intCast(tri.texture_index)) < textures.len) {
-                const uv_u = w0 * tri.uv0[0] + hit_u * tri.uv1[0] + hit_v * tri.uv2[0];
-                const uv_v = w0 * tri.uv0[1] + hit_u * tri.uv1[1] + hit_v * tri.uv2[1];
+                const uv_u = w0 * tri.uv0[0] + hit.u * tri.uv1[0] + hit.v * tri.uv2[0];
+                const uv_v = w0 * tri.uv0[1] + hit.u * tri.uv1[1] + hit.v * tri.uv2[1];
                 const tex_color = sampleTextureBilinear(textures[@intCast(tri.texture_index)], uv_u, uv_v);
                 break :blk_albedo [3]f32{
                     tex_color[0] * tri.albedo[0],
@@ -823,87 +1344,385 @@ fn pathTraceRay(
             }
             break :blk_albedo tri.albedo;
         };
+        const transmission = std.math.clamp(tri.transmission, 0.0, 0.98);
 
-        // Direct lighting stays cheap; reflective look mainly comes from the
-        // bounce path so metals can see the same environment source as Raster.
-        const n_dot_l = std.math.clamp(vec3.dot(shading_normal, light_direction), 0.0, 1.0);
-        const diffuse = vec3.scale(surface_albedo, n_dot_l * (1.0 - tri.metallic));
-        const dielectric_f0 = [3]f32{ 0.04, 0.04, 0.04 };
-        const specular_tint = mixVec3(dielectric_f0, surface_albedo, tri.metallic);
-        const halfway = vec3.normalize(vec3.add(light_direction, vec3.scale(direction, -1.0)));
-        const n_dot_h = std.math.clamp(vec3.dot(shading_normal, halfway), 0.0, 1.0);
-        const spec_power = @max(8.0, 10.0 + (1.0 - tri.roughness) * 120.0);
-        const spec = std.math.pow(f32, n_dot_h, spec_power) * (0.1 + 0.9 * (1.0 - tri.roughness));
-        const spec_color = vec3.scale(specular_tint, spec);
-
-        const transmission = std.math.clamp(tri.transmission, 0.0, 0.96);
-        const thickness = @max(tri.thickness, 0.0);
-        const surface_lighting_weight = 1.0 - transmission * 0.85;
-        const direct_light = [3]f32{
-            (diffuse[0] + spec_color[0] * n_dot_l) * surface_lighting_weight,
-            (diffuse[1] + spec_color[1] * n_dot_l) * surface_lighting_weight,
-            (diffuse[2] + spec_color[2] * n_dot_l) * surface_lighting_weight,
-        };
-
-        // Keep ambient low; let the environment map carry the overall scene tone.
-        const ambient = vec3.scale(surface_albedo, (0.03 + 0.04 * (1.0 - tri.metallic)) * surface_lighting_weight);
-        const combined = vec3.add(direct_light, ambient);
-        radiance = vec3.add(radiance, vec3.mul(throughput, combined));
-
-        // Bounce: shared material semantics, not a separate "Path Trace only" shading model.
-        const seed = seed_base ^ (bounce *% 0x9e3779b9);
-        const specular_chance = std.math.clamp(0.08 + tri.metallic * 0.84 + (1.0 - tri.roughness) * 0.06, 0.05, 0.97);
-        const reflected = vec3.normalize(reflectVector(direction, shading_normal));
-        const glossy = vec3.normalize(mixVec3(reflected, randomHemisphereDirection(reflected, seed ^ 0x51c8e12d), tri.roughness * tri.roughness));
-        const diffuse_dir = randomHemisphereDirection(shading_normal, seed ^ 0xa241b3c1);
-        const choose_specular = hashUnitFloat(seed ^ 0x6b84221f) < specular_chance;
-        const transmission_chance = std.math.clamp(transmission * (1.0 - tri.metallic), 0.0, 0.92);
-        const choose_transmission = transmission_chance > 0.0 and hashUnitFloat(seed ^ 0xb5297a4d) < transmission_chance;
-
-        if (choose_transmission) {
-            const eta = if (front_face) 1.0 / @max(tri.ior, 1.01) else @max(tri.ior, 1.01);
-            const refracted = refractVector(direction, shading_normal, eta);
-            const transmission_tint = mixVec3(.{ 1.0, 1.0, 1.0 }, surface_albedo, 0.2);
-            if (refracted) |refract_dir| {
-                direction = vec3.normalize(refract_dir);
+        const emissive_strength = maxComponent(tri.emissive);
+        if (emissive_strength > 0.0001) {
+            if (bounce == 0 or previous_was_delta) {
+                radiance = vec3.add(radiance, vec3.mul(throughput, tri.emissive));
             } else {
-                direction = reflected;
+                const light_type_count = directLightTypeCount(
+                    light_radiance,
+                    environment_texture,
+                    environment_importance,
+                    emissive_lights,
+                    emissive_total_area,
+                );
+                const emissive_select_pdf = if (light_type_count > 0 and emissive_lights.len > 0 and emissive_total_area > 0.0)
+                    1.0 / @as(f32, @floatFromInt(light_type_count))
+                else
+                    0.0;
+                const light_pdf = emissive_select_pdf * emissiveDirectionPdf(origin, hit_pos, tri, emissive_total_area);
+                const mis = powerHeuristic(previous_bsdf_pdf, light_pdf);
+                radiance = vec3.add(radiance, vec3.scale(vec3.mul(throughput, tri.emissive), mis));
             }
-            if (thickness > 0.0001) {
-                const ndot = @max(@abs(vec3.dot(direction, shading_normal)), 0.2);
-                const optical_distance = thickness / ndot;
-                const sigma_a = .{
-                    @max(0.0, 1.0 - surface_albedo[0]) * 2.2,
-                    @max(0.0, 1.0 - surface_albedo[1]) * 2.2,
-                    @max(0.0, 1.0 - surface_albedo[2]) * 2.2,
-                };
-                throughput = vec3.mul(throughput, .{
-                    std.math.exp(-sigma_a[0] * optical_distance),
-                    std.math.exp(-sigma_a[1] * optical_distance),
-                    std.math.exp(-sigma_a[2] * optical_distance),
-                });
-            }
-            throughput = vec3.scale(vec3.mul(throughput, transmission_tint), 0.96 / @max(transmission_chance, 0.05));
-            origin = vec3.add(hit_pos, vec3.scale(direction, 0.002));
-        } else if (choose_specular) {
-            direction = if (vec3.dot(glossy, shading_normal) > 0.0) glossy else reflected;
-            throughput = vec3.scale(vec3.mul(throughput, specular_tint), 0.92 / specular_chance);
-            origin = vec3.add(hit_pos, vec3.scale(shading_normal, 0.002));
-        } else {
-            direction = diffuse_dir;
-            throughput = vec3.scale(
-                vec3.mul(throughput, vec3.scale(surface_albedo, 1.0 - tri.metallic)),
-                0.85 / @max(1.0 - specular_chance, 0.05),
-            );
-            origin = vec3.add(hit_pos, vec3.scale(shading_normal, 0.002));
         }
 
-        if (vec3.length(throughput) < 0.02) {
+        if (transmission < 0.995) {
+            // NEE emits one explicit light sample per hit and balances it against the BRDF pdf.
+            if (sampleDirectLight(
+                hit_pos,
+                hit.tri_index,
+                triangles,
+                environment_texture,
+                environment_importance,
+                environment_importance_width,
+                environment_importance_height,
+                emissive_lights,
+                emissive_total_area,
+                light_direction,
+                light_radiance,
+                seed_base ^ (bounce *% 0x9e3779b9),
+            )) |light_sample| {
+                const occlusion_distance = if (light_sample.delta) 1.0e30 else @max(light_sample.distance - 0.004, 0.001);
+                const shadow_origin = vec3.add(hit_pos, vec3.scale(shading_normal, 0.002));
+                if (!isPathTraceOccluded(shadow_origin, light_sample.direction, occlusion_distance, triangles, meshes)) {
+                    const bsdf = evaluateOpaqueBsdf(
+                        surface_albedo,
+                        tri.metallic,
+                        tri.roughness,
+                        transmission,
+                        shading_normal,
+                        view_dir,
+                        light_sample.direction,
+                    );
+                    if (bsdf.pdf > 0.0) {
+                        const n_dot_l = std.math.clamp(vec3.dot(shading_normal, light_sample.direction), 0.0, 1.0);
+                        const mis = if (light_sample.delta) 1.0 else powerHeuristic(light_sample.pdf, bsdf.pdf);
+                        const direct = vec3.scale(
+                            vec3.mul(vec3.mul(throughput, bsdf.value), light_sample.radiance),
+                            (n_dot_l * mis) / @max(light_sample.pdf, 0.000001),
+                        );
+                        radiance = vec3.add(radiance, direct);
+                    }
+                }
+            }
+        }
+
+        const transmission_branch_prob = std.math.clamp(transmission * (1.0 - tri.metallic), 0.0, 0.98);
+        const opaque_branch_prob = 1.0 - transmission_branch_prob;
+        const branch_seed = seed_base ^ (bounce *% 0x85ebca6b);
+        if (transmission_branch_prob > 0.0 and hashUnitFloat(branch_seed ^ 0x1451ad37) < transmission_branch_prob) {
+            const eta = if (front_face) 1.0 / @max(tri.ior, 1.01) else @max(tri.ior, 1.01);
+            const dielectric_f0 = [3]f32{ 0.04, 0.04, 0.04 };
+            const fresnel = fresnelSchlick(std.math.clamp(vec3.dot(shading_normal, view_dir), 0.0, 1.0), dielectric_f0);
+            const reflect_prob = std.math.clamp(luminance(fresnel), 0.05, 0.95);
+            const reflected = vec3.normalize(reflectVector(direction, shading_normal));
+            const refracted = refractVector(direction, shading_normal, eta);
+
+            if (refracted == null or hashUnitFloat(branch_seed ^ 0x45a18bc5) < reflect_prob) {
+                throughput = vec3.scale(vec3.mul(throughput, fresnel), 1.0 / @max(transmission_branch_prob * reflect_prob, 0.000001));
+                direction = reflected;
+                origin = vec3.add(hit_pos, vec3.scale(shading_normal, 0.002));
+            } else {
+                const transmission_tint = mixVec3(.{ 1.0, 1.0, 1.0 }, surface_albedo, 0.18);
+                throughput = vec3.scale(
+                    vec3.mul(throughput, vec3.mul(transmission_tint, oneMinusVec3(fresnel))),
+                    1.0 / @max(transmission_branch_prob * (1.0 - reflect_prob), 0.000001),
+                );
+                direction = vec3.normalize(refracted.?);
+                if (tri.thickness > 0.0001) {
+                    const ndot = @max(@abs(vec3.dot(direction, shading_normal)), 0.2);
+                    const optical_distance = tri.thickness / ndot;
+                    const sigma_a = .{
+                        @max(0.0, 1.0 - surface_albedo[0]) * 2.2,
+                        @max(0.0, 1.0 - surface_albedo[1]) * 2.2,
+                        @max(0.0, 1.0 - surface_albedo[2]) * 2.2,
+                    };
+                    throughput = vec3.mul(throughput, .{
+                        std.math.exp(-sigma_a[0] * optical_distance),
+                        std.math.exp(-sigma_a[1] * optical_distance),
+                        std.math.exp(-sigma_a[2] * optical_distance),
+                    });
+                }
+                origin = vec3.add(hit_pos, vec3.scale(direction, 0.002));
+            }
+            previous_bsdf_pdf = 1.0;
+            previous_was_delta = true;
+        } else if (opaque_branch_prob > 0.0) {
+            const dielectric_f0 = [3]f32{ 0.04, 0.04, 0.04 };
+            const f0 = mixVec3(dielectric_f0, surface_albedo, tri.metallic);
+            const fresnel_view = fresnelSchlick(std.math.clamp(vec3.dot(shading_normal, view_dir), 0.0, 1.0), f0);
+            const lobe_probabilities = computeOpaqueLobeProbabilities(surface_albedo, tri.metallic, transmission, fresnel_view);
+            const choose_specular = hashUnitFloat(branch_seed ^ 0x92c313f7) < lobe_probabilities.specular;
+            var next_direction: [3]f32 = undefined;
+
+            if (choose_specular) {
+                const half_vector = sampleGGXHalfVector(shading_normal, tri.roughness, branch_seed ^ 0x6b84221f);
+                next_direction = vec3.normalize(reflectVector(vec3.scale(view_dir, -1.0), half_vector));
+                if (vec3.dot(next_direction, shading_normal) <= 0.0) {
+                    break;
+                }
+            } else {
+                next_direction = sampleCosineHemisphere(shading_normal, branch_seed ^ 0xb5297a4d);
+            }
+
+            const bsdf = evaluateOpaqueBsdf(
+                surface_albedo,
+                tri.metallic,
+                tri.roughness,
+                transmission,
+                shading_normal,
+                view_dir,
+                next_direction,
+            );
+            const n_dot_l = std.math.clamp(vec3.dot(shading_normal, next_direction), 0.0, 1.0);
+            const overall_pdf = opaque_branch_prob * bsdf.pdf;
+            if (overall_pdf <= 0.0 or n_dot_l <= 0.0) {
+                break;
+            }
+
+            throughput = vec3.scale(vec3.mul(throughput, bsdf.value), n_dot_l / overall_pdf);
+            direction = next_direction;
+            origin = vec3.add(hit_pos, vec3.scale(shading_normal, 0.002));
+            previous_bsdf_pdf = overall_pdf;
+            previous_was_delta = false;
+        } else {
             break;
+        }
+
+        if (bounce >= 2) {
+            const survival_prob = @min(maxComponent(throughput), 0.95);
+            if (survival_prob <= 0.0 or hashUnitFloat(seed_base ^ (bounce *% 0xc2b2ae35)) > survival_prob) {
+                break;
+            }
+            throughput = vec3.scale(throughput, 1.0 / survival_prob);
         }
     }
 
     return radiance;
+}
+
+const BuiltPathTraceEnvironmentImportance = struct {
+    items: ?[]PathTraceEnvImportance = null,
+    width: u32 = 0,
+    height: u32 = 0,
+};
+
+fn buildPathTraceEnvironmentImportance(
+    allocator: std.mem.Allocator,
+    environment_texture: ?PathTraceTexture,
+) !BuiltPathTraceEnvironmentImportance {
+    const environment = environment_texture orelse return .{};
+    const table_width = @min(environment.width, 256);
+    const table_height = @min(environment.height, 128);
+    if (table_width == 0 or table_height == 0) return .{};
+
+    const entry_count: usize = @as(usize, table_width) * @as(usize, table_height);
+    var weights = try allocator.alloc(f32, entry_count);
+    defer allocator.free(weights);
+
+    var total_weight: f64 = 0.0;
+    var y: u32 = 0;
+    while (y < table_height) : (y += 1) {
+        var x: u32 = 0;
+        while (x < table_width) : (x += 1) {
+            const u = (@as(f32, @floatFromInt(x)) + 0.5) / @as(f32, @floatFromInt(table_width));
+            const v = (@as(f32, @floatFromInt(y)) + 0.5) / @as(f32, @floatFromInt(table_height));
+            const theta = v * std.math.pi;
+            const weight = @max(luminance(sampleTextureBilinear(environment, u, v)) * std.math.sin(theta), 0.000001);
+            const index = @as(usize, y) * @as(usize, table_width) + @as(usize, x);
+            weights[index] = weight;
+            total_weight += weight;
+        }
+    }
+
+    if (total_weight <= 0.0) return .{};
+
+    var entries = try allocator.alloc(PathTraceEnvImportance, entry_count);
+    errdefer allocator.free(entries);
+    var scaled = try allocator.alloc(f32, entry_count);
+    defer allocator.free(scaled);
+    var small = std.ArrayListUnmanaged(usize){};
+    defer small.deinit(allocator);
+    var large = std.ArrayListUnmanaged(usize){};
+    defer large.deinit(allocator);
+
+    const count_f = @as(f32, @floatFromInt(entry_count));
+    for (weights, 0..) |weight, index| {
+        entries[index] = .{
+            .q = 1.0,
+            .pmf = @as(f32, @floatCast(weight / total_weight)),
+            .alias = @intCast(index),
+        };
+        scaled[index] = entries[index].pmf * count_f;
+        if (scaled[index] < 1.0) {
+            try small.append(allocator, index);
+        } else {
+            try large.append(allocator, index);
+        }
+    }
+
+    while (small.items.len > 0 and large.items.len > 0) {
+        const small_index = small.pop().?;
+        const large_index = large.pop().?;
+        entries[small_index].q = std.math.clamp(scaled[small_index], 0.0, 1.0);
+        entries[small_index].alias = @intCast(large_index);
+        scaled[large_index] = (scaled[large_index] + scaled[small_index]) - 1.0;
+        if (scaled[large_index] < 1.0) {
+            try small.append(allocator, large_index);
+        } else {
+            try large.append(allocator, large_index);
+        }
+    }
+
+    while (large.items.len > 0) {
+        const index = large.pop().?;
+        entries[index].q = 1.0;
+        entries[index].alias = @intCast(index);
+    }
+    while (small.items.len > 0) {
+        const index = small.pop().?;
+        entries[index].q = 1.0;
+        entries[index].alias = @intCast(index);
+    }
+
+    return .{
+        .items = entries,
+        .width = table_width,
+        .height = table_height,
+    };
+}
+
+const BuiltPathTraceEmissiveLights = struct {
+    items: ?[]PathTraceEmissiveLight = null,
+    total_area: f32 = 0.0,
+};
+
+fn buildPathTraceEmissiveLights(
+    allocator: std.mem.Allocator,
+    triangles: []const PathTraceTriangle,
+) !BuiltPathTraceEmissiveLights {
+    var list = std.ArrayListUnmanaged(PathTraceEmissiveLight){};
+    defer list.deinit(allocator);
+
+    var total_area: f32 = 0.0;
+    for (triangles, 0..) |tri, tri_index| {
+        if (maxComponent(tri.emissive) <= 0.0001) continue;
+        const area = triangleArea(tri);
+        if (area <= 0.000001) continue;
+        total_area += area;
+        try list.append(allocator, .{
+            .triangle_index = @intCast(tri_index),
+            .cdf = total_area,
+        });
+    }
+
+    if (list.items.len == 0 or total_area <= 0.0) {
+        return .{};
+    }
+
+    for (list.items) |*light| {
+        light.cdf /= total_area;
+    }
+
+    return .{
+        .items = try allocator.dupe(PathTraceEmissiveLight, list.items),
+        .total_area = total_area,
+    };
+}
+
+fn buildHwRtEmissiveLights(
+    allocator: std.mem.Allocator,
+    triangles: []const rt_backend.RtTriangle,
+) !BuiltPathTraceEmissiveLights {
+    var list = std.ArrayListUnmanaged(PathTraceEmissiveLight){};
+    defer list.deinit(allocator);
+
+    var total_area: f32 = 0.0;
+    for (triangles, 0..) |tri, tri_index| {
+        if (maxComponent(tri.emissive) <= 0.0001) continue;
+        const edge_a = vec3.sub(tri.v1, tri.v0);
+        const edge_b = vec3.sub(tri.v2, tri.v0);
+        const area = 0.5 * vec3.length(vec3.cross(edge_a, edge_b));
+        if (area <= 0.000001) continue;
+        total_area += area;
+        try list.append(allocator, .{
+            .triangle_index = @intCast(tri_index),
+            .cdf = total_area,
+        });
+    }
+
+    if (list.items.len == 0 or total_area <= 0.0) {
+        return .{};
+    }
+
+    for (list.items) |*light| {
+        light.cdf /= total_area;
+    }
+
+    return .{
+        .items = try allocator.dupe(PathTraceEmissiveLight, list.items),
+        .total_area = total_area,
+    };
+}
+
+const BuiltHwRtSamplingTables = struct {
+    data: ?[]u8 = null,
+    meta: ?[]rt_backend.RtSamplingTableMeta = null,
+};
+
+fn buildHwRtSamplingTables(
+    allocator: std.mem.Allocator,
+    environment_importance: ?[]const PathTraceEnvImportance,
+    emissive_lights: ?[]const PathTraceEmissiveLight,
+) !BuiltHwRtSamplingTables {
+    const env_items = environment_importance orelse &.{};
+    const emissive_items = emissive_lights orelse &.{};
+    var table_count: usize = 0;
+    var total_bytes: usize = 0;
+    if (env_items.len > 0) {
+        table_count += 1;
+        total_bytes += std.mem.sliceAsBytes(env_items).len;
+    }
+    if (emissive_items.len > 0) {
+        table_count += 1;
+        total_bytes += std.mem.sliceAsBytes(emissive_items).len;
+    }
+    if (table_count == 0 or total_bytes == 0) return .{};
+
+    const data = try allocator.alloc(u8, total_bytes);
+    errdefer allocator.free(data);
+    const meta = try allocator.alloc(rt_backend.RtSamplingTableMeta, table_count);
+    errdefer allocator.free(meta);
+
+    var offset: usize = 0;
+    var meta_index: usize = 0;
+    if (env_items.len > 0) {
+        const bytes = std.mem.sliceAsBytes(env_items);
+        @memcpy(data[offset..][0..bytes.len], bytes);
+        meta[meta_index] = .{
+            .offset = @intCast(offset),
+            .byte_size = @intCast(bytes.len),
+            .kind = @intFromEnum(rt_backend.RtSamplingTableKind.environment_importance),
+        };
+        offset += bytes.len;
+        meta_index += 1;
+    }
+    if (emissive_items.len > 0) {
+        const bytes = std.mem.sliceAsBytes(emissive_items);
+        @memcpy(data[offset..][0..bytes.len], bytes);
+        meta[meta_index] = .{
+            .offset = @intCast(offset),
+            .byte_size = @intCast(bytes.len),
+            .kind = @intFromEnum(rt_backend.RtSamplingTableKind.emissive_light),
+        };
+    }
+
+    return .{
+        .data = data,
+        .meta = meta,
+    };
 }
 
 fn writeF16Le(out: []u8, offset: usize, value: f32) void {
@@ -3130,12 +3949,10 @@ pub const Renderer = struct {
         const trace_width = @max(@as(u32, 1), @as(u32, @intFromFloat(@as(f32, @floatFromInt(width)) * resolution_scale)));
         const trace_height = @max(@as(u32, 1), @as(u32, @intFromFloat(@as(f32, @floatFromInt(height)) * resolution_scale)));
 
-        // --- 尝试 GPU 硬件加速路径追踪 ---
+        // 优先尝试与 CPU Phase 5 积分器对齐后的 Metal RT 路径。
         if (self.tryRenderHwRtPath(prepared_scene, scene, target, width, height, trace_width, trace_height, samples, bounces, resolution_scale)) {
             return;
         }
-
-        // --- 回退到 CPU 渐进式路径追踪 ---
 
         if (!g_logged_path_trace_active) {
             render_log.info("CPU path trace viewport active (progressive)", .{});
@@ -3417,16 +4234,29 @@ pub const Renderer = struct {
             pt.triangles = try self.allocator.dupe(PathTraceTriangle, triangle_list.items);
             pt.meshes = try self.allocator.dupe(PathTraceMesh, mesh_list.items);
             pt.textures = try self.allocator.dupe(PathTraceTexture, texture_list.items);
+            const built_emissive_lights = try buildPathTraceEmissiveLights(self.allocator, pt.triangles.?);
+            errdefer if (built_emissive_lights.items) |items| self.allocator.free(items);
+            pt.emissive_lights = built_emissive_lights.items;
+            pt.emissive_total_area = built_emissive_lights.total_area;
+            const built_environment_importance = try buildPathTraceEnvironmentImportance(self.allocator, path_trace_environment.texture);
+            errdefer if (built_environment_importance.items) |items| self.allocator.free(items);
+            pt.environment_importance = built_environment_importance.items;
+            pt.environment_importance_width = built_environment_importance.width;
+            pt.environment_importance_height = built_environment_importance.height;
             pt.inv_view_projection = mat4_mod.inverse(prepared_scene.view_projection) orelse mat4_mod.identity();
             pt.camera_origin = .{
                 prepared_scene.camera_world_position[0],
                 prepared_scene.camera_world_position[1],
                 prepared_scene.camera_world_position[2],
             };
-            pt.light_direction = if (prepared_scene.lights.directional_lights.len > 0)
-                vec3.normalize(vec3.scale(prepared_scene.lights.directional_lights[0].direction, -1.0))
-            else
-                vec3.normalize(.{ 0.38, 0.82, 0.42 });
+            if (prepared_scene.lights.directional_lights.len > 0) {
+                const light = prepared_scene.lights.directional_lights[0];
+                pt.light_direction = vec3.normalize(vec3.scale(light.direction, -1.0));
+                pt.light_radiance = vec3.scale(light.color, light.intensity);
+            } else {
+                pt.light_direction = vec3.normalize(.{ 0.38, 0.82, 0.42 });
+                pt.light_radiance = .{ 0.0, 0.0, 0.0 };
+            }
             pt.cached_samples = samples;
             pt.cached_bounces = bounces;
             pt.environment_texture = path_trace_environment.texture;
@@ -3451,6 +4281,8 @@ pub const Renderer = struct {
         const meshes = pt.meshes.?;
         const pt_textures = pt.textures orelse &[_]PathTraceTexture{};
         const pt_environment_texture = pt.environment_texture;
+        const pt_environment_importance = pt.environment_importance orelse &[_]PathTraceEnvImportance{};
+        const pt_emissive_lights = pt.emissive_lights orelse &[_]PathTraceEmissiveLight{};
 
         while (pt.current_scanline < trace_height) {
             const y = pt.current_scanline;
@@ -3486,7 +4318,13 @@ pub const Renderer = struct {
                         meshes,
                         pt_textures,
                         pt_environment_texture,
+                        pt_environment_importance,
+                        pt.environment_importance_width,
+                        pt.environment_importance_height,
+                        pt_emissive_lights,
+                        pt.emissive_total_area,
                         pt.light_direction,
+                        pt.light_radiance,
                         jitter_seed,
                         pt.cached_bounces,
                     );
@@ -4069,6 +4907,26 @@ pub const Renderer = struct {
             }
 
             mrt.triangles = self.allocator.dupe(rt_backend.RtTriangle, triangle_list.items) catch return false;
+            const built_emissive_lights = buildHwRtEmissiveLights(self.allocator, triangle_list.items) catch return false;
+            errdefer if (built_emissive_lights.items) |items| self.allocator.free(items);
+            mrt.emissive_lights = built_emissive_lights.items;
+            mrt.emissive_total_area = built_emissive_lights.total_area;
+
+            const built_environment_importance = buildPathTraceEnvironmentImportance(self.allocator, path_trace_environment.texture) catch return false;
+            errdefer if (built_environment_importance.items) |items| self.allocator.free(items);
+            mrt.environment_importance = built_environment_importance.items;
+            mrt.environment_importance_width = built_environment_importance.width;
+            mrt.environment_importance_height = built_environment_importance.height;
+
+            const built_sampling_tables = buildHwRtSamplingTables(
+                self.allocator,
+                mrt.environment_importance,
+                mrt.emissive_lights,
+            ) catch return false;
+            errdefer if (built_sampling_tables.data) |data| self.allocator.free(data);
+            errdefer if (built_sampling_tables.meta) |meta| self.allocator.free(meta);
+            mrt.sampling_table_data = built_sampling_tables.data;
+            mrt.sampling_table_meta = built_sampling_tables.meta;
             mrt.accel_built = false;
 
             // 打包纹理图集
@@ -4094,7 +4952,14 @@ pub const Renderer = struct {
                 mrt.texture_atlas = atlas;
                 mrt.texture_meta = meta;
             }
+            if (prepared_scene.lights.directional_lights.len > 0) {
+                const light = prepared_scene.lights.directional_lights[0];
+                mrt.light_radiance = vec3.scale(light.color, light.intensity);
+            } else {
+                mrt.light_radiance = .{ 0.0, 0.0, 0.0 };
+            }
             mrt.textures_uploaded = false;
+            mrt.sampling_tables_uploaded = false;
         }
 
         // --- 构建加速结构 ---
@@ -4114,6 +4979,15 @@ pub const Renderer = struct {
                 _ = rt_dev.uploadTextures(&.{}, &.{});
             }
             mrt.textures_uploaded = true;
+        }
+
+        if (!mrt.sampling_tables_uploaded) {
+            if (mrt.sampling_table_data != null and mrt.sampling_table_meta != null) {
+                _ = rt_dev.uploadSamplingTables(mrt.sampling_table_data.?, mrt.sampling_table_meta.?);
+            } else {
+                _ = rt_dev.uploadSamplingTables(&.{}, &.{});
+            }
+            mrt.sampling_tables_uploaded = true;
         }
 
         // --- 光线追踪 ---
@@ -4136,7 +5010,16 @@ pub const Renderer = struct {
             .bounces = bounces,
             .output_is_half = 1,
             .environment_texture_index = mrt.environment_texture_index,
+            .directional_light_count = if (maxComponent(mrt.light_radiance) > 0.0001) 1 else 0,
+            .sampling_table_count = if (mrt.sampling_table_meta) |meta| @intCast(meta.len) else 0,
+            .environment_importance_width = mrt.environment_importance_width,
+            .environment_importance_height = mrt.environment_importance_height,
+            .emissive_total_area = mrt.emissive_total_area,
         };
+        if (params.directional_light_count > 0) {
+            params.directional_light_directions[0] = light_dir;
+            params.directional_light_radiance[0] = mrt.light_radiance;
+        }
 
         if (!rt_dev.traceRays(&params, mrt.trace_pixels.?)) {
             render_log.err("{s} trace failed", .{rt_device_mod.RtDevice.backendName()});

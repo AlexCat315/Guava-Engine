@@ -35,6 +35,13 @@ struct RTTextureMeta {
     uint format;
 };
 
+struct RTSamplingTableMeta {
+    uint offset;    // byte offset in packed sampling-table buffer
+    uint byte_size; // size of this table in bytes
+    uint kind;      // 0 = environment importance, 1 = emissive light
+    uint _pad;
+};
+
 struct RTParams {
     float4x4 inv_view_projection;
     packed_float3 camera_origin;
@@ -54,6 +61,13 @@ struct RTParams {
     uint _pad3;
     uint _pad4;
     uint _pad5;
+    uint directional_light_count;
+    packed_float3 directional_light_directions[4];
+    packed_float3 directional_light_radiance[4];
+    uint sampling_table_count;
+    uint environment_importance_width;
+    uint environment_importance_height;
+    float emissive_total_area;
 };
 
 // ---- deterministic hash RNG (与 CPU 路径追踪保持一致) ----
@@ -205,6 +219,432 @@ static float3 sample_environment(
     return sample_sky(dir);
 }
 
+constant uint RT_SAMPLING_TABLE_ENVIRONMENT_IMPORTANCE = 0u;
+constant uint RT_SAMPLING_TABLE_EMISSIVE_LIGHT = 1u;
+
+struct PathTraceEnvImportance {
+    float q;
+    float pmf;
+    uint alias;
+};
+
+struct PathTraceEmissiveLight {
+    uint triangle_index;
+    float cdf;
+};
+
+struct PathTraceBsdfEval {
+    float3 value;
+    float pdf;
+};
+
+struct PathTraceLobeProbabilities {
+    float diffuse;
+    float specular;
+};
+
+struct PathTraceDirectLightSample {
+    float3 direction;
+    float3 radiance;
+    float pdf;
+    float distance;
+    uint valid;
+    uint delta;
+};
+
+static float sqr(float value) {
+    return value * value;
+}
+
+static float luminance(float3 rgb) {
+    return dot(rgb, float3(0.2126f, 0.7152f, 0.0722f));
+}
+
+static float max_component(float3 rgb) {
+    return max(rgb.x, max(rgb.y, rgb.z));
+}
+
+static float3 one_minus(float3 value) {
+    return float3(1.0f) - value;
+}
+
+static float3 safe_normalize(float3 value, float3 fallback) {
+    float len2 = dot(value, value);
+    if (len2 <= 1e-12f) return fallback;
+    return value * rsqrt(len2);
+}
+
+static float power_heuristic(float pdf_a, float pdf_b) {
+    float a2 = pdf_a * pdf_a;
+    float b2 = pdf_b * pdf_b;
+    float denom = a2 + b2;
+    if (denom <= 0.0f) return 0.0f;
+    return a2 / denom;
+}
+
+static float2 direction_to_environment_uv(float3 direction) {
+    float3 dir = safe_normalize(direction, float3(0.0f, 1.0f, 0.0f));
+    return float2(
+        atan2(dir.z, dir.x) / (2.0f * 3.14159265f) + 0.5f,
+        0.5f - asin(clamp(dir.y, -1.0f, 1.0f)) / 3.14159265f
+    );
+}
+
+static float3 environment_uv_to_direction(float u, float v) {
+    float phi = (u - 0.5f) * (2.0f * 3.14159265f);
+    float theta = clamp(v, 0.0f, 1.0f) * 3.14159265f;
+    float sin_theta = sin(theta);
+    return safe_normalize(
+        float3(cos(phi) * sin_theta, cos(theta), sin(phi) * sin_theta),
+        float3(0.0f, 1.0f, 0.0f)
+    );
+}
+
+static float3 frame_to_world(float3 normal, float3 local_dir) {
+    float3 up = (abs(normal.y) < 0.999f) ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f);
+    float3 tangent = safe_normalize(cross(up, normal), float3(1.0f, 0.0f, 0.0f));
+    float3 bitangent = cross(normal, tangent);
+    return safe_normalize(tangent * local_dir.x + bitangent * local_dir.y + normal * local_dir.z, normal);
+}
+
+static float3 sample_cosine_hemisphere(float3 normal, uint seed) {
+    float rand_u = hash_unit_float(seed ^ 0x68bc21ebu);
+    float rand_v = hash_unit_float(seed ^ 0x02e5be93u);
+    float r = sqrt(rand_u);
+    float phi = 2.0f * 3.14159265f * rand_v;
+    float3 local_dir = float3(
+        r * cos(phi),
+        r * sin(phi),
+        sqrt(max(0.0f, 1.0f - rand_u))
+    );
+    return frame_to_world(normal, local_dir);
+}
+
+static float3 sample_ggx_half_vector(float3 normal, float roughness, uint seed) {
+    float alpha = max(roughness * roughness, 0.001f);
+    float alpha2 = alpha * alpha;
+    float rand_u = hash_unit_float(seed ^ 0xa3d95fa1u);
+    float rand_v = hash_unit_float(seed ^ 0x51c8e12du);
+    float phi = 2.0f * 3.14159265f * rand_u;
+    float cos_theta = sqrt((1.0f - rand_v) / max(1.0f + (alpha2 - 1.0f) * rand_v, 1e-6f));
+    float sin_theta = sqrt(max(0.0f, 1.0f - cos_theta * cos_theta));
+    float3 local_dir = float3(cos(phi) * sin_theta, sin(phi) * sin_theta, cos_theta);
+    return frame_to_world(normal, local_dir);
+}
+
+static float distribution_ggx(float n_dot_h, float roughness) {
+    float alpha = max(roughness * roughness, 0.001f);
+    float alpha2 = alpha * alpha;
+    float n_dot_h2 = n_dot_h * n_dot_h;
+    float denom_term = n_dot_h2 * (alpha2 - 1.0f) + 1.0f;
+    return alpha2 / max(3.14159265f * denom_term * denom_term, 1e-6f);
+}
+
+static float geometry_schlick_ggx(float n_dot_x, float roughness) {
+    float r = roughness + 1.0f;
+    float k = (r * r) * 0.125f;
+    return n_dot_x / max(n_dot_x * (1.0f - k) + k, 1e-6f);
+}
+
+static float geometry_smith_ggx(float n_dot_v, float n_dot_l, float roughness) {
+    return geometry_schlick_ggx(n_dot_v, roughness) * geometry_schlick_ggx(n_dot_l, roughness);
+}
+
+static float3 fresnel_schlick(float cos_theta, float3 f0) {
+    float factor = pow(clamp(1.0f - cos_theta, 0.0f, 1.0f), 5.0f);
+    return f0 + (1.0f - f0) * factor;
+}
+
+static PathTraceLobeProbabilities compute_opaque_lobe_probabilities(
+    float3 albedo,
+    float metallic,
+    float transmission,
+    float3 fresnel_view
+) {
+    float diffuse_weight = max(0.0f, max_component(albedo) * (1.0f - metallic) * (1.0f - transmission) * (1.0f - luminance(fresnel_view)));
+    float specular_weight = max(0.0f, luminance(fresnel_view) + metallic * 0.35f + 0.05f);
+    float total = diffuse_weight + specular_weight;
+    if (total <= 1e-6f) {
+        return PathTraceLobeProbabilities{1.0f, 0.0f};
+    }
+    return PathTraceLobeProbabilities{diffuse_weight / total, specular_weight / total};
+}
+
+static float ggx_specular_pdf(float3 normal, float3 view_dir, float3 light_dir, float roughness) {
+    float3 half_vector = safe_normalize(view_dir + light_dir, normal);
+    float n_dot_h = saturate(dot(normal, half_vector));
+    float v_dot_h = saturate(dot(view_dir, half_vector));
+    if (n_dot_h <= 0.0f || v_dot_h <= 0.0f) return 0.0f;
+    return distribution_ggx(n_dot_h, roughness) * n_dot_h / max(4.0f * v_dot_h, 1e-6f);
+}
+
+static PathTraceBsdfEval evaluate_opaque_bsdf(
+    float3 albedo,
+    float metallic,
+    float roughness,
+    float transmission,
+    float3 normal,
+    float3 view_dir,
+    float3 light_dir
+) {
+    float n_dot_v = saturate(dot(normal, view_dir));
+    float n_dot_l = saturate(dot(normal, light_dir));
+    if (n_dot_v <= 0.0f || n_dot_l <= 0.0f) {
+        return PathTraceBsdfEval{float3(0.0f), 0.0f};
+    }
+
+    float3 half_vector = safe_normalize(view_dir + light_dir, normal);
+    float n_dot_h = saturate(dot(normal, half_vector));
+    float v_dot_h = saturate(dot(view_dir, half_vector));
+    float opaque_weight = 1.0f - transmission;
+    float3 dielectric_f0 = float3(0.04f);
+    float3 f0 = mix(dielectric_f0, albedo, metallic);
+    float3 fresnel = fresnel_schlick(v_dot_h, f0);
+    float3 fresnel_view = fresnel_schlick(n_dot_v, f0);
+    PathTraceLobeProbabilities probs = compute_opaque_lobe_probabilities(albedo, metallic, transmission, fresnel_view);
+    float distribution = distribution_ggx(n_dot_h, roughness);
+    float geometry = geometry_smith_ggx(n_dot_v, n_dot_l, roughness);
+    float spec_scale = opaque_weight * distribution * geometry / max(4.0f * n_dot_v * n_dot_l, 1e-6f);
+    float3 specular = fresnel * spec_scale;
+    float3 diffuse_color = albedo * ((1.0f - metallic) * opaque_weight);
+    float3 diffuse = diffuse_color * one_minus(fresnel) * (1.0f / 3.14159265f);
+    float pdf = probs.diffuse * (n_dot_l / 3.14159265f) +
+        probs.specular * ggx_specular_pdf(normal, view_dir, light_dir, roughness);
+    return PathTraceBsdfEval{diffuse + specular, pdf};
+}
+
+static float3 triangle_geometric_normal(constant RTTriangle& tri) {
+    return safe_normalize(cross(float3(tri.v1) - float3(tri.v0), float3(tri.v2) - float3(tri.v0)), float3(0.0f, 1.0f, 0.0f));
+}
+
+static int find_sampling_table(constant RTSamplingTableMeta* meta, uint count, uint kind) {
+    for (uint i = 0; i < count; i++) {
+        if (meta[i].kind == kind) return int(i);
+    }
+    return -1;
+}
+
+static float environment_direction_pdf(
+    device const uchar* sample_data,
+    constant RTSamplingTableMeta* sample_meta,
+    constant RTParams& params,
+    int env_table_index,
+    float3 direction
+) {
+    if (env_table_index < 0 || params.environment_importance_width == 0u || params.environment_importance_height == 0u) return 0.0f;
+    constant RTSamplingTableMeta& table = sample_meta[env_table_index];
+    device const PathTraceEnvImportance* env_table =
+        reinterpret_cast<device const PathTraceEnvImportance*>(sample_data + table.offset);
+    float2 uv = direction_to_environment_uv(direction);
+    uint x = min(params.environment_importance_width - 1u, uint(uv.x * float(params.environment_importance_width)));
+    uint y = min(params.environment_importance_height - 1u, uint(uv.y * float(params.environment_importance_height)));
+    uint cell_index = y * params.environment_importance_width + x;
+    float pmf = env_table[cell_index].pmf;
+    float theta = clamp(uv.y, 0.0f, 1.0f) * 3.14159265f;
+    float sin_theta = max(sin(theta), 0.0001f);
+    float solid_angle =
+        (2.0f * 3.14159265f / float(params.environment_importance_width)) *
+        (3.14159265f / float(params.environment_importance_height)) *
+        sin_theta;
+    return pmf / max(solid_angle, 1e-6f);
+}
+
+static PathTraceDirectLightSample make_invalid_direct_light_sample() {
+    return PathTraceDirectLightSample{float3(0.0f), float3(0.0f), 0.0f, 0.0f, 0u, 0u};
+}
+
+static PathTraceDirectLightSample sample_environment_light(
+    device const uchar* tex_atlas,
+    constant RTTextureMeta* tex_meta,
+    device const uchar* sample_data,
+    constant RTSamplingTableMeta* sample_meta,
+    constant RTParams& params,
+    int env_table_index,
+    uint seed
+) {
+    if (params.environment_texture_index < 0 || env_table_index < 0 ||
+        params.environment_importance_width == 0u || params.environment_importance_height == 0u) {
+        return make_invalid_direct_light_sample();
+    }
+    constant RTSamplingTableMeta& table = sample_meta[env_table_index];
+    device const PathTraceEnvImportance* env_table =
+        reinterpret_cast<device const PathTraceEnvImportance*>(sample_data + table.offset);
+    uint entry_count = table.byte_size / uint(sizeof(PathTraceEnvImportance));
+    if (entry_count == 0u) return make_invalid_direct_light_sample();
+
+    uint select = min(entry_count - 1u, uint(hash_unit_float(seed ^ 0x3c84ef95u) * float(entry_count)));
+    PathTraceEnvImportance entry = env_table[select];
+    uint resolved = (hash_unit_float(seed ^ 0x7e6b2f31u) < entry.q) ? select : entry.alias;
+    uint cell_x = resolved % params.environment_importance_width;
+    uint cell_y = resolved / params.environment_importance_width;
+    float u = (float(cell_x) + hash_unit_float(seed ^ 0x0f9d13c1u)) / float(params.environment_importance_width);
+    float v = (float(cell_y) + hash_unit_float(seed ^ 0x92c313f7u)) / float(params.environment_importance_height);
+    float3 direction = environment_uv_to_direction(u, v);
+    float3 radiance = sample_texture_atlas(tex_atlas, tex_meta, params.environment_texture_index, u, v);
+    float pdf = environment_direction_pdf(sample_data, sample_meta, params, env_table_index, direction);
+    return PathTraceDirectLightSample{direction, radiance, pdf, 1e30f, 1u, 0u};
+}
+
+static PathTraceDirectLightSample sample_emissive_light(
+    float3 hit_pos,
+    uint current_tri_index,
+    constant RTTriangle* triangles,
+    device const uchar* sample_data,
+    constant RTSamplingTableMeta* sample_meta,
+    constant RTParams& params,
+    int emissive_table_index,
+    uint seed
+) {
+    if (emissive_table_index < 0 || params.emissive_total_area <= 0.0f) {
+        return make_invalid_direct_light_sample();
+    }
+    constant RTSamplingTableMeta& table = sample_meta[emissive_table_index];
+    device const PathTraceEmissiveLight* light_table =
+        reinterpret_cast<device const PathTraceEmissiveLight*>(sample_data + table.offset);
+    uint light_count = table.byte_size / uint(sizeof(PathTraceEmissiveLight));
+    if (light_count == 0u) return make_invalid_direct_light_sample();
+
+    float pick = hash_unit_float(seed ^ 0xe18f0c7bu);
+    uint low = 0u;
+    uint high = light_count;
+    while (low < high) {
+        uint mid = (low + high) / 2u;
+        if (pick <= light_table[mid].cdf) {
+            high = mid;
+        } else {
+            low = mid + 1u;
+        }
+    }
+    uint chosen_index = min(low, light_count - 1u);
+    PathTraceEmissiveLight light = light_table[chosen_index];
+    if (light.triangle_index == current_tri_index) return make_invalid_direct_light_sample();
+
+    constant RTTriangle& tri = triangles[light.triangle_index];
+    float sqrt_r1 = sqrt(hash_unit_float(seed ^ 0x1451ad37u));
+    float r2 = hash_unit_float(seed ^ 0x45a18bc5u);
+    float b0 = 1.0f - sqrt_r1;
+    float b1 = sqrt_r1 * (1.0f - r2);
+    float b2 = sqrt_r1 * r2;
+    float3 sample_pos =
+        float3(tri.v0) * b0 +
+        float3(tri.v1) * b1 +
+        float3(tri.v2) * b2;
+    float3 to_light = sample_pos - hit_pos;
+    float distance = length(to_light);
+    if (distance <= 0.002f) return make_invalid_direct_light_sample();
+    float3 direction = to_light / distance;
+    float3 light_normal = triangle_geometric_normal(tri);
+    float cos_light = max(abs(dot(-direction, light_normal)), 0.0001f);
+    float pdf = (distance * distance) / max(cos_light * params.emissive_total_area, 1e-6f);
+    return PathTraceDirectLightSample{direction, float3(tri.emissive), pdf, distance, 1u, 0u};
+}
+
+static float emissive_direction_pdf(
+    float3 origin,
+    float3 hit_pos,
+    constant RTTriangle& tri,
+    float emissive_total_area
+) {
+    if (emissive_total_area <= 0.0f) return 0.0f;
+    float3 to_light = hit_pos - origin;
+    float distance_sq = dot(to_light, to_light);
+    if (distance_sq <= 0.0f) return 0.0f;
+    float3 direction = safe_normalize(to_light, float3(0.0f, 1.0f, 0.0f));
+    float3 light_normal = triangle_geometric_normal(tri);
+    float cos_light = max(abs(dot(-direction, light_normal)), 0.0001f);
+    return distance_sq / max(cos_light * emissive_total_area, 1e-6f);
+}
+
+static uint direct_light_type_count(
+    constant RTParams& params,
+    bool has_environment_sampling,
+    bool has_emissive_sampling
+) {
+    uint count = 0u;
+    if (params.directional_light_count > 0u &&
+        max_component(float3(params.directional_light_radiance[0])) > 0.0001f) {
+        count += 1u;
+    }
+    if (has_environment_sampling) count += 1u;
+    if (has_emissive_sampling && params.emissive_total_area > 0.0f) count += 1u;
+    return count;
+}
+
+static PathTraceDirectLightSample sample_direct_light(
+    float3 hit_pos,
+    uint current_tri_index,
+    constant RTTriangle* triangles,
+    device const uchar* tex_atlas,
+    constant RTTextureMeta* tex_meta,
+    device const uchar* sample_data,
+    constant RTSamplingTableMeta* sample_meta,
+    constant RTParams& params,
+    int env_table_index,
+    int emissive_table_index,
+    uint seed
+) {
+    bool has_environment_sampling =
+        params.environment_texture_index >= 0 &&
+        env_table_index >= 0 &&
+        params.environment_importance_width > 0u &&
+        params.environment_importance_height > 0u;
+    bool has_emissive_sampling = emissive_table_index >= 0 && params.emissive_total_area > 0.0f;
+    uint light_type_count = direct_light_type_count(params, has_environment_sampling, has_emissive_sampling);
+    if (light_type_count == 0u) return make_invalid_direct_light_sample();
+
+    uint selection = min(light_type_count - 1u, uint(hash_unit_float(seed ^ 0xa241b3c1u) * float(light_type_count)));
+    uint cursor = 0u;
+    if (params.directional_light_count > 0u &&
+        max_component(float3(params.directional_light_radiance[0])) > 0.0001f) {
+        if (selection == cursor) {
+            return PathTraceDirectLightSample{
+                safe_normalize(float3(params.directional_light_directions[0]), float3(0.0f, 1.0f, 0.0f)),
+                float3(params.directional_light_radiance[0]),
+                1.0f / float(light_type_count),
+                1e30f,
+                1u,
+                1u,
+            };
+        }
+        cursor += 1u;
+    }
+    if (has_environment_sampling) {
+        if (selection == cursor) {
+            PathTraceDirectLightSample sample = sample_environment_light(
+                tex_atlas,
+                tex_meta,
+                sample_data,
+                sample_meta,
+                params,
+                env_table_index,
+                seed ^ 0x6b84221fu
+            );
+            if (sample.valid != 0u) {
+                sample.pdf *= 1.0f / float(light_type_count);
+            }
+            return sample;
+        }
+        cursor += 1u;
+    }
+    if (has_emissive_sampling && selection == cursor) {
+        PathTraceDirectLightSample sample = sample_emissive_light(
+            hit_pos,
+            current_tri_index,
+            triangles,
+            sample_data,
+            sample_meta,
+            params,
+            emissive_table_index,
+            seed ^ 0xb5297a4du
+        );
+        if (sample.valid != 0u) {
+            sample.pdf *= 1.0f / float(light_type_count);
+        }
+        return sample;
+    }
+    return make_invalid_direct_light_sample();
+}
+
 kernel void raytrace_kernel(
     uint2                          tid        [[thread_position_in_grid]],
     constant RTParams&             params     [[buffer(0)]],
@@ -212,7 +652,9 @@ kernel void raytrace_kernel(
     constant RTTriangle*           triangles  [[buffer(2)]],
     primitive_acceleration_structure accel     [[buffer(3)]],
     device const uchar*            tex_atlas  [[buffer(4)]],
-    constant RTTextureMeta*        tex_meta   [[buffer(5)]]
+    constant RTTextureMeta*        tex_meta   [[buffer(5)]],
+    device const uchar*            sample_data [[buffer(6)]],
+    constant RTSamplingTableMeta*  sample_meta [[buffer(7)]]
 ) {
     if (tid.x >= params.dimensions.x || tid.y >= params.dimensions.y) return;
 
@@ -237,11 +679,22 @@ kernel void raytrace_kernel(
         float3 direction = normalize(far_pos - near_pos);
         if (length(direction) <= 1e-4f) direction = normalize(far_pos - origin);
 
-        // ---- multi-bounce path trace ----
         float3 throughput = float3(1.0f);
         float3 radiance   = float3(0.0f);
+        float previous_bsdf_pdf = 0.0f;
+        bool previous_was_delta = true;
         intersector<triangle_data> inter;
         inter.accept_any_intersection(false);
+        const int env_table_index = find_sampling_table(sample_meta, params.sampling_table_count, RT_SAMPLING_TABLE_ENVIRONMENT_IMPORTANCE);
+        const int emissive_table_index = find_sampling_table(sample_meta, params.sampling_table_count, RT_SAMPLING_TABLE_EMISSIVE_LIGHT);
+        const bool has_environment_sampling =
+            params.environment_texture_index >= 0 &&
+            env_table_index >= 0 &&
+            params.environment_importance_width > 0u &&
+            params.environment_importance_height > 0u;
+        const bool has_emissive_sampling =
+            emissive_table_index >= 0 &&
+            params.emissive_total_area > 0.0f;
 
         for (uint bounce = 0; bounce < params.bounces; bounce++) {
             ray r;
@@ -252,21 +705,32 @@ kernel void raytrace_kernel(
 
             auto hit = inter.intersect(r, accel);
             if (hit.type != intersection_type::triangle) {
-                radiance += throughput * sample_environment(tex_atlas, tex_meta, params.environment_texture_index, direction);
+                float3 sky = sample_environment(tex_atlas, tex_meta, params.environment_texture_index, direction);
+                if (bounce == 0u || previous_was_delta || !has_environment_sampling) {
+                    radiance += throughput * sky;
+                } else {
+                    uint light_type_count = direct_light_type_count(params, has_environment_sampling, has_emissive_sampling);
+                    float env_select_pdf = (light_type_count > 0u && has_environment_sampling) ? (1.0f / float(light_type_count)) : 0.0f;
+                    float env_pdf = env_select_pdf * environment_direction_pdf(sample_data, sample_meta, params, env_table_index, direction);
+                    float mis = power_heuristic(previous_bsdf_pdf, env_pdf);
+                    radiance += throughput * sky * mis;
+                }
                 break;
             }
 
             uint pid = hit.primitive_id;
-            RTTriangle tri = triangles[pid];
+            constant RTTriangle& tri = triangles[pid];
             float2 bary = hit.triangle_barycentric_coord;
             float w0 = 1.0f - bary.x - bary.y;
-            float3 normal = normalize(
-                float3(tri.n0) * w0 + float3(tri.n1) * bary.x + float3(tri.n2) * bary.y);
+            float3 normal = safe_normalize(
+                float3(tri.n0) * w0 + float3(tri.n1) * bary.x + float3(tri.n2) * bary.y,
+                float3(0.0f, 1.0f, 0.0f)
+            );
             bool front_face = dot(direction, normal) < 0.0f;
             float3 shade_n = front_face ? normal : -normal;
+            float3 view_dir = -direction;
             float3 hit_pos = origin + direction * hit.distance;
 
-            // UV 插值 + 纹理采样
             float2 hit_uv = float2(tri.uv0) * w0 + float2(tri.uv1) * bary.x + float2(tri.uv2) * bary.y;
             float3 alb;
             if (tri.texture_index >= 0) {
@@ -276,15 +740,13 @@ kernel void raytrace_kernel(
                 alb = float3(tri.albedo);
             }
 
-            float3 emis  = float3(tri.emissive);
-            float  met   = tri.metallic;
-            float  rough = tri.roughness;
-            float  transmission = clamp(tri.transmission, 0.0f, 0.96f);
-            float  thickness = max(tri.thickness, 0.0f);
+            float3 emis = float3(tri.emissive);
+            float met = tri.metallic;
+            float rough = tri.roughness;
+            float transmission = clamp(tri.transmission, 0.0f, 0.98f);
 
-            // ---- shadow-only mode: primary ray + N shadow rays → soft visibility ----
-            if (params.mode == 1) {
-                float3 L = normalize(float3(params.light_direction));
+            if (params.mode == 1u) {
+                float3 L = safe_normalize(float3(params.light_direction), float3(0.0f, 1.0f, 0.0f));
                 uint n_shadow = max(1u, params.shadow_samples);
                 float total_vis = 0.0f;
                 for (uint si = 0; si < n_shadow; si++) {
@@ -301,80 +763,146 @@ kernel void raytrace_kernel(
                     total_vis += (shadow_hit.type == intersection_type::triangle) ? 0.0f : 1.0f;
                 }
                 accumulated += float3(total_vis / float(n_shadow));
-                break; // 仅需第一次命中
+                break;
             }
 
-            // emissive
-            if ((emis.x + emis.y + emis.z) > 0.001f) radiance += throughput * emis;
-
-            // direct lighting — keep this cheap, reflective look mainly comes
-            // from bounce path so Metal RT and CPU PT stay visually aligned.
-            float3 L = float3(params.light_direction);
-            float shadow_vis = 1.0f;
-            {
-                ray shadow_ray;
-                shadow_ray.origin       = hit_pos + normal * 0.002f;
-                shadow_ray.direction    = L;
-                shadow_ray.min_distance = 0.001f;
-                shadow_ray.max_distance = 1e30f;
-                intersector<triangle_data> shadow_inter;
-                shadow_inter.accept_any_intersection(true);
-                auto shadow_hit = shadow_inter.intersect(shadow_ray, accel);
-                if (shadow_hit.type == intersection_type::triangle) shadow_vis = 0.0f;
-            }
-            float NdotL = saturate(dot(shade_n, L));
-            float3 diffuse = alb * NdotL * (1.0f - met);
-            float3 dielectric_f0 = float3(0.04f);
-            float3 specular_tint = mix(dielectric_f0, alb, met);
-            float3 H = normalize(L - direction);
-            float NdotH = saturate(dot(shade_n, H));
-            float sp = max(8.0f, 10.0f + (1.0f - rough) * 120.0f);
-            float spec_val = pow(NdotH, sp) * (0.1f + 0.9f * (1.0f - rough));
-            float3 spec_c = specular_tint * spec_val;
-            float surface_lighting_weight = 1.0f - transmission * 0.85f;
-            float3 direct = (diffuse + spec_c * NdotL) * shadow_vis * surface_lighting_weight;
-            float3 ambient = alb * (0.03f + 0.04f * (1.0f - met)) * surface_lighting_weight;
-            radiance += throughput * (direct + ambient);
-
-            // bounce selection: transmission/reflection/diffuse
-            uint bseed = sseed ^ (bounce * 0x9e3779b9u);
-            float specular_chance = clamp(0.08f + met * 0.84f + (1.0f - rough) * 0.06f, 0.05f, 0.97f);
-            float transmission_chance = clamp(transmission * (1.0f - met), 0.0f, 0.92f);
-            float3 reflected = normalize(reflect_vec(direction, shade_n));
-            float3 glossy = normalize(mix(reflected, random_hemisphere(reflected, bseed ^ 0x51c8e12du), rough * rough));
-            float3 diffuse_dir = random_hemisphere(shade_n, bseed ^ 0xa241b3c1u);
-            bool choose_specular = hash_unit_float(bseed ^ 0x6b84221fu) < specular_chance;
-            bool choose_transmission = transmission_chance > 0.0f && hash_unit_float(bseed ^ 0xb5297a4du) < transmission_chance;
-
-            if (choose_transmission) {
-                float eta = front_face ? (1.0f / max(tri.ior, 1.01f)) : max(tri.ior, 1.01f);
-                float3 refr_dir;
-                if (refract_vec(direction, shade_n, eta, refr_dir)) {
-                    direction = normalize(refr_dir);
+            if (max_component(emis) > 0.0001f) {
+                if (bounce == 0u || previous_was_delta) {
+                    radiance += throughput * emis;
                 } else {
-                    direction = reflected;
+                    uint light_type_count = direct_light_type_count(params, has_environment_sampling, has_emissive_sampling);
+                    float emissive_select_pdf =
+                        (light_type_count > 0u && has_emissive_sampling) ? (1.0f / float(light_type_count)) : 0.0f;
+                    float light_pdf = emissive_select_pdf * emissive_direction_pdf(origin, hit_pos, tri, params.emissive_total_area);
+                    float mis = power_heuristic(previous_bsdf_pdf, light_pdf);
+                    radiance += throughput * emis * mis;
                 }
-                float3 transmission_tint = mix(float3(1.0f), alb, 0.2f);
-                if (thickness > 1e-4f) {
-                    float ndot = max(abs(dot(direction, shade_n)), 0.2f);
-                    float optical_distance = thickness / ndot;
-                    float3 sigma_a = max(float3(0.0f), 1.0f - alb) * 2.2f;
-                    throughput *= exp(-sigma_a * optical_distance);
-                }
-                throughput *= transmission_tint * (0.96f / max(transmission_chance, 0.05f));
-                origin = hit_pos + direction * 0.002f;
-            } else if (choose_specular) {
-                direction = (dot(glossy, shade_n) > 0.0f) ? glossy : reflected;
-                throughput *= specular_tint * (0.92f / specular_chance);
-                origin = hit_pos + shade_n * 0.002f;
-            } else {
-                direction = diffuse_dir;
-                throughput *= (alb * (1.0f - met)) * (0.85f / max(1.0f - specular_chance, 0.05f));
-                origin = hit_pos + shade_n * 0.002f;
             }
 
-            if (length(throughput) < 0.02f) break;
+            if (transmission < 0.995f) {
+                PathTraceDirectLightSample light_sample = sample_direct_light(
+                    hit_pos,
+                    pid,
+                    triangles,
+                    tex_atlas,
+                    tex_meta,
+                    sample_data,
+                    sample_meta,
+                    params,
+                    env_table_index,
+                    emissive_table_index,
+                    sseed ^ (bounce * 0x9e3779b9u)
+                );
+                if (light_sample.valid != 0u) {
+                    float occlusion_distance = (light_sample.delta != 0u)
+                        ? 1e30f
+                        : max(light_sample.distance - 0.004f, 0.001f);
+                    ray shadow_ray;
+                    shadow_ray.origin = hit_pos + shade_n * 0.002f;
+                    shadow_ray.direction = light_sample.direction;
+                    shadow_ray.min_distance = 0.001f;
+                    shadow_ray.max_distance = occlusion_distance;
+                    intersector<triangle_data> shadow_inter;
+                    shadow_inter.accept_any_intersection(true);
+                    auto shadow_hit = shadow_inter.intersect(shadow_ray, accel);
+                    if (shadow_hit.type != intersection_type::triangle) {
+                        PathTraceBsdfEval bsdf = evaluate_opaque_bsdf(
+                            alb,
+                            met,
+                            rough,
+                            transmission,
+                            shade_n,
+                            view_dir,
+                            light_sample.direction
+                        );
+                        if (bsdf.pdf > 0.0f) {
+                            float n_dot_l = saturate(dot(shade_n, light_sample.direction));
+                            float mis = (light_sample.delta != 0u) ? 1.0f : power_heuristic(light_sample.pdf, bsdf.pdf);
+                            radiance += throughput * bsdf.value * light_sample.radiance *
+                                ((n_dot_l * mis) / max(light_sample.pdf, 1e-6f));
+                        }
+                    }
+                }
+            }
+
+            float transmission_branch_prob = clamp(transmission * (1.0f - met), 0.0f, 0.98f);
+            float opaque_branch_prob = 1.0f - transmission_branch_prob;
+            uint branch_seed = sseed ^ (bounce * 0x85ebca6bu);
+
+            if (transmission_branch_prob > 0.0f && hash_unit_float(branch_seed ^ 0x1451ad37u) < transmission_branch_prob) {
+                float eta = front_face ? (1.0f / max(tri.ior, 1.01f)) : max(tri.ior, 1.01f);
+                float3 dielectric_f0 = float3(0.04f);
+                float3 fresnel = fresnel_schlick(saturate(dot(shade_n, view_dir)), dielectric_f0);
+                float reflect_prob = clamp(luminance(fresnel), 0.05f, 0.95f);
+                float3 reflected = safe_normalize(reflect_vec(direction, shade_n), shade_n);
+                float3 refr_dir;
+
+                if (!refract_vec(direction, shade_n, eta, refr_dir) || hash_unit_float(branch_seed ^ 0x45a18bc5u) < reflect_prob) {
+                    throughput = throughput * fresnel / max(transmission_branch_prob * reflect_prob, 1e-6f);
+                    direction = reflected;
+                    origin = hit_pos + shade_n * 0.002f;
+                } else {
+                    float3 transmission_tint = mix(float3(1.0f), alb, 0.18f);
+                    throughput = throughput * (transmission_tint * one_minus(fresnel)) /
+                        max(transmission_branch_prob * (1.0f - reflect_prob), 1e-6f);
+                    direction = safe_normalize(refr_dir, -shade_n);
+                    if (tri.thickness > 1e-4f) {
+                        float ndot = max(abs(dot(direction, shade_n)), 0.2f);
+                        float optical_distance = tri.thickness / ndot;
+                        float3 sigma_a = max(float3(0.0f), 1.0f - alb) * 2.2f;
+                        throughput *= exp(-sigma_a * optical_distance);
+                    }
+                    origin = hit_pos + direction * 0.002f;
+                }
+                previous_bsdf_pdf = 1.0f;
+                previous_was_delta = true;
+            } else if (opaque_branch_prob > 0.0f) {
+                float3 dielectric_f0 = float3(0.04f);
+                float3 f0 = mix(dielectric_f0, alb, met);
+                float3 fresnel_view = fresnel_schlick(saturate(dot(shade_n, view_dir)), f0);
+                PathTraceLobeProbabilities lobe_probs = compute_opaque_lobe_probabilities(alb, met, transmission, fresnel_view);
+                bool choose_specular = hash_unit_float(branch_seed ^ 0x92c313f7u) < lobe_probs.specular;
+                float3 next_direction;
+
+                if (choose_specular) {
+                    float3 half_vector = sample_ggx_half_vector(shade_n, rough, branch_seed ^ 0x6b84221fu);
+                    next_direction = safe_normalize(reflect_vec(-view_dir, half_vector), shade_n);
+                    if (dot(next_direction, shade_n) <= 0.0f) break;
+                } else {
+                    next_direction = sample_cosine_hemisphere(shade_n, branch_seed ^ 0xb5297a4du);
+                }
+
+                PathTraceBsdfEval bsdf = evaluate_opaque_bsdf(
+                    alb,
+                    met,
+                    rough,
+                    transmission,
+                    shade_n,
+                    view_dir,
+                    next_direction
+                );
+                float n_dot_l = saturate(dot(shade_n, next_direction));
+                float overall_pdf = opaque_branch_prob * bsdf.pdf;
+                if (overall_pdf <= 0.0f || n_dot_l <= 0.0f) break;
+
+                throughput = throughput * bsdf.value * (n_dot_l / overall_pdf);
+                direction = next_direction;
+                origin = hit_pos + shade_n * 0.002f;
+                previous_bsdf_pdf = overall_pdf;
+                previous_was_delta = false;
+            } else {
+                break;
+            }
+
+            if (bounce >= 2u) {
+                float survival_prob = min(max_component(throughput), 0.95f);
+                if (survival_prob <= 0.0f || hash_unit_float(sseed ^ (bounce * 0xc2b2ae35u)) > survival_prob) {
+                    break;
+                }
+                throughput /= survival_prob;
+            }
         }
+
         accumulated += radiance;
     }
     accumulated /= float(params.samples);
@@ -420,11 +948,14 @@ struct GuavaMetalRTContext {
     id<MTLBuffer>                   paramsBuffer;
     id<MTLBuffer>                   textureAtlasBuffer;
     id<MTLBuffer>                   textureMetaBuffer;
+    id<MTLBuffer>                   samplingTableBuffer;
+    id<MTLBuffer>                   samplingTableMetaBuffer;
     uint32_t                        triangleCount;
     uint32_t                        outputWidth;
     uint32_t                        outputHeight;
     uint32_t                        outputBytesPerPixel;
     uint32_t                        textureCount;
+    uint32_t                        samplingTableCount;
     bool                            supported;
     bool                            accelBuilt;
 };
@@ -489,11 +1020,14 @@ extern "C" GuavaMetalRTContext* guava_metal_rt_init(void) {
         ctx->paramsBuffer  = nil;
         ctx->textureAtlasBuffer = nil;
         ctx->textureMetaBuffer  = nil;
+        ctx->samplingTableBuffer = nil;
+        ctx->samplingTableMetaBuffer = nil;
         ctx->triangleCount = 0;
         ctx->outputWidth   = 0;
         ctx->outputHeight  = 0;
         ctx->outputBytesPerPixel = 0;
         ctx->textureCount  = 0;
+        ctx->samplingTableCount = 0;
         ctx->supported     = true;
         ctx->accelBuilt    = false;
 
@@ -628,6 +1162,40 @@ extern "C" bool guava_metal_rt_upload_textures(GuavaMetalRTContext* ctx,
 }
 
 // ---------------------------------------------------------------------------
+// guava_metal_rt_upload_sampling_tables
+// ---------------------------------------------------------------------------
+extern "C" bool guava_metal_rt_upload_sampling_tables(GuavaMetalRTContext* ctx,
+                                                      const uint8_t* table_data,
+                                                      uint32_t table_data_size,
+                                                      const GuavaRTSamplingTableMeta* meta,
+                                                      uint32_t table_count) {
+    if (!ctx || !ctx->supported) return false;
+    if (table_count == 0 || !table_data || table_data_size == 0) {
+        ctx->samplingTableBuffer = nil;
+        ctx->samplingTableMetaBuffer = nil;
+        ctx->samplingTableCount = 0;
+        return true;
+    }
+
+    @autoreleasepool {
+        id<MTLDevice> dev = ctx->device;
+
+        ctx->samplingTableBuffer = [dev newBufferWithBytes:table_data
+                                                    length:table_data_size
+                                                   options:MTLResourceStorageModeShared];
+        if (!ctx->samplingTableBuffer) return false;
+
+        ctx->samplingTableMetaBuffer = [dev newBufferWithBytes:meta
+                                                         length:(size_t)table_count * sizeof(GuavaRTSamplingTableMeta)
+                                                        options:MTLResourceStorageModeShared];
+        if (!ctx->samplingTableMetaBuffer) return false;
+
+        ctx->samplingTableCount = table_count;
+        return true;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // guava_metal_rt_trace
 // ---------------------------------------------------------------------------
 extern "C" bool guava_metal_rt_trace(GuavaMetalRTContext* ctx,
@@ -688,6 +1256,19 @@ extern "C" bool guava_metal_rt_trace(GuavaMetalRTContext* ctx,
             [enc setBuffer:emptyBuf offset:0 atIndex:5];
         }
 
+        if (ctx->samplingTableBuffer && ctx->samplingTableMetaBuffer && ctx->samplingTableCount > 0) {
+            [enc setBuffer:ctx->samplingTableBuffer offset:0 atIndex:6];
+            [enc setBuffer:ctx->samplingTableMetaBuffer offset:0 atIndex:7];
+        } else {
+            static id<MTLBuffer> emptyBuf = nil;
+            if (!emptyBuf) {
+                emptyBuf = [ctx->device newBufferWithLength:16
+                                                    options:MTLResourceStorageModeShared];
+            }
+            [enc setBuffer:emptyBuf offset:0 atIndex:6];
+            [enc setBuffer:emptyBuf offset:0 atIndex:7];
+        }
+
         // Metal 要求 compute encoder 声明加速结构引用的资源
         [enc useResource:ctx->vertexPositionBuffer usage:MTLResourceUsageRead];
 
@@ -721,6 +1302,8 @@ extern "C" void guava_metal_rt_destroy(GuavaMetalRTContext* ctx) {
         ctx->triangleDataBuffer   = nil;
         ctx->textureAtlasBuffer   = nil;
         ctx->textureMetaBuffer    = nil;
+        ctx->samplingTableBuffer  = nil;
+        ctx->samplingTableMetaBuffer = nil;
         ctx->outputBuffer         = nil;
         ctx->paramsBuffer         = nil;
         ctx->pipeline             = nil;

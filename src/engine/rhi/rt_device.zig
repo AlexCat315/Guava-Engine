@@ -44,6 +44,12 @@ pub const RtDevice = struct {
         return b.uploadTextures(pixel_data, meta);
     }
 
+    /// Upload environment-importance and emissive-light sampling tables.
+    pub fn uploadSamplingTables(self: *RtDevice, table_data: []const u8, meta: []const rt_backend.RtSamplingTableMeta) bool {
+        var b = self.backend orelse return false;
+        return b.uploadSamplingTables(table_data, meta);
+    }
+
     /// Trace rays with the given parameters, writing BGRA8 pixels to output.
     pub fn traceRays(self: *RtDevice, params: *const rt_backend.RtParams, output: []u8) bool {
         var b = self.backend orelse return false;

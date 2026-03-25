@@ -5,6 +5,8 @@
 //!   init() -> ?Self
 //!   isSupported(*const Self) -> bool
 //!   buildAccelerationStructure(*Self, []const RtTriangle) -> bool
+//!   uploadTextures(*Self, []const u8, []const RtTextureMeta) -> bool
+//!   uploadSamplingTables(*Self, []const u8, []const RtSamplingTableMeta) -> bool
 //!   traceRays(*Self, *const RtParams, []u8) -> bool
 //!   deinit(*Self) -> void
 
@@ -47,6 +49,21 @@ pub const RtTextureMeta = extern struct {
     height: u32,
     format: u32 = 0,
 };
+
+/// 采样表元数据 — 支持环境重要性数据与发光体采样表的通用上传。
+pub const RtSamplingTableKind = enum(u32) {
+    environment_importance = 0,
+    emissive_light = 1,
+};
+
+pub const RtSamplingTableMeta = extern struct {
+    offset: u32, // 字节偏移 (在打包采样表缓冲中)
+    byte_size: u32,
+    kind: u32,
+    _pad: u32 = 0,
+};
+
+pub const max_directional_lights = 4;
 
 /// 光追三角形 — 与 C 桥接层 GuavaRTTriangle 完全对齐 (extern struct)。
 pub const RtTriangle = extern struct {
@@ -94,4 +111,11 @@ pub const RtParams = extern struct {
     _pad3: u32 = 0,
     _pad4: u32 = 0,
     _pad5: u32 = 0,
+    directional_light_count: u32 = 0,
+    directional_light_directions: [max_directional_lights][3]f32 = .{ .{ 0.0, 0.0, 0.0 } } ** max_directional_lights,
+    directional_light_radiance: [max_directional_lights][3]f32 = .{ .{ 0.0, 0.0, 0.0 } } ** max_directional_lights,
+    sampling_table_count: u32 = 0,
+    environment_importance_width: u32 = 0,
+    environment_importance_height: u32 = 0,
+    emissive_total_area: f32 = 0.0,
 };
