@@ -349,8 +349,10 @@ uint32_t guava_metal_rhi_create_texture(void* raw,
         if (desc->usage_bits & 0x01) usage |= MTLTextureUsageShaderRead;       // sampled
         if (desc->usage_bits & 0x02) usage |= MTLTextureUsageRenderTarget;     // color_target
         if (desc->usage_bits & 0x04) usage |= MTLTextureUsageRenderTarget;     // depth_stencil_target
-        if (desc->usage_bits & 0x08) usage |= MTLTextureUsageShaderRead;       // storage_read
-        if (desc->usage_bits & 0x10) usage |= MTLTextureUsageShaderWrite;      // storage_write
+        if (desc->usage_bits & 0x08) usage |= MTLTextureUsageShaderRead;       // graphics_storage_read
+        if (desc->usage_bits & 0x10) usage |= MTLTextureUsageShaderRead;       // compute_storage_read
+        if (desc->usage_bits & 0x20) usage |= MTLTextureUsageShaderWrite;      // compute_storage_write
+        if (desc->usage_bits & 0x40) usage |= MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite; // compute_storage_rw
         td.usage = usage;
 
         id<MTLTexture> tex = [ctx->device newTextureWithDescriptor:td];
