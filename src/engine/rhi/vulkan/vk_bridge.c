@@ -21,6 +21,9 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 
+// ImGui Vulkan backend render (implemented in imgui_vulkan_backend.cpp)
+extern bool guava_imgui_vulkan_backend_render(void* vk_command_buffer);
+
 // ---------------------------------------------------------------------------
 // Command buffer opcodes — must match command_buffer.zig OpCode enum(u8)
 // ---------------------------------------------------------------------------
@@ -125,7 +128,24 @@ typedef struct {
     uint32_t id;
     uint32_t entry_count;
     GuavaVkBindingEntry entries[32]; // max 32 bindings per set
+    VkDescriptorSetLayout layout;
+    VkDescriptorSet descriptor_set;
 } BindingSetData;
+
+typedef struct {
+    VkRenderPass render_pass;
+    VkFormat color_format;
+    VkFormat depth_format;
+    uint32_t clear_mask;
+} RenderPassCacheEntry;
+
+typedef struct {
+    VkFramebuffer framebuffer;
+    VkRenderPass render_pass;
+    VkImageView color_view;
+    VkImageView depth_view;
+    uint32_t width, height;
+} FramebufferCacheEntry;
 
 // ---------------------------------------------------------------------------
 // Main bridge context — owns all Vulkan objects
@@ -191,6 +211,17 @@ typedef struct {
     uint32_t             cmp_pipeline_count;
     BindingSetData       binding_sets[MAX_RESOURCES];
     uint32_t             binding_set_count;
+
+    // Descriptor pool for binding sets
+    VkDescriptorPool descriptor_pool;
+
+    // Render pass cache (keyed by format + clear mode)
+    RenderPassCacheEntry rp_cache[256];
+    uint32_t rp_cache_count;
+
+    // Framebuffer cache
+    FramebufferCacheEntry fb_cache[1024];
+    uint32_t fb_cache_count;
 } GuavaVkContext;
 
 // ---------------------------------------------------------------------------
@@ -342,6 +373,136 @@ static bool format_has_depth(VkFormat fmt) {
     return fmt == VK_FORMAT_D32_SFLOAT ||
            fmt == VK_FORMAT_D24_UNORM_S8_UINT ||
            fmt == VK_FORMAT_D16_UNORM;
+}
+
+// ---------------------------------------------------------------------------
+// Render pass & framebuffer cache helpers
+// ---------------------------------------------------------------------------
+
+static VkRenderPass find_or_create_render_pass(GuavaVkContext* ctx,
+                                                VkFormat color_fmt, VkFormat depth_fmt,
+                                                uint32_t clear_mask) {
+    for (uint32_t i = 0; i < ctx->rp_cache_count; i++) {
+        if (ctx->rp_cache[i].color_format == color_fmt &&
+            ctx->rp_cache[i].depth_format == depth_fmt &&
+            ctx->rp_cache[i].clear_mask == clear_mask)
+            return ctx->rp_cache[i].render_pass;
+    }
+
+    VkAttachmentDescription attachments[2];
+    uint32_t att_count = 0;
+
+    VkAttachmentReference color_ref = { .attachment = 0, .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+    VkAttachmentReference depth_ref = { .attachment = 1, .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
+
+    bool clear_color = (clear_mask & 1) != 0;
+    attachments[att_count++] = (VkAttachmentDescription){
+        .format = color_fmt,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .loadOp = clear_color ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = clear_color ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    };
+
+    bool has_depth = depth_fmt != VK_FORMAT_UNDEFINED;
+    if (has_depth) {
+        bool clear_depth = (clear_mask & 2) != 0;
+        attachments[att_count++] = (VkAttachmentDescription){
+            .format = depth_fmt,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .loadOp = clear_depth ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD,
+            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+            .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            .initialLayout = clear_depth ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        };
+    }
+
+    VkSubpassDescription subpass = {
+        .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &color_ref,
+        .pDepthStencilAttachment = has_depth ? &depth_ref : NULL,
+    };
+
+    VkSubpassDependency dep = {
+        .srcSubpass = VK_SUBPASS_EXTERNAL,
+        .dstSubpass = 0,
+        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+        .srcAccessMask = 0,
+        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | (has_depth ? VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT : 0),
+    };
+
+    VkRenderPassCreateInfo rp_info = {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+        .attachmentCount = att_count,
+        .pAttachments = attachments,
+        .subpassCount = 1,
+        .pSubpasses = &subpass,
+        .dependencyCount = 1,
+        .pDependencies = &dep,
+    };
+
+    VkRenderPass rp;
+    if (vkCreateRenderPass(ctx->device, &rp_info, NULL, &rp) != VK_SUCCESS)
+        return VK_NULL_HANDLE;
+
+    if (ctx->rp_cache_count < 256) {
+        ctx->rp_cache[ctx->rp_cache_count++] = (RenderPassCacheEntry){
+            .render_pass = rp,
+            .color_format = color_fmt,
+            .depth_format = depth_fmt,
+            .clear_mask = clear_mask,
+        };
+    }
+    return rp;
+}
+
+static VkFramebuffer find_or_create_framebuffer(GuavaVkContext* ctx, VkRenderPass rp,
+                                                  VkImageView color_view, VkImageView depth_view,
+                                                  uint32_t w, uint32_t h) {
+    for (uint32_t i = 0; i < ctx->fb_cache_count; i++) {
+        FramebufferCacheEntry* e = &ctx->fb_cache[i];
+        if (e->render_pass == rp && e->color_view == color_view &&
+            e->depth_view == depth_view && e->width == w && e->height == h)
+            return e->framebuffer;
+    }
+
+    VkImageView views[2];
+    uint32_t view_count = 0;
+    views[view_count++] = color_view;
+    if (depth_view) views[view_count++] = depth_view;
+
+    VkFramebufferCreateInfo fb_info = {
+        .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+        .renderPass = rp,
+        .attachmentCount = view_count,
+        .pAttachments = views,
+        .width = w,
+        .height = h,
+        .layers = 1,
+    };
+
+    VkFramebuffer fb;
+    if (vkCreateFramebuffer(ctx->device, &fb_info, NULL, &fb) != VK_SUCCESS)
+        return VK_NULL_HANDLE;
+
+    if (ctx->fb_cache_count < 1024) {
+        ctx->fb_cache[ctx->fb_cache_count++] = (FramebufferCacheEntry){
+            .framebuffer = fb,
+            .render_pass = rp,
+            .color_view = color_view,
+            .depth_view = depth_view,
+            .width = w,
+            .height = h,
+        };
+    }
+    return fb;
 }
 
 // ---------------------------------------------------------------------------
@@ -618,6 +779,24 @@ void* guava_vk_rhi_init(bool enable_validation) {
     };
     vkCreateFence(ctx->device, &fence_info, NULL, &ctx->in_flight_fence);
 
+    // ── Descriptor pool ───────────────────────────────────────────────
+    VkDescriptorPoolSize desc_pool_sizes[] = {
+        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 },
+        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1000 },
+        { VK_DESCRIPTOR_TYPE_SAMPLER, 1000 },
+        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1000 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1000 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1000 },
+    };
+    VkDescriptorPoolCreateInfo desc_pool_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
+        .maxSets = 4096,
+        .poolSizeCount = sizeof(desc_pool_sizes) / sizeof(desc_pool_sizes[0]),
+        .pPoolSizes = desc_pool_sizes,
+    };
+    vkCreateDescriptorPool(ctx->device, &desc_pool_info, NULL, &ctx->descriptor_pool);
+
     return ctx;
 }
 
@@ -652,6 +831,24 @@ void guava_vk_rhi_destroy(void* raw) {
         vkDestroyPipeline(ctx->device, ctx->cmp_pipelines[i].pipeline, NULL);
         vkDestroyPipelineLayout(ctx->device, ctx->cmp_pipelines[i].layout, NULL);
     }
+
+    // Binding set layouts
+    for (uint32_t i = 0; i < ctx->binding_set_count; i++) {
+        if (ctx->binding_sets[i].layout)
+            vkDestroyDescriptorSetLayout(ctx->device, ctx->binding_sets[i].layout, NULL);
+    }
+
+    // Framebuffer cache
+    for (uint32_t i = 0; i < ctx->fb_cache_count; i++)
+        vkDestroyFramebuffer(ctx->device, ctx->fb_cache[i].framebuffer, NULL);
+
+    // Render pass cache
+    for (uint32_t i = 0; i < ctx->rp_cache_count; i++)
+        vkDestroyRenderPass(ctx->device, ctx->rp_cache[i].render_pass, NULL);
+
+    // Descriptor pool
+    if (ctx->descriptor_pool)
+        vkDestroyDescriptorPool(ctx->device, ctx->descriptor_pool, NULL);
 
     // Swapchain
     if (ctx->swapchain_image_views) {
@@ -1158,15 +1355,26 @@ uint32_t guava_vk_rhi_create_graphics_pipeline(void* raw,
         .pAttachments = &color_blend_attachment,
     };
 
-    // ── Pipeline layout (push constants for uniforms) ──────────────
+    // ── Pipeline layout (push constants + descriptor set layouts) ──
     VkPushConstantRange push_range = {
         .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
         .offset = 0,
         .size = 256, // max push constant size
     };
 
+    // Collect unique descriptor set layouts from registered binding sets
+    VkDescriptorSetLayout set_layouts[4];
+    uint32_t set_layout_count = 0;
+    for (uint32_t i = 0; i < ctx->binding_set_count && set_layout_count < 4; i++) {
+        if (ctx->binding_sets[i].layout) {
+            set_layouts[set_layout_count++] = ctx->binding_sets[i].layout;
+        }
+    }
+
     VkPipelineLayoutCreateInfo layout_info = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = set_layout_count,
+        .pSetLayouts = set_layout_count > 0 ? set_layouts : NULL,
         .pushConstantRangeCount = 1,
         .pPushConstantRanges = &push_range,
     };
@@ -1290,8 +1498,18 @@ uint32_t guava_vk_rhi_create_compute_pipeline(void* raw, uint32_t shader_id) {
         .size = 256,
     };
 
+    // Collect descriptor set layouts
+    VkDescriptorSetLayout set_layouts[4];
+    uint32_t set_layout_count = 0;
+    for (uint32_t i = 0; i < ctx->binding_set_count && set_layout_count < 4; i++) {
+        if (ctx->binding_sets[i].layout)
+            set_layouts[set_layout_count++] = ctx->binding_sets[i].layout;
+    }
+
     VkPipelineLayoutCreateInfo layout_info = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = set_layout_count,
+        .pSetLayouts = set_layout_count > 0 ? set_layouts : NULL,
         .pushConstantRangeCount = 1,
         .pPushConstantRanges = &push_range,
     };
@@ -1595,6 +1813,140 @@ bool guava_vk_rhi_read_texture_data(void* raw, uint32_t texture_id,
 // Binding set registration
 // ===========================================================================
 
+static VkDescriptorType map_resource_type_to_descriptor(uint32_t resource_type) {
+    switch (resource_type) {
+        case 0: return VK_DESCRIPTOR_TYPE_SAMPLER;
+        case 1: return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        case 2: return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        case 3: return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        case 4: return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        default: return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    }
+}
+
+static VkShaderStageFlags map_stage_to_shader_flags(uint32_t stage) {
+    switch (stage) {
+        case 0: return VK_SHADER_STAGE_VERTEX_BIT;
+        case 1: return VK_SHADER_STAGE_FRAGMENT_BIT;
+        case 2: return VK_SHADER_STAGE_COMPUTE_BIT;
+        default: return VK_SHADER_STAGE_ALL;
+    }
+}
+
+static void create_binding_set_descriptors(GuavaVkContext* ctx, BindingSetData* data,
+                                            const GuavaVkBindingEntry* entries, uint32_t count) {
+    // Create descriptor set layout from entries
+    VkDescriptorSetLayoutBinding layout_bindings[32];
+    for (uint32_t i = 0; i < count; i++) {
+        layout_bindings[i] = (VkDescriptorSetLayoutBinding){
+            .binding = entries[i].slot,
+            .descriptorType = map_resource_type_to_descriptor(entries[i].resource_type),
+            .descriptorCount = 1,
+            .stageFlags = map_stage_to_shader_flags(entries[i].stage),
+        };
+    }
+
+    VkDescriptorSetLayoutCreateInfo layout_ci = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = count,
+        .pBindings = layout_bindings,
+    };
+    if (vkCreateDescriptorSetLayout(ctx->device, &layout_ci, NULL, &data->layout) != VK_SUCCESS) {
+        fprintf(stderr, "[Guava VK] Failed to create descriptor set layout for set %u\n", data->id);
+        return;
+    }
+
+    // Allocate descriptor set
+    VkDescriptorSetAllocateInfo alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = ctx->descriptor_pool,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &data->layout,
+    };
+    if (vkAllocateDescriptorSets(ctx->device, &alloc_info, &data->descriptor_set) != VK_SUCCESS) {
+        fprintf(stderr, "[Guava VK] Failed to allocate descriptor set for set %u\n", data->id);
+        return;
+    }
+
+    // Write descriptors
+    VkWriteDescriptorSet writes[32];
+    VkDescriptorBufferInfo buffer_infos[32];
+    VkDescriptorImageInfo image_infos[32];
+    uint32_t write_count = 0;
+
+    for (uint32_t i = 0; i < count; i++) {
+        VkDescriptorType desc_type = map_resource_type_to_descriptor(entries[i].resource_type);
+
+        writes[write_count] = (VkWriteDescriptorSet){
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = data->descriptor_set,
+            .dstBinding = entries[i].slot,
+            .dstArrayElement = 0,
+            .descriptorType = desc_type,
+            .descriptorCount = 1,
+        };
+
+        switch (entries[i].resource_type) {
+            case 0: { // sampler
+                SamplerEntry* s = find_sampler(ctx, entries[i].resource_id);
+                if (!s) continue;
+                image_infos[write_count] = (VkDescriptorImageInfo){
+                    .sampler = s->sampler,
+                };
+                writes[write_count].pImageInfo = &image_infos[write_count];
+                break;
+            }
+            case 1: { // texture (sampled image)
+                TextureEntry* t = find_texture(ctx, entries[i].resource_id);
+                if (!t) continue;
+                image_infos[write_count] = (VkDescriptorImageInfo){
+                    .imageView = t->view,
+                    .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                };
+                writes[write_count].pImageInfo = &image_infos[write_count];
+                break;
+            }
+            case 2: { // storage texture
+                TextureEntry* t = find_texture(ctx, entries[i].resource_id);
+                if (!t) continue;
+                image_infos[write_count] = (VkDescriptorImageInfo){
+                    .imageView = t->view,
+                    .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+                };
+                writes[write_count].pImageInfo = &image_infos[write_count];
+                break;
+            }
+            case 3: { // uniform buffer
+                BufferEntry* b = find_buffer(ctx, entries[i].resource_id);
+                if (!b) continue;
+                buffer_infos[write_count] = (VkDescriptorBufferInfo){
+                    .buffer = b->buffer,
+                    .offset = 0,
+                    .range = b->size,
+                };
+                writes[write_count].pBufferInfo = &buffer_infos[write_count];
+                break;
+            }
+            case 4: { // storage buffer
+                BufferEntry* b = find_buffer(ctx, entries[i].resource_id);
+                if (!b) continue;
+                buffer_infos[write_count] = (VkDescriptorBufferInfo){
+                    .buffer = b->buffer,
+                    .offset = 0,
+                    .range = b->size,
+                };
+                writes[write_count].pBufferInfo = &buffer_infos[write_count];
+                break;
+            }
+            default: continue;
+        }
+        write_count++;
+    }
+
+    if (write_count > 0)
+        vkUpdateDescriptorSets(ctx->device, write_count, writes, 0, NULL);
+}
+
 void guava_vk_rhi_register_binding_set(void* raw, uint32_t set_id,
                                         const GuavaVkBindingEntry* entries,
                                         uint32_t count) {
@@ -1604,15 +1956,26 @@ void guava_vk_rhi_register_binding_set(void* raw, uint32_t set_id,
     if (existing) {
         existing->entry_count = count > 32 ? 32 : count;
         memcpy(existing->entries, entries, sizeof(GuavaVkBindingEntry) * existing->entry_count);
+        // Free old descriptor set and layout, then recreate
+        if (existing->descriptor_set)
+            vkFreeDescriptorSets(ctx->device, ctx->descriptor_pool, 1, &existing->descriptor_set);
+        if (existing->layout)
+            vkDestroyDescriptorSetLayout(ctx->device, existing->layout, NULL);
+        existing->layout = VK_NULL_HANDLE;
+        existing->descriptor_set = VK_NULL_HANDLE;
+        create_binding_set_descriptors(ctx, existing, entries, existing->entry_count);
         return;
     }
 
-    if (ctx->binding_set_count < MAX_RESOURCES) {
-        BindingSetData* data = &ctx->binding_sets[ctx->binding_set_count++];
-        data->id = set_id;
-        data->entry_count = count > 32 ? 32 : count;
-        memcpy(data->entries, entries, sizeof(GuavaVkBindingEntry) * data->entry_count);
-    }
+    if (ctx->binding_set_count >= MAX_RESOURCES) return;
+
+    BindingSetData* data = &ctx->binding_sets[ctx->binding_set_count++];
+    data->id = set_id;
+    data->entry_count = count > 32 ? 32 : count;
+    data->layout = VK_NULL_HANDLE;
+    data->descriptor_set = VK_NULL_HANDLE;
+    memcpy(data->entries, entries, sizeof(GuavaVkBindingEntry) * data->entry_count);
+    create_binding_set_descriptors(ctx, data, entries, data->entry_count);
 }
 
 // ===========================================================================
@@ -1665,10 +2028,58 @@ bool guava_vk_rhi_submit(void* raw, uint32_t queue_class,
                 const CmdBeginRenderPass* rp = (const CmdBeginRenderPass*)(cmd_bytes + offset);
                 offset += sizeof(CmdBeginRenderPass);
 
-                // TODO: create framebuffer from color/depth targets, begin render pass
-                // For now, this is a skeleton — real implementation needs framebuffer cache
+                TextureEntry* color_tex = find_texture(ctx, rp->color_target_id);
+                if (!color_tex) { in_render_pass = true; break; }
+
+                TextureEntry* depth_tex = rp->depth_target_id ? find_texture(ctx, rp->depth_target_id) : NULL;
+                VkFormat depth_fmt = depth_tex ? depth_tex->format : VK_FORMAT_UNDEFINED;
+
+                // Find or create compatible render pass
+                active_render_pass = find_or_create_render_pass(ctx, color_tex->format, depth_fmt, rp->clear_mask);
+                if (!active_render_pass) { in_render_pass = true; break; }
+
+                // Transition images to attachment layouts
+                if (color_tex->current_layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+                    transition_image_layout(ctx, cmd, color_tex->image,
+                        color_tex->current_layout, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                        VK_IMAGE_ASPECT_COLOR_BIT);
+                    color_tex->current_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                }
+                if (depth_tex && depth_tex->current_layout != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
+                    transition_image_layout(ctx, cmd, depth_tex->image,
+                        depth_tex->current_layout, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                        VK_IMAGE_ASPECT_DEPTH_BIT);
+                    depth_tex->current_layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                }
+
+                // Find or create framebuffer
+                VkImageView depth_view = depth_tex ? depth_tex->view : VK_NULL_HANDLE;
+                active_framebuffer = find_or_create_framebuffer(ctx, active_render_pass,
+                    color_tex->view, depth_view, color_tex->width, color_tex->height);
+                if (!active_framebuffer) { in_render_pass = true; break; }
+
+                // Begin render pass
+                VkClearValue clear_values[2];
+                uint32_t clear_count = 0;
+                clear_values[clear_count++] = (VkClearValue){
+                    .color = {{ rp->clear_r, rp->clear_g, rp->clear_b, rp->clear_a }}
+                };
+                if (depth_tex) {
+                    clear_values[clear_count++] = (VkClearValue){
+                        .depthStencil = { rp->clear_depth, 0 }
+                    };
+                }
+
+                VkRenderPassBeginInfo rp_begin = {
+                    .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+                    .renderPass = active_render_pass,
+                    .framebuffer = active_framebuffer,
+                    .renderArea = { {0, 0}, {color_tex->width, color_tex->height} },
+                    .clearValueCount = clear_count,
+                    .pClearValues = clear_values,
+                };
+                vkCmdBeginRenderPass(cmd, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
                 in_render_pass = true;
-                (void)rp;
                 break;
             }
             case OP_END_RENDER_PASS: {
@@ -1703,9 +2114,17 @@ bool guava_vk_rhi_submit(void* raw, uint32_t queue_class,
             }
             case OP_SET_BINDING_SET: {
                 if (offset + sizeof(CmdSetBindingSet) > cmd_len) goto done;
-                // const CmdSetBindingSet* bs = (const CmdSetBindingSet*)(cmd_bytes + offset);
+                const CmdSetBindingSet* bs = (const CmdSetBindingSet*)(cmd_bytes + offset);
                 offset += sizeof(CmdSetBindingSet);
-                // TODO: bind descriptor sets
+
+                BindingSetData* set_data = find_binding_set(ctx, bs->set_id);
+                if (set_data && set_data->descriptor_set && active_layout) {
+                    VkPipelineBindPoint bp = in_compute_pass
+                        ? VK_PIPELINE_BIND_POINT_COMPUTE
+                        : VK_PIPELINE_BIND_POINT_GRAPHICS;
+                    vkCmdBindDescriptorSets(cmd, bp, active_layout,
+                                            bs->slot, 1, &set_data->descriptor_set, 0, NULL);
+                }
                 break;
             }
             case OP_SET_VERTEX_BUFFER: {
@@ -1853,7 +2272,9 @@ bool guava_vk_rhi_submit(void* raw, uint32_t queue_class,
                 break;
             }
             case OP_IMGUI_DRAW: {
-                // TODO: ImGui Vulkan rendering integration
+                if (in_render_pass) {
+                    guava_imgui_vulkan_backend_render((void*)cmd);
+                }
                 break;
             }
             default:
@@ -1953,4 +2374,40 @@ bool guava_vk_rhi_present(void* raw, uint32_t swapchain_id) {
 const char* guava_vk_rhi_get_device_name(void* raw) {
     GuavaVkContext* ctx = (GuavaVkContext*)raw;
     return ctx->device_properties.deviceName;
+}
+
+// ===========================================================================
+// Vulkan handle getters (for ImGui Vulkan backend integration)
+// ===========================================================================
+
+void* guava_vk_rhi_get_instance(void* raw) {
+    return (void*)((GuavaVkContext*)raw)->instance;
+}
+
+void* guava_vk_rhi_get_physical_device(void* raw) {
+    return (void*)((GuavaVkContext*)raw)->physical_device;
+}
+
+void* guava_vk_rhi_get_vk_device(void* raw) {
+    return (void*)((GuavaVkContext*)raw)->device;
+}
+
+uint32_t guava_vk_rhi_get_graphics_queue_family(void* raw) {
+    return ((GuavaVkContext*)raw)->graphics_family;
+}
+
+void* guava_vk_rhi_get_graphics_queue(void* raw) {
+    return (void*)((GuavaVkContext*)raw)->graphics_queue;
+}
+
+uint32_t guava_vk_rhi_get_swapchain_image_count(void* raw) {
+    GuavaVkContext* ctx = (GuavaVkContext*)raw;
+    return ctx->swapchain_image_count > 0 ? ctx->swapchain_image_count : 2;
+}
+
+void* guava_vk_rhi_get_swapchain_render_pass(void* raw) {
+    GuavaVkContext* ctx = (GuavaVkContext*)raw;
+    VkFormat color_fmt = ctx->swapchain_format ? ctx->swapchain_format : VK_FORMAT_B8G8R8A8_SRGB;
+    VkRenderPass rp = find_or_create_render_pass(ctx, color_fmt, VK_FORMAT_UNDEFINED, 0);
+    return (void*)(uintptr_t)rp;
 }

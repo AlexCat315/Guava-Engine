@@ -84,6 +84,7 @@ enum {
 
 bool guava_imgui_init(SDL_Window *window, void *metal_bridge_ctx,
                       uint32_t color_target_format);
+bool guava_imgui_init_vulkan(SDL_Window *window, void *vk_bridge_ctx);
 void guava_imgui_shutdown(void);
 void guava_imgui_process_event(const SDL_Event *event);
 void guava_imgui_new_frame(void);
@@ -98,6 +99,7 @@ void guava_imgui_render(void);
 bool guava_imgui_metal_backend_render(void *command_buffer,
                                       void *render_encoder,
                                       void *render_pass_desc);
+bool guava_imgui_vulkan_backend_render(void *vk_command_buffer);
 bool guava_imgui_want_capture_mouse(void);
 bool guava_imgui_want_capture_keyboard(void);
 bool guava_imgui_want_text_input(void);

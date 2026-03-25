@@ -62,3 +62,9 @@ extern "C" float guava_window_macos_titlebar_leading_inset(SDL_Window* window) {
         return static_cast<float>(NSMaxX(zoom_button.frame) + 12.0);
     }
 }
+
+extern "C" void guava_window_activate_macos_app(void) {
+    @autoreleasepool {
+        [NSApp activate];
+    }
+}

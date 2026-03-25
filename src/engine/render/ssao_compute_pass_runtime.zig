@@ -44,6 +44,8 @@ pub const SSAOComputePass = struct {
             .{ .texture = depth_texture, .sampler = &self.sampler.? },
             .{ .texture = &self.noise_texture.?, .sampler = &self.noise_sampler.? },
         });
+        // Bind output storage texture: slot 4 → Metal texture(4/2=2), after 2 sampled textures.
+        device.bindComputeStorageTextures(compute_pass, 4, &.{output_texture});
         device.pushComputeUniformData(frame, 0, std.mem.asBytes(&uniforms));
 
         const group_x = (output_texture.desc.width + 7) / 8;

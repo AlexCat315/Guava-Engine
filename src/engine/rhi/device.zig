@@ -10,30 +10,7 @@ const rhi = @import("rhi.zig");
 const command_buffer = @import("command_buffer.zig");
 const metal_device_mod = @import("metal/metal_device.zig");
 const metal_backend_mod = @import("metal/metal_backend.zig");
-const vulkan_device_mod = if (builtin.os.tag != .macos) @import("vulkan/vk_device.zig") else struct {
-    pub const VulkanDevice = struct {
-        allocator: std.mem.Allocator,
-        bridge_ctx: *anyopaque,
-        last_submit_queue: ?rhi.QueueClass = null,
-
-        pub fn init(_: std.mem.Allocator, _: bool) ?VulkanDevice {
-            return null;
-        }
-        pub fn deinit(_: *VulkanDevice) void {}
-        pub fn createDevice(_: *VulkanDevice) rhi.Device {
-            unreachable;
-        }
-        pub fn createSurface(_: *VulkanDevice, _: *anyopaque) bool {
-            return false;
-        }
-        pub fn createSwapchain(_: *VulkanDevice, _: u32, _: u32) bool {
-            return false;
-        }
-        pub fn getDeviceName(_: *const VulkanDevice) []const u8 {
-            return "N/A";
-        }
-    };
-};
+const vulkan_device_mod = @import("vulkan/vk_device.zig");
 
 // Combined error set that includes both old and new RHI errors
 pub const Error = error{
@@ -354,7 +331,7 @@ pub const RhiDevice = struct {
             return out;
         }
 
-        // Non-macOS: try Vulkan first, then fall back to mock backend
+        // Try Vulkan (all platforms — macOS uses MoltenVK)
         if (vulkan_device_mod.VulkanDevice.init(allocator, config.enable_validation)) |vk| {
             const vk_ptr = allocator.create(vulkan_device_mod.VulkanDevice) catch return error.OutOfMemory;
             errdefer allocator.destroy(vk_ptr);

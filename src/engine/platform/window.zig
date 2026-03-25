@@ -5,6 +5,7 @@ const sdl = @import("sdl.zig").c;
 
 extern fn guava_window_apply_macos_native_titlebar_style(window: *sdl.SDL_Window) bool;
 extern fn guava_window_macos_titlebar_leading_inset(window: *sdl.SDL_Window) f32;
+extern fn guava_window_activate_macos_app() void;
 extern fn guava_window_apply_windows_native_titlebar_style(window: *sdl.SDL_Window) bool;
 extern fn guava_window_windows_titlebar_trailing_inset(window: *sdl.SDL_Window) f32;
 
@@ -134,8 +135,17 @@ pub const Window = struct {
             }
             window.refreshNativeTitlebarInsets();
         }
-        try window.positionInUsableBounds(config.width, config.height);
+        if (!config.maximized) {
+            try window.positionInUsableBounds(config.width, config.height);
+        }
         try window.refreshSizes();
+
+        // Bring window to front
+        _ = sdl.SDL_RaiseWindow(window.handle);
+        if (builtin.os.tag == .macos) {
+            guava_window_activate_macos_app();
+        }
+
         return window;
     }
 

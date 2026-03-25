@@ -12,6 +12,10 @@
 
 extern "C" bool guava_imgui_metal_backend_init(void *metal_bridge_ctx);
 extern "C" void guava_imgui_metal_backend_shutdown(void);
+extern "C" bool guava_imgui_vulkan_backend_init(void *vk_bridge_ctx);
+extern "C" void guava_imgui_vulkan_backend_shutdown(void);
+
+static bool g_using_vulkan_backend = false;
 
 namespace {
 
@@ -640,17 +644,67 @@ extern "C" bool guava_imgui_init(SDL_Window *window, void *metal_bridge_ctx,
   return true;
 }
 
+extern "C" bool guava_imgui_init_vulkan(SDL_Window *window,
+                                         void *vk_bridge_ctx) {
+  if (g_imgui_initialized) {
+    return true;
+  }
+
+  IMGUI_CHECKVERSION();
+  ImGui::CreateContext();
+  ImGuiIO &io = ImGui::GetIO();
+  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+  io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+  io.ConfigDockingAlwaysTabBar = true;
+
+  if (char *pref_path = SDL_GetPrefPath("Guava", "Editor")) {
+    g_ini_path = std::string(pref_path) + "imgui.ini";
+    io.IniFilename = g_ini_path.c_str();
+    SDL_free(pref_path);
+  } else {
+    g_ini_path.clear();
+    io.IniFilename = nullptr;
+  }
+
+  const float reported_scale =
+      SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
+  const float main_scale = reported_scale > 0.0f ? reported_scale : 1.0f;
+  configure_fonts(main_scale);
+
+  apply_guava_editor_style(main_scale);
+
+  if (!ImGui_ImplSDL3_InitForVulkan(window)) {
+    ImGui::DestroyContext();
+    return false;
+  }
+
+  if (!guava_imgui_vulkan_backend_init(vk_bridge_ctx)) {
+    ImGui_ImplSDL3_Shutdown();
+    ImGui::DestroyContext();
+    return false;
+  }
+
+  g_using_vulkan_backend = true;
+  g_imgui_initialized = true;
+  return true;
+}
+
 extern "C" void guava_imgui_shutdown(void) {
   if (!g_imgui_initialized) {
     return;
   }
 
-  guava_imgui_metal_backend_shutdown();
+  if (g_using_vulkan_backend) {
+    guava_imgui_vulkan_backend_shutdown();
+  } else {
+    guava_imgui_metal_backend_shutdown();
+  }
   ImGui_ImplSDL3_Shutdown();
   ImGui::DestroyContext();
   g_draw_data = nullptr;
   g_ini_path.clear();
   g_imgui_initialized = false;
+  g_using_vulkan_backend = false;
 }
 
 extern "C" void guava_imgui_process_event(const SDL_Event *event) {
