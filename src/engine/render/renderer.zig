@@ -62,6 +62,8 @@ const outline_pass_mod = @import("outline_pass.zig");
 const volumetric_fog_pass_mod = @import("volumetric_fog_pass.zig");
 const ssao_pass_mod = @import("ssao_pass.zig");
 const ssao_compute_pass_mod = @import("ssao_compute_pass_runtime.zig");
+const ssgi_compute_pass_mod = @import("ssgi_compute_pass.zig");
+const ssgi_composite_pass_mod = @import("ssgi_composite_pass.zig");
 const ibl_compute_pass_mod = @import("ibl_compute_pass.zig");
 const contact_shadow_pass_mod = @import("contact_shadow_pass.zig");
 const taa_pass_mod = @import("taa_pass.zig");
@@ -925,6 +927,7 @@ const SceneViewportState = struct {
     hdr_color_texture: ?rhi_mod.Texture = null,
     taa_texture: ?rhi_mod.Texture = null,
     ssao_texture: ?rhi_mod.Texture = null,
+    ssgi_texture: ?rhi_mod.Texture = null,
     contact_shadow_texture: ?rhi_mod.Texture = null,
     rt_shadow_denoised_texture: ?rhi_mod.Texture = null,
     bloom_texture: ?rhi_mod.Texture = null,
@@ -940,6 +943,9 @@ const SceneViewportState = struct {
             device.releaseTexture(texture);
         }
         if (self.ssao_texture) |*texture| {
+            device.releaseTexture(texture);
+        }
+        if (self.ssgi_texture) |*texture| {
             device.releaseTexture(texture);
         }
         if (self.contact_shadow_texture) |*texture| {
@@ -970,7 +976,7 @@ const SceneViewportState = struct {
         }
 
         if (self.color_texture) |color_texture| {
-            if (self.depth_texture != null and self.hdr_color_texture != null and self.taa_texture != null and self.ssao_texture != null and self.contact_shadow_texture != null and self.rt_shadow_denoised_texture != null and self.bloom_texture != null and self.fxaa_texture != null and color_texture.desc.width == width and color_texture.desc.height == height) {
+            if (self.depth_texture != null and self.hdr_color_texture != null and self.taa_texture != null and self.ssao_texture != null and self.ssgi_texture != null and self.contact_shadow_texture != null and self.rt_shadow_denoised_texture != null and self.bloom_texture != null and self.fxaa_texture != null and color_texture.desc.width == width and color_texture.desc.height == height) {
                 self.width = width;
                 self.height = height;
                 return;
@@ -1010,6 +1016,17 @@ const SceneViewportState = struct {
         errdefer if (self.ssao_texture) |*texture| {
             device.releaseTexture(texture);
             self.ssao_texture = null;
+        };
+
+        self.ssgi_texture = try device.createTexture(.{
+            .width = width,
+            .height = height,
+            .format = .rgba16_float,
+            .usage = rhi_types.TextureUsage.color_target | rhi_types.TextureUsage.sampler | rhi_types.TextureUsage.compute_storage_write,
+        });
+        errdefer if (self.ssgi_texture) |*texture| {
+            device.releaseTexture(texture);
+            self.ssgi_texture = null;
         };
 
         self.contact_shadow_texture = try device.createTexture(.{
@@ -1126,6 +1143,13 @@ const SceneViewportState = struct {
 
     fn ssao(self: *SceneViewportState) ?*const rhi_mod.Texture {
         if (self.ssao_texture) |*texture| {
+            return texture;
+        }
+        return null;
+    }
+
+    fn ssgi(self: *SceneViewportState) ?*const rhi_mod.Texture {
+        if (self.ssgi_texture) |*texture| {
             return texture;
         }
         return null;
@@ -1529,6 +1553,8 @@ pub const Renderer = struct {
     ssao_pass: ssao_pass_mod.SSAOPass,
     /// SSAO Compute 通道（GPU Compute 加速）
     ssao_compute_pass: ?ssao_compute_pass_mod.SSAOComputePass = null,
+    ssgi_compute_pass: ?ssgi_compute_pass_mod.SSGIComputePass = null,
+    ssgi_composite_pass: ssgi_composite_pass_mod.SSGICompositePass,
     /// RHI 设备（抽象后端）
     rhi_device: ?*rhi_api.Device = null,
     /// RHI mock 后端存储（仅测试用；生产环境使用 real Metal）
@@ -1654,6 +1680,8 @@ pub const Renderer = struct {
             .gizmo_pass = undefined,
             .ssao_pass = undefined,
             .ssao_compute_pass = null,
+            .ssgi_compute_pass = null,
+            .ssgi_composite_pass = undefined,
             .ibl_compute_pass = null,
             .taa_pass = undefined,
             .bloom_pass = undefined,
@@ -1740,6 +1768,15 @@ pub const Renderer = struct {
         renderer.ssao_composite_pass = try rt_shadow_composite_pass_mod.RtShadowCompositePass.init(&renderer.rhi);
         errdefer renderer.ssao_composite_pass.deinit(&renderer.rhi);
 
+        renderer.ssgi_compute_pass = ssgi_compute_pass_mod.SSGIComputePass.init(&renderer.rhi) catch |err| blk: {
+            std.log.warn("SSGI compute pass init failed (falling back to fragment): {}", .{err});
+            break :blk null;
+        };
+        errdefer if (renderer.ssgi_compute_pass) |*p| p.deinit(&renderer.rhi);
+
+        renderer.ssgi_composite_pass = try ssgi_composite_pass_mod.SSGICompositePass.init(&renderer.rhi);
+        errdefer renderer.ssgi_composite_pass.deinit(&renderer.rhi);
+
         // RHI Metal backend — real GPU via ObjC++ bridge on macOS,
         // falls back to mock MetalBackend otherwise.
         rhi_init: {
@@ -1820,6 +1857,8 @@ pub const Renderer = struct {
         self.rt_shadow_composite_pass.deinit(&self.rhi);
         self.rt_shadow_denoise_pass.deinit(&self.rhi);
         self.ssao_composite_pass.deinit(&self.rhi);
+        if (self.ssgi_compute_pass) |*p| p.deinit(&self.rhi);
+        self.ssgi_composite_pass.deinit(&self.rhi);
         if (self.rt_shadow_mask_texture) |*t| self.rhi.releaseTexture(t);
         if (self.rt_shadow_pixels) |p| self.allocator.free(p);
         if (self.rhi_device) |dp| {
@@ -2674,6 +2713,48 @@ pub const Renderer = struct {
                                 const ssao_composite_stats = self.ssao_composite_pass.draw(&self.rhi, frame, ssao_composite_render_pass, self.editor_viewport_state.ssao_intensity);
                                 draw_stats.add(ssao_composite_stats);
                                 self.rhi.endRenderPass(ssao_composite_render_pass);
+                            }
+
+                            // SSGI (Screen Space Global Illumination)
+                            if (self.editor_viewport_state.ssgi_enabled and self.scene_viewport.ssgi() != null and self.scene_viewport.depth() != null and self.scene_viewport.hdrColor() != null) {
+                                if (self.ssgi_compute_pass) |*ssgi_compute| {
+                                    if (ssgi_compute.isReady()) {
+                                        const mat4_ssgi = @import("../math/mat4.zig");
+                                        const inv_proj_ssgi = mat4_ssgi.inverse(prepared_scene.projection_matrix) orelse mat4_ssgi.identity();
+                                        const inv_view_ssgi = mat4_ssgi.inverse(prepared_scene.view_matrix) orelse mat4_ssgi.identity();
+
+                                        const ssgi_uniforms = ssgi_compute_pass_mod.SSGIUniforms{
+                                            .projection = mat4_ssgi.transpose(prepared_scene.projection_matrix),
+                                            .inv_projection = mat4_ssgi.transpose(inv_proj_ssgi),
+                                            .view = mat4_ssgi.transpose(prepared_scene.view_matrix),
+                                            .inv_view = mat4_ssgi.transpose(inv_view_ssgi),
+                                            .resolution = .{ @floatFromInt(self.scene_viewport.width), @floatFromInt(self.scene_viewport.height) },
+                                            .radius = self.editor_viewport_state.ssgi_radius,
+                                            .intensity = self.editor_viewport_state.ssgi_intensity,
+                                            .bias = self.editor_viewport_state.ssgi_bias,
+                                            .ray_count = self.editor_viewport_state.ssgi_ray_count,
+                                            .step_count = self.editor_viewport_state.ssgi_step_count,
+                                        };
+
+                                        ssgi_compute.execute(
+                                            &self.rhi,
+                                            frame,
+                                            self.scene_viewport.ssgi().?,
+                                            self.scene_viewport.depth().?,
+                                            self.scene_viewport.hdrColor().?,
+                                            ssgi_uniforms,
+                                        );
+
+                                        // SSGI 合成 (Additive blend to HDR color)
+                                        if (self.ssgi_composite_pass.isReady()) {
+                                            try self.ssgi_composite_pass.syncTexture(&self.rhi, self.scene_viewport.ssgi().?);
+                                            const ssgi_composite_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(.{ .texture = self.scene_viewport.hdrColor().? }));
+                                            const ssgi_composite_stats = self.ssgi_composite_pass.draw(&self.rhi, frame, ssgi_composite_render_pass, 1.0);
+                                            draw_stats.add(ssgi_composite_stats);
+                                            self.rhi.endRenderPass(ssgi_composite_render_pass);
+                                        }
+                                    }
+                                }
                             }
                         }
 

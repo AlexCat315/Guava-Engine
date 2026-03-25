@@ -118,6 +118,9 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
         if (gui.menuItem(state.text(.animation_editor), null, state.animation_editor_open, true)) {
             state.animation_editor_open = !state.animation_editor_open;
         }
+        if (gui.menuItem(state.text(.post_process_pipeline), null, state.post_process_editor_open, true)) {
+            state.post_process_editor_open = !state.post_process_editor_open;
+        }
         if (gui.menuItem(state.text(.prefab_browser), null, state.prefab_browser_open, true)) {
             state.prefab_browser_open = !state.prefab_browser_open;
         }

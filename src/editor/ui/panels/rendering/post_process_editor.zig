@@ -11,6 +11,7 @@ pub const PostProcessEffect = enum {
     bloom,
     fxaa,
     ssao,
+    ssgi,
     ssr,
     taa,
     dof,
@@ -45,6 +46,7 @@ pub const PostProcessEffectNode = struct {
             .bloom => "Bloom",
             .fxaa => "FXAA",
             .ssao => "SSAO",
+            .ssgi => "SSGI",
             .ssr => "SSR",
             .taa => "TAA",
             .dof => "DOF",
@@ -59,6 +61,7 @@ pub const PostProcessEffectNode = struct {
             .bloom => .{ 1.0, 0.8, 0.2, 1.0 },
             .fxaa => .{ 0.2, 0.8, 1.0, 1.0 },
             .ssao => .{ 0.8, 0.4, 0.8, 1.0 },
+            .ssgi => .{ 0.9, 0.6, 0.2, 1.0 },
             .ssr => .{ 0.4, 0.8, 0.8, 1.0 },
             .taa => .{ 0.6, 0.6, 1.0, 1.0 },
             .dof => .{ 0.8, 0.6, 0.4, 1.0 },
@@ -144,7 +147,10 @@ pub fn drawPostProcessPipelineEditorWindow(
 
     var title_buffer: [80]u8 = undefined;
     const title = try editor_state_.windowLabel(&title_buffer, .post_process_pipeline, "post_process_panel");
-    _ = gui.beginWindow(title);
+    if (!gui.beginWindowOpen(title, &editor_state_.post_process_editor_open)) {
+        gui.endWindow();
+        return;
+    }
     defer gui.endWindow();
 
     drawPipelineToolbar(editor_state);
@@ -185,6 +191,7 @@ fn drawPipelineToolbar(editor_state: *PostProcessPipelineEditorState) void {
             .bloom,
             .fxaa,
             .ssao,
+            .ssgi,
             .ssr,
             .taa,
             .dof,
@@ -290,6 +297,7 @@ fn drawPreviewPanel(viewport_state: *EditorViewportState) void {
         _ = props.boolean("Bloom", &viewport_state.bloom_enabled);
         _ = props.boolean("FXAA", &viewport_state.fxaa_enabled);
         _ = props.boolean("SSAO", &viewport_state.ssao_enabled);
+        _ = props.boolean("SSGI", &viewport_state.ssgi_enabled);
         _ = props.boolean("SSR", &viewport_state.ssr_enabled);
         _ = props.boolean("TAA", &viewport_state.taa_enabled);
         _ = props.boolean("DOF", &viewport_state.dof_enabled);
@@ -321,6 +329,11 @@ fn drawEffectParameters(viewport_state: *EditorViewportState, node: *PostProcess
                 _ = props.float("Bias", &viewport_state.ssao_bias, 0.01, 0.0, 1.0);
                 _ = props.float("Intensity", &viewport_state.ssao_intensity, 0.1, 0.0, 5.0);
                 _ = props.float("Power", &viewport_state.ssao_power, 0.1, 0.0, 10.0);
+            },
+            .ssgi => {
+                _ = props.float("Radius", &viewport_state.ssgi_radius, 0.1, 0.1, 10.0);
+                _ = props.float("Intensity", &viewport_state.ssgi_intensity, 0.1, 0.0, 10.0);
+                _ = props.float("Bias", &viewport_state.ssgi_bias, 0.01, 0.0, 1.0);
             },
             .ssr => {
                 _ = props.float("Intensity", &viewport_state.ssr_intensity, 0.1, 0.0, 2.0);

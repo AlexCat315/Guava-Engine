@@ -32,6 +32,16 @@ pub fn mul(a: Mat4, b: Mat4) Mat4 {
     return result;
 }
 
+pub fn transpose(matrix: Mat4) Mat4 {
+    var result: Mat4 = undefined;
+    for (0..4) |row| {
+        for (0..4) |col| {
+            set(&result, row, col, get(matrix, col, row));
+        }
+    }
+    return result;
+}
+
 pub fn inverse(matrix: Mat4) ?Mat4 {
     var augmented: [4][8]f32 = undefined;
 
