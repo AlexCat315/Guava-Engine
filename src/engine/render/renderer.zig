@@ -268,7 +268,11 @@ const PathTraceTriangle = struct {
     transmission: f32,
     ior: f32,
     thickness: f32,
-    texture_index: i32, // -1 = no texture, >=0 = index into PathTraceTextureCache.textures
+    base_color_texture_index: i32 = -1,
+    metallic_roughness_texture_index: i32 = -1,
+    normal_texture_index: i32 = -1,
+    occlusion_texture_index: i32 = -1,
+    emissive_texture_index: i32 = -1,
 };
 
 const PathTraceTexture = struct {
@@ -281,6 +285,22 @@ const PathTraceTexture = struct {
 const PathTraceEnvironment = struct {
     handle: u32 = 0,
     texture: ?PathTraceTexture = null,
+};
+
+const PathTraceTextureIndices = struct {
+    base_color: i32 = -1,
+    metallic_roughness: i32 = -1,
+    normal: i32 = -1,
+    occlusion: i32 = -1,
+    emissive: i32 = -1,
+};
+
+const PathTraceMaterialSample = struct {
+    albedo: [3]f32,
+    emissive: [3]f32,
+    metallic: f32,
+    roughness: f32,
+    shading_normal: [3]f32,
 };
 
 const PathTraceEnvImportance = extern struct {
@@ -553,6 +573,20 @@ fn wyhashUpdateValue(hasher: *std.hash.Wyhash, value: anytype) void {
     hasher.update(std.mem.asBytes(&value));
 }
 
+fn wyhashUpdateTextureResource(
+    hasher: *std.hash.Wyhash,
+    resources: *const assets_lib.ResourceLibrary,
+    texture_handle: ?handles.TextureHandle,
+) void {
+    const resolved_handle = texture_handle orelse return;
+    wyhashUpdateValue(hasher, @intFromEnum(resolved_handle));
+    if (resources.texture(resolved_handle)) |texture| {
+        wyhashUpdateValue(hasher, texture.width);
+        wyhashUpdateValue(hasher, texture.height);
+        hasher.update(texture.pixels);
+    }
+}
+
 fn computePathTraceSceneSignature(
     prepared_scene: *const mesh_pass_mod.PreparedScene,
     scene: *const scene_mod.Scene,
@@ -613,14 +647,11 @@ fn computePathTraceSceneSignature(
                         wyhashUpdateValue(&hasher, material.alpha_cutoff);
                         wyhashUpdateValue(&hasher, material.use_ibl);
                         wyhashUpdateValue(&hasher, material.ibl_intensity);
-                        if (material.base_color_texture) |texture_handle| {
-                            wyhashUpdateValue(&hasher, @intFromEnum(texture_handle));
-                            if (scene.resources.texture(texture_handle)) |texture| {
-                                wyhashUpdateValue(&hasher, texture.width);
-                                wyhashUpdateValue(&hasher, texture.height);
-                                hasher.update(texture.pixels);
-                            }
-                        }
+                        wyhashUpdateTextureResource(&hasher, &scene.resources, material.base_color_texture);
+                        wyhashUpdateTextureResource(&hasher, &scene.resources, material.metallic_roughness_texture);
+                        wyhashUpdateTextureResource(&hasher, &scene.resources, material.normal_texture);
+                        wyhashUpdateTextureResource(&hasher, &scene.resources, material.occlusion_texture);
+                        wyhashUpdateTextureResource(&hasher, &scene.resources, material.emissive_texture);
                     }
                 }
             }
@@ -656,14 +687,11 @@ fn computePathTraceSceneSignature(
                         wyhashUpdateValue(&hasher, material.alpha_cutoff);
                         wyhashUpdateValue(&hasher, material.use_ibl);
                         wyhashUpdateValue(&hasher, material.ibl_intensity);
-                        if (material.base_color_texture) |texture_handle| {
-                            wyhashUpdateValue(&hasher, @intFromEnum(texture_handle));
-                            if (scene.resources.texture(texture_handle)) |texture| {
-                                wyhashUpdateValue(&hasher, texture.width);
-                                wyhashUpdateValue(&hasher, texture.height);
-                                hasher.update(texture.pixels);
-                            }
-                        }
+                        wyhashUpdateTextureResource(&hasher, &scene.resources, material.base_color_texture);
+                        wyhashUpdateTextureResource(&hasher, &scene.resources, material.metallic_roughness_texture);
+                        wyhashUpdateTextureResource(&hasher, &scene.resources, material.normal_texture);
+                        wyhashUpdateTextureResource(&hasher, &scene.resources, material.occlusion_texture);
+                        wyhashUpdateTextureResource(&hasher, &scene.resources, material.emissive_texture);
                     }
                 }
             }
@@ -791,6 +819,63 @@ fn readTexelLinear(tex: PathTraceTexture, x: u32, y: u32) [3]f32 {
             };
         },
     };
+}
+
+fn readTexelRaw(tex: PathTraceTexture, x: u32, y: u32) [3]f32 {
+    const pixel_index = @as(usize, y) * @as(usize, tex.width) + @as(usize, x);
+    return switch (tex.format) {
+        .rgba32_float, .rgba16_float => readTexelLinear(tex, x, y),
+        else => blk: {
+            const idx = pixel_index * 4;
+            if (idx + 3 >= tex.pixels.len) break :blk [3]f32{ 0.5, 0.5, 0.5 };
+            const is_bgra = (tex.format == .bgra8_unorm or tex.format == .bgra8_unorm_srgb);
+            const r_byte = tex.pixels[idx + if (is_bgra) @as(usize, 2) else @as(usize, 0)];
+            const g_byte = tex.pixels[idx + 1];
+            const b_byte = tex.pixels[idx + if (is_bgra) @as(usize, 0) else @as(usize, 2)];
+            break :blk .{
+                @as(f32, @floatFromInt(r_byte)) / 255.0,
+                @as(f32, @floatFromInt(g_byte)) / 255.0,
+                @as(f32, @floatFromInt(b_byte)) / 255.0,
+            };
+        },
+    };
+}
+
+fn sampleTextureBilinearRaw(tex: PathTraceTexture, u_in: f32, v_in: f32) [3]f32 {
+    var u = u_in - @floor(u_in);
+    var v = v_in - @floor(v_in);
+    if (u < 0.0) u += 1.0;
+    if (v < 0.0) v += 1.0;
+    const fx = u * @as(f32, @floatFromInt(tex.width)) - 0.5;
+    const fy = v * @as(f32, @floatFromInt(tex.height)) - 0.5;
+    const x0_i = @as(i32, @intFromFloat(@floor(fx)));
+    const y0_i = @as(i32, @intFromFloat(@floor(fy)));
+    const frac_x = fx - @floor(fx);
+    const frac_y = fy - @floor(fy);
+    const w: i32 = @intCast(tex.width);
+    const h: i32 = @intCast(tex.height);
+
+    const x0: u32 = @intCast(@mod(x0_i, w) + (if (@mod(x0_i, w) < 0) w else @as(i32, 0)));
+    const y0: u32 = @intCast(@mod(y0_i, h) + (if (@mod(y0_i, h) < 0) h else @as(i32, 0)));
+    const x1: u32 = @intCast(@mod(x0_i + 1, w) + (if (@mod(x0_i + 1, w) < 0) w else @as(i32, 0)));
+    const y1: u32 = @intCast(@mod(y0_i + 1, h) + (if (@mod(y0_i + 1, h) < 0) h else @as(i32, 0)));
+
+    const c00 = readTexelRaw(tex, x0, y0);
+    const c10 = readTexelRaw(tex, x1, y0);
+    const c01 = readTexelRaw(tex, x0, y1);
+    const c11 = readTexelRaw(tex, x1, y1);
+    return .{
+        (c00[0] * (1.0 - frac_x) + c10[0] * frac_x) * (1.0 - frac_y) + (c01[0] * (1.0 - frac_x) + c11[0] * frac_x) * frac_y,
+        (c00[1] * (1.0 - frac_x) + c10[1] * frac_x) * (1.0 - frac_y) + (c01[1] * (1.0 - frac_x) + c11[1] * frac_x) * frac_y,
+        (c00[2] * (1.0 - frac_x) + c10[2] * frac_x) * (1.0 - frac_y) + (c01[2] * (1.0 - frac_x) + c11[2] * frac_x) * frac_y,
+    };
+}
+
+fn pathTraceTextureAt(textures: []const PathTraceTexture, texture_index: i32) ?PathTraceTexture {
+    if (texture_index < 0) return null;
+    const index: usize = @intCast(texture_index);
+    if (index >= textures.len) return null;
+    return textures[index];
 }
 
 const PathTraceSceneHit = struct {
@@ -925,6 +1010,112 @@ fn buildTangentFrame(normal: [3]f32) TangentFrame {
         .bitangent = vec3.cross(normal, tangent),
         .normal = normal,
     };
+}
+
+fn buildTriangleTangentFrame(tri: PathTraceTriangle, normal: [3]f32) TangentFrame {
+    const edge1 = vec3.sub(tri.v1, tri.v0);
+    const edge2 = vec3.sub(tri.v2, tri.v0);
+    const duv1 = .{ tri.uv1[0] - tri.uv0[0], tri.uv1[1] - tri.uv0[1] };
+    const duv2 = .{ tri.uv2[0] - tri.uv0[0], tri.uv2[1] - tri.uv0[1] };
+    const det = duv1[0] * duv2[1] - duv1[1] * duv2[0];
+    if (@abs(det) <= 0.000001) {
+        return buildTangentFrame(normal);
+    }
+
+    const inv_det = 1.0 / det;
+    var tangent: [3]f32 = .{
+        (edge1[0] * duv2[1] - edge2[0] * duv1[1]) * inv_det,
+        (edge1[1] * duv2[1] - edge2[1] * duv1[1]) * inv_det,
+        (edge1[2] * duv2[1] - edge2[2] * duv1[1]) * inv_det,
+    };
+    if (vec3.length(tangent) <= 0.000001) {
+        return buildTangentFrame(normal);
+    }
+    tangent = vec3.normalize(vec3.sub(tangent, vec3.scale(normal, vec3.dot(normal, tangent))));
+    var bitangent = vec3.cross(normal, tangent);
+    const bitangent_raw: [3]f32 = .{
+        (edge2[0] * duv1[0] - edge1[0] * duv2[0]) * inv_det,
+        (edge2[1] * duv1[0] - edge1[1] * duv2[0]) * inv_det,
+        (edge2[2] * duv1[0] - edge1[2] * duv2[0]) * inv_det,
+    };
+    if (vec3.dot(bitangent, bitangent_raw) < 0.0) {
+        bitangent = vec3.scale(bitangent, -1.0);
+    }
+    return .{
+        .tangent = tangent,
+        .bitangent = bitangent,
+        .normal = normal,
+    };
+}
+
+fn samplePathTraceMaterial(
+    tri: PathTraceTriangle,
+    textures: []const PathTraceTexture,
+    hit_uv: [2]f32,
+    geometric_normal: [3]f32,
+    interpolated_normal: [3]f32,
+) PathTraceMaterialSample {
+    var albedo = tri.albedo;
+    if (pathTraceTextureAt(textures, tri.base_color_texture_index)) |texture| {
+        const tex_color = sampleTextureBilinear(texture, hit_uv[0], hit_uv[1]);
+        albedo = vec3.mul(albedo, tex_color);
+    }
+
+    if (pathTraceTextureAt(textures, tri.occlusion_texture_index)) |texture| {
+        const ao = std.math.clamp(sampleTextureBilinearRaw(texture, hit_uv[0], hit_uv[1])[0], 0.0, 1.0);
+        // AO is treated as an artist-authored diffuse attenuation for PT parity with raster materials.
+        albedo = vec3.scale(albedo, ao);
+    }
+
+    var emissive = tri.emissive;
+    if (pathTraceTextureAt(textures, tri.emissive_texture_index)) |texture| {
+        const tex_emissive = sampleTextureBilinear(texture, hit_uv[0], hit_uv[1]);
+        emissive = vec3.mul(emissive, tex_emissive);
+    }
+
+    var metallic = std.math.clamp(tri.metallic, 0.0, 1.0);
+    var roughness = std.math.clamp(tri.roughness, 0.04, 1.0);
+    if (pathTraceTextureAt(textures, tri.metallic_roughness_texture_index)) |texture| {
+        const mr = sampleTextureBilinearRaw(texture, hit_uv[0], hit_uv[1]);
+        metallic = std.math.clamp(metallic * mr[2], 0.0, 1.0);
+        roughness = std.math.clamp(roughness * mr[1], 0.04, 1.0);
+    }
+
+    var shading_normal = interpolated_normal;
+    if (pathTraceTextureAt(textures, tri.normal_texture_index)) |texture| {
+        const normal_sample = sampleTextureBilinearRaw(texture, hit_uv[0], hit_uv[1]);
+        const tangent_space_normal = vec3.normalize(.{
+            normal_sample[0] * 2.0 - 1.0,
+            normal_sample[1] * 2.0 - 1.0,
+            normal_sample[2] * 2.0 - 1.0,
+        });
+        const frame = buildTriangleTangentFrame(tri, interpolated_normal);
+        const mapped_normal = frameToWorld(frame, tangent_space_normal);
+        shading_normal = if (vec3.dot(mapped_normal, geometric_normal) > 0.0)
+            mapped_normal
+        else
+            interpolated_normal;
+    }
+
+    return .{
+        .albedo = albedo,
+        .emissive = emissive,
+        .metallic = metallic,
+        .roughness = roughness,
+        .shading_normal = shading_normal,
+    };
+}
+
+fn samplePathTraceEmissiveRadiance(
+    tri: PathTraceTriangle,
+    textures: []const PathTraceTexture,
+    hit_uv: [2]f32,
+) [3]f32 {
+    var emissive = tri.emissive;
+    if (pathTraceTextureAt(textures, tri.emissive_texture_index)) |texture| {
+        emissive = vec3.mul(emissive, sampleTextureBilinear(texture, hit_uv[0], hit_uv[1]));
+    }
+    return emissive;
 }
 
 fn frameToWorld(frame: TangentFrame, local: [3]f32) [3]f32 {
@@ -1129,6 +1320,7 @@ fn sampleEmissiveLight(
     hit_pos: [3]f32,
     current_tri_index: usize,
     triangles: []const PathTraceTriangle,
+    textures: []const PathTraceTexture,
     emissive_lights: []const PathTraceEmissiveLight,
     emissive_total_area: f32,
     seed: u32,
@@ -1160,6 +1352,10 @@ fn sampleEmissiveLight(
         tri.v0[1] * b0 + tri.v1[1] * b1 + tri.v2[1] * b2,
         tri.v0[2] * b0 + tri.v1[2] * b1 + tri.v2[2] * b2,
     };
+    const sample_uv = .{
+        tri.uv0[0] * b0 + tri.uv1[0] * b1 + tri.uv2[0] * b2,
+        tri.uv0[1] * b0 + tri.uv1[1] * b1 + tri.uv2[1] * b2,
+    };
     const to_light = vec3.sub(sample_pos, hit_pos);
     const distance = vec3.length(to_light);
     if (distance <= 0.002) return null;
@@ -1168,7 +1364,7 @@ fn sampleEmissiveLight(
     const cos_light = @max(@abs(vec3.dot(vec3.scale(direction, -1.0), light_normal)), 0.0001);
     return .{
         .direction = direction,
-        .radiance = tri.emissive,
+        .radiance = samplePathTraceEmissiveRadiance(tri, textures, sample_uv),
         .pdf = (distance * distance) / @max(cos_light * emissive_total_area, 0.000001),
         .distance = distance,
         .delta = false,
@@ -1195,6 +1391,7 @@ fn sampleDirectLight(
     hit_pos: [3]f32,
     current_tri_index: usize,
     triangles: []const PathTraceTriangle,
+    textures: []const PathTraceTexture,
     environment_texture: ?PathTraceTexture,
     environment_importance: []const PathTraceEnvImportance,
     environment_importance_width: u32,
@@ -1253,6 +1450,7 @@ fn sampleDirectLight(
             hit_pos,
             current_tri_index,
             triangles,
+            textures,
             emissive_lights,
             emissive_total_area,
             seed ^ 0xb5297a4d,
@@ -1262,6 +1460,19 @@ fn sampleDirectLight(
     }
 
     return null;
+}
+
+fn pathTraceRussianRouletteSurvivalProbability(throughput: [3]f32) f32 {
+    return @min(maxComponent(throughput), 0.95);
+}
+
+fn applyPathTraceRussianRoulette(throughput: *[3]f32, bounce: u32, seed: u32) bool {
+    if (bounce < 2) return false;
+    const survival_prob = pathTraceRussianRouletteSurvivalProbability(throughput.*);
+    if (survival_prob <= 0.0) return true;
+    if (hashUnitFloat(seed) > survival_prob) return true;
+    throughput.* = vec3.scale(throughput.*, 1.0 / survival_prob);
+    return false;
 }
 
 fn pathTraceRay(
@@ -1323,33 +1534,38 @@ fn pathTraceRay(
         const tri = triangles[hit.tri_index];
         const hit_pos = vec3.add(origin, vec3.scale(direction, hit.t));
         const w0 = 1.0 - hit.u - hit.v;
-        const normal = vec3.normalize(.{
+        const hit_uv = [2]f32{
+            w0 * tri.uv0[0] + hit.u * tri.uv1[0] + hit.v * tri.uv2[0],
+            w0 * tri.uv0[1] + hit.u * tri.uv1[1] + hit.v * tri.uv2[1],
+        };
+        const interpolated_normal = vec3.normalize(.{
             w0 * tri.n0[0] + hit.u * tri.n1[0] + hit.v * tri.n2[0],
             w0 * tri.n0[1] + hit.u * tri.n1[1] + hit.v * tri.n2[1],
             w0 * tri.n0[2] + hit.u * tri.n1[2] + hit.v * tri.n2[2],
         });
-        const front_face = vec3.dot(direction, normal) < 0.0;
-        const shading_normal = if (front_face) normal else vec3.scale(normal, -1.0);
+        const geometric_normal_raw = triangleGeometricNormal(tri);
+        const front_face = vec3.dot(direction, geometric_normal_raw) < 0.0;
+        const geometric_normal = if (front_face) geometric_normal_raw else vec3.scale(geometric_normal_raw, -1.0);
+        const oriented_interpolated_normal = if (front_face) interpolated_normal else vec3.scale(interpolated_normal, -1.0);
+        const material_sample = samplePathTraceMaterial(
+            tri,
+            textures,
+            hit_uv,
+            geometric_normal,
+            oriented_interpolated_normal,
+        );
+        const shading_normal = material_sample.shading_normal;
         const view_dir = vec3.scale(direction, -1.0);
-        const surface_albedo = blk_albedo: {
-            if (tri.texture_index >= 0 and @as(usize, @intCast(tri.texture_index)) < textures.len) {
-                const uv_u = w0 * tri.uv0[0] + hit.u * tri.uv1[0] + hit.v * tri.uv2[0];
-                const uv_v = w0 * tri.uv0[1] + hit.u * tri.uv1[1] + hit.v * tri.uv2[1];
-                const tex_color = sampleTextureBilinear(textures[@intCast(tri.texture_index)], uv_u, uv_v);
-                break :blk_albedo [3]f32{
-                    tex_color[0] * tri.albedo[0],
-                    tex_color[1] * tri.albedo[1],
-                    tex_color[2] * tri.albedo[2],
-                };
-            }
-            break :blk_albedo tri.albedo;
-        };
+        const surface_albedo = material_sample.albedo;
+        const surface_emissive = material_sample.emissive;
+        const surface_metallic = material_sample.metallic;
+        const surface_roughness = material_sample.roughness;
         const transmission = std.math.clamp(tri.transmission, 0.0, 0.98);
 
-        const emissive_strength = maxComponent(tri.emissive);
+        const emissive_strength = maxComponent(surface_emissive);
         if (emissive_strength > 0.0001) {
             if (bounce == 0 or previous_was_delta) {
-                radiance = vec3.add(radiance, vec3.mul(throughput, tri.emissive));
+                radiance = vec3.add(radiance, vec3.mul(throughput, surface_emissive));
             } else {
                 const light_type_count = directLightTypeCount(
                     light_radiance,
@@ -1364,7 +1580,7 @@ fn pathTraceRay(
                     0.0;
                 const light_pdf = emissive_select_pdf * emissiveDirectionPdf(origin, hit_pos, tri, emissive_total_area);
                 const mis = powerHeuristic(previous_bsdf_pdf, light_pdf);
-                radiance = vec3.add(radiance, vec3.scale(vec3.mul(throughput, tri.emissive), mis));
+                radiance = vec3.add(radiance, vec3.scale(vec3.mul(throughput, surface_emissive), mis));
             }
         }
 
@@ -1374,6 +1590,7 @@ fn pathTraceRay(
                 hit_pos,
                 hit.tri_index,
                 triangles,
+                textures,
                 environment_texture,
                 environment_importance,
                 environment_importance_width,
@@ -1389,8 +1606,8 @@ fn pathTraceRay(
                 if (!isPathTraceOccluded(shadow_origin, light_sample.direction, occlusion_distance, triangles, meshes)) {
                     const bsdf = evaluateOpaqueBsdf(
                         surface_albedo,
-                        tri.metallic,
-                        tri.roughness,
+                        surface_metallic,
+                        surface_roughness,
                         transmission,
                         shading_normal,
                         view_dir,
@@ -1409,7 +1626,7 @@ fn pathTraceRay(
             }
         }
 
-        const transmission_branch_prob = std.math.clamp(transmission * (1.0 - tri.metallic), 0.0, 0.98);
+        const transmission_branch_prob = std.math.clamp(transmission * (1.0 - surface_metallic), 0.0, 0.98);
         const opaque_branch_prob = 1.0 - transmission_branch_prob;
         const branch_seed = seed_base ^ (bounce *% 0x85ebca6b);
         if (transmission_branch_prob > 0.0 and hashUnitFloat(branch_seed ^ 0x1451ad37) < transmission_branch_prob) {
@@ -1451,14 +1668,14 @@ fn pathTraceRay(
             previous_was_delta = true;
         } else if (opaque_branch_prob > 0.0) {
             const dielectric_f0 = [3]f32{ 0.04, 0.04, 0.04 };
-            const f0 = mixVec3(dielectric_f0, surface_albedo, tri.metallic);
+            const f0 = mixVec3(dielectric_f0, surface_albedo, surface_metallic);
             const fresnel_view = fresnelSchlick(std.math.clamp(vec3.dot(shading_normal, view_dir), 0.0, 1.0), f0);
-            const lobe_probabilities = computeOpaqueLobeProbabilities(surface_albedo, tri.metallic, transmission, fresnel_view);
+            const lobe_probabilities = computeOpaqueLobeProbabilities(surface_albedo, surface_metallic, transmission, fresnel_view);
             const choose_specular = hashUnitFloat(branch_seed ^ 0x92c313f7) < lobe_probabilities.specular;
             var next_direction: [3]f32 = undefined;
 
             if (choose_specular) {
-                const half_vector = sampleGGXHalfVector(shading_normal, tri.roughness, branch_seed ^ 0x6b84221f);
+                const half_vector = sampleGGXHalfVector(shading_normal, surface_roughness, branch_seed ^ 0x6b84221f);
                 next_direction = vec3.normalize(reflectVector(vec3.scale(view_dir, -1.0), half_vector));
                 if (vec3.dot(next_direction, shading_normal) <= 0.0) {
                     break;
@@ -1469,8 +1686,8 @@ fn pathTraceRay(
 
             const bsdf = evaluateOpaqueBsdf(
                 surface_albedo,
-                tri.metallic,
-                tri.roughness,
+                surface_metallic,
+                surface_roughness,
                 transmission,
                 shading_normal,
                 view_dir,
@@ -1491,12 +1708,8 @@ fn pathTraceRay(
             break;
         }
 
-        if (bounce >= 2) {
-            const survival_prob = @min(maxComponent(throughput), 0.95);
-            if (survival_prob <= 0.0 or hashUnitFloat(seed_base ^ (bounce *% 0xc2b2ae35)) > survival_prob) {
-                break;
-            }
-            throughput = vec3.scale(throughput, 1.0 / survival_prob);
+        if (applyPathTraceRussianRoulette(&throughput, bounce, seed_base ^ (bounce *% 0xc2b2ae35))) {
+            break;
         }
     }
 
@@ -1599,6 +1812,61 @@ const BuiltPathTraceEmissiveLights = struct {
     total_area: f32 = 0.0,
 };
 
+fn appendPathTraceTextureIndex(
+    allocator: std.mem.Allocator,
+    texture_list: anytype,
+    texture_index_map: *std.AutoHashMap(u32, i32),
+    resources: *const assets_lib.ResourceLibrary,
+    texture_handle: ?handles.TextureHandle,
+) !i32 {
+    const resolved_handle = texture_handle orelse return -1;
+    const texture_key = @intFromEnum(resolved_handle);
+    if (texture_index_map.get(texture_key)) |existing| return existing;
+
+    const texture = resources.texture(resolved_handle) orelse return -1;
+    if (texture.pixels.len == 0 or texture.width == 0 or texture.height == 0) return -1;
+
+    const texture_index: i32 = @intCast(texture_list.items.len);
+    try texture_list.append(allocator, .{
+        .pixels = texture.pixels,
+        .width = texture.width,
+        .height = texture.height,
+        .format = texture.format,
+    });
+    try texture_index_map.put(texture_key, texture_index);
+    return texture_index;
+}
+
+fn resolvePathTraceTextureIndices(
+    allocator: std.mem.Allocator,
+    texture_list: anytype,
+    texture_index_map: *std.AutoHashMap(u32, i32),
+    resources: *const assets_lib.ResourceLibrary,
+    material: ?*const material_resource_mod.MaterialResource,
+    has_textures: [4]u32,
+) !PathTraceTextureIndices {
+    const resolved_material = material orelse return .{};
+    return .{
+        .base_color = if (has_textures[0] != 0)
+            try appendPathTraceTextureIndex(allocator, texture_list, texture_index_map, resources, resolved_material.base_color_texture)
+        else
+            -1,
+        .metallic_roughness = if (has_textures[1] != 0)
+            try appendPathTraceTextureIndex(allocator, texture_list, texture_index_map, resources, resolved_material.metallic_roughness_texture)
+        else
+            -1,
+        .normal = if (has_textures[2] != 0)
+            try appendPathTraceTextureIndex(allocator, texture_list, texture_index_map, resources, resolved_material.normal_texture)
+        else
+            -1,
+        .occlusion = if (has_textures[3] != 0)
+            try appendPathTraceTextureIndex(allocator, texture_list, texture_index_map, resources, resolved_material.occlusion_texture)
+        else
+            -1,
+        .emissive = try appendPathTraceTextureIndex(allocator, texture_list, texture_index_map, resources, resolved_material.emissive_texture),
+    };
+}
+
 fn buildPathTraceEmissiveLights(
     allocator: std.mem.Allocator,
     triangles: []const PathTraceTriangle,
@@ -1667,6 +1935,30 @@ fn buildHwRtEmissiveLights(
     };
 }
 
+fn sceneNeedsCpuPathTraceMaterialFallback(
+    prepared_scene: *const mesh_pass_mod.PreparedScene,
+    scene: *const scene_mod.Scene,
+) bool {
+    const draw_batches = [_][]const mesh_pass_mod.DrawItem{
+        prepared_scene.opaque_meshes,
+        prepared_scene.transparent_meshes,
+    };
+    for (draw_batches) |items| {
+        for (items) |item| {
+            if (item.has_textures[1] != 0 or item.has_textures[2] != 0 or item.has_textures[3] != 0) {
+                return true;
+            }
+
+            const entity = scene.getEntityConst(item.entity_id) orelse continue;
+            const material_component = entity.material orelse continue;
+            const material_handle = material_component.handle orelse continue;
+            const material = scene.resources.material(material_handle) orelse continue;
+            if (material.emissive_texture != null) return true;
+        }
+    }
+    return false;
+}
+
 const BuiltHwRtSamplingTables = struct {
     data: ?[]u8 = null,
     meta: ?[]rt_backend.RtSamplingTableMeta = null,
@@ -1730,6 +2022,163 @@ fn writeF16Le(out: []u8, offset: usize, value: f32) void {
     const bits: u16 = @bitCast(@as(f16, @floatCast(clamped)));
     out[offset + 0] = @as(u8, @truncate(bits));
     out[offset + 1] = @as(u8, @truncate(bits >> 8));
+}
+
+fn readF16Le(bytes: []const u8, offset: usize) f32 {
+    const bits: u16 = @as(u16, bytes[offset + 0]) | (@as(u16, bytes[offset + 1]) << 8);
+    return @as(f32, @floatCast(@as(f16, @bitCast(bits))));
+}
+
+fn writeU32Le(out: []u8, offset: usize, value: u32) void {
+    out[offset + 0] = @as(u8, @truncate(value));
+    out[offset + 1] = @as(u8, @truncate(value >> 8));
+    out[offset + 2] = @as(u8, @truncate(value >> 16));
+    out[offset + 3] = @as(u8, @truncate(value >> 24));
+}
+
+fn writeI32Le(out: []u8, offset: usize, value: i32) void {
+    writeU32Le(out, offset, @bitCast(value));
+}
+
+fn writeU64Le(out: []u8, offset: usize, value: u64) void {
+    out[offset + 0] = @as(u8, @truncate(value));
+    out[offset + 1] = @as(u8, @truncate(value >> 8));
+    out[offset + 2] = @as(u8, @truncate(value >> 16));
+    out[offset + 3] = @as(u8, @truncate(value >> 24));
+    out[offset + 4] = @as(u8, @truncate(value >> 32));
+    out[offset + 5] = @as(u8, @truncate(value >> 40));
+    out[offset + 6] = @as(u8, @truncate(value >> 48));
+    out[offset + 7] = @as(u8, @truncate(value >> 56));
+}
+
+fn writeF32Le(out: []u8, offset: usize, value: f32) void {
+    writeU32Le(out, offset, @bitCast(value));
+}
+
+fn appendU32Le(list: *std.ArrayList(u8), allocator: std.mem.Allocator, value: u32) !void {
+    var buf: [4]u8 = undefined;
+    writeU32Le(&buf, 0, value);
+    try list.appendSlice(allocator, &buf);
+}
+
+fn appendI32Le(list: *std.ArrayList(u8), allocator: std.mem.Allocator, value: i32) !void {
+    var buf: [4]u8 = undefined;
+    writeI32Le(&buf, 0, value);
+    try list.appendSlice(allocator, &buf);
+}
+
+fn appendU64Le(list: *std.ArrayList(u8), allocator: std.mem.Allocator, value: u64) !void {
+    var buf: [8]u8 = undefined;
+    writeU64Le(&buf, 0, value);
+    try list.appendSlice(allocator, &buf);
+}
+
+fn appendF32Le(list: *std.ArrayList(u8), allocator: std.mem.Allocator, value: f32) !void {
+    var buf: [4]u8 = undefined;
+    writeF32Le(&buf, 0, value);
+    try list.appendSlice(allocator, &buf);
+}
+
+fn appendCString(list: *std.ArrayList(u8), allocator: std.mem.Allocator, value: []const u8) !void {
+    try list.appendSlice(allocator, value);
+    try list.append(allocator, 0);
+}
+
+fn appendExrAttribute(
+    list: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    name: []const u8,
+    attr_type: []const u8,
+    value: []const u8,
+) !void {
+    try appendCString(list, allocator, name);
+    try appendCString(list, allocator, attr_type);
+    try appendU32Le(list, allocator, @intCast(value.len));
+    try list.appendSlice(allocator, value);
+}
+
+fn sanitizeHdrValue(value: f32) f32 {
+    if (!std.math.isFinite(value)) return 0.0;
+    return value;
+}
+
+fn encodeExrRgb32fAlloc(
+    allocator: std.mem.Allocator,
+    rgba: []const f32,
+    width: u32,
+    height: u32,
+) ![]u8 {
+    if (width == 0 or height == 0) return error.InvalidDimensions;
+    const pixel_count = @as(usize, width) * @as(usize, height);
+    if (rgba.len < pixel_count * 4) return error.InvalidHdrData;
+
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
+
+    try appendU32Le(&output, allocator, 20000630);
+    try appendU32Le(&output, allocator, 2);
+
+    var channel_list = std.ArrayList(u8).empty;
+    defer channel_list.deinit(allocator);
+    for ([_][]const u8{ "B", "G", "R" }) |channel_name| {
+        try appendCString(&channel_list, allocator, channel_name);
+        try appendI32Le(&channel_list, allocator, 2);
+        try channel_list.append(allocator, 0);
+        try channel_list.appendNTimes(allocator, 0, 3);
+        try appendI32Le(&channel_list, allocator, 1);
+        try appendI32Le(&channel_list, allocator, 1);
+    }
+    try channel_list.append(allocator, 0);
+    try appendExrAttribute(&output, allocator, "channels", "chlist", channel_list.items);
+
+    try appendExrAttribute(&output, allocator, "compression", "compression", &[_]u8{0});
+
+    var box2i: [16]u8 = undefined;
+    writeI32Le(&box2i, 0, 0);
+    writeI32Le(&box2i, 4, 0);
+    writeI32Le(&box2i, 8, @intCast(width - 1));
+    writeI32Le(&box2i, 12, @intCast(height - 1));
+    try appendExrAttribute(&output, allocator, "dataWindow", "box2i", &box2i);
+    try appendExrAttribute(&output, allocator, "displayWindow", "box2i", &box2i);
+    try appendExrAttribute(&output, allocator, "lineOrder", "lineOrder", &[_]u8{0});
+
+    var pixel_aspect_ratio: [4]u8 = undefined;
+    writeF32Le(&pixel_aspect_ratio, 0, 1.0);
+    try appendExrAttribute(&output, allocator, "pixelAspectRatio", "float", &pixel_aspect_ratio);
+
+    var screen_window_center: [8]u8 = undefined;
+    writeF32Le(&screen_window_center, 0, 0.0);
+    writeF32Le(&screen_window_center, 4, 0.0);
+    try appendExrAttribute(&output, allocator, "screenWindowCenter", "v2f", &screen_window_center);
+
+    var screen_window_width: [4]u8 = undefined;
+    writeF32Le(&screen_window_width, 0, 1.0);
+    try appendExrAttribute(&output, allocator, "screenWindowWidth", "float", &screen_window_width);
+    try output.append(allocator, 0);
+
+    const header_size = output.items.len;
+    const scanline_data_size: u32 = width * 3 * @sizeOf(f32);
+    const offset_table_size = @as(usize, height) * @sizeOf(u64);
+    var next_chunk_offset: u64 = @intCast(header_size + offset_table_size);
+    for (0..height) |_| {
+        try appendU64Le(&output, allocator, next_chunk_offset);
+        next_chunk_offset += 8 + scanline_data_size;
+    }
+
+    for (0..height) |row| {
+        try appendI32Le(&output, allocator, @intCast(row));
+        try appendU32Le(&output, allocator, scanline_data_size);
+
+        for ([_]usize{ 2, 1, 0 }) |channel_index| {
+            var x: u32 = 0;
+            while (x < width) : (x += 1) {
+                const pixel_index = (@as(usize, @intCast(row)) * @as(usize, width) + @as(usize, x)) * 4;
+                try appendF32Le(&output, allocator, sanitizeHdrValue(rgba[pixel_index + channel_index]));
+            }
+        }
+    }
+
+    return output.toOwnedSlice(allocator);
 }
 
 fn writeHdrPixelRgba16f(out: []u8, pixel_index: usize, rgb: [3]f32) void {
@@ -3949,9 +4398,11 @@ pub const Renderer = struct {
         const trace_width = @max(@as(u32, 1), @as(u32, @intFromFloat(@as(f32, @floatFromInt(width)) * resolution_scale)));
         const trace_height = @max(@as(u32, 1), @as(u32, @intFromFloat(@as(f32, @floatFromInt(height)) * resolution_scale)));
 
-        // 优先尝试与 CPU Phase 5 积分器对齐后的 Metal RT 路径。
-        if (self.tryRenderHwRtPath(prepared_scene, scene, target, width, height, trace_width, trace_height, samples, bounces, resolution_scale)) {
-            return;
+        // 默认优先尝试与 CPU Phase 5 积分器对齐后的 Metal RT 路径。
+        if (!self.editor_viewport_state.path_trace_force_cpu) {
+            if (self.tryRenderHwRtPath(prepared_scene, scene, target, width, height, trace_width, trace_height, samples, bounces, resolution_scale)) {
+                return;
+            }
         }
 
         if (!g_logged_path_trace_active) {
@@ -4108,26 +4559,14 @@ pub const Renderer = struct {
                             },
                         }
 
-                        // 解析 base_color 纹理（如果存在）
-                        const tex_idx: i32 = blk_tex: {
-                            if (item.has_textures[0] == 0) break :blk_tex @as(i32, -1);
-                            const material = mat_res orelse break :blk_tex @as(i32, -1);
-                            const tex_handle = material.base_color_texture orelse break :blk_tex @as(i32, -1);
-                            // 去重查询
-                            const tex_key = @intFromEnum(tex_handle);
-                            if (texture_index_map.get(tex_key)) |existing| break :blk_tex existing;
-                            const tex_res = scene.resources.texture(tex_handle) orelse break :blk_tex @as(i32, -1);
-                            if (tex_res.pixels.len == 0 or tex_res.width == 0 or tex_res.height == 0) break :blk_tex @as(i32, -1);
-                            const idx_i32: i32 = @intCast(texture_list.items.len);
-                            try texture_list.append(self.allocator, .{
-                                .pixels = tex_res.pixels,
-                                .width = tex_res.width,
-                                .height = tex_res.height,
-                                .format = tex_res.format,
-                            });
-                            try texture_index_map.put(tex_key, idx_i32);
-                            break :blk_tex idx_i32;
-                        };
+                        const texture_indices = try resolvePathTraceTextureIndices(
+                            self.allocator,
+                            &texture_list,
+                            &texture_index_map,
+                            &scene.resources,
+                            mat_res,
+                            item.has_textures,
+                        );
 
                         const tri_start: u32 = @intCast(triangle_list.items.len);
                         const indices = mesh.indices;
@@ -4168,7 +4607,11 @@ pub const Renderer = struct {
                                 .transmission = transmission,
                                 .ior = ior,
                                 .thickness = thickness,
-                                .texture_index = tex_idx,
+                                .base_color_texture_index = texture_indices.base_color,
+                                .metallic_roughness_texture_index = texture_indices.metallic_roughness,
+                                .normal_texture_index = texture_indices.normal,
+                                .occlusion_texture_index = texture_indices.occlusion,
+                                .emissive_texture_index = texture_indices.emissive,
                             });
                         }
 
@@ -4203,7 +4646,6 @@ pub const Renderer = struct {
                     .transmission = 0.0,
                     .ior = 1.5,
                     .thickness = 0.0,
-                    .texture_index = -1,
                 });
                 try triangle_list.append(self.allocator, .{
                     .v0 = .{ -5.0, 0.0, -5.0 },
@@ -4222,7 +4664,6 @@ pub const Renderer = struct {
                     .transmission = 0.0,
                     .ior = 1.5,
                     .thickness = 0.0,
-                    .texture_index = -1,
                 });
                 try mesh_list.append(self.allocator, .{
                     .aabb = .{ .min = .{ -5.0, -0.01, -5.0 }, .max = .{ 5.0, 0.01, 5.0 } },
@@ -4650,6 +5091,10 @@ pub const Renderer = struct {
         bounces: u32,
         resolution_scale: f32,
     ) bool {
+        if (sceneNeedsCpuPathTraceMaterialFallback(prepared_scene, scene)) {
+            return false;
+        }
+
         // 懒初始化硬件 RT 后端
         if (self.rt_device == null) {
             self.rt_device = rt_device_mod.RtDevice.init();
@@ -5111,6 +5556,80 @@ pub const Renderer = struct {
         height: u32,
     };
 
+    pub const HdrFramePixels = struct {
+        data: []f32,
+        width: u32,
+        height: u32,
+    };
+
+    /// Download final HDR frame pixels as linear RGBA32F data from the HDR viewport target.
+    pub fn downloadHdrFramePixelsAlloc(self: *Renderer, allocator: std.mem.Allocator) !HdrFramePixels {
+        const texture = self.scene_viewport.hdr_color_texture orelse return error.TextureNotFound;
+        const width = texture.desc.width;
+        const height = texture.desc.height;
+        const row_bytes = width * texture.desc.format.bytesPerPixel();
+        const byte_count = row_bytes * height;
+
+        const raw = try allocator.alloc(u8, byte_count);
+        defer allocator.free(raw);
+        try self.rhi.readTextureData(&texture, row_bytes, raw);
+
+        const pixel_count = @as(usize, width) * @as(usize, height);
+        const hdr = try allocator.alloc(f32, pixel_count * 4);
+        errdefer allocator.free(hdr);
+
+        switch (texture.desc.format) {
+            .rgba16_float => {
+                var pixel_index: usize = 0;
+                while (pixel_index < pixel_count) : (pixel_index += 1) {
+                    const src = pixel_index * 8;
+                    const dst = pixel_index * 4;
+                    hdr[dst + 0] = readF16Le(raw, src + 0);
+                    hdr[dst + 1] = readF16Le(raw, src + 2);
+                    hdr[dst + 2] = readF16Le(raw, src + 4);
+                    hdr[dst + 3] = readF16Le(raw, src + 6);
+                }
+            },
+            .rgba32_float => {
+                var pixel_index: usize = 0;
+                while (pixel_index < pixel_count) : (pixel_index += 1) {
+                    const src = pixel_index * 16;
+                    const dst = pixel_index * 4;
+                    const r_bits: u32 = @as(u32, raw[src + 0]) |
+                        (@as(u32, raw[src + 1]) << 8) |
+                        (@as(u32, raw[src + 2]) << 16) |
+                        (@as(u32, raw[src + 3]) << 24);
+                    const g_bits: u32 = @as(u32, raw[src + 4]) |
+                        (@as(u32, raw[src + 5]) << 8) |
+                        (@as(u32, raw[src + 6]) << 16) |
+                        (@as(u32, raw[src + 7]) << 24);
+                    const b_bits: u32 = @as(u32, raw[src + 8]) |
+                        (@as(u32, raw[src + 9]) << 8) |
+                        (@as(u32, raw[src + 10]) << 16) |
+                        (@as(u32, raw[src + 11]) << 24);
+                    const a_bits: u32 = @as(u32, raw[src + 12]) |
+                        (@as(u32, raw[src + 13]) << 8) |
+                        (@as(u32, raw[src + 14]) << 16) |
+                        (@as(u32, raw[src + 15]) << 24);
+                    hdr[dst + 0] = @bitCast(r_bits);
+                    hdr[dst + 1] = @bitCast(g_bits);
+                    hdr[dst + 2] = @bitCast(b_bits);
+                    hdr[dst + 3] = @bitCast(a_bits);
+                }
+            },
+            else => return error.UnsupportedTextureFormat,
+        }
+
+        return .{ .data = hdr, .width = width, .height = height };
+    }
+
+    /// Download final HDR frame as an uncompressed scanline OpenEXR file.
+    pub fn downloadHdrFrameExrAlloc(self: *Renderer, allocator: std.mem.Allocator) ![]u8 {
+        const pixels = try self.downloadHdrFramePixelsAlloc(allocator);
+        defer allocator.free(pixels.data);
+        return encodeExrRgb32fAlloc(allocator, pixels.data, pixels.width, pixels.height);
+    }
+
     /// Export a single frame to PNG at the given path.
     /// Performs GPU readback + CPU-side PNG encode + disk write.
     pub fn exportFramePng(self: *Renderer, allocator: std.mem.Allocator, out_path: []const u8) !void {
@@ -5150,6 +5669,19 @@ pub const Renderer = struct {
         const file = try std.fs.cwd().createFile(out_path, .{});
         defer file.close();
         try file.writeAll(png_slice);
+    }
+
+    /// Export a single HDR frame to OpenEXR at the given path.
+    pub fn exportFrameExr(self: *Renderer, allocator: std.mem.Allocator, out_path: []const u8) !void {
+        const exr = try self.downloadHdrFrameExrAlloc(allocator);
+        defer allocator.free(exr);
+
+        if (std.fs.path.dirname(out_path)) |directory| {
+            try std.fs.cwd().makePath(directory);
+        }
+        const file = try std.fs.cwd().createFile(out_path, .{});
+        defer file.close();
+        try file.writeAll(exr);
     }
 
     fn buildSceneSnapshot(scene: *const scene_mod.Scene) types.SceneSnapshot {
@@ -6005,6 +6537,131 @@ fn makeOwnedTestAssetRecord(
             .source_extension = try allocator.dupe(u8, ".thumb"),
         },
     };
+}
+
+fn expectVec3ApproxEqAbs(expected: [3]f32, actual: [3]f32, tolerance: f32) !void {
+    try std.testing.expectApproxEqAbs(expected[0], actual[0], tolerance);
+    try std.testing.expectApproxEqAbs(expected[1], actual[1], tolerance);
+    try std.testing.expectApproxEqAbs(expected[2], actual[2], tolerance);
+}
+
+fn findHashUnitFloatSeed(threshold: f32, want_lte: bool) !u32 {
+    var seed: u32 = 0;
+    while (true) : (seed += 1) {
+        const value = hashUnitFloat(seed);
+        if (want_lte) {
+            if (value <= threshold) return seed;
+        } else {
+            if (value > threshold) return seed;
+        }
+        if (seed == std.math.maxInt(u32)) return error.SeedNotFound;
+    }
+}
+
+test "samplePathTraceMaterial applies normal metallic-roughness AO and emissive maps" {
+    var base_color_pixels = [_]f32{ 0.25, 0.50, 0.75, 1.0 };
+    var metallic_roughness_pixels = [_]f32{ 0.0, 0.25, 0.8, 1.0 };
+    var ao_pixels = [_]f32{ 0.5, 0.0, 0.0, 1.0 };
+    var emissive_pixels = [_]f32{ 2.0, 0.5, 1.0, 1.0 };
+    var normal_pixels = [_]f32{ 0.8, 0.5, 0.9, 1.0 };
+
+    const textures = [_]PathTraceTexture{
+        .{
+            .pixels = std.mem.sliceAsBytes(base_color_pixels[0..]),
+            .width = 1,
+            .height = 1,
+            .format = .rgba32_float,
+        },
+        .{
+            .pixels = std.mem.sliceAsBytes(metallic_roughness_pixels[0..]),
+            .width = 1,
+            .height = 1,
+            .format = .rgba32_float,
+        },
+        .{
+            .pixels = std.mem.sliceAsBytes(ao_pixels[0..]),
+            .width = 1,
+            .height = 1,
+            .format = .rgba32_float,
+        },
+        .{
+            .pixels = std.mem.sliceAsBytes(emissive_pixels[0..]),
+            .width = 1,
+            .height = 1,
+            .format = .rgba32_float,
+        },
+        .{
+            .pixels = std.mem.sliceAsBytes(normal_pixels[0..]),
+            .width = 1,
+            .height = 1,
+            .format = .rgba32_float,
+        },
+    };
+
+    const tri = PathTraceTriangle{
+        .v0 = .{ 0.0, 0.0, 0.0 },
+        .v1 = .{ 1.0, 0.0, 0.0 },
+        .v2 = .{ 0.0, 1.0, 0.0 },
+        .n0 = .{ 0.0, 0.0, 1.0 },
+        .n1 = .{ 0.0, 0.0, 1.0 },
+        .n2 = .{ 0.0, 0.0, 1.0 },
+        .uv0 = .{ 0.0, 0.0 },
+        .uv1 = .{ 1.0, 0.0 },
+        .uv2 = .{ 0.0, 1.0 },
+        .albedo = .{ 0.8, 0.6, 0.4 },
+        .emissive = .{ 1.0, 2.0, 3.0 },
+        .metallic = 0.5,
+        .roughness = 0.8,
+        .transmission = 0.0,
+        .ior = 1.5,
+        .thickness = 0.0,
+        .base_color_texture_index = 0,
+        .metallic_roughness_texture_index = 1,
+        .normal_texture_index = 4,
+        .occlusion_texture_index = 2,
+        .emissive_texture_index = 3,
+    };
+
+    const sample = samplePathTraceMaterial(
+        tri,
+        &textures,
+        .{ 0.25, 0.25 },
+        .{ 0.0, 0.0, 1.0 },
+        .{ 0.0, 0.0, 1.0 },
+    );
+
+    try expectVec3ApproxEqAbs(.{ 0.1, 0.15, 0.15 }, sample.albedo, 0.0001);
+    try expectVec3ApproxEqAbs(.{ 2.0, 1.0, 3.0 }, sample.emissive, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.4), sample.metallic, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.2), sample.roughness, 0.0001);
+    try expectVec3ApproxEqAbs(.{ 0.6, 0.0, 0.8 }, sample.shading_normal, 0.0001);
+    try std.testing.expect(vec3.dot(sample.shading_normal, .{ 0.0, 0.0, 1.0 }) > 0.0);
+}
+
+test "applyPathTraceRussianRoulette gates bounce and rescales surviving throughput" {
+    var early_tp = [3]f32{ 0.25, 0.5, 1.2 };
+    try std.testing.expect(!applyPathTraceRussianRoulette(&early_tp, 1, 0));
+    try expectVec3ApproxEqAbs(.{ 0.25, 0.5, 1.2 }, early_tp, 0.000001);
+
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 0.95),
+        pathTraceRussianRouletteSurvivalProbability(.{ 1.2, 1.1, 0.2 }),
+        0.000001,
+    );
+
+    var zero_tp = [3]f32{ 0.0, 0.0, 0.0 };
+    try std.testing.expect(applyPathTraceRussianRoulette(&zero_tp, 3, 0));
+    try expectVec3ApproxEqAbs(.{ 0.0, 0.0, 0.0 }, zero_tp, 0.000001);
+
+    const survive_seed = try findHashUnitFloatSeed(0.5, true);
+    var surviving_tp = [3]f32{ 0.25, 0.5, 0.4 };
+    try std.testing.expect(!applyPathTraceRussianRoulette(&surviving_tp, 3, survive_seed));
+    try expectVec3ApproxEqAbs(.{ 0.5, 1.0, 0.8 }, surviving_tp, 0.000001);
+
+    const terminate_seed = try findHashUnitFloatSeed(0.5, false);
+    var terminated_tp = [3]f32{ 0.25, 0.5, 0.4 };
+    try std.testing.expect(applyPathTraceRussianRoulette(&terminated_tp, 3, terminate_seed));
+    try expectVec3ApproxEqAbs(.{ 0.25, 0.5, 0.4 }, terminated_tp, 0.000001);
 }
 
 test "resolveMaterialThumbnailSource captures loaded material signatures" {

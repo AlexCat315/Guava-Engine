@@ -28,6 +28,7 @@ pub const EditorViewportState = struct {
     path_trace_samples: u32 = 4,
     path_trace_bounces: u32 = 2,
     path_trace_resolution_scale: f32 = 0.75,
+    path_trace_force_cpu: bool = false,
     render_mode: EditorViewportRenderMode = .textured,
     show_grid: bool = true,
     show_bones: bool = false,
