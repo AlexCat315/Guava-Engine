@@ -245,6 +245,13 @@ pub const AiPreviewRuntime = struct {
 
 pub const max_ai_providers: usize = 8;
 
+pub const AiProviderType = enum {
+    openai,
+    anthropic,
+    ollama,
+    custom,
+};
+
 /// Per-provider configuration stored in EditorState.
 pub const AiProviderConfig = struct {
     name: [64]u8 = [_]u8{0} ** 64,
@@ -378,6 +385,7 @@ pub const EditorState = struct {
     ai_provider_count: usize = 1,
     ai_active_provider: usize = 0,
     ai_provider_api_key_visible: bool = false,
+    ai_provider_type: AiProviderType = .openai,
     layout_template_name_buffer: [128]u8 = [_]u8{0} ** 128,
     layout_templates: std.ArrayList(LayoutTemplateEntry) = .empty,
     layout_templates_loaded: bool = false,
@@ -504,7 +512,7 @@ pub const EditorState = struct {
             return;
         }
 
-        const default_path = "renders/frame.png";
+        const default_path = "renders_test_out/frame.png";
         @memcpy(self.render_output_path_buffer[0..default_path.len], default_path);
     }
 

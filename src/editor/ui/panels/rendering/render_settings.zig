@@ -187,7 +187,7 @@ fn drawRenderOutputSection(state: *EditorState, layer_context: *engine.core.Laye
     gui.labelText("Format", renderOutputFormatLabel(state.render_output_format));
 
     gui.text("Output Path");
-    _ = gui.inputTextWithHint("##render_output_path", "renders/frame.png", state.render_output_path_buffer[0..]);
+    _ = gui.inputTextWithHint("##render_output_path", "renders_test_out/frame.png", state.render_output_path_buffer[0..]);
 
     gui.textWrapped(renderOutputPipelineNote(state));
 
