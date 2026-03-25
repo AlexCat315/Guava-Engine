@@ -1046,6 +1046,13 @@ extern "C" bool guava_imgui_is_popup_open(const char *id, size_t id_len) {
   return ImGui::IsPopupOpen(owned_id.c_str());
 }
 
+extern "C" void guava_imgui_close_current_popup(void) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::CloseCurrentPopup();
+}
+
 extern "C" bool guava_imgui_begin_popup_context_item(const char *id,
                                                      size_t id_len) {
   if (!g_imgui_initialized) {

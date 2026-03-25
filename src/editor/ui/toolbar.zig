@@ -1,4 +1,3 @@
-const std = @import("std");
 const engine = @import("guava");
 const gui = @import("gui.zig");
 const EditorState = @import("../core/state.zig").EditorState;
@@ -41,31 +40,49 @@ pub fn drawToolbarWindow(state: *EditorState, layer_context: *engine.core.LayerC
     // Centered playback controls
     const play_button_size: f32 = 28.0;
     const spacing: f32 = 6.0;
-    const total_playback_width = play_button_size * 4.0 + spacing * 3.0;
+    const total_playback_width = play_button_size * 3.0 + spacing * 2.0;
     const center_start = (content_width - total_playback_width) * 0.5;
 
     gui.dummy(0.0, 1.0);
     gui.sameLineEx(center_start, 0.0);
 
-    // Play button - green background when active
+    const session_active = state.play_mode_active or state.playback_state != .stopped;
     const is_playing = state.playback_state == .playing;
-    const play_palette = if (is_playing) ui_icons.palettes.toolbar_accent else ui_icons.palettes.toolbar_idle;
-    if (try drawPlaybackButton(state, layer_context, "toolbar_play", ui_icons.paths.toolbar.play, play_palette)) {
-        try playback_session.play(state, layer_context);
+    const is_paused = state.playback_state == .paused;
+    const run_stop_tooltip_id: @import("../i18n/message_id.zig").MessageId = if (session_active) .stop else .run;
+    const pause_resume_tooltip_id: @import("../i18n/message_id.zig").MessageId = if (is_paused) .resume_playback else .pause;
+    const run_stop_id = if (session_active) "toolbar_stop_toggle" else "toolbar_run_toggle";
+    const run_stop_path = if (session_active) ui_icons.paths.toolbar.stop else ui_icons.paths.toolbar.play;
+    const run_stop_palette = if (is_playing)
+        ui_icons.palettes.toolbar_accent
+    else if (session_active)
+        ui_icons.palettes.toolbar_active
+    else
+        ui_icons.palettes.toolbar_idle;
+    if (try drawPlaybackButton(state, layer_context, run_stop_id, run_stop_path, run_stop_palette)) {
+        if (session_active) {
+            playback_session.stop(state, layer_context);
+        } else {
+            try playback_session.play(state, layer_context);
+        }
     }
     if (gui.isItemHovered()) {
-        gui.setTooltip(state.text(.run));
+        gui.setTooltip(state.text(run_stop_tooltip_id));
     }
     gui.sameLine();
 
-    // Pause button
-    const is_paused = state.playback_state == .paused;
-    const pause_palette = if (is_paused) ui_icons.palettes.toolbar_active else ui_icons.palettes.toolbar_idle;
-    if (try drawPlaybackButton(state, layer_context, "toolbar_pause", ui_icons.paths.toolbar.pause, pause_palette)) {
-        playback_session.pause(state, layer_context);
+    const pause_resume_id = if (is_paused) "toolbar_resume" else "toolbar_pause";
+    const pause_resume_path = if (is_paused) ui_icons.paths.toolbar.play else ui_icons.paths.toolbar.pause;
+    const pause_resume_palette = if (is_paused) ui_icons.palettes.toolbar_active else ui_icons.palettes.toolbar_idle;
+    if (try drawPlaybackButton(state, layer_context, pause_resume_id, pause_resume_path, pause_resume_palette)) {
+        if (is_paused) {
+            try playback_session.play(state, layer_context);
+        } else {
+            playback_session.pause(state, layer_context);
+        }
     }
     if (gui.isItemHovered()) {
-        gui.setTooltip(state.text(.pause));
+        gui.setTooltip(state.text(pause_resume_tooltip_id));
     }
     gui.sameLine();
 
@@ -75,15 +92,5 @@ pub fn drawToolbarWindow(state: *EditorState, layer_context: *engine.core.LayerC
     }
     if (gui.isItemHovered()) {
         gui.setTooltip(state.text(.step));
-    }
-    gui.sameLine();
-
-    const is_stop_available = state.play_mode_active or state.playback_state != .stopped;
-    const stop_palette = if (is_stop_available) ui_icons.palettes.toolbar_active else ui_icons.palettes.toolbar_idle;
-    if (try drawPlaybackButton(state, layer_context, "toolbar_stop", ui_icons.paths.toolbar.stop, stop_palette)) {
-        playback_session.stop(state, layer_context);
-    }
-    if (gui.isItemHovered()) {
-        gui.setTooltip(state.text(.stop));
     }
 }

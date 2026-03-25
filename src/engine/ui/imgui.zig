@@ -327,6 +327,10 @@ pub fn isPopupOpen(id: []const u8) bool {
     return c.guava_imgui_is_popup_open(id.ptr, id.len);
 }
 
+pub fn closeCurrentPopup() void {
+    c.guava_imgui_close_current_popup();
+}
+
 pub fn beginPopupContextItem(id: ?[]const u8) bool {
     return c.guava_imgui_begin_popup_context_item(
         if (id) |value| value.ptr else null,

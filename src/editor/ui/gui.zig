@@ -78,6 +78,7 @@ pub const menuItem = backend.menuItem;
 pub const openPopup = backend.openPopup;
 pub const beginPopup = backend.beginPopup;
 pub const isPopupOpen = backend.isPopupOpen;
+pub const closeCurrentPopup = backend.closeCurrentPopup;
 pub const beginPopupContextItem = backend.beginPopupContextItem;
 pub const beginPopupContextWindow = backend.beginPopupContextWindow;
 pub const endPopup = backend.endPopup;

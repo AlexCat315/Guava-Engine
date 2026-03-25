@@ -465,7 +465,7 @@ fn createCameraEntityViaQueueOrWorld(layer_context: *engine.core.LayerContext, t
     return layer_context.world.createCameraEntity(transform);
 }
 
-fn createPrimitiveEntityViaQueueOrWorld(
+pub fn createPrimitiveEntityViaQueueOrWorld(
     layer_context: *engine.core.LayerContext,
     primitive: engine.scene.Primitive,
     transform: engine.scene.Transform,

@@ -9,6 +9,8 @@ const layout = @import("../../layout.zig");
 const history = @import("../../../actions/history.zig");
 const camera = @import("../../../interaction/camera.zig");
 const utils = @import("../../../common/utils.zig");
+const content_browser = @import("../../../assets/browser.zig");
+const inspector = @import("inspector.zig");
 
 const PlaceActorEntry = struct {
     kind: state_mod.PlaceActorKind,
@@ -100,6 +102,24 @@ const shapes_entries = [_]PlaceActorEntry{
         .description_id = .plane_actor_description,
         .icon_path = ui_icons.paths.place_actors.plane,
     },
+    .{
+        .kind = .textured_cube,
+        .label_id = .textured_cube,
+        .description_id = .textured_cube_actor_description,
+        .icon_path = ui_icons.paths.place_actors.cube,
+    },
+    .{
+        .kind = .textured_sphere,
+        .label_id = .textured_sphere,
+        .description_id = .textured_sphere_actor_description,
+        .icon_path = ui_icons.paths.place_actors.sphere,
+    },
+    .{
+        .kind = .textured_plane,
+        .label_id = .textured_plane,
+        .description_id = .textured_plane_actor_description,
+        .icon_path = ui_icons.paths.place_actors.plane,
+    },
 };
 
 const vfx_entries = [_]PlaceActorEntry{
@@ -133,6 +153,9 @@ fn drawPlaceActorDragPreview(
     description: []const u8,
     icon_texture: *engine.rhi.Texture,
 ) void {
+    if (!supportsDragPlacement(kind)) {
+        return;
+    }
     if (!gui.beginDragDropSourceU64(state_mod.place_actor_drag_payload, @intFromEnum(kind))) {
         return;
     }
@@ -149,6 +172,13 @@ fn drawPlaceActorDragPreview(
     gui.image(icon_texture, place_actor_drag_preview_icon_size, place_actor_drag_preview_icon_size);
     gui.sameLine();
     gui.text(preview_text);
+}
+
+fn supportsDragPlacement(kind: state_mod.PlaceActorKind) bool {
+    return switch (kind) {
+        .textured_cube, .textured_sphere, .textured_plane => false,
+        else => true,
+    };
 }
 
 fn categoryTabWidth(available_width: f32, category_count: usize) f32 {
@@ -193,11 +223,118 @@ fn triggerPlaceActorEntry(
         .cube => try history.spawnPrimitive(state, layer_context, .cube),
         .sphere => try history.spawnPrimitive(state, layer_context, .sphere),
         .plane => try history.spawnPrimitive(state, layer_context, .plane),
+        .textured_cube => openTexturedPrimitivePicker(state, .cube),
+        .textured_sphere => openTexturedPrimitivePicker(state, .sphere),
+        .textured_plane => openTexturedPrimitivePicker(state, .plane),
         .point_light => try history.spawnPointLight(state, layer_context),
         .spot_light => try history.spawnSpotLight(state, layer_context),
         .directional_light => try history.spawnDirectionalLight(state, layer_context),
         .vfx_fountain => try history.spawnVfxEntity(state, layer_context, .fountain),
         .vfx_orbit => try history.spawnVfxEntity(state, layer_context, .orbit),
+    }
+}
+
+fn openTexturedPrimitivePicker(state: *EditorState, primitive: engine.scene.Primitive) void {
+    state.place_actor_texture_picker_primitive = primitive;
+    @memset(&state.place_actor_texture_filter_buffer, 0);
+    gui.openPopup("place_actor_texture_picker_popup");
+}
+
+fn spawnTexturedPrimitiveFromEntry(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    primitive: engine.scene.Primitive,
+    entry: *const state_mod.AssetEntry,
+) !void {
+    const entity_id = try history.createPrimitiveEntityViaQueueOrWorld(
+        layer_context,
+        primitive,
+        history.spawnTransform(state, layer_context),
+    );
+    const entity = layer_context.world.getEntity(entity_id) orelse return error.EntityNotFound;
+    const assigned = try inspector.assignTextureEntryToMaterial(state, layer_context, entity, entry);
+    if (!assigned) {
+        return error.TextureAssignmentFailed;
+    }
+
+    try layer_context.renderer.replaceSelection(entity_id);
+    utils.syncInspectorNameBuffer(state, layer_context);
+    camera.focusSelection(state, layer_context);
+    try history.captureSnapshot(state, layer_context);
+}
+
+fn drawTexturedPrimitiveTexturePickerPopup(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    if (!gui.isPopupOpen("place_actor_texture_picker_popup")) {
+        state.place_actor_texture_picker_primitive = null;
+    }
+
+    gui.setNextWindowSize(.{ 360.0, 320.0 });
+    if (!gui.beginPopup("place_actor_texture_picker_popup")) {
+        return;
+    }
+    defer gui.endPopup();
+
+    const primitive = state.place_actor_texture_picker_primitive orelse {
+        gui.closeCurrentPopup();
+        return;
+    };
+
+    gui.text(state.text(.select_texture_for_primitive));
+    gui.textColored(place_actor_card_text_muted, utils.primitiveLabel(state, primitive));
+    gui.separator();
+
+    if (content_browser.selectedAssetCanUseAsTexture(state)) {
+        if (gui.buttonEx(state.text(.assign_selected_texture), -1.0, 0.0)) {
+            const selected = content_browser.selectedAsset(state) orelse return;
+            try spawnTexturedPrimitiveFromEntry(state, layer_context, primitive, selected);
+            state.place_actor_texture_picker_primitive = null;
+            gui.closeCurrentPopup();
+            return;
+        }
+        gui.separator();
+    }
+
+    gui.setNextItemWidth(-1.0);
+    _ = gui.inputTextWithHint(
+        "##place_actor_texture_filter",
+        state.text(.search_assets),
+        state.place_actor_texture_filter_buffer[0..],
+    );
+
+    const filter_text = std.mem.sliceTo(state.place_actor_texture_filter_buffer[0..], 0);
+    var texture_count: usize = 0;
+
+    _ = gui.beginChild("place_actor_texture_list", 0.0, 210.0, true);
+    defer gui.endChild();
+
+    for (state.asset_entries.items) |*entry| {
+        if (entry.kind != .texture) {
+            continue;
+        }
+        if (filter_text.len != 0 and
+            !utils.containsAsciiInsensitive(entry.name, filter_text) and
+            !utils.containsAsciiInsensitive(entry.path, filter_text))
+        {
+            continue;
+        }
+
+        texture_count += 1;
+        if (gui.selectable(entry.name, false, false, 0.0, 0.0)) {
+            try spawnTexturedPrimitiveFromEntry(state, layer_context, primitive, entry);
+            state.place_actor_texture_picker_primitive = null;
+            gui.closeCurrentPopup();
+            return;
+        }
+    }
+
+    if (texture_count == 0) {
+        gui.textWrapped(state.text(.no_texture_assets_available));
+    }
+
+    gui.separator();
+    if (gui.buttonEx(state.text(.cancel_action), -1.0, 0.0)) {
+        state.place_actor_texture_picker_primitive = null;
+        gui.closeCurrentPopup();
     }
 }
 
@@ -240,6 +377,8 @@ pub fn drawPlaceActorsWindow(state: *EditorState, layer_context: *engine.core.La
     for (entries) |entry| {
         try drawPlaceActorEntry(state, layer_context, entry, filter_active, filter_text);
     }
+
+    try drawTexturedPrimitiveTexturePickerPopup(state, layer_context);
 
     layout.endSectionBody();
 }

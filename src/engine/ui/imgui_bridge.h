@@ -136,6 +136,7 @@ void guava_imgui_end_menu(void);
 void guava_imgui_open_popup(const char *id, size_t id_len);
 bool guava_imgui_begin_popup(const char *id, size_t id_len);
 bool guava_imgui_is_popup_open(const char *id, size_t id_len);
+void guava_imgui_close_current_popup(void);
 bool guava_imgui_begin_popup_context_item(const char *id, size_t id_len);
 bool guava_imgui_begin_popup_context_window(const char *id, size_t id_len,
                                             bool open_over_items);

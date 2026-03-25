@@ -1000,6 +1000,9 @@ fn applyPendingViewportAssetDrop(state: *EditorState, layer_context: *engine.cor
                 .cube => try history.spawnPrimitiveAt(state, layer_context, .cube, spawn_transform),
                 .sphere => try history.spawnPrimitiveAt(state, layer_context, .sphere, spawn_transform),
                 .plane => try history.spawnPrimitiveAt(state, layer_context, .plane, spawn_transform),
+                .textured_cube => try history.spawnPrimitiveAt(state, layer_context, .cube, spawn_transform),
+                .textured_sphere => try history.spawnPrimitiveAt(state, layer_context, .sphere, spawn_transform),
+                .textured_plane => try history.spawnPrimitiveAt(state, layer_context, .plane, spawn_transform),
                 .point_light => try history.spawnPointLightAt(state, layer_context, spawn_transform),
                 .spot_light => try history.spawnSpotLightAt(state, layer_context, spawn_transform),
                 .directional_light => try history.spawnDirectionalLightAt(state, layer_context, spawn_transform),
@@ -1056,8 +1059,8 @@ fn calculateSpawnTransformFromPixel(
 
 fn placementHalfExtentsForActorKind(actor_kind: state_mod.PlaceActorKind) ?[3]f32 {
     return switch (actor_kind) {
-        .cube, .sphere => .{ 0.5, 0.5, 0.5 },
-        .plane => .{ 0.5, 0.05, 0.5 },
+        .cube, .sphere, .textured_cube, .textured_sphere => .{ 0.5, 0.5, 0.5 },
+        .plane, .textured_plane => .{ 0.5, 0.05, 0.5 },
         .empty, .camera, .point_light, .spot_light, .directional_light, .vfx_fountain, .vfx_orbit => .{ 0.25, 0.25, 0.25 },
     };
 }
@@ -1268,7 +1271,7 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
 }
 
 fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
-    const window_width = 166.0;
+    const window_width = 128.0;
     gui.setNextWindowPos(.{
         state.viewport_origin[0] + @max((state.viewport_extent[0] - window_width) * 0.5, 18.0),
         state.viewport_origin[1] + 10.0,
@@ -1294,14 +1297,27 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
         state.manipulation_started_from_ui = true;
     }
 
+    const session_active = state.play_mode_active or state.playback_state != .stopped;
+    const is_playing = state.playback_state == .playing;
+    const is_paused = state.playback_state == .paused;
+
     if (try drawPlaybackToolbarIconButton(
         state,
         layer_context,
-        "viewport_play",
-        ui_icons.paths.toolbar.play,
-        if (state.playback_state == .playing) activePlayPalette() else idlePlaybackPalette(),
+        if (session_active) "viewport_stop_toggle" else "viewport_run_toggle",
+        if (session_active) ui_icons.paths.toolbar.stop else ui_icons.paths.toolbar.play,
+        if (is_playing)
+            activePlayPalette()
+        else if (session_active)
+            activePausePalette()
+        else
+            idlePlaybackPalette(),
     )) {
-        try playback_session.play(state, layer_context);
+        if (session_active) {
+            playback_session.stop(state, layer_context);
+        } else {
+            try playback_session.play(state, layer_context);
+        }
     }
     if (gui.isItemHovered() or (state.manipulation_started_from_ui and input.isMouseDown(.left))) state.viewport_overlay_hovered = true;
 
@@ -1313,11 +1329,15 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
     if (try drawPlaybackToolbarIconButton(
         state,
         layer_context,
-        "viewport_pause",
-        ui_icons.paths.toolbar.pause,
-        if (state.playback_state == .paused) activePausePalette() else idlePlaybackPalette(),
+        if (is_paused) "viewport_resume" else "viewport_pause",
+        if (is_paused) ui_icons.paths.toolbar.play else ui_icons.paths.toolbar.pause,
+        if (is_paused) activePausePalette() else idlePlaybackPalette(),
     )) {
-        playback_session.pause(state, layer_context);
+        if (is_paused) {
+            try playback_session.play(state, layer_context);
+        } else {
+            playback_session.pause(state, layer_context);
+        }
     }
     if (gui.isItemHovered() or (state.manipulation_started_from_ui and input.isMouseDown(.left))) state.viewport_overlay_hovered = true;
 
@@ -1334,22 +1354,6 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
         stepPlaybackPalette(),
     )) {
         try playback_session.step(state, layer_context);
-    }
-    if (gui.isItemHovered() or (state.manipulation_started_from_ui and input.isMouseDown(.left))) state.viewport_overlay_hovered = true;
-
-    gui.sameLine();
-    if (gui.isWindowHovered() and input.wasMousePressed(.left)) {
-        state.manipulation_started_from_ui = true;
-    }
-
-    if (try drawPlaybackToolbarIconButton(
-        state,
-        layer_context,
-        "viewport_stop",
-        ui_icons.paths.toolbar.stop,
-        if (state.play_mode_active or state.playback_state != .stopped) activePausePalette() else idlePlaybackPalette(),
-    )) {
-        playback_session.stop(state, layer_context);
     }
     if (gui.isItemHovered() or (state.manipulation_started_from_ui and input.isMouseDown(.left))) state.viewport_overlay_hovered = true;
 }
