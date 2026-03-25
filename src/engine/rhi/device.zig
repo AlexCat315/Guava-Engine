@@ -694,24 +694,73 @@ pub const RhiDevice = struct {
     }
 
     pub fn bindComputeSamplers(self: *RhiDevice, pass: ComputePass, first_slot: u32, bindings: []const TextureSamplerBinding) void {
-        _ = self;
         _ = pass;
-        _ = first_slot;
-        _ = bindings;
+        if (self.current_frame == null) return;
+        var layout_entries = std.ArrayList(rhi.BindingLayoutEntry).empty;
+        defer layout_entries.deinit(self.allocator);
+        var set_entries = std.ArrayList(rhi.BindingSetEntry).empty;
+        defer set_entries.deinit(self.allocator);
+
+        for (bindings, 0..) |binding, i| {
+            const base_slot = first_slot + @as(u32, @intCast(i * 2));
+            const tex_slot = base_slot;
+            const samp_slot = base_slot + 1;
+            layout_entries.append(self.allocator, .{ .slot = tex_slot, .binding_type = .texture, .stage = .compute }) catch return;
+            set_entries.append(self.allocator, .{ .slot = tex_slot, .resource = .{ .texture = .{ .id = binding.texture.id } } }) catch return;
+            layout_entries.append(self.allocator, .{ .slot = samp_slot, .binding_type = .sampler, .stage = .compute }) catch return;
+            set_entries.append(self.allocator, .{ .slot = samp_slot, .resource = .{ .sampler = .{ .id = binding.sampler.id } } }) catch return;
+        }
+
+        if (layout_entries.items.len == 0) return;
+        const layout = self.device.createBindingLayout(.{ .entries = layout_entries.items, .label = "compute_samplers" }) catch return;
+        const set = self.device.createBindingSetCached(layout, .{ .entries = set_entries.items, .label = "compute_samplers" }) catch return;
+        if (self.current_frame) |*frame| {
+            frame.command_buffer.encodeSetBindingSet(.{ .slot = first_slot, .set_id = set.id }) catch {};
+        }
     }
 
     pub fn bindComputeStorageTextures(self: *RhiDevice, pass: ComputePass, first_slot: u32, textures: []const *const Texture) void {
-        _ = self;
         _ = pass;
-        _ = first_slot;
-        _ = textures;
+        if (self.current_frame == null) return;
+        var layout_entries = std.ArrayList(rhi.BindingLayoutEntry).empty;
+        defer layout_entries.deinit(self.allocator);
+        var set_entries = std.ArrayList(rhi.BindingSetEntry).empty;
+        defer set_entries.deinit(self.allocator);
+
+        for (textures, 0..) |tex, i| {
+            const slot = first_slot + @as(u32, @intCast(i));
+            layout_entries.append(self.allocator, .{ .slot = slot, .binding_type = .storage_texture, .stage = .compute }) catch return;
+            set_entries.append(self.allocator, .{ .slot = slot, .resource = .{ .storage_texture = .{ .id = tex.id } } }) catch return;
+        }
+
+        if (layout_entries.items.len == 0) return;
+        const layout = self.device.createBindingLayout(.{ .entries = layout_entries.items, .label = "compute_storage_tex" }) catch return;
+        const set = self.device.createBindingSetCached(layout, .{ .entries = set_entries.items, .label = "compute_storage_tex" }) catch return;
+        if (self.current_frame) |*frame| {
+            frame.command_buffer.encodeSetBindingSet(.{ .slot = first_slot, .set_id = set.id }) catch {};
+        }
     }
 
     pub fn bindComputeStorageBuffers(self: *RhiDevice, pass: ComputePass, first_slot: u32, buffers: []const *const Buffer) void {
-        _ = self;
         _ = pass;
-        _ = first_slot;
-        _ = buffers;
+        if (self.current_frame == null) return;
+        var layout_entries = std.ArrayList(rhi.BindingLayoutEntry).empty;
+        defer layout_entries.deinit(self.allocator);
+        var set_entries = std.ArrayList(rhi.BindingSetEntry).empty;
+        defer set_entries.deinit(self.allocator);
+
+        for (buffers, 0..) |buf, i| {
+            const slot = first_slot + @as(u32, @intCast(i));
+            layout_entries.append(self.allocator, .{ .slot = slot, .binding_type = .storage_buffer, .stage = .compute }) catch return;
+            set_entries.append(self.allocator, .{ .slot = slot, .resource = .{ .storage_buffer = .{ .id = buf.id } } }) catch return;
+        }
+
+        if (layout_entries.items.len == 0) return;
+        const layout = self.device.createBindingLayout(.{ .entries = layout_entries.items, .label = "compute_storage_buf" }) catch return;
+        const set = self.device.createBindingSetCached(layout, .{ .entries = set_entries.items, .label = "compute_storage_buf" }) catch return;
+        if (self.current_frame) |*frame| {
+            frame.command_buffer.encodeSetBindingSet(.{ .slot = first_slot, .set_id = set.id }) catch {};
+        }
     }
 
     pub fn dispatchCompute(self: *RhiDevice, pass: ComputePass, groupcount_x: u32, groupcount_y: u32, groupcount_z: u32) void {

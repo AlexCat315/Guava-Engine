@@ -1539,6 +1539,10 @@ pub const Renderer = struct {
     sdl_metal_view: sdl.SDL_MetalView = null,
     /// IBL Compute 通道（GPU Compute 加速 BRDF LUT + Irradiance）
     ibl_compute_pass: ?ibl_compute_pass_mod.IBLComputePass = null,
+    /// GPU 生成的 BRDF LUT 纹理（256x256 RGBA16F）
+    gpu_brdf_lut: ?rhi_mod.Texture = null,
+    /// GPU BRDF LUT 是否已生成
+    gpu_brdf_lut_generated: bool = false,
     /// TAA 抗锯齿通道
     taa_pass: taa_pass_mod.TAAPass,
     /// Bloom 后处理通道
@@ -1808,6 +1812,7 @@ pub const Renderer = struct {
         }
         self.ssao_pass.deinit(&self.rhi);
         if (self.ssao_compute_pass) |*p| p.deinit(&self.rhi);
+        if (self.gpu_brdf_lut) |*t| self.rhi.releaseTexture(t);
         if (self.ibl_compute_pass) |*p| p.deinit(&self.rhi);
         self.taa_pass.deinit(&self.rhi);
         self.bloom_pass.deinit(&self.rhi);
@@ -2219,6 +2224,33 @@ pub const Renderer = struct {
                     prepared_scene.shadow_maps[ci] = &self.shadow_map.depth_textures[ci].?;
                 }
                 prepared_scene.shadow_sampler = &self.shadow_map.sampler.?;
+
+                // Generate GPU BRDF LUT once via compute shader (high quality, environment-independent)
+                if (!self.gpu_brdf_lut_generated) {
+                    self.gpu_brdf_lut_generated = true;
+                    if (self.ibl_compute_pass) |*ibl_pass| {
+                        if (ibl_pass.hasBRDF()) {
+                            const brdf_size: u32 = 256;
+                            self.gpu_brdf_lut = self.rhi.createTexture(.{
+                                .width = brdf_size,
+                                .height = brdf_size,
+                                .format = .rgba16_float,
+                                .usage = rhi_types.TextureUsage.sampler | rhi_types.TextureUsage.compute_storage_write,
+                            }) catch null;
+                            if (self.gpu_brdf_lut) |*lut| {
+                                ibl_pass.generateBRDFLUT(&self.rhi, frame, lut, brdf_size, 1024) catch |err| {
+                                    render_log.warn("GPU BRDF LUT generation failed: {s}", .{@errorName(err)});
+                                    self.rhi.releaseTexture(lut);
+                                    self.gpu_brdf_lut = null;
+                                };
+                                if (self.gpu_brdf_lut != null) {
+                                    render_log.info("GPU BRDF LUT generated ({}x{}, 1024 samples)", .{ brdf_size, brdf_size });
+                                }
+                            }
+                        }
+                    }
+                }
+
                 try resolveEnvironmentTextures(self, scene, &prepared_scene);
 
                 var prepared_preview_scene: mesh_pass_mod.PreparedScene = undefined;
@@ -4818,14 +4850,14 @@ fn resolveEnvironmentTextures(
         prepared_scene.environment_map = self.cached_env_textures.environment_map orelse &self.scene_cache.fallback_texture.?;
         prepared_scene.irradiance_map = self.cached_env_textures.irradiance_map orelse &self.scene_cache.fallback_texture.?;
         prepared_scene.prefiltered_env_map = self.cached_env_textures.prefiltered_env_map orelse &self.scene_cache.fallback_texture.?;
-        prepared_scene.brdf_lut = self.cached_env_textures.brdf_lut orelse self.scene_cache.fallbackBrdfLut();
+        prepared_scene.brdf_lut = self.cached_env_textures.brdf_lut orelse if (self.gpu_brdf_lut) |*lut| lut else self.scene_cache.fallbackBrdfLut();
         return;
     }
 
     prepared_scene.environment_map = &self.scene_cache.fallback_texture.?;
     prepared_scene.irradiance_map = &self.scene_cache.fallback_texture.?;
     prepared_scene.prefiltered_env_map = &self.scene_cache.fallback_texture.?;
-    prepared_scene.brdf_lut = self.scene_cache.fallbackBrdfLut();
+    prepared_scene.brdf_lut = if (self.gpu_brdf_lut) |*lut| lut else self.scene_cache.fallbackBrdfLut();
 
     // Mark resolved early so we never retry on failure (each attempt costs ~9s of disk I/O)
     self.cached_env_textures = .{
@@ -4884,6 +4916,11 @@ fn resolveEnvironmentTextures(
     }
     if (environment.brdf_lut_handle) |handle| {
         prepared_scene.brdf_lut = try self.scene_cache.ensureTextureHandle(&self.rhi, scene, handle);
+    }
+
+    // Prefer GPU-generated BRDF LUT over CPU-baked version
+    if (self.gpu_brdf_lut) |*lut| {
+        prepared_scene.brdf_lut = lut;
     }
 
     // Cache resolved textures for subsequent frames
