@@ -20,6 +20,8 @@ pub const place_actor_filter_buffer_size = 128;
 pub const asset_filter_buffer_size = 128;
 pub const asset_directory_buffer_size = 256;
 pub const layout_template_name_buffer_size = 128;
+pub const render_output_path_buffer_size = 256;
+pub const render_output_status_buffer_size = 256;
 
 pub const AssetKind = enum {
     scene,
@@ -136,6 +138,33 @@ pub const ViewportViewPreset = enum {
     top,
     side,
     custom,
+};
+
+pub const RenderOutputResolutionPreset = enum {
+    viewport,
+    hd_1080,
+    dci_2k,
+    uhd_4k,
+    custom,
+};
+
+pub const RenderOutputFormat = enum {
+    png,
+};
+
+pub const RenderOutputStatus = enum {
+    idle,
+    queued,
+    rendering,
+    writing,
+    success,
+    failure,
+};
+
+pub const RenderOutputJobStage = enum {
+    idle,
+    resize_and_render,
+    export_pending,
 };
 
 pub const AxisConstraint = engine.math.axis.Axis3;
@@ -357,6 +386,19 @@ pub const EditorState = struct {
     viewport_path_trace_samples: u32 = 4,
     viewport_path_trace_bounces: u32 = 2,
     viewport_path_trace_resolution_scale: f32 = 0.75,
+    render_output_resolution_preset: RenderOutputResolutionPreset = .hd_1080,
+    render_output_format: RenderOutputFormat = .png,
+    render_output_width: u32 = 1920,
+    render_output_height: u32 = 1080,
+    render_output_samples: u32 = 16,
+    render_output_bounces: u32 = 4,
+    render_output_path_buffer: [render_output_path_buffer_size]u8 = [_]u8{0} ** render_output_path_buffer_size,
+    render_output_status_buffer: [render_output_status_buffer_size]u8 = [_]u8{0} ** render_output_status_buffer_size,
+    render_output_status: RenderOutputStatus = .idle,
+    render_output_job_stage: RenderOutputJobStage = .idle,
+    render_output_restore_samples: u32 = 4,
+    render_output_restore_bounces: u32 = 2,
+    render_output_restore_resolution_scale: f32 = 0.75,
     viewport_view_preset: ViewportViewPreset = .perspective,
     viewport_debug_overlay: bool = false,
     viewport_show_grid: bool = true,
@@ -445,6 +487,25 @@ pub const EditorState = struct {
 
     pub fn languageInfo(self: *const EditorState) *const i18n.LocaleInfo {
         return i18n.locale(self.language);
+    }
+
+    pub fn renderOutputPath(self: *const EditorState) []const u8 {
+        const end = std.mem.indexOfScalar(u8, self.render_output_path_buffer[0..], 0) orelse self.render_output_path_buffer.len;
+        return self.render_output_path_buffer[0..end];
+    }
+
+    pub fn renderOutputStatusText(self: *const EditorState) []const u8 {
+        const end = std.mem.indexOfScalar(u8, self.render_output_status_buffer[0..], 0) orelse self.render_output_status_buffer.len;
+        return self.render_output_status_buffer[0..end];
+    }
+
+    pub fn ensureRenderOutputDefaults(self: *EditorState) void {
+        if (self.renderOutputPath().len != 0) {
+            return;
+        }
+
+        const default_path = "renders/frame.png";
+        @memcpy(self.render_output_path_buffer[0..default_path.len], default_path);
     }
 
     pub fn setMeshComponentClipboard(self: *EditorState, world: *engine.scene.World, component: engine.scene.Mesh) !void {

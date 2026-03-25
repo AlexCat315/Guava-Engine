@@ -88,6 +88,64 @@ fn syncPlaybackState(state: *EditorState, layer_context: *engine.core.LayerConte
     try playback_session.sync(state, layer_context);
 }
 
+fn syncRenderOutputJob(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    switch (state.render_output_job_stage) {
+        .idle => {},
+        .resize_and_render => {},
+        .export_pending => try exportPendingRenderOutput(state, layer_context),
+    }
+}
+
+fn exportPendingRenderOutput(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const allocator = state.allocator orelse layer_context.world.allocator;
+    const out_path = state.renderOutputPath();
+    if (out_path.len == 0) {
+        setRenderOutputStatusLiteral(state, .failure, "Output path is required.");
+        restoreRenderOutputOverrides(state, layer_context);
+        return;
+    }
+
+    setRenderOutputStatusFmt(state, .writing, "Writing {s}", .{out_path});
+    const dims = layer_context.renderer.sceneViewportSize();
+    const export_result = switch (state.render_output_format) {
+        .png => layer_context.renderer.exportFramePng(allocator, out_path),
+    };
+
+    if (export_result) {
+        setRenderOutputStatusFmt(state, .success, "Saved {d} x {d} -> {s}", .{ dims[0], dims[1], out_path });
+    } else |err| {
+        setRenderOutputStatusFmt(state, .failure, "Export failed: {s}", .{@errorName(err)});
+    }
+
+    restoreRenderOutputOverrides(state, layer_context);
+}
+
+fn restoreRenderOutputOverrides(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+    state.viewport_path_trace_samples = state.render_output_restore_samples;
+    state.viewport_path_trace_bounces = state.render_output_restore_bounces;
+    state.viewport_path_trace_resolution_scale = state.render_output_restore_resolution_scale;
+    state.render_output_job_stage = .idle;
+    layer_context.renderer.resetPathTraceState();
+}
+
+fn setRenderOutputStatusLiteral(state: *EditorState, status: state_mod.RenderOutputStatus, text: []const u8) void {
+    state.render_output_status = status;
+    @memset(state.render_output_status_buffer[0..], 0);
+    const copy_len = @min(text.len, state.render_output_status_buffer.len - 1);
+    @memcpy(state.render_output_status_buffer[0..copy_len], text[0..copy_len]);
+}
+
+fn setRenderOutputStatusFmt(
+    state: *EditorState,
+    status: state_mod.RenderOutputStatus,
+    comptime fmt: []const u8,
+    args: anytype,
+) void {
+    state.render_output_status = status;
+    @memset(state.render_output_status_buffer[0..], 0);
+    _ = std.fmt.bufPrint(&state.render_output_status_buffer, fmt, args) catch {};
+}
+
 fn drawViewportToolbarStrip(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const width = gui.contentRegionAvail()[0];
     gui.pushStyleVarVec2(.item_spacing, .{ 6.0, 6.0 });
@@ -358,8 +416,15 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
     var mouse_pos = effectiveViewportMousePos(layer_context);
     state.viewport_hovered = window_hovered and isPointInViewportRect(mouse_pos, state.viewport_origin, state.viewport_extent);
 
-    const drawable_size = utils.viewportDrawableSize(layer_context.window, state.viewport_extent);
+    const drawable_size = if (state.render_output_job_stage == .resize_and_render)
+        render_settings.resolveRenderOutputDimensions(state, layer_context)
+    else
+        utils.viewportDrawableSize(layer_context.window, state.viewport_extent);
     try layer_context.renderer.setSceneViewportSize(drawable_size[0], drawable_size[1]);
+    if (state.render_output_job_stage == .resize_and_render) {
+        state.render_output_job_stage = .export_pending;
+        setRenderOutputStatusFmt(state, .rendering, "Rendering {d} x {d}", .{ drawable_size[0], drawable_size[1] });
+    }
 
     if (layer_context.renderer.sceneViewportTexture()) |texture| {
         const image_size = .{
@@ -709,6 +774,7 @@ pub fn drawEditorUi(
     post_process_state: *const engine.render.EditorViewportState,
     layer_context: *engine.core.LayerContext,
 ) !void {
+    try syncRenderOutputJob(state, layer_context);
     syncViewportState(state, post_process_state, layer_context);
     try applyPendingViewportAssetDrop(state, layer_context);
     try syncPlaybackState(state, layer_context);

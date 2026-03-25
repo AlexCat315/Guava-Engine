@@ -1,11 +1,14 @@
 const std = @import("std");
 const engine = @import("guava");
 const gui = @import("../../gui.zig");
-const EditorState = @import("../../../core/state.zig").EditorState;
+const state_mod = @import("../../../core/state.zig");
+const EditorState = state_mod.EditorState;
 const camera = @import("../../../interaction/camera.zig");
 const layout = @import("../../layout.zig");
 
 pub fn drawRenderSettingsWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    state.ensureRenderOutputDefaults();
+
     var title_buffer: [80]u8 = undefined;
     const title = try state.windowLabel(&title_buffer, .render_settings, "render_settings_popup");
     var open = state.render_settings_open;
@@ -76,6 +79,9 @@ pub fn drawRenderSettingsWindow(state: *EditorState, layer_context: *engine.core
     gui.labelText("Resolution", pt_scale_text);
 
     gui.separator();
+    try drawRenderOutputSection(state, layer_context);
+
+    gui.separator();
     _ = gui.checkbox(state.text(.show_grid), &state.viewport_show_grid);
     _ = gui.checkbox(state.text(.show_bones), &state.viewport_show_bones);
     _ = gui.checkbox(state.text(.show_collision), &state.viewport_show_collision);
@@ -94,6 +100,135 @@ pub fn drawRenderSettingsWindow(state: *EditorState, layer_context: *engine.core
     var viewport_buffer: [64]u8 = undefined;
     const viewport_text = try std.fmt.bufPrint(&viewport_buffer, "{d} x {d}", .{ viewport_size[0], viewport_size[1] });
     gui.labelText(state.text(.viewport_size), viewport_text);
+}
+
+pub fn resolveRenderOutputDimensions(
+    state: *const EditorState,
+    layer_context: *const engine.core.LayerContext,
+) [2]u32 {
+    return switch (state.render_output_resolution_preset) {
+        .viewport => blk: {
+            const renderer_size = layer_context.renderer.sceneViewportSize();
+            if (renderer_size[0] > 0 and renderer_size[1] > 0) {
+                break :blk renderer_size;
+            }
+            break :blk .{ 0, 0 };
+        },
+        .hd_1080 => .{ 1920, 1080 },
+        .dci_2k => .{ 2048, 1080 },
+        .uhd_4k => .{ 3840, 2160 },
+        .custom => .{
+            @max(state.render_output_width, 64),
+            @max(state.render_output_height, 64),
+        },
+    };
+}
+
+pub fn queueRenderImageOutput(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    if (state.render_output_job_stage != .idle) {
+        return;
+    }
+
+    state.ensureRenderOutputDefaults();
+
+    const dims = resolveRenderOutputDimensions(state, layer_context);
+    if (dims[0] == 0 or dims[1] == 0) {
+        setRenderOutputStatusLiteral(state, .failure, "Viewport size is not ready yet.");
+        return;
+    }
+
+    const out_path = state.renderOutputPath();
+    if (out_path.len == 0) {
+        setRenderOutputStatusLiteral(state, .failure, "Output path is required.");
+        return;
+    }
+
+    state.render_output_restore_samples = state.viewport_path_trace_samples;
+    state.render_output_restore_bounces = state.viewport_path_trace_bounces;
+    state.render_output_restore_resolution_scale = state.viewport_path_trace_resolution_scale;
+
+    if (state.viewport_pipeline_mode == .path_trace) {
+        state.viewport_path_trace_samples = std.math.clamp(state.render_output_samples, 1, 64);
+        state.viewport_path_trace_bounces = std.math.clamp(state.render_output_bounces, 1, 8);
+        state.viewport_path_trace_resolution_scale = 1.0;
+        layer_context.renderer.resetPathTraceState();
+    }
+
+    state.render_output_job_stage = .resize_and_render;
+    setRenderOutputStatusFmt(state, .queued, "{d} x {d} -> {s}", .{ dims[0], dims[1], out_path });
+}
+
+fn drawRenderOutputSection(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    gui.text("Render Output");
+    drawRenderOutputPresetCombo(state);
+
+    if (state.render_output_resolution_preset == .custom) {
+        var output_width: i32 = @intCast(state.render_output_width);
+        if (gui.dragInt("##render_output_width", &output_width, 1.0, 64, 8192)) {
+            state.render_output_width = @intCast(std.math.clamp(output_width, 64, 8192));
+        }
+        var output_width_buf: [32]u8 = undefined;
+        const output_width_text = try std.fmt.bufPrint(&output_width_buf, "{d}", .{state.render_output_width});
+        gui.labelText("Width", output_width_text);
+
+        var output_height: i32 = @intCast(state.render_output_height);
+        if (gui.dragInt("##render_output_height", &output_height, 1.0, 64, 8192)) {
+            state.render_output_height = @intCast(std.math.clamp(output_height, 64, 8192));
+        }
+        var output_height_buf: [32]u8 = undefined;
+        const output_height_text = try std.fmt.bufPrint(&output_height_buf, "{d}", .{state.render_output_height});
+        gui.labelText("Height", output_height_text);
+    }
+
+    const dims = resolveRenderOutputDimensions(state, layer_context);
+    var output_size_buf: [64]u8 = undefined;
+    const output_size_text = try std.fmt.bufPrint(&output_size_buf, "{d} x {d}", .{ dims[0], dims[1] });
+    gui.labelText("Output Size", output_size_text);
+    gui.labelText("Format", renderOutputFormatLabel(state.render_output_format));
+
+    gui.text("Output Path");
+    _ = gui.inputTextWithHint("##render_output_path", "renders/frame.png", state.render_output_path_buffer[0..]);
+
+    gui.textWrapped(renderOutputPipelineNote(state));
+
+    if (state.viewport_pipeline_mode == .path_trace) {
+        var export_samples: i32 = @intCast(state.render_output_samples);
+        if (gui.dragInt("##render_output_samples", &export_samples, 1.0, 1, 64)) {
+            state.render_output_samples = @intCast(std.math.clamp(export_samples, 1, 64));
+        }
+        var export_samples_buf: [32]u8 = undefined;
+        const export_samples_text = try std.fmt.bufPrint(&export_samples_buf, "{d}", .{state.render_output_samples});
+        gui.labelText("Export Samples", export_samples_text);
+
+        var export_bounces: i32 = @intCast(state.render_output_bounces);
+        if (gui.dragInt("##render_output_bounces", &export_bounces, 1.0, 1, 8)) {
+            state.render_output_bounces = @intCast(std.math.clamp(export_bounces, 1, 8));
+        }
+        var export_bounces_buf: [32]u8 = undefined;
+        const export_bounces_text = try std.fmt.bufPrint(&export_bounces_buf, "{d}", .{state.render_output_bounces});
+        gui.labelText("Export Bounces", export_bounces_text);
+    } else {
+        gui.textWrapped("Current pipeline is Raster, so export samples/bounces are ignored.");
+    }
+
+    gui.labelText("Status", renderOutputStatusLabel(state.render_output_status));
+    const status_detail = state.renderOutputStatusText();
+    if (status_detail.len > 0) {
+        const detail_color = switch (state.render_output_status) {
+            .failure => [4]f32{ 1.0, 0.42, 0.42, 1.0 },
+            .success => [4]f32{ 0.50, 0.86, 0.58, 1.0 },
+            else => [4]f32{ 0.73, 0.76, 0.82, 1.0 },
+        };
+        gui.textColored(detail_color, status_detail);
+    }
+
+    if (state.render_output_job_stage == .idle) {
+        if (gui.buttonEx("Render Image", 140.0, 0.0)) {
+            try queueRenderImageOutput(state, layer_context);
+        }
+    } else {
+        gui.textWrapped("High-resolution frame render is in progress. Animation/video output is still pending.");
+    }
 }
 
 const ButtonRowResult = enum {
@@ -208,4 +343,107 @@ fn drawPtQualityPresetCombo(state: *EditorState) void {
             applyPtPreset(state, preset);
         }
     }
+}
+
+fn drawRenderOutputPresetCombo(state: *EditorState) void {
+    const preview_label = renderOutputPresetLabel(state.render_output_resolution_preset);
+    if (!gui.beginCombo("Resolution Preset##render_output_preset", preview_label)) {
+        return;
+    }
+    defer gui.endCombo();
+
+    const presets = [_]state_mod.RenderOutputResolutionPreset{ .viewport, .hd_1080, .dci_2k, .uhd_4k, .custom };
+    for (presets) |preset| {
+        const selected = state.render_output_resolution_preset == preset;
+        if (gui.selectable(renderOutputPresetLabel(preset), selected, false, 0.0, 0.0)) {
+            state.render_output_resolution_preset = preset;
+            applyRenderOutputPreset(state, preset);
+        }
+    }
+}
+
+fn renderOutputPresetLabel(preset: state_mod.RenderOutputResolutionPreset) []const u8 {
+    return switch (preset) {
+        .viewport => "Viewport",
+        .hd_1080 => "1080p",
+        .dci_2k => "2K DCI",
+        .uhd_4k => "4K UHD",
+        .custom => "Custom",
+    };
+}
+
+fn applyRenderOutputPreset(state: *EditorState, preset: state_mod.RenderOutputResolutionPreset) void {
+    switch (preset) {
+        .viewport => {},
+        .hd_1080 => {
+            state.render_output_width = 1920;
+            state.render_output_height = 1080;
+        },
+        .dci_2k => {
+            state.render_output_width = 2048;
+            state.render_output_height = 1080;
+        },
+        .uhd_4k => {
+            state.render_output_width = 3840;
+            state.render_output_height = 2160;
+        },
+        .custom => {},
+    }
+}
+
+fn renderOutputFormatLabel(format: state_mod.RenderOutputFormat) []const u8 {
+    return switch (format) {
+        .png => "PNG",
+    };
+}
+
+fn renderOutputPipelineNote(state: *const EditorState) []const u8 {
+    return switch (state.viewport_pipeline_mode) {
+        .raster => "Exports use the current Raster viewport result at the selected output resolution.",
+        .path_trace => "Exports temporarily switch PathTrace to the output samples/bounces and full-resolution tracing.",
+    };
+}
+
+fn renderOutputStatusLabel(status: state_mod.RenderOutputStatus) []const u8 {
+    return switch (status) {
+        .idle => "Ready",
+        .queued => "Queued",
+        .rendering => "Rendering",
+        .writing => "Writing",
+        .success => "Done",
+        .failure => "Failed",
+    };
+}
+
+fn setRenderOutputStatusLiteral(state: *EditorState, status: state_mod.RenderOutputStatus, text: []const u8) void {
+    state.render_output_status = status;
+    @memset(state.render_output_status_buffer[0..], 0);
+    const copy_len = @min(text.len, state.render_output_status_buffer.len - 1);
+    @memcpy(state.render_output_status_buffer[0..copy_len], text[0..copy_len]);
+}
+
+fn setRenderOutputStatusFmt(
+    state: *EditorState,
+    status: state_mod.RenderOutputStatus,
+    comptime fmt: []const u8,
+    args: anytype,
+) void {
+    state.render_output_status = status;
+    @memset(state.render_output_status_buffer[0..], 0);
+    _ = std.fmt.bufPrint(&state.render_output_status_buffer, fmt, args) catch {};
+}
+
+test "render output preset dimensions" {
+    var state = EditorState{};
+    applyRenderOutputPreset(&state, .hd_1080);
+    try std.testing.expectEqual(@as(u32, 1920), state.render_output_width);
+    try std.testing.expectEqual(@as(u32, 1080), state.render_output_height);
+
+    applyRenderOutputPreset(&state, .dci_2k);
+    try std.testing.expectEqual(@as(u32, 2048), state.render_output_width);
+    try std.testing.expectEqual(@as(u32, 1080), state.render_output_height);
+
+    applyRenderOutputPreset(&state, .uhd_4k);
+    try std.testing.expectEqual(@as(u32, 3840), state.render_output_width);
+    try std.testing.expectEqual(@as(u32, 2160), state.render_output_height);
 }

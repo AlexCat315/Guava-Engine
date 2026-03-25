@@ -4260,6 +4260,9 @@ pub const Renderer = struct {
 
         const png_slice: []const u8 = @ptrCast(png_data[0..@intCast(out_len)]);
 
+        if (std.fs.path.dirname(out_path)) |directory| {
+            try std.fs.cwd().makePath(directory);
+        }
         const file = try std.fs.cwd().createFile(out_path, .{});
         defer file.close();
         try file.writeAll(png_slice);
