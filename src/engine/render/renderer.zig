@@ -4244,6 +4244,7 @@ pub const Renderer = struct {
 
         const c = @cImport({
             @cDefine("STBI_WRITE_NO_STDIO", "1");
+            @cDefine("STB_IMAGE_WRITE_IMPLEMENTATION", "1");
             @cInclude("stb_image_write.h");
         });
 
