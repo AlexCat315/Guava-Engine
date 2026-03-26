@@ -365,10 +365,15 @@ pub const Application = struct {
 
             try self.applyPendingCommands();
 
+            const should_advance_simulation = self.playback_controller.shouldAdvance();
+            if (should_advance_simulation) {
+                if (self.playback_controller.fixed_delta_seconds) |fixed_delta| {
+                    delta_seconds = fixed_delta;
+                }
+            }
+
             // 更新全局时间
             self.global_time += delta_seconds * self.time_scale;
-
-            const should_advance_simulation = self.playback_controller.shouldAdvance();
 
             // 同步 GameState 与 PlaybackController
             if (should_advance_simulation and self.game_state == .game_start) {

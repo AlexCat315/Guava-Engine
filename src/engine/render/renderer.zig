@@ -5712,6 +5712,69 @@ pub const Renderer = struct {
         }
     }
 
+    /// Export path-traced linear beauty to OpenEXR.
+    pub fn exportPathTraceFrameExr(
+        self: *Renderer,
+        allocator: std.mem.Allocator,
+        scene: *scene_mod.Scene,
+        out_path: []const u8,
+    ) !void {
+        const viewport_size = self.sceneViewportSize();
+        if (viewport_size[0] == 0 or viewport_size[1] == 0) return error.InvalidDimensions;
+
+        const samples = std.math.clamp(self.editor_viewport_state.path_trace_samples, 1, 64);
+        const bounces = std.math.clamp(self.editor_viewport_state.path_trace_bounces, 1, 8);
+
+        var beauty_rgb: []f32 = undefined;
+        defer allocator.free(beauty_rgb);
+
+        var beauty_width = viewport_size[0];
+        var beauty_height = viewport_size[1];
+
+        const use_existing_cpu_path = self.path_trace_state.triangles != null and
+            self.path_trace_state.trace_width == viewport_size[0] and
+            self.path_trace_state.trace_height == viewport_size[1];
+
+        if (use_existing_cpu_path) {
+            var pt = &self.path_trace_state;
+            pt.cached_samples = samples;
+            pt.cached_bounces = bounces;
+            if (pt.sample_step == 0) {
+                pt.sample_step = computePathTraceSampleStep(pt.trace_width, pt.trace_height);
+            }
+            renderCpuPathTraceTiles(pt, false, 0);
+            resolvePathTraceDisplayPixels(pt);
+            beauty_rgb = try allocator.dupe(f32, pt.trace_linear_rgb.?);
+            beauty_width = pt.trace_width;
+            beauty_height = pt.trace_height;
+        } else if (self.path_trace_state.triangles != null) {
+            var offline_pt = try self.buildOfflinePathTraceExportState(
+                scene,
+                viewport_size[0],
+                viewport_size[1],
+                samples,
+                bounces,
+                true,
+            );
+            defer offline_pt.deinit(self.allocator);
+            beauty_rgb = try allocator.dupe(f32, offline_pt.trace_linear_rgb.?);
+            beauty_width = offline_pt.trace_width;
+            beauty_height = offline_pt.trace_height;
+        } else {
+            const hdr = try self.downloadHdrFramePixelsAlloc(allocator);
+            defer allocator.free(hdr.data);
+            beauty_rgb = try image_export.copyHdrRgbaToRgbAlloc(allocator, hdr.data, hdr.width, hdr.height);
+            beauty_width = hdr.width;
+            beauty_height = hdr.height;
+        }
+
+        const beauty_rgba = try image_export.copyHdrRgbToRgbaAlloc(allocator, beauty_rgb, beauty_width, beauty_height);
+        defer allocator.free(beauty_rgba);
+        const exr = try image_export.encodeExrRgb32fAlloc(allocator, beauty_rgba, beauty_width, beauty_height);
+        defer allocator.free(exr);
+        try image_export.writeFileEnsuringParent(out_path, exr);
+    }
+
     /// Export a single frame to PNG at the given path.
     /// Performs GPU readback + CPU-side PNG encode + disk write.
     pub fn exportFramePng(self: *Renderer, allocator: std.mem.Allocator, out_path: []const u8) !void {

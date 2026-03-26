@@ -32,15 +32,25 @@ pub const GameState = enum(u32) {
 pub const PlaybackController = struct {
     state: PlaybackState = .stopped,
     pending_steps: usize = 0,
+    fixed_delta_seconds: ?f32 = null,
 
     pub fn setState(self: *PlaybackController, next: PlaybackState) void {
         self.state = next;
         self.pending_steps = 0;
+        self.fixed_delta_seconds = null;
     }
 
     pub fn requestStep(self: *PlaybackController) void {
         self.state = .paused;
         self.pending_steps += 1;
+        self.fixed_delta_seconds = null;
+    }
+
+    pub fn setFixedDelta(self: *PlaybackController, delta_seconds: ?f32) void {
+        self.fixed_delta_seconds = if (delta_seconds) |delta|
+            if (std.math.isFinite(delta) and delta > 0.0) delta else null
+        else
+            null;
     }
 
     pub fn shouldAdvance(self: *const PlaybackController) bool {
@@ -129,4 +139,20 @@ test "PlaybackController advances only while playing or stepping" {
     controller.requestStep();
     controller.setState(.paused);
     try std.testing.expect(!controller.shouldAdvance());
+}
+
+test "PlaybackController fixed delta override resets with state changes" {
+    var controller = PlaybackController{};
+    controller.setFixedDelta(1.0 / 24.0);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0 / 24.0), controller.fixed_delta_seconds.?, 0.0001);
+
+    controller.requestStep();
+    try std.testing.expectEqual(@as(?f32, null), controller.fixed_delta_seconds);
+
+    controller.setFixedDelta(1.0 / 30.0);
+    controller.setState(.playing);
+    try std.testing.expectEqual(@as(?f32, null), controller.fixed_delta_seconds);
+
+    controller.setFixedDelta(-1.0);
+    try std.testing.expectEqual(@as(?f32, null), controller.fixed_delta_seconds);
 }

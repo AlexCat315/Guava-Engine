@@ -197,6 +197,28 @@ pub fn copyHdrRgbaToRgbAlloc(
     return rgb;
 }
 
+pub fn copyHdrRgbToRgbaAlloc(
+    allocator: std.mem.Allocator,
+    hdr_rgb: []const f32,
+    width: u32,
+    height: u32,
+) ![]f32 {
+    const pixel_count = @as(usize, width) * @as(usize, height);
+    if (hdr_rgb.len < pixel_count * 3) return error.InvalidHdrData;
+
+    const rgba = try allocator.alloc(f32, pixel_count * 4);
+    var pixel_index: usize = 0;
+    while (pixel_index < pixel_count) : (pixel_index += 1) {
+        const src = pixel_index * 3;
+        const dst = pixel_index * 4;
+        rgba[dst + 0] = sanitizeHdrValue(hdr_rgb[src + 0]);
+        rgba[dst + 1] = sanitizeHdrValue(hdr_rgb[src + 1]);
+        rgba[dst + 2] = sanitizeHdrValue(hdr_rgb[src + 2]);
+        rgba[dst + 3] = 1.0;
+    }
+    return rgba;
+}
+
 fn acesFilmScalar(x: f32) f32 {
     const clamped = @max(x, 0.0);
     return std.math.clamp((clamped * (2.51 * clamped + 0.03)) / (clamped * (2.43 * clamped + 0.59) + 0.14), 0.0, 1.0);

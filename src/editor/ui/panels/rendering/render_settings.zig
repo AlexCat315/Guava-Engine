@@ -5,6 +5,7 @@ const state_mod = @import("../../../core/state.zig");
 const EditorState = state_mod.EditorState;
 const camera = @import("../../../interaction/camera.zig");
 const layout = @import("../../layout.zig");
+const playback_session = @import("../../../core/playback_session.zig");
 
 pub fn drawRenderSettingsWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     state.ensureRenderOutputDefaults();
@@ -124,7 +125,7 @@ pub fn resolveRenderOutputDimensions(
     };
 }
 
-pub fn queueRenderImageOutput(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+pub fn queueRenderOutput(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     if (state.render_output_job_stage != .idle) {
         return;
     }
@@ -137,15 +138,31 @@ pub fn queueRenderImageOutput(state: *EditorState, layer_context: *engine.core.L
         return;
     }
 
-    const out_path = state.renderOutputPath();
-    if (out_path.len == 0) {
+    if (state.renderOutputPath().len == 0) {
         setRenderOutputStatusLiteral(state, .failure, "Output path is required.");
+        return;
+    }
+
+    const total_frames: u32 = if (state.render_output_sequence_enabled)
+        @max(state.render_output_sequence_frame_count, 1)
+    else
+        1;
+    if (state.render_output_sequence_enabled and layer_context.playback_controller.state != .stopped) {
+        setRenderOutputStatusLiteral(state, .failure, "Sequence export requires playback to be stopped.");
+        return;
+    }
+    if (state.render_output_sequence_enabled and state.render_output_sequence_fps == 0) {
+        setRenderOutputStatusLiteral(state, .failure, "Sequence FPS must be at least 1.");
         return;
     }
 
     state.render_output_restore_samples = state.viewport_path_trace_samples;
     state.render_output_restore_bounces = state.viewport_path_trace_bounces;
     state.render_output_restore_resolution_scale = state.viewport_path_trace_resolution_scale;
+    state.render_output_job_is_sequence = state.render_output_sequence_enabled;
+    state.render_output_job_total_frames = total_frames;
+    state.render_output_job_frame_index = 0;
+    state.render_output_job_started_playback = false;
 
     if (state.viewport_pipeline_mode == .path_trace) {
         state.viewport_path_trace_samples = std.math.clamp(state.render_output_samples, 1, 64);
@@ -154,8 +171,23 @@ pub fn queueRenderImageOutput(state: *EditorState, layer_context: *engine.core.L
         layer_context.renderer.resetPathTraceState();
     }
 
+    if (state.render_output_job_is_sequence and total_frames > 1) {
+        try playback_session.play(state, layer_context);
+        layer_context.playback_controller.setFixedDelta(1.0 / @as(f32, @floatFromInt(state.render_output_sequence_fps)));
+        state.render_output_job_started_playback = true;
+    }
+
     state.render_output_job_stage = .resize_and_render;
-    setRenderOutputStatusFmt(state, .queued, "{d} x {d} -> {s}", .{ dims[0], dims[1], out_path });
+    if (state.render_output_job_is_sequence) {
+        const frame_number = state.renderOutputFrameNumber(0);
+        const out_path = try state.renderOutputResolvedPathAlloc(state.allocator orelse layer_context.world.allocator, frame_number);
+        defer (state.allocator orelse layer_context.world.allocator).free(out_path);
+        setRenderOutputStatusFmt(state, .queued, "Queued frame 1/{d} -> {s}", .{ total_frames, out_path });
+    } else {
+        const out_path = try state.renderOutputResolvedPathAlloc(state.allocator orelse layer_context.world.allocator, null);
+        defer (state.allocator orelse layer_context.world.allocator).free(out_path);
+        setRenderOutputStatusFmt(state, .queued, "{d} x {d} -> {s}", .{ dims[0], dims[1], out_path });
+    }
 }
 
 fn drawRenderOutputSection(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -184,12 +216,39 @@ fn drawRenderOutputSection(state: *EditorState, layer_context: *engine.core.Laye
     var output_size_buf: [64]u8 = undefined;
     const output_size_text = try std.fmt.bufPrint(&output_size_buf, "{d} x {d}", .{ dims[0], dims[1] });
     gui.labelText("Output Size", output_size_text);
-    gui.labelText("Format", renderOutputFormatLabel(state.render_output_format));
+    drawRenderOutputFormatCombo(state);
 
     gui.text("Output Path");
     _ = gui.inputTextWithHint("##render_output_path", "renders_test_out/frame.png", state.render_output_path_buffer[0..]);
 
     gui.textWrapped(renderOutputPipelineNote(state));
+
+    _ = gui.checkbox("Image Sequence", &state.render_output_sequence_enabled);
+    if (state.render_output_sequence_enabled) {
+        var start_frame: i32 = @intCast(state.render_output_sequence_start_frame);
+        if (gui.dragInt("##render_output_sequence_start", &start_frame, 1.0, 0, 100000)) {
+            state.render_output_sequence_start_frame = @intCast(std.math.clamp(start_frame, 0, 100000));
+        }
+        var start_frame_buf: [32]u8 = undefined;
+        const start_frame_text = try std.fmt.bufPrint(&start_frame_buf, "{d}", .{state.render_output_sequence_start_frame});
+        gui.labelText("Start Frame", start_frame_text);
+
+        var frame_count: i32 = @intCast(state.render_output_sequence_frame_count);
+        if (gui.dragInt("##render_output_sequence_count", &frame_count, 1.0, 1, 4096)) {
+            state.render_output_sequence_frame_count = @intCast(std.math.clamp(frame_count, 1, 4096));
+        }
+        var frame_count_buf: [32]u8 = undefined;
+        const frame_count_text = try std.fmt.bufPrint(&frame_count_buf, "{d}", .{state.render_output_sequence_frame_count});
+        gui.labelText("Frame Count", frame_count_text);
+
+        var fps: i32 = @intCast(state.render_output_sequence_fps);
+        if (gui.dragInt("##render_output_sequence_fps", &fps, 1.0, 1, 240)) {
+            state.render_output_sequence_fps = @intCast(std.math.clamp(fps, 1, 240));
+        }
+        var fps_buf: [32]u8 = undefined;
+        const fps_text = try std.fmt.bufPrint(&fps_buf, "{d}", .{state.render_output_sequence_fps});
+        gui.labelText("FPS", fps_text);
+    }
 
     if (state.viewport_pipeline_mode == .path_trace) {
         var export_samples: i32 = @intCast(state.render_output_samples);
@@ -208,8 +267,12 @@ fn drawRenderOutputSection(state: *EditorState, layer_context: *engine.core.Laye
         const export_bounces_text = try std.fmt.bufPrint(&export_bounces_buf, "{d}", .{state.render_output_bounces});
         gui.labelText("Export Bounces", export_bounces_text);
 
-        _ = gui.checkbox("Denoise PathTrace Export", &state.render_output_path_trace_denoise);
-        _ = gui.checkbox("Write Albedo/Normal AOV", &state.render_output_path_trace_write_aovs);
+        if (state.render_output_format == .png) {
+            _ = gui.checkbox("Denoise PathTrace Export", &state.render_output_path_trace_denoise);
+            _ = gui.checkbox("Write Albedo/Normal AOV", &state.render_output_path_trace_write_aovs);
+        } else {
+            gui.textWrapped("OpenEXR exports write linear beauty only. Denoise and albedo/normal AOV sidecars remain PNG-only.");
+        }
     } else {
         gui.textWrapped("Current pipeline is Raster, so export samples/bounces are ignored.");
     }
@@ -226,11 +289,12 @@ fn drawRenderOutputSection(state: *EditorState, layer_context: *engine.core.Laye
     }
 
     if (state.render_output_job_stage == .idle) {
-        if (gui.buttonEx("Render Image", 140.0, 0.0)) {
-            try queueRenderImageOutput(state, layer_context);
+        const button_label = if (state.render_output_sequence_enabled) "Render Sequence" else "Render Image";
+        if (gui.buttonEx(button_label, 140.0, 0.0)) {
+            try queueRenderOutput(state, layer_context);
         }
     } else {
-        gui.textWrapped("High-resolution frame render is in progress. Animation/video output is still pending.");
+        gui.textWrapped("Render output job is in progress. Settings are locked until the current export finishes.");
     }
 }
 
@@ -365,6 +429,22 @@ fn drawRenderOutputPresetCombo(state: *EditorState) void {
     }
 }
 
+fn drawRenderOutputFormatCombo(state: *EditorState) void {
+    const preview_label = renderOutputFormatLabel(state.render_output_format);
+    if (!gui.beginCombo("Format##render_output_format", preview_label)) {
+        return;
+    }
+    defer gui.endCombo();
+
+    const formats = [_]state_mod.RenderOutputFormat{ .png, .exr };
+    for (formats) |format| {
+        const selected = state.render_output_format == format;
+        if (gui.selectable(renderOutputFormatLabel(format), selected, false, 0.0, 0.0)) {
+            state.render_output_format = format;
+        }
+    }
+}
+
 fn renderOutputPresetLabel(preset: state_mod.RenderOutputResolutionPreset) []const u8 {
     return switch (preset) {
         .viewport => "Viewport",
@@ -397,14 +477,30 @@ fn applyRenderOutputPreset(state: *EditorState, preset: state_mod.RenderOutputRe
 fn renderOutputFormatLabel(format: state_mod.RenderOutputFormat) []const u8 {
     return switch (format) {
         .png => "PNG",
+        .exr => "OpenEXR",
     };
 }
 
 fn renderOutputPipelineNote(state: *const EditorState) []const u8 {
+    if (state.render_output_sequence_enabled) {
+        return switch (state.viewport_pipeline_mode) {
+            .raster => "Sequence export drives playback with a fixed timestep so animation, scripts, physics, and VFX advance deterministically per frame before each raster write.",
+            .path_trace => if (state.render_output_format == .png and
+                (state.render_output_path_trace_denoise or state.render_output_path_trace_write_aovs))
+                "Sequence export drives playback with a fixed timestep. Each frame switches PathTrace to the output samples/bounces, and PNG writes can emit albedo/normal AOV sidecars plus AOV-guided denoise."
+            else if (state.render_output_format == .exr)
+                "Sequence export drives playback with a fixed timestep. OpenEXR writes linear PathTrace beauty per frame."
+            else
+                "Sequence export drives playback with a fixed timestep. Each frame switches PathTrace to the output samples/bounces and full-resolution tracing before write.",
+        };
+    }
     return switch (state.viewport_pipeline_mode) {
         .raster => "Exports use the current Raster viewport result at the selected output resolution.",
-        .path_trace => if (state.render_output_path_trace_denoise or state.render_output_path_trace_write_aovs)
+        .path_trace => if (state.render_output_format == .png and
+            (state.render_output_path_trace_denoise or state.render_output_path_trace_write_aovs))
             "Exports switch PathTrace to the output samples/bounces and full-resolution tracing, then can emit albedo/normal AOV sidecars and run AOV-guided denoise before PNG write."
+        else if (state.render_output_format == .exr)
+            "Exports switch PathTrace to the output samples/bounces and write linear beauty to OpenEXR."
         else
             "Exports temporarily switch PathTrace to the output samples/bounces and full-resolution tracing.",
     };

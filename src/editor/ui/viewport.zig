@@ -93,19 +93,60 @@ fn syncRenderOutputJob(state: *EditorState, layer_context: *engine.core.LayerCon
         .idle => {},
         .resize_and_render => {},
         .export_pending => try exportPendingRenderOutput(state, layer_context),
+        .restore_pending => {
+            if (!state.play_mode_active and state.playback_state == .stopped) {
+                restoreRenderOutputOverrides(state, layer_context);
+            }
+        },
     }
+}
+
+fn renderOutputCurrentFrameNumber(state: *const EditorState) ?u32 {
+    if (!state.render_output_job_is_sequence) {
+        return null;
+    }
+    return state.renderOutputFrameNumber(state.render_output_job_frame_index);
+}
+
+fn beginRenderOutputRestore(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+    if (state.render_output_job_started_playback) {
+        playback_session.stop(state, layer_context);
+        state.render_output_job_stage = .restore_pending;
+        return;
+    }
+    restoreRenderOutputOverrides(state, layer_context);
+}
+
+fn failRenderOutputJob(state: *EditorState, layer_context: *engine.core.LayerContext, err: anyerror) void {
+    setRenderOutputStatusFmt(state, .failure, "Export failed: {s}", .{@errorName(err)});
+    beginRenderOutputRestore(state, layer_context);
 }
 
 fn exportPendingRenderOutput(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const allocator = state.allocator orelse layer_context.world.allocator;
-    const out_path = state.renderOutputPath();
+    const out_path = state.renderOutputResolvedPathAlloc(allocator, renderOutputCurrentFrameNumber(state)) catch |err| {
+        setRenderOutputStatusFmt(state, .failure, "Output path is invalid: {s}", .{@errorName(err)});
+        beginRenderOutputRestore(state, layer_context);
+        return;
+    };
+    defer allocator.free(out_path);
+
     if (out_path.len == 0) {
         setRenderOutputStatusLiteral(state, .failure, "Output path is required.");
-        restoreRenderOutputOverrides(state, layer_context);
+        beginRenderOutputRestore(state, layer_context);
         return;
     }
 
-    setRenderOutputStatusFmt(state, .writing, "Writing {s}", .{out_path});
+    if (state.render_output_job_is_sequence) {
+        setRenderOutputStatusFmt(
+            state,
+            .writing,
+            "Writing frame {d}/{d} -> {s}",
+            .{ state.render_output_job_frame_index + 1, state.render_output_job_total_frames, out_path },
+        );
+    } else {
+        setRenderOutputStatusFmt(state, .writing, "Writing {s}", .{out_path});
+    }
     const dims = layer_context.renderer.sceneViewportSize();
     const export_result = switch (state.render_output_format) {
         .png => if (state.viewport_pipeline_mode == .path_trace and
@@ -121,22 +162,53 @@ fn exportPendingRenderOutput(state: *EditorState, layer_context: *engine.core.La
             )
         else
             layer_context.renderer.exportFramePng(allocator, out_path),
+        .exr => if (state.viewport_pipeline_mode == .path_trace)
+            layer_context.renderer.exportPathTraceFrameExr(allocator, layer_context.scene, out_path)
+        else
+            layer_context.renderer.exportFrameExr(allocator, out_path),
     };
 
     if (export_result) {
-        setRenderOutputStatusFmt(state, .success, "Saved {d} x {d} -> {s}", .{ dims[0], dims[1], out_path });
-    } else |err| {
-        setRenderOutputStatusFmt(state, .failure, "Export failed: {s}", .{@errorName(err)});
-    }
+        if (state.render_output_job_is_sequence) {
+            state.render_output_job_frame_index += 1;
+            if (state.render_output_job_frame_index < state.render_output_job_total_frames) {
+                state.render_output_job_stage = .resize_and_render;
+                setRenderOutputStatusFmt(
+                    state,
+                    .queued,
+                    "Queued frame {d}/{d}",
+                    .{ state.render_output_job_frame_index + 1, state.render_output_job_total_frames },
+                );
+                return;
+            }
 
-    restoreRenderOutputOverrides(state, layer_context);
+            setRenderOutputStatusFmt(
+                state,
+                .success,
+                "Saved {d} frames at {d} x {d}",
+                .{ state.render_output_job_total_frames, dims[0], dims[1] },
+            );
+            beginRenderOutputRestore(state, layer_context);
+            return;
+        }
+
+        setRenderOutputStatusFmt(state, .success, "Saved {d} x {d} -> {s}", .{ dims[0], dims[1], out_path });
+        restoreRenderOutputOverrides(state, layer_context);
+    } else |err| {
+        failRenderOutputJob(state, layer_context, err);
+    }
 }
 
 fn restoreRenderOutputOverrides(state: *EditorState, layer_context: *engine.core.LayerContext) void {
     state.viewport_path_trace_samples = state.render_output_restore_samples;
     state.viewport_path_trace_bounces = state.render_output_restore_bounces;
     state.viewport_path_trace_resolution_scale = state.render_output_restore_resolution_scale;
+    state.render_output_job_is_sequence = false;
+    state.render_output_job_total_frames = 1;
+    state.render_output_job_frame_index = 0;
+    state.render_output_job_started_playback = false;
     state.render_output_job_stage = .idle;
+    layer_context.playback_controller.setFixedDelta(null);
     layer_context.renderer.resetPathTraceState();
 }
 
@@ -435,7 +507,16 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
     try layer_context.renderer.setSceneViewportSize(drawable_size[0], drawable_size[1]);
     if (state.render_output_job_stage == .resize_and_render) {
         state.render_output_job_stage = .export_pending;
-        setRenderOutputStatusFmt(state, .rendering, "Rendering {d} x {d}", .{ drawable_size[0], drawable_size[1] });
+        if (state.render_output_job_is_sequence) {
+            setRenderOutputStatusFmt(
+                state,
+                .rendering,
+                "Rendering frame {d}/{d} at {d} x {d}",
+                .{ state.render_output_job_frame_index + 1, state.render_output_job_total_frames, drawable_size[0], drawable_size[1] },
+            );
+        } else {
+            setRenderOutputStatusFmt(state, .rendering, "Rendering {d} x {d}", .{ drawable_size[0], drawable_size[1] });
+        }
     }
 
     if (layer_context.renderer.sceneViewportTexture()) |texture| {
@@ -786,10 +867,10 @@ pub fn drawEditorUi(
     post_process_state: *const engine.render.EditorViewportState,
     layer_context: *engine.core.LayerContext,
 ) !void {
+    try syncPlaybackState(state, layer_context);
     try syncRenderOutputJob(state, layer_context);
     syncViewportState(state, post_process_state, layer_context);
     try applyPendingViewportAssetDrop(state, layer_context);
-    try syncPlaybackState(state, layer_context);
 
     // ── Shell Layer 1: Top Bar ────────────────────────────────────────────
     try menu_bar.drawMenuBar(state, layer_context);

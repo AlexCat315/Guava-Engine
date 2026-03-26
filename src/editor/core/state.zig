@@ -150,6 +150,7 @@ pub const RenderOutputResolutionPreset = enum {
 
 pub const RenderOutputFormat = enum {
     png,
+    exr,
 };
 
 pub const RenderOutputStatus = enum {
@@ -165,7 +166,60 @@ pub const RenderOutputJobStage = enum {
     idle,
     resize_and_render,
     export_pending,
+    restore_pending,
 };
+
+fn renderOutputFormatExtension(format: RenderOutputFormat) []const u8 {
+    return switch (format) {
+        .png => ".png",
+        .exr => ".exr",
+    };
+}
+
+fn lastPathSeparatorIndex(path: []const u8) ?usize {
+    const slash = std.mem.lastIndexOfScalar(u8, path, '/');
+    const backslash = std.mem.lastIndexOfScalar(u8, path, '\\');
+    if (slash) |lhs| {
+        if (backslash) |rhs| {
+            return @max(lhs, rhs);
+        }
+        return lhs;
+    }
+    return backslash;
+}
+
+fn allocRenderOutputPath(
+    allocator: std.mem.Allocator,
+    base_path: []const u8,
+    format: RenderOutputFormat,
+    frame_number: ?u32,
+) ![]u8 {
+    if (base_path.len == 0) return error.InvalidPath;
+
+    const extension = renderOutputFormatExtension(format);
+    if (base_path[base_path.len - 1] == '/' or base_path[base_path.len - 1] == '\\') {
+        return if (frame_number) |frame|
+            std.fmt.allocPrint(allocator, "{s}frame_{d:0>4}{s}", .{ base_path, frame, extension })
+        else
+            std.fmt.allocPrint(allocator, "{s}frame{s}", .{ base_path, extension });
+    }
+
+    var stem = base_path;
+    if (std.mem.lastIndexOfScalar(u8, base_path, '.')) |dot| {
+        if (lastPathSeparatorIndex(base_path)) |separator| {
+            if (dot > separator) {
+                stem = base_path[0..dot];
+            }
+        } else {
+            stem = base_path[0..dot];
+        }
+    }
+
+    return if (frame_number) |frame|
+        std.fmt.allocPrint(allocator, "{s}_{d:0>4}{s}", .{ stem, frame, extension })
+    else
+        std.fmt.allocPrint(allocator, "{s}{s}", .{ stem, extension });
+}
 
 pub const AxisConstraint = engine.math.axis.Axis3;
 
@@ -402,10 +456,18 @@ pub const EditorState = struct {
     render_output_bounces: u32 = 4,
     render_output_path_trace_denoise: bool = true,
     render_output_path_trace_write_aovs: bool = true,
+    render_output_sequence_enabled: bool = false,
+    render_output_sequence_start_frame: u32 = 0,
+    render_output_sequence_frame_count: u32 = 10,
+    render_output_sequence_fps: u32 = 24,
     render_output_path_buffer: [render_output_path_buffer_size]u8 = [_]u8{0} ** render_output_path_buffer_size,
     render_output_status_buffer: [render_output_status_buffer_size]u8 = [_]u8{0} ** render_output_status_buffer_size,
     render_output_status: RenderOutputStatus = .idle,
     render_output_job_stage: RenderOutputJobStage = .idle,
+    render_output_job_is_sequence: bool = false,
+    render_output_job_total_frames: u32 = 1,
+    render_output_job_frame_index: u32 = 0,
+    render_output_job_started_playback: bool = false,
     render_output_restore_samples: u32 = 4,
     render_output_restore_bounces: u32 = 2,
     render_output_restore_resolution_scale: f32 = 0.75,
@@ -502,6 +564,14 @@ pub const EditorState = struct {
     pub fn renderOutputPath(self: *const EditorState) []const u8 {
         const end = std.mem.indexOfScalar(u8, self.render_output_path_buffer[0..], 0) orelse self.render_output_path_buffer.len;
         return self.render_output_path_buffer[0..end];
+    }
+
+    pub fn renderOutputFrameNumber(self: *const EditorState, frame_index: u32) u32 {
+        return self.render_output_sequence_start_frame + frame_index;
+    }
+
+    pub fn renderOutputResolvedPathAlloc(self: *const EditorState, allocator: std.mem.Allocator, frame_number: ?u32) ![]u8 {
+        return allocRenderOutputPath(allocator, self.renderOutputPath(), self.render_output_format, frame_number);
     }
 
     pub fn renderOutputStatusText(self: *const EditorState) []const u8 {
@@ -800,4 +870,26 @@ test "viewport drop defaults and payload constants stay stable" {
     try std.testing.expectEqual(@as(?[2]u32, null), pending.pixel);
     try std.testing.expectEqual(@as(?engine.scene.EntityId, null), pending.target_entity);
     try std.testing.expectEqual(@as(?[3]f32, null), pending.world_position);
+}
+
+test "render output path resolution normalizes extension and sequence suffix" {
+    var state = EditorState{};
+    const png_path = "renders_test_out/frame";
+    @memcpy(state.render_output_path_buffer[0..png_path.len], png_path);
+
+    const single_png = try state.renderOutputResolvedPathAlloc(std.testing.allocator, null);
+    defer std.testing.allocator.free(single_png);
+    try std.testing.expectEqualStrings("renders_test_out/frame.png", single_png);
+
+    state.render_output_format = .exr;
+    const exr_sequence = try state.renderOutputResolvedPathAlloc(std.testing.allocator, 12);
+    defer std.testing.allocator.free(exr_sequence);
+    try std.testing.expectEqualStrings("renders_test_out/frame_0012.exr", exr_sequence);
+
+    @memset(state.render_output_path_buffer[0..], 0);
+    const directory_path = "renders_test_out/";
+    @memcpy(state.render_output_path_buffer[0..directory_path.len], directory_path);
+    const directory_sequence = try state.renderOutputResolvedPathAlloc(std.testing.allocator, 3);
+    defer std.testing.allocator.free(directory_sequence);
+    try std.testing.expectEqualStrings("renders_test_out/frame_0003.exr", directory_sequence);
 }
