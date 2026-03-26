@@ -322,7 +322,8 @@ const PathTraceMesh = struct {
 
 /// 渐进式路径追踪状态：每帧只追踪有限扫描行，避免阻塞主线程。
 const PathTraceProgressiveState = struct {
-    current_scanline: u32 = 0,
+    current_tile_x: u32 = 0,
+    current_tile_y: u32 = 0,
     complete: bool = false,
     trace_linear_rgb: ?[]f32 = null,
     display_pixels: ?[]u8 = null,
@@ -356,7 +357,8 @@ const PathTraceProgressiveState = struct {
     last_scene_signature: u64 = 0,
 
     fn reset(self: *PathTraceProgressiveState, allocator: std.mem.Allocator) void {
-        self.current_scanline = 0;
+        self.current_tile_x = 0;
+        self.current_tile_y = 0;
         self.complete = false;
         self.environment_texture = null;
         if (self.triangles) |t| {
@@ -394,6 +396,17 @@ const PathTraceProgressiveState = struct {
         if (self.emissive_lights) |items| allocator.free(items);
         self.* = .{};
     }
+};
+
+const path_trace_adaptive_tile_dim: u32 = 8;
+const path_trace_adaptive_tile_capacity: usize = path_trace_adaptive_tile_dim * path_trace_adaptive_tile_dim;
+
+const PathTraceAdaptiveTileBlock = struct {
+    x: u32 = 0,
+    y: u32 = 0,
+    color_sum: [3]f32 = .{ 0.0, 0.0, 0.0 },
+    luminance_sum: f32 = 0.0,
+    luminance_sum_sq: f32 = 0.0,
 };
 
 /// 硬件 RT 渲染状态（GPU 光追，与平台无关）
@@ -1126,6 +1139,14 @@ fn frameToWorld(frame: TangentFrame, local: [3]f32) [3]f32 {
     });
 }
 
+fn worldToFrame(frame: TangentFrame, world: [3]f32) [3]f32 {
+    return .{
+        vec3.dot(world, frame.tangent),
+        vec3.dot(world, frame.bitangent),
+        vec3.dot(world, frame.normal),
+    };
+}
+
 fn sampleCosineHemisphere(normal: [3]f32, seed: u32) [3]f32 {
     const rand_u = hashUnitFloat(seed ^ 0x68bc21eb);
     const rand_v = hashUnitFloat(seed ^ 0x02e5be93);
@@ -1139,20 +1160,49 @@ fn sampleCosineHemisphere(normal: [3]f32, seed: u32) [3]f32 {
     return frameToWorld(buildTangentFrame(normal), local);
 }
 
-fn sampleGGXHalfVector(normal: [3]f32, roughness: f32, seed: u32) [3]f32 {
+fn sampleGGXVisibleHalfVector(normal: [3]f32, view_dir: [3]f32, roughness: f32, seed: u32) [3]f32 {
+    const frame = buildTangentFrame(normal);
+    const local_view = worldToFrame(frame, view_dir);
+    if (local_view[2] <= 0.0) return normal;
+
     const alpha = @max(roughness * roughness, 0.001);
-    const alpha2 = alpha * alpha;
     const rand_u = hashUnitFloat(seed ^ 0xa3d95fa1);
     const rand_v = hashUnitFloat(seed ^ 0x51c8e12d);
-    const phi = std.math.tau * rand_u;
-    const cos_theta = std.math.sqrt((1.0 - rand_v) / (1.0 + (alpha2 - 1.0) * rand_v));
-    const sin_theta = std.math.sqrt(@max(0.0, 1.0 - cos_theta * cos_theta));
-    const local = [3]f32{
-        std.math.cos(phi) * sin_theta,
-        std.math.sin(phi) * sin_theta,
-        cos_theta,
+
+    const stretched_view = vec3.normalize(.{
+        alpha * local_view[0],
+        alpha * local_view[1],
+        @max(local_view[2], 0.000001),
+    });
+    const lensq = stretched_view[0] * stretched_view[0] + stretched_view[1] * stretched_view[1];
+    const tangent_1 = if (lensq > 0.0)
+        [3]f32{
+            -stretched_view[1] / std.math.sqrt(lensq),
+            stretched_view[0] / std.math.sqrt(lensq),
+            0.0,
+        }
+    else
+        [3]f32{ 1.0, 0.0, 0.0 };
+    const tangent_2 = vec3.cross(stretched_view, tangent_1);
+
+    const r = std.math.sqrt(rand_u);
+    const phi = std.math.tau * rand_v;
+    const p1 = r * std.math.cos(phi);
+    var p2 = r * std.math.sin(phi);
+    const s = 0.5 * (1.0 + stretched_view[2]);
+    p2 = (1.0 - s) * std.math.sqrt(@max(0.0, 1.0 - p1 * p1)) + s * p2;
+
+    const micro_normal = vec3.normalize(.{
+        tangent_1[0] * p1 + tangent_2[0] * p2 + stretched_view[0] * std.math.sqrt(@max(0.0, 1.0 - p1 * p1 - p2 * p2)),
+        tangent_1[1] * p1 + tangent_2[1] * p2 + stretched_view[1] * std.math.sqrt(@max(0.0, 1.0 - p1 * p1 - p2 * p2)),
+        tangent_1[2] * p1 + tangent_2[2] * p2 + stretched_view[2] * std.math.sqrt(@max(0.0, 1.0 - p1 * p1 - p2 * p2)),
+    });
+    const unstretched = [3]f32{
+        alpha * micro_normal[0],
+        alpha * micro_normal[1],
+        @max(micro_normal[2], 0.0),
     };
-    return frameToWorld(buildTangentFrame(normal), local);
+    return frameToWorld(frame, unstretched);
 }
 
 fn distributionGGX(n_dot_h: f32, roughness: f32) f32 {
@@ -1171,6 +1221,17 @@ fn geometrySchlickGGX(n_dot_x: f32, roughness: f32) f32 {
 
 fn geometrySmithGGX(n_dot_v: f32, n_dot_l: f32, roughness: f32) f32 {
     return geometrySchlickGGX(n_dot_v, roughness) * geometrySchlickGGX(n_dot_l, roughness);
+}
+
+fn smithMaskingG1GGX(n_dot_x: f32, roughness: f32) f32 {
+    if (n_dot_x <= 0.0) return 0.0;
+    if (n_dot_x >= 1.0) return 1.0;
+
+    const alpha = @max(roughness * roughness, 0.001);
+    const alpha2 = alpha * alpha;
+    const sin_theta2 = @max(0.0, 1.0 - n_dot_x * n_dot_x);
+    const tan_theta2 = sin_theta2 / @max(n_dot_x * n_dot_x, 0.000001);
+    return 2.0 / (1.0 + std.math.sqrt(1.0 + alpha2 * tan_theta2));
 }
 
 fn fresnelSchlick(cos_theta: f32, f0: [3]f32) [3]f32 {
@@ -1204,11 +1265,16 @@ fn computeOpaqueLobeProbabilities(
 }
 
 fn ggxSpecularPdf(normal: [3]f32, view_dir: [3]f32, light_dir: [3]f32, roughness: f32) f32 {
-    const half_vector = vec3.normalize(vec3.add(view_dir, light_dir));
+    const half_vector_raw = vec3.add(view_dir, light_dir);
+    if (vec3.dot(half_vector_raw, half_vector_raw) <= 0.000001) return 0.0;
+    const half_vector = vec3.normalize(half_vector_raw);
+    const n_dot_v = std.math.clamp(vec3.dot(normal, view_dir), 0.0, 1.0);
     const n_dot_h = std.math.clamp(vec3.dot(normal, half_vector), 0.0, 1.0);
     const v_dot_h = std.math.clamp(vec3.dot(view_dir, half_vector), 0.0, 1.0);
-    if (n_dot_h <= 0.0 or v_dot_h <= 0.0) return 0.0;
-    return distributionGGX(n_dot_h, roughness) * n_dot_h / @max(4.0 * v_dot_h, 0.000001);
+    if (n_dot_v <= 0.0 or n_dot_h <= 0.0 or v_dot_h <= 0.0) return 0.0;
+
+    const visible_masking = smithMaskingG1GGX(n_dot_v, roughness);
+    return distributionGGX(n_dot_h, roughness) * visible_masking / @max(4.0 * n_dot_v, 0.000001);
 }
 
 fn evaluateOpaqueBsdf(
@@ -1475,6 +1541,92 @@ fn applyPathTraceRussianRoulette(throughput: *[3]f32, bounce: u32, seed: u32) bo
     return false;
 }
 
+fn pathTraceAdaptiveMinSamples(max_samples: u32) u32 {
+    if (max_samples <= 2) return max_samples;
+    if (max_samples <= 4) return 2;
+    return @min(max_samples, 4);
+}
+
+fn pathTraceAdaptiveNoiseMetric(sum: f32, sum_sq: f32, sample_count: u32) f32 {
+    if (sample_count == 0) return 0.0;
+    const sample_count_f = @as(f32, @floatFromInt(sample_count));
+    const mean = sum / sample_count_f;
+    const variance = @max(0.0, sum_sq / sample_count_f - mean * mean);
+    return variance / @max(mean * mean, 0.0001);
+}
+
+fn pathTraceAdaptiveTargetSamples(max_samples: u32, tile_noise_metric: f32) u32 {
+    const min_samples = pathTraceAdaptiveMinSamples(max_samples);
+    if (max_samples <= min_samples) return max_samples;
+
+    const remaining = max_samples - min_samples;
+    const medium_samples = @min(max_samples, min_samples + @max(@as(u32, 1), (remaining + 1) / 2));
+    if (tile_noise_metric <= 0.015) return min_samples;
+    if (tile_noise_metric <= 0.06) return medium_samples;
+    return max_samples;
+}
+
+fn pathTraceAdaptiveTileSpan(sample_step: u32) u32 {
+    return @max(sample_step, sample_step * path_trace_adaptive_tile_dim);
+}
+
+fn advancePathTraceTileCursor(
+    current_tile_x: *u32,
+    current_tile_y: *u32,
+    trace_width: u32,
+    tile_span: u32,
+) void {
+    current_tile_x.* += tile_span;
+    if (current_tile_x.* >= trace_width) {
+        current_tile_x.* = 0;
+        current_tile_y.* += tile_span;
+    }
+}
+
+fn tracePathTracePixelSample(pt: *const PathTraceProgressiveState, x: u32, y: u32, sample_index: u32) [3]f32 {
+    const triangles = pt.triangles orelse return .{ 0.0, 0.0, 0.0 };
+    const meshes = pt.meshes orelse return .{ 0.0, 0.0, 0.0 };
+    const textures = pt.textures orelse &[_]PathTraceTexture{};
+    const environment_importance = pt.environment_importance orelse &[_]PathTraceEnvImportance{};
+    const emissive_lights = pt.emissive_lights orelse &[_]PathTraceEmissiveLight{};
+    const seed_base = hashU32(x ^ (y << 16) ^ 0x7f4a7c15);
+    const jitter_seed = seed_base ^ (sample_index *% 0x45d9f3b);
+    const jitter_x = hashUnitFloat(jitter_seed ^ 0x18f0e149) - 0.5;
+    const jitter_y = hashUnitFloat(jitter_seed ^ 0x6c8e9cf5) - 0.5;
+    const uv_x = (@as(f32, @floatFromInt(x)) + 0.5 + jitter_x) /
+        @as(f32, @floatFromInt(pt.trace_width));
+    const uv_y = (@as(f32, @floatFromInt(y)) + 0.5 + jitter_y) /
+        @as(f32, @floatFromInt(pt.trace_height));
+    const ndc_x = uv_x * 2.0 - 1.0;
+    const ndc_y = 1.0 - uv_y * 2.0;
+
+    const world_near = unprojectNdc(pt.inv_view_projection, ndc_x, ndc_y, 0.0);
+    const world_far = unprojectNdc(pt.inv_view_projection, ndc_x, ndc_y, 1.0);
+    const ray_origin = pt.camera_origin;
+    var ray_direction = vec3.normalize(vec3.sub(world_far, world_near));
+    if (vec3.length(ray_direction) <= 0.0001) {
+        ray_direction = vec3.normalize(vec3.sub(world_far, ray_origin));
+    }
+
+    return pathTraceRay(
+        ray_origin,
+        ray_direction,
+        triangles,
+        meshes,
+        textures,
+        pt.environment_texture,
+        environment_importance,
+        pt.environment_importance_width,
+        pt.environment_importance_height,
+        emissive_lights,
+        pt.emissive_total_area,
+        pt.light_direction,
+        pt.light_radiance,
+        jitter_seed,
+        pt.cached_bounces,
+    );
+}
+
 fn pathTraceRay(
     origin_start: [3]f32,
     direction_start: [3]f32,
@@ -1675,7 +1827,7 @@ fn pathTraceRay(
             var next_direction: [3]f32 = undefined;
 
             if (choose_specular) {
-                const half_vector = sampleGGXHalfVector(shading_normal, surface_roughness, branch_seed ^ 0x6b84221f);
+                const half_vector = sampleGGXVisibleHalfVector(shading_normal, view_dir, surface_roughness, branch_seed ^ 0x6b84221f);
                 next_direction = vec3.normalize(reflectVector(vec3.scale(view_dir, -1.0), half_vector));
                 if (vec3.dot(next_direction, shading_normal) <= 0.0) {
                     break;
@@ -4714,73 +4866,77 @@ pub const Renderer = struct {
                 1;
         }
 
-        // --- 渐进追踪：每帧只渲染时间预算内的扫描行 ---
-        const budget_ns: i128 = 8_000_000; // 8ms
+        // --- 渐进追踪：每帧只渲染时间预算内的 tile，并按 tile 方差决定样本数 ---
+        const use_progressive_budget = !self.editor_viewport_state.path_trace_force_cpu;
+        const budget_ns: i128 = 8_000_000;
         const start_time = std.time.nanoTimestamp();
         const trace_linear = pt.trace_linear_rgb.?;
-        const triangles = pt.triangles.?;
-        const meshes = pt.meshes.?;
-        const pt_textures = pt.textures orelse &[_]PathTraceTexture{};
-        const pt_environment_texture = pt.environment_texture;
-        const pt_environment_importance = pt.environment_importance orelse &[_]PathTraceEnvImportance{};
-        const pt_emissive_lights = pt.emissive_lights orelse &[_]PathTraceEmissiveLight{};
+        const tile_span = pathTraceAdaptiveTileSpan(pt.sample_step);
+        const use_adaptive_sampling = use_progressive_budget;
+        const min_samples = if (use_adaptive_sampling)
+            pathTraceAdaptiveMinSamples(pt.cached_samples)
+        else
+            pt.cached_samples;
 
-        while (pt.current_scanline < trace_height) {
-            const y = pt.current_scanline;
-            var x: u32 = 0;
-            while (x < trace_width) : (x += pt.sample_step) {
-                var traced_color = [3]f32{ 0.0, 0.0, 0.0 };
-                const seed_base = hashU32(x ^ (y << 16) ^ 0x7f4a7c15);
+        while (pt.current_tile_y < trace_height) {
+            var tile_blocks: [path_trace_adaptive_tile_capacity]PathTraceAdaptiveTileBlock = undefined;
+            var tile_block_count: usize = 0;
+            var tile_noise_metric_sum: f32 = 0.0;
+            const tile_end_y = @min(trace_height, pt.current_tile_y + tile_span);
+            const tile_end_x = @min(trace_width, pt.current_tile_x + tile_span);
 
-                var s: u32 = 0;
-                while (s < pt.cached_samples) : (s += 1) {
-                    const jitter_seed = seed_base ^ (s *% 0x45d9f3b);
-                    const jitter_x = hashUnitFloat(jitter_seed ^ 0x18f0e149) - 0.5;
-                    const jitter_y = hashUnitFloat(jitter_seed ^ 0x6c8e9cf5) - 0.5;
-                    const uv_x = (@as(f32, @floatFromInt(x)) + 0.5 + jitter_x) /
-                        @as(f32, @floatFromInt(trace_width));
-                    const uv_y = (@as(f32, @floatFromInt(y)) + 0.5 + jitter_y) /
-                        @as(f32, @floatFromInt(trace_height));
-                    const ndc_x = uv_x * 2.0 - 1.0;
-                    const ndc_y = 1.0 - uv_y * 2.0;
-
-                    const world_near = unprojectNdc(pt.inv_view_projection, ndc_x, ndc_y, 0.0);
-                    const world_far = unprojectNdc(pt.inv_view_projection, ndc_x, ndc_y, 1.0);
-                    const ray_origin = pt.camera_origin;
-                    var ray_direction = vec3.normalize(vec3.sub(world_far, world_near));
-                    if (vec3.length(ray_direction) <= 0.0001) {
-                        ray_direction = vec3.normalize(vec3.sub(world_far, ray_origin));
+            var y = pt.current_tile_y;
+            while (y < tile_end_y) : (y += pt.sample_step) {
+                var x = pt.current_tile_x;
+                while (x < tile_end_x) : (x += pt.sample_step) {
+                    var block = PathTraceAdaptiveTileBlock{
+                        .x = x,
+                        .y = y,
+                    };
+                    var sample_index: u32 = 0;
+                    while (sample_index < min_samples) : (sample_index += 1) {
+                        const sample_color = tracePathTracePixelSample(pt, x, y, sample_index);
+                        block.color_sum = vec3.add(block.color_sum, sample_color);
+                        const sample_luminance = luminance(sample_color);
+                        block.luminance_sum += sample_luminance;
+                        block.luminance_sum_sq += sample_luminance * sample_luminance;
                     }
 
-                    const sample_color = pathTraceRay(
-                        ray_origin,
-                        ray_direction,
-                        triangles,
-                        meshes,
-                        pt_textures,
-                        pt_environment_texture,
-                        pt_environment_importance,
-                        pt.environment_importance_width,
-                        pt.environment_importance_height,
-                        pt_emissive_lights,
-                        pt.emissive_total_area,
-                        pt.light_direction,
-                        pt.light_radiance,
-                        jitter_seed,
-                        pt.cached_bounces,
+                    tile_noise_metric_sum += pathTraceAdaptiveNoiseMetric(
+                        block.luminance_sum,
+                        block.luminance_sum_sq,
+                        min_samples,
                     );
-                    traced_color = vec3.add(traced_color, sample_color);
+                    tile_blocks[tile_block_count] = block;
+                    tile_block_count += 1;
+                }
+            }
+
+            const tile_noise_metric = if (tile_block_count > 0)
+                tile_noise_metric_sum / @as(f32, @floatFromInt(tile_block_count))
+            else
+                0.0;
+            const target_samples = if (use_adaptive_sampling)
+                pathTraceAdaptiveTargetSamples(pt.cached_samples, tile_noise_metric)
+            else
+                pt.cached_samples;
+
+            var block_index: usize = 0;
+            while (block_index < tile_block_count) : (block_index += 1) {
+                var block = tile_blocks[block_index];
+                var sample_index = min_samples;
+                while (sample_index < target_samples) : (sample_index += 1) {
+                    const sample_color = tracePathTracePixelSample(pt, block.x, block.y, sample_index);
+                    block.color_sum = vec3.add(block.color_sum, sample_color);
                 }
 
-                traced_color = vec3.scale(traced_color, 1.0 / @as(f32, @floatFromInt(pt.cached_samples)));
-                const hdr_rgb = traced_color;
-
+                const hdr_rgb = vec3.scale(block.color_sum, 1.0 / @as(f32, @floatFromInt(target_samples)));
                 var fy: u32 = 0;
-                while (fy < pt.sample_step and y + fy < trace_height) : (fy += 1) {
+                while (fy < pt.sample_step and block.y + fy < trace_height) : (fy += 1) {
                     var fx: u32 = 0;
-                    while (fx < pt.sample_step and x + fx < trace_width) : (fx += 1) {
-                        const out_x = x + fx;
-                        const out_y = y + fy;
+                    while (fx < pt.sample_step and block.x + fx < trace_width) : (fx += 1) {
+                        const out_x = block.x + fx;
+                        const out_y = block.y + fy;
                         const pixel_index: usize = @as(usize, out_y) * @as(usize, trace_width) + @as(usize, out_x);
                         const linear_index: usize = pixel_index * 3;
                         trace_linear[linear_index + 0] = hdr_rgb[0];
@@ -4790,13 +4946,11 @@ pub const Renderer = struct {
                 }
             }
 
-            pt.current_scanline += pt.sample_step;
-
-            // 超出时间预算后让出控制权，下帧继续
-            if (std.time.nanoTimestamp() - start_time >= budget_ns) break;
+            advancePathTraceTileCursor(&pt.current_tile_x, &pt.current_tile_y, trace_width, tile_span);
+            if (use_progressive_budget and std.time.nanoTimestamp() - start_time >= budget_ns) break;
         }
 
-        if (pt.current_scanline >= trace_height) {
+        if (pt.current_tile_y >= trace_height) {
             pt.complete = true;
         }
 
@@ -6556,6 +6710,42 @@ fn findHashUnitFloatSeed(threshold: f32, want_lte: bool) !u32 {
         }
         if (seed == std.math.maxInt(u32)) return error.SeedNotFound;
     }
+}
+
+test "sampleGGXVisibleHalfVector keeps sampled microfacets visible to the view" {
+    const normal = [3]f32{ 0.0, 0.0, 1.0 };
+    const view_dir = vec3.normalize(.{ 0.35, 0.1, 0.93 });
+    const roughness: f32 = 0.55;
+
+    var seed: u32 = 0;
+    while (seed < 64) : (seed += 1) {
+        const half_vector = sampleGGXVisibleHalfVector(normal, view_dir, roughness, seed);
+        try std.testing.expect(vec3.dot(half_vector, normal) > 0.0);
+        try std.testing.expect(vec3.dot(half_vector, view_dir) > 0.0);
+
+        const light_dir = vec3.normalize(reflectVector(vec3.scale(view_dir, -1.0), half_vector));
+        if (vec3.dot(light_dir, normal) > 0.0) {
+            const pdf = ggxSpecularPdf(normal, view_dir, light_dir, roughness);
+            try std.testing.expect(std.math.isFinite(pdf));
+            try std.testing.expect(pdf > 0.0);
+        }
+    }
+}
+
+test "adaptive path trace helpers early-out stable tiles and keep noisy tiles on full budget" {
+    try std.testing.expectEqual(@as(u32, 1), pathTraceAdaptiveMinSamples(1));
+    try std.testing.expectEqual(@as(u32, 2), pathTraceAdaptiveMinSamples(4));
+    try std.testing.expectEqual(@as(u32, 4), pathTraceAdaptiveMinSamples(16));
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), pathTraceAdaptiveNoiseMetric(2.0, 1.0, 0), 0.000001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), pathTraceAdaptiveNoiseMetric(2.0, 1.0, 4), 0.000001);
+    try std.testing.expect(pathTraceAdaptiveNoiseMetric(2.0, 1.8, 4) > 0.015);
+    try std.testing.expectEqual(@as(u32, 2), pathTraceAdaptiveTargetSamples(4, 0.01));
+    try std.testing.expectEqual(@as(u32, 3), pathTraceAdaptiveTargetSamples(4, 0.03));
+    try std.testing.expectEqual(@as(u32, 4), pathTraceAdaptiveTargetSamples(4, 0.12));
+    try std.testing.expectEqual(@as(u32, 4), pathTraceAdaptiveTargetSamples(16, 0.01));
+    try std.testing.expectEqual(@as(u32, 10), pathTraceAdaptiveTargetSamples(16, 0.03));
+    try std.testing.expectEqual(@as(u32, 16), pathTraceAdaptiveTargetSamples(16, 0.12));
+    try std.testing.expectEqual(@as(u32, 24), pathTraceAdaptiveTileSpan(3));
 }
 
 test "samplePathTraceMaterial applies normal metallic-roughness AO and emissive maps" {
