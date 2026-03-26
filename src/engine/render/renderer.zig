@@ -303,6 +303,29 @@ const PathTraceMaterialSample = struct {
     shading_normal: [3]f32,
 };
 
+const PathTracePrimaryRay = struct {
+    origin: [3]f32,
+    direction: [3]f32,
+};
+
+const PathTraceGuidePixel = struct {
+    albedo: [3]f32 = .{ 0.0, 0.0, 0.0 },
+    normal: [3]f32 = .{ 0.0, 0.0, 0.0 },
+};
+
+const PathTraceGuideBuffers = struct {
+    albedo: []f32,
+    normal: []f32,
+    width: u32,
+    height: u32,
+
+    fn deinit(self: *PathTraceGuideBuffers, allocator: std.mem.Allocator) void {
+        allocator.free(self.albedo);
+        allocator.free(self.normal);
+        self.* = undefined;
+    }
+};
+
 const PathTraceEnvImportance = extern struct {
     q: f32,
     pmf: f32,
@@ -1583,16 +1606,26 @@ fn advancePathTraceTileCursor(
     }
 }
 
-fn tracePathTracePixelSample(pt: *const PathTraceProgressiveState, x: u32, y: u32, sample_index: u32) [3]f32 {
-    const triangles = pt.triangles orelse return .{ 0.0, 0.0, 0.0 };
-    const meshes = pt.meshes orelse return .{ 0.0, 0.0, 0.0 };
-    const textures = pt.textures orelse &[_]PathTraceTexture{};
-    const environment_importance = pt.environment_importance orelse &[_]PathTraceEnvImportance{};
-    const emissive_lights = pt.emissive_lights orelse &[_]PathTraceEmissiveLight{};
-    const seed_base = hashU32(x ^ (y << 16) ^ 0x7f4a7c15);
-    const jitter_seed = seed_base ^ (sample_index *% 0x45d9f3b);
-    const jitter_x = hashUnitFloat(jitter_seed ^ 0x18f0e149) - 0.5;
-    const jitter_y = hashUnitFloat(jitter_seed ^ 0x6c8e9cf5) - 0.5;
+fn computePathTraceSampleStep(trace_width: u32, trace_height: u32) u32 {
+    const pixel_budget: u32 = 960 * 540;
+    const area = trace_width * trace_height;
+    return if (area > pixel_budget * 4)
+        4
+    else if (area > pixel_budget * 2)
+        3
+    else if (area > pixel_budget)
+        2
+    else
+        1;
+}
+
+fn buildPathTracePrimaryRay(
+    pt: *const PathTraceProgressiveState,
+    x: u32,
+    y: u32,
+    jitter_x: f32,
+    jitter_y: f32,
+) PathTracePrimaryRay {
     const uv_x = (@as(f32, @floatFromInt(x)) + 0.5 + jitter_x) /
         @as(f32, @floatFromInt(pt.trace_width));
     const uv_y = (@as(f32, @floatFromInt(y)) + 0.5 + jitter_y) /
@@ -1608,9 +1641,27 @@ fn tracePathTracePixelSample(pt: *const PathTraceProgressiveState, x: u32, y: u3
         ray_direction = vec3.normalize(vec3.sub(world_far, ray_origin));
     }
 
+    return .{
+        .origin = ray_origin,
+        .direction = ray_direction,
+    };
+}
+
+fn tracePathTracePixelSample(pt: *const PathTraceProgressiveState, x: u32, y: u32, sample_index: u32) [3]f32 {
+    const triangles = pt.triangles orelse return .{ 0.0, 0.0, 0.0 };
+    const meshes = pt.meshes orelse return .{ 0.0, 0.0, 0.0 };
+    const textures = pt.textures orelse &[_]PathTraceTexture{};
+    const environment_importance = pt.environment_importance orelse &[_]PathTraceEnvImportance{};
+    const emissive_lights = pt.emissive_lights orelse &[_]PathTraceEmissiveLight{};
+    const seed_base = hashU32(x ^ (y << 16) ^ 0x7f4a7c15);
+    const jitter_seed = seed_base ^ (sample_index *% 0x45d9f3b);
+    const jitter_x = hashUnitFloat(jitter_seed ^ 0x18f0e149) - 0.5;
+    const jitter_y = hashUnitFloat(jitter_seed ^ 0x6c8e9cf5) - 0.5;
+    const ray = buildPathTracePrimaryRay(pt, x, y, jitter_x, jitter_y);
+
     return pathTraceRay(
-        ray_origin,
-        ray_direction,
+        ray.origin,
+        ray.direction,
         triangles,
         meshes,
         textures,
@@ -1625,6 +1676,42 @@ fn tracePathTracePixelSample(pt: *const PathTraceProgressiveState, x: u32, y: u3
         jitter_seed,
         pt.cached_bounces,
     );
+}
+
+fn samplePathTraceGuidePixel(pt: *const PathTraceProgressiveState, x: u32, y: u32) PathTraceGuidePixel {
+    const triangles = pt.triangles orelse return .{};
+    const meshes = pt.meshes orelse return .{};
+    const textures = pt.textures orelse &[_]PathTraceTexture{};
+    const ray = buildPathTracePrimaryRay(pt, x, y, 0.0, 0.0);
+    const scene_hit = tracePathTraceScene(ray.origin, ray.direction, triangles, meshes, 0.001, 1.0e30) orelse return .{};
+
+    const tri = triangles[scene_hit.tri_index];
+    const w0 = 1.0 - scene_hit.u - scene_hit.v;
+    const hit_uv = [2]f32{
+        w0 * tri.uv0[0] + scene_hit.u * tri.uv1[0] + scene_hit.v * tri.uv2[0],
+        w0 * tri.uv0[1] + scene_hit.u * tri.uv1[1] + scene_hit.v * tri.uv2[1],
+    };
+    const interpolated_normal = vec3.normalize(.{
+        w0 * tri.n0[0] + scene_hit.u * tri.n1[0] + scene_hit.v * tri.n2[0],
+        w0 * tri.n0[1] + scene_hit.u * tri.n1[1] + scene_hit.v * tri.n2[1],
+        w0 * tri.n0[2] + scene_hit.u * tri.n1[2] + scene_hit.v * tri.n2[2],
+    });
+    const geometric_normal_raw = triangleGeometricNormal(tri);
+    const front_face = vec3.dot(ray.direction, geometric_normal_raw) < 0.0;
+    const geometric_normal = if (front_face) geometric_normal_raw else vec3.scale(geometric_normal_raw, -1.0);
+    const oriented_interpolated_normal = if (front_face) interpolated_normal else vec3.scale(interpolated_normal, -1.0);
+    const material_sample = samplePathTraceMaterial(
+        tri,
+        textures,
+        hit_uv,
+        geometric_normal,
+        oriented_interpolated_normal,
+    );
+
+    return .{
+        .albedo = material_sample.albedo,
+        .normal = vec3.normalize(material_sample.shading_normal),
+    };
 }
 
 fn pathTraceRay(
@@ -2339,6 +2426,338 @@ fn writeHdrPixelRgba16f(out: []u8, pixel_index: usize, rgb: [3]f32) void {
     writeF16Le(out, dst + 2, rgb[1]);
     writeF16Le(out, dst + 4, rgb[2]);
     writeF16Le(out, dst + 6, 1.0);
+}
+
+fn capturePathTraceGuideBuffersAlloc(
+    allocator: std.mem.Allocator,
+    pt: *const PathTraceProgressiveState,
+) !PathTraceGuideBuffers {
+    const pixel_count = @as(usize, pt.trace_width) * @as(usize, pt.trace_height);
+    var guides = PathTraceGuideBuffers{
+        .albedo = try allocator.alloc(f32, pixel_count * 3),
+        .normal = try allocator.alloc(f32, pixel_count * 3),
+        .width = pt.trace_width,
+        .height = pt.trace_height,
+    };
+    errdefer guides.deinit(allocator);
+
+    var y: u32 = 0;
+    while (y < pt.trace_height) : (y += 1) {
+        var x: u32 = 0;
+        while (x < pt.trace_width) : (x += 1) {
+            const guide = samplePathTraceGuidePixel(pt, x, y);
+            const pixel_index = (@as(usize, y) * @as(usize, pt.trace_width) + @as(usize, x)) * 3;
+            guides.albedo[pixel_index + 0] = guide.albedo[0];
+            guides.albedo[pixel_index + 1] = guide.albedo[1];
+            guides.albedo[pixel_index + 2] = guide.albedo[2];
+            guides.normal[pixel_index + 0] = guide.normal[0];
+            guides.normal[pixel_index + 1] = guide.normal[1];
+            guides.normal[pixel_index + 2] = guide.normal[2];
+        }
+    }
+
+    return guides;
+}
+
+fn copyHdrRgbaToRgbAlloc(
+    allocator: std.mem.Allocator,
+    hdr_rgba: []const f32,
+    width: u32,
+    height: u32,
+) ![]f32 {
+    const pixel_count = @as(usize, width) * @as(usize, height);
+    if (hdr_rgba.len < pixel_count * 4) return error.InvalidHdrData;
+
+    const rgb = try allocator.alloc(f32, pixel_count * 3);
+    var pixel_index: usize = 0;
+    while (pixel_index < pixel_count) : (pixel_index += 1) {
+        const src = pixel_index * 4;
+        const dst = pixel_index * 3;
+        rgb[dst + 0] = sanitizeHdrValue(hdr_rgba[src + 0]);
+        rgb[dst + 1] = sanitizeHdrValue(hdr_rgba[src + 1]);
+        rgb[dst + 2] = sanitizeHdrValue(hdr_rgba[src + 2]);
+    }
+    return rgb;
+}
+
+fn gaussianWeight(distance_sq: f32, sigma: f32) f32 {
+    const sigma_sq = sigma * sigma;
+    if (sigma_sq <= 0.0) return 0.0;
+    return std.math.exp(-distance_sq / (2.0 * sigma_sq));
+}
+
+fn denoisePathTraceHdrAlloc(
+    allocator: std.mem.Allocator,
+    beauty_rgb: []const f32,
+    width: u32,
+    height: u32,
+    guides: PathTraceGuideBuffers,
+) ![]f32 {
+    const pixel_count = @as(usize, width) * @as(usize, height);
+    if (beauty_rgb.len < pixel_count * 3) return error.InvalidHdrData;
+    if (guides.width != width or guides.height != height) return error.InvalidDimensions;
+
+    const pass_count: u32 = 2;
+    const radius: i32 = 2;
+    const spatial_sigma: f32 = 1.15;
+    const albedo_sigma: f32 = 0.18;
+    const normal_sigma: f32 = 0.14;
+
+    var ping = try allocator.dupe(f32, beauty_rgb);
+    errdefer allocator.free(ping);
+    var pong = try allocator.alloc(f32, pixel_count * 3);
+    errdefer allocator.free(pong);
+
+    var pass_index: u32 = 0;
+    while (pass_index < pass_count) : (pass_index += 1) {
+        var y: u32 = 0;
+        while (y < height) : (y += 1) {
+            var x: u32 = 0;
+            while (x < width) : (x += 1) {
+                const center_pixel = (@as(usize, y) * @as(usize, width) + @as(usize, x)) * 3;
+                const center_albedo = [3]f32{
+                    guides.albedo[center_pixel + 0],
+                    guides.albedo[center_pixel + 1],
+                    guides.albedo[center_pixel + 2],
+                };
+                const center_normal = [3]f32{
+                    guides.normal[center_pixel + 0],
+                    guides.normal[center_pixel + 1],
+                    guides.normal[center_pixel + 2],
+                };
+                const center_has_normal = vec3.dot(center_normal, center_normal) > 0.0001;
+
+                var color_sum = [3]f32{ 0.0, 0.0, 0.0 };
+                var weight_sum: f32 = 0.0;
+
+                var offset_y: i32 = -radius;
+                while (offset_y <= radius) : (offset_y += 1) {
+                    const sample_y_i32 = @as(i32, @intCast(y)) + offset_y;
+                    if (sample_y_i32 < 0 or sample_y_i32 >= @as(i32, @intCast(height))) continue;
+                    const sample_y: u32 = @intCast(sample_y_i32);
+
+                    var offset_x: i32 = -radius;
+                    while (offset_x <= radius) : (offset_x += 1) {
+                        const sample_x_i32 = @as(i32, @intCast(x)) + offset_x;
+                        if (sample_x_i32 < 0 or sample_x_i32 >= @as(i32, @intCast(width))) continue;
+                        const sample_x: u32 = @intCast(sample_x_i32);
+                        const sample_pixel = (@as(usize, sample_y) * @as(usize, width) + @as(usize, sample_x)) * 3;
+
+                        const sample_albedo = [3]f32{
+                            guides.albedo[sample_pixel + 0],
+                            guides.albedo[sample_pixel + 1],
+                            guides.albedo[sample_pixel + 2],
+                        };
+                        const sample_normal = [3]f32{
+                            guides.normal[sample_pixel + 0],
+                            guides.normal[sample_pixel + 1],
+                            guides.normal[sample_pixel + 2],
+                        };
+                        const sample_has_normal = vec3.dot(sample_normal, sample_normal) > 0.0001;
+
+                        const spatial_distance_sq = @as(f32, @floatFromInt(offset_x * offset_x + offset_y * offset_y));
+                        const albedo_delta = vec3.sub(center_albedo, sample_albedo);
+                        const albedo_distance_sq = vec3.dot(albedo_delta, albedo_delta);
+
+                        var weight = gaussianWeight(spatial_distance_sq, spatial_sigma) *
+                            gaussianWeight(albedo_distance_sq, albedo_sigma);
+
+                        if (center_has_normal != sample_has_normal) {
+                            weight *= 0.02;
+                        } else if (center_has_normal and sample_has_normal) {
+                            const alignment = std.math.clamp(vec3.dot(center_normal, sample_normal), 0.0, 1.0);
+                            const normal_delta = 1.0 - alignment;
+                            weight *= gaussianWeight(normal_delta * normal_delta, normal_sigma);
+                        }
+
+                        color_sum[0] += ping[sample_pixel + 0] * weight;
+                        color_sum[1] += ping[sample_pixel + 1] * weight;
+                        color_sum[2] += ping[sample_pixel + 2] * weight;
+                        weight_sum += weight;
+                    }
+                }
+
+                if (weight_sum <= 0.0) {
+                    pong[center_pixel + 0] = ping[center_pixel + 0];
+                    pong[center_pixel + 1] = ping[center_pixel + 1];
+                    pong[center_pixel + 2] = ping[center_pixel + 2];
+                } else {
+                    pong[center_pixel + 0] = color_sum[0] / weight_sum;
+                    pong[center_pixel + 1] = color_sum[1] / weight_sum;
+                    pong[center_pixel + 2] = color_sum[2] / weight_sum;
+                }
+            }
+        }
+
+        std.mem.swap([]f32, &ping, &pong);
+    }
+
+    allocator.free(pong);
+    return ping;
+}
+
+fn acesFilmScalar(x: f32) f32 {
+    const clamped = @max(x, 0.0);
+    return std.math.clamp((clamped * (2.51 * clamped + 0.03)) / (clamped * (2.43 * clamped + 0.59) + 0.14), 0.0, 1.0);
+}
+
+fn linearToSrgbScalar(linear: f32) f32 {
+    if (linear <= 0.0031308) return linear * 12.92;
+    return 1.055 * std.math.pow(f32, @max(linear, 0.0), 1.0 / 2.4) - 0.055;
+}
+
+fn applyCpuColorGrading(color: [3]f32, viewport_state: EditorViewportState) [3]f32 {
+    if (!viewport_state.color_grading_enabled) return color;
+
+    const saturation = @max(viewport_state.color_grading_saturation, 0.0);
+    const contrast = @max(viewport_state.color_grading_contrast, 0.0);
+    const gamma = @max(viewport_state.color_grading_gamma, 0.001);
+    const luma = luminance(color);
+    var graded = .{
+        luma + (color[0] - luma) * saturation,
+        luma + (color[1] - luma) * saturation,
+        luma + (color[2] - luma) * saturation,
+    };
+    graded = .{
+        (graded[0] - 0.5) * contrast + 0.5,
+        (graded[1] - 0.5) * contrast + 0.5,
+        (graded[2] - 0.5) * contrast + 0.5,
+    };
+    graded = .{
+        std.math.pow(f32, @max(graded[0], 0.0), 1.0 / gamma),
+        std.math.pow(f32, @max(graded[1], 0.0), 1.0 / gamma),
+        std.math.pow(f32, @max(graded[2], 0.0), 1.0 / gamma),
+    };
+    return .{
+        std.math.clamp(graded[0], 0.0, 1.0),
+        std.math.clamp(graded[1], 0.0, 1.0),
+        std.math.clamp(graded[2], 0.0, 1.0),
+    };
+}
+
+fn tonemapHdrToRgba8Alloc(
+    allocator: std.mem.Allocator,
+    hdr_rgb: []const f32,
+    width: u32,
+    height: u32,
+    viewport_state: EditorViewportState,
+) ![]u8 {
+    const pixel_count = @as(usize, width) * @as(usize, height);
+    if (hdr_rgb.len < pixel_count * 3) return error.InvalidHdrData;
+
+    const rgba = try allocator.alloc(u8, pixel_count * 4);
+    const exposure = if (viewport_state.exposure_enabled) @max(viewport_state.exposure, 0.0) else 1.0;
+
+    var pixel_index: usize = 0;
+    while (pixel_index < pixel_count) : (pixel_index += 1) {
+        const src = pixel_index * 3;
+        const dst = pixel_index * 4;
+        var ldr = [3]f32{
+            acesFilmScalar(sanitizeHdrValue(hdr_rgb[src + 0]) * exposure),
+            acesFilmScalar(sanitizeHdrValue(hdr_rgb[src + 1]) * exposure),
+            acesFilmScalar(sanitizeHdrValue(hdr_rgb[src + 2]) * exposure),
+        };
+        ldr = applyCpuColorGrading(ldr, viewport_state);
+        rgba[dst + 0] = @intFromFloat(std.math.clamp(linearToSrgbScalar(ldr[0]) * 255.0, 0.0, 255.0));
+        rgba[dst + 1] = @intFromFloat(std.math.clamp(linearToSrgbScalar(ldr[1]) * 255.0, 0.0, 255.0));
+        rgba[dst + 2] = @intFromFloat(std.math.clamp(linearToSrgbScalar(ldr[2]) * 255.0, 0.0, 255.0));
+        rgba[dst + 3] = 255;
+    }
+
+    return rgba;
+}
+
+fn encodeGuideToRgba8Alloc(
+    allocator: std.mem.Allocator,
+    guide_rgb: []const f32,
+    width: u32,
+    height: u32,
+    encode_normal: bool,
+) ![]u8 {
+    const pixel_count = @as(usize, width) * @as(usize, height);
+    if (guide_rgb.len < pixel_count * 3) return error.InvalidHdrData;
+
+    const rgba = try allocator.alloc(u8, pixel_count * 4);
+    var pixel_index: usize = 0;
+    while (pixel_index < pixel_count) : (pixel_index += 1) {
+        const src = pixel_index * 3;
+        const dst = pixel_index * 4;
+        var out_rgb = [3]f32{
+            guide_rgb[src + 0],
+            guide_rgb[src + 1],
+            guide_rgb[src + 2],
+        };
+        if (encode_normal) {
+            const normal_len_sq = vec3.dot(out_rgb, out_rgb);
+            if (normal_len_sq <= 0.0001) {
+                out_rgb = .{ 0.0, 0.0, 0.0 };
+            } else {
+                out_rgb = .{
+                    out_rgb[0] * 0.5 + 0.5,
+                    out_rgb[1] * 0.5 + 0.5,
+                    out_rgb[2] * 0.5 + 0.5,
+                };
+            }
+        } else {
+            out_rgb = .{
+                linearToSrgbScalar(std.math.clamp(out_rgb[0], 0.0, 1.0)),
+                linearToSrgbScalar(std.math.clamp(out_rgb[1], 0.0, 1.0)),
+                linearToSrgbScalar(std.math.clamp(out_rgb[2], 0.0, 1.0)),
+            };
+        }
+
+        rgba[dst + 0] = @intFromFloat(std.math.clamp(out_rgb[0] * 255.0, 0.0, 255.0));
+        rgba[dst + 1] = @intFromFloat(std.math.clamp(out_rgb[1] * 255.0, 0.0, 255.0));
+        rgba[dst + 2] = @intFromFloat(std.math.clamp(out_rgb[2] * 255.0, 0.0, 255.0));
+        rgba[dst + 3] = 255;
+    }
+
+    return rgba;
+}
+
+fn encodePngAlloc(
+    allocator: std.mem.Allocator,
+    rgba: []const u8,
+    width: u32,
+    height: u32,
+) ![]u8 {
+    if (rgba.len < @as(usize, width) * @as(usize, height) * 4) return error.InvalidPngData;
+
+    const c = @cImport({
+        @cDefine("STBI_WRITE_NO_STDIO", "1");
+        @cDefine("STB_IMAGE_WRITE_IMPLEMENTATION", "1");
+        @cInclude("stb_image_write.h");
+    });
+
+    var out_len: c_int = 0;
+    const png_data = c.stbi_write_png_to_mem(
+        @constCast(rgba.ptr),
+        @intCast(width * 4),
+        @intCast(width),
+        @intCast(height),
+        4,
+        &out_len,
+    ) orelse return error.PngEncodingFailed;
+    defer c.free(png_data);
+
+    const png_slice: []const u8 = @ptrCast(png_data[0..@intCast(out_len)]);
+    return allocator.dupe(u8, png_slice);
+}
+
+fn writeFileEnsuringParent(out_path: []const u8, bytes: []const u8) !void {
+    if (std.fs.path.dirname(out_path)) |directory| {
+        try std.fs.cwd().makePath(directory);
+    }
+    const file = try std.fs.cwd().createFile(out_path, .{});
+    defer file.close();
+    try file.writeAll(bytes);
+}
+
+fn allocSidecarPath(allocator: std.mem.Allocator, out_path: []const u8, suffix: []const u8) ![]u8 {
+    const extension = std.fs.path.extension(out_path);
+    const stem = if (extension.len > 0) out_path[0 .. out_path.len - extension.len] else out_path;
+    const resolved_extension = if (extension.len > 0) extension else ".png";
+    return std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ stem, suffix, resolved_extension });
 }
 
 const SceneViewportState = struct {
@@ -4535,6 +4954,433 @@ pub const Renderer = struct {
         return result;
     }
 
+    fn populatePathTraceSceneState(
+        self: *Renderer,
+        pt: *PathTraceProgressiveState,
+        prepared_scene: *const mesh_pass_mod.PreparedScene,
+        scene: *scene_mod.Scene,
+        path_trace_environment: PathTraceEnvironment,
+    ) !void {
+        if (pt.triangles != null) return;
+
+        var triangle_list = std.ArrayList(PathTraceTriangle).empty;
+        defer triangle_list.deinit(self.allocator);
+        var mesh_list = std.ArrayList(PathTraceMesh).empty;
+        defer mesh_list.deinit(self.allocator);
+        var texture_list = std.ArrayList(PathTraceTexture).empty;
+        defer texture_list.deinit(self.allocator);
+        var texture_index_map = std.AutoHashMap(u32, i32).init(self.allocator);
+        defer texture_index_map.deinit();
+
+        const draw_batches = [_]struct {
+            items: []const mesh_pass_mod.DrawItem,
+            is_transparent: bool,
+        }{
+            .{ .items = prepared_scene.opaque_meshes, .is_transparent = false },
+            .{ .items = prepared_scene.transparent_meshes, .is_transparent = true },
+        };
+        for (draw_batches) |batch| {
+            for (batch.items) |item| {
+                const mesh_res = if (handles.isValid(item.mesh_handle))
+                    scene.resources.mesh(item.mesh_handle)
+                else
+                    null;
+
+                if (mesh_res) |mesh| {
+                    const entity = scene.getEntityConst(item.entity_id);
+                    const mat_comp = if (entity) |resolved_entity| resolved_entity.material else null;
+                    const mat_res = blk_mat: {
+                        const resolved_comp = mat_comp orelse break :blk_mat null;
+                        const mat_handle = resolved_comp.handle orelse break :blk_mat null;
+                        break :blk_mat scene.resources.material(mat_handle);
+                    };
+
+                    var shading: components.ShadingModel = if (mat_comp) |resolved_comp|
+                        resolved_comp.shading
+                    else
+                        .pbr_metallic_roughness;
+                    var alpha_cutoff = std.math.clamp(item.pbr_factors[2], 0.0, 1.0);
+                    if (mat_res) |material| {
+                        shading = material.shading;
+                        alpha_cutoff = std.math.clamp(material.alpha_cutoff, 0.0, 1.0);
+                    }
+
+                    const opacity = std.math.clamp(item.base_color_factor[3] * item.pbr_factors[3], 0.0, 1.0);
+                    if (batch.is_transparent and (opacity <= 0.001 or opacity < alpha_cutoff)) {
+                        continue;
+                    }
+
+                    var albedo = [3]f32{
+                        std.math.clamp(item.base_color_factor[0], 0.0, 1.0),
+                        std.math.clamp(item.base_color_factor[1], 0.0, 1.0),
+                        std.math.clamp(item.base_color_factor[2], 0.0, 1.0),
+                    };
+                    var emissive = [3]f32{
+                        item.emissive_factor[0] * item.emissive_factor[3],
+                        item.emissive_factor[1] * item.emissive_factor[3],
+                        item.emissive_factor[2] * item.emissive_factor[3],
+                    };
+                    var metallic = std.math.clamp(item.pbr_factors[0], 0.0, 1.0);
+                    var roughness = std.math.clamp(item.pbr_factors[1], 0.04, 1.0);
+                    var transmission = std.math.clamp(1.0 - opacity, 0.0, 0.96);
+                    var ior: f32 = 1.5;
+                    var thickness: f32 = std.math.clamp((1.0 - opacity) * 0.75 + 0.05, 0.01, 2.0);
+
+                    if (batch.is_transparent) {
+                        albedo = vec3.scale(albedo, opacity);
+                        roughness = std.math.clamp(roughness + (1.0 - opacity) * 0.35, 0.04, 1.0);
+                    } else {
+                        albedo = .{
+                            std.math.clamp(albedo[0], 0.02, 1.0),
+                            std.math.clamp(albedo[1], 0.02, 1.0),
+                            std.math.clamp(albedo[2], 0.02, 1.0),
+                        };
+                    }
+
+                    switch (shading) {
+                        .unlit => {
+                            emissive = vec3.add(emissive, vec3.scale(albedo, 1.2));
+                            albedo = vec3.scale(albedo, 0.06);
+                            metallic = 0.0;
+                            roughness = 1.0;
+                            transmission = 0.0;
+                            thickness = 0.0;
+                        },
+                        .lambert => {
+                            metallic = 0.0;
+                            roughness = @max(roughness, 0.65);
+                            ior = 1.45;
+                            thickness = std.math.clamp(thickness * 0.5, 0.0, 1.0);
+                        },
+                        .pbr_metallic_roughness => {
+                            ior = 1.52;
+                        },
+                    }
+
+                    const texture_indices = try resolvePathTraceTextureIndices(
+                        self.allocator,
+                        &texture_list,
+                        &texture_index_map,
+                        &scene.resources,
+                        mat_res,
+                        item.has_textures,
+                    );
+
+                    const tri_start: u32 = @intCast(triangle_list.items.len);
+                    const indices = mesh.indices;
+                    const vertices = mesh.vertices;
+                    var aabb = AABB.empty();
+                    var i: usize = 0;
+                    while (i + 2 < indices.len) : (i += 3) {
+                        const idx0 = indices[i];
+                        const idx1 = indices[i + 1];
+                        const idx2 = indices[i + 2];
+                        if (idx0 >= vertices.len or idx1 >= vertices.len or idx2 >= vertices.len) continue;
+
+                        const v0 = transformPoint(item.model, vertices[idx0].position);
+                        const v1 = transformPoint(item.model, vertices[idx1].position);
+                        const v2 = transformPoint(item.model, vertices[idx2].position);
+                        const n0 = transformNormal(item.model, vertices[idx0].normal);
+                        const n1 = transformNormal(item.model, vertices[idx1].normal);
+                        const n2 = transformNormal(item.model, vertices[idx2].normal);
+
+                        aabb.expand(v0);
+                        aabb.expand(v1);
+                        aabb.expand(v2);
+
+                        try triangle_list.append(self.allocator, .{
+                            .v0 = v0,
+                            .v1 = v1,
+                            .v2 = v2,
+                            .n0 = n0,
+                            .n1 = n1,
+                            .n2 = n2,
+                            .uv0 = vertices[idx0].uv,
+                            .uv1 = vertices[idx1].uv,
+                            .uv2 = vertices[idx2].uv,
+                            .albedo = albedo,
+                            .emissive = emissive,
+                            .metallic = metallic,
+                            .roughness = roughness,
+                            .transmission = transmission,
+                            .ior = ior,
+                            .thickness = thickness,
+                            .base_color_texture_index = texture_indices.base_color,
+                            .metallic_roughness_texture_index = texture_indices.metallic_roughness,
+                            .normal_texture_index = texture_indices.normal,
+                            .occlusion_texture_index = texture_indices.occlusion,
+                            .emissive_texture_index = texture_indices.emissive,
+                        });
+                    }
+
+                    const tri_count: u32 = @intCast(triangle_list.items.len - tri_start);
+                    if (tri_count > 0) {
+                        try mesh_list.append(self.allocator, .{
+                            .aabb = aabb,
+                            .tri_start = tri_start,
+                            .tri_count = tri_count,
+                        });
+                    }
+                }
+            }
+        }
+
+        if (triangle_list.items.len == 0) {
+            try triangle_list.append(self.allocator, .{
+                .v0 = .{ -5.0, 0.0, -5.0 },
+                .v1 = .{ 5.0, 0.0, -5.0 },
+                .v2 = .{ 5.0, 0.0, 5.0 },
+                .n0 = .{ 0.0, 1.0, 0.0 },
+                .n1 = .{ 0.0, 1.0, 0.0 },
+                .n2 = .{ 0.0, 1.0, 0.0 },
+                .uv0 = .{ 0.0, 0.0 },
+                .uv1 = .{ 1.0, 0.0 },
+                .uv2 = .{ 1.0, 1.0 },
+                .albedo = .{ 0.6, 0.6, 0.6 },
+                .emissive = .{ 0.0, 0.0, 0.0 },
+                .metallic = 0.0,
+                .roughness = 0.8,
+                .transmission = 0.0,
+                .ior = 1.5,
+                .thickness = 0.0,
+            });
+            try triangle_list.append(self.allocator, .{
+                .v0 = .{ -5.0, 0.0, -5.0 },
+                .v1 = .{ 5.0, 0.0, 5.0 },
+                .v2 = .{ -5.0, 0.0, 5.0 },
+                .n0 = .{ 0.0, 1.0, 0.0 },
+                .n1 = .{ 0.0, 1.0, 0.0 },
+                .n2 = .{ 0.0, 1.0, 0.0 },
+                .uv0 = .{ 0.0, 0.0 },
+                .uv1 = .{ 1.0, 1.0 },
+                .uv2 = .{ 0.0, 1.0 },
+                .albedo = .{ 0.6, 0.6, 0.6 },
+                .emissive = .{ 0.0, 0.0, 0.0 },
+                .metallic = 0.0,
+                .roughness = 0.8,
+                .transmission = 0.0,
+                .ior = 1.5,
+                .thickness = 0.0,
+            });
+            try mesh_list.append(self.allocator, .{
+                .aabb = .{ .min = .{ -5.0, -0.01, -5.0 }, .max = .{ 5.0, 0.01, 5.0 } },
+                .tri_start = 0,
+                .tri_count = 2,
+            });
+        }
+
+        pt.triangles = try self.allocator.dupe(PathTraceTriangle, triangle_list.items);
+        pt.meshes = try self.allocator.dupe(PathTraceMesh, mesh_list.items);
+        pt.textures = try self.allocator.dupe(PathTraceTexture, texture_list.items);
+        const built_emissive_lights = try buildPathTraceEmissiveLights(self.allocator, pt.triangles.?);
+        errdefer if (built_emissive_lights.items) |items| self.allocator.free(items);
+        pt.emissive_lights = built_emissive_lights.items;
+        pt.emissive_total_area = built_emissive_lights.total_area;
+        const built_environment_importance = try buildPathTraceEnvironmentImportance(self.allocator, path_trace_environment.texture);
+        errdefer if (built_environment_importance.items) |items| self.allocator.free(items);
+        pt.environment_importance = built_environment_importance.items;
+        pt.environment_importance_width = built_environment_importance.width;
+        pt.environment_importance_height = built_environment_importance.height;
+        pt.inv_view_projection = mat4_mod.inverse(prepared_scene.view_projection) orelse mat4_mod.identity();
+        pt.camera_origin = .{
+            prepared_scene.camera_world_position[0],
+            prepared_scene.camera_world_position[1],
+            prepared_scene.camera_world_position[2],
+        };
+        if (prepared_scene.lights.directional_lights.len > 0) {
+            const light = prepared_scene.lights.directional_lights[0];
+            pt.light_direction = vec3.normalize(vec3.scale(light.direction, -1.0));
+            pt.light_radiance = vec3.scale(light.color, light.intensity);
+        } else {
+            pt.light_direction = vec3.normalize(.{ 0.38, 0.82, 0.42 });
+            pt.light_radiance = .{ 0.0, 0.0, 0.0 };
+        }
+        pt.environment_texture = path_trace_environment.texture;
+    }
+
+    fn ensurePathTraceBuffers(
+        self: *Renderer,
+        pt: *PathTraceProgressiveState,
+        trace_width: u32,
+        trace_height: u32,
+        target_width: u32,
+        target_height: u32,
+    ) !void {
+        if (pt.trace_linear_rgb == null) {
+            pt.trace_linear_rgb = try self.allocator.alloc(f32, @as(usize, trace_width) * @as(usize, trace_height) * 3);
+            @memset(pt.trace_linear_rgb.?, 0);
+            pt.trace_width = trace_width;
+            pt.trace_height = trace_height;
+        }
+        if (pt.display_pixels == null) {
+            pt.display_pixels = try self.allocator.alloc(u8, @as(usize, target_width) * @as(usize, target_height) * 8);
+            @memset(pt.display_pixels.?, 0);
+            pt.target_width = target_width;
+            pt.target_height = target_height;
+        }
+    }
+
+    fn renderCpuPathTraceTiles(pt: *PathTraceProgressiveState, use_progressive_budget: bool, budget_ns: i128) void {
+        if (pt.complete) return;
+        const trace_linear = pt.trace_linear_rgb orelse return;
+        if (pt.trace_width == 0 or pt.trace_height == 0 or pt.cached_samples == 0) return;
+
+        const start_time = std.time.nanoTimestamp();
+        const tile_span = pathTraceAdaptiveTileSpan(pt.sample_step);
+        const use_adaptive_sampling = use_progressive_budget;
+        const min_samples = if (use_adaptive_sampling)
+            pathTraceAdaptiveMinSamples(pt.cached_samples)
+        else
+            pt.cached_samples;
+
+        while (pt.current_tile_y < pt.trace_height) {
+            var tile_blocks: [path_trace_adaptive_tile_capacity]PathTraceAdaptiveTileBlock = undefined;
+            var tile_block_count: usize = 0;
+            var tile_noise_metric_sum: f32 = 0.0;
+            const tile_end_y = @min(pt.trace_height, pt.current_tile_y + tile_span);
+            const tile_end_x = @min(pt.trace_width, pt.current_tile_x + tile_span);
+
+            var y = pt.current_tile_y;
+            while (y < tile_end_y) : (y += pt.sample_step) {
+                var x = pt.current_tile_x;
+                while (x < tile_end_x) : (x += pt.sample_step) {
+                    var block = PathTraceAdaptiveTileBlock{
+                        .x = x,
+                        .y = y,
+                    };
+                    var sample_index: u32 = 0;
+                    while (sample_index < min_samples) : (sample_index += 1) {
+                        const sample_color = tracePathTracePixelSample(pt, x, y, sample_index);
+                        block.color_sum = vec3.add(block.color_sum, sample_color);
+                        const sample_luminance = luminance(sample_color);
+                        block.luminance_sum += sample_luminance;
+                        block.luminance_sum_sq += sample_luminance * sample_luminance;
+                    }
+
+                    tile_noise_metric_sum += pathTraceAdaptiveNoiseMetric(
+                        block.luminance_sum,
+                        block.luminance_sum_sq,
+                        min_samples,
+                    );
+                    tile_blocks[tile_block_count] = block;
+                    tile_block_count += 1;
+                }
+            }
+
+            const tile_noise_metric = if (tile_block_count > 0)
+                tile_noise_metric_sum / @as(f32, @floatFromInt(tile_block_count))
+            else
+                0.0;
+            const target_samples = if (use_adaptive_sampling)
+                pathTraceAdaptiveTargetSamples(pt.cached_samples, tile_noise_metric)
+            else
+                pt.cached_samples;
+
+            var block_index: usize = 0;
+            while (block_index < tile_block_count) : (block_index += 1) {
+                var block = tile_blocks[block_index];
+                var sample_index = min_samples;
+                while (sample_index < target_samples) : (sample_index += 1) {
+                    const sample_color = tracePathTracePixelSample(pt, block.x, block.y, sample_index);
+                    block.color_sum = vec3.add(block.color_sum, sample_color);
+                }
+
+                const hdr_rgb = vec3.scale(block.color_sum, 1.0 / @as(f32, @floatFromInt(target_samples)));
+                var fy: u32 = 0;
+                while (fy < pt.sample_step and block.y + fy < pt.trace_height) : (fy += 1) {
+                    var fx: u32 = 0;
+                    while (fx < pt.sample_step and block.x + fx < pt.trace_width) : (fx += 1) {
+                        const out_x = block.x + fx;
+                        const out_y = block.y + fy;
+                        const pixel_index: usize = @as(usize, out_y) * @as(usize, pt.trace_width) + @as(usize, out_x);
+                        const linear_index: usize = pixel_index * 3;
+                        trace_linear[linear_index + 0] = hdr_rgb[0];
+                        trace_linear[linear_index + 1] = hdr_rgb[1];
+                        trace_linear[linear_index + 2] = hdr_rgb[2];
+                    }
+                }
+            }
+
+            advancePathTraceTileCursor(&pt.current_tile_x, &pt.current_tile_y, pt.trace_width, tile_span);
+            if (use_progressive_budget and std.time.nanoTimestamp() - start_time >= budget_ns) break;
+        }
+
+        if (pt.current_tile_y >= pt.trace_height) {
+            pt.complete = true;
+        }
+    }
+
+    fn resolvePathTraceDisplayPixels(pt: *PathTraceProgressiveState) void {
+        const trace_linear = pt.trace_linear_rgb orelse return;
+        const display_pixels = pt.display_pixels orelse return;
+        if (pt.trace_width == 0 or pt.trace_height == 0 or pt.target_width == 0 or pt.target_height == 0) return;
+
+        var out_y: u32 = 0;
+        while (out_y < pt.target_height) : (out_y += 1) {
+            const src_y_u64 = (@as(u64, out_y) * @as(u64, pt.trace_height)) / @as(u64, pt.target_height);
+            const src_y: u32 = @min(pt.trace_height - 1, @as(u32, @intCast(src_y_u64)));
+            var out_x: u32 = 0;
+            while (out_x < pt.target_width) : (out_x += 1) {
+                const src_x_u64 = (@as(u64, out_x) * @as(u64, pt.trace_width)) / @as(u64, pt.target_width);
+                const src_x: u32 = @min(pt.trace_width - 1, @as(u32, @intCast(src_x_u64)));
+                const src_index: usize = (@as(usize, src_y) * @as(usize, pt.trace_width) + @as(usize, src_x)) * 3;
+                const dst_pixel: usize = @as(usize, out_y) * @as(usize, pt.target_width) + @as(usize, out_x);
+                writeHdrPixelRgba16f(display_pixels, dst_pixel, .{
+                    trace_linear[src_index + 0],
+                    trace_linear[src_index + 1],
+                    trace_linear[src_index + 2],
+                });
+            }
+        }
+    }
+
+    fn buildOfflinePathTraceExportState(
+        self: *Renderer,
+        scene: *scene_mod.Scene,
+        width: u32,
+        height: u32,
+        samples: u32,
+        bounces: u32,
+        render_beauty: bool,
+    ) !PathTraceProgressiveState {
+        const extraction_frustum = buildSceneExtractionFrustum(&self.scene_cache, scene, width, height);
+        _ = try scene_extraction.extractWorld(
+            scene,
+            &self.render_world,
+            self.selection_history.primarySelection(),
+            self.selection_history.currentSelection(),
+            extraction_frustum,
+        );
+
+        var prepared_scene = try self.scene_cache.prepareScene(
+            &self.rhi,
+            scene,
+            &self.render_world,
+            width,
+            height,
+        );
+        defer prepared_scene.deinit();
+
+        var pt = PathTraceProgressiveState{
+            .trace_width = width,
+            .trace_height = height,
+            .target_width = width,
+            .target_height = height,
+            .cached_samples = samples,
+            .cached_bounces = bounces,
+            .sample_step = computePathTraceSampleStep(width, height),
+        };
+        errdefer pt.deinit(self.allocator);
+
+        try self.populatePathTraceSceneState(&pt, &prepared_scene, scene, resolvePathTraceEnvironment(&scene.resources));
+        if (render_beauty) {
+            try self.ensurePathTraceBuffers(&pt, width, height, width, height);
+            renderCpuPathTraceTiles(&pt, false, 0);
+            resolvePathTraceDisplayPixels(&pt);
+        }
+        return pt;
+    }
+
     fn renderPathTraceViewport(self: *Renderer, prepared_scene: *const mesh_pass_mod.PreparedScene, scene: *scene_mod.Scene) !void {
         const target = self.scene_viewport.hdrColor() orelse return;
         const width = target.desc.width;
@@ -4594,19 +5440,7 @@ pub const Renderer = struct {
         pt.last_scene_signature = scene_signature;
         pt.environment_texture = path_trace_environment.texture;
 
-        // --- 分配/复用持久缓冲区 ---
-        if (pt.trace_linear_rgb == null) {
-            pt.trace_linear_rgb = try self.allocator.alloc(f32, @as(usize, trace_width) * @as(usize, trace_height) * 3);
-            @memset(pt.trace_linear_rgb.?, 0);
-            pt.trace_width = trace_width;
-            pt.trace_height = trace_height;
-        }
-        if (pt.display_pixels == null) {
-            pt.display_pixels = try self.allocator.alloc(u8, @as(usize, width) * height * 8);
-            @memset(pt.display_pixels.?, 0);
-            pt.target_width = width;
-            pt.target_height = height;
-        }
+        try self.ensurePathTraceBuffers(pt, trace_width, trace_height, width, height);
 
         // 如果已经渲染完成，直接上传缓存结果
         if (pt.complete) {
@@ -4614,367 +5448,15 @@ pub const Renderer = struct {
             return;
         }
 
-        // --- 构建/缓存场景三角形数据 ---
-        if (pt.triangles == null) {
-            var triangle_list = std.ArrayList(PathTraceTriangle).empty;
-            defer triangle_list.deinit(self.allocator);
-            var mesh_list = std.ArrayList(PathTraceMesh).empty;
-            defer mesh_list.deinit(self.allocator);
-            var texture_list = std.ArrayList(PathTraceTexture).empty;
-            defer texture_list.deinit(self.allocator);
-            // 去重: TextureHandle.value → texture_list index
-            var texture_index_map = std.AutoHashMap(u32, i32).init(self.allocator);
-            defer texture_index_map.deinit();
+        try self.populatePathTraceSceneState(pt, prepared_scene, scene, path_trace_environment);
+        pt.cached_samples = samples;
+        pt.cached_bounces = bounces;
+        pt.environment_texture = path_trace_environment.texture;
+        pt.sample_step = computePathTraceSampleStep(trace_width, trace_height);
 
-            const draw_batches = [_]struct {
-                items: []const mesh_pass_mod.DrawItem,
-                is_transparent: bool,
-            }{
-                .{ .items = prepared_scene.opaque_meshes, .is_transparent = false },
-                .{ .items = prepared_scene.transparent_meshes, .is_transparent = true },
-            };
-            for (draw_batches) |batch| {
-                for (batch.items) |item| {
-                    const mesh_res = if (handles.isValid(item.mesh_handle))
-                        scene.resources.mesh(item.mesh_handle)
-                    else
-                        null;
-
-                    if (mesh_res) |mesh| {
-                        const entity = scene.getEntityConst(item.entity_id);
-                        const mat_comp = if (entity) |resolved_entity| resolved_entity.material else null;
-                        const mat_res = blk_mat: {
-                            const resolved_comp = mat_comp orelse break :blk_mat null;
-                            const mat_handle = resolved_comp.handle orelse break :blk_mat null;
-                            break :blk_mat scene.resources.material(mat_handle);
-                        };
-
-                        var shading: components.ShadingModel = if (mat_comp) |resolved_comp|
-                            resolved_comp.shading
-                        else
-                            .pbr_metallic_roughness;
-                        var alpha_cutoff = std.math.clamp(item.pbr_factors[2], 0.0, 1.0);
-                        if (mat_res) |material| {
-                            shading = material.shading;
-                            alpha_cutoff = std.math.clamp(material.alpha_cutoff, 0.0, 1.0);
-                        }
-
-                        const opacity = std.math.clamp(item.base_color_factor[3] * item.pbr_factors[3], 0.0, 1.0);
-                        if (batch.is_transparent and (opacity <= 0.001 or opacity < alpha_cutoff)) {
-                            continue;
-                        }
-
-                        var albedo = [3]f32{
-                            std.math.clamp(item.base_color_factor[0], 0.0, 1.0),
-                            std.math.clamp(item.base_color_factor[1], 0.0, 1.0),
-                            std.math.clamp(item.base_color_factor[2], 0.0, 1.0),
-                        };
-                        var emissive = [3]f32{
-                            item.emissive_factor[0] * item.emissive_factor[3],
-                            item.emissive_factor[1] * item.emissive_factor[3],
-                            item.emissive_factor[2] * item.emissive_factor[3],
-                        };
-                        var metallic = std.math.clamp(item.pbr_factors[0], 0.0, 1.0);
-                        var roughness = std.math.clamp(item.pbr_factors[1], 0.04, 1.0);
-                        var transmission = std.math.clamp(1.0 - opacity, 0.0, 0.96);
-                        var ior: f32 = 1.5;
-                        var thickness: f32 = std.math.clamp((1.0 - opacity) * 0.75 + 0.05, 0.01, 2.0);
-
-                        if (batch.is_transparent) {
-                            albedo = vec3.scale(albedo, opacity);
-                            roughness = std.math.clamp(roughness + (1.0 - opacity) * 0.35, 0.04, 1.0);
-                        } else {
-                            albedo = .{
-                                std.math.clamp(albedo[0], 0.02, 1.0),
-                                std.math.clamp(albedo[1], 0.02, 1.0),
-                                std.math.clamp(albedo[2], 0.02, 1.0),
-                            };
-                        }
-
-                        switch (shading) {
-                            .unlit => {
-                                emissive = vec3.add(emissive, vec3.scale(albedo, 1.2));
-                                albedo = vec3.scale(albedo, 0.06);
-                                metallic = 0.0;
-                                roughness = 1.0;
-                                transmission = 0.0;
-                                thickness = 0.0;
-                            },
-                            .lambert => {
-                                metallic = 0.0;
-                                roughness = @max(roughness, 0.65);
-                                ior = 1.45;
-                                thickness = std.math.clamp(thickness * 0.5, 0.0, 1.0);
-                            },
-                            .pbr_metallic_roughness => {
-                                ior = 1.52;
-                            },
-                        }
-
-                        const texture_indices = try resolvePathTraceTextureIndices(
-                            self.allocator,
-                            &texture_list,
-                            &texture_index_map,
-                            &scene.resources,
-                            mat_res,
-                            item.has_textures,
-                        );
-
-                        const tri_start: u32 = @intCast(triangle_list.items.len);
-                        const indices = mesh.indices;
-                        const vertices = mesh.vertices;
-                        var aabb = AABB.empty();
-                        var i: usize = 0;
-                        while (i + 2 < indices.len) : (i += 3) {
-                            const idx0 = indices[i];
-                            const idx1 = indices[i + 1];
-                            const idx2 = indices[i + 2];
-                            if (idx0 >= vertices.len or idx1 >= vertices.len or idx2 >= vertices.len) continue;
-
-                            const v0 = transformPoint(item.model, vertices[idx0].position);
-                            const v1 = transformPoint(item.model, vertices[idx1].position);
-                            const v2 = transformPoint(item.model, vertices[idx2].position);
-                            const n0 = transformNormal(item.model, vertices[idx0].normal);
-                            const n1 = transformNormal(item.model, vertices[idx1].normal);
-                            const n2 = transformNormal(item.model, vertices[idx2].normal);
-
-                            aabb.expand(v0);
-                            aabb.expand(v1);
-                            aabb.expand(v2);
-
-                            try triangle_list.append(self.allocator, .{
-                                .v0 = v0,
-                                .v1 = v1,
-                                .v2 = v2,
-                                .n0 = n0,
-                                .n1 = n1,
-                                .n2 = n2,
-                                .uv0 = vertices[idx0].uv,
-                                .uv1 = vertices[idx1].uv,
-                                .uv2 = vertices[idx2].uv,
-                                .albedo = albedo,
-                                .emissive = emissive,
-                                .metallic = metallic,
-                                .roughness = roughness,
-                                .transmission = transmission,
-                                .ior = ior,
-                                .thickness = thickness,
-                                .base_color_texture_index = texture_indices.base_color,
-                                .metallic_roughness_texture_index = texture_indices.metallic_roughness,
-                                .normal_texture_index = texture_indices.normal,
-                                .occlusion_texture_index = texture_indices.occlusion,
-                                .emissive_texture_index = texture_indices.emissive,
-                            });
-                        }
-
-                        const tri_count: u32 = @intCast(triangle_list.items.len - tri_start);
-                        if (tri_count > 0) {
-                            try mesh_list.append(self.allocator, .{
-                                .aabb = aabb,
-                                .tri_start = tri_start,
-                                .tri_count = tri_count,
-                            });
-                        }
-                    }
-                }
-            }
-
-            // 无网格时显示地面平面
-            if (triangle_list.items.len == 0) {
-                try triangle_list.append(self.allocator, .{
-                    .v0 = .{ -5.0, 0.0, -5.0 },
-                    .v1 = .{ 5.0, 0.0, -5.0 },
-                    .v2 = .{ 5.0, 0.0, 5.0 },
-                    .n0 = .{ 0.0, 1.0, 0.0 },
-                    .n1 = .{ 0.0, 1.0, 0.0 },
-                    .n2 = .{ 0.0, 1.0, 0.0 },
-                    .uv0 = .{ 0.0, 0.0 },
-                    .uv1 = .{ 1.0, 0.0 },
-                    .uv2 = .{ 1.0, 1.0 },
-                    .albedo = .{ 0.6, 0.6, 0.6 },
-                    .emissive = .{ 0.0, 0.0, 0.0 },
-                    .metallic = 0.0,
-                    .roughness = 0.8,
-                    .transmission = 0.0,
-                    .ior = 1.5,
-                    .thickness = 0.0,
-                });
-                try triangle_list.append(self.allocator, .{
-                    .v0 = .{ -5.0, 0.0, -5.0 },
-                    .v1 = .{ 5.0, 0.0, 5.0 },
-                    .v2 = .{ -5.0, 0.0, 5.0 },
-                    .n0 = .{ 0.0, 1.0, 0.0 },
-                    .n1 = .{ 0.0, 1.0, 0.0 },
-                    .n2 = .{ 0.0, 1.0, 0.0 },
-                    .uv0 = .{ 0.0, 0.0 },
-                    .uv1 = .{ 1.0, 1.0 },
-                    .uv2 = .{ 0.0, 1.0 },
-                    .albedo = .{ 0.6, 0.6, 0.6 },
-                    .emissive = .{ 0.0, 0.0, 0.0 },
-                    .metallic = 0.0,
-                    .roughness = 0.8,
-                    .transmission = 0.0,
-                    .ior = 1.5,
-                    .thickness = 0.0,
-                });
-                try mesh_list.append(self.allocator, .{
-                    .aabb = .{ .min = .{ -5.0, -0.01, -5.0 }, .max = .{ 5.0, 0.01, 5.0 } },
-                    .tri_start = 0,
-                    .tri_count = 2,
-                });
-            }
-
-            pt.triangles = try self.allocator.dupe(PathTraceTriangle, triangle_list.items);
-            pt.meshes = try self.allocator.dupe(PathTraceMesh, mesh_list.items);
-            pt.textures = try self.allocator.dupe(PathTraceTexture, texture_list.items);
-            const built_emissive_lights = try buildPathTraceEmissiveLights(self.allocator, pt.triangles.?);
-            errdefer if (built_emissive_lights.items) |items| self.allocator.free(items);
-            pt.emissive_lights = built_emissive_lights.items;
-            pt.emissive_total_area = built_emissive_lights.total_area;
-            const built_environment_importance = try buildPathTraceEnvironmentImportance(self.allocator, path_trace_environment.texture);
-            errdefer if (built_environment_importance.items) |items| self.allocator.free(items);
-            pt.environment_importance = built_environment_importance.items;
-            pt.environment_importance_width = built_environment_importance.width;
-            pt.environment_importance_height = built_environment_importance.height;
-            pt.inv_view_projection = mat4_mod.inverse(prepared_scene.view_projection) orelse mat4_mod.identity();
-            pt.camera_origin = .{
-                prepared_scene.camera_world_position[0],
-                prepared_scene.camera_world_position[1],
-                prepared_scene.camera_world_position[2],
-            };
-            if (prepared_scene.lights.directional_lights.len > 0) {
-                const light = prepared_scene.lights.directional_lights[0];
-                pt.light_direction = vec3.normalize(vec3.scale(light.direction, -1.0));
-                pt.light_radiance = vec3.scale(light.color, light.intensity);
-            } else {
-                pt.light_direction = vec3.normalize(.{ 0.38, 0.82, 0.42 });
-                pt.light_radiance = .{ 0.0, 0.0, 0.0 };
-            }
-            pt.cached_samples = samples;
-            pt.cached_bounces = bounces;
-            pt.environment_texture = path_trace_environment.texture;
-
-            const pixel_budget: u32 = 960 * 540;
-            const area = trace_width * trace_height;
-            pt.sample_step = if (area > pixel_budget * 4)
-                4
-            else if (area > pixel_budget * 2)
-                3
-            else if (area > pixel_budget)
-                2
-            else
-                1;
-        }
-
-        // --- 渐进追踪：每帧只渲染时间预算内的 tile，并按 tile 方差决定样本数 ---
-        const use_progressive_budget = !self.editor_viewport_state.path_trace_force_cpu;
-        const budget_ns: i128 = 8_000_000;
-        const start_time = std.time.nanoTimestamp();
-        const trace_linear = pt.trace_linear_rgb.?;
-        const tile_span = pathTraceAdaptiveTileSpan(pt.sample_step);
-        const use_adaptive_sampling = use_progressive_budget;
-        const min_samples = if (use_adaptive_sampling)
-            pathTraceAdaptiveMinSamples(pt.cached_samples)
-        else
-            pt.cached_samples;
-
-        while (pt.current_tile_y < trace_height) {
-            var tile_blocks: [path_trace_adaptive_tile_capacity]PathTraceAdaptiveTileBlock = undefined;
-            var tile_block_count: usize = 0;
-            var tile_noise_metric_sum: f32 = 0.0;
-            const tile_end_y = @min(trace_height, pt.current_tile_y + tile_span);
-            const tile_end_x = @min(trace_width, pt.current_tile_x + tile_span);
-
-            var y = pt.current_tile_y;
-            while (y < tile_end_y) : (y += pt.sample_step) {
-                var x = pt.current_tile_x;
-                while (x < tile_end_x) : (x += pt.sample_step) {
-                    var block = PathTraceAdaptiveTileBlock{
-                        .x = x,
-                        .y = y,
-                    };
-                    var sample_index: u32 = 0;
-                    while (sample_index < min_samples) : (sample_index += 1) {
-                        const sample_color = tracePathTracePixelSample(pt, x, y, sample_index);
-                        block.color_sum = vec3.add(block.color_sum, sample_color);
-                        const sample_luminance = luminance(sample_color);
-                        block.luminance_sum += sample_luminance;
-                        block.luminance_sum_sq += sample_luminance * sample_luminance;
-                    }
-
-                    tile_noise_metric_sum += pathTraceAdaptiveNoiseMetric(
-                        block.luminance_sum,
-                        block.luminance_sum_sq,
-                        min_samples,
-                    );
-                    tile_blocks[tile_block_count] = block;
-                    tile_block_count += 1;
-                }
-            }
-
-            const tile_noise_metric = if (tile_block_count > 0)
-                tile_noise_metric_sum / @as(f32, @floatFromInt(tile_block_count))
-            else
-                0.0;
-            const target_samples = if (use_adaptive_sampling)
-                pathTraceAdaptiveTargetSamples(pt.cached_samples, tile_noise_metric)
-            else
-                pt.cached_samples;
-
-            var block_index: usize = 0;
-            while (block_index < tile_block_count) : (block_index += 1) {
-                var block = tile_blocks[block_index];
-                var sample_index = min_samples;
-                while (sample_index < target_samples) : (sample_index += 1) {
-                    const sample_color = tracePathTracePixelSample(pt, block.x, block.y, sample_index);
-                    block.color_sum = vec3.add(block.color_sum, sample_color);
-                }
-
-                const hdr_rgb = vec3.scale(block.color_sum, 1.0 / @as(f32, @floatFromInt(target_samples)));
-                var fy: u32 = 0;
-                while (fy < pt.sample_step and block.y + fy < trace_height) : (fy += 1) {
-                    var fx: u32 = 0;
-                    while (fx < pt.sample_step and block.x + fx < trace_width) : (fx += 1) {
-                        const out_x = block.x + fx;
-                        const out_y = block.y + fy;
-                        const pixel_index: usize = @as(usize, out_y) * @as(usize, trace_width) + @as(usize, out_x);
-                        const linear_index: usize = pixel_index * 3;
-                        trace_linear[linear_index + 0] = hdr_rgb[0];
-                        trace_linear[linear_index + 1] = hdr_rgb[1];
-                        trace_linear[linear_index + 2] = hdr_rgb[2];
-                    }
-                }
-            }
-
-            advancePathTraceTileCursor(&pt.current_tile_x, &pt.current_tile_y, trace_width, tile_span);
-            if (use_progressive_budget and std.time.nanoTimestamp() - start_time >= budget_ns) break;
-        }
-
-        if (pt.current_tile_y >= trace_height) {
-            pt.complete = true;
-        }
-
-        // --- 上采样 trace_linear → display_pixels (RGBA16F) ---
-        const display_pixels = pt.display_pixels.?;
-        var out_y: u32 = 0;
-        while (out_y < height) : (out_y += 1) {
-            const src_y_u64 = (@as(u64, out_y) * @as(u64, trace_height)) / @as(u64, height);
-            const src_y: u32 = @min(trace_height - 1, @as(u32, @intCast(src_y_u64)));
-            var out_x: u32 = 0;
-            while (out_x < width) : (out_x += 1) {
-                const src_x_u64 = (@as(u64, out_x) * @as(u64, trace_width)) / @as(u64, width);
-                const src_x: u32 = @min(trace_width - 1, @as(u32, @intCast(src_x_u64)));
-                const src_index: usize = (@as(usize, src_y) * @as(usize, trace_width) + @as(usize, src_x)) * 3;
-                const dst_pixel: usize = @as(usize, out_y) * @as(usize, width) + @as(usize, out_x);
-                writeHdrPixelRgba16f(display_pixels, dst_pixel, .{
-                    trace_linear[src_index + 0],
-                    trace_linear[src_index + 1],
-                    trace_linear[src_index + 2],
-                });
-            }
-        }
-
-        try self.rhi.uploadTextureData(target, display_pixels, width, height);
+        renderCpuPathTraceTiles(pt, !self.editor_viewport_state.path_trace_force_cpu, 8_000_000);
+        resolvePathTraceDisplayPixels(pt);
+        try self.rhi.uploadTextureData(target, pt.display_pixels.?, width, height);
     }
 
     // ==================================================================
@@ -5716,6 +6198,11 @@ pub const Renderer = struct {
         height: u32,
     };
 
+    pub const PathTracePngExportOptions = struct {
+        denoise: bool = true,
+        write_aov_sidecars: bool = true,
+    };
+
     /// Download final HDR frame pixels as linear RGBA32F data from the HDR viewport target.
     pub fn downloadHdrFramePixelsAlloc(self: *Renderer, allocator: std.mem.Allocator) !HdrFramePixels {
         const texture = self.scene_viewport.hdr_color_texture orelse return error.TextureNotFound;
@@ -5784,6 +6271,107 @@ pub const Renderer = struct {
         return encodeExrRgb32fAlloc(allocator, pixels.data, pixels.width, pixels.height);
     }
 
+    /// Export path-traced PNG with optional albedo/normal sidecars and AOV-guided denoise.
+    pub fn exportPathTraceFramePng(
+        self: *Renderer,
+        allocator: std.mem.Allocator,
+        scene: *scene_mod.Scene,
+        out_path: []const u8,
+        options: PathTracePngExportOptions,
+    ) !void {
+        if (!options.denoise and !options.write_aov_sidecars) {
+            return self.exportFramePng(allocator, out_path);
+        }
+
+        const viewport_size = self.sceneViewportSize();
+        if (viewport_size[0] == 0 or viewport_size[1] == 0) return error.InvalidDimensions;
+
+        const samples = std.math.clamp(self.editor_viewport_state.path_trace_samples, 1, 64);
+        const bounces = std.math.clamp(self.editor_viewport_state.path_trace_bounces, 1, 8);
+
+        var beauty_rgb: []f32 = undefined;
+        defer allocator.free(beauty_rgb);
+
+        var guides: PathTraceGuideBuffers = undefined;
+        defer guides.deinit(allocator);
+
+        const use_existing_cpu_path = self.path_trace_state.triangles != null and
+            self.path_trace_state.trace_width == viewport_size[0] and
+            self.path_trace_state.trace_height == viewport_size[1];
+
+        if (use_existing_cpu_path) {
+            var pt = &self.path_trace_state;
+            pt.cached_samples = samples;
+            pt.cached_bounces = bounces;
+            if (pt.sample_step == 0) {
+                pt.sample_step = computePathTraceSampleStep(pt.trace_width, pt.trace_height);
+            }
+            renderCpuPathTraceTiles(pt, false, 0);
+            resolvePathTraceDisplayPixels(pt);
+            beauty_rgb = try allocator.dupe(f32, pt.trace_linear_rgb.?);
+            guides = try capturePathTraceGuideBuffersAlloc(allocator, pt);
+        } else if (self.path_trace_state.triangles != null) {
+            var offline_pt = try self.buildOfflinePathTraceExportState(
+                scene,
+                viewport_size[0],
+                viewport_size[1],
+                samples,
+                bounces,
+                true,
+            );
+            defer offline_pt.deinit(self.allocator);
+            beauty_rgb = try allocator.dupe(f32, offline_pt.trace_linear_rgb.?);
+            guides = try capturePathTraceGuideBuffersAlloc(allocator, &offline_pt);
+        } else {
+            const hdr = try self.downloadHdrFramePixelsAlloc(allocator);
+            defer allocator.free(hdr.data);
+            beauty_rgb = try copyHdrRgbaToRgbAlloc(allocator, hdr.data, hdr.width, hdr.height);
+
+            var guide_pt = try self.buildOfflinePathTraceExportState(
+                scene,
+                hdr.width,
+                hdr.height,
+                samples,
+                bounces,
+                false,
+            );
+            defer guide_pt.deinit(self.allocator);
+            guides = try capturePathTraceGuideBuffersAlloc(allocator, &guide_pt);
+        }
+
+        var final_beauty = beauty_rgb;
+        var denoised_rgb: ?[]f32 = null;
+        defer if (denoised_rgb) |rgb| allocator.free(rgb);
+        if (options.denoise) {
+            denoised_rgb = try denoisePathTraceHdrAlloc(allocator, beauty_rgb, guides.width, guides.height, guides);
+            final_beauty = denoised_rgb.?;
+        }
+
+        const beauty_rgba = try tonemapHdrToRgba8Alloc(allocator, final_beauty, guides.width, guides.height, self.editor_viewport_state);
+        defer allocator.free(beauty_rgba);
+        const beauty_png = try encodePngAlloc(allocator, beauty_rgba, guides.width, guides.height);
+        defer allocator.free(beauty_png);
+        try writeFileEnsuringParent(out_path, beauty_png);
+
+        if (options.write_aov_sidecars) {
+            const albedo_rgba = try encodeGuideToRgba8Alloc(allocator, guides.albedo, guides.width, guides.height, false);
+            defer allocator.free(albedo_rgba);
+            const albedo_png = try encodePngAlloc(allocator, albedo_rgba, guides.width, guides.height);
+            defer allocator.free(albedo_png);
+            const albedo_path = try allocSidecarPath(allocator, out_path, "_albedo");
+            defer allocator.free(albedo_path);
+            try writeFileEnsuringParent(albedo_path, albedo_png);
+
+            const normal_rgba = try encodeGuideToRgba8Alloc(allocator, guides.normal, guides.width, guides.height, true);
+            defer allocator.free(normal_rgba);
+            const normal_png = try encodePngAlloc(allocator, normal_rgba, guides.width, guides.height);
+            defer allocator.free(normal_png);
+            const normal_path = try allocSidecarPath(allocator, out_path, "_normal");
+            defer allocator.free(normal_path);
+            try writeFileEnsuringParent(normal_path, normal_png);
+        }
+    }
+
     /// Export a single frame to PNG at the given path.
     /// Performs GPU readback + CPU-side PNG encode + disk write.
     pub fn exportFramePng(self: *Renderer, allocator: std.mem.Allocator, out_path: []const u8) !void {
@@ -5798,44 +6386,16 @@ pub const Renderer = struct {
             pixels.data[i + 2] = b;
         }
 
-        const c = @cImport({
-            @cDefine("STBI_WRITE_NO_STDIO", "1");
-            @cDefine("STB_IMAGE_WRITE_IMPLEMENTATION", "1");
-            @cInclude("stb_image_write.h");
-        });
-
-        var out_len: c_int = 0;
-        const png_data = c.stbi_write_png_to_mem(
-            pixels.data.ptr,
-            @intCast(pixels.width * 4),
-            @intCast(pixels.width),
-            @intCast(pixels.height),
-            4,
-            &out_len,
-        ) orelse return error.PngEncodingFailed;
-        defer c.free(png_data);
-
-        const png_slice: []const u8 = @ptrCast(png_data[0..@intCast(out_len)]);
-
-        if (std.fs.path.dirname(out_path)) |directory| {
-            try std.fs.cwd().makePath(directory);
-        }
-        const file = try std.fs.cwd().createFile(out_path, .{});
-        defer file.close();
-        try file.writeAll(png_slice);
+        const png = try encodePngAlloc(allocator, pixels.data, pixels.width, pixels.height);
+        defer allocator.free(png);
+        try writeFileEnsuringParent(out_path, png);
     }
 
     /// Export a single HDR frame to OpenEXR at the given path.
     pub fn exportFrameExr(self: *Renderer, allocator: std.mem.Allocator, out_path: []const u8) !void {
         const exr = try self.downloadHdrFrameExrAlloc(allocator);
         defer allocator.free(exr);
-
-        if (std.fs.path.dirname(out_path)) |directory| {
-            try std.fs.cwd().makePath(directory);
-        }
-        const file = try std.fs.cwd().createFile(out_path, .{});
-        defer file.close();
-        try file.writeAll(exr);
+        try writeFileEnsuringParent(out_path, exr);
     }
 
     fn buildSceneSnapshot(scene: *const scene_mod.Scene) types.SceneSnapshot {
@@ -6826,6 +7386,102 @@ test "samplePathTraceMaterial applies normal metallic-roughness AO and emissive 
     try std.testing.expectApproxEqAbs(@as(f32, 0.2), sample.roughness, 0.0001);
     try expectVec3ApproxEqAbs(.{ 0.6, 0.0, 0.8 }, sample.shading_normal, 0.0001);
     try std.testing.expect(vec3.dot(sample.shading_normal, .{ 0.0, 0.0, 1.0 }) > 0.0);
+}
+
+test "samplePathTraceGuidePixel captures first-hit albedo and normal guides" {
+    var base_color_pixels = [_]f32{ 0.25, 0.50, 0.75, 1.0 };
+    var normal_pixels = [_]f32{ 0.8, 0.5, 0.9, 1.0 };
+
+    var textures = [_]PathTraceTexture{
+        .{
+            .pixels = std.mem.sliceAsBytes(base_color_pixels[0..]),
+            .width = 1,
+            .height = 1,
+            .format = .rgba32_float,
+        },
+        .{
+            .pixels = std.mem.sliceAsBytes(normal_pixels[0..]),
+            .width = 1,
+            .height = 1,
+            .format = .rgba32_float,
+        },
+    };
+
+    var triangles = [_]PathTraceTriangle{
+        .{
+            .v0 = .{ -2.0, -2.0, 0.0 },
+            .v1 = .{ 2.0, -2.0, 0.0 },
+            .v2 = .{ -2.0, 2.0, 0.0 },
+            .n0 = .{ 0.0, 0.0, 1.0 },
+            .n1 = .{ 0.0, 0.0, 1.0 },
+            .n2 = .{ 0.0, 0.0, 1.0 },
+            .uv0 = .{ 0.0, 0.0 },
+            .uv1 = .{ 1.0, 0.0 },
+            .uv2 = .{ 0.0, 1.0 },
+            .albedo = .{ 0.8, 0.6, 0.4 },
+            .emissive = .{ 0.0, 0.0, 0.0 },
+            .metallic = 0.0,
+            .roughness = 0.5,
+            .transmission = 0.0,
+            .ior = 1.5,
+            .thickness = 0.0,
+            .base_color_texture_index = 0,
+            .normal_texture_index = 1,
+        },
+    };
+    var meshes = [_]PathTraceMesh{
+        .{
+            .aabb = .{ .min = .{ -2.0, -2.0, -0.01 }, .max = .{ 2.0, 2.0, 0.01 } },
+            .tri_start = 0,
+            .tri_count = 1,
+        },
+    };
+
+    const pt = PathTraceProgressiveState{
+        .trace_width = 1,
+        .trace_height = 1,
+        .triangles = triangles[0..],
+        .meshes = meshes[0..],
+        .textures = textures[0..],
+        .inv_view_projection = mat4_mod.identity(),
+        .camera_origin = .{ 0.0, 0.0, -1.0 },
+    };
+
+    const guide = samplePathTraceGuidePixel(&pt, 0, 0);
+    try expectVec3ApproxEqAbs(.{ 0.2, 0.3, 0.3 }, guide.albedo, 0.0001);
+    try expectVec3ApproxEqAbs(.{ 0.6, 0.0, 0.8 }, guide.normal, 0.0001);
+}
+
+test "denoisePathTraceHdrAlloc smooths within matching guides and preserves albedo edges" {
+    const beauty = [_]f32{
+        1.0, 0.0, 0.0,
+        0.2, 0.0, 0.0,
+        0.0, 0.0, 1.0,
+    };
+    const albedo = [_]f32{
+        1.0, 0.0, 0.0,
+        1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0,
+    };
+    const normal = [_]f32{
+        0.0, 0.0, 1.0,
+        0.0, 0.0, 1.0,
+        0.0, 0.0, 1.0,
+    };
+
+    const guides = PathTraceGuideBuffers{
+        .albedo = albedo[0..],
+        .normal = normal[0..],
+        .width = 3,
+        .height = 1,
+    };
+
+    const denoised = try denoisePathTraceHdrAlloc(std.testing.allocator, beauty[0..], 3, 1, guides);
+    defer std.testing.allocator.free(denoised);
+
+    try std.testing.expect(denoised[3] > beauty[3]);
+    try std.testing.expect(denoised[3] > 0.45);
+    try std.testing.expect(denoised[5] < 0.12);
 }
 
 test "applyPathTraceRussianRoulette gates bounce and rescales surviving throughput" {

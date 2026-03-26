@@ -207,6 +207,9 @@ fn drawRenderOutputSection(state: *EditorState, layer_context: *engine.core.Laye
         var export_bounces_buf: [32]u8 = undefined;
         const export_bounces_text = try std.fmt.bufPrint(&export_bounces_buf, "{d}", .{state.render_output_bounces});
         gui.labelText("Export Bounces", export_bounces_text);
+
+        _ = gui.checkbox("Denoise PathTrace Export", &state.render_output_path_trace_denoise);
+        _ = gui.checkbox("Write Albedo/Normal AOV", &state.render_output_path_trace_write_aovs);
     } else {
         gui.textWrapped("Current pipeline is Raster, so export samples/bounces are ignored.");
     }
@@ -400,7 +403,10 @@ fn renderOutputFormatLabel(format: state_mod.RenderOutputFormat) []const u8 {
 fn renderOutputPipelineNote(state: *const EditorState) []const u8 {
     return switch (state.viewport_pipeline_mode) {
         .raster => "Exports use the current Raster viewport result at the selected output resolution.",
-        .path_trace => "Exports temporarily switch PathTrace to the output samples/bounces and full-resolution tracing.",
+        .path_trace => if (state.render_output_path_trace_denoise or state.render_output_path_trace_write_aovs)
+            "Exports switch PathTrace to the output samples/bounces and full-resolution tracing, then can emit albedo/normal AOV sidecars and run AOV-guided denoise before PNG write."
+        else
+            "Exports temporarily switch PathTrace to the output samples/bounces and full-resolution tracing.",
     };
 }
 

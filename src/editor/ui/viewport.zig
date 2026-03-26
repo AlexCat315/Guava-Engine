@@ -108,7 +108,19 @@ fn exportPendingRenderOutput(state: *EditorState, layer_context: *engine.core.La
     setRenderOutputStatusFmt(state, .writing, "Writing {s}", .{out_path});
     const dims = layer_context.renderer.sceneViewportSize();
     const export_result = switch (state.render_output_format) {
-        .png => layer_context.renderer.exportFramePng(allocator, out_path),
+        .png => if (state.viewport_pipeline_mode == .path_trace and
+            (state.render_output_path_trace_denoise or state.render_output_path_trace_write_aovs))
+            layer_context.renderer.exportPathTraceFramePng(
+                allocator,
+                layer_context.scene,
+                out_path,
+                .{
+                    .denoise = state.render_output_path_trace_denoise,
+                    .write_aov_sidecars = state.render_output_path_trace_write_aovs,
+                },
+            )
+        else
+            layer_context.renderer.exportFramePng(allocator, out_path),
     };
 
     if (export_result) {
