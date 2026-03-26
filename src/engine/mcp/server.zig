@@ -183,7 +183,7 @@ const Server = struct {
                     .title = "Guava Engine MCP",
                     .version = "0.1.0",
                 },
-                .instructions = "Guava Engine MCP bridge with scene snapshots, component schema contracts, editor context injection, staged ghost-preview transactions, paged entity queries, and writable WASM pipelines for both scene scripts and editor utilities. Resources: scene://hierarchy, selection://current, entity://{id}, schema://components, editor://context, editor://intent-log, preview://staged, script://runtime-status, editor://utilities. Tools: create_entity, delete_entity, rename_entity, set_parent, set_local_transform, set_world_transform, set_visible, query_entities, compile_script, compile_editor_utility, stage_transaction, apply_staged_transaction, discard_staged_transaction.",
+                .instructions = "Guava Engine MCP bridge with scene snapshots, component schema contracts, editor context injection, staged ghost-preview transactions, paged entity queries, writable WASM pipelines for both scene scripts and editor utilities, and viewport screenshot capture. Resources: scene://hierarchy, selection://current, entity://{id}, schema://components, editor://context, editor://intent-log, preview://staged, script://runtime-status, editor://utilities. Tools: create_entity, delete_entity, rename_entity, set_parent, set_local_transform, set_world_transform, set_visible, query_entities, compile_script, compile_editor_utility, screenshot_png, stage_transaction, apply_staged_transaction, discard_staged_transaction.",
             });
             return false;
         }
@@ -221,12 +221,6 @@ const Server = struct {
             else
                 null;
             const arguments_value = if (arguments) |value| std.json.Value{ .object = value } else null;
-
-            // Handle screenshot_png tool: requires renderer access from MCP sync layer
-            if (std.mem.eql(u8, tool_name.?, "screenshot_png")) {
-                try writeErrorResponse(stdout_file, id, protocol.ErrorCode.internal_error, "screenshot_png tool requires render context. Capture screenshot manually or use editor viewport export.", null);
-                return false;
-            }
 
             if (collaboration_mod.isToolName(tool_name.?)) {
                 var response = self.collaboration_bridge.submitJson(tool_name.?, arguments_value) catch |err| switch (err) {
@@ -301,6 +295,29 @@ const Server = struct {
                         .items = query.items,
                     },
                     .isError = false,
+                });
+                return false;
+            }
+
+            if (response.result.kind == .screenshot) {
+                const data_uri = response.result.screenshot_data_uri orelse "";
+                const content_text = if (data_uri.len != 0) data_uri else summary;
+                try writeResult(stdout_file, id, .{
+                    .content = &.{
+                        .{
+                            .type = "text",
+                            .text = content_text,
+                        },
+                    },
+                    .structuredContent = .{
+                        .tool = response.tool_name,
+                        .mime_type = "image/png",
+                        .width = response.result.screenshot_width,
+                        .height = response.result.screenshot_height,
+                        .data_uri = data_uri,
+                        .@"error" = response.result.script_error,
+                    },
+                    .isError = response.result.script_error != null,
                 });
                 return false;
             }

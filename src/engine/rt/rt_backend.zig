@@ -36,8 +36,8 @@ pub const HardwareRtBackend = switch (builtin.os.tag) {
 pub fn backendName() []const u8 {
     return switch (builtin.os.tag) {
         .macos => "Metal RT",
-        .windows => "Vulkan RT", // 占位
-        .linux => "Vulkan RT", // 占位
+        .windows => "Vulkan/DX12 RT (planned)",
+        .linux => "Vulkan RT (planned)",
         else => "CPU",
     };
 }

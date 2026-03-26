@@ -66,6 +66,15 @@ const CompileEditorUtilityRequest = struct {
     }
 };
 
+const ScreenshotRequest = struct {
+    tool_name: []u8,
+
+    fn deinit(self: *ScreenshotRequest, allocator: std.mem.Allocator) void {
+        allocator.free(self.tool_name);
+        self.* = undefined;
+    }
+};
+
 const QueryRequest = struct {
     tool_name: []u8,
     id: ?scene_mod.EntityId = null,
@@ -126,6 +135,7 @@ pub const PendingRequest = union(enum) {
     command: CommandRequest,
     compile_script: CompileScriptRequest,
     compile_editor_utility: CompileEditorUtilityRequest,
+    screenshot_png: ScreenshotRequest,
     query_entities: QueryRequest,
 
     pub fn deinit(self: *PendingRequest, allocator: std.mem.Allocator) void {
@@ -133,6 +143,7 @@ pub const PendingRequest = union(enum) {
             .command => |*command| command.deinit(allocator),
             .compile_script => |*compile| compile.deinit(allocator),
             .compile_editor_utility => |*compile| compile.deinit(allocator),
+            .screenshot_png => |*screenshot| screenshot.deinit(allocator),
             .query_entities => |*query| query.deinit(allocator),
         }
         self.* = undefined;
@@ -144,6 +155,7 @@ pub const ToolResult = struct {
         command,
         compile_script,
         compile_editor_utility,
+        screenshot,
         query,
     } = .command,
     changed: bool = false,
@@ -154,10 +166,14 @@ pub const ToolResult = struct {
     compiled: bool = false,
     attached: bool = false,
     utility_registered: bool = false,
+    screenshot_data_uri: ?[]u8 = null,
+    screenshot_width: ?u32 = null,
+    screenshot_height: ?u32 = null,
     query_result: ?query_engine.ResultSet = null,
 
     fn deinit(self: *ToolResult, allocator: std.mem.Allocator) void {
         if (self.script_error) |message| allocator.free(message);
+        if (self.screenshot_data_uri) |data_uri| allocator.free(data_uri);
         if (self.query_result) |*query_result| query_result.deinit(allocator);
         self.* = undefined;
     }
@@ -255,6 +271,7 @@ pub const Bridge = struct {
             .command => |command_request| command_request.tool_name,
             .compile_script => |compile_request| compile_request.tool_name,
             .compile_editor_utility => |compile_request| compile_request.tool_name,
+            .screenshot_png => |screenshot_request| screenshot_request.tool_name,
             .query_entities => |query_request| query_request.tool_name,
         });
         errdefer self.allocator.free(response_tool_name);
@@ -277,6 +294,21 @@ pub const Bridge = struct {
             },
             .compile_editor_utility => |compile_request| blk: {
                 break :blk try processCompileEditorUtilityRequest(self.allocator, layer_context, compile_request);
+            },
+            .screenshot_png => |_| blk: {
+                const data_uri = screenshot_tool.screenshotAsDataUriAlloc(self.allocator, layer_context) catch |err| {
+                    break :blk ToolResult{
+                        .kind = .screenshot,
+                        .script_error = try std.fmt.allocPrint(self.allocator, "screenshot capture failed: {s}", .{@errorName(err)}),
+                    };
+                };
+                const viewport_size = layer_context.renderer.sceneViewportSize();
+                break :blk ToolResult{
+                    .kind = .screenshot,
+                    .screenshot_data_uri = data_uri,
+                    .screenshot_width = viewport_size[0],
+                    .screenshot_height = viewport_size[1],
+                };
             },
             .query_entities => |query_request| blk: {
                 break :blk ToolResult{
@@ -335,6 +367,14 @@ pub fn parseToolCallAlloc(
                 .description = try parseOptionalStringAlloc(allocator, arguments, "description"),
                 .utility_name = try parseOptionalStringAlloc(allocator, arguments, "utility_name"),
                 .open = try parseBoolFromObject(try requireObject(arguments), "open", true),
+            },
+        };
+    }
+
+    if (std.mem.eql(u8, tool_name, "screenshot_png")) {
+        return .{
+            .screenshot_png = .{
+                .tool_name = owned_tool_name,
             },
         };
     }
@@ -466,6 +506,14 @@ pub fn buildSummaryAlloc(allocator: std.mem.Allocator, response: CallResponse) !
             response.result.script_handle,
             response.result.compiled,
             response.result.utility_registered,
+        });
+    }
+
+    if (response.result.kind == .screenshot) {
+        return std.fmt.allocPrint(allocator, "{s} ok: png data uri ready ({}x{})", .{
+            response.tool_name,
+            response.result.screenshot_width orelse 0,
+            response.result.screenshot_height orelse 0,
         });
     }
 
