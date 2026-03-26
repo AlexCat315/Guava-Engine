@@ -69,6 +69,9 @@ const contact_shadow_pass_mod = @import("contact_shadow_pass.zig");
 const taa_pass_mod = @import("taa_pass.zig");
 const rt_shadow_composite_pass_mod = @import("rt_shadow_composite_pass.zig");
 const rt_shadow_denoise_pass_mod = @import("rt_shadow_denoise_pass.zig");
+const path_trace_common = @import("path_trace_common.zig");
+const path_trace_denoise = @import("path_trace_denoise.zig");
+const image_export = @import("image_export.zig");
 const dof_pass_mod = @import("dof_pass.zig");
 const ssr_pass_mod = @import("ssr_pass.zig");
 const fullscreen_post_mod = @import("fullscreen_post_pass.zig");
@@ -251,186 +254,21 @@ fn effectiveViewportRenderMode(state: types.EditorViewportState) types.EditorVie
     return state.render_mode;
 }
 
-const PathTraceTriangle = struct {
-    v0: [3]f32,
-    v1: [3]f32,
-    v2: [3]f32,
-    n0: [3]f32,
-    n1: [3]f32,
-    n2: [3]f32,
-    uv0: [2]f32,
-    uv1: [2]f32,
-    uv2: [2]f32,
-    albedo: [3]f32,
-    emissive: [3]f32,
-    metallic: f32,
-    roughness: f32,
-    transmission: f32,
-    ior: f32,
-    thickness: f32,
-    base_color_texture_index: i32 = -1,
-    metallic_roughness_texture_index: i32 = -1,
-    normal_texture_index: i32 = -1,
-    occlusion_texture_index: i32 = -1,
-    emissive_texture_index: i32 = -1,
-};
-
-const PathTraceTexture = struct {
-    pixels: []const u8, // borrowed pointer (owned by TextureResource)
-    width: u32,
-    height: u32,
-    format: rhi_types.TextureFormat,
-};
-
-const PathTraceEnvironment = struct {
-    handle: u32 = 0,
-    texture: ?PathTraceTexture = null,
-};
-
-const PathTraceTextureIndices = struct {
-    base_color: i32 = -1,
-    metallic_roughness: i32 = -1,
-    normal: i32 = -1,
-    occlusion: i32 = -1,
-    emissive: i32 = -1,
-};
-
-const PathTraceMaterialSample = struct {
-    albedo: [3]f32,
-    emissive: [3]f32,
-    metallic: f32,
-    roughness: f32,
-    shading_normal: [3]f32,
-};
-
-const PathTracePrimaryRay = struct {
-    origin: [3]f32,
-    direction: [3]f32,
-};
-
-const PathTraceGuidePixel = struct {
-    albedo: [3]f32 = .{ 0.0, 0.0, 0.0 },
-    normal: [3]f32 = .{ 0.0, 0.0, 0.0 },
-};
-
-const PathTraceGuideBuffers = struct {
-    albedo: []f32,
-    normal: []f32,
-    width: u32,
-    height: u32,
-
-    fn deinit(self: *PathTraceGuideBuffers, allocator: std.mem.Allocator) void {
-        allocator.free(self.albedo);
-        allocator.free(self.normal);
-        self.* = undefined;
-    }
-};
-
-const PathTraceEnvImportance = extern struct {
-    q: f32,
-    pmf: f32,
-    alias: u32,
-};
-
-const PathTraceEmissiveLight = extern struct {
-    triangle_index: u32,
-    cdf: f32,
-};
-
-const PathTraceMesh = struct {
-    aabb: AABB,
-    tri_start: u32,
-    tri_count: u32,
-};
-
-/// 渐进式路径追踪状态：每帧只追踪有限扫描行，避免阻塞主线程。
-const PathTraceProgressiveState = struct {
-    current_tile_x: u32 = 0,
-    current_tile_y: u32 = 0,
-    complete: bool = false,
-    trace_linear_rgb: ?[]f32 = null,
-    display_pixels: ?[]u8 = null,
-    trace_width: u32 = 0,
-    trace_height: u32 = 0,
-    target_width: u32 = 0,
-    target_height: u32 = 0,
-    // 缓存的场景数据
-    triangles: ?[]PathTraceTriangle = null,
-    meshes: ?[]PathTraceMesh = null,
-    textures: ?[]PathTraceTexture = null,
-    environment_texture: ?PathTraceTexture = null,
-    environment_importance: ?[]PathTraceEnvImportance = null,
-    environment_importance_width: u32 = 0,
-    environment_importance_height: u32 = 0,
-    emissive_lights: ?[]PathTraceEmissiveLight = null,
-    emissive_total_area: f32 = 0.0,
-    inv_view_projection: [16]f32 = mat4_mod.identity(),
-    camera_origin: [3]f32 = .{ 0, 0, 0 },
-    light_direction: [3]f32 = .{ 0, 1, 0 },
-    light_radiance: [3]f32 = .{ 0, 0, 0 },
-    sample_step: u32 = 1,
-    cached_samples: u32 = 0,
-    cached_bounces: u32 = 0,
-    // 变化检测
-    last_view_projection: [16]f32 = mat4_mod.identity(),
-    last_samples: u32 = 0,
-    last_bounces: u32 = 0,
-    last_resolution_scale: f32 = 0.0,
-    last_environment_texture_handle: u32 = 0,
-    last_scene_signature: u64 = 0,
-
-    fn reset(self: *PathTraceProgressiveState, allocator: std.mem.Allocator) void {
-        self.current_tile_x = 0;
-        self.current_tile_y = 0;
-        self.complete = false;
-        self.environment_texture = null;
-        if (self.triangles) |t| {
-            allocator.free(t);
-            self.triangles = null;
-        }
-        if (self.meshes) |m| {
-            allocator.free(m);
-            self.meshes = null;
-        }
-        if (self.textures) |tex| {
-            allocator.free(tex);
-            self.textures = null;
-        }
-        if (self.environment_importance) |items| {
-            allocator.free(items);
-            self.environment_importance = null;
-        }
-        if (self.emissive_lights) |items| {
-            allocator.free(items);
-            self.emissive_lights = null;
-        }
-        self.environment_importance_width = 0;
-        self.environment_importance_height = 0;
-        self.emissive_total_area = 0.0;
-    }
-
-    fn deinit(self: *PathTraceProgressiveState, allocator: std.mem.Allocator) void {
-        if (self.trace_linear_rgb) |p| allocator.free(p);
-        if (self.display_pixels) |p| allocator.free(p);
-        if (self.triangles) |t| allocator.free(t);
-        if (self.meshes) |m| allocator.free(m);
-        if (self.textures) |tex| allocator.free(tex);
-        if (self.environment_importance) |items| allocator.free(items);
-        if (self.emissive_lights) |items| allocator.free(items);
-        self.* = .{};
-    }
-};
-
-const path_trace_adaptive_tile_dim: u32 = 8;
-const path_trace_adaptive_tile_capacity: usize = path_trace_adaptive_tile_dim * path_trace_adaptive_tile_dim;
-
-const PathTraceAdaptiveTileBlock = struct {
-    x: u32 = 0,
-    y: u32 = 0,
-    color_sum: [3]f32 = .{ 0.0, 0.0, 0.0 },
-    luminance_sum: f32 = 0.0,
-    luminance_sum_sq: f32 = 0.0,
-};
+const PathTraceTriangle = path_trace_common.PathTraceTriangle;
+const PathTraceTexture = path_trace_common.PathTraceTexture;
+const PathTraceEnvironment = path_trace_common.PathTraceEnvironment;
+const PathTraceTextureIndices = path_trace_common.PathTraceTextureIndices;
+const PathTraceMaterialSample = path_trace_common.PathTraceMaterialSample;
+const PathTracePrimaryRay = path_trace_common.PathTracePrimaryRay;
+const PathTraceGuidePixel = path_trace_common.PathTraceGuidePixel;
+const PathTraceGuideBuffers = path_trace_common.PathTraceGuideBuffers;
+const PathTraceEnvImportance = path_trace_common.PathTraceEnvImportance;
+const PathTraceEmissiveLight = path_trace_common.PathTraceEmissiveLight;
+const PathTraceMesh = path_trace_common.PathTraceMesh;
+const PathTraceProgressiveState = path_trace_common.PathTraceProgressiveState;
+const path_trace_adaptive_tile_dim = path_trace_common.path_trace_adaptive_tile_dim;
+const path_trace_adaptive_tile_capacity = path_trace_common.path_trace_adaptive_tile_capacity;
+const PathTraceAdaptiveTileBlock = path_trace_common.PathTraceAdaptiveTileBlock;
 
 /// 硬件 RT 渲染状态（GPU 光追，与平台无关）
 const HwRtState = struct {
@@ -2254,510 +2092,6 @@ fn buildHwRtSamplingTables(
         .data = data,
         .meta = meta,
     };
-}
-
-fn writeF16Le(out: []u8, offset: usize, value: f32) void {
-    const clamped = std.math.clamp(value, -65504.0, 65504.0);
-    const bits: u16 = @bitCast(@as(f16, @floatCast(clamped)));
-    out[offset + 0] = @as(u8, @truncate(bits));
-    out[offset + 1] = @as(u8, @truncate(bits >> 8));
-}
-
-fn readF16Le(bytes: []const u8, offset: usize) f32 {
-    const bits: u16 = @as(u16, bytes[offset + 0]) | (@as(u16, bytes[offset + 1]) << 8);
-    return @as(f32, @floatCast(@as(f16, @bitCast(bits))));
-}
-
-fn writeU32Le(out: []u8, offset: usize, value: u32) void {
-    out[offset + 0] = @as(u8, @truncate(value));
-    out[offset + 1] = @as(u8, @truncate(value >> 8));
-    out[offset + 2] = @as(u8, @truncate(value >> 16));
-    out[offset + 3] = @as(u8, @truncate(value >> 24));
-}
-
-fn writeI32Le(out: []u8, offset: usize, value: i32) void {
-    writeU32Le(out, offset, @bitCast(value));
-}
-
-fn writeU64Le(out: []u8, offset: usize, value: u64) void {
-    out[offset + 0] = @as(u8, @truncate(value));
-    out[offset + 1] = @as(u8, @truncate(value >> 8));
-    out[offset + 2] = @as(u8, @truncate(value >> 16));
-    out[offset + 3] = @as(u8, @truncate(value >> 24));
-    out[offset + 4] = @as(u8, @truncate(value >> 32));
-    out[offset + 5] = @as(u8, @truncate(value >> 40));
-    out[offset + 6] = @as(u8, @truncate(value >> 48));
-    out[offset + 7] = @as(u8, @truncate(value >> 56));
-}
-
-fn writeF32Le(out: []u8, offset: usize, value: f32) void {
-    writeU32Le(out, offset, @bitCast(value));
-}
-
-fn appendU32Le(list: *std.ArrayList(u8), allocator: std.mem.Allocator, value: u32) !void {
-    var buf: [4]u8 = undefined;
-    writeU32Le(&buf, 0, value);
-    try list.appendSlice(allocator, &buf);
-}
-
-fn appendI32Le(list: *std.ArrayList(u8), allocator: std.mem.Allocator, value: i32) !void {
-    var buf: [4]u8 = undefined;
-    writeI32Le(&buf, 0, value);
-    try list.appendSlice(allocator, &buf);
-}
-
-fn appendU64Le(list: *std.ArrayList(u8), allocator: std.mem.Allocator, value: u64) !void {
-    var buf: [8]u8 = undefined;
-    writeU64Le(&buf, 0, value);
-    try list.appendSlice(allocator, &buf);
-}
-
-fn appendF32Le(list: *std.ArrayList(u8), allocator: std.mem.Allocator, value: f32) !void {
-    var buf: [4]u8 = undefined;
-    writeF32Le(&buf, 0, value);
-    try list.appendSlice(allocator, &buf);
-}
-
-fn appendCString(list: *std.ArrayList(u8), allocator: std.mem.Allocator, value: []const u8) !void {
-    try list.appendSlice(allocator, value);
-    try list.append(allocator, 0);
-}
-
-fn appendExrAttribute(
-    list: *std.ArrayList(u8),
-    allocator: std.mem.Allocator,
-    name: []const u8,
-    attr_type: []const u8,
-    value: []const u8,
-) !void {
-    try appendCString(list, allocator, name);
-    try appendCString(list, allocator, attr_type);
-    try appendU32Le(list, allocator, @intCast(value.len));
-    try list.appendSlice(allocator, value);
-}
-
-fn sanitizeHdrValue(value: f32) f32 {
-    if (!std.math.isFinite(value)) return 0.0;
-    return value;
-}
-
-fn encodeExrRgb32fAlloc(
-    allocator: std.mem.Allocator,
-    rgba: []const f32,
-    width: u32,
-    height: u32,
-) ![]u8 {
-    if (width == 0 or height == 0) return error.InvalidDimensions;
-    const pixel_count = @as(usize, width) * @as(usize, height);
-    if (rgba.len < pixel_count * 4) return error.InvalidHdrData;
-
-    var output = std.ArrayList(u8).empty;
-    errdefer output.deinit(allocator);
-
-    try appendU32Le(&output, allocator, 20000630);
-    try appendU32Le(&output, allocator, 2);
-
-    var channel_list = std.ArrayList(u8).empty;
-    defer channel_list.deinit(allocator);
-    for ([_][]const u8{ "B", "G", "R" }) |channel_name| {
-        try appendCString(&channel_list, allocator, channel_name);
-        try appendI32Le(&channel_list, allocator, 2);
-        try channel_list.append(allocator, 0);
-        try channel_list.appendNTimes(allocator, 0, 3);
-        try appendI32Le(&channel_list, allocator, 1);
-        try appendI32Le(&channel_list, allocator, 1);
-    }
-    try channel_list.append(allocator, 0);
-    try appendExrAttribute(&output, allocator, "channels", "chlist", channel_list.items);
-
-    try appendExrAttribute(&output, allocator, "compression", "compression", &[_]u8{0});
-
-    var box2i: [16]u8 = undefined;
-    writeI32Le(&box2i, 0, 0);
-    writeI32Le(&box2i, 4, 0);
-    writeI32Le(&box2i, 8, @intCast(width - 1));
-    writeI32Le(&box2i, 12, @intCast(height - 1));
-    try appendExrAttribute(&output, allocator, "dataWindow", "box2i", &box2i);
-    try appendExrAttribute(&output, allocator, "displayWindow", "box2i", &box2i);
-    try appendExrAttribute(&output, allocator, "lineOrder", "lineOrder", &[_]u8{0});
-
-    var pixel_aspect_ratio: [4]u8 = undefined;
-    writeF32Le(&pixel_aspect_ratio, 0, 1.0);
-    try appendExrAttribute(&output, allocator, "pixelAspectRatio", "float", &pixel_aspect_ratio);
-
-    var screen_window_center: [8]u8 = undefined;
-    writeF32Le(&screen_window_center, 0, 0.0);
-    writeF32Le(&screen_window_center, 4, 0.0);
-    try appendExrAttribute(&output, allocator, "screenWindowCenter", "v2f", &screen_window_center);
-
-    var screen_window_width: [4]u8 = undefined;
-    writeF32Le(&screen_window_width, 0, 1.0);
-    try appendExrAttribute(&output, allocator, "screenWindowWidth", "float", &screen_window_width);
-    try output.append(allocator, 0);
-
-    const header_size = output.items.len;
-    const scanline_data_size: u32 = width * 3 * @sizeOf(f32);
-    const offset_table_size = @as(usize, height) * @sizeOf(u64);
-    var next_chunk_offset: u64 = @intCast(header_size + offset_table_size);
-    for (0..height) |_| {
-        try appendU64Le(&output, allocator, next_chunk_offset);
-        next_chunk_offset += 8 + scanline_data_size;
-    }
-
-    for (0..height) |row| {
-        try appendI32Le(&output, allocator, @intCast(row));
-        try appendU32Le(&output, allocator, scanline_data_size);
-
-        for ([_]usize{ 2, 1, 0 }) |channel_index| {
-            var x: u32 = 0;
-            while (x < width) : (x += 1) {
-                const pixel_index = (@as(usize, @intCast(row)) * @as(usize, width) + @as(usize, x)) * 4;
-                try appendF32Le(&output, allocator, sanitizeHdrValue(rgba[pixel_index + channel_index]));
-            }
-        }
-    }
-
-    return output.toOwnedSlice(allocator);
-}
-
-fn writeHdrPixelRgba16f(out: []u8, pixel_index: usize, rgb: [3]f32) void {
-    const dst = pixel_index * 8;
-    writeF16Le(out, dst + 0, rgb[0]);
-    writeF16Le(out, dst + 2, rgb[1]);
-    writeF16Le(out, dst + 4, rgb[2]);
-    writeF16Le(out, dst + 6, 1.0);
-}
-
-fn capturePathTraceGuideBuffersAlloc(
-    allocator: std.mem.Allocator,
-    pt: *const PathTraceProgressiveState,
-) !PathTraceGuideBuffers {
-    const pixel_count = @as(usize, pt.trace_width) * @as(usize, pt.trace_height);
-    var guides = PathTraceGuideBuffers{
-        .albedo = try allocator.alloc(f32, pixel_count * 3),
-        .normal = try allocator.alloc(f32, pixel_count * 3),
-        .width = pt.trace_width,
-        .height = pt.trace_height,
-    };
-    errdefer guides.deinit(allocator);
-
-    var y: u32 = 0;
-    while (y < pt.trace_height) : (y += 1) {
-        var x: u32 = 0;
-        while (x < pt.trace_width) : (x += 1) {
-            const guide = samplePathTraceGuidePixel(pt, x, y);
-            const pixel_index = (@as(usize, y) * @as(usize, pt.trace_width) + @as(usize, x)) * 3;
-            guides.albedo[pixel_index + 0] = guide.albedo[0];
-            guides.albedo[pixel_index + 1] = guide.albedo[1];
-            guides.albedo[pixel_index + 2] = guide.albedo[2];
-            guides.normal[pixel_index + 0] = guide.normal[0];
-            guides.normal[pixel_index + 1] = guide.normal[1];
-            guides.normal[pixel_index + 2] = guide.normal[2];
-        }
-    }
-
-    return guides;
-}
-
-fn copyHdrRgbaToRgbAlloc(
-    allocator: std.mem.Allocator,
-    hdr_rgba: []const f32,
-    width: u32,
-    height: u32,
-) ![]f32 {
-    const pixel_count = @as(usize, width) * @as(usize, height);
-    if (hdr_rgba.len < pixel_count * 4) return error.InvalidHdrData;
-
-    const rgb = try allocator.alloc(f32, pixel_count * 3);
-    var pixel_index: usize = 0;
-    while (pixel_index < pixel_count) : (pixel_index += 1) {
-        const src = pixel_index * 4;
-        const dst = pixel_index * 3;
-        rgb[dst + 0] = sanitizeHdrValue(hdr_rgba[src + 0]);
-        rgb[dst + 1] = sanitizeHdrValue(hdr_rgba[src + 1]);
-        rgb[dst + 2] = sanitizeHdrValue(hdr_rgba[src + 2]);
-    }
-    return rgb;
-}
-
-fn gaussianWeight(distance_sq: f32, sigma: f32) f32 {
-    const sigma_sq = sigma * sigma;
-    if (sigma_sq <= 0.0) return 0.0;
-    return std.math.exp(-distance_sq / (2.0 * sigma_sq));
-}
-
-fn denoisePathTraceHdrAlloc(
-    allocator: std.mem.Allocator,
-    beauty_rgb: []const f32,
-    width: u32,
-    height: u32,
-    guides: PathTraceGuideBuffers,
-) ![]f32 {
-    const pixel_count = @as(usize, width) * @as(usize, height);
-    if (beauty_rgb.len < pixel_count * 3) return error.InvalidHdrData;
-    if (guides.width != width or guides.height != height) return error.InvalidDimensions;
-
-    const pass_count: u32 = 2;
-    const radius: i32 = 2;
-    const spatial_sigma: f32 = 1.15;
-    const albedo_sigma: f32 = 0.18;
-    const normal_sigma: f32 = 0.14;
-
-    var ping = try allocator.dupe(f32, beauty_rgb);
-    errdefer allocator.free(ping);
-    var pong = try allocator.alloc(f32, pixel_count * 3);
-    errdefer allocator.free(pong);
-
-    var pass_index: u32 = 0;
-    while (pass_index < pass_count) : (pass_index += 1) {
-        var y: u32 = 0;
-        while (y < height) : (y += 1) {
-            var x: u32 = 0;
-            while (x < width) : (x += 1) {
-                const center_pixel = (@as(usize, y) * @as(usize, width) + @as(usize, x)) * 3;
-                const center_albedo = [3]f32{
-                    guides.albedo[center_pixel + 0],
-                    guides.albedo[center_pixel + 1],
-                    guides.albedo[center_pixel + 2],
-                };
-                const center_normal = [3]f32{
-                    guides.normal[center_pixel + 0],
-                    guides.normal[center_pixel + 1],
-                    guides.normal[center_pixel + 2],
-                };
-                const center_has_normal = vec3.dot(center_normal, center_normal) > 0.0001;
-
-                var color_sum = [3]f32{ 0.0, 0.0, 0.0 };
-                var weight_sum: f32 = 0.0;
-
-                var offset_y: i32 = -radius;
-                while (offset_y <= radius) : (offset_y += 1) {
-                    const sample_y_i32 = @as(i32, @intCast(y)) + offset_y;
-                    if (sample_y_i32 < 0 or sample_y_i32 >= @as(i32, @intCast(height))) continue;
-                    const sample_y: u32 = @intCast(sample_y_i32);
-
-                    var offset_x: i32 = -radius;
-                    while (offset_x <= radius) : (offset_x += 1) {
-                        const sample_x_i32 = @as(i32, @intCast(x)) + offset_x;
-                        if (sample_x_i32 < 0 or sample_x_i32 >= @as(i32, @intCast(width))) continue;
-                        const sample_x: u32 = @intCast(sample_x_i32);
-                        const sample_pixel = (@as(usize, sample_y) * @as(usize, width) + @as(usize, sample_x)) * 3;
-
-                        const sample_albedo = [3]f32{
-                            guides.albedo[sample_pixel + 0],
-                            guides.albedo[sample_pixel + 1],
-                            guides.albedo[sample_pixel + 2],
-                        };
-                        const sample_normal = [3]f32{
-                            guides.normal[sample_pixel + 0],
-                            guides.normal[sample_pixel + 1],
-                            guides.normal[sample_pixel + 2],
-                        };
-                        const sample_has_normal = vec3.dot(sample_normal, sample_normal) > 0.0001;
-
-                        const spatial_distance_sq = @as(f32, @floatFromInt(offset_x * offset_x + offset_y * offset_y));
-                        const albedo_delta = vec3.sub(center_albedo, sample_albedo);
-                        const albedo_distance_sq = vec3.dot(albedo_delta, albedo_delta);
-
-                        var weight = gaussianWeight(spatial_distance_sq, spatial_sigma) *
-                            gaussianWeight(albedo_distance_sq, albedo_sigma);
-
-                        if (center_has_normal != sample_has_normal) {
-                            weight *= 0.02;
-                        } else if (center_has_normal and sample_has_normal) {
-                            const alignment = std.math.clamp(vec3.dot(center_normal, sample_normal), 0.0, 1.0);
-                            const normal_delta = 1.0 - alignment;
-                            weight *= gaussianWeight(normal_delta * normal_delta, normal_sigma);
-                        }
-
-                        color_sum[0] += ping[sample_pixel + 0] * weight;
-                        color_sum[1] += ping[sample_pixel + 1] * weight;
-                        color_sum[2] += ping[sample_pixel + 2] * weight;
-                        weight_sum += weight;
-                    }
-                }
-
-                if (weight_sum <= 0.0) {
-                    pong[center_pixel + 0] = ping[center_pixel + 0];
-                    pong[center_pixel + 1] = ping[center_pixel + 1];
-                    pong[center_pixel + 2] = ping[center_pixel + 2];
-                } else {
-                    pong[center_pixel + 0] = color_sum[0] / weight_sum;
-                    pong[center_pixel + 1] = color_sum[1] / weight_sum;
-                    pong[center_pixel + 2] = color_sum[2] / weight_sum;
-                }
-            }
-        }
-
-        std.mem.swap([]f32, &ping, &pong);
-    }
-
-    allocator.free(pong);
-    return ping;
-}
-
-fn acesFilmScalar(x: f32) f32 {
-    const clamped = @max(x, 0.0);
-    return std.math.clamp((clamped * (2.51 * clamped + 0.03)) / (clamped * (2.43 * clamped + 0.59) + 0.14), 0.0, 1.0);
-}
-
-fn linearToSrgbScalar(linear: f32) f32 {
-    if (linear <= 0.0031308) return linear * 12.92;
-    return 1.055 * std.math.pow(f32, @max(linear, 0.0), 1.0 / 2.4) - 0.055;
-}
-
-fn applyCpuColorGrading(color: [3]f32, viewport_state: EditorViewportState) [3]f32 {
-    if (!viewport_state.color_grading_enabled) return color;
-
-    const saturation = @max(viewport_state.color_grading_saturation, 0.0);
-    const contrast = @max(viewport_state.color_grading_contrast, 0.0);
-    const gamma = @max(viewport_state.color_grading_gamma, 0.001);
-    const luma = luminance(color);
-    var graded = .{
-        luma + (color[0] - luma) * saturation,
-        luma + (color[1] - luma) * saturation,
-        luma + (color[2] - luma) * saturation,
-    };
-    graded = .{
-        (graded[0] - 0.5) * contrast + 0.5,
-        (graded[1] - 0.5) * contrast + 0.5,
-        (graded[2] - 0.5) * contrast + 0.5,
-    };
-    graded = .{
-        std.math.pow(f32, @max(graded[0], 0.0), 1.0 / gamma),
-        std.math.pow(f32, @max(graded[1], 0.0), 1.0 / gamma),
-        std.math.pow(f32, @max(graded[2], 0.0), 1.0 / gamma),
-    };
-    return .{
-        std.math.clamp(graded[0], 0.0, 1.0),
-        std.math.clamp(graded[1], 0.0, 1.0),
-        std.math.clamp(graded[2], 0.0, 1.0),
-    };
-}
-
-fn tonemapHdrToRgba8Alloc(
-    allocator: std.mem.Allocator,
-    hdr_rgb: []const f32,
-    width: u32,
-    height: u32,
-    viewport_state: EditorViewportState,
-) ![]u8 {
-    const pixel_count = @as(usize, width) * @as(usize, height);
-    if (hdr_rgb.len < pixel_count * 3) return error.InvalidHdrData;
-
-    const rgba = try allocator.alloc(u8, pixel_count * 4);
-    const exposure = if (viewport_state.exposure_enabled) @max(viewport_state.exposure, 0.0) else 1.0;
-
-    var pixel_index: usize = 0;
-    while (pixel_index < pixel_count) : (pixel_index += 1) {
-        const src = pixel_index * 3;
-        const dst = pixel_index * 4;
-        var ldr = [3]f32{
-            acesFilmScalar(sanitizeHdrValue(hdr_rgb[src + 0]) * exposure),
-            acesFilmScalar(sanitizeHdrValue(hdr_rgb[src + 1]) * exposure),
-            acesFilmScalar(sanitizeHdrValue(hdr_rgb[src + 2]) * exposure),
-        };
-        ldr = applyCpuColorGrading(ldr, viewport_state);
-        rgba[dst + 0] = @intFromFloat(std.math.clamp(linearToSrgbScalar(ldr[0]) * 255.0, 0.0, 255.0));
-        rgba[dst + 1] = @intFromFloat(std.math.clamp(linearToSrgbScalar(ldr[1]) * 255.0, 0.0, 255.0));
-        rgba[dst + 2] = @intFromFloat(std.math.clamp(linearToSrgbScalar(ldr[2]) * 255.0, 0.0, 255.0));
-        rgba[dst + 3] = 255;
-    }
-
-    return rgba;
-}
-
-fn encodeGuideToRgba8Alloc(
-    allocator: std.mem.Allocator,
-    guide_rgb: []const f32,
-    width: u32,
-    height: u32,
-    encode_normal: bool,
-) ![]u8 {
-    const pixel_count = @as(usize, width) * @as(usize, height);
-    if (guide_rgb.len < pixel_count * 3) return error.InvalidHdrData;
-
-    const rgba = try allocator.alloc(u8, pixel_count * 4);
-    var pixel_index: usize = 0;
-    while (pixel_index < pixel_count) : (pixel_index += 1) {
-        const src = pixel_index * 3;
-        const dst = pixel_index * 4;
-        var out_rgb = [3]f32{
-            guide_rgb[src + 0],
-            guide_rgb[src + 1],
-            guide_rgb[src + 2],
-        };
-        if (encode_normal) {
-            const normal_len_sq = vec3.dot(out_rgb, out_rgb);
-            if (normal_len_sq <= 0.0001) {
-                out_rgb = .{ 0.0, 0.0, 0.0 };
-            } else {
-                out_rgb = .{
-                    out_rgb[0] * 0.5 + 0.5,
-                    out_rgb[1] * 0.5 + 0.5,
-                    out_rgb[2] * 0.5 + 0.5,
-                };
-            }
-        } else {
-            out_rgb = .{
-                linearToSrgbScalar(std.math.clamp(out_rgb[0], 0.0, 1.0)),
-                linearToSrgbScalar(std.math.clamp(out_rgb[1], 0.0, 1.0)),
-                linearToSrgbScalar(std.math.clamp(out_rgb[2], 0.0, 1.0)),
-            };
-        }
-
-        rgba[dst + 0] = @intFromFloat(std.math.clamp(out_rgb[0] * 255.0, 0.0, 255.0));
-        rgba[dst + 1] = @intFromFloat(std.math.clamp(out_rgb[1] * 255.0, 0.0, 255.0));
-        rgba[dst + 2] = @intFromFloat(std.math.clamp(out_rgb[2] * 255.0, 0.0, 255.0));
-        rgba[dst + 3] = 255;
-    }
-
-    return rgba;
-}
-
-fn encodePngAlloc(
-    allocator: std.mem.Allocator,
-    rgba: []const u8,
-    width: u32,
-    height: u32,
-) ![]u8 {
-    if (rgba.len < @as(usize, width) * @as(usize, height) * 4) return error.InvalidPngData;
-
-    const c = @cImport({
-        @cDefine("STBI_WRITE_NO_STDIO", "1");
-        @cDefine("STB_IMAGE_WRITE_IMPLEMENTATION", "1");
-        @cInclude("stb_image_write.h");
-    });
-
-    var out_len: c_int = 0;
-    const png_data = c.stbi_write_png_to_mem(
-        @constCast(rgba.ptr),
-        @intCast(width * 4),
-        @intCast(width),
-        @intCast(height),
-        4,
-        &out_len,
-    ) orelse return error.PngEncodingFailed;
-    defer c.free(png_data);
-
-    const png_slice: []const u8 = @ptrCast(png_data[0..@intCast(out_len)]);
-    return allocator.dupe(u8, png_slice);
-}
-
-fn writeFileEnsuringParent(out_path: []const u8, bytes: []const u8) !void {
-    if (std.fs.path.dirname(out_path)) |directory| {
-        try std.fs.cwd().makePath(directory);
-    }
-    const file = try std.fs.cwd().createFile(out_path, .{});
-    defer file.close();
-    try file.writeAll(bytes);
-}
-
-fn allocSidecarPath(allocator: std.mem.Allocator, out_path: []const u8, suffix: []const u8) ![]u8 {
-    const extension = std.fs.path.extension(out_path);
-    const stem = if (extension.len > 0) out_path[0 .. out_path.len - extension.len] else out_path;
-    const resolved_extension = if (extension.len > 0) extension else ".png";
-    return std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ stem, suffix, resolved_extension });
 }
 
 const SceneViewportState = struct {
@@ -5325,7 +4659,7 @@ pub const Renderer = struct {
                 const src_x: u32 = @min(pt.trace_width - 1, @as(u32, @intCast(src_x_u64)));
                 const src_index: usize = (@as(usize, src_y) * @as(usize, pt.trace_width) + @as(usize, src_x)) * 3;
                 const dst_pixel: usize = @as(usize, out_y) * @as(usize, pt.target_width) + @as(usize, out_x);
-                writeHdrPixelRgba16f(display_pixels, dst_pixel, .{
+                image_export.writeHdrPixelRgba16f(display_pixels, dst_pixel, .{
                     trace_linear[src_index + 0],
                     trace_linear[src_index + 1],
                     trace_linear[src_index + 2],
@@ -6225,10 +5559,10 @@ pub const Renderer = struct {
                 while (pixel_index < pixel_count) : (pixel_index += 1) {
                     const src = pixel_index * 8;
                     const dst = pixel_index * 4;
-                    hdr[dst + 0] = readF16Le(raw, src + 0);
-                    hdr[dst + 1] = readF16Le(raw, src + 2);
-                    hdr[dst + 2] = readF16Le(raw, src + 4);
-                    hdr[dst + 3] = readF16Le(raw, src + 6);
+                    hdr[dst + 0] = image_export.readF16Le(raw, src + 0);
+                    hdr[dst + 1] = image_export.readF16Le(raw, src + 2);
+                    hdr[dst + 2] = image_export.readF16Le(raw, src + 4);
+                    hdr[dst + 3] = image_export.readF16Le(raw, src + 6);
                 }
             },
             .rgba32_float => {
@@ -6268,7 +5602,7 @@ pub const Renderer = struct {
     pub fn downloadHdrFrameExrAlloc(self: *Renderer, allocator: std.mem.Allocator) ![]u8 {
         const pixels = try self.downloadHdrFramePixelsAlloc(allocator);
         defer allocator.free(pixels.data);
-        return encodeExrRgb32fAlloc(allocator, pixels.data, pixels.width, pixels.height);
+        return image_export.encodeExrRgb32fAlloc(allocator, pixels.data, pixels.width, pixels.height);
     }
 
     /// Export path-traced PNG with optional albedo/normal sidecars and AOV-guided denoise.
@@ -6309,7 +5643,7 @@ pub const Renderer = struct {
             renderCpuPathTraceTiles(pt, false, 0);
             resolvePathTraceDisplayPixels(pt);
             beauty_rgb = try allocator.dupe(f32, pt.trace_linear_rgb.?);
-            guides = try capturePathTraceGuideBuffersAlloc(allocator, pt);
+            guides = try path_trace_denoise.captureGuideBuffersAlloc(allocator, pt, samplePathTraceGuidePixel);
         } else if (self.path_trace_state.triangles != null) {
             var offline_pt = try self.buildOfflinePathTraceExportState(
                 scene,
@@ -6321,11 +5655,11 @@ pub const Renderer = struct {
             );
             defer offline_pt.deinit(self.allocator);
             beauty_rgb = try allocator.dupe(f32, offline_pt.trace_linear_rgb.?);
-            guides = try capturePathTraceGuideBuffersAlloc(allocator, &offline_pt);
+            guides = try path_trace_denoise.captureGuideBuffersAlloc(allocator, &offline_pt, samplePathTraceGuidePixel);
         } else {
             const hdr = try self.downloadHdrFramePixelsAlloc(allocator);
             defer allocator.free(hdr.data);
-            beauty_rgb = try copyHdrRgbaToRgbAlloc(allocator, hdr.data, hdr.width, hdr.height);
+            beauty_rgb = try image_export.copyHdrRgbaToRgbAlloc(allocator, hdr.data, hdr.width, hdr.height);
 
             var guide_pt = try self.buildOfflinePathTraceExportState(
                 scene,
@@ -6336,39 +5670,45 @@ pub const Renderer = struct {
                 false,
             );
             defer guide_pt.deinit(self.allocator);
-            guides = try capturePathTraceGuideBuffersAlloc(allocator, &guide_pt);
+            guides = try path_trace_denoise.captureGuideBuffersAlloc(allocator, &guide_pt, samplePathTraceGuidePixel);
         }
 
         var final_beauty = beauty_rgb;
         var denoised_rgb: ?[]f32 = null;
         defer if (denoised_rgb) |rgb| allocator.free(rgb);
         if (options.denoise) {
-            denoised_rgb = try denoisePathTraceHdrAlloc(allocator, beauty_rgb, guides.width, guides.height, guides);
-            final_beauty = denoised_rgb.?;
+            const denoise_result = try path_trace_denoise.denoiseAlloc(allocator, beauty_rgb, guides.width, guides.height, guides);
+            denoised_rgb = denoise_result.rgb;
+            final_beauty = denoise_result.rgb;
+            if (denoise_result.fallback_used) {
+                render_log.warn("path trace export denoise requested backend fell back to {s}", .{path_trace_denoise.backendLabel(denoise_result.backend)});
+            } else {
+                render_log.info("path trace export denoise backend: {s}", .{path_trace_denoise.backendLabel(denoise_result.backend)});
+            }
         }
 
-        const beauty_rgba = try tonemapHdrToRgba8Alloc(allocator, final_beauty, guides.width, guides.height, self.editor_viewport_state);
+        const beauty_rgba = try image_export.tonemapHdrToRgba8Alloc(allocator, final_beauty, guides.width, guides.height, self.editor_viewport_state);
         defer allocator.free(beauty_rgba);
-        const beauty_png = try encodePngAlloc(allocator, beauty_rgba, guides.width, guides.height);
+        const beauty_png = try image_export.encodePngAlloc(allocator, beauty_rgba, guides.width, guides.height);
         defer allocator.free(beauty_png);
-        try writeFileEnsuringParent(out_path, beauty_png);
+        try image_export.writeFileEnsuringParent(out_path, beauty_png);
 
         if (options.write_aov_sidecars) {
-            const albedo_rgba = try encodeGuideToRgba8Alloc(allocator, guides.albedo, guides.width, guides.height, false);
+            const albedo_rgba = try image_export.encodeGuideToRgba8Alloc(allocator, guides.albedo, guides.width, guides.height, false);
             defer allocator.free(albedo_rgba);
-            const albedo_png = try encodePngAlloc(allocator, albedo_rgba, guides.width, guides.height);
+            const albedo_png = try image_export.encodePngAlloc(allocator, albedo_rgba, guides.width, guides.height);
             defer allocator.free(albedo_png);
-            const albedo_path = try allocSidecarPath(allocator, out_path, "_albedo");
+            const albedo_path = try image_export.allocSidecarPath(allocator, out_path, "_albedo");
             defer allocator.free(albedo_path);
-            try writeFileEnsuringParent(albedo_path, albedo_png);
+            try image_export.writeFileEnsuringParent(albedo_path, albedo_png);
 
-            const normal_rgba = try encodeGuideToRgba8Alloc(allocator, guides.normal, guides.width, guides.height, true);
+            const normal_rgba = try image_export.encodeGuideToRgba8Alloc(allocator, guides.normal, guides.width, guides.height, true);
             defer allocator.free(normal_rgba);
-            const normal_png = try encodePngAlloc(allocator, normal_rgba, guides.width, guides.height);
+            const normal_png = try image_export.encodePngAlloc(allocator, normal_rgba, guides.width, guides.height);
             defer allocator.free(normal_png);
-            const normal_path = try allocSidecarPath(allocator, out_path, "_normal");
+            const normal_path = try image_export.allocSidecarPath(allocator, out_path, "_normal");
             defer allocator.free(normal_path);
-            try writeFileEnsuringParent(normal_path, normal_png);
+            try image_export.writeFileEnsuringParent(normal_path, normal_png);
         }
     }
 
@@ -6386,16 +5726,16 @@ pub const Renderer = struct {
             pixels.data[i + 2] = b;
         }
 
-        const png = try encodePngAlloc(allocator, pixels.data, pixels.width, pixels.height);
+        const png = try image_export.encodePngAlloc(allocator, pixels.data, pixels.width, pixels.height);
         defer allocator.free(png);
-        try writeFileEnsuringParent(out_path, png);
+        try image_export.writeFileEnsuringParent(out_path, png);
     }
 
     /// Export a single HDR frame to OpenEXR at the given path.
     pub fn exportFrameExr(self: *Renderer, allocator: std.mem.Allocator, out_path: []const u8) !void {
         const exr = try self.downloadHdrFrameExrAlloc(allocator);
         defer allocator.free(exr);
-        try writeFileEnsuringParent(out_path, exr);
+        try image_export.writeFileEnsuringParent(out_path, exr);
     }
 
     fn buildSceneSnapshot(scene: *const scene_mod.Scene) types.SceneSnapshot {
@@ -7450,38 +6790,6 @@ test "samplePathTraceGuidePixel captures first-hit albedo and normal guides" {
     const guide = samplePathTraceGuidePixel(&pt, 0, 0);
     try expectVec3ApproxEqAbs(.{ 0.2, 0.3, 0.3 }, guide.albedo, 0.0001);
     try expectVec3ApproxEqAbs(.{ 0.6, 0.0, 0.8 }, guide.normal, 0.0001);
-}
-
-test "denoisePathTraceHdrAlloc smooths within matching guides and preserves albedo edges" {
-    const beauty = [_]f32{
-        1.0, 0.0, 0.0,
-        0.2, 0.0, 0.0,
-        0.0, 0.0, 1.0,
-    };
-    const albedo = [_]f32{
-        1.0, 0.0, 0.0,
-        1.0, 0.0, 0.0,
-        0.0, 0.0, 1.0,
-    };
-    const normal = [_]f32{
-        0.0, 0.0, 1.0,
-        0.0, 0.0, 1.0,
-        0.0, 0.0, 1.0,
-    };
-
-    const guides = PathTraceGuideBuffers{
-        .albedo = albedo[0..],
-        .normal = normal[0..],
-        .width = 3,
-        .height = 1,
-    };
-
-    const denoised = try denoisePathTraceHdrAlloc(std.testing.allocator, beauty[0..], 3, 1, guides);
-    defer std.testing.allocator.free(denoised);
-
-    try std.testing.expect(denoised[3] > beauty[3]);
-    try std.testing.expect(denoised[3] > 0.45);
-    try std.testing.expect(denoised[5] < 0.12);
 }
 
 test "applyPathTraceRussianRoulette gates bounce and rescales surviving throughput" {
