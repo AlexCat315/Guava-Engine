@@ -115,6 +115,7 @@ var g_logged_path_trace_active: bool = false;
 
 const CachedEnvironmentTextures = struct {
     resolved: bool = false,
+    selection_fingerprint: u64 = 0,
     environment_map: ?*const rhi_mod.Texture = null,
     irradiance_map: ?*const rhi_mod.Texture = null,
     prefiltered_env_map: ?*const rhi_mod.Texture = null,
@@ -129,6 +130,14 @@ pub const RuntimeInfo = rhi_types.RuntimeInfo;
 pub const SelectionHistory = selection_history_mod.SelectionHistory;
 /// 选择更新模式
 pub const SelectionUpdateMode = selection_history_mod.SelectionUpdateMode;
+pub const PathTraceRenderProgress = struct {
+    active: bool = false,
+    complete: bool = false,
+    uses_hw_rt: bool = false,
+    fraction: f32 = 0.0,
+    trace_width: u32 = 0,
+    trace_height: u32 = 0,
+};
 /// 编辑器 Gizmo 状态
 pub const EditorGizmoState = gizmo_pass_mod.EditorGizmoState;
 /// 编辑器视口状态
@@ -263,6 +272,7 @@ const PathTraceGuidePixel = path_trace_common.PathTraceGuidePixel;
 const PathTraceGuideBuffers = path_trace_common.PathTraceGuideBuffers;
 const PathTraceEnvImportance = path_trace_common.PathTraceEnvImportance;
 const PathTraceEmissiveLight = path_trace_common.PathTraceEmissiveLight;
+const PathTracePointLight = path_trace_common.PathTracePointLight;
 const PathTraceMesh = path_trace_common.PathTraceMesh;
 const PathTraceProgressiveState = path_trace_common.PathTraceProgressiveState;
 const path_trace_adaptive_tile_dim = path_trace_common.path_trace_adaptive_tile_dim;
@@ -1174,6 +1184,7 @@ fn evaluateOpaqueBsdf(
 
 fn directLightTypeCount(
     light_radiance: [3]f32,
+    point_lights: []const PathTracePointLight,
     environment_texture: ?PathTraceTexture,
     environment_importance: []const PathTraceEnvImportance,
     emissive_lights: []const PathTraceEmissiveLight,
@@ -1181,9 +1192,16 @@ fn directLightTypeCount(
 ) u32 {
     var count: u32 = 0;
     if (maxComponent(light_radiance) > 0.0001) count += 1;
+    for (point_lights) |light| {
+        if (pathTracePointLightActive(light)) count += 1;
+    }
     if (environment_texture != null and environment_importance.len > 0) count += 1;
     if (emissive_lights.len > 0 and emissive_total_area > 0.0) count += 1;
     return count;
+}
+
+fn pathTracePointLightActive(light: PathTracePointLight) bool {
+    return light.intensity > 0.0001 and light.range > 0.001 and maxComponent(light.color) > 0.0001;
 }
 
 fn environmentDirectionPdf(
@@ -1307,11 +1325,32 @@ fn emissiveDirectionPdf(
     return distance_sq / @max(cos_light * emissive_total_area, 0.000001);
 }
 
+fn samplePointLight(hit_pos: [3]f32, light: PathTracePointLight) ?PathTraceDirectLightSample {
+    if (!pathTracePointLightActive(light)) return null;
+
+    const to_light = vec3.sub(light.position, hit_pos);
+    const distance = vec3.length(to_light);
+    if (distance <= 0.002 or distance > light.range) return null;
+
+    const falloff = std.math.clamp(1.0 - distance / @max(light.range, 0.001), 0.0, 1.0);
+    const attenuation = falloff * falloff;
+    if (attenuation <= 0.00001) return null;
+
+    return .{
+        .direction = vec3.scale(to_light, 1.0 / distance),
+        .radiance = vec3.scale(light.color, light.intensity * attenuation),
+        .pdf = 1.0,
+        .distance = distance,
+        .delta = true,
+    };
+}
+
 fn sampleDirectLight(
     hit_pos: [3]f32,
     current_tri_index: usize,
     triangles: []const PathTraceTriangle,
     textures: []const PathTraceTexture,
+    point_lights: []const PathTracePointLight,
     environment_texture: ?PathTraceTexture,
     environment_importance: []const PathTraceEnvImportance,
     environment_importance_width: u32,
@@ -1324,6 +1363,7 @@ fn sampleDirectLight(
 ) ?PathTraceDirectLightSample {
     const light_type_count = directLightTypeCount(
         light_radiance,
+        point_lights,
         environment_texture,
         environment_importance,
         emissive_lights,
@@ -1346,6 +1386,16 @@ fn sampleDirectLight(
                 .distance = 1.0e30,
                 .delta = true,
             };
+        }
+        cursor += 1;
+    }
+
+    for (point_lights) |point_light| {
+        if (!pathTracePointLightActive(point_light)) continue;
+        if (selection == cursor) {
+            var sample = samplePointLight(hit_pos, point_light) orelse return null;
+            sample.pdf = 1.0 / @as(f32, @floatFromInt(light_type_count));
+            return sample;
         }
         cursor += 1;
     }
@@ -1484,6 +1534,7 @@ fn tracePathTracePixelSample(pt: *const PathTraceProgressiveState, x: u32, y: u3
     const textures = pt.textures orelse &[_]PathTraceTexture{};
     const environment_importance = pt.environment_importance orelse &[_]PathTraceEnvImportance{};
     const emissive_lights = pt.emissive_lights orelse &[_]PathTraceEmissiveLight{};
+    const point_lights = pt.point_lights orelse &[_]PathTracePointLight{};
     const seed_base = hashU32(x ^ (y << 16) ^ 0x7f4a7c15);
     const jitter_seed = seed_base ^ (sample_index *% 0x45d9f3b);
     const jitter_x = hashUnitFloat(jitter_seed ^ 0x18f0e149) - 0.5;
@@ -1496,6 +1547,7 @@ fn tracePathTracePixelSample(pt: *const PathTraceProgressiveState, x: u32, y: u3
         triangles,
         meshes,
         textures,
+        point_lights,
         pt.environment_texture,
         environment_importance,
         pt.environment_importance_width,
@@ -1551,6 +1603,7 @@ fn pathTraceRay(
     triangles: []const PathTraceTriangle,
     meshes: []const PathTraceMesh,
     textures: []const PathTraceTexture,
+    point_lights: []const PathTracePointLight,
     environment_texture: ?PathTraceTexture,
     environment_importance: []const PathTraceEnvImportance,
     environment_importance_width: u32,
@@ -1579,6 +1632,7 @@ fn pathTraceRay(
             } else {
                 const light_type_count = directLightTypeCount(
                     light_radiance,
+                    point_lights,
                     environment_texture,
                     environment_importance,
                     emissive_lights,
@@ -1639,6 +1693,7 @@ fn pathTraceRay(
             } else {
                 const light_type_count = directLightTypeCount(
                     light_radiance,
+                    point_lights,
                     environment_texture,
                     environment_importance,
                     emissive_lights,
@@ -1661,6 +1716,7 @@ fn pathTraceRay(
                 hit.tri_index,
                 triangles,
                 textures,
+                point_lights,
                 environment_texture,
                 environment_importance,
                 environment_importance_width,
@@ -1671,7 +1727,7 @@ fn pathTraceRay(
                 light_radiance,
                 seed_base ^ (bounce *% 0x9e3779b9),
             )) |light_sample| {
-                const occlusion_distance = if (light_sample.delta) 1.0e30 else @max(light_sample.distance - 0.004, 0.001);
+                const occlusion_distance = if (light_sample.distance >= 1.0e29) 1.0e30 else @max(light_sample.distance - 0.004, 0.001);
                 const shadow_origin = vec3.add(hit_pos, vec3.scale(shading_normal, 0.002));
                 if (!isPathTraceOccluded(shadow_origin, light_sample.direction, occlusion_distance, triangles, meshes)) {
                     const bsdf = evaluateOpaqueBsdf(
@@ -2009,6 +2065,10 @@ fn sceneNeedsCpuPathTraceMaterialFallback(
     prepared_scene: *const mesh_pass_mod.PreparedScene,
     scene: *const scene_mod.Scene,
 ) bool {
+    if (prepared_scene.lights.point_lights.len > 0) {
+        return true;
+    }
+
     const draw_batches = [_][]const mesh_pass_mod.DrawItem{
         prepared_scene.opaque_meshes,
         prepared_scene.transparent_meshes,
@@ -3104,6 +3164,45 @@ pub const Renderer = struct {
         return self.selection_history.currentSelection();
     }
 
+    pub fn pathTraceRenderProgress(self: *const Renderer) PathTraceRenderProgress {
+        const pt = &self.path_trace_state;
+        if (pt.triangles != null) {
+            const tile_span = pathTraceAdaptiveTileSpan(@max(pt.sample_step, 1));
+            const total_tiles_x = @max(@as(u32, 1), (pt.trace_width + tile_span - 1) / tile_span);
+            const total_tiles_y = @max(@as(u32, 1), (pt.trace_height + tile_span - 1) / tile_span);
+            const total_tiles = @max(@as(u32, 1), total_tiles_x * total_tiles_y);
+            const current_tile_index = if (pt.complete)
+                total_tiles
+            else
+                @min(
+                    total_tiles,
+                    (pt.current_tile_y / tile_span) * total_tiles_x + (pt.current_tile_x / tile_span),
+                );
+            return .{
+                .active = true,
+                .complete = pt.complete,
+                .uses_hw_rt = false,
+                .fraction = if (pt.complete) 1.0 else @as(f32, @floatFromInt(current_tile_index)) / @as(f32, @floatFromInt(total_tiles)),
+                .trace_width = pt.trace_width,
+                .trace_height = pt.trace_height,
+            };
+        }
+
+        const mrt = &self.hw_rt_state;
+        if (mrt.trace_pixels != null or mrt.display_pixels != null) {
+            return .{
+                .active = true,
+                .complete = !mrt.needs_retrace,
+                .uses_hw_rt = true,
+                .fraction = if (mrt.needs_retrace) 0.0 else 1.0,
+                .trace_width = mrt.trace_width,
+                .trace_height = mrt.trace_height,
+            };
+        }
+
+        return .{};
+    }
+
     pub fn resetSceneState(self: *Renderer) !void {
         self.releaseInFlightSelectionBatches();
         self.in_flight_selection_batches = .empty;
@@ -3119,6 +3218,7 @@ pub const Renderer = struct {
         self.preview_scene_cache = try mesh_pass_mod.MeshSceneCache.init(self.allocator, &self.rhi);
         self.scene_cache.deinit(&self.rhi);
         self.scene_cache = try mesh_pass_mod.MeshSceneCache.init(self.allocator, &self.rhi);
+        self.cached_env_textures = .{};
         self.preview_scene = null;
         self.preview_gizmo_transform = null;
         self.preview_entity_filter.clearRetainingCapacity();
@@ -4500,6 +4600,20 @@ pub const Renderer = struct {
         errdefer if (built_emissive_lights.items) |items| self.allocator.free(items);
         pt.emissive_lights = built_emissive_lights.items;
         pt.emissive_total_area = built_emissive_lights.total_area;
+        if (prepared_scene.lights.point_lights.len > 0) {
+            var point_lights = try self.allocator.alloc(PathTracePointLight, prepared_scene.lights.point_lights.len);
+            for (prepared_scene.lights.point_lights, 0..) |light, index| {
+                point_lights[index] = .{
+                    .position = light.position,
+                    .color = light.color,
+                    .intensity = light.intensity,
+                    .range = light.range,
+                };
+            }
+            pt.point_lights = point_lights;
+        } else {
+            pt.point_lights = null;
+        }
         const built_environment_importance = try buildPathTraceEnvironmentImportance(self.allocator, path_trace_environment.texture);
         errdefer if (built_environment_importance.items) |items| self.allocator.free(items);
         pt.environment_importance = built_environment_importance.items;
@@ -4714,8 +4828,8 @@ pub const Renderer = struct {
         const path_trace_environment = resolvePathTraceEnvironment(&scene.resources);
         const scene_signature = computePathTraceSceneSignature(prepared_scene, scene, path_trace_environment);
 
-        const samples = std.math.clamp(self.editor_viewport_state.path_trace_samples, 1, 64);
-        const bounces = std.math.clamp(self.editor_viewport_state.path_trace_bounces, 1, 8);
+        const samples = std.math.clamp(self.editor_viewport_state.path_trace_samples, 1, 256);
+        const bounces = std.math.clamp(self.editor_viewport_state.path_trace_bounces, 1, 12);
         const resolution_scale = std.math.clamp(self.editor_viewport_state.path_trace_resolution_scale, 0.25, 1.0);
         const trace_width = @max(@as(u32, 1), @as(u32, @intFromFloat(@as(f32, @floatFromInt(width)) * resolution_scale)));
         const trace_height = @max(@as(u32, 1), @as(u32, @intFromFloat(@as(f32, @floatFromInt(height)) * resolution_scale)));
@@ -5614,21 +5728,17 @@ pub const Renderer = struct {
         out_path: []const u8,
         options: PathTracePngExportOptions,
     ) !void {
-        if (!options.denoise and !options.write_aov_sidecars) {
-            return self.exportFramePng(allocator, out_path);
-        }
-
         const viewport_size = self.sceneViewportSize();
         if (viewport_size[0] == 0 or viewport_size[1] == 0) return error.InvalidDimensions;
 
-        const samples = std.math.clamp(self.editor_viewport_state.path_trace_samples, 1, 64);
-        const bounces = std.math.clamp(self.editor_viewport_state.path_trace_bounces, 1, 8);
+        const samples = std.math.clamp(self.editor_viewport_state.path_trace_samples, 1, 512);
+        const bounces = std.math.clamp(self.editor_viewport_state.path_trace_bounces, 1, 12);
 
         var beauty_rgb: []f32 = undefined;
         defer allocator.free(beauty_rgb);
 
-        var guides: PathTraceGuideBuffers = undefined;
-        defer guides.deinit(allocator);
+        var guides: ?PathTraceGuideBuffers = null;
+        defer if (guides) |*value| value.deinit(allocator);
 
         const use_existing_cpu_path = self.path_trace_state.triangles != null and
             self.path_trace_state.trace_width == viewport_size[0] and
@@ -5641,44 +5751,39 @@ pub const Renderer = struct {
             if (pt.sample_step == 0) {
                 pt.sample_step = computePathTraceSampleStep(pt.trace_width, pt.trace_height);
             }
-            renderCpuPathTraceTiles(pt, false, 0);
-            resolvePathTraceDisplayPixels(pt);
+            if (!pt.complete) {
+                renderCpuPathTraceTiles(pt, false, 0);
+                resolvePathTraceDisplayPixels(pt);
+            }
             beauty_rgb = try allocator.dupe(f32, pt.trace_linear_rgb.?);
-            guides = try path_trace_denoise.captureGuideBuffersAlloc(allocator, pt, samplePathTraceGuidePixel);
-        } else if (self.path_trace_state.triangles != null) {
-            var offline_pt = try self.buildOfflinePathTraceExportState(
-                scene,
-                viewport_size[0],
-                viewport_size[1],
-                samples,
-                bounces,
-                true,
-            );
-            defer offline_pt.deinit(self.allocator);
-            beauty_rgb = try allocator.dupe(f32, offline_pt.trace_linear_rgb.?);
-            guides = try path_trace_denoise.captureGuideBuffersAlloc(allocator, &offline_pt, samplePathTraceGuidePixel);
+            if (options.denoise or options.write_aov_sidecars) {
+                guides = try path_trace_denoise.captureGuideBuffersAlloc(allocator, pt, samplePathTraceGuidePixel);
+            }
         } else {
             const hdr = try self.downloadHdrFramePixelsAlloc(allocator);
             defer allocator.free(hdr.data);
             beauty_rgb = try image_export.copyHdrRgbaToRgbAlloc(allocator, hdr.data, hdr.width, hdr.height);
 
-            var guide_pt = try self.buildOfflinePathTraceExportState(
-                scene,
-                hdr.width,
-                hdr.height,
-                samples,
-                bounces,
-                false,
-            );
-            defer guide_pt.deinit(self.allocator);
-            guides = try path_trace_denoise.captureGuideBuffersAlloc(allocator, &guide_pt, samplePathTraceGuidePixel);
+            if (options.denoise or options.write_aov_sidecars) {
+                var guide_pt = try self.buildOfflinePathTraceExportState(
+                    scene,
+                    hdr.width,
+                    hdr.height,
+                    samples,
+                    bounces,
+                    false,
+                );
+                defer guide_pt.deinit(self.allocator);
+                guides = try path_trace_denoise.captureGuideBuffersAlloc(allocator, &guide_pt, samplePathTraceGuidePixel);
+            }
         }
 
         var final_beauty = beauty_rgb;
         var denoised_rgb: ?[]f32 = null;
         defer if (denoised_rgb) |rgb| allocator.free(rgb);
         if (options.denoise) {
-            const denoise_result = try path_trace_denoise.denoiseAlloc(allocator, beauty_rgb, guides.width, guides.height, guides);
+            const guide_buffers = guides orelse return error.PathTraceGuidesUnavailable;
+            const denoise_result = try path_trace_denoise.denoiseAlloc(allocator, beauty_rgb, guide_buffers.width, guide_buffers.height, guide_buffers);
             denoised_rgb = denoise_result.rgb;
             final_beauty = denoise_result.rgb;
             if (denoise_result.fallback_used) {
@@ -5688,24 +5793,27 @@ pub const Renderer = struct {
             }
         }
 
-        const beauty_rgba = try image_export.tonemapHdrToRgba8Alloc(allocator, final_beauty, guides.width, guides.height, self.editor_viewport_state);
+        const output_width = if (guides) |value| value.width else viewport_size[0];
+        const output_height = if (guides) |value| value.height else viewport_size[1];
+        const beauty_rgba = try image_export.tonemapHdrToRgba8Alloc(allocator, final_beauty, output_width, output_height, self.editor_viewport_state);
         defer allocator.free(beauty_rgba);
-        const beauty_png = try image_export.encodePngAlloc(allocator, beauty_rgba, guides.width, guides.height);
+        const beauty_png = try image_export.encodePngAlloc(allocator, beauty_rgba, output_width, output_height);
         defer allocator.free(beauty_png);
         try image_export.writeFileEnsuringParent(out_path, beauty_png);
 
         if (options.write_aov_sidecars) {
-            const albedo_rgba = try image_export.encodeGuideToRgba8Alloc(allocator, guides.albedo, guides.width, guides.height, false);
+            const guide_buffers = guides orelse return error.PathTraceGuidesUnavailable;
+            const albedo_rgba = try image_export.encodeGuideToRgba8Alloc(allocator, guide_buffers.albedo, guide_buffers.width, guide_buffers.height, false);
             defer allocator.free(albedo_rgba);
-            const albedo_png = try image_export.encodePngAlloc(allocator, albedo_rgba, guides.width, guides.height);
+            const albedo_png = try image_export.encodePngAlloc(allocator, albedo_rgba, guide_buffers.width, guide_buffers.height);
             defer allocator.free(albedo_png);
             const albedo_path = try image_export.allocSidecarPath(allocator, out_path, "_albedo");
             defer allocator.free(albedo_path);
             try image_export.writeFileEnsuringParent(albedo_path, albedo_png);
 
-            const normal_rgba = try image_export.encodeGuideToRgba8Alloc(allocator, guides.normal, guides.width, guides.height, true);
+            const normal_rgba = try image_export.encodeGuideToRgba8Alloc(allocator, guide_buffers.normal, guide_buffers.width, guide_buffers.height, true);
             defer allocator.free(normal_rgba);
-            const normal_png = try image_export.encodePngAlloc(allocator, normal_rgba, guides.width, guides.height);
+            const normal_png = try image_export.encodePngAlloc(allocator, normal_rgba, guide_buffers.width, guide_buffers.height);
             defer allocator.free(normal_png);
             const normal_path = try image_export.allocSidecarPath(allocator, out_path, "_normal");
             defer allocator.free(normal_path);
@@ -5720,11 +5828,12 @@ pub const Renderer = struct {
         scene: *scene_mod.Scene,
         out_path: []const u8,
     ) !void {
+        _ = scene;
         const viewport_size = self.sceneViewportSize();
         if (viewport_size[0] == 0 or viewport_size[1] == 0) return error.InvalidDimensions;
 
-        const samples = std.math.clamp(self.editor_viewport_state.path_trace_samples, 1, 64);
-        const bounces = std.math.clamp(self.editor_viewport_state.path_trace_bounces, 1, 8);
+        const samples = std.math.clamp(self.editor_viewport_state.path_trace_samples, 1, 512);
+        const bounces = std.math.clamp(self.editor_viewport_state.path_trace_bounces, 1, 12);
 
         var beauty_rgb: []f32 = undefined;
         defer allocator.free(beauty_rgb);
@@ -5743,24 +5852,13 @@ pub const Renderer = struct {
             if (pt.sample_step == 0) {
                 pt.sample_step = computePathTraceSampleStep(pt.trace_width, pt.trace_height);
             }
-            renderCpuPathTraceTiles(pt, false, 0);
-            resolvePathTraceDisplayPixels(pt);
+            if (!pt.complete) {
+                renderCpuPathTraceTiles(pt, false, 0);
+                resolvePathTraceDisplayPixels(pt);
+            }
             beauty_rgb = try allocator.dupe(f32, pt.trace_linear_rgb.?);
             beauty_width = pt.trace_width;
             beauty_height = pt.trace_height;
-        } else if (self.path_trace_state.triangles != null) {
-            var offline_pt = try self.buildOfflinePathTraceExportState(
-                scene,
-                viewport_size[0],
-                viewport_size[1],
-                samples,
-                bounces,
-                true,
-            );
-            defer offline_pt.deinit(self.allocator);
-            beauty_rgb = try allocator.dupe(f32, offline_pt.trace_linear_rgb.?);
-            beauty_width = offline_pt.trace_width;
-            beauty_height = offline_pt.trace_height;
         } else {
             const hdr = try self.downloadHdrFramePixelsAlloc(allocator);
             defer allocator.free(hdr.data);
@@ -6463,8 +6561,10 @@ fn resolveEnvironmentTextures(
     scene: *scene_mod.Scene,
     prepared_scene: *mesh_pass_mod.PreparedScene,
 ) !void {
+    const selection_fingerprint = environmentSelectionFingerprint(&scene.resources);
+
     // Use cached textures if already resolved (avoid per-frame disk I/O + IBL decode)
-    if (self.cached_env_textures.resolved) {
+    if (self.cached_env_textures.resolved and self.cached_env_textures.selection_fingerprint == selection_fingerprint) {
         prepared_scene.environment_map = self.cached_env_textures.environment_map orelse &self.scene_cache.fallback_texture.?;
         prepared_scene.irradiance_map = self.cached_env_textures.irradiance_map orelse &self.scene_cache.fallback_texture.?;
         prepared_scene.prefiltered_env_map = self.cached_env_textures.prefiltered_env_map orelse &self.scene_cache.fallback_texture.?;
@@ -6480,6 +6580,7 @@ fn resolveEnvironmentTextures(
     // Mark resolved early so we never retry on failure (each attempt costs ~9s of disk I/O)
     self.cached_env_textures = .{
         .resolved = true,
+        .selection_fingerprint = selection_fingerprint,
         .environment_map = null,
         .irradiance_map = null,
         .prefiltered_env_map = null,
@@ -6544,6 +6645,7 @@ fn resolveEnvironmentTextures(
     // Cache resolved textures for subsequent frames
     self.cached_env_textures = .{
         .resolved = true,
+        .selection_fingerprint = selection_fingerprint,
         .environment_map = prepared_scene.environment_map,
         .irradiance_map = prepared_scene.irradiance_map,
         .prefiltered_env_map = prepared_scene.prefiltered_env_map,
@@ -6551,18 +6653,38 @@ fn resolveEnvironmentTextures(
     };
 }
 
+fn environmentSelectionFingerprint(resources: *const assets_lib.ResourceLibrary) u64 {
+    const asset_id = findSceneEnvironmentAssetId(resources) orelse return 0;
+    const record = resources.asset_registry.recordById(asset_id) orelse return 0;
+
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update(record.id);
+    hasher.update(record.source_path);
+    hasher.update(record.source_hash);
+    hasher.update(record.import_settings_hash);
+    var import_version = record.resolvedImportVersion();
+    hasher.update(std.mem.asBytes(&import_version));
+    return hasher.final();
+}
+
 fn findSceneEnvironmentAssetId(resources: *const assets_lib.ResourceLibrary) ?[]const u8 {
-    var fallback: ?[]const u8 = null;
+    var sole_hdr: ?[]const u8 = null;
+    var hdr_count: usize = 0;
     for (resources.asset_registry.records.items) |record| {
         if (record.type != .texture or !std.mem.endsWith(u8, record.source_path, ".hdr")) {
             continue;
         }
-        fallback = fallback orelse record.id;
-        if (isLikelyEnvironmentPath(record.source_path)) {
+        std.fs.cwd().access(record.source_path, .{}) catch continue;
+        hdr_count += 1;
+        sole_hdr = record.id;
+        if (isLikelyEnvironmentPath(record.source_path) or isLikelyEnvironmentPath(record.metadata.display_name)) {
             return record.id;
         }
     }
-    return fallback;
+    if (hdr_count == 1) {
+        return sole_hdr;
+    }
+    return null;
 }
 
 fn isLikelyEnvironmentPath(path: []const u8) bool {

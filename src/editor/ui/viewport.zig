@@ -30,6 +30,13 @@ var g_last_viewport_hovered: ?bool = null;
 var g_last_viewport_overlay_hovered: ?bool = null;
 var g_last_viewport_has_image: ?bool = null;
 
+const ViewportEntityGlyph = enum {
+    camera,
+    directional,
+    point,
+    spot,
+};
+
 fn drawToolbarIconButton(
     state: *EditorState,
     layer_context: *engine.core.LayerContext,
@@ -228,6 +235,152 @@ fn setRenderOutputStatusFmt(
     state.render_output_status = status;
     @memset(state.render_output_status_buffer[0..], 0);
     _ = std.fmt.bufPrint(&state.render_output_status_buffer, fmt, args) catch {};
+}
+
+fn worldPointToViewportScreen(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    world_position: [3]f32,
+) ?[2]f32 {
+    const viewport_size = layer_context.renderer.sceneViewportSize();
+    if (viewport_size[0] == 0 or viewport_size[1] == 0 or state.viewport_extent[0] <= 1.0 or state.viewport_extent[1] <= 1.0) {
+        return null;
+    }
+
+    const view = camera.activeCameraViewMatrix(state, layer_context);
+    const aspect = @as(f32, @floatFromInt(viewport_size[0])) / @as(f32, @floatFromInt(viewport_size[1]));
+    const projection = engine.math.mat4.projectionForCamera(camera.activeCameraComponent(state, layer_context), aspect);
+    const view_projection = engine.math.mat4.mul(projection, view);
+    const clip = mulPoint4(view_projection, .{ world_position[0], world_position[1], world_position[2], 1.0 });
+    if (@abs(clip[3]) <= 0.00001 or clip[3] <= 0.0) {
+        return null;
+    }
+
+    const ndc_x = clip[0] / clip[3];
+    const ndc_y = clip[1] / clip[3];
+    if (ndc_x < -1.15 or ndc_x > 1.15 or ndc_y < -1.15 or ndc_y > 1.15) {
+        return null;
+    }
+
+    return .{
+        state.viewport_origin[0] + (ndc_x * 0.5 + 0.5) * state.viewport_extent[0],
+        state.viewport_origin[1] + (1.0 - (ndc_y * 0.5 + 0.5)) * state.viewport_extent[1],
+    };
+}
+
+fn mulPoint4(matrix_value: engine.math.mat4.Mat4, point: [4]f32) [4]f32 {
+    return .{
+        matrix_value[0] * point[0] + matrix_value[4] * point[1] + matrix_value[8] * point[2] + matrix_value[12] * point[3],
+        matrix_value[1] * point[0] + matrix_value[5] * point[1] + matrix_value[9] * point[2] + matrix_value[13] * point[3],
+        matrix_value[2] * point[0] + matrix_value[6] * point[1] + matrix_value[10] * point[2] + matrix_value[14] * point[3],
+        matrix_value[3] * point[0] + matrix_value[7] * point[1] + matrix_value[11] * point[2] + matrix_value[15] * point[3],
+    };
+}
+
+fn drawViewportLineGlyph(draw_list: gui.DrawList, center: [2]f32, size: f32, color: u32, kind: ViewportEntityGlyph, selected: bool) void {
+    const half = size * 0.5;
+    const bg_color = gui.getColorU32(if (selected) .{ 0.10, 0.14, 0.18, 0.94 } else .{ 0.06, 0.08, 0.10, 0.82 });
+    draw_list.addRectFilled(
+        .{ center[0] - half - 4.0, center[1] - half - 4.0 },
+        .{ center[0] + half + 4.0, center[1] + half + 4.0 },
+        bg_color,
+        6.0,
+        0,
+    );
+
+    switch (kind) {
+        .camera => {
+            const left = center[0] - half * 0.55;
+            const right = center[0] + half * 0.28;
+            const top = center[1] - half * 0.34;
+            const bottom = center[1] + half * 0.34;
+            draw_list.addLine(.{ left, top }, .{ right, top }, color, 1.8);
+            draw_list.addLine(.{ right, top }, .{ right, bottom }, color, 1.8);
+            draw_list.addLine(.{ right, bottom }, .{ left, bottom }, color, 1.8);
+            draw_list.addLine(.{ left, bottom }, .{ left, top }, color, 1.8);
+            draw_list.addLine(.{ right, top }, .{ center[0] + half * 0.78, center[1] }, color, 1.8);
+            draw_list.addLine(.{ center[0] + half * 0.78, center[1] }, .{ right, bottom }, color, 1.8);
+            draw_list.addLine(.{ left + 2.0, top - 3.0 }, .{ left + 6.0, top - 3.0 }, color, 1.8);
+        },
+        .directional => {
+            draw_list.addLine(.{ center[0] - half * 0.72, center[1] }, .{ center[0] + half * 0.52, center[1] }, color, 2.0);
+            draw_list.addLine(.{ center[0] + half * 0.52, center[1] }, .{ center[0] + half * 0.12, center[1] - half * 0.34 }, color, 2.0);
+            draw_list.addLine(.{ center[0] + half * 0.52, center[1] }, .{ center[0] + half * 0.12, center[1] + half * 0.34 }, color, 2.0);
+            draw_list.addLine(.{ center[0] - half * 0.52, center[1] - half * 0.34 }, .{ center[0] - half * 0.18, center[1] - half * 0.34 }, color, 1.6);
+            draw_list.addLine(.{ center[0] - half * 0.52, center[1] + half * 0.34 }, .{ center[0] - half * 0.18, center[1] + half * 0.34 }, color, 1.6);
+        },
+        .point => {
+            draw_list.addCircleFilled(center, half * 0.34, color, 16);
+            draw_list.addLine(.{ center[0], center[1] - half * 0.9 }, .{ center[0], center[1] - half * 0.5 }, color, 1.7);
+            draw_list.addLine(.{ center[0], center[1] + half * 0.5 }, .{ center[0], center[1] + half * 0.9 }, color, 1.7);
+            draw_list.addLine(.{ center[0] - half * 0.9, center[1] }, .{ center[0] - half * 0.5, center[1] }, color, 1.7);
+            draw_list.addLine(.{ center[0] + half * 0.5, center[1] }, .{ center[0] + half * 0.9, center[1] }, color, 1.7);
+        },
+        .spot => {
+            const apex = .{ center[0], center[1] - half * 0.76 };
+            const base_left = .{ center[0] - half * 0.72, center[1] + half * 0.48 };
+            const base_right = .{ center[0] + half * 0.72, center[1] + half * 0.48 };
+            draw_list.addLine(apex, base_left, color, 1.8);
+            draw_list.addLine(apex, base_right, color, 1.8);
+            draw_list.addLine(base_left, base_right, color, 1.8);
+            draw_list.addLine(.{ center[0], center[1] - half * 0.2 }, .{ center[0], center[1] + half * 0.36 }, color, 1.6);
+        },
+    }
+}
+
+fn drawViewportSceneEntityIcons(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+    if (!state.viewport_has_image) return;
+
+    const draw_list = gui.getWindowDrawList();
+    const selected_entities = layer_context.renderer.selectedEntities();
+
+    for (layer_context.scene.entities.items) |entity| {
+        if (!entity.visible or entity.editor_only) continue;
+        if (entity.camera == null and entity.light == null) continue;
+
+        const world_transform = layer_context.scene.worldTransformConst(entity.id) orelse entity.local_transform;
+        const screen_pos = worldPointToViewportScreen(state, layer_context, world_transform.translation) orelse continue;
+
+        var is_selected = false;
+        for (selected_entities) |selected_id| {
+            if (selected_id == entity.id) {
+                is_selected = true;
+                break;
+            }
+        }
+
+        if (entity.camera != null) {
+            drawViewportLineGlyph(
+                draw_list,
+                screen_pos,
+                if (is_selected) 18.0 else 16.0,
+                gui.getColorU32(.{ 0.38, 0.84, 1.0, 1.0 }),
+                .camera,
+                is_selected,
+            );
+            continue;
+        }
+
+        const light = entity.light.?;
+        const light_kind: ViewportEntityGlyph = switch (light.kind) {
+            .directional => .directional,
+            .point => .point,
+            .spot => .spot,
+        };
+        const light_color: [4]f32 = switch (light.kind) {
+            .directional => .{ 1.0, 0.82, 0.34, 1.0 },
+            .point => .{ 1.0, 0.90, 0.42, 1.0 },
+            .spot => .{ 0.56, 0.80, 1.0, 1.0 },
+        };
+        drawViewportLineGlyph(
+            draw_list,
+            screen_pos,
+            if (is_selected) 18.0 else 16.0,
+            gui.getColorU32(light_color),
+            light_kind,
+            is_selected,
+        );
+    }
 }
 
 fn drawViewportToolbarStrip(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -506,16 +659,34 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
         utils.viewportDrawableSize(layer_context.window, state.viewport_extent);
     try layer_context.renderer.setSceneViewportSize(drawable_size[0], drawable_size[1]);
     if (state.render_output_job_stage == .resize_and_render) {
-        state.render_output_job_stage = .export_pending;
-        if (state.render_output_job_is_sequence) {
-            setRenderOutputStatusFmt(
-                state,
-                .rendering,
-                "Rendering frame {d}/{d} at {d} x {d}",
-                .{ state.render_output_job_frame_index + 1, state.render_output_job_total_frames, drawable_size[0], drawable_size[1] },
-            );
+        if (state.viewport_pipeline_mode == .path_trace) {
+            const progress = layer_context.renderer.pathTraceRenderProgress();
+            const progress_percent: u32 = @intFromFloat(std.math.clamp(progress.fraction, 0.0, 1.0) * 100.0);
+            if (progress.complete) {
+                state.render_output_job_stage = .export_pending;
+            }
+            if (state.render_output_job_is_sequence) {
+                setRenderOutputStatusFmt(
+                    state,
+                    .rendering,
+                    "Rendering frame {d}/{d} at {d} x {d} ({d}%)",
+                    .{ state.render_output_job_frame_index + 1, state.render_output_job_total_frames, drawable_size[0], drawable_size[1], progress_percent },
+                );
+            } else {
+                setRenderOutputStatusFmt(state, .rendering, "Rendering {d} x {d} ({d}%)", .{ drawable_size[0], drawable_size[1], progress_percent });
+            }
         } else {
-            setRenderOutputStatusFmt(state, .rendering, "Rendering {d} x {d}", .{ drawable_size[0], drawable_size[1] });
+            state.render_output_job_stage = .export_pending;
+            if (state.render_output_job_is_sequence) {
+                setRenderOutputStatusFmt(
+                    state,
+                    .rendering,
+                    "Rendering frame {d}/{d} at {d} x {d}",
+                    .{ state.render_output_job_frame_index + 1, state.render_output_job_total_frames, drawable_size[0], drawable_size[1] },
+                );
+            } else {
+                setRenderOutputStatusFmt(state, .rendering, "Rendering {d} x {d}", .{ drawable_size[0], drawable_size[1] });
+            }
         }
     }
 
@@ -544,6 +715,7 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
         try drawViewportFpsOverlayWindow(state, layer_context);
         try drawViewportDebugOverlayWindow(state, layer_context);
         try ai_collaboration.drawViewportCollaborationOverlay(state, layer_context);
+        drawViewportSceneEntityIcons(state, layer_context);
         drawViewportViewCube(state, layer_context);
         logViewportStateChange(state, layer_context);
 

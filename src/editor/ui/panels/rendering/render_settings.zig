@@ -56,16 +56,16 @@ pub fn drawRenderSettingsWindow(state: *EditorState, layer_context: *engine.core
     drawPtQualityPresetCombo(state);
 
     var pt_samples: i32 = @intCast(state.viewport_path_trace_samples);
-    if (gui.dragInt("##pt_samples", &pt_samples, 1.0, 1, 64)) {
-        state.viewport_path_trace_samples = @intCast(std.math.clamp(pt_samples, 1, 64));
+    if (gui.dragInt("##pt_samples", &pt_samples, 1.0, 1, 256)) {
+        state.viewport_path_trace_samples = @intCast(std.math.clamp(pt_samples, 1, 256));
     }
     var pt_samples_buf: [32]u8 = undefined;
     const pt_samples_text = try std.fmt.bufPrint(&pt_samples_buf, "{d}", .{state.viewport_path_trace_samples});
     gui.labelText("Samples", pt_samples_text);
 
     var pt_bounces: i32 = @intCast(state.viewport_path_trace_bounces);
-    if (gui.dragInt("##pt_bounces", &pt_bounces, 1.0, 1, 8)) {
-        state.viewport_path_trace_bounces = @intCast(std.math.clamp(pt_bounces, 1, 8));
+    if (gui.dragInt("##pt_bounces", &pt_bounces, 1.0, 1, 12)) {
+        state.viewport_path_trace_bounces = @intCast(std.math.clamp(pt_bounces, 1, 12));
     }
     var pt_bounces_buf: [32]u8 = undefined;
     const pt_bounces_text = try std.fmt.bufPrint(&pt_bounces_buf, "{d}", .{state.viewport_path_trace_bounces});
@@ -165,8 +165,8 @@ pub fn queueRenderOutput(state: *EditorState, layer_context: *engine.core.LayerC
     state.render_output_job_started_playback = false;
 
     if (state.viewport_pipeline_mode == .path_trace) {
-        state.viewport_path_trace_samples = std.math.clamp(state.render_output_samples, 1, 64);
-        state.viewport_path_trace_bounces = std.math.clamp(state.render_output_bounces, 1, 8);
+        state.viewport_path_trace_samples = std.math.clamp(state.render_output_samples, 1, 512);
+        state.viewport_path_trace_bounces = std.math.clamp(state.render_output_bounces, 1, 12);
         state.viewport_path_trace_resolution_scale = 1.0;
         layer_context.renderer.resetPathTraceState();
     }
@@ -252,16 +252,16 @@ fn drawRenderOutputSection(state: *EditorState, layer_context: *engine.core.Laye
 
     if (state.viewport_pipeline_mode == .path_trace) {
         var export_samples: i32 = @intCast(state.render_output_samples);
-        if (gui.dragInt("##render_output_samples", &export_samples, 1.0, 1, 64)) {
-            state.render_output_samples = @intCast(std.math.clamp(export_samples, 1, 64));
+        if (gui.dragInt("##render_output_samples", &export_samples, 1.0, 1, 512)) {
+            state.render_output_samples = @intCast(std.math.clamp(export_samples, 1, 512));
         }
         var export_samples_buf: [32]u8 = undefined;
         const export_samples_text = try std.fmt.bufPrint(&export_samples_buf, "{d}", .{state.render_output_samples});
         gui.labelText("Export Samples", export_samples_text);
 
         var export_bounces: i32 = @intCast(state.render_output_bounces);
-        if (gui.dragInt("##render_output_bounces", &export_bounces, 1.0, 1, 8)) {
-            state.render_output_bounces = @intCast(std.math.clamp(export_bounces, 1, 8));
+        if (gui.dragInt("##render_output_bounces", &export_bounces, 1.0, 1, 12)) {
+            state.render_output_bounces = @intCast(std.math.clamp(export_bounces, 1, 12));
         }
         var export_bounces_buf: [32]u8 = undefined;
         const export_bounces_text = try std.fmt.bufPrint(&export_bounces_buf, "{d}", .{state.render_output_bounces});
@@ -359,9 +359,9 @@ fn detectCurrentPtPreset(state: *const EditorState) ?PtQualityPreset {
     const r = state.viewport_path_trace_resolution_scale;
     if (s == 1 and b == 1 and r == 0.5) return .preview;
     if (s == 4 and b == 2 and r == 0.75) return .low;
-    if (s == 8 and b == 3 and r == 1.0) return .medium;
-    if (s == 16 and b == 4 and r == 1.0) return .high;
-    if (s == 32 and b == 6 and r == 1.0) return .ultra;
+    if (s == 12 and b == 4 and r == 1.0) return .medium;
+    if (s == 32 and b == 6 and r == 1.0) return .high;
+    if (s == 64 and b == 8 and r == 1.0) return .ultra;
     return null;
 }
 
@@ -378,18 +378,18 @@ fn applyPtPreset(state: *EditorState, preset: PtQualityPreset) void {
             state.viewport_path_trace_resolution_scale = 0.75;
         },
         .medium => {
-            state.viewport_path_trace_samples = 8;
-            state.viewport_path_trace_bounces = 3;
-            state.viewport_path_trace_resolution_scale = 1.0;
-        },
-        .high => {
-            state.viewport_path_trace_samples = 16;
+            state.viewport_path_trace_samples = 12;
             state.viewport_path_trace_bounces = 4;
             state.viewport_path_trace_resolution_scale = 1.0;
         },
-        .ultra => {
+        .high => {
             state.viewport_path_trace_samples = 32;
             state.viewport_path_trace_bounces = 6;
+            state.viewport_path_trace_resolution_scale = 1.0;
+        },
+        .ultra => {
+            state.viewport_path_trace_samples = 64;
+            state.viewport_path_trace_bounces = 8;
             state.viewport_path_trace_resolution_scale = 1.0;
         },
     }

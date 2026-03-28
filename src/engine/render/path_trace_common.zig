@@ -89,6 +89,13 @@ pub const PathTraceEmissiveLight = extern struct {
     cdf: f32,
 };
 
+pub const PathTracePointLight = extern struct {
+    position: [3]f32,
+    color: [3]f32,
+    intensity: f32,
+    range: f32,
+};
+
 pub const PathTraceMesh = struct {
     aabb: AABB,
     tri_start: u32,
@@ -113,6 +120,7 @@ pub const PathTraceProgressiveState = struct {
     environment_importance_width: u32 = 0,
     environment_importance_height: u32 = 0,
     emissive_lights: ?[]PathTraceEmissiveLight = null,
+    point_lights: ?[]PathTracePointLight = null,
     emissive_total_area: f32 = 0.0,
     inv_view_projection: [16]f32 = mat4_mod.identity(),
     camera_origin: [3]f32 = .{ 0, 0, 0 },
@@ -153,6 +161,10 @@ pub const PathTraceProgressiveState = struct {
             allocator.free(items);
             self.emissive_lights = null;
         }
+        if (self.point_lights) |items| {
+            allocator.free(items);
+            self.point_lights = null;
+        }
         self.environment_importance_width = 0;
         self.environment_importance_height = 0;
         self.emissive_total_area = 0.0;
@@ -166,6 +178,7 @@ pub const PathTraceProgressiveState = struct {
         if (self.textures) |textures| allocator.free(textures);
         if (self.environment_importance) |items| allocator.free(items);
         if (self.emissive_lights) |items| allocator.free(items);
+        if (self.point_lights) |items| allocator.free(items);
         self.* = .{};
     }
 };
