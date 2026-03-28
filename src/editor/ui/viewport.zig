@@ -1102,21 +1102,21 @@ pub fn drawEditorUi(
     syncViewportState(state, post_process_state, layer_context);
     try applyPendingViewportAssetDrop(state, layer_context);
 
-    // ── Shell Layer 1: Top Bar ────────────────────────────────────────────
+    // Shell Layer 1: Top Bar
     try menu_bar.drawMenuBar(state, layer_context);
 
-    // ── Shell Layer 2: Main Workspace (center + left + right panels) ──────
+    // Shell Layer 2: Main Workspace (center + left + right panels)
     try drawViewportWindow(state, layer_context);
     try drawLeftSidebar(state, layer_context);
     try drawRightSidebar(state, layer_context);
 
-    // ── Shell Layer 3: Bottom Workspace ───────────────────────────────────
+    // Shell Layer 3: Bottom Workspace
     try content_browser.drawContentBrowser(state, layer_context);
 
-    // ── Shell Layer 4: Auxiliary / Floating Windows ───────────────────────
+    // Shell Layer 4: Auxiliary / Floating Windows
     try drawAuxiliaryWindows(state, layer_context);
 
-    // ── Shell Layer 5: Status Bar (pinned bottom) ─────────────────────────
+    // Shell Layer 5: Status Bar (pinned bottom)
     try drawStatusBarWindow(state, layer_context);
 }
 

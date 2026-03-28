@@ -603,10 +603,21 @@ fn refractVector(incident: [3]f32, normal: [3]f32, eta: f32) ?[3]f32 {
     );
 }
 
-fn resolvePathTraceEnvironment(resources: *const assets_lib.ResourceLibrary) PathTraceEnvironment {
-    const asset_id = findSceneEnvironmentAssetId(resources) orelse return .{};
-    const handle = resources.textureHandleByAssetId(asset_id) orelse return .{};
-    const texture = resources.texture(handle) orelse return .{};
+fn resolvePathTraceEnvironment(self: *Renderer, scene: *scene_mod.Scene) PathTraceEnvironment {
+    const borrowed_asset_id = findSceneEnvironmentAssetId(&scene.resources) orelse return .{};
+    const environment_asset_id = self.allocator.dupe(u8, borrowed_asset_id) catch return .{};
+    defer self.allocator.free(environment_asset_id);
+
+    const handle = scene.resources.textureHandleByAssetId(environment_asset_id) orelse blk: {
+        _ = texture_import_mod.loadTextureAsset(
+            self.allocator,
+            &scene.resources,
+            &scene.resources.asset_registry,
+            environment_asset_id,
+        ) catch return .{};
+        break :blk scene.resources.textureHandleByAssetId(environment_asset_id) orelse return .{};
+    };
+    const texture = scene.resources.texture(handle) orelse return .{};
     if (texture.width == 0 or texture.height == 0 or texture.pixels.len == 0) {
         return .{};
     }
@@ -3330,6 +3341,11 @@ pub const Renderer = struct {
         self.hw_rt_state.last_scene_signature = 0;
     }
 
+    pub fn invalidateEnvironmentState(self: *Renderer) void {
+        self.cached_env_textures = .{};
+        self.resetPathTraceState();
+    }
+
     pub fn setEditorViewportState(self: *Renderer, state: EditorViewportState) void {
         if (g_logged_postfx_state == null or
             g_logged_postfx_state.?.exposure_enabled != state.exposure_enabled or
@@ -4880,7 +4896,7 @@ pub const Renderer = struct {
         };
         errdefer pt.deinit(self.allocator);
 
-        try self.populatePathTraceSceneState(&pt, &prepared_scene, scene, resolvePathTraceEnvironment(&scene.resources));
+        try self.populatePathTraceSceneState(&pt, &prepared_scene, scene, resolvePathTraceEnvironment(self, scene));
         if (render_beauty) {
             try self.ensurePathTraceBuffers(&pt, width, height, width, height);
             renderCpuPathTraceTiles(&pt, false, 0);
@@ -4895,10 +4911,10 @@ pub const Renderer = struct {
         const height = target.desc.height;
         if (width == 0 or height == 0) return;
 
-        const path_trace_environment = resolvePathTraceEnvironment(&scene.resources);
+        const path_trace_environment = resolvePathTraceEnvironment(self, scene);
         const scene_signature = computePathTraceSceneSignature(prepared_scene, scene, path_trace_environment);
 
-        const samples = std.math.clamp(self.editor_viewport_state.path_trace_samples, 1, 256);
+        const samples = std.math.clamp(self.editor_viewport_state.path_trace_samples, 1, 2048);
         const bounces = std.math.clamp(self.editor_viewport_state.path_trace_bounces, 1, 12);
         const resolution_scale = std.math.clamp(self.editor_viewport_state.path_trace_resolution_scale, 0.25, 1.0);
         const trace_width = @max(@as(u32, 1), @as(u32, @intFromFloat(@as(f32, @floatFromInt(width)) * resolution_scale)));
@@ -5254,7 +5270,7 @@ pub const Renderer = struct {
             },
         }
         var mrt = &self.hw_rt_state;
-        const path_trace_environment = resolvePathTraceEnvironment(&scene.resources);
+        const path_trace_environment = resolvePathTraceEnvironment(self, scene);
         const scene_signature = computePathTraceSceneSignature(prepared_scene, scene, path_trace_environment);
 
         // --- 变化检测 ---
@@ -5853,7 +5869,7 @@ pub const Renderer = struct {
         const viewport_size = self.sceneViewportSize();
         if (viewport_size[0] == 0 or viewport_size[1] == 0) return error.InvalidDimensions;
 
-        const samples = std.math.clamp(self.editor_viewport_state.path_trace_samples, 1, 512);
+        const samples = std.math.clamp(self.editor_viewport_state.path_trace_samples, 1, 4096);
         const bounces = std.math.clamp(self.editor_viewport_state.path_trace_bounces, 1, 12);
 
         var beauty_rgb: []f32 = undefined;
@@ -5969,7 +5985,7 @@ pub const Renderer = struct {
         const viewport_size = self.sceneViewportSize();
         if (viewport_size[0] == 0 or viewport_size[1] == 0) return error.InvalidDimensions;
 
-        const samples = std.math.clamp(self.editor_viewport_state.path_trace_samples, 1, 512);
+        const samples = std.math.clamp(self.editor_viewport_state.path_trace_samples, 1, 4096);
         const bounces = std.math.clamp(self.editor_viewport_state.path_trace_bounces, 1, 12);
 
         var beauty_rgb: []f32 = undefined;
@@ -6809,51 +6825,13 @@ fn environmentSelectionFingerprint(resources: *const assets_lib.ResourceLibrary)
 }
 
 fn findSceneEnvironmentAssetId(resources: *const assets_lib.ResourceLibrary) ?[]const u8 {
-    var sole_hdr: ?[]const u8 = null;
-    var hdr_count: usize = 0;
-    for (resources.asset_registry.records.items) |record| {
-        if (record.type != .texture or !std.mem.endsWith(u8, record.source_path, ".hdr")) {
-            continue;
-        }
-        std.fs.cwd().access(record.source_path, .{}) catch continue;
-        hdr_count += 1;
-        sole_hdr = record.id;
-        if (isLikelyEnvironmentPath(record.source_path) or isLikelyEnvironmentPath(record.metadata.display_name)) {
-            return record.id;
-        }
+    const environment_asset_id = resources.sceneEnvironmentAssetId() orelse return null;
+    const record = resources.asset_registry.recordById(environment_asset_id) orelse return null;
+    if (record.type != .texture or !std.mem.endsWith(u8, record.source_path, ".hdr")) {
+        return null;
     }
-    if (hdr_count == 1) {
-        return sole_hdr;
-    }
-    return null;
-}
-
-fn isLikelyEnvironmentPath(path: []const u8) bool {
-    return containsIgnoreCase(path, "sky") or
-        containsIgnoreCase(path, "env") or
-        containsIgnoreCase(path, "ibl") or
-        containsIgnoreCase(path, "ticknock");
-}
-
-fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
-    if (needle.len == 0 or needle.len > haystack.len) {
-        return false;
-    }
-
-    var start: usize = 0;
-    while (start + needle.len <= haystack.len) : (start += 1) {
-        var matched = true;
-        for (needle, 0..) |needle_char, offset| {
-            if (std.ascii.toLower(haystack[start + offset]) != std.ascii.toLower(needle_char)) {
-                matched = false;
-                break;
-            }
-        }
-        if (matched) {
-            return true;
-        }
-    }
-    return false;
+    std.fs.cwd().access(record.source_path, .{}) catch return null;
+    return record.id;
 }
 
 fn resolveMaterialThumbnailSource(

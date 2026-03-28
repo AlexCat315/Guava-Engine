@@ -3,6 +3,8 @@ const engine = @import("guava");
 const gui = @import("../../gui.zig");
 const state_mod = @import("../../../core/state.zig");
 const EditorState = state_mod.EditorState;
+const history = @import("../../../actions/history.zig");
+const content_browser = @import("../../../assets/browser.zig");
 const camera = @import("../../../interaction/camera.zig");
 const layout = @import("../../layout.zig");
 const playback_session = @import("../../../core/playback_session.zig");
@@ -50,14 +52,17 @@ pub fn drawRenderSettingsWindow(state: *EditorState, layer_context: *engine.core
     }
 
     gui.separator();
+    try drawEnvironmentSection(state, layer_context);
+
+    gui.separator();
     gui.text("Path Tracer");
 
     // Quality preset combo
     drawPtQualityPresetCombo(state);
 
     var pt_samples: i32 = @intCast(state.viewport_path_trace_samples);
-    if (gui.dragInt("##pt_samples", &pt_samples, 1.0, 1, 256)) {
-        state.viewport_path_trace_samples = @intCast(std.math.clamp(pt_samples, 1, 256));
+    if (gui.dragInt("##pt_samples", &pt_samples, 1.0, 1, 2048)) {
+        state.viewport_path_trace_samples = @intCast(std.math.clamp(pt_samples, 1, 2048));
     }
     var pt_samples_buf: [32]u8 = undefined;
     const pt_samples_text = try std.fmt.bufPrint(&pt_samples_buf, "{d}", .{state.viewport_path_trace_samples});
@@ -101,6 +106,94 @@ pub fn drawRenderSettingsWindow(state: *EditorState, layer_context: *engine.core
     var viewport_buffer: [64]u8 = undefined;
     const viewport_text = try std.fmt.bufPrint(&viewport_buffer, "{d} x {d}", .{ viewport_size[0], viewport_size[1] });
     gui.labelText(state.text(.viewport_size), viewport_text);
+}
+
+fn drawEnvironmentSection(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    gui.text("Environment");
+
+    const current_environment = layer_context.world.resources.sceneEnvironmentAssetId();
+    const preview_label = sceneEnvironmentPreviewLabel(&layer_context.world.resources);
+    if (gui.beginCombo("HDR Sky##scene_environment", preview_label)) {
+        defer gui.endCombo();
+
+        if (gui.selectable("None", current_environment == null, false, 0.0, 0.0)) {
+            try applySceneEnvironmentSelection(state, layer_context, null);
+        }
+
+        for (layer_context.world.resources.asset_registry.records.items) |record| {
+            if (!isHdrTextureRecord(record)) continue;
+            std.fs.cwd().access(record.source_path, .{}) catch continue;
+
+            const selected = current_environment != null and std.mem.eql(u8, current_environment.?, record.id);
+            if (gui.selectable(sceneEnvironmentRecordLabel(record), selected, false, 0.0, 0.0)) {
+                try applySceneEnvironmentSelection(state, layer_context, record.id);
+            }
+        }
+    }
+
+    const selected_asset = content_browser.selectedAsset(state);
+    const can_use_selected = if (selected_asset) |entry| isHdrTextureEntry(entry) else false;
+    if (gui.buttonEx("Use Selected HDR", 0.0, 0.0) and can_use_selected) {
+        try applySceneEnvironmentSelection(state, layer_context, selected_asset.?.id);
+    }
+    gui.sameLine();
+    if (gui.buttonEx("Clear HDR", 0.0, 0.0) and current_environment != null) {
+        try applySceneEnvironmentSelection(state, layer_context, null);
+    }
+
+    if (selected_asset) |entry| {
+        gui.labelText("Browser Selection", if (isHdrTextureEntry(entry)) entry.name else "Select an .hdr asset in the browser");
+    } else {
+        gui.labelText("Browser Selection", "None");
+    }
+}
+
+fn applySceneEnvironmentSelection(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    asset_id: ?[]const u8,
+) !void {
+    if (asset_id) |resolved_asset_id| {
+        if (state.asset_registry) |*registry| {
+            if (registry.recordById(resolved_asset_id) != null) {
+                _ = try engine.assets.loadTextureAsset(
+                    state.allocator orelse layer_context.world.allocator,
+                    layer_context.world.assets(),
+                    registry,
+                    resolved_asset_id,
+                );
+            }
+        }
+    }
+
+    const changed = try layer_context.world.resources.setSceneEnvironmentAssetId(asset_id);
+    if (!changed) {
+        return;
+    }
+
+    layer_context.renderer.invalidateEnvironmentState();
+    try history.captureSnapshot(state, layer_context);
+}
+
+fn sceneEnvironmentPreviewLabel(resources: *const engine.assets.ResourceLibrary) []const u8 {
+    const environment_asset_id = resources.sceneEnvironmentAssetId() orelse return "None";
+    const record = resources.asset_registry.recordById(environment_asset_id) orelse return "Missing";
+    return sceneEnvironmentRecordLabel(record);
+}
+
+fn sceneEnvironmentRecordLabel(record: anytype) []const u8 {
+    if (record.metadata.display_name.len != 0) {
+        return record.metadata.display_name;
+    }
+    return std.fs.path.basename(record.source_path);
+}
+
+fn isHdrTextureEntry(entry: *const state_mod.AssetEntry) bool {
+    return entry.kind == .texture and std.mem.endsWith(u8, entry.path, ".hdr");
+}
+
+fn isHdrTextureRecord(record: anytype) bool {
+    return record.type == .texture and std.mem.endsWith(u8, record.source_path, ".hdr");
 }
 
 pub fn resolveRenderOutputDimensions(
@@ -165,7 +258,7 @@ pub fn queueRenderOutput(state: *EditorState, layer_context: *engine.core.LayerC
     state.render_output_job_started_playback = false;
 
     if (state.viewport_pipeline_mode == .path_trace) {
-        state.viewport_path_trace_samples = std.math.clamp(state.render_output_samples, 1, 512);
+        state.viewport_path_trace_samples = std.math.clamp(state.render_output_samples, 1, 4096);
         state.viewport_path_trace_bounces = std.math.clamp(state.render_output_bounces, 1, 12);
         state.viewport_path_trace_resolution_scale = 1.0;
         layer_context.renderer.resetPathTraceState();
@@ -252,8 +345,8 @@ fn drawRenderOutputSection(state: *EditorState, layer_context: *engine.core.Laye
 
     if (state.viewport_pipeline_mode == .path_trace) {
         var export_samples: i32 = @intCast(state.render_output_samples);
-        if (gui.dragInt("##render_output_samples", &export_samples, 1.0, 1, 512)) {
-            state.render_output_samples = @intCast(std.math.clamp(export_samples, 1, 512));
+        if (gui.dragInt("##render_output_samples", &export_samples, 1.0, 1, 4096)) {
+            state.render_output_samples = @intCast(std.math.clamp(export_samples, 1, 4096));
         }
         var export_samples_buf: [32]u8 = undefined;
         const export_samples_text = try std.fmt.bufPrint(&export_samples_buf, "{d}", .{state.render_output_samples});
@@ -360,8 +453,8 @@ fn detectCurrentPtPreset(state: *const EditorState) ?PtQualityPreset {
     if (s == 1 and b == 1 and r == 0.5) return .preview;
     if (s == 4 and b == 2 and r == 0.75) return .low;
     if (s == 12 and b == 4 and r == 1.0) return .medium;
-    if (s == 32 and b == 6 and r == 1.0) return .high;
-    if (s == 64 and b == 8 and r == 1.0) return .ultra;
+    if (s == 48 and b == 6 and r == 1.0) return .high;
+    if (s == 256 and b == 10 and r == 1.0) return .ultra;
     return null;
 }
 
@@ -383,13 +476,13 @@ fn applyPtPreset(state: *EditorState, preset: PtQualityPreset) void {
             state.viewport_path_trace_resolution_scale = 1.0;
         },
         .high => {
-            state.viewport_path_trace_samples = 32;
+            state.viewport_path_trace_samples = 48;
             state.viewport_path_trace_bounces = 6;
             state.viewport_path_trace_resolution_scale = 1.0;
         },
         .ultra => {
-            state.viewport_path_trace_samples = 64;
-            state.viewport_path_trace_bounces = 8;
+            state.viewport_path_trace_samples = 256;
+            state.viewport_path_trace_bounces = 10;
             state.viewport_path_trace_resolution_scale = 1.0;
         },
     }

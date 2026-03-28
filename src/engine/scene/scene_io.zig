@@ -17,6 +17,7 @@ const SceneHeader = struct {
 const SceneFile = struct {
     version: u32 = current_scene_version,
     scene_id: []const u8,
+    environment_asset_id: ?[]const u8 = null,
     asset_records: []asset_registry.AssetRecord,
     meshes: []MeshRecord,
     textures: []TextureRecord,
@@ -880,6 +881,12 @@ fn buildSceneFile(allocator: std.mem.Allocator, world: *const world_mod.World) !
         });
     }
 
+    if (world.resources.sceneEnvironmentAssetId()) |environment_asset_id| {
+        if (world.resources.asset_registry.recordById(environment_asset_id)) |asset_record| {
+            _ = try ensureSceneAssetRecord(&asset_records, allocator, asset_record.*);
+        }
+    }
+
     const scene_id = try makeSceneIdAlloc(
         allocator,
         entity_records.items,
@@ -894,6 +901,7 @@ fn buildSceneFile(allocator: std.mem.Allocator, world: *const world_mod.World) !
 
     return .{
         .scene_id = scene_id,
+        .environment_asset_id = world.resources.sceneEnvironmentAssetId(),
         .asset_records = try asset_records.toOwnedSlice(allocator),
         .meshes = try mesh_records.toOwnedSlice(allocator),
         .textures = try texture_records.toOwnedSlice(allocator),
@@ -934,6 +942,12 @@ fn deserializeWorldV4FromSlice(allocator: std.mem.Allocator, world: *world_mod.W
     }
 
     world.clear();
+
+    if (scene.environment_asset_id) |environment_asset_id| {
+        if (findAssetRecord(scene.asset_records, environment_asset_id) != null) {
+            _ = try world.resources.setSceneEnvironmentAssetId(environment_asset_id);
+        }
+    }
 
     var texture_bindings = std.ArrayList(TextureBinding).empty;
     defer texture_bindings.deinit(allocator);

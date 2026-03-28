@@ -42,6 +42,7 @@ pub const ResourceLibrary = struct {
     default_material: ?handles.MaterialHandle = null,
     white_texture: ?handles.TextureHandle = null,
     default_albedo_texture: ?handles.TextureHandle = null,
+    scene_environment_asset_id: ?[]u8 = null,
 
     pub fn init(allocator: std.mem.Allocator, job_system: ?*job_system_mod.JobSystem) ResourceLibrary {
         return .{
@@ -66,6 +67,10 @@ pub const ResourceLibrary = struct {
     }
 
     pub fn deinit(self: *ResourceLibrary) void {
+        if (self.scene_environment_asset_id) |asset_id| {
+            self.allocator.free(asset_id);
+            self.scene_environment_asset_id = null;
+        }
         freeHandleKeys(self.allocator, handles.AnimationClipHandle, &self.animation_clip_handles_by_asset_id);
         self.animation_clip_handles_by_asset_id.deinit();
         freeHandleKeys(self.allocator, handles.SkinHandle, &self.skin_handles_by_asset_id);
@@ -165,6 +170,34 @@ pub const ResourceLibrary = struct {
         const resource = try script_mod.clone(self.allocator, desc);
         try self.scripts.append(self.allocator, resource);
         return handles.scriptHandle(self.scripts.items.len - 1);
+    }
+
+    pub fn sceneEnvironmentAssetId(self: *const ResourceLibrary) ?[]const u8 {
+        return self.scene_environment_asset_id;
+    }
+
+    pub fn setSceneEnvironmentAssetId(self: *ResourceLibrary, asset_id: ?[]const u8) !bool {
+        if (asset_id) |resolved_id| {
+            if (self.scene_environment_asset_id) |existing| {
+                if (std.mem.eql(u8, existing, resolved_id)) {
+                    return false;
+                }
+            }
+
+            const owned = try self.allocator.dupe(u8, resolved_id);
+            if (self.scene_environment_asset_id) |existing| {
+                self.allocator.free(existing);
+            }
+            self.scene_environment_asset_id = owned;
+            return true;
+        }
+
+        if (self.scene_environment_asset_id) |existing| {
+            self.allocator.free(existing);
+            self.scene_environment_asset_id = null;
+            return true;
+        }
+        return false;
     }
 
     pub fn mesh(self: *const ResourceLibrary, handle: handles.MeshHandle) ?*const mesh_mod.MeshResource {

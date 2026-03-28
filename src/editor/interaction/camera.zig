@@ -34,10 +34,6 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
     }
     updateViewCubeTransition(state, layer_context);
 
-    if (!state.editor_camera_active) {
-        return;
-    }
-
     const mouse_pressed = input.wasMousePressed(.right) or input.wasMousePressed(.middle) or
         (input.modifiers.alt and input.wasMousePressed(.left));
     if (mouse_pressed) {
@@ -82,7 +78,7 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
         layer_context.window.setRelativeMouseMode(state.camera_drag_active);
     }
 
-    const camera_id = state.editor_camera orelse return;
+    const camera_id = controlledCameraEntity(state, layer_context) orelse return;
     const camera = layer_context.world.getEntity(camera_id) orelse return;
     var camera_transform_changed = false;
 
@@ -208,6 +204,7 @@ pub fn activateEditorCamera(state: *EditorState, layer_context: *engine.core.Lay
     if (!layer_context.world.hasEntity(editor_camera_id)) return false;
     _ = layer_context.world.setPrimaryCamera(editor_camera_id);
     state.editor_camera_active = true;
+    syncOrbitStateFromEntity(state, layer_context, editor_camera_id);
     return true;
 }
 
@@ -220,6 +217,7 @@ pub fn activateSceneCamera(
     _ = layer_context.world.setPrimaryCamera(scene_camera_id);
     state.scene_camera = scene_camera_id;
     state.editor_camera_active = false;
+    syncOrbitStateFromEntity(state, layer_context, scene_camera_id);
     return true;
 }
 
@@ -233,16 +231,13 @@ pub fn lookThroughCamera(
 
 pub fn focusSelection(state: *EditorState, layer_context: *engine.core.LayerContext) void {
     const selected = layer_context.renderer.selectedEntity() orelse return;
-    const camera_id = state.editor_camera orelse return;
+    const camera_id = controlledCameraEntity(state, layer_context) orelse return;
     const camera = layer_context.world.getEntity(camera_id) orelse return;
     const entity_transform = layer_context.world.worldTransform(selected) orelse return;
     const camera_component = camera.camera orelse return;
 
     const focus_radius = selectionFocusRadius(layer_context, selected);
     state.focus_pivot = selectionFocusPivot(layer_context, selected, entity_transform.translation);
-    if (!state.editor_camera_active) {
-        return;
-    }
 
     const viewport_size = layer_context.renderer.sceneViewportSize();
     const viewport_aspect = if (viewport_size[0] > 0 and viewport_size[1] > 0)
@@ -330,6 +325,13 @@ pub fn editorCameraTransform(state: *const EditorState) engine.scene.Transform {
         .translation = vec3.sub(state.focus_pivot, vec3.scale(vec3.forwardFromAngles(state.yaw, state.pitch), state.orbit_distance)),
         .rotation = quat.fromEuler(.{ state.pitch, state.yaw, 0.0 }),
     };
+}
+
+fn controlledCameraEntity(state: *EditorState, layer_context: *engine.core.LayerContext) ?engine.scene.EntityId {
+    if (state.editor_camera_active) {
+        return state.editor_camera;
+    }
+    return resolveSceneCameraEntity(state, layer_context, layer_context.world.primaryCameraEntity());
 }
 
 pub fn activeCameraTransform(state: *const EditorState, layer_context: *engine.core.LayerContext) engine.scene.Transform {
@@ -447,6 +449,31 @@ fn applyEditorViewDirection(
     }
     _ = layer_context.world.setPrimaryCamera(camera_id);
     state.editor_camera_active = true;
+}
+
+fn syncOrbitStateFromEntity(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    camera_id: engine.scene.EntityId,
+) void {
+    const camera_transform = layer_context.world.worldTransform(camera_id) orelse return;
+    const forward = normalize(quat.rotateVec3(camera_transform.rotation, .{ 0.0, 0.0, -1.0 }));
+    state.pitch = utils.clampPitch(std.math.asin(std.math.clamp(forward[1], -1.0, 1.0)));
+    state.yaw = std.math.atan2(-forward[0], -forward[2]);
+
+    var orbit_distance = if (state.orbit_distance > 0.01) state.orbit_distance else 5.0;
+    if (layer_context.world.getEntityConst(camera_id)) |entity| {
+        if (entity.camera) |camera_component| {
+            orbit_distance = switch (camera_component.projection) {
+                .orthographic => |projection| @max(projection.size * 0.9, 2.0),
+                .perspective => @max(orbit_distance, 4.0),
+            };
+        }
+    }
+
+    state.orbit_distance = utils.clampDistance(orbit_distance);
+    state.focus_pivot = vec3.add(camera_transform.translation, vec3.scale(forward, state.orbit_distance));
+    state.viewport_view_preset = .custom;
 }
 
 fn resolveSceneCameraEntity(

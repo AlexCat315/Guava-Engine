@@ -1,5 +1,6 @@
 const std = @import("std");
 const engine = @import("guava");
+const quat = engine.math.quat;
 const vec3 = engine.math.vec3;
 const EditorState = @import("../core/state.zig").EditorState;
 const state_mod = @import("../core/state.zig");
@@ -309,7 +310,7 @@ pub fn spawnEmptyEntity(state: *EditorState, layer_context: *engine.core.LayerCo
 
 pub fn spawnCameraEntity(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const selection_before = layer_context.renderer.selectedEntities();
-    const entity_id = try createCameraEntityViaQueueOrWorld(layer_context, camera.activeCameraTransform(state, layer_context));
+    const entity_id = try createCameraEntityViaQueueOrWorld(layer_context, spawnCameraTransform(state, layer_context));
     try layer_context.renderer.replaceSelection(entity_id);
     state.scene_camera = entity_id;
     utils.syncInspectorNameBuffer(state, layer_context);
@@ -614,11 +615,69 @@ fn executeSingleCreateResult(layer_context: *engine.core.LayerContext) !engine.s
 pub fn spawnTransform(state: *EditorState, layer_context: *engine.core.LayerContext) engine.scene.Transform {
     const camera_transform = camera.activeCameraTransform(state, layer_context);
     const forward = engine.math.quat.rotateVec3(camera_transform.rotation, .{ 0.0, 0.0, -1.0 });
-    const spawn_position = vec3.add(camera_transform.translation, vec3.scale(forward, 3.0));
-
-    return .{
-        .translation = spawn_position,
+    const base_transform: engine.scene.Transform = .{
+        .translation = vec3.add(camera_transform.translation, vec3.scale(forward, 3.0)),
     };
+    return resolveUnoccupiedSpawnTransform(layer_context.world, camera_transform, base_transform, 0.9);
+}
+
+fn spawnCameraTransform(state: *EditorState, layer_context: *engine.core.LayerContext) engine.scene.Transform {
+    const camera_transform = camera.activeCameraTransform(state, layer_context);
+    return resolveUnoccupiedSpawnTransform(layer_context.world, camera_transform, camera_transform, 1.25);
+}
+
+fn resolveUnoccupiedSpawnTransform(
+    world: *engine.scene.World,
+    reference_camera: engine.scene.Transform,
+    base_transform: engine.scene.Transform,
+    min_distance: f32,
+) engine.scene.Transform {
+    world.updateHierarchy();
+
+    const right = quat.rotateVec3(reference_camera.rotation, .{ 1.0, 0.0, 0.0 });
+    const up = quat.rotateVec3(reference_camera.rotation, .{ 0.0, 1.0, 0.0 });
+    const offsets = [_][2]f32{
+        .{ 0.0, 0.0 },
+        .{ 1.0, 0.0 },
+        .{ -1.0, 0.0 },
+        .{ 0.0, 1.0 },
+        .{ 0.0, -1.0 },
+        .{ 1.4, 1.0 },
+        .{ -1.4, 1.0 },
+        .{ 1.4, -1.0 },
+        .{ -1.4, -1.0 },
+        .{ 2.0, 0.0 },
+        .{ -2.0, 0.0 },
+    };
+
+    for (offsets) |offset| {
+        var candidate = base_transform;
+        candidate.translation = vec3.add(
+            candidate.translation,
+            vec3.add(
+                vec3.scale(right, offset[0] * min_distance),
+                vec3.scale(up, offset[1] * min_distance),
+            ),
+        );
+        if (!spawnPositionOccupied(world, candidate.translation, min_distance)) {
+            return candidate;
+        }
+    }
+
+    return base_transform;
+}
+
+fn spawnPositionOccupied(world: *engine.scene.World, position: [3]f32, min_distance: f32) bool {
+    const min_distance_sq = min_distance * min_distance;
+    for (world.entities.items) |entity| {
+        if (entity.editor_only) continue;
+        const world_transform = world.worldTransformConst(entity.id) orelse entity.local_transform;
+        const delta = vec3.sub(world_transform.translation, position);
+        if (vec3.dot(delta, delta) < min_distance_sq) {
+            return true;
+        }
+    }
+    return false;
 }
 
 pub fn saveScene(state: *EditorState, layer_context: *engine.core.LayerContext) void {

@@ -46,6 +46,7 @@ pub const VertexUniforms = extern struct {
 pub const csm_cascade_count = 4;
 pub const max_directional_lights = 4;
 pub const max_point_lights = 16;
+pub const max_spot_lights = 16;
 
 pub const BasePassUniforms = extern struct {
     base_color_factor: [4]f32,
@@ -58,7 +59,11 @@ pub const BasePassUniforms = extern struct {
     light_space_matrix: [16]f32,
     point_light_positions: [max_point_lights][4]f32, // xyz = position, w = range
     point_light_colors: [max_point_lights][4]f32, // rgb = color, w = intensity
-    light_counts: [4]u32, // x: dir_count, y: point_count
+    spot_light_positions: [max_spot_lights][4]f32, // xyz = position, w = range
+    spot_light_directions: [max_spot_lights][4]f32, // xyz = direction, w = inner cone cos
+    spot_light_colors: [max_spot_lights][4]f32, // rgb = color, w = intensity
+    spot_light_angles: [max_spot_lights][4]f32, // x = outer cone cos
+    light_counts: [4]u32, // x: dir_count, y: point_count, z: spot_count
     ambient_color: [4]f32,
     shadow_params: [4]f32, // x: bias, yzw: preview tint color
     rt_shadow_params: [4]f32, // x: enabled (0/1), y: strength, z: ambient floor, w: unused
@@ -390,7 +395,7 @@ pub const MeshSceneCache = struct {
             .light_space_matrix = math.identity(),
             .shadow_sampler = null,
             .texture_sampler = &self.sampler.?,
-            .ambient_color = .{ 0.24, 0.24, 0.25, 1.0 },
+            .ambient_color = .{ 0.06, 0.06, 0.065, 1.0 },
             .opaque_meshes = try opaque_meshes.toOwnedSlice(self.allocator),
             .transparent_meshes = try transparent_meshes.toOwnedSlice(self.allocator),
             .debug = .{},

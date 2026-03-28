@@ -348,13 +348,6 @@ pub const BasePass = struct {
             dir_directions[i] = .{ dl.direction[0], dl.direction[1], dl.direction[2], 0.0 };
             dir_colors[i] = .{ dl.color[0], dl.color[1], dl.color[2], dl.intensity };
         }
-        // If no directional lights in scene, provide a default primary light
-        if (dir_count == 0) {
-            const default_dir = vec3.normalize(.{ 0.3, -0.9, -0.2 });
-            dir_directions[0] = .{ default_dir[0], default_dir[1], default_dir[2], 0.0 };
-            dir_colors[0] = .{ 1.0, 0.98, 0.92, 1.6 };
-        }
-
         // Fill point light arrays (up to max_point_lights)
         var pt_positions: [mesh_pass_mod.max_point_lights][4]f32 = .{.{ 0, 0, 0, 0 }} ** mesh_pass_mod.max_point_lights;
         var pt_colors: [mesh_pass_mod.max_point_lights][4]f32 = .{.{ 0, 0, 0, 0 }} ** mesh_pass_mod.max_point_lights;
@@ -365,7 +358,18 @@ pub const BasePass = struct {
             pt_colors[i] = .{ pl.color[0], pl.color[1], pl.color[2], pl.intensity };
         }
 
-        const actual_dir_count: u32 = if (dir_count == 0) 1 else @intCast(dir_count);
+        var spot_positions: [mesh_pass_mod.max_spot_lights][4]f32 = .{.{ 0, 0, 0, 0 }} ** mesh_pass_mod.max_spot_lights;
+        var spot_directions: [mesh_pass_mod.max_spot_lights][4]f32 = .{.{ 0, 0, -1, 0 }} ** mesh_pass_mod.max_spot_lights;
+        var spot_colors: [mesh_pass_mod.max_spot_lights][4]f32 = .{.{ 0, 0, 0, 0 }} ** mesh_pass_mod.max_spot_lights;
+        var spot_angles: [mesh_pass_mod.max_spot_lights][4]f32 = .{.{ -1, 0, 0, 0 }} ** mesh_pass_mod.max_spot_lights;
+        const spot_count = @min(prepared_scene.lights.spot_lights.len, mesh_pass_mod.max_spot_lights);
+        for (0..spot_count) |i| {
+            const sl = prepared_scene.lights.spot_lights[i];
+            spot_positions[i] = .{ sl.position[0], sl.position[1], sl.position[2], sl.range };
+            spot_directions[i] = .{ sl.direction[0], sl.direction[1], sl.direction[2], sl.inner_angle_cos };
+            spot_colors[i] = .{ sl.color[0], sl.color[1], sl.color[2], sl.intensity };
+            spot_angles[i] = .{ sl.outer_angle_cos, 0.0, 0.0, 0.0 };
+        }
 
         var fragment_uniforms = mesh_pass_mod.BasePassUniforms{
             .base_color_factor = item.base_color_factor,
@@ -378,7 +382,11 @@ pub const BasePass = struct {
             .light_space_matrix = prepared_scene.light_space_matrix,
             .point_light_positions = pt_positions,
             .point_light_colors = pt_colors,
-            .light_counts = .{ actual_dir_count, @intCast(pt_count), 0, 0 },
+            .spot_light_positions = spot_positions,
+            .spot_light_directions = spot_directions,
+            .spot_light_colors = spot_colors,
+            .spot_light_angles = spot_angles,
+            .light_counts = .{ @intCast(dir_count), @intCast(pt_count), @intCast(spot_count), 0 },
             .ambient_color = prepared_scene.ambient_color,
             .shadow_params = .{ 0.0025, 0.0, 0.0, 0.0 }, // bias
             .rt_shadow_params = .{
