@@ -1,5 +1,3 @@
-const std = @import("std");
-const rhi_mod = @import("device.zig");
 const rt_backend = @import("../rt/rt_backend.zig");
 
 /// RHI-level Ray Tracing abstraction.
@@ -11,10 +9,27 @@ pub const RtDevice = struct {
     backend: ?rt_backend.HardwareRtBackend = null,
     initialized: bool = false,
 
+    pub const SceneSyncDesc = struct {
+        triangles: ?[]const rt_backend.RtTriangle = null,
+        texture_data: []const u8 = &.{},
+        texture_meta: []const rt_backend.RtTextureMeta = &.{},
+        sampling_table_data: []const u8 = &.{},
+        sampling_table_meta: []const rt_backend.RtSamplingTableMeta = &.{},
+    };
+
     pub fn init() RtDevice {
         var self = RtDevice{};
         self.backend = rt_backend.HardwareRtBackend.init();
         self.initialized = self.backend != null;
+        return self;
+    }
+
+    pub fn initAvailable() ?RtDevice {
+        var self = RtDevice.init();
+        if (!self.isAvailable()) {
+            self.deinit();
+            return null;
+        }
         return self;
     }
 
@@ -48,6 +63,16 @@ pub const RtDevice = struct {
     pub fn uploadSamplingTables(self: *RtDevice, table_data: []const u8, meta: []const rt_backend.RtSamplingTableMeta) bool {
         var b = self.backend orelse return false;
         return b.uploadSamplingTables(table_data, meta);
+    }
+
+    /// Synchronize scene-side RT resources behind a single RHI-level call.
+    pub fn syncScene(self: *RtDevice, desc: SceneSyncDesc) bool {
+        if (desc.triangles) |triangles| {
+            if (!self.buildAccelerationStructure(triangles)) return false;
+        }
+        if (!self.uploadTextures(desc.texture_data, desc.texture_meta)) return false;
+        if (!self.uploadSamplingTables(desc.sampling_table_data, desc.sampling_table_meta)) return false;
+        return true;
     }
 
     /// Trace rays with the given parameters, writing BGRA8 pixels to output.

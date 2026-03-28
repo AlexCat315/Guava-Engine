@@ -10,6 +10,8 @@ const rhi = @import("rhi.zig");
 const command_buffer = @import("command_buffer.zig");
 const metal_device_mod = @import("metal/metal_device.zig");
 const metal_backend_mod = @import("metal/metal_backend.zig");
+const rt_device_mod = @import("rt_device.zig");
+const rt_backend = @import("../rt/rt_backend.zig");
 const vulkan_device_mod = @import("vulkan/vk_device.zig");
 
 // Combined error set that includes both old and new RHI errors
@@ -46,6 +48,12 @@ pub const Error = error{
     // CommandBuffer encoding errors
     InvalidOpcode,
     TruncatedStream,
+};
+
+pub const RtInitStatus = enum {
+    ready,
+    initialized,
+    unavailable,
 };
 
 // ============================================================================
@@ -294,6 +302,7 @@ pub const RhiDevice = struct {
     owned_metal_device: ?*metal_device_mod.MetalDevice = null,
     owned_vulkan_device: ?*vulkan_device_mod.VulkanDevice = null,
     owned_mock_backend: ?*metal_backend_mod.MetalBackend = null,
+    rt_device: ?rt_device_mod.RtDevice = null,
     sdl_metal_view: sdl.SDL_MetalView = null,
     pending_pixel_downloads: std.ArrayList(PendingPixelDownload) = .empty,
     pending_texture_blits: std.ArrayList(PendingTextureBlit) = .empty,
@@ -433,6 +442,7 @@ pub const RhiDevice = struct {
         self.releaseAllDepthTextures();
         self.pending_pixel_downloads.deinit(self.allocator);
         self.pending_texture_blits.deinit(self.allocator);
+        self.releaseRtDevice();
         if (self.owned_device) {
             self.device.deinit();
             self.allocator.destroy(self.device);
@@ -454,6 +464,43 @@ pub const RhiDevice = struct {
             }
         }
         self.* = undefined;
+    }
+
+    pub fn ensureRtDevice(self: *RhiDevice) RtInitStatus {
+        if (self.rt_device != null) return .ready;
+        self.rt_device = rt_device_mod.RtDevice.initAvailable() orelse return .unavailable;
+        return .initialized;
+    }
+
+    pub fn releaseRtDevice(self: *RhiDevice) void {
+        if (self.rt_device) |*dev| {
+            dev.deinit();
+        }
+        self.rt_device = null;
+    }
+
+    pub fn rtBackendName(_: *const RhiDevice) []const u8 {
+        return rt_device_mod.RtDevice.backendName();
+    }
+
+    pub fn rtBuildAccelerationStructure(self: *RhiDevice, triangles: []const rt_backend.RtTriangle) bool {
+        if (self.rt_device) |*dev| return dev.buildAccelerationStructure(triangles);
+        return false;
+    }
+
+    pub fn rtUploadTextures(self: *RhiDevice, pixel_data: []const u8, meta: []const rt_backend.RtTextureMeta) bool {
+        if (self.rt_device) |*dev| return dev.uploadTextures(pixel_data, meta);
+        return false;
+    }
+
+    pub fn rtUploadSamplingTables(self: *RhiDevice, table_data: []const u8, meta: []const rt_backend.RtSamplingTableMeta) bool {
+        if (self.rt_device) |*dev| return dev.uploadSamplingTables(table_data, meta);
+        return false;
+    }
+
+    pub fn rtTraceRays(self: *RhiDevice, params: *const rt_backend.RtParams, output: []u8) bool {
+        if (self.rt_device) |*dev| return dev.traceRays(params, output);
+        return false;
     }
 
     // ────────────────────────────────────────────────────────────────────

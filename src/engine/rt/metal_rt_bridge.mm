@@ -113,13 +113,6 @@ static float3 sample_cone(float3 dir, float cone_angle, uint seed) {
     return normalize(sin_theta * cos(phi) * T + sin_theta * sin(phi) * B + cos_theta * dir);
 }
 
-static float3 sample_sky(float3 dir) {
-    float horizon = saturate(dir.y * 0.5f + 0.5f);
-    return float3(0.12f + 0.42f * horizon,
-                  0.18f + 0.48f * horizon,
-                  0.24f + 0.58f * horizon);
-}
-
 static float3 reflect_vec(float3 incident, float3 normal) {
     return incident - 2.0f * dot(incident, normal) * normal;
 }
@@ -217,7 +210,7 @@ static float3 sample_environment(
         float v = 0.5f - asin(clamp(nd.y, -1.0f, 1.0f)) / 3.14159265f;
         return sample_texture_atlas(atlas, meta, env_tex_index, u, v);
     }
-    return sample_sky(dir);
+    return float3(0.0f);
 }
 
 constant uint RT_SAMPLING_TABLE_ENVIRONMENT_IMPORTANCE = 0u;

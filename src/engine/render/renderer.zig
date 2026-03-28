@@ -99,7 +99,6 @@ const physics_mod = @import("../physics/system.zig");
 const PassDescriptors = @import("render_helpers.zig").PassDescriptors;
 const render_log = std.log.scoped(.viewport_render);
 const rt_backend = @import("../rt/rt_backend.zig");
-const rt_device_mod = @import("../rhi/rt_device.zig");
 
 /// 是否已记录视口后端日志
 var g_logged_viewport_backend: bool = false;
@@ -425,13 +424,7 @@ fn sampleSky(direction: [3]f32, environment_texture: ?PathTraceTexture) [3]f32 {
         const v = 0.5 - std.math.asin(std.math.clamp(dir[1], -1.0, 1.0)) / std.math.pi;
         return sampleTextureBilinear(environment, u, v);
     }
-
-    const horizon = std.math.clamp(direction[1] * 0.5 + 0.5, 0.0, 1.0);
-    return .{
-        0.12 + 0.42 * horizon,
-        0.18 + 0.48 * horizon,
-        0.24 + 0.58 * horizon,
-    };
+    return .{ 0.0, 0.0, 0.0 };
 }
 
 fn mixVec3(a: [3]f32, b: [3]f32, t: f32) [3]f32 {
@@ -2798,8 +2791,6 @@ pub const Renderer = struct {
     ai_focus_entity_count: usize = 0,
     /// 渐进式 CPU 路径追踪状态
     path_trace_state: PathTraceProgressiveState = .{},
-    /// 硬件 RT 后端（通过 RHI RT 抽象层）
-    rt_device: ?rt_device_mod.RtDevice = null,
     /// 硬件 RT 渲染状态
     hw_rt_state: HwRtState = .{},
 
@@ -3006,7 +2997,6 @@ pub const Renderer = struct {
     pub fn deinit(self: *Renderer) void {
         self.path_trace_state.deinit(self.allocator);
         self.hw_rt_state.deinit(self.allocator);
-        if (self.rt_device) |*d| d.deinit();
         self.releaseInFlightSelectionBatches();
         self.pending_selection_readbacks.deinit(self.allocator);
         self.selection_history.deinit();
@@ -4808,16 +4798,10 @@ pub const Renderer = struct {
         if (width == 0 or height == 0) return false;
 
         // 懒初始化硬件 RT 后端
-        if (self.rt_device == null) {
-            self.rt_device = rt_device_mod.RtDevice.init();
-            if (!self.rt_device.?.isAvailable()) {
-                self.rt_device.?.deinit();
-                self.rt_device = null;
-                return false;
-            }
+        switch (self.rhi.ensureRtDevice()) {
+            .ready, .initialized => {},
+            .unavailable => return false,
         }
-
-        var rt_dev = &self.rt_device.?;
         var mrt = &self.hw_rt_state;
 
         // --- 变化检测 ---
@@ -4936,20 +4920,20 @@ pub const Renderer = struct {
 
         // --- 构建加速结构 ---
         if (!mrt.accel_built) {
-            if (!rt_dev.buildAccelerationStructure(mrt.triangles.?)) return false;
+            if (!self.rhi.rtBuildAccelerationStructure(mrt.triangles.?)) return false;
             mrt.accel_built = true;
         }
 
         // --- 上传纹理图集到 GPU ---
         if (!mrt.textures_uploaded) {
             if (mrt.texture_atlas != null and mrt.texture_meta != null) {
-                if (!rt_dev.uploadTextures(mrt.texture_atlas.?, mrt.texture_meta.?)) {
-                    render_log.err("{s} texture upload failed for RT shadows", .{rt_device_mod.RtDevice.backendName()});
+                if (!self.rhi.rtUploadTextures(mrt.texture_atlas.?, mrt.texture_meta.?)) {
+                    render_log.err("{s} texture upload failed for RT shadows", .{self.rhi.rtBackendName()});
                     return false;
                 }
             } else {
-                if (!rt_dev.uploadTextures(&.{}, &.{})) {
-                    render_log.err("{s} empty texture upload failed for RT shadows", .{rt_device_mod.RtDevice.backendName()});
+                if (!self.rhi.rtUploadTextures(&.{}, &.{})) {
+                    render_log.err("{s} empty texture upload failed for RT shadows", .{self.rhi.rtBackendName()});
                     return false;
                 }
             }
@@ -4993,7 +4977,7 @@ pub const Renderer = struct {
             .shadow_samples = self.editor_viewport_state.rt_shadow_samples,
         };
 
-        if (!rt_dev.traceRays(&params, self.rt_shadow_pixels.?)) return false;
+        if (!self.rhi.rtTraceRays(&params, self.rt_shadow_pixels.?)) return false;
 
         // --- 上采样 (如果 trace 分辨率 < 输出分辨率) ---
         const upload_pixels: []u8 = if (trace_w == width and trace_h == height)
@@ -5071,21 +5055,20 @@ pub const Renderer = struct {
             return false;
         }
 
-        // 懒初始化硬件 RT 后端
-        if (self.rt_device == null) {
-            self.rt_device = rt_device_mod.RtDevice.init();
-            if (!self.rt_device.?.isAvailable()) {
-                self.rt_device.?.deinit();
-                self.rt_device = null;
+        switch (self.rhi.ensureRtDevice()) {
+            .unavailable => {
                 if (!g_logged_path_trace_active) {
-                    render_log.info("{s} not available, using CPU path trace", .{rt_device_mod.RtDevice.backendName()});
+                    render_log.info("{s} not available, using CPU path trace", .{self.rhi.rtBackendName()});
                 }
                 return false;
-            }
-            render_log.info("{s} backend initialized — GPU path trace active", .{rt_device_mod.RtDevice.backendName()});
+            },
+            .initialized, .ready => {
+                if (!g_logged_path_trace_active) {
+                    render_log.info("{s} backend initialized — GPU path trace active", .{self.rhi.rtBackendName()});
+                    g_logged_path_trace_active = true;
+                }
+            },
         }
-
-        var rt_dev = &self.rt_device.?;
         var mrt = &self.hw_rt_state;
         const path_trace_environment = resolvePathTraceEnvironment(&scene.resources);
         const scene_signature = computePathTraceSceneSignature(prepared_scene, scene, path_trace_environment);
@@ -5385,8 +5368,8 @@ pub const Renderer = struct {
 
         // --- 构建加速结构 ---
         if (!mrt.accel_built) {
-            if (!rt_dev.buildAccelerationStructure(mrt.triangles.?)) {
-                render_log.err("{s} acceleration structure build failed", .{rt_device_mod.RtDevice.backendName()});
+            if (!self.rhi.rtBuildAccelerationStructure(mrt.triangles.?)) {
+                render_log.err("{s} acceleration structure build failed", .{self.rhi.rtBackendName()});
                 return false;
             }
             mrt.accel_built = true;
@@ -5395,13 +5378,13 @@ pub const Renderer = struct {
         // --- 上传纹理图集到 GPU ---
         if (!mrt.textures_uploaded) {
             if (mrt.texture_atlas != null and mrt.texture_meta != null) {
-                if (!rt_dev.uploadTextures(mrt.texture_atlas.?, mrt.texture_meta.?)) {
-                    render_log.err("{s} texture atlas upload failed", .{rt_device_mod.RtDevice.backendName()});
+                if (!self.rhi.rtUploadTextures(mrt.texture_atlas.?, mrt.texture_meta.?)) {
+                    render_log.err("{s} texture atlas upload failed", .{self.rhi.rtBackendName()});
                     return false;
                 }
             } else {
-                if (!rt_dev.uploadTextures(&.{}, &.{})) {
-                    render_log.err("{s} empty texture atlas upload failed", .{rt_device_mod.RtDevice.backendName()});
+                if (!self.rhi.rtUploadTextures(&.{}, &.{})) {
+                    render_log.err("{s} empty texture atlas upload failed", .{self.rhi.rtBackendName()});
                     return false;
                 }
             }
@@ -5410,13 +5393,13 @@ pub const Renderer = struct {
 
         if (!mrt.sampling_tables_uploaded) {
             if (mrt.sampling_table_data != null and mrt.sampling_table_meta != null) {
-                if (!rt_dev.uploadSamplingTables(mrt.sampling_table_data.?, mrt.sampling_table_meta.?)) {
-                    render_log.err("{s} sampling-table upload failed", .{rt_device_mod.RtDevice.backendName()});
+                if (!self.rhi.rtUploadSamplingTables(mrt.sampling_table_data.?, mrt.sampling_table_meta.?)) {
+                    render_log.err("{s} sampling-table upload failed", .{self.rhi.rtBackendName()});
                     return false;
                 }
             } else {
-                if (!rt_dev.uploadSamplingTables(&.{}, &.{})) {
-                    render_log.err("{s} empty sampling-table upload failed", .{rt_device_mod.RtDevice.backendName()});
+                if (!self.rhi.rtUploadSamplingTables(&.{}, &.{})) {
+                    render_log.err("{s} empty sampling-table upload failed", .{self.rhi.rtBackendName()});
                     return false;
                 }
             }
@@ -5454,8 +5437,8 @@ pub const Renderer = struct {
             params.directional_light_radiance[0] = mrt.light_radiance;
         }
 
-        if (!rt_dev.traceRays(&params, mrt.trace_pixels.?)) {
-            render_log.err("{s} trace failed", .{rt_device_mod.RtDevice.backendName()});
+        if (!self.rhi.rtTraceRays(&params, mrt.trace_pixels.?)) {
+            render_log.err("{s} trace failed", .{self.rhi.rtBackendName()});
             return false;
         }
         mrt.needs_retrace = false;
