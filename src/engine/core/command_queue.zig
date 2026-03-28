@@ -382,19 +382,17 @@ fn executeCommand(world: *scene_mod.World, command: command_mod.Command) !comman
             .err = if (world.hasEntity(set_transform.entity_id)) null else .entity_not_found,
         },
         .set_visible => |set_visible| blk: {
-            const entity = world.getEntity(set_visible.entity_id) orelse break :blk .{
-                .entity_id = set_visible.entity_id,
-                .err = .entity_not_found,
-            };
-            if (entity.visible == set_visible.visible) {
+            const existed = world.hasEntity(set_visible.entity_id);
+            if (!existed) {
                 break :blk .{
                     .entity_id = set_visible.entity_id,
+                    .err = .entity_not_found,
                 };
             }
-            entity.visible = set_visible.visible;
+            const changed = world.setEntityVisible(set_visible.entity_id, set_visible.visible);
             break :blk .{
-                .changed = true,
                 .entity_id = set_visible.entity_id,
+                .changed = changed,
             };
         },
     };

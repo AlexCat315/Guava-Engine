@@ -3,6 +3,7 @@ const collaboration_mod = @import("collaboration.zig");
 const core = @import("../core/layer.zig");
 const protocol = @import("protocol.zig");
 const resources_mod = @import("resources/mod.zig");
+const scene_mod = @import("../scene/scene.zig");
 const tools_mod = @import("tools.zig");
 
 const EmptyObject = struct {};
@@ -12,6 +13,13 @@ pub const SyncLayer = struct {
     tool_bridge: *tools_mod.Bridge,
     collaboration_bridge: *collaboration_mod.Bridge,
     exit_requested: *std.atomic.Value(bool),
+    active_clients: *std.atomic.Value(u32),
+    idle_publish_interval_frames: u32 = 60,
+    last_published_world_revision: u64 = 0,
+    last_selection_signature: u64 = 0,
+    last_environment_signature: u64 = 0,
+    has_published_once: bool = false,
+    idle_frames_since_publish: u32 = 0,
 
     pub fn asLayer(self: *SyncLayer) core.Layer {
         return .{
@@ -27,6 +35,7 @@ pub const SyncLayer = struct {
     fn onAttach(context: *anyopaque, layer_context: *core.LayerContext) !void {
         const self: *SyncLayer = @ptrCast(@alignCast(context));
         try self.publish(layer_context);
+        self.recordPublishedState(layer_context);
     }
 
     fn onUpdate(context: *anyopaque, layer_context: *core.LayerContext) !void {
@@ -36,14 +45,95 @@ pub const SyncLayer = struct {
             return;
         }
 
-        try self.tool_bridge.processPending(layer_context, self.store);
-        _ = try self.collaboration_bridge.processPending(layer_context);
-        try self.publish(layer_context);
+        const tool_result = try self.tool_bridge.processPending(layer_context);
+        const collaboration_world_changed = try self.collaboration_bridge.processPending(layer_context);
+
+        const state = self.capturePublishState(layer_context);
+        const clients_active = self.active_clients.load(.acquire) != 0;
+
+        var should_publish = false;
+        if (!self.has_published_once) {
+            should_publish = true;
+        }
+        if (tool_result.snapshot_dirty or collaboration_world_changed) {
+            should_publish = true;
+        }
+        if (clients_active and self.publishStateChanged(state)) {
+            should_publish = true;
+        }
+        if (clients_active and !should_publish and self.idle_frames_since_publish >= self.idle_publish_interval_frames) {
+            should_publish = true;
+        }
+
+        if (should_publish) {
+            try self.publish(layer_context);
+            self.recordPublishedStateFromState(state);
+        } else if (self.idle_frames_since_publish < std.math.maxInt(u32)) {
+            self.idle_frames_since_publish += 1;
+        }
     }
 
     fn publish(self: *SyncLayer, layer_context: *core.LayerContext) !void {
-        layer_context.world.updateHierarchy();
         try self.store.replaceFromRenderer(layer_context.world, layer_context.renderer);
+    }
+
+    const PublishState = struct {
+        world_revision: u64,
+        selection_signature: u64,
+        environment_signature: u64,
+    };
+
+    fn capturePublishState(self: *const SyncLayer, layer_context: *core.LayerContext) PublishState {
+        _ = self;
+        return .{
+            .world_revision = layer_context.world.sceneRevision(),
+            .selection_signature = selectionSignature(
+                layer_context.renderer.selectedEntity(),
+                layer_context.renderer.selectedEntities(),
+            ),
+            .environment_signature = environmentSignature(layer_context),
+        };
+    }
+
+    fn recordPublishedState(self: *SyncLayer, layer_context: *core.LayerContext) void {
+        self.recordPublishedStateFromState(self.capturePublishState(layer_context));
+    }
+
+    fn recordPublishedStateFromState(self: *SyncLayer, state: PublishState) void {
+        self.last_published_world_revision = state.world_revision;
+        self.last_selection_signature = state.selection_signature;
+        self.last_environment_signature = state.environment_signature;
+        self.has_published_once = true;
+        self.idle_frames_since_publish = 0;
+    }
+
+    fn publishStateChanged(self: *const SyncLayer, state: PublishState) bool {
+        return state.world_revision != self.last_published_world_revision or
+            state.selection_signature != self.last_selection_signature or
+            state.environment_signature != self.last_environment_signature;
+    }
+
+    fn selectionSignature(primary: ?scene_mod.EntityId, selected_entities: []const scene_mod.EntityId) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        const primary_value: u64 = if (primary) |entity_id| @intCast(entity_id) else 0;
+        hasher.update(std.mem.asBytes(&primary_value));
+        const count: u64 = @intCast(selected_entities.len);
+        hasher.update(std.mem.asBytes(&count));
+        for (selected_entities) |entity_id| {
+            const resolved_id: u64 = @intCast(entity_id);
+            hasher.update(std.mem.asBytes(&resolved_id));
+        }
+        return hasher.final();
+    }
+
+    fn environmentSignature(layer_context: *core.LayerContext) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        if (layer_context.world.resources.sceneEnvironmentAssetId()) |asset_id| {
+            hasher.update(asset_id);
+        } else {
+            hasher.update("none");
+        }
+        return hasher.final();
     }
 };
 
@@ -52,6 +142,7 @@ pub fn spawn(
     tool_bridge: *tools_mod.Bridge,
     collaboration_bridge: *collaboration_mod.Bridge,
     exit_requested: *std.atomic.Value(bool),
+    active_clients: *std.atomic.Value(u32),
 ) !std.Thread {
     const server = try std.heap.page_allocator.create(Server);
     errdefer std.heap.page_allocator.destroy(server);
@@ -60,6 +151,7 @@ pub fn spawn(
         .tool_bridge = tool_bridge,
         .collaboration_bridge = collaboration_bridge,
         .exit_requested = exit_requested,
+        .active_clients = active_clients,
     };
 
     return try std.Thread.spawn(.{}, serverMain, .{server});
@@ -70,7 +162,9 @@ const Server = struct {
     tool_bridge: *tools_mod.Bridge,
     collaboration_bridge: *collaboration_mod.Bridge,
     exit_requested: *std.atomic.Value(bool),
+    active_clients: *std.atomic.Value(u32),
     initialized: bool = false,
+    client_registered: bool = false,
     shutdown_received: bool = false,
     negotiated_protocol_version: []const u8 = protocol.default_protocol_version,
 
@@ -78,9 +172,29 @@ const Server = struct {
         self.exit_requested.store(true, .release);
     }
 
+    fn registerClient(self: *Server) void {
+        if (self.client_registered) {
+            return;
+        }
+        _ = self.active_clients.fetchAdd(1, .acq_rel);
+        self.client_registered = true;
+    }
+
+    fn unregisterClient(self: *Server) void {
+        if (!self.client_registered) {
+            return;
+        }
+        const previous = self.active_clients.fetchSub(1, .acq_rel);
+        if (previous == 0) {
+            self.active_clients.store(0, .release);
+        }
+        self.client_registered = false;
+    }
+
     fn run(self: *Server) !void {
         var pending = std.ArrayList(u8).empty;
         defer pending.deinit(std.heap.page_allocator);
+        defer self.unregisterClient();
 
         var stdin_file = std.fs.File.stdin();
         var stdout_file = std.fs.File.stdout();
@@ -174,6 +288,7 @@ const Server = struct {
             else
                 protocol.default_protocol_version;
             self.negotiated_protocol_version = requested_protocol;
+            self.registerClient();
 
             try writeResult(stdout_file, id, .{
                 .protocolVersion = requested_protocol,
@@ -242,7 +357,7 @@ const Server = struct {
                     },
                     else => return err,
                 };
-                defer response.deinit(std.heap.page_allocator);
+                defer response.deinit(self.collaboration_bridge.allocator);
 
                 const summary = try collaboration_mod.buildSummaryAlloc(std.heap.page_allocator, response);
                 defer std.heap.page_allocator.free(summary);
@@ -270,7 +385,7 @@ const Server = struct {
                 },
                 else => return err,
             };
-            defer response.deinit(std.heap.page_allocator);
+            defer response.deinit(self.tool_bridge.allocator);
 
             const summary = try tools_mod.buildSummaryAlloc(std.heap.page_allocator, response);
             defer std.heap.page_allocator.free(summary);

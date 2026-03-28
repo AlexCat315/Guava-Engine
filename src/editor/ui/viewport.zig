@@ -1134,7 +1134,7 @@ fn drawRightSidebar(state: *EditorState, layer_context: *engine.core.LayerContex
 /// Auxiliary floating / tool windows (toggled via state flags)
 fn drawAuxiliaryWindows(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     // AI assistant
-    try ai_chat.drawAiChatPanel(state);
+    try ai_chat.drawAiChatPanel(state, layer_context);
 
     // Rendering tools
     if (state.render_settings_open) {

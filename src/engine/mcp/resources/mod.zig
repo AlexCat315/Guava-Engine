@@ -480,6 +480,7 @@ fn buildHierarchyJsonAlloc(allocator: std.mem.Allocator, world: *const scene_mod
         is_folder: bool,
     };
     const HierarchySnapshot = struct {
+        world_revision: u64,
         roots: []const scene_mod.EntityId,
         entities: []const HierarchyEntity,
         summary: scene_mod.Summary,
@@ -506,6 +507,7 @@ fn buildHierarchyJsonAlloc(allocator: std.mem.Allocator, world: *const scene_mod
     }
 
     return stringifyAlloc(allocator, HierarchySnapshot{
+        .world_revision = world.sceneRevision(),
         .roots = roots.items,
         .entities = entities.items,
         .summary = world.summary(),

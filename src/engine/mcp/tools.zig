@@ -5,8 +5,6 @@ const command_queue_mod = @import("../core/command_queue.zig");
 const query_engine = @import("../core/query_engine.zig");
 const core = @import("../core/layer.zig");
 const script_resource_mod = @import("../assets/script_resource.zig");
-const protocol = @import("protocol.zig");
-const resources_mod = @import("resources/mod.zig");
 const scene_mod = @import("../scene/scene.zig");
 const components = @import("../scene/components.zig");
 const wasm_compiler = @import("../script/wasm_compiler.zig");
@@ -190,6 +188,16 @@ pub const CallResponse = struct {
     }
 };
 
+pub const ProcessPendingOutcome = struct {
+    handled: bool = false,
+    snapshot_dirty: bool = false,
+};
+
+pub const ExecuteOutcome = struct {
+    response: CallResponse,
+    snapshot_dirty: bool = false,
+};
+
 pub const Bridge = struct {
     allocator: std.mem.Allocator,
     mutex: std.Thread.Mutex = .{},
@@ -257,17 +265,43 @@ pub const Bridge = struct {
         return response;
     }
 
-    pub fn processPending(self: *Bridge, layer_context: *core.LayerContext, store: *resources_mod.SnapshotStore) !void {
+    pub fn executeJsonImmediate(
+        self: *Bridge,
+        layer_context: *core.LayerContext,
+        tool_name: []const u8,
+        arguments: ?std.json.Value,
+    ) !ExecuteOutcome {
+        var request = try parseToolCallAlloc(self.allocator, tool_name, arguments);
+        return try self.executeOwnedRequest(layer_context, &request);
+    }
+
+    pub fn processPending(self: *Bridge, layer_context: *core.LayerContext) !ProcessPendingOutcome {
         self.mutex.lock();
         if (self.pending == null or self.response != null) {
             self.mutex.unlock();
-            return;
+            return .{};
         }
         var request = self.pending.?;
         self.pending = null;
         self.mutex.unlock();
+        const execution = try self.executeOwnedRequest(layer_context, &request);
 
-        const response_tool_name = try self.allocator.dupe(u8, switch (request) {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.response = execution.response;
+        self.condition.broadcast();
+        return .{
+            .handled = true,
+            .snapshot_dirty = execution.snapshot_dirty,
+        };
+    }
+
+    fn executeOwnedRequest(
+        self: *Bridge,
+        layer_context: *core.LayerContext,
+        request: *PendingRequest,
+    ) !ExecuteOutcome {
+        const response_tool_name = try self.allocator.dupe(u8, switch (request.*) {
             .command => |command_request| command_request.tool_name,
             .compile_script => |compile_request| compile_request.tool_name,
             .compile_editor_utility => |compile_request| compile_request.tool_name,
@@ -276,7 +310,7 @@ pub const Bridge = struct {
         });
         errdefer self.allocator.free(response_tool_name);
 
-        const result = switch (request) {
+        const result = switch (request.*) {
             .command => |command_request| blk: {
                 const execution = command_queue_mod.executeOne(layer_context.world, command_request.command) catch |err| {
                     request.deinit(self.allocator);
@@ -322,16 +356,17 @@ pub const Bridge = struct {
         };
         request.deinit(self.allocator);
 
-        layer_context.world.updateHierarchy();
-        try store.replaceFromRenderer(layer_context.world, layer_context.renderer);
-
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        self.response = .{
-            .tool_name = response_tool_name,
-            .result = result,
+        return .{
+            .response = .{
+                .tool_name = response_tool_name,
+                .result = result,
+            },
+            .snapshot_dirty = switch (result.kind) {
+                .command => result.changed,
+                .compile_script, .compile_editor_utility => true,
+                .screenshot, .query => false,
+            },
         };
-        self.condition.broadcast();
     }
 };
 

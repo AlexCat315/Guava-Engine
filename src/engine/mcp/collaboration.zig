@@ -1224,6 +1224,11 @@ pub const Bridge = struct {
     response: ?CallResponse = null,
     shutting_down: bool = false,
 
+    pub const ExecuteOutcome = struct {
+        response: CallResponse,
+        world_changed: bool = false,
+    };
+
     const PendingRequest = union(enum) {
         stage: StagePending,
         apply: []u8,
@@ -1309,6 +1314,16 @@ pub const Bridge = struct {
         return response;
     }
 
+    pub fn executeJsonImmediate(
+        self: *Bridge,
+        layer_context: *core.LayerContext,
+        tool_name: []const u8,
+        arguments: ?std.json.Value,
+    ) !ExecuteOutcome {
+        var request = try parsePendingRequestAlloc(self.allocator, tool_name, arguments);
+        return try self.executeOwnedRequest(layer_context, &request);
+    }
+
     pub fn processPending(self: *Bridge, layer_context: *core.LayerContext) !bool {
         self.mutex.lock();
         if (self.pending == null or self.response != null) {
@@ -1318,10 +1333,23 @@ pub const Bridge = struct {
         var request = self.pending.?;
         self.pending = null;
         self.mutex.unlock();
+        const execution = try self.executeOwnedRequest(layer_context, &request);
 
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.response = execution.response;
+        self.condition.broadcast();
+        return execution.world_changed;
+    }
+
+    fn executeOwnedRequest(
+        self: *Bridge,
+        layer_context: *core.LayerContext,
+        request: *PendingRequest,
+    ) !ExecuteOutcome {
         var world_changed = false;
         var response: CallResponse = undefined;
-        switch (request) {
+        switch (request.*) {
             .stage => |*stage_pending| {
                 const result = try self.store.stageOwnedTransaction(layer_context.world, &stage_pending.request);
                 response = .{
@@ -1347,7 +1375,7 @@ pub const Bridge = struct {
             },
         }
 
-        switch (request) {
+        switch (request.*) {
             .stage => |*stage_pending| {
                 stage_pending.request.commands = .empty;
                 request.deinit(self.allocator);
@@ -1355,11 +1383,10 @@ pub const Bridge = struct {
             else => request.deinit(self.allocator),
         }
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        self.response = response;
-        self.condition.broadcast();
-        return world_changed;
+        return .{
+            .response = response,
+            .world_changed = world_changed,
+        };
     }
 };
 

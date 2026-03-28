@@ -395,6 +395,8 @@ pub const World = struct {
     id_to_index: std.AutoHashMap(EntityId, usize),
     /// 下一个可用的实体 ID
     next_id: EntityId = 1,
+    /// 场景变更版本号（用于增量同步）
+    scene_revision: u64 = 1,
     /// 作业系统（用于并行处理）
     job_system: ?*job_system_mod.JobSystem = null,
     /// VFX 运行时发射器列表
@@ -471,6 +473,7 @@ pub const World = struct {
     /// 清空世界中的所有实体（保留资源库）
     pub fn clear(self: *World) void {
         self.clearStorage(true);
+        self.bumpSceneRevision();
     }
 
     fn clearStorage(self: *World, reinitialize: bool) void {
@@ -642,6 +645,8 @@ pub const World = struct {
             self.next_id = id + 1;
         }
 
+        self.bumpSceneRevision();
+
         return id;
     }
 
@@ -683,6 +688,15 @@ pub const World = struct {
 
     pub fn hasEntity(self: *const World, id: EntityId) bool {
         return self.getEntityConst(id) != null;
+    }
+
+    pub fn sceneRevision(self: *const World) u64 {
+        return self.scene_revision;
+    }
+
+    fn bumpSceneRevision(self: *World) void {
+        const next = self.scene_revision +% 1;
+        self.scene_revision = if (next == 0) 1 else next;
     }
 
     pub fn parentEntity(self: *const World, id: EntityId) ?EntityId {
@@ -849,6 +863,7 @@ pub const World = struct {
             t.* = transform;
         }
         self.markDirty(id);
+        self.bumpSceneRevision();
         return true;
     }
 
@@ -900,6 +915,7 @@ pub const World = struct {
             t.* = entity.local_transform;
         }
         self.markDirty(id);
+        self.bumpSceneRevision();
         return true;
     }
 
@@ -927,6 +943,7 @@ pub const World = struct {
         } else {
             self.rigidbody_set.insert(id, rigidbody) catch {};
         }
+        self.bumpSceneRevision();
         return true;
     }
 
@@ -958,6 +975,7 @@ pub const World = struct {
         } else {
             self.box_collider_set.insert(id, box_collider) catch {};
         }
+        self.bumpSceneRevision();
         return true;
     }
 
@@ -989,6 +1007,7 @@ pub const World = struct {
         } else {
             self.sphere_collider_set.insert(id, sphere_collider) catch {};
         }
+        self.bumpSceneRevision();
         return true;
     }
 
@@ -1005,6 +1024,7 @@ pub const World = struct {
         const owned_name = try self.allocator.dupe(u8, new_name);
         self.allocator.free(entity.name);
         entity.name = owned_name;
+        self.bumpSceneRevision();
         return true;
     }
 
@@ -1033,15 +1053,20 @@ pub const World = struct {
 
     pub fn setPrimaryCamera(self: *World, id: EntityId) bool {
         var found = false;
+        var changed = false;
         for (self.entities.items) |*entity| {
             if (entity.camera) |camera| {
                 var next_camera = camera;
                 next_camera.is_primary = entity.id == id;
+                changed = changed or next_camera.is_primary != camera.is_primary;
                 entity.camera = next_camera;
                 if (entity.id == id) {
                     found = true;
                 }
             }
+        }
+        if (changed) {
+            self.bumpSceneRevision();
         }
         return found;
     }
@@ -1131,6 +1156,7 @@ pub const World = struct {
         }
 
         self.markDirty(child_id);
+        self.bumpSceneRevision();
         return true;
     }
 
@@ -1149,6 +1175,17 @@ pub const World = struct {
             index -= 1;
             self.removeEntityById(subtree.items[index]);
         }
+        self.bumpSceneRevision();
+        return true;
+    }
+
+    pub fn setEntityVisible(self: *World, id: EntityId, visible: bool) bool {
+        const entity = self.getEntity(id) orelse return false;
+        if (entity.visible == visible) {
+            return false;
+        }
+        entity.visible = visible;
+        self.bumpSceneRevision();
         return true;
     }
 
@@ -2385,19 +2422,26 @@ pub const World = struct {
 
     pub fn revertPrefabOverride(self: *World, entity_id: EntityId) !void {
         const entity = self.getEntity(entity_id) orelse return error.EntityNotFound;
+        var changed = false;
         if (entity.prefab_instance_override) |*override| {
             if (override.override_mask.local_transform) {
                 if (override.local_transform_override) |transform| {
                     entity.local_transform = transform;
+                    changed = true;
                 }
             }
             if (override.override_mask.visible) {
                 if (override.visible_override) |visible| {
                     entity.visible = visible;
+                    changed = true;
                 }
             }
             override.deinit(self.allocator);
             entity.prefab_instance_override = null;
+            changed = true;
+        }
+        if (changed) {
+            self.bumpSceneRevision();
         }
     }
 };
