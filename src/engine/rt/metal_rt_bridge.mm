@@ -68,6 +68,7 @@ struct RTParams {
     uint environment_importance_width;
     uint environment_importance_height;
     float emissive_total_area;
+    uint _tail_pad[3];
 };
 
 // ---- deterministic hash RNG (与 CPU 路径追踪保持一致) ----
@@ -1388,7 +1389,7 @@ extern "C" bool guava_metal_rt_trace(GuavaMetalRTContext* ctx,
         }
 
         // ---- params buffer ----
-        if (!ctx->paramsBuffer) {
+        if (!ctx->paramsBuffer || [ctx->paramsBuffer length] != sizeof(GuavaRTParams)) {
             ctx->paramsBuffer = [dev newBufferWithLength:sizeof(GuavaRTParams)
                                                  options:MTLResourceStorageModeShared];
             if (!ctx->paramsBuffer) return false;

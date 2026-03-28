@@ -73,7 +73,16 @@ typedef struct {
     uint32_t environment_importance_width;
     uint32_t environment_importance_height;
     float emissive_total_area;
+    /* Metal validates this argument buffer as 304 bytes because the kernel-side
+       RTParams carries 16-byte struct alignment. Keep the tail padding explicit
+       here so Zig/C stay ABI-compatible with the shader. */
+    uint32_t _tail_pad[3];
 } GuavaRTParams;
+
+#ifdef __cplusplus
+static_assert(sizeof(GuavaRTParams) == 304,
+              "GuavaRTParams must stay 304 bytes to match Metal RT argument layout");
+#endif
 
 /// 创建 Metal RT 上下文。返回 NULL 表示当前设备不支持 Metal RT。
 GuavaMetalRTContext* guava_metal_rt_init(void);

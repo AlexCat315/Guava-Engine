@@ -118,4 +118,13 @@ pub const RtParams = extern struct {
     environment_importance_width: u32 = 0,
     environment_importance_height: u32 = 0,
     emissive_total_area: f32 = 0.0,
+    // Metal's argument ABI rounds this struct up to 16-byte alignment because of
+    // the matrix/vector members in the kernel-side RTParams definition.
+    _tail_pad: [3]u32 = .{ 0, 0, 0 },
 };
+
+comptime {
+    if (@sizeOf(RtParams) != 304) {
+        @compileError("RtParams must stay 304 bytes to match the Metal RT params buffer layout");
+    }
+}

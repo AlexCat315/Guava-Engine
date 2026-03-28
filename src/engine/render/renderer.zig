@@ -4943,9 +4943,15 @@ pub const Renderer = struct {
         // --- 上传纹理图集到 GPU ---
         if (!mrt.textures_uploaded) {
             if (mrt.texture_atlas != null and mrt.texture_meta != null) {
-                _ = rt_dev.uploadTextures(mrt.texture_atlas.?, mrt.texture_meta.?);
+                if (!rt_dev.uploadTextures(mrt.texture_atlas.?, mrt.texture_meta.?)) {
+                    render_log.err("{s} texture upload failed for RT shadows", .{rt_device_mod.RtDevice.backendName()});
+                    return false;
+                }
             } else {
-                _ = rt_dev.uploadTextures(&.{}, &.{});
+                if (!rt_dev.uploadTextures(&.{}, &.{})) {
+                    render_log.err("{s} empty texture upload failed for RT shadows", .{rt_device_mod.RtDevice.backendName()});
+                    return false;
+                }
             }
             mrt.textures_uploaded = true;
         }
@@ -5389,18 +5395,30 @@ pub const Renderer = struct {
         // --- 上传纹理图集到 GPU ---
         if (!mrt.textures_uploaded) {
             if (mrt.texture_atlas != null and mrt.texture_meta != null) {
-                _ = rt_dev.uploadTextures(mrt.texture_atlas.?, mrt.texture_meta.?);
+                if (!rt_dev.uploadTextures(mrt.texture_atlas.?, mrt.texture_meta.?)) {
+                    render_log.err("{s} texture atlas upload failed", .{rt_device_mod.RtDevice.backendName()});
+                    return false;
+                }
             } else {
-                _ = rt_dev.uploadTextures(&.{}, &.{});
+                if (!rt_dev.uploadTextures(&.{}, &.{})) {
+                    render_log.err("{s} empty texture atlas upload failed", .{rt_device_mod.RtDevice.backendName()});
+                    return false;
+                }
             }
             mrt.textures_uploaded = true;
         }
 
         if (!mrt.sampling_tables_uploaded) {
             if (mrt.sampling_table_data != null and mrt.sampling_table_meta != null) {
-                _ = rt_dev.uploadSamplingTables(mrt.sampling_table_data.?, mrt.sampling_table_meta.?);
+                if (!rt_dev.uploadSamplingTables(mrt.sampling_table_data.?, mrt.sampling_table_meta.?)) {
+                    render_log.err("{s} sampling-table upload failed", .{rt_device_mod.RtDevice.backendName()});
+                    return false;
+                }
             } else {
-                _ = rt_dev.uploadSamplingTables(&.{}, &.{});
+                if (!rt_dev.uploadSamplingTables(&.{}, &.{})) {
+                    render_log.err("{s} empty sampling-table upload failed", .{rt_device_mod.RtDevice.backendName()});
+                    return false;
+                }
             }
             mrt.sampling_tables_uploaded = true;
         }
