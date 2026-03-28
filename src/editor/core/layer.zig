@@ -35,7 +35,7 @@ fn initEditorStyle() void {
     const ai_accent = .{ 0.60, 0.34, 0.90, 1.0 };
     const ai_accent_dimmed = .{ 0.60, 0.34, 0.90, 0.22 };
 
-    const bg_base = .{ 0.09, 0.10, 0.11, 1.0 };
+    const bg_base = .{ 0.14, 0.15, 0.16, 1.0 };
     const bg_mid = .{ 0.11, 0.12, 0.14, 1.0 };
     const bg_light = .{ 0.14, 0.15, 0.18, 1.0 };
     const bg_panel = .{ 0.12, 0.13, 0.15, 1.0 };

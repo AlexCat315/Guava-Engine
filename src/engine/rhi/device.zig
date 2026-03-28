@@ -101,6 +101,7 @@ pub const Buffer = struct {
 pub const TransferBuffer = struct {
     id: u32,
     desc: types.TransferBufferDesc,
+    shadow_data: ?[]u8 = null,
 };
 
 pub const Texture = struct {
@@ -202,7 +203,21 @@ pub const CopyPass = struct {
 };
 
 pub const Fence = struct {
-    reserved: u32 = 0, // STUB - not yet implemented in new RHI
+    id: u64 = 0,
+    signaled: bool = false,
+};
+
+const PendingPixelDownload = struct {
+    texture: *const Texture,
+    transfer_buffer: *TransferBuffer,
+    offset: u32,
+    x: u32,
+    y: u32,
+};
+
+const PendingTextureBlit = struct {
+    src: *const Texture,
+    dst: *const Texture,
 };
 
 pub const LoadOp = enum {
@@ -280,6 +295,9 @@ pub const RhiDevice = struct {
     owned_vulkan_device: ?*vulkan_device_mod.VulkanDevice = null,
     owned_mock_backend: ?*metal_backend_mod.MetalBackend = null,
     sdl_metal_view: sdl.SDL_MetalView = null,
+    pending_pixel_downloads: std.ArrayList(PendingPixelDownload) = .empty,
+    pending_texture_blits: std.ArrayList(PendingTextureBlit) = .empty,
+    next_fence_id: u64 = 1,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -413,6 +431,8 @@ pub const RhiDevice = struct {
 
     pub fn deinit(self: *RhiDevice) void {
         self.releaseAllDepthTextures();
+        self.pending_pixel_downloads.deinit(self.allocator);
+        self.pending_texture_blits.deinit(self.allocator);
         if (self.owned_device) {
             self.device.deinit();
             self.allocator.destroy(self.device);
@@ -545,8 +565,8 @@ pub const RhiDevice = struct {
     }
 
     pub fn waitForIdle(self: *RhiDevice) bool {
-        _ = self;
-        // Not implemented in new RHI - stub
+        if (self.current_frame != null) return false;
+        self.flushPendingPostSubmitWork();
         return true;
     }
 
@@ -582,6 +602,7 @@ pub const RhiDevice = struct {
         const active = self.current_frame orelse frame;
         var cmd_mut = active.command_buffer;
         cmd_mut.deinit();
+        self.clearPendingPostSubmitWork();
         self.current_frame = null;
     }
 
@@ -592,6 +613,7 @@ pub const RhiDevice = struct {
         try self.device.present(swapchain_image);
         var cmd_mut = active.command_buffer;
         cmd_mut.deinit();
+        self.flushPendingPostSubmitWork();
         self.advanceFrame();
         self.depth_texture = self.depth_textures[self.current_depth_index];
         self.current_frame = null;
@@ -604,10 +626,16 @@ pub const RhiDevice = struct {
         try self.device.present(swapchain_image);
         var cmd_mut = active.command_buffer;
         cmd_mut.deinit();
+        self.flushPendingPostSubmitWork();
         self.advanceFrame();
         self.depth_texture = self.depth_textures[self.current_depth_index];
         self.current_frame = null;
-        return .{}; // STUB - fence not yet implemented
+        const fence = Fence{
+            .id = self.next_fence_id,
+            .signaled = true,
+        };
+        self.next_fence_id += 1;
+        return fence;
     }
 
     pub fn clearAndPresent(self: *RhiDevice, frame: Frame, clear: types.ClearState) Error!void {
@@ -693,13 +721,19 @@ pub const RhiDevice = struct {
     }
 
     pub fn beginCopyPass(self: *RhiDevice, frame: Frame) Error!CopyPass {
-        _ = frame;
-        _ = self;
+        if (self.current_frame == null) {
+            self.current_frame = frame;
+        }
+        if (self.current_frame) |*active| {
+            active.command_buffer.encodeBeginCopyPass(.{}) catch return error.CommandBufferAcquireFailed;
+        }
         return .{};
     }
 
     pub fn endCopyPass(self: *RhiDevice, pass: CopyPass) void {
-        _ = self;
+        if (self.current_frame) |*frame| {
+            frame.command_buffer.encodeEndCopyPass() catch {};
+        }
         _ = pass;
     }
 
@@ -822,10 +856,11 @@ pub const RhiDevice = struct {
     }
 
     pub fn blitTexture(self: *RhiDevice, frame: Frame, src: *const Texture, dst: *const Texture) void {
-        _ = self;
         _ = frame;
-        _ = src;
-        _ = dst;
+        self.pending_texture_blits.append(self.allocator, .{
+            .src = src,
+            .dst = dst,
+        }) catch {};
     }
 
     // ────────────────────────────────────────────────────────────────────
@@ -862,10 +897,19 @@ pub const RhiDevice = struct {
             .usage = usage,
             .label = desc.label,
         });
-        return .{ .id = buf.id, .desc = desc };
+        const shadow = try self.allocator.alloc(u8, desc.size);
+        @memset(shadow, 0);
+        return .{
+            .id = buf.id,
+            .desc = desc,
+            .shadow_data = shadow,
+        };
     }
 
     pub fn releaseTransferBuffer(self: *RhiDevice, transfer_buffer: *TransferBuffer) void {
+        if (transfer_buffer.shadow_data) |shadow| {
+            self.allocator.free(shadow);
+        }
         self.device.destroyBuffer(.{ .id = transfer_buffer.id });
         transfer_buffer.* = undefined;
     }
@@ -1170,36 +1214,33 @@ pub const RhiDevice = struct {
         try self.device.readTextureData(.{ .id = texture.id }, width, height, bytes_per_row, destination);
     }
 
-    pub fn downloadTexturePixel(_: *RhiDevice, pass: CopyPass, texture: *const Texture, transfer_buffer: *const TransferBuffer, x: u32, y: u32) void {
-        _ = pass;
-        _ = texture;
-        _ = transfer_buffer;
-        _ = x;
-        _ = y;
+    pub fn downloadTexturePixel(self: *RhiDevice, pass: CopyPass, texture: *const Texture, transfer_buffer: *const TransferBuffer, x: u32, y: u32) void {
+        self.downloadTexturePixelToOffset(pass, texture, transfer_buffer, 0, x, y);
     }
 
-    pub fn downloadTexturePixelToOffset(_: *RhiDevice, pass: CopyPass, texture: *const Texture, transfer_buffer: *const TransferBuffer, offset: u32, x: u32, y: u32) void {
+    pub fn downloadTexturePixelToOffset(self: *RhiDevice, pass: CopyPass, texture: *const Texture, transfer_buffer: *const TransferBuffer, offset: u32, x: u32, y: u32) void {
         _ = pass;
-        _ = texture;
-        _ = transfer_buffer;
-        _ = offset;
-        _ = x;
-        _ = y;
+        if (offset > transfer_buffer.desc.size or transfer_buffer.desc.size - offset < 4) return;
+        self.pending_pixel_downloads.append(self.allocator, .{
+            .texture = texture,
+            .transfer_buffer = @constCast(transfer_buffer),
+            .offset = offset,
+            .x = x,
+            .y = y,
+        }) catch {};
     }
 
     pub fn readTransferBufferBytes(self: *RhiDevice, transfer_buffer: *const TransferBuffer, destination: []u8) Error!void {
-        _ = self;
-        _ = transfer_buffer;
-        _ = destination;
-        return error.TransferBufferMapFailed;
+        return self.readTransferBufferBytesAt(transfer_buffer, 0, destination);
     }
 
     pub fn readTransferBufferBytesAt(self: *RhiDevice, transfer_buffer: *const TransferBuffer, offset: u32, destination: []u8) Error!void {
         _ = self;
-        _ = transfer_buffer;
-        _ = offset;
-        _ = destination;
-        return error.TransferBufferMapFailed;
+        const shadow = transfer_buffer.shadow_data orelse return error.TransferBufferMapFailed;
+        const start = offset;
+        const end = start + destination.len;
+        if (end > shadow.len) return error.InvalidArgument;
+        @memcpy(destination, shadow[start..end]);
     }
 
     pub fn readTexturePixel(self: *RhiDevice, texture: *const Texture, x: u32, y: u32) Error![4]u8 {
@@ -1222,13 +1263,12 @@ pub const RhiDevice = struct {
 
     pub fn isFenceSignaled(self: *RhiDevice, fence: *const Fence) bool {
         _ = self;
-        _ = fence;
-        return true; // STUB
+        return fence.signaled;
     }
 
     pub fn releaseFence(self: *RhiDevice, fence: *Fence) void {
         _ = self;
-        _ = fence;
+        fence.* = undefined;
     }
 
     fn releaseDepthTexture(self: *RhiDevice) void {
@@ -1246,6 +1286,53 @@ pub const RhiDevice = struct {
             }
         }
         self.depth_texture = null;
+    }
+
+    fn clearPendingPostSubmitWork(self: *RhiDevice) void {
+        self.pending_pixel_downloads.clearRetainingCapacity();
+        self.pending_texture_blits.clearRetainingCapacity();
+    }
+
+    fn flushPendingPostSubmitWork(self: *RhiDevice) void {
+        self.flushPendingPixelDownloads();
+        self.flushPendingTextureBlits();
+    }
+
+    fn flushPendingPixelDownloads(self: *RhiDevice) void {
+        defer self.pending_pixel_downloads.clearRetainingCapacity();
+
+        for (self.pending_pixel_downloads.items) |download| {
+            const shadow = download.transfer_buffer.shadow_data orelse continue;
+            const start: usize = download.offset;
+            if (start + 4 > shadow.len) continue;
+
+            const pixel = self.readTexturePixel(download.texture, download.x, download.y) catch {
+                @memset(shadow[start .. start + 4], 0);
+                continue;
+            };
+            @memcpy(shadow[start .. start + 4], pixel[0..]);
+        }
+    }
+
+    fn flushPendingTextureBlits(self: *RhiDevice) void {
+        defer self.pending_texture_blits.clearRetainingCapacity();
+
+        for (self.pending_texture_blits.items) |blit| {
+            if (blit.src.desc.width != blit.dst.desc.width or
+                blit.src.desc.height != blit.dst.desc.height or
+                blit.src.desc.format != blit.dst.desc.format)
+            {
+                continue;
+            }
+
+            const bytes_per_row = blit.src.desc.width * blit.src.desc.format.bytesPerPixel();
+            const total_size = bytes_per_row * blit.src.desc.height;
+            const temp = self.allocator.alloc(u8, total_size) catch continue;
+            defer self.allocator.free(temp);
+
+            self.readTextureData(blit.src, bytes_per_row, temp) catch continue;
+            self.uploadTextureData(blit.dst, temp, blit.src.desc.width, blit.src.desc.height) catch continue;
+        }
     }
 
     pub fn resize(self: *RhiDevice, width: u32, height: u32) Error!void {
