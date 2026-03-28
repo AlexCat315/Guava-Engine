@@ -109,9 +109,20 @@ pub const PointLightBlock = struct {
     range: f32,
 };
 
+pub const SpotLightBlock = struct {
+    position: [3]f32,
+    direction: [3]f32,
+    color: [3]f32,
+    intensity: f32,
+    range: f32,
+    inner_angle_cos: f32,
+    outer_angle_cos: f32,
+};
+
 pub const LightBlock = struct {
     directional_lights: []DirectionalLightBlock,
     point_lights: []PointLightBlock,
+    spot_lights: []SpotLightBlock,
 };
 
 pub const DebugBlock = struct {
@@ -149,6 +160,7 @@ pub const PreparedScene = struct {
     pub fn deinit(self: *PreparedScene) void {
         self.allocator.free(self.lights.directional_lights);
         self.allocator.free(self.lights.point_lights);
+        self.allocator.free(self.lights.spot_lights);
         self.allocator.free(self.opaque_meshes);
         self.allocator.free(self.transparent_meshes);
         self.* = undefined;
@@ -342,6 +354,7 @@ pub const MeshSceneCache = struct {
         errdefer {
             self.allocator.free(lights.directional_lights);
             self.allocator.free(lights.point_lights);
+            self.allocator.free(lights.spot_lights);
         }
 
         var opaque_meshes = std.ArrayList(DrawItem).empty;
@@ -397,6 +410,7 @@ pub const MeshSceneCache = struct {
         errdefer {
             self.allocator.free(lights.directional_lights);
             self.allocator.free(lights.point_lights);
+            self.allocator.free(lights.spot_lights);
         }
         var opaque_meshes = std.ArrayList(DrawItem).empty;
         defer opaque_meshes.deinit(self.allocator);
@@ -811,10 +825,14 @@ pub const MeshSceneCache = struct {
         render_world: *const scene_extraction.RenderWorld,
         frustum: frustum_mod.Frustum,
     ) !LightBlock {
+        const spot_inner_angle_cos: f32 = 0.9063078; // cos(25 deg)
+        const spot_outer_angle_cos: f32 = 0.81915206; // cos(35 deg)
         var directional_lights = std.ArrayList(DirectionalLightBlock).empty;
         defer directional_lights.deinit(self.allocator);
         var point_lights = std.ArrayList(PointLightBlock).empty;
         defer point_lights.deinit(self.allocator);
+        var spot_lights = std.ArrayList(SpotLightBlock).empty;
+        defer spot_lights.deinit(self.allocator);
 
         for (render_world.lights.directional.items) |render_light| {
             const light = render_light.light;
@@ -852,9 +870,38 @@ pub const MeshSceneCache = struct {
             });
         }
 
+        for (render_world.lights.spot.items) |render_light| {
+            const light = render_light.light;
+            const world_transform = render_light.transform;
+            const light_bounds = @import("../math/aabb.zig").AABB{
+                .min = .{
+                    world_transform.translation[0] - light.range,
+                    world_transform.translation[1] - light.range,
+                    world_transform.translation[2] - light.range,
+                },
+                .max = .{
+                    world_transform.translation[0] + light.range,
+                    world_transform.translation[1] + light.range,
+                    world_transform.translation[2] + light.range,
+                },
+            };
+            if (!frustum.intersectsAABB(light_bounds)) continue;
+
+            try spot_lights.append(self.allocator, .{
+                .position = world_transform.translation,
+                .direction = quat.rotateVec3(world_transform.rotation, .{ 0.0, 0.0, -1.0 }),
+                .color = light.color,
+                .intensity = light.intensity,
+                .range = light.range,
+                .inner_angle_cos = spot_inner_angle_cos,
+                .outer_angle_cos = spot_outer_angle_cos,
+            });
+        }
+
         return .{
             .directional_lights = try directional_lights.toOwnedSlice(self.allocator),
             .point_lights = try point_lights.toOwnedSlice(self.allocator),
+            .spot_lights = try spot_lights.toOwnedSlice(self.allocator),
         };
     }
 

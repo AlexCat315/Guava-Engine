@@ -273,6 +273,7 @@ const PathTraceGuideBuffers = path_trace_common.PathTraceGuideBuffers;
 const PathTraceEnvImportance = path_trace_common.PathTraceEnvImportance;
 const PathTraceEmissiveLight = path_trace_common.PathTraceEmissiveLight;
 const PathTracePointLight = path_trace_common.PathTracePointLight;
+const PathTraceSpotLight = path_trace_common.PathTraceSpotLight;
 const PathTraceMesh = path_trace_common.PathTraceMesh;
 const PathTraceProgressiveState = path_trace_common.PathTraceProgressiveState;
 const path_trace_adaptive_tile_dim = path_trace_common.path_trace_adaptive_tile_dim;
@@ -476,6 +477,7 @@ fn computePathTraceSceneSignature(
     wyhashUpdateValue(&hasher, prepared_scene.ambient_color);
     wyhashUpdateValue(&hasher, prepared_scene.lights.directional_lights.len);
     wyhashUpdateValue(&hasher, prepared_scene.lights.point_lights.len);
+    wyhashUpdateValue(&hasher, prepared_scene.lights.spot_lights.len);
     for (prepared_scene.lights.directional_lights) |light| {
         wyhashUpdateValue(&hasher, light.direction);
         wyhashUpdateValue(&hasher, light.color);
@@ -486,6 +488,15 @@ fn computePathTraceSceneSignature(
         wyhashUpdateValue(&hasher, light.color);
         wyhashUpdateValue(&hasher, light.intensity);
         wyhashUpdateValue(&hasher, light.range);
+    }
+    for (prepared_scene.lights.spot_lights) |light| {
+        wyhashUpdateValue(&hasher, light.position);
+        wyhashUpdateValue(&hasher, light.direction);
+        wyhashUpdateValue(&hasher, light.color);
+        wyhashUpdateValue(&hasher, light.intensity);
+        wyhashUpdateValue(&hasher, light.range);
+        wyhashUpdateValue(&hasher, light.inner_angle_cos);
+        wyhashUpdateValue(&hasher, light.outer_angle_cos);
     }
 
     wyhashUpdateValue(&hasher, environment.handle);
@@ -1185,6 +1196,7 @@ fn evaluateOpaqueBsdf(
 fn directLightTypeCount(
     light_radiance: [3]f32,
     point_lights: []const PathTracePointLight,
+    spot_lights: []const PathTraceSpotLight,
     environment_texture: ?PathTraceTexture,
     environment_importance: []const PathTraceEnvImportance,
     emissive_lights: []const PathTraceEmissiveLight,
@@ -1194,6 +1206,9 @@ fn directLightTypeCount(
     if (maxComponent(light_radiance) > 0.0001) count += 1;
     for (point_lights) |light| {
         if (pathTracePointLightActive(light)) count += 1;
+    }
+    for (spot_lights) |light| {
+        if (pathTraceSpotLightActive(light)) count += 1;
     }
     if (environment_texture != null and environment_importance.len > 0) count += 1;
     if (emissive_lights.len > 0 and emissive_total_area > 0.0) count += 1;
@@ -1345,12 +1360,52 @@ fn samplePointLight(hit_pos: [3]f32, light: PathTracePointLight) ?PathTraceDirec
     };
 }
 
+fn pathTraceSpotLightActive(light: PathTraceSpotLight) bool {
+    return light.intensity > 0.0001 and light.range > 0.001 and maxComponent(light.color) > 0.0001;
+}
+
+fn sampleSpotLight(hit_pos: [3]f32, light: PathTraceSpotLight) ?PathTraceDirectLightSample {
+    if (!pathTraceSpotLightActive(light)) return null;
+
+    const to_light = vec3.sub(light.position, hit_pos);
+    const distance = vec3.length(to_light);
+    if (distance <= 0.002 or distance > light.range) return null;
+
+    const direction = vec3.scale(to_light, 1.0 / distance);
+    const light_to_surface = vec3.scale(direction, -1.0);
+    const light_forward = vec3.normalize(light.direction);
+    const cone_cos = vec3.dot(light_forward, light_to_surface);
+    if (cone_cos <= light.outer_angle_cos) return null;
+
+    const falloff = std.math.clamp(1.0 - distance / @max(light.range, 0.001), 0.0, 1.0);
+    const attenuation = falloff * falloff;
+    const cone_factor = if (cone_cos >= light.inner_angle_cos)
+        1.0
+    else
+        std.math.clamp(
+            (cone_cos - light.outer_angle_cos) / @max(light.inner_angle_cos - light.outer_angle_cos, 0.0001),
+            0.0,
+            1.0,
+        );
+    const intensity = light.intensity * attenuation * cone_factor;
+    if (intensity <= 0.00001) return null;
+
+    return .{
+        .direction = direction,
+        .radiance = vec3.scale(light.color, intensity),
+        .pdf = 1.0,
+        .distance = distance,
+        .delta = true,
+    };
+}
+
 fn sampleDirectLight(
     hit_pos: [3]f32,
     current_tri_index: usize,
     triangles: []const PathTraceTriangle,
     textures: []const PathTraceTexture,
     point_lights: []const PathTracePointLight,
+    spot_lights: []const PathTraceSpotLight,
     environment_texture: ?PathTraceTexture,
     environment_importance: []const PathTraceEnvImportance,
     environment_importance_width: u32,
@@ -1364,6 +1419,7 @@ fn sampleDirectLight(
     const light_type_count = directLightTypeCount(
         light_radiance,
         point_lights,
+        spot_lights,
         environment_texture,
         environment_importance,
         emissive_lights,
@@ -1394,6 +1450,16 @@ fn sampleDirectLight(
         if (!pathTracePointLightActive(point_light)) continue;
         if (selection == cursor) {
             var sample = samplePointLight(hit_pos, point_light) orelse return null;
+            sample.pdf = 1.0 / @as(f32, @floatFromInt(light_type_count));
+            return sample;
+        }
+        cursor += 1;
+    }
+
+    for (spot_lights) |spot_light| {
+        if (!pathTraceSpotLightActive(spot_light)) continue;
+        if (selection == cursor) {
+            var sample = sampleSpotLight(hit_pos, spot_light) orelse return null;
             sample.pdf = 1.0 / @as(f32, @floatFromInt(light_type_count));
             return sample;
         }
@@ -1535,6 +1601,7 @@ fn tracePathTracePixelSample(pt: *const PathTraceProgressiveState, x: u32, y: u3
     const environment_importance = pt.environment_importance orelse &[_]PathTraceEnvImportance{};
     const emissive_lights = pt.emissive_lights orelse &[_]PathTraceEmissiveLight{};
     const point_lights = pt.point_lights orelse &[_]PathTracePointLight{};
+    const spot_lights = pt.spot_lights orelse &[_]PathTraceSpotLight{};
     const seed_base = hashU32(x ^ (y << 16) ^ 0x7f4a7c15);
     const jitter_seed = seed_base ^ (sample_index *% 0x45d9f3b);
     const jitter_x = hashUnitFloat(jitter_seed ^ 0x18f0e149) - 0.5;
@@ -1548,6 +1615,7 @@ fn tracePathTracePixelSample(pt: *const PathTraceProgressiveState, x: u32, y: u3
         meshes,
         textures,
         point_lights,
+        spot_lights,
         pt.environment_texture,
         environment_importance,
         pt.environment_importance_width,
@@ -1604,6 +1672,7 @@ fn pathTraceRay(
     meshes: []const PathTraceMesh,
     textures: []const PathTraceTexture,
     point_lights: []const PathTracePointLight,
+    spot_lights: []const PathTraceSpotLight,
     environment_texture: ?PathTraceTexture,
     environment_importance: []const PathTraceEnvImportance,
     environment_importance_width: u32,
@@ -1633,6 +1702,7 @@ fn pathTraceRay(
                 const light_type_count = directLightTypeCount(
                     light_radiance,
                     point_lights,
+                    spot_lights,
                     environment_texture,
                     environment_importance,
                     emissive_lights,
@@ -1694,6 +1764,7 @@ fn pathTraceRay(
                 const light_type_count = directLightTypeCount(
                     light_radiance,
                     point_lights,
+                    spot_lights,
                     environment_texture,
                     environment_importance,
                     emissive_lights,
@@ -1717,6 +1788,7 @@ fn pathTraceRay(
                 triangles,
                 textures,
                 point_lights,
+                spot_lights,
                 environment_texture,
                 environment_importance,
                 environment_importance_width,
@@ -2065,27 +2137,8 @@ fn sceneNeedsCpuPathTraceMaterialFallback(
     prepared_scene: *const mesh_pass_mod.PreparedScene,
     scene: *const scene_mod.Scene,
 ) bool {
-    if (prepared_scene.lights.point_lights.len > 0) {
-        return true;
-    }
-
-    const draw_batches = [_][]const mesh_pass_mod.DrawItem{
-        prepared_scene.opaque_meshes,
-        prepared_scene.transparent_meshes,
-    };
-    for (draw_batches) |items| {
-        for (items) |item| {
-            if (item.has_textures[1] != 0 or item.has_textures[2] != 0 or item.has_textures[3] != 0) {
-                return true;
-            }
-
-            const entity = scene.getEntityConst(item.entity_id) orelse continue;
-            const material_component = entity.material orelse continue;
-            const material_handle = material_component.handle orelse continue;
-            const material = scene.resources.material(material_handle) orelse continue;
-            if (material.emissive_texture != null) return true;
-        }
-    }
+    _ = prepared_scene;
+    _ = scene;
     return false;
 }
 
@@ -4614,6 +4667,23 @@ pub const Renderer = struct {
         } else {
             pt.point_lights = null;
         }
+        if (prepared_scene.lights.spot_lights.len > 0) {
+            var spot_lights = try self.allocator.alloc(PathTraceSpotLight, prepared_scene.lights.spot_lights.len);
+            for (prepared_scene.lights.spot_lights, 0..) |light, index| {
+                spot_lights[index] = .{
+                    .position = light.position,
+                    .direction = light.direction,
+                    .color = light.color,
+                    .intensity = light.intensity,
+                    .range = light.range,
+                    .inner_angle_cos = light.inner_angle_cos,
+                    .outer_angle_cos = light.outer_angle_cos,
+                };
+            }
+            pt.spot_lights = spot_lights;
+        } else {
+            pt.spot_lights = null;
+        }
         const built_environment_importance = try buildPathTraceEnvironmentImportance(self.allocator, path_trace_environment.texture);
         errdefer if (built_environment_importance.items) |items| self.allocator.free(items);
         pt.environment_importance = built_environment_importance.items;
@@ -5000,7 +5070,7 @@ pub const Renderer = struct {
                             .emissive = emissive,
                             .metallic = metallic,
                             .roughness = roughness,
-                            .texture_index = tex_idx,
+                            .base_color_texture_index = tex_idx,
                         }) catch return false;
                     }
                 }
@@ -5328,24 +5398,14 @@ pub const Renderer = struct {
                             },
                         }
 
-                        const tex_idx: i32 = blk_tex: {
-                            if (item.has_textures[0] == 0) break :blk_tex @as(i32, -1);
-                            const material = mat_res orelse break :blk_tex @as(i32, -1);
-                            const tex_handle = material.base_color_texture orelse break :blk_tex @as(i32, -1);
-                            const tex_key = @intFromEnum(tex_handle);
-                            if (texture_index_map.get(tex_key)) |existing| break :blk_tex existing;
-                            const tex_res = scene.resources.texture(tex_handle) orelse break :blk_tex @as(i32, -1);
-                            if (tex_res.pixels.len == 0 or tex_res.width == 0 or tex_res.height == 0) break :blk_tex @as(i32, -1);
-                            const idx_i32: i32 = @intCast(texture_list.items.len);
-                            texture_list.append(self.allocator, .{
-                                .pixels = tex_res.pixels,
-                                .width = tex_res.width,
-                                .height = tex_res.height,
-                                .format = tex_res.format,
-                            }) catch break :blk_tex @as(i32, -1);
-                            texture_index_map.put(tex_key, idx_i32) catch break :blk_tex @as(i32, -1);
-                            break :blk_tex idx_i32;
-                        };
+                        const texture_indices = resolvePathTraceTextureIndices(
+                            self.allocator,
+                            &texture_list,
+                            &texture_index_map,
+                            &scene.resources,
+                            mat_res,
+                            item.has_textures,
+                        ) catch return false;
 
                         const indices = mesh.indices;
                         const vertices = mesh.vertices;
@@ -5373,7 +5433,11 @@ pub const Renderer = struct {
                                 .transmission = transmission,
                                 .ior = ior,
                                 .thickness = thickness,
-                                .texture_index = tex_idx,
+                                .base_color_texture_index = texture_indices.base_color,
+                                .metallic_roughness_texture_index = texture_indices.metallic_roughness,
+                                .normal_texture_index = texture_indices.normal,
+                                .occlusion_texture_index = texture_indices.occlusion,
+                                .emissive_texture_index = texture_indices.emissive,
                             }) catch return false;
                         }
                     }
@@ -5540,15 +5604,36 @@ pub const Renderer = struct {
             .bounces = bounces,
             .output_is_half = 1,
             .environment_texture_index = mrt.environment_texture_index,
-            .directional_light_count = if (maxComponent(mrt.light_radiance) > 0.0001) 1 else 0,
             .sampling_table_count = if (mrt.sampling_table_meta) |meta| @intCast(meta.len) else 0,
             .environment_importance_width = mrt.environment_importance_width,
             .environment_importance_height = mrt.environment_importance_height,
             .emissive_total_area = mrt.emissive_total_area,
         };
-        if (params.directional_light_count > 0) {
-            params.directional_light_directions[0] = light_dir;
-            params.directional_light_radiance[0] = mrt.light_radiance;
+
+        const directional_count = @min(prepared_scene.lights.directional_lights.len, rt_backend.max_directional_lights);
+        params.directional_light_count = @intCast(directional_count);
+        for (prepared_scene.lights.directional_lights[0..directional_count], 0..) |light, index| {
+            params.directional_light_directions[index] = vec3.normalize(vec3.scale(light.direction, -1.0));
+            params.directional_light_radiance[index] = vec3.scale(light.color, light.intensity);
+        }
+
+        const point_count = @min(prepared_scene.lights.point_lights.len, rt_backend.max_point_lights);
+        params.point_light_count = @intCast(point_count);
+        for (prepared_scene.lights.point_lights[0..point_count], 0..) |light, index| {
+            params.point_light_positions[index] = light.position;
+            params.point_light_radiance[index] = vec3.scale(light.color, light.intensity);
+            params.point_light_ranges[index] = light.range;
+        }
+
+        const spot_count = @min(prepared_scene.lights.spot_lights.len, rt_backend.max_spot_lights);
+        params.spot_light_count = @intCast(spot_count);
+        for (prepared_scene.lights.spot_lights[0..spot_count], 0..) |light, index| {
+            params.spot_light_positions[index] = light.position;
+            params.spot_light_directions[index] = vec3.normalize(light.direction);
+            params.spot_light_radiance[index] = vec3.scale(light.color, light.intensity);
+            params.spot_light_ranges[index] = light.range;
+            params.spot_light_inner_angle_cos[index] = light.inner_angle_cos;
+            params.spot_light_outer_angle_cos[index] = light.outer_angle_cos;
         }
 
         if (!self.rhi.rtTraceRays(&params, mrt.trace_pixels.?)) {
@@ -5651,6 +5736,43 @@ pub const Renderer = struct {
         denoise: bool = true,
         write_aov_sidecars: bool = true,
     };
+
+    fn exportableHwRtTraceBeauty(self: *Renderer, viewport_size: [2]u32) ?struct {
+        pixels: []const u8,
+        width: u32,
+        height: u32,
+    } {
+        const mrt = &self.hw_rt_state;
+        if (mrt.needs_retrace or mrt.trace_pixels == null) return null;
+        if (mrt.trace_width != viewport_size[0] or mrt.trace_height != viewport_size[1]) return null;
+        return .{
+            .pixels = mrt.trace_pixels.?,
+            .width = mrt.trace_width,
+            .height = mrt.trace_height,
+        };
+    }
+
+    fn copyHalfTracePixelsToRgbAlloc(
+        allocator: std.mem.Allocator,
+        pixels: []const u8,
+        width: u32,
+        height: u32,
+    ) ![]f32 {
+        const pixel_count = @as(usize, width) * @as(usize, height);
+        if (pixels.len < pixel_count * 8) return error.InvalidPixelBuffer;
+        const rgb = try allocator.alloc(f32, pixel_count * 3);
+        errdefer allocator.free(rgb);
+
+        var pixel_index: usize = 0;
+        while (pixel_index < pixel_count) : (pixel_index += 1) {
+            const src = pixel_index * 8;
+            const dst = pixel_index * 3;
+            rgb[dst + 0] = image_export.readF16Le(pixels, src + 0);
+            rgb[dst + 1] = image_export.readF16Le(pixels, src + 2);
+            rgb[dst + 2] = image_export.readF16Le(pixels, src + 4);
+        }
+        return rgb;
+    }
 
     /// Download final HDR frame pixels as linear RGBA32F data from the HDR viewport target.
     pub fn downloadHdrFramePixelsAlloc(self: *Renderer, allocator: std.mem.Allocator) !HdrFramePixels {
@@ -5759,6 +5881,21 @@ pub const Renderer = struct {
             if (options.denoise or options.write_aov_sidecars) {
                 guides = try path_trace_denoise.captureGuideBuffersAlloc(allocator, pt, samplePathTraceGuidePixel);
             }
+        } else if (self.exportableHwRtTraceBeauty(viewport_size)) |hw_trace| {
+            beauty_rgb = try copyHalfTracePixelsToRgbAlloc(allocator, hw_trace.pixels, hw_trace.width, hw_trace.height);
+
+            if (options.denoise or options.write_aov_sidecars) {
+                var guide_pt = try self.buildOfflinePathTraceExportState(
+                    scene,
+                    hw_trace.width,
+                    hw_trace.height,
+                    samples,
+                    bounces,
+                    false,
+                );
+                defer guide_pt.deinit(self.allocator);
+                guides = try path_trace_denoise.captureGuideBuffersAlloc(allocator, &guide_pt, samplePathTraceGuidePixel);
+            }
         } else {
             const hdr = try self.downloadHdrFramePixelsAlloc(allocator);
             defer allocator.free(hdr.data);
@@ -5859,6 +5996,10 @@ pub const Renderer = struct {
             beauty_rgb = try allocator.dupe(f32, pt.trace_linear_rgb.?);
             beauty_width = pt.trace_width;
             beauty_height = pt.trace_height;
+        } else if (self.exportableHwRtTraceBeauty(viewport_size)) |hw_trace| {
+            beauty_rgb = try copyHalfTracePixelsToRgbAlloc(allocator, hw_trace.pixels, hw_trace.width, hw_trace.height);
+            beauty_width = hw_trace.width;
+            beauty_height = hw_trace.height;
         } else {
             const hdr = try self.downloadHdrFramePixelsAlloc(allocator);
             defer allocator.free(hdr.data);

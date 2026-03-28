@@ -24,8 +24,11 @@ struct RTTriangle {
     float transmission;
     float ior;
     float thickness;
-    int texture_index;
-    uint _tri_pad;
+    int base_color_texture_index;
+    int metallic_roughness_texture_index;
+    int normal_texture_index;
+    int occlusion_texture_index;
+    int emissive_texture_index;
 };
 
 struct RTTextureMeta {
@@ -55,20 +58,27 @@ struct RTParams {
     uint shadow_samples; // shadow-only 每像素采样数 (1=硬阴影, 4+=软阴影)
     uint output_is_half;
     int environment_texture_index;
-    uint _pad2;
     packed_float4 exposure_params;
     packed_float4 color_grading_params;
-    uint _pad3;
-    uint _pad4;
-    uint _pad5;
     uint directional_light_count;
+    uint point_light_count;
+    uint spot_light_count;
+    uint sampling_table_count;
     packed_float3 directional_light_directions[4];
     packed_float3 directional_light_radiance[4];
-    uint sampling_table_count;
+    packed_float3 point_light_positions[16];
+    packed_float3 point_light_radiance[16];
+    float point_light_ranges[16];
+    packed_float3 spot_light_positions[16];
+    packed_float3 spot_light_directions[16];
+    packed_float3 spot_light_radiance[16];
+    float spot_light_ranges[16];
+    float spot_light_inner_angle_cos[16];
+    float spot_light_outer_angle_cos[16];
     uint environment_importance_width;
     uint environment_importance_height;
     float emissive_total_area;
-    uint _tail_pad[3];
+    uint _tail_pad;
 };
 
 // ---- deterministic hash RNG (与 CPU 路径追踪保持一致) ----
@@ -159,6 +169,33 @@ static float3 read_texel_texture_atlas(
     return float3(pow(byte0, 2.2f), pow(byte1, 2.2f), pow(byte2, 2.2f));
 }
 
+static float4 read_texel_texture_atlas_raw(
+    device const uchar* atlas,
+    constant RTTextureMeta& tm,
+    uint tx,
+    uint ty
+) {
+    uint index = ty * tm.width + tx;
+    uint base = tm.offset;
+    if (tm.format == TEXFMT_RGBA32_FLOAT) {
+        device const float* f32 = reinterpret_cast<device const float*>(atlas + base + index * 16u);
+        return float4(f32[0], f32[1], f32[2], f32[3]);
+    }
+    if (tm.format == TEXFMT_RGBA16_FLOAT) {
+        device const half* f16 = reinterpret_cast<device const half*>(atlas + base + index * 8u);
+        return float4(float(f16[0]), float(f16[1]), float(f16[2]), float(f16[3]));
+    }
+    const uint px_off = base + index * 4u;
+    float byte0 = float(atlas[px_off + 0]) / 255.0f;
+    float byte1 = float(atlas[px_off + 1]) / 255.0f;
+    float byte2 = float(atlas[px_off + 2]) / 255.0f;
+    float byte3 = float(atlas[px_off + 3]) / 255.0f;
+    if (tm.format == TEXFMT_BGRA8_UNORM || tm.format == TEXFMT_BGRA8_UNORM_SRGB) {
+        return float4(byte2, byte1, byte0, byte3);
+    }
+    return float4(byte0, byte1, byte2, byte3);
+}
+
 // 从打包纹理图集中双线性采样 (BGRA8)
 static float3 sample_texture_atlas(
     device const uchar* atlas,
@@ -194,6 +231,43 @@ static float3 sample_texture_atlas(
     float3 c10 = read_texel_texture_atlas(atlas, tm, x1u, y0u);
     float3 c01 = read_texel_texture_atlas(atlas, tm, x0u, y1u);
     float3 c11 = read_texel_texture_atlas(atlas, tm, x1u, y1u);
+
+    return mix(mix(c00, c10, frac_x), mix(c01, c11, frac_x), frac_y);
+}
+
+static float4 sample_texture_atlas_raw(
+    device const uchar* atlas,
+    constant RTTextureMeta* meta,
+    int tex_index,
+    float u_in, float v_in
+) {
+    constant RTTextureMeta& tm = meta[tex_index];
+    uint tw = tm.width;
+    uint th = tm.height;
+
+    float u = u_in - floor(u_in);
+    float v = v_in - floor(v_in);
+    if (u < 0.0f) u += 1.0f;
+    if (v < 0.0f) v += 1.0f;
+
+    float fx = u * float(tw) - 0.5f;
+    float fy = v * float(th) - 0.5f;
+    int x0 = int(floor(fx));
+    int y0 = int(floor(fy));
+    float frac_x = fx - floor(fx);
+    float frac_y = fy - floor(fy);
+
+    int iw = int(tw);
+    int ih = int(th);
+    uint x0u = uint(((x0 % iw) + iw) % iw);
+    uint y0u = uint(((y0 % ih) + ih) % ih);
+    uint x1u = uint((((x0 + 1) % iw) + iw) % iw);
+    uint y1u = uint((((y0 + 1) % ih) + ih) % ih);
+
+    float4 c00 = read_texel_texture_atlas_raw(atlas, tm, x0u, y0u);
+    float4 c10 = read_texel_texture_atlas_raw(atlas, tm, x1u, y0u);
+    float4 c01 = read_texel_texture_atlas_raw(atlas, tm, x0u, y1u);
+    float4 c11 = read_texel_texture_atlas_raw(atlas, tm, x1u, y1u);
 
     return mix(mix(c00, c10, frac_x), mix(c01, c11, frac_x), frac_y);
 }
@@ -446,6 +520,46 @@ static float3 triangle_geometric_normal(constant RTTriangle& tri) {
     return safe_normalize(cross(float3(tri.v1) - float3(tri.v0), float3(tri.v2) - float3(tri.v0)), float3(0.0f, 1.0f, 0.0f));
 }
 
+struct RTTangentFrame {
+    float3 tangent;
+    float3 bitangent;
+    float3 normal;
+};
+
+static RTTangentFrame build_tangent_frame(float3 normal) {
+    float3 up = (abs(normal.y) < 0.999f) ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f);
+    float3 tangent = safe_normalize(cross(up, normal), float3(1.0f, 0.0f, 0.0f));
+    return RTTangentFrame{tangent, cross(normal, tangent), normal};
+}
+
+static RTTangentFrame build_triangle_tangent_frame(constant RTTriangle& tri, float3 normal) {
+    float3 edge1 = float3(tri.v1) - float3(tri.v0);
+    float3 edge2 = float3(tri.v2) - float3(tri.v0);
+    float2 duv1 = float2(tri.uv1) - float2(tri.uv0);
+    float2 duv2 = float2(tri.uv2) - float2(tri.uv0);
+    float det = duv1.x * duv2.y - duv1.y * duv2.x;
+    if (abs(det) <= 1e-6f) return build_tangent_frame(normal);
+
+    float inv_det = 1.0f / det;
+    float3 tangent = float3(
+        (edge1.x * duv2.y - edge2.x * duv1.y) * inv_det,
+        (edge1.y * duv2.y - edge2.y * duv1.y) * inv_det,
+        (edge1.z * duv2.y - edge2.z * duv1.y) * inv_det
+    );
+    if (dot(tangent, tangent) <= 1e-6f) return build_tangent_frame(normal);
+    tangent = safe_normalize(tangent - normal * dot(normal, tangent), float3(1.0f, 0.0f, 0.0f));
+    float3 bitangent = cross(normal, tangent);
+    float3 bitangent_raw = float3(
+        (edge2.x * duv1.x - edge1.x * duv2.x) * inv_det,
+        (edge2.y * duv1.x - edge1.y * duv2.x) * inv_det,
+        (edge2.z * duv1.x - edge1.z * duv2.x) * inv_det
+    );
+    if (dot(bitangent, bitangent_raw) < 0.0f) {
+        bitangent = -bitangent;
+    }
+    return RTTangentFrame{tangent, bitangent, normal};
+}
+
 static int find_sampling_table(constant RTSamplingTableMeta* meta, uint count, uint kind) {
     for (uint i = 0; i < count; i++) {
         if (meta[i].kind == kind) return int(i);
@@ -584,15 +698,97 @@ static float emissive_direction_pdf(
     return distance_sq / max(cos_light * emissive_total_area, 1e-6f);
 }
 
+static bool point_light_active(float3 radiance, float range) {
+    return max_component(radiance) > 0.0001f && range > 0.001f;
+}
+
+static PathTraceDirectLightSample sample_point_light(
+    float3 hit_pos,
+    float3 light_position,
+    float3 light_radiance,
+    float light_range
+) {
+    if (!point_light_active(light_radiance, light_range)) return make_invalid_direct_light_sample();
+
+    float3 to_light = light_position - hit_pos;
+    float distance = length(to_light);
+    if (distance <= 0.002f || distance > light_range) return make_invalid_direct_light_sample();
+    float falloff = clamp(1.0f - distance / max(light_range, 0.001f), 0.0f, 1.0f);
+    float attenuation = falloff * falloff;
+    if (attenuation <= 1e-5f) return make_invalid_direct_light_sample();
+    return PathTraceDirectLightSample{
+        to_light / distance,
+        light_radiance * attenuation,
+        1.0f,
+        distance,
+        1u,
+        1u,
+    };
+}
+
+static bool spot_light_active(float3 radiance, float range) {
+    return max_component(radiance) > 0.0001f && range > 0.001f;
+}
+
+static PathTraceDirectLightSample sample_spot_light(
+    float3 hit_pos,
+    float3 light_position,
+    float3 light_direction,
+    float3 light_radiance,
+    float light_range,
+    float inner_angle_cos,
+    float outer_angle_cos
+) {
+    if (!spot_light_active(light_radiance, light_range)) return make_invalid_direct_light_sample();
+
+    float3 to_light = light_position - hit_pos;
+    float distance = length(to_light);
+    if (distance <= 0.002f || distance > light_range) return make_invalid_direct_light_sample();
+
+    float3 direction = to_light / distance;
+    float3 light_to_surface = -direction;
+    float3 light_forward = safe_normalize(light_direction, float3(0.0f, 0.0f, -1.0f));
+    float cone_cos = dot(light_forward, light_to_surface);
+    if (cone_cos <= outer_angle_cos) return make_invalid_direct_light_sample();
+
+    float falloff = clamp(1.0f - distance / max(light_range, 0.001f), 0.0f, 1.0f);
+    float attenuation = falloff * falloff;
+    float cone_factor = (cone_cos >= inner_angle_cos)
+        ? 1.0f
+        : clamp((cone_cos - outer_angle_cos) / max(inner_angle_cos - outer_angle_cos, 1e-4f), 0.0f, 1.0f);
+    float intensity = attenuation * cone_factor;
+    if (intensity <= 1e-5f) return make_invalid_direct_light_sample();
+
+    return PathTraceDirectLightSample{
+        direction,
+        light_radiance * intensity,
+        1.0f,
+        distance,
+        1u,
+        1u,
+    };
+}
+
 static uint direct_light_type_count(
     constant RTParams& params,
     bool has_environment_sampling,
     bool has_emissive_sampling
 ) {
     uint count = 0u;
-    if (params.directional_light_count > 0u &&
-        max_component(float3(params.directional_light_radiance[0])) > 0.0001f) {
-        count += 1u;
+    for (uint i = 0u; i < params.directional_light_count && i < 4u; i++) {
+        if (max_component(float3(params.directional_light_radiance[i])) > 0.0001f) {
+            count += 1u;
+        }
+    }
+    for (uint i = 0u; i < params.point_light_count && i < 16u; i++) {
+        if (point_light_active(float3(params.point_light_radiance[i]), params.point_light_ranges[i])) {
+            count += 1u;
+        }
+    }
+    for (uint i = 0u; i < params.spot_light_count && i < 16u; i++) {
+        if (spot_light_active(float3(params.spot_light_radiance[i]), params.spot_light_ranges[i])) {
+            count += 1u;
+        }
     }
     if (has_environment_sampling) count += 1u;
     if (has_emissive_sampling && params.emissive_total_area > 0.0f) count += 1u;
@@ -623,17 +819,52 @@ static PathTraceDirectLightSample sample_direct_light(
 
     uint selection = min(light_type_count - 1u, uint(hash_unit_float(seed ^ 0xa241b3c1u) * float(light_type_count)));
     uint cursor = 0u;
-    if (params.directional_light_count > 0u &&
-        max_component(float3(params.directional_light_radiance[0])) > 0.0001f) {
+    for (uint i = 0u; i < params.directional_light_count && i < 4u; i++) {
+        if (max_component(float3(params.directional_light_radiance[i])) <= 0.0001f) continue;
         if (selection == cursor) {
             return PathTraceDirectLightSample{
-                safe_normalize(float3(params.directional_light_directions[0]), float3(0.0f, 1.0f, 0.0f)),
-                float3(params.directional_light_radiance[0]),
+                safe_normalize(float3(params.directional_light_directions[i]), float3(0.0f, 1.0f, 0.0f)),
+                float3(params.directional_light_radiance[i]),
                 1.0f / float(light_type_count),
                 1e30f,
                 1u,
                 1u,
             };
+        }
+        cursor += 1u;
+    }
+    for (uint i = 0u; i < params.point_light_count && i < 16u; i++) {
+        if (!point_light_active(float3(params.point_light_radiance[i]), params.point_light_ranges[i])) continue;
+        if (selection == cursor) {
+            PathTraceDirectLightSample sample = sample_point_light(
+                hit_pos,
+                float3(params.point_light_positions[i]),
+                float3(params.point_light_radiance[i]),
+                params.point_light_ranges[i]
+            );
+            if (sample.valid != 0u) {
+                sample.pdf = 1.0f / float(light_type_count);
+            }
+            return sample;
+        }
+        cursor += 1u;
+    }
+    for (uint i = 0u; i < params.spot_light_count && i < 16u; i++) {
+        if (!spot_light_active(float3(params.spot_light_radiance[i]), params.spot_light_ranges[i])) continue;
+        if (selection == cursor) {
+            PathTraceDirectLightSample sample = sample_spot_light(
+                hit_pos,
+                float3(params.spot_light_positions[i]),
+                float3(params.spot_light_directions[i]),
+                float3(params.spot_light_radiance[i]),
+                params.spot_light_ranges[i],
+                params.spot_light_inner_angle_cos[i],
+                params.spot_light_outer_angle_cos[i]
+            );
+            if (sample.valid != 0u) {
+                sample.pdf = 1.0f / float(light_type_count);
+            }
+            return sample;
         }
         cursor += 1u;
     }
@@ -764,27 +995,54 @@ static float3 trace_path_sample(
         constant RTTriangle& tri = triangles[pid];
         float2 bary = hit.triangle_barycentric_coord;
         float w0 = 1.0f - bary.x - bary.y;
-        float3 normal = safe_normalize(
+        float3 interpolated_normal = safe_normalize(
             float3(tri.n0) * w0 + float3(tri.n1) * bary.x + float3(tri.n2) * bary.y,
             float3(0.0f, 1.0f, 0.0f)
         );
-        bool front_face = dot(direction, normal) < 0.0f;
-        float3 shade_n = front_face ? normal : -normal;
+        float3 geometric_normal_raw = triangle_geometric_normal(tri);
+        bool front_face = dot(direction, geometric_normal_raw) < 0.0f;
+        float3 geometric_normal = front_face ? geometric_normal_raw : -geometric_normal_raw;
+        float3 shade_n = front_face ? interpolated_normal : -interpolated_normal;
         float3 view_dir = -direction;
         float3 hit_pos = origin + direction * hit.distance;
 
         float2 hit_uv = float2(tri.uv0) * w0 + float2(tri.uv1) * bary.x + float2(tri.uv2) * bary.y;
-        float3 alb;
-        if (tri.texture_index >= 0) {
-            float3 tex_color = sample_texture_atlas(tex_atlas, tex_meta, tri.texture_index, hit_uv.x, hit_uv.y);
-            alb = tex_color * float3(tri.albedo);
-        } else {
-            alb = float3(tri.albedo);
+        float3 alb = float3(tri.albedo);
+        if (tri.base_color_texture_index >= 0) {
+            alb *= sample_texture_atlas(tex_atlas, tex_meta, tri.base_color_texture_index, hit_uv.x, hit_uv.y);
+        }
+        if (tri.occlusion_texture_index >= 0) {
+            float ao = clamp(sample_texture_atlas_raw(tex_atlas, tex_meta, tri.occlusion_texture_index, hit_uv.x, hit_uv.y).x, 0.0f, 1.0f);
+            alb *= ao;
         }
 
         float3 emis = float3(tri.emissive);
+        if (tri.emissive_texture_index >= 0) {
+            emis *= sample_texture_atlas(tex_atlas, tex_meta, tri.emissive_texture_index, hit_uv.x, hit_uv.y);
+        }
         float met = tri.metallic;
         float rough = tri.roughness;
+        if (tri.metallic_roughness_texture_index >= 0) {
+            float4 mr = sample_texture_atlas_raw(tex_atlas, tex_meta, tri.metallic_roughness_texture_index, hit_uv.x, hit_uv.y);
+            met = clamp(met * mr.z, 0.0f, 1.0f);
+            rough = clamp(rough * mr.y, 0.04f, 1.0f);
+        }
+        if (tri.normal_texture_index >= 0) {
+            float3 tangent_space_normal = safe_normalize(
+                sample_texture_atlas_raw(tex_atlas, tex_meta, tri.normal_texture_index, hit_uv.x, hit_uv.y).xyz * 2.0f - 1.0f,
+                float3(0.0f, 0.0f, 1.0f)
+            );
+            RTTangentFrame frame = build_triangle_tangent_frame(tri, shade_n);
+            float3 mapped_normal = safe_normalize(
+                frame.tangent * tangent_space_normal.x +
+                frame.bitangent * tangent_space_normal.y +
+                frame.normal * tangent_space_normal.z,
+                shade_n
+            );
+            if (dot(mapped_normal, geometric_normal) > 0.0f) {
+                shade_n = mapped_normal;
+            }
+        }
         float transmission = clamp(tri.transmission, 0.0f, 0.98f);
 
         if (params.mode == 1u) {
@@ -795,7 +1053,7 @@ static float3 trace_path_sample(
                 uint sseed2 = pixel_seed ^ (si * 0x9e3779b9u) ^ 0xa1b2c3d4u;
                 float3 jittered_L = sample_cone(L, params.sun_angular_radius, sseed2);
                 ray shadow_ray;
-                shadow_ray.origin       = hit_pos + normal * 0.002f;
+                shadow_ray.origin       = hit_pos + geometric_normal * 0.002f;
                 shadow_ray.direction    = jittered_L;
                 shadow_ray.min_distance = 0.001f;
                 shadow_ray.max_distance = 1e30f;
@@ -835,7 +1093,7 @@ static float3 trace_path_sample(
                 sseed ^ (bounce * 0x9e3779b9u)
             );
             if (light_sample.valid != 0u) {
-                float occlusion_distance = (light_sample.delta != 0u)
+                float occlusion_distance = (light_sample.distance >= 1.0e29f)
                     ? 1e30f
                     : max(light_sample.distance - 0.004f, 0.001f);
                 ray shadow_ray;

@@ -737,9 +737,13 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                     defer gui.popStyleVar(1);
                     if (gui.buttonEx(state.text(.make_primary_camera), 0.0, 0.0)) {
                         _ = layer_context.world.setPrimaryCamera(selected);
+                        state.scene_camera = selected;
                         try history.captureSnapshot(state, layer_context);
                     }
                     gui.sameLine();
+                }
+                if (gui.buttonEx("Use This Camera", 0.0, 0.0)) {
+                    _ = camera.lookThroughCamera(state, layer_context, selected);
                 }
 
                 switch (drawActionRow2(state.text(.use_perspective), state.text(.use_orthographic), 116.0)) {

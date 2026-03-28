@@ -156,8 +156,7 @@ fn exportPendingRenderOutput(state: *EditorState, layer_context: *engine.core.La
     }
     const dims = layer_context.renderer.sceneViewportSize();
     const export_result = switch (state.render_output_format) {
-        .png => if (state.viewport_pipeline_mode == .path_trace and
-            (state.render_output_path_trace_denoise or state.render_output_path_trace_write_aovs))
+        .png => if (state.viewport_pipeline_mode == .path_trace)
             layer_context.renderer.exportPathTraceFramePng(
                 allocator,
                 layer_context.scene,
@@ -277,62 +276,84 @@ fn mulPoint4(matrix_value: engine.math.mat4.Mat4, point: [4]f32) [4]f32 {
     };
 }
 
-fn drawViewportLineGlyph(draw_list: gui.DrawList, center: [2]f32, size: f32, color: u32, kind: ViewportEntityGlyph, selected: bool) void {
-    const half = size * 0.5;
-    const bg_color = gui.getColorU32(if (selected) .{ 0.10, 0.14, 0.18, 0.94 } else .{ 0.06, 0.08, 0.10, 0.82 });
-    draw_list.addRectFilled(
-        .{ center[0] - half - 4.0, center[1] - half - 4.0 },
-        .{ center[0] + half + 4.0, center[1] + half + 4.0 },
-        bg_color,
-        6.0,
-        0,
-    );
-
-    switch (kind) {
-        .camera => {
-            const left = center[0] - half * 0.55;
-            const right = center[0] + half * 0.28;
-            const top = center[1] - half * 0.34;
-            const bottom = center[1] + half * 0.34;
-            draw_list.addLine(.{ left, top }, .{ right, top }, color, 1.8);
-            draw_list.addLine(.{ right, top }, .{ right, bottom }, color, 1.8);
-            draw_list.addLine(.{ right, bottom }, .{ left, bottom }, color, 1.8);
-            draw_list.addLine(.{ left, bottom }, .{ left, top }, color, 1.8);
-            draw_list.addLine(.{ right, top }, .{ center[0] + half * 0.78, center[1] }, color, 1.8);
-            draw_list.addLine(.{ center[0] + half * 0.78, center[1] }, .{ right, bottom }, color, 1.8);
-            draw_list.addLine(.{ left + 2.0, top - 3.0 }, .{ left + 6.0, top - 3.0 }, color, 1.8);
-        },
-        .directional => {
-            draw_list.addLine(.{ center[0] - half * 0.72, center[1] }, .{ center[0] + half * 0.52, center[1] }, color, 2.0);
-            draw_list.addLine(.{ center[0] + half * 0.52, center[1] }, .{ center[0] + half * 0.12, center[1] - half * 0.34 }, color, 2.0);
-            draw_list.addLine(.{ center[0] + half * 0.52, center[1] }, .{ center[0] + half * 0.12, center[1] + half * 0.34 }, color, 2.0);
-            draw_list.addLine(.{ center[0] - half * 0.52, center[1] - half * 0.34 }, .{ center[0] - half * 0.18, center[1] - half * 0.34 }, color, 1.6);
-            draw_list.addLine(.{ center[0] - half * 0.52, center[1] + half * 0.34 }, .{ center[0] - half * 0.18, center[1] + half * 0.34 }, color, 1.6);
-        },
-        .point => {
-            draw_list.addCircleFilled(center, half * 0.34, color, 16);
-            draw_list.addLine(.{ center[0], center[1] - half * 0.9 }, .{ center[0], center[1] - half * 0.5 }, color, 1.7);
-            draw_list.addLine(.{ center[0], center[1] + half * 0.5 }, .{ center[0], center[1] + half * 0.9 }, color, 1.7);
-            draw_list.addLine(.{ center[0] - half * 0.9, center[1] }, .{ center[0] - half * 0.5, center[1] }, color, 1.7);
-            draw_list.addLine(.{ center[0] + half * 0.5, center[1] }, .{ center[0] + half * 0.9, center[1] }, color, 1.7);
-        },
-        .spot => {
-            const apex = .{ center[0], center[1] - half * 0.76 };
-            const base_left = .{ center[0] - half * 0.72, center[1] + half * 0.48 };
-            const base_right = .{ center[0] + half * 0.72, center[1] + half * 0.48 };
-            draw_list.addLine(apex, base_left, color, 1.8);
-            draw_list.addLine(apex, base_right, color, 1.8);
-            draw_list.addLine(base_left, base_right, color, 1.8);
-            draw_list.addLine(.{ center[0], center[1] - half * 0.2 }, .{ center[0], center[1] + half * 0.36 }, color, 1.6);
-        },
-    }
+fn viewportEntityIconPath(kind: ViewportEntityGlyph) []const u8 {
+    return switch (kind) {
+        .camera => ui_icons.paths.viewport_entities.camera,
+        .directional => ui_icons.paths.viewport_entities.directional_light,
+        .point => ui_icons.paths.viewport_entities.point_light,
+        .spot => ui_icons.paths.viewport_entities.spot_light,
+    };
 }
 
-fn drawViewportSceneEntityIcons(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+fn viewportEntityIconTint(kind: ViewportEntityGlyph) [4]u8 {
+    return switch (kind) {
+        .camera => .{ 122, 208, 255, 255 },
+        .directional => .{ 255, 212, 92, 255 },
+        .point => .{ 255, 224, 116, 255 },
+        .spot => .{ 132, 204, 255, 255 },
+    };
+}
+
+fn viewportEntityAccent(kind: ViewportEntityGlyph) [4]f32 {
+    return switch (kind) {
+        .camera => .{ 0.34, 0.77, 1.0, 1.0 },
+        .directional => .{ 1.0, 0.82, 0.36, 1.0 },
+        .point => .{ 1.0, 0.90, 0.46, 1.0 },
+        .spot => .{ 0.57, 0.82, 1.0, 1.0 },
+    };
+}
+
+fn drawViewportEntityIconButton(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    id: []const u8,
+    path: []const u8,
+    size: f32,
+    tint: [4]u8,
+) !bool {
+    const texture = try ui_icons.ensureTintedIconTexture(state, layer_context, path, size, tint);
+    gui.pushStyleColor(.button, .{ 0.0, 0.0, 0.0, 0.0 });
+    gui.pushStyleColor(.button_hovered, .{ 0.0, 0.0, 0.0, 0.0 });
+    gui.pushStyleColor(.button_active, .{ 0.0, 0.0, 0.0, 0.0 });
+    gui.pushStyleVarVec2(.frame_padding, .{ 0.0, 0.0 });
+    gui.pushStyleVarFloat(.frame_rounding, 0.0);
+    defer {
+        gui.popStyleVar(2);
+        gui.popStyleColor(3);
+    }
+    return gui.imageButton(id, texture, size, size, .{ 0.0, 0.0, 0.0, 0.0 }, .{ 1.0, 1.0, 1.0, 1.0 });
+}
+
+fn resolveViewportPrimarySceneCamera(state: *EditorState, layer_context: *engine.core.LayerContext) ?engine.scene.EntityId {
+    if (state.scene_camera) |camera_id| {
+        if (layer_context.world.hasEntity(camera_id)) {
+            if (layer_context.world.getEntityConst(camera_id)) |entity| {
+                if (entity.camera != null) return camera_id;
+            }
+        }
+    }
+    if (layer_context.world.primaryCameraEntity()) |camera_id| {
+        if (state.editor_camera == null or camera_id != state.editor_camera.?) {
+            if (layer_context.world.getEntityConst(camera_id)) |entity| {
+                if (entity.camera != null) return camera_id;
+            }
+        }
+    }
+    for (layer_context.world.entities.items) |entity| {
+        if (entity.camera == null) continue;
+        if (state.editor_camera != null and entity.id == state.editor_camera.?) continue;
+        return entity.id;
+    }
+    return null;
+}
+
+fn drawViewportSceneEntityIcons(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     if (!state.viewport_has_image) return;
 
     const draw_list = gui.getWindowDrawList();
     const selected_entities = layer_context.renderer.selectedEntities();
+    const input = layer_context.input;
+    const primary_scene_camera = resolveViewportPrimarySceneCamera(state, layer_context);
 
     for (layer_context.scene.entities.items) |entity| {
         if (!entity.visible or entity.editor_only) continue;
@@ -349,37 +370,74 @@ fn drawViewportSceneEntityIcons(state: *EditorState, layer_context: *engine.core
             }
         }
 
-        if (entity.camera != null) {
-            drawViewportLineGlyph(
-                draw_list,
-                screen_pos,
-                if (is_selected) 18.0 else 16.0,
-                gui.getColorU32(.{ 0.38, 0.84, 1.0, 1.0 }),
-                .camera,
-                is_selected,
-            );
-            continue;
-        }
-
-        const light = entity.light.?;
-        const light_kind: ViewportEntityGlyph = switch (light.kind) {
+        const kind: ViewportEntityGlyph = if (entity.camera != null)
+            .camera
+        else switch (entity.light.?.kind) {
             .directional => .directional,
             .point => .point,
             .spot => .spot,
         };
-        const light_color: [4]f32 = switch (light.kind) {
-            .directional => .{ 1.0, 0.82, 0.34, 1.0 },
-            .point => .{ 1.0, 0.90, 0.42, 1.0 },
-            .spot => .{ 0.56, 0.80, 1.0, 1.0 },
-        };
-        drawViewportLineGlyph(
-            draw_list,
-            screen_pos,
-            if (is_selected) 18.0 else 16.0,
-            gui.getColorU32(light_color),
-            light_kind,
-            is_selected,
+        const tint = viewportEntityIconTint(kind);
+        const accent = viewportEntityAccent(kind);
+        const is_primary_scene_camera = entity.camera != null and primary_scene_camera != null and primary_scene_camera.? == entity.id;
+        const icon_size: f32 = if (is_selected) 20.0 else 18.0;
+        const halo_radius = icon_size * 0.72;
+
+        if (is_selected) {
+            draw_list.addCircleFilled(screen_pos, halo_radius + 5.0, gui.getColorU32(.{ accent[0], accent[1], accent[2], 0.18 }), 24);
+        }
+        if (is_primary_scene_camera) {
+            draw_list.addCircleFilled(screen_pos, halo_radius + 2.5, gui.getColorU32(.{ accent[0], accent[1], accent[2], 0.24 }), 24);
+        }
+        draw_list.addCircleFilled(screen_pos, halo_radius, gui.getColorU32(.{ 0.05, 0.06, 0.08, 0.90 }), 24);
+        draw_list.addCircleFilled(screen_pos, halo_radius - 2.0, gui.getColorU32(.{ accent[0] * 0.22, accent[1] * 0.22, accent[2] * 0.22, 0.92 }), 24);
+
+        var button_id_buffer: [64]u8 = undefined;
+        const button_id = std.fmt.bufPrint(&button_id_buffer, "viewport_entity_icon##{d}", .{entity.id}) catch continue;
+        gui.setCursorScreenPos(.{ screen_pos[0] - icon_size * 0.5, screen_pos[1] - icon_size * 0.5 });
+        const clicked = try drawViewportEntityIconButton(
+            state,
+            layer_context,
+            button_id,
+            viewportEntityIconPath(kind),
+            icon_size,
+            tint,
         );
+
+        const hovered = gui.isItemHovered();
+        if (hovered) {
+            state.viewport_overlay_hovered = true;
+            if (input.wasMousePressed(.left)) {
+                state.manipulation_started_from_ui = true;
+            }
+            draw_list.addCircleFilled(screen_pos, halo_radius + 3.5, gui.getColorU32(.{ 1.0, 1.0, 1.0, 0.10 }), 24);
+            var tooltip_buffer: [320]u8 = undefined;
+            const tooltip = if (entity.camera != null)
+                std.fmt.bufPrint(&tooltip_buffer, "{s}\nDouble-click to look through camera", .{entity.name}) catch entity.name
+            else
+                std.fmt.bufPrint(&tooltip_buffer, "{s}", .{entity.name}) catch entity.name;
+            gui.setTooltip(tooltip);
+        }
+        if (is_primary_scene_camera) {
+            draw_list.addCircleFilled(
+                .{ screen_pos[0] + halo_radius * 0.52, screen_pos[1] + halo_radius * 0.52 },
+                3.5,
+                gui.getColorU32(.{ 0.20, 0.92, 0.58, 0.98 }),
+                16,
+            );
+        }
+
+        if (clicked) {
+            const mode = selectionUpdateModeForInput(input);
+            switch (mode) {
+                .replace => try layer_context.renderer.replaceSelection(entity.id),
+                .toggle => try layer_context.renderer.toggleSelection(entity.id),
+            }
+            utils.syncInspectorNameBuffer(state, layer_context);
+        }
+        if (hovered and entity.camera != null and input.wasMouseDoubleClicked(.left)) {
+            _ = camera.lookThroughCamera(state, layer_context, entity.id);
+        }
     }
 }
 
@@ -715,7 +773,7 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
         try drawViewportFpsOverlayWindow(state, layer_context);
         try drawViewportDebugOverlayWindow(state, layer_context);
         try ai_collaboration.drawViewportCollaborationOverlay(state, layer_context);
-        drawViewportSceneEntityIcons(state, layer_context);
+        try drawViewportSceneEntityIcons(state, layer_context);
         drawViewportViewCube(state, layer_context);
         logViewportStateChange(state, layer_context);
 

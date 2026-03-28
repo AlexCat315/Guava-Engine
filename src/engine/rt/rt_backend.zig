@@ -64,6 +64,8 @@ pub const RtSamplingTableMeta = extern struct {
 };
 
 pub const max_directional_lights = 4;
+pub const max_point_lights = 16;
+pub const max_spot_lights = 16;
 
 /// 光追三角形 — 与 C 桥接层 GuavaRTTriangle 完全对齐 (extern struct)。
 pub const RtTriangle = extern struct {
@@ -83,8 +85,11 @@ pub const RtTriangle = extern struct {
     transmission: f32 = 0.0,
     ior: f32 = 1.5,
     thickness: f32 = 0.0,
-    texture_index: i32 = -1,
-    _tri_pad: u32 = 0,
+    base_color_texture_index: i32 = -1,
+    metallic_roughness_texture_index: i32 = -1,
+    normal_texture_index: i32 = -1,
+    occlusion_texture_index: i32 = -1,
+    emissive_texture_index: i32 = -1,
 };
 
 /// 光追渲染参数 — 与 C 桥接层 GuavaRTParams 完全对齐 (extern struct)。
@@ -105,26 +110,32 @@ pub const RtParams = extern struct {
     shadow_samples: u32 = 1,
     output_is_half: u32 = 0,
     environment_texture_index: i32 = -1,
-    _pad2: u32 = 0,
     exposure_params: [4]f32 = .{ 0.0, 1.0, 0.0, 0.0 },
     color_grading_params: [4]f32 = .{ 0.0, 1.0, 1.0, 1.0 },
-    _pad3: u32 = 0,
-    _pad4: u32 = 0,
-    _pad5: u32 = 0,
     directional_light_count: u32 = 0,
+    point_light_count: u32 = 0,
+    spot_light_count: u32 = 0,
+    sampling_table_count: u32 = 0,
     directional_light_directions: [max_directional_lights][3]f32 = .{ .{ 0.0, 0.0, 0.0 } } ** max_directional_lights,
     directional_light_radiance: [max_directional_lights][3]f32 = .{ .{ 0.0, 0.0, 0.0 } } ** max_directional_lights,
-    sampling_table_count: u32 = 0,
+    point_light_positions: [max_point_lights][3]f32 = .{ .{ 0.0, 0.0, 0.0 } } ** max_point_lights,
+    point_light_radiance: [max_point_lights][3]f32 = .{ .{ 0.0, 0.0, 0.0 } } ** max_point_lights,
+    point_light_ranges: [max_point_lights]f32 = .{0.0} ** max_point_lights,
+    spot_light_positions: [max_spot_lights][3]f32 = .{ .{ 0.0, 0.0, 0.0 } } ** max_spot_lights,
+    spot_light_directions: [max_spot_lights][3]f32 = .{ .{ 0.0, 0.0, -1.0 } } ** max_spot_lights,
+    spot_light_radiance: [max_spot_lights][3]f32 = .{ .{ 0.0, 0.0, 0.0 } } ** max_spot_lights,
+    spot_light_ranges: [max_spot_lights]f32 = .{0.0} ** max_spot_lights,
+    spot_light_inner_angle_cos: [max_spot_lights]f32 = .{1.0} ** max_spot_lights,
+    spot_light_outer_angle_cos: [max_spot_lights]f32 = .{1.0} ** max_spot_lights,
     environment_importance_width: u32 = 0,
     environment_importance_height: u32 = 0,
     emissive_total_area: f32 = 0.0,
-    // Metal's argument ABI rounds this struct up to 16-byte alignment because of
-    // the matrix/vector members in the kernel-side RTParams definition.
-    _tail_pad: [3]u32 = .{ 0, 0, 0 },
+    // Keep the params buffer 16-byte aligned for the Metal argument ABI.
+    _tail_pad: u32 = 0,
 };
 
 comptime {
-    if (@sizeOf(RtParams) != 304) {
-        @compileError("RtParams must stay 304 bytes to match the Metal RT params buffer layout");
+    if (@sizeOf(RtParams) % 16 != 0) {
+        @compileError("RtParams must stay 16-byte aligned for the Metal RT params buffer layout");
     }
 }

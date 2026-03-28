@@ -41,8 +41,11 @@ typedef struct {
     float transmission;
     float ior;
     float thickness;
-    int32_t texture_index;
-    uint32_t _tri_pad;
+    int32_t base_color_texture_index;
+    int32_t metallic_roughness_texture_index;
+    int32_t normal_texture_index;
+    int32_t occlusion_texture_index;
+    int32_t emissive_texture_index;
 } GuavaRTTriangle;
 
 /// 光追渲染参数 — 与 Zig RtParams / Metal RTParams 完全对齐
@@ -60,28 +63,32 @@ typedef struct {
     uint32_t shadow_samples;   /* shadow-only 每像素采样数 */
     uint32_t output_is_half;   /* 1 = RGBA16F output, 0 = BGRA8 output */
     int32_t environment_texture_index;
-    uint32_t _pad2;
     float exposure_params[4];
     float color_grading_params[4];
-    uint32_t _pad3;
-    uint32_t _pad4;
-    uint32_t _pad5;
     uint32_t directional_light_count;
+    uint32_t point_light_count;
+    uint32_t spot_light_count;
+    uint32_t sampling_table_count;
     float directional_light_directions[4][3];
     float directional_light_radiance[4][3];
-    uint32_t sampling_table_count;
+    float point_light_positions[16][3];
+    float point_light_radiance[16][3];
+    float point_light_ranges[16];
+    float spot_light_positions[16][3];
+    float spot_light_directions[16][3];
+    float spot_light_radiance[16][3];
+    float spot_light_ranges[16];
+    float spot_light_inner_angle_cos[16];
+    float spot_light_outer_angle_cos[16];
     uint32_t environment_importance_width;
     uint32_t environment_importance_height;
     float emissive_total_area;
-    /* Metal validates this argument buffer as 304 bytes because the kernel-side
-       RTParams carries 16-byte struct alignment. Keep the tail padding explicit
-       here so Zig/C stay ABI-compatible with the shader. */
-    uint32_t _tail_pad[3];
+    uint32_t _tail_pad;
 } GuavaRTParams;
 
 #ifdef __cplusplus
-static_assert(sizeof(GuavaRTParams) == 304,
-              "GuavaRTParams must stay 304 bytes to match Metal RT argument layout");
+static_assert((sizeof(GuavaRTParams) % 16) == 0,
+              "GuavaRTParams must stay 16-byte aligned to match Metal RT argument layout");
 #endif
 
 /// 创建 Metal RT 上下文。返回 NULL 表示当前设备不支持 Metal RT。

@@ -39,6 +39,13 @@ pub const paths = struct {
         pub const grid = "assets/ui/icons/heroicons/24/solid/squares-2x2.svg";
     };
 
+    pub const viewport_entities = struct {
+        pub const camera = "assets/ui/icons/viewport/camera.svg";
+        pub const directional_light = "assets/ui/icons/viewport/light_sun.svg";
+        pub const point_light = "assets/ui/icons/viewport/light_point.svg";
+        pub const spot_light = "assets/ui/icons/viewport/light_spot.svg";
+    };
+
     pub const place_actors = struct {
         pub const empty = "assets/ui/icons/heroicons/24/solid/squares-2x2.svg";
         pub const camera = "assets/ui/icons/heroicons/24/solid/camera.svg";

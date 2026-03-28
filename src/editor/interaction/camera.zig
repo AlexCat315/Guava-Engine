@@ -196,21 +196,39 @@ pub fn toggleCameraMode(state: *EditorState, layer_context: *engine.core.LayerCo
         return;
     }
     if (state.editor_camera_active) {
-        if (state.scene_camera) |scene_camera_id| {
-            if (layer_context.world.hasEntity(scene_camera_id)) {
-                _ = layer_context.world.setPrimaryCamera(scene_camera_id);
-                state.editor_camera_active = false;
-            }
-        }
+        _ = activateSceneCamera(state, layer_context, null);
         return;
     }
 
-    if (state.editor_camera) |editor_camera_id| {
-        if (layer_context.world.hasEntity(editor_camera_id)) {
-            _ = layer_context.world.setPrimaryCamera(editor_camera_id);
-            state.editor_camera_active = true;
-        }
-    }
+    _ = activateEditorCamera(state, layer_context);
+}
+
+pub fn activateEditorCamera(state: *EditorState, layer_context: *engine.core.LayerContext) bool {
+    const editor_camera_id = state.editor_camera orelse return false;
+    if (!layer_context.world.hasEntity(editor_camera_id)) return false;
+    _ = layer_context.world.setPrimaryCamera(editor_camera_id);
+    state.editor_camera_active = true;
+    return true;
+}
+
+pub fn activateSceneCamera(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    preferred_camera_id: ?engine.scene.EntityId,
+) bool {
+    const scene_camera_id = resolveSceneCameraEntity(state, layer_context, preferred_camera_id) orelse return false;
+    _ = layer_context.world.setPrimaryCamera(scene_camera_id);
+    state.scene_camera = scene_camera_id;
+    state.editor_camera_active = false;
+    return true;
+}
+
+pub fn lookThroughCamera(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    camera_id: engine.scene.EntityId,
+) bool {
+    return activateSceneCamera(state, layer_context, camera_id);
 }
 
 pub fn focusSelection(state: *EditorState, layer_context: *engine.core.LayerContext) void {
@@ -429,6 +447,45 @@ fn applyEditorViewDirection(
     }
     _ = layer_context.world.setPrimaryCamera(camera_id);
     state.editor_camera_active = true;
+}
+
+fn resolveSceneCameraEntity(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    preferred_camera_id: ?engine.scene.EntityId,
+) ?engine.scene.EntityId {
+    if (preferred_camera_id) |camera_id| {
+        if (isValidSceneCameraEntity(state, layer_context, camera_id)) {
+            return camera_id;
+        }
+    }
+    if (state.scene_camera) |camera_id| {
+        if (isValidSceneCameraEntity(state, layer_context, camera_id)) {
+            return camera_id;
+        }
+    }
+    if (layer_context.world.primaryCameraEntity()) |camera_id| {
+        if (isValidSceneCameraEntity(state, layer_context, camera_id)) {
+            return camera_id;
+        }
+    }
+    for (layer_context.world.entities.items) |entity| {
+        if (entity.camera == null) continue;
+        if (state.editor_camera != null and entity.id == state.editor_camera.?) continue;
+        return entity.id;
+    }
+    return null;
+}
+
+fn isValidSceneCameraEntity(
+    state: *const EditorState,
+    layer_context: *engine.core.LayerContext,
+    camera_id: engine.scene.EntityId,
+) bool {
+    if (!layer_context.world.hasEntity(camera_id)) return false;
+    if (state.editor_camera != null and camera_id == state.editor_camera.?) return false;
+    const entity = layer_context.world.getEntityConst(camera_id) orelse return false;
+    return entity.camera != null;
 }
 
 fn requestViewOrientation(
