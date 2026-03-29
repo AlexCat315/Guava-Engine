@@ -388,7 +388,7 @@ pub const BasePass = struct {
             .spot_light_angles = spot_angles,
             .light_counts = .{ @intCast(dir_count), @intCast(pt_count), @intCast(spot_count), 0 },
             .ambient_color = prepared_scene.ambient_color,
-            .shadow_params = .{ 0.0025, 0.0, 0.0, 0.0 }, // bias
+            .shadow_params = .{ 0.0065, 0.0, 0.0, 0.0 }, // bias
             .rt_shadow_params = .{
                 if (prepared_scene.rt_shadow_mask != null) 1.0 else 0.0,
                 prepared_scene.rt_shadow_strength,

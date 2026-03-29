@@ -105,7 +105,7 @@ pub const ShadowPass = struct {
             .fill_mode = .fill,
             .cull_mode = .front, // Cull front faces to avoid Peter Panning
             .front_face = .counter_clockwise,
-            .depth_compare = .less,
+            .depth_compare = .less_or_equal,
             .depth_test = true,
             .depth_write = true,
         });

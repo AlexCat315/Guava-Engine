@@ -83,9 +83,13 @@ pub fn computeCascadeMatrix(
     }
     radius = @ceil(radius * 16.0) / 16.0;
 
-    const z_range = max_z - min_z;
-    min_z -= z_range * 2.5;
-    max_z += z_range * 0.25;
+    const z_range = @max(max_z - min_z, 0.001);
+    // Keep the light-space depth range tight. Excessive padding burns shadow-map
+    // precision and shows up as blocky self-shadowing on flat faces.
+    const caster_guard = @max(radius * 0.85, z_range * 0.45);
+    const receiver_guard = @max(radius * 0.12, z_range * 0.12);
+    min_z -= caster_guard;
+    max_z += receiver_guard;
 
     if (shadow_resolution > 0 and radius > 0) {
         const world_units_per_texel = (radius * 2.0) / shadow_resolution;

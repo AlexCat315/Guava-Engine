@@ -1667,36 +1667,52 @@ pub const Renderer = struct {
                         var taa_resolved = false;
                         if (taa_enabled) {
                             try self.taa_pass.ensureHistoryTexture(&self.rhi, self.scene_viewport.width, self.scene_viewport.height);
-                            try self.taa_pass.syncTextures(&self.rhi, self.scene_viewport.hdrColor().?, null, self.scene_viewport.depth());
-                            const taa_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.taa().? }));
+                            const taa_camera_moved = !std.mem.eql(
+                                u8,
+                                std.mem.asBytes(&prepared_scene.view_matrix),
+                                std.mem.asBytes(&self.prev_view_matrix),
+                            );
+                            const taa_requires_seed = !self.taa_pass.hasValidHistory() or taa_camera_moved;
 
-                            const inv_proj_taa = mat4_mod.inverse(unjittered_projection) orelse mat4_mod.identity();
-                            const jitter_val = self.taa_pass.getJitter();
+                            if (taa_requires_seed) {
+                                self.rhi.blitTexture(frame, self.scene_viewport.hdrColor().?, &self.scene_viewport.taa_texture.?);
+                                self.rhi.blitTexture(frame, self.scene_viewport.hdrColor().?, &self.taa_pass.history_texture.?);
+                                self.taa_pass.markHistoryValid();
+                                taa_resolved = true;
+                            } else {
+                                try self.taa_pass.syncTextures(&self.rhi, self.scene_viewport.hdrColor().?, null, self.scene_viewport.depth());
+                                const taa_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.taa().? }));
 
-                            const taa_uniforms = taa_pass_mod.TAAUniforms{
-                                .projection = unjittered_projection,
-                                .inv_projection = inv_proj_taa,
-                                .view = prepared_scene.view_matrix,
-                                .prev_view = self.prev_view_matrix,
-                                .resolution = .{ @floatFromInt(self.scene_viewport.width), @floatFromInt(self.scene_viewport.height) },
-                                .jitter = .{
-                                    jitter_val[0] / @as(f32, @floatFromInt(self.scene_viewport.width)),
-                                    jitter_val[1] / @as(f32, @floatFromInt(self.scene_viewport.height)),
-                                },
-                                .blend_factor = self.editor_viewport_state.taa_blend_factor,
-                                .motion_blur_scale = 0.0, // No velocity buffer in MVP — disable velocity lookup
-                                .feedback_min = self.editor_viewport_state.taa_feedback_min,
-                                .feedback_max = self.editor_viewport_state.taa_feedback_max,
-                            };
-                            const taa_stats = self.taa_pass.draw(&self.rhi, frame, taa_render_pass, taa_uniforms);
-                            draw_stats.add(taa_stats);
-                            self.rhi.endRenderPass(taa_render_pass);
+                                const inv_proj_taa = mat4_mod.inverse(unjittered_projection) orelse mat4_mod.identity();
+                                const jitter_val = self.taa_pass.getJitter();
 
-                            // Copy TAA output to history for next frame
-                            self.rhi.blitTexture(frame, self.scene_viewport.taa().?, &self.taa_pass.history_texture.?);
-                            taa_resolved = true;
+                                const taa_uniforms = taa_pass_mod.TAAUniforms{
+                                    .projection = unjittered_projection,
+                                    .inv_projection = inv_proj_taa,
+                                    .view = prepared_scene.view_matrix,
+                                    .prev_view = self.prev_view_matrix,
+                                    .resolution = .{ @floatFromInt(self.scene_viewport.width), @floatFromInt(self.scene_viewport.height) },
+                                    .jitter = .{
+                                        jitter_val[0] / @as(f32, @floatFromInt(self.scene_viewport.width)),
+                                        jitter_val[1] / @as(f32, @floatFromInt(self.scene_viewport.height)),
+                                    },
+                                    .blend_factor = self.editor_viewport_state.taa_blend_factor,
+                                    .motion_blur_scale = 0.0, // No velocity buffer in MVP — disable velocity lookup
+                                    .feedback_min = self.editor_viewport_state.taa_feedback_min,
+                                    .feedback_max = self.editor_viewport_state.taa_feedback_max,
+                                };
+                                const taa_stats = self.taa_pass.draw(&self.rhi, frame, taa_render_pass, taa_uniforms);
+                                draw_stats.add(taa_stats);
+                                self.rhi.endRenderPass(taa_render_pass);
+
+                                self.rhi.blitTexture(frame, self.scene_viewport.taa().?, &self.taa_pass.history_texture.?);
+                                self.taa_pass.markHistoryValid();
+                                taa_resolved = true;
+                            }
 
                             self.taa_pass.advanceFrame();
+                        } else {
+                            self.taa_pass.invalidateHistory();
                         }
 
                         // Select input for bloom/tonemap: use TAA output if resolved, otherwise HDR scene color.

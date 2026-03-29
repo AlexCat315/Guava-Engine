@@ -39,6 +39,7 @@ pub const TAAPass = struct {
     pipeline: ?rhi_mod.GraphicsPipeline = null,
     stages: ?shader_support.ProgramStages = null,
     history_texture: ?rhi_mod.Texture = null,
+    history_valid: bool = false,
     frame_index: u32 = 0,
     halton_sequence: [8][2]f32 = undefined,
 
@@ -84,12 +85,25 @@ pub const TAAPass = struct {
         self.frame_index += 1;
     }
 
+    pub fn invalidateHistory(self: *TAAPass) void {
+        self.history_valid = false;
+    }
+
+    pub fn hasValidHistory(self: *const TAAPass) bool {
+        return self.history_valid and self.history_texture != null;
+    }
+
+    pub fn markHistoryValid(self: *TAAPass) void {
+        self.history_valid = self.history_texture != null;
+    }
+
     pub fn ensureHistoryTexture(self: *TAAPass, device: *rhi_mod.RhiDevice, width: u32, height: u32) !void {
         if (self.history_texture) |ht| {
             if (ht.desc.width == width and ht.desc.height == height) return;
             var tex = self.history_texture.?;
             device.releaseTexture(&tex);
             self.history_texture = null;
+            self.history_valid = false;
         }
         self.history_texture = try device.createTexture(.{
             .width = width,
@@ -97,6 +111,7 @@ pub const TAAPass = struct {
             .format = .rgba16_float,
             .usage = rhi_types.TextureUsage.color_target | rhi_types.TextureUsage.sampler,
         });
+        self.history_valid = false;
     }
 
     pub fn syncTextures(
@@ -162,6 +177,7 @@ pub const TAAPass = struct {
         device.bindGraphicsPipeline(pass, &self.pipeline.?);
         device.bindVertexBuffer(pass, 0, &self.fullscreen_vertex_buffer.?, 0);
         device.bindGroup(pass, &self.bind_group.?);
+        device.pushVertexUniformData(frame, 0, std.mem.asBytes(&uniforms));
         device.pushFragmentUniformData(frame, 0, std.mem.asBytes(&uniforms));
         device.drawPrimitives(pass, fullscreen_triangle.len, 1, 0, 0);
 

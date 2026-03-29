@@ -313,7 +313,7 @@ pub const ShadowMapState = struct {
             .address_mode_v = .clamp_to_edge,
             .address_mode_w = .clamp_to_edge,
             .enable_compare = true,
-            .compare_op = .less,
+            .compare_op = .less_or_equal,
         });
 
         return .{
