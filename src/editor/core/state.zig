@@ -152,6 +152,47 @@ pub const ViewportPipelineMode = enum {
     path_trace,
 };
 
+pub const ViewportShadingMode = enum {
+    solid,
+    material,
+    rendered,
+    wireframe,
+};
+
+pub fn viewportShadingMode(state: *const EditorState) ViewportShadingMode {
+    if (state.viewport_pipeline_mode == .path_trace) {
+        return .rendered;
+    }
+    return switch (state.viewport_render_mode) {
+        .textured => .material,
+        .wireframe => .wireframe,
+        .unlit => .solid,
+    };
+}
+
+pub fn setViewportShadingMode(state: *EditorState, mode: ViewportShadingMode) bool {
+    const entering_rendered = state.viewport_pipeline_mode != .path_trace and mode == .rendered;
+    switch (mode) {
+        .solid => {
+            state.viewport_pipeline_mode = .raster;
+            state.viewport_render_mode = .unlit;
+        },
+        .material => {
+            state.viewport_pipeline_mode = .raster;
+            state.viewport_render_mode = .textured;
+        },
+        .rendered => {
+            state.viewport_pipeline_mode = .path_trace;
+            state.viewport_render_mode = .textured;
+        },
+        .wireframe => {
+            state.viewport_pipeline_mode = .raster;
+            state.viewport_render_mode = .wireframe;
+        },
+    }
+    return entering_rendered;
+}
+
 pub const ViewportLutPreset = engine.render.EditorViewportLutPreset;
 
 pub const ViewportViewPreset = enum {

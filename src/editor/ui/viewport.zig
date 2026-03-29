@@ -27,6 +27,7 @@ const ui_icons = @import("icons.zig");
 const layout = @import("layout.zig");
 const playback_session = @import("../core/playback_session.zig");
 const viewport_log = std.log.scoped(.viewport_input);
+const ViewportShadingMode = state_mod.ViewportShadingMode;
 
 var g_last_viewport_hovered: ?bool = null;
 var g_last_viewport_overlay_hovered: ?bool = null;
@@ -759,18 +760,29 @@ fn drawViewportModeZone(state: *EditorState, layer_context: *engine.core.LayerCo
     gui.pushStyleVarVec2(.item_spacing, .{ 4.0, 4.0 });
     defer gui.popStyleVar(1);
 
-    const raster_active = state.viewport_pipeline_mode == .raster;
-    const path_trace_active = state.viewport_pipeline_mode == .path_trace;
+    const shading_mode = state_mod.viewportShadingMode(state);
 
-    if (drawModeButton("Raster##viewport_mode_raster", raster_active, 82.0)) {
-        state.viewport_pipeline_mode = .raster;
+    if (drawModeButton(state.text(.solid_view), shading_mode == .solid, 64.0)) {
+        applyViewportShadingMode(state, layer_context, .solid);
     }
     gui.sameLine();
-    if (drawModeButton("PathTrace##viewport_mode_pathtrace", path_trace_active, 92.0)) {
-        state.viewport_pipeline_mode = .path_trace;
-        state.viewport_render_mode = .textured;
-        // 切换到 PathTrace 时强制同步当前场景状态并重新渲染，
-        // 而 Raster 模式中的操作不会影响 PathTrace 渐进状态。
+    if (drawModeButton(state.text(.material_view), shading_mode == .material, 72.0)) {
+        applyViewportShadingMode(state, layer_context, .material);
+    }
+    gui.sameLine();
+    if (drawModeButton(state.text(.rendered_view), shading_mode == .rendered, 76.0)) {
+        applyViewportShadingMode(state, layer_context, .rendered);
+    }
+}
+
+fn applyViewportShadingMode(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    shading_mode: ViewportShadingMode,
+) void {
+    if (state_mod.setViewportShadingMode(state, shading_mode)) {
+        // 切换到 Rendered 时强制同步当前场景状态并重新渲染，
+        // 而 Material / Solid / Wireframe 不影响 PathTrace 渐进状态。
         layer_context.renderer.resetPathTraceState();
     }
 }
@@ -1783,18 +1795,22 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
         gui.openPopup(render_popup_id);
     }
     if (gui.isItemHovered()) {
-        gui.setTooltip(state.text(.render_modes));
+        gui.setTooltip(state.text(.viewport_shading_mode_tooltip));
     }
     if (gui.beginPopup(render_popup_id)) {
         defer gui.endPopup();
-        if (gui.menuItem(state.text(.textured), null, state.viewport_render_mode == .textured, true)) {
-            state.viewport_render_mode = .textured;
+        const shading_mode = state_mod.viewportShadingMode(state);
+        if (gui.menuItem(state.text(.solid_view), null, shading_mode == .solid, true)) {
+            applyViewportShadingMode(state, layer_context, .solid);
         }
-        if (gui.menuItem(state.text(.wireframe), null, state.viewport_render_mode == .wireframe, true)) {
-            state.viewport_render_mode = .wireframe;
+        if (gui.menuItem(state.text(.material_view), null, shading_mode == .material, true)) {
+            applyViewportShadingMode(state, layer_context, .material);
         }
-        if (gui.menuItem(state.text(.unlit), null, state.viewport_render_mode == .unlit, true)) {
-            state.viewport_render_mode = .unlit;
+        if (gui.menuItem(state.text(.rendered_view), null, shading_mode == .rendered, true)) {
+            applyViewportShadingMode(state, layer_context, .rendered);
+        }
+        if (gui.menuItem(state.text(.wireframe), null, shading_mode == .wireframe, true)) {
+            applyViewportShadingMode(state, layer_context, .wireframe);
         }
     }
     gui.sameLine();
@@ -2311,10 +2327,11 @@ fn drawViewportViewCube(state: *EditorState, layer_context: *engine.core.LayerCo
 }
 
 fn currentRenderModeLabel(state: *const EditorState) []const u8 {
-    return switch (state.viewport_render_mode) {
-        .textured => state.text(.textured),
+    return switch (state_mod.viewportShadingMode(state)) {
+        .solid => state.text(.solid_view),
+        .material => state.text(.material_view),
+        .rendered => state.text(.rendered_view),
         .wireframe => state.text(.wireframe),
-        .unlit => state.text(.unlit),
     };
 }
 
@@ -2327,9 +2344,10 @@ fn currentViewPresetIcon(state: *const EditorState) []const u8 {
 }
 
 fn currentRenderModeIcon(state: *const EditorState) []const u8 {
-    return switch (state.viewport_render_mode) {
-        .textured => ui_icons.paths.viewport.textured,
+    return switch (state_mod.viewportShadingMode(state)) {
+        .solid => ui_icons.paths.viewport.solid,
+        .material => ui_icons.paths.viewport.material,
+        .rendered => ui_icons.paths.viewport.rendered,
         .wireframe => ui_icons.paths.viewport.wireframe,
-        .unlit => ui_icons.paths.viewport.unlit,
     };
 }

@@ -166,8 +166,8 @@ pub const EditorLayer = struct {
             std.log.warn("Editor: failed to load AI provider settings: {s}", .{@errorName(err)});
         };
 
-        // Force textured startup viewport so imported model textures are visible immediately.
-        self.state.viewport_render_mode = .textured;
+        // Default to Material preview on startup so imported model textures are visible immediately.
+        _ = @import("state.zig").setViewportShadingMode(&self.state, .material);
         self.state.viewport_debug_overlay = false;
 
         self.state.dock_layout_initialized = false;

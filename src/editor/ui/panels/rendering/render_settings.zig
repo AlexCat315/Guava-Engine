@@ -32,6 +32,7 @@ pub fn drawRenderSettingsWindow(state: *EditorState, layer_context: *engine.core
             camera.toggleCameraMode(state, layer_context);
         },
         .third => {},
+        .fourth => {},
         .none => {},
     }
 
@@ -41,15 +42,23 @@ pub fn drawRenderSettingsWindow(state: *EditorState, layer_context: *engine.core
         .first => camera.setViewPreset(state, layer_context, .perspective),
         .second => camera.setViewPreset(state, layer_context, .top),
         .third => camera.setViewPreset(state, layer_context, .side),
+        .fourth => {},
         .none => {},
     }
 
     gui.separator();
-    gui.text(state.text(.render_mode));
-    switch (drawButtonRow3(state.text(.textured), state.text(.wireframe), state.text(.unlit), 92.0)) {
-        .first => state.viewport_render_mode = .textured,
-        .second => state.viewport_render_mode = .wireframe,
-        .third => state.viewport_render_mode = .unlit,
+    gui.text(state.text(.render_modes));
+    switch (drawButtonRow4(
+        state.text(.solid_view),
+        state.text(.material_view),
+        state.text(.rendered_view),
+        state.text(.wireframe),
+        72.0,
+    )) {
+        .first => applyViewportShadingMode(state, layer_context, .solid),
+        .second => applyViewportShadingMode(state, layer_context, .material),
+        .third => applyViewportShadingMode(state, layer_context, .rendered),
+        .fourth => applyViewportShadingMode(state, layer_context, .wireframe),
         .none => {},
     }
 
@@ -100,6 +109,7 @@ pub fn drawRenderSettingsWindow(state: *EditorState, layer_context: *engine.core
         .first => state.transform_space = .local,
         .second => state.transform_space = .world,
         .third => {},
+        .fourth => {},
         .none => {},
     }
 
@@ -398,6 +408,7 @@ const ButtonRowResult = enum {
     first,
     second,
     third,
+    fourth,
 };
 
 fn drawButtonRow2(first: []const u8, second: []const u8, min_button_width: f32) ButtonRowResult {
@@ -428,6 +439,37 @@ fn drawButtonRow3(first: []const u8, second: []const u8, third: []const u8, min_
         return .third;
     }
     return .none;
+}
+
+fn drawButtonRow4(first: []const u8, second: []const u8, third: []const u8, fourth: []const u8, min_button_width: f32) ButtonRowResult {
+    const columns = layout.responsiveButtonColumns(4, min_button_width);
+    const width = layout.responsiveButtonWidth(columns);
+    if (gui.buttonEx(first, width, 0.0)) {
+        return .first;
+    }
+    layout.advanceResponsiveRow(1, columns);
+    if (gui.buttonEx(second, width, 0.0)) {
+        return .second;
+    }
+    layout.advanceResponsiveRow(2, columns);
+    if (gui.buttonEx(third, width, 0.0)) {
+        return .third;
+    }
+    layout.advanceResponsiveRow(3, columns);
+    if (gui.buttonEx(fourth, width, 0.0)) {
+        return .fourth;
+    }
+    return .none;
+}
+
+fn applyViewportShadingMode(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    shading_mode: state_mod.ViewportShadingMode,
+) void {
+    if (state_mod.setViewportShadingMode(state, shading_mode)) {
+        layer_context.renderer.resetPathTraceState();
+    }
 }
 
 const PtQualityPreset = enum {
