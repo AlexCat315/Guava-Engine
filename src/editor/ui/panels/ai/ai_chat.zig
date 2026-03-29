@@ -1996,7 +1996,8 @@ fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerCo
     var provider_prefs_dirty = false;
 
     gui.separator();
-    _ = gui.beginChild("ai_provider_settings##jt", 0.0, 320.0, true);
+    const settings_height = gui.contentRegionAvail()[1];
+    _ = gui.beginChild("ai_provider_settings##jt", 0.0, settings_height, true);
     defer gui.endChild();
 
     gui.pushStyleColor(.text, .{ 0.78, 0.83, 0.92, 1.0 });

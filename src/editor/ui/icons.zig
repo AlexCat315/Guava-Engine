@@ -7,72 +7,72 @@ const icon_cache = @import("icon_cache.zig");
 
 pub const paths = struct {
     pub const toolbar = struct {
-        pub const select = "assets/ui/icons/heroicons/24/solid/cursor-arrow-rays.svg";
-        pub const move = "assets/ui/icons/heroicons/24/solid/arrows-up-down.svg";
-        pub const rotate = "assets/ui/icons/heroicons/24/solid/arrow-path.svg";
-        pub const scale = "assets/ui/icons/heroicons/24/solid/arrows-pointing-out.svg";
-        pub const camera = "assets/ui/icons/heroicons/24/solid/camera.svg";
-        pub const material = "assets/ui/icons/heroicons/24/solid/cube.svg";
-        pub const overlay = "assets/ui/icons/heroicons/24/solid/eye.svg";
-        pub const snap = "assets/ui/icons/filled/grid-pattern.svg";
-        pub const snap_translate = "assets/ui/icons/filled/direction-arrows.svg";
-        pub const snap_rotate = "assets/ui/icons/filled/clock.svg";
-        pub const snap_scale = "assets/ui/icons/filled/arrow-big-up.svg";
-        pub const folder = "assets/ui/icons/heroicons/24/solid/squares-2x2.svg";
-        pub const play = "assets/ui/icons/heroicons/24/solid/play.svg";
-        pub const pause = "assets/ui/icons/heroicons/24/solid/pause.svg";
-        pub const stop = "assets/ui/icons/heroicons/24/solid/squares-2x2.svg";
-        pub const step = "assets/ui/icons/heroicons/24/solid/forward.svg";
-        pub const settings = "assets/ui/icons/heroicons/24/solid/cog-6-tooth.svg";
-        pub const transform_global = "assets/ui/icons/filled/globe.svg";
-        pub const transform_local = "assets/ui/icons/heroicons/24/solid/cube.svg";
-        pub const ai_chat = "assets/ui/icons/filled/sparkle.svg";
-        pub const chevron_down = "assets/ui/icons/filled/chevron-down.svg";
-        pub const plus = "assets/ui/icons/filled/plus.svg";
-        pub const x_mark = "assets/ui/icons/filled/x-mark.svg";
+        pub const select = "assets/ui/icons/svg/cursor-arrow-rays.svg";
+        pub const move = "assets/ui/icons/svg/arrows-up-down.svg";
+        pub const rotate = "assets/ui/icons/svg/arrow-path.svg";
+        pub const scale = "assets/ui/icons/svg/arrows-pointing-out.svg";
+        pub const camera = "assets/ui/icons/svg/camera.svg";
+        pub const material = "assets/ui/icons/svg/cube.svg";
+        pub const overlay = "assets/ui/icons/svg/eye.svg";
+        pub const snap = "assets/ui/icons/svg/grid-pattern.svg";
+        pub const snap_translate = "assets/ui/icons/svg/direction-arrows.svg";
+        pub const snap_rotate = "assets/ui/icons/svg/clock.svg";
+        pub const snap_scale = "assets/ui/icons/svg/arrow-big-up.svg";
+        pub const folder = "assets/ui/icons/svg/squares-2x2.svg";
+        pub const play = "assets/ui/icons/svg/play.svg";
+        pub const pause = "assets/ui/icons/svg/pause.svg";
+        pub const stop = "assets/ui/icons/svg/squares-2x2.svg";
+        pub const step = "assets/ui/icons/svg/forward.svg";
+        pub const settings = "assets/ui/icons/svg/cog-6-tooth.svg";
+        pub const transform_global = "assets/ui/icons/svg/globe.svg";
+        pub const transform_local = "assets/ui/icons/svg/cube.svg";
+        pub const ai_chat = "assets/ui/icons/svg/sparkle.svg";
+        pub const chevron_down = "assets/ui/icons/svg/chevron-down.svg";
+        pub const plus = "assets/ui/icons/svg/plus.svg";
+        pub const x_mark = "assets/ui/icons/svg/delete.svg";
     };
 
     pub const viewport = struct {
-        pub const perspective = "assets/ui/icons/heroicons/24/solid/cube.svg";
-        pub const top = "assets/ui/icons/heroicons/24/solid/arrows-up-down.svg";
-        pub const side = "assets/ui/icons/heroicons/24/solid/cursor-arrow-rays.svg";
-        pub const textured = "assets/ui/icons/heroicons/24/solid/squares-2x2.svg";
-        pub const wireframe = "assets/ui/icons/heroicons/24/solid/squares-2x2.svg";
-        pub const unlit = "assets/ui/icons/heroicons/24/solid/eye.svg";
-        pub const grid = "assets/ui/icons/heroicons/24/solid/squares-2x2.svg";
+        pub const perspective = "assets/ui/icons/svg/cube.svg";
+        pub const top = "assets/ui/icons/svg/arrows-up-down.svg";
+        pub const side = "assets/ui/icons/svg/cursor-arrow-rays.svg";
+        pub const textured = "assets/ui/icons/svg/squares-2x2.svg";
+        pub const wireframe = "assets/ui/icons/svg/squares-2x2.svg";
+        pub const unlit = "assets/ui/icons/svg/eye.svg";
+        pub const grid = "assets/ui/icons/svg/squares-2x2.svg";
     };
 
     pub const viewport_entities = struct {
-        pub const camera = "assets/ui/icons/viewport/camera.svg";
-        pub const directional_light = "assets/ui/icons/viewport/light_sun.svg";
-        pub const point_light = "assets/ui/icons/viewport/light_point.svg";
-        pub const spot_light = "assets/ui/icons/viewport/light_spot.svg";
+        pub const camera = "assets/ui/icons/svg/camera.svg";
+        pub const directional_light = "assets/ui/icons/svg/light_sun.svg";
+        pub const point_light = "assets/ui/icons/svg/light_point.svg";
+        pub const spot_light = "assets/ui/icons/svg/light_spot.svg";
     };
 
     pub const place_actors = struct {
-        pub const empty = "assets/ui/icons/heroicons/24/solid/squares-2x2.svg";
-        pub const camera = "assets/ui/icons/heroicons/24/solid/camera.svg";
-        pub const cube = "assets/ui/icons/heroicons/24/solid/cube.svg";
-        pub const sphere = "assets/ui/icons/heroicons/24/solid/cube.svg";
-        pub const plane = "assets/ui/icons/heroicons/24/solid/squares-2x2.svg";
-        pub const point_light = "assets/ui/icons/heroicons/24/solid/light-bulb.svg";
-        pub const spot_light = "assets/ui/icons/heroicons/24/solid/light-bulb.svg";
-        pub const directional_light = "assets/ui/icons/heroicons/24/solid/light-bulb.svg";
-        pub const vfx_fountain = "assets/ui/icons/heroicons/24/solid/play.svg";
-        pub const vfx_orbit = "assets/ui/icons/heroicons/24/solid/arrow-path.svg";
+        pub const empty = "assets/ui/icons/svg/squares-2x2.svg";
+        pub const camera = "assets/ui/icons/svg/camera.svg";
+        pub const cube = "assets/ui/icons/svg/cube.svg";
+        pub const sphere = "assets/ui/icons/svg/cube.svg";
+        pub const plane = "assets/ui/icons/svg/squares-2x2.svg";
+        pub const point_light = "assets/ui/icons/svg/light-bulb.svg";
+        pub const spot_light = "assets/ui/icons/svg/light-bulb.svg";
+        pub const directional_light = "assets/ui/icons/svg/light-bulb.svg";
+        pub const vfx_fountain = "assets/ui/icons/svg/play.svg";
+        pub const vfx_orbit = "assets/ui/icons/svg/arrow-path.svg";
     };
 
     pub const hierarchy = struct {
-        pub const camera = "assets/ui/icons/heroicons/24/solid/camera.svg";
-        pub const light = "assets/ui/icons/heroicons/24/solid/light-bulb.svg";
-        pub const vfx = "assets/ui/icons/heroicons/24/solid/play.svg";
-        pub const mesh = "assets/ui/icons/heroicons/24/solid/cube.svg";
-        pub const object = "assets/ui/icons/heroicons/24/solid/squares-2x2.svg";
-        pub const folder = "assets/ui/icons/heroicons/24/solid/squares-2x2.svg";
-        pub const eye = "assets/ui/icons/heroicons/24/solid/eye.svg";
-        pub const eye_off = "assets/ui/icons/heroicons/24/solid/eye-slash.svg";
-        pub const lock = "assets/ui/icons/heroicons/24/solid/lock-closed.svg";
-        pub const unlock = "assets/ui/icons/heroicons/24/solid/lock-open.svg";
+        pub const camera = "assets/ui/icons/svg/camera.svg";
+        pub const light = "assets/ui/icons/svg/light-bulb.svg";
+        pub const vfx = "assets/ui/icons/svg/play.svg";
+        pub const mesh = "assets/ui/icons/svg/cube.svg";
+        pub const object = "assets/ui/icons/svg/squares-2x2.svg";
+        pub const folder = "assets/ui/icons/svg/squares-2x2.svg";
+        pub const eye = "assets/ui/icons/svg/eye.svg";
+        pub const eye_off = "assets/ui/icons/svg/eye-slash.svg";
+        pub const lock = "assets/ui/icons/svg/lock-closed.svg";
+        pub const unlock = "assets/ui/icons/svg/lock-open.svg";
     };
 };
 
@@ -176,4 +176,17 @@ pub fn drawIconButton(
         gui.popStyleColor(3);
     }
     return gui.imageButton(id, texture, size, size, .{ 0.0, 0.0, 0.0, 0.0 }, .{ 1.0, 1.0, 1.0, 1.0 });
+}
+
+// Test whether the icon file exists and can be loaded as a texture
+test "Test whether the icon file exists and can be loaded as a texture" {
+    const state = EditorState{
+        .icon_cache = icon_cache.init(),
+    };
+    const layer_context = engine.core.LayerContext{
+        .window = null, // This test doesn't require a window
+    };
+    const path = paths.toolbar.select;
+    const result = ensureTintedIconTexture(&state, &layer_context, path, 24.0, .{ 255, 255, 255, 255 });
+    std.testing.expect(result != null);
 }

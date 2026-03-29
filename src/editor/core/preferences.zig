@@ -101,17 +101,15 @@ fn providerLooksLikePlaceholder(provider: PersistedProvider, provider_type: AiPr
     const endpoint = trimSpace(persistedFieldSlice(provider.endpoint));
     const model = trimSpace(persistedFieldSlice(provider.model));
     const api_key = trimSpace(persistedFieldSlice(provider.api_key));
-    const defaults = provider_defaults[@intFromEnum(provider_type)];
 
-    const endpoint_is_default_or_empty = endpointLooksLikeAnyDefault(endpoint) or
-        std.mem.eql(u8, endpoint, defaults.endpoint);
-    const model_is_default_or_empty = modelLooksLikeAnyDefault(model) or
-        std.mem.eql(u8, model, defaults.model);
+    // Only treat as placeholder when ALL fields are truly empty or auto-generated.
+    // A provider with a custom endpoint or model is user-configured and must be preserved.
+    if (!looksLikeGeneratedProviderName(name)) return false;
+    if (endpoint.len > 0 and !endpointLooksLikeAnyDefault(endpoint)) return false;
+    if (model.len > 0 and !modelLooksLikeAnyDefault(model)) return false;
 
-    return looksLikeGeneratedProviderName(name) and
-        endpoint_is_default_or_empty and
-        model_is_default_or_empty and
-        api_key.len == 0;
+    _ = provider_type;
+    return endpoint.len == 0 and model.len == 0 and api_key.len == 0;
 }
 
 fn providerHasCompleteConfig(provider: *const state_mod.AiProviderConfig, provider_type: AiProviderType) bool {
