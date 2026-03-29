@@ -237,7 +237,7 @@ fn setRenderOutputStatusFmt(
     _ = std.fmt.bufPrint(&state.render_output_status_buffer, fmt, args) catch {};
 }
 
-fn worldPointToViewportScreen(
+fn projectWorldPointToViewport(
     state: *EditorState,
     layer_context: *engine.core.LayerContext,
     world_position: [3]f32,
@@ -251,7 +251,7 @@ fn worldPointToViewportScreen(
     const aspect = @as(f32, @floatFromInt(viewport_size[0])) / @as(f32, @floatFromInt(viewport_size[1]));
     const projection = engine.math.mat4.projectionForCamera(camera.activeCameraComponent(state, layer_context), aspect);
     const view_projection = engine.math.mat4.mul(projection, view);
-    const clip = mulPoint4(view_projection, .{ world_position[0], world_position[1], world_position[2], 1.0 });
+    const clip = transformPoint4(view_projection, .{ world_position[0], world_position[1], world_position[2], 1.0 });
     if (@abs(clip[3]) <= 0.00001 or clip[3] <= 0.0) {
         return null;
     }
@@ -268,7 +268,7 @@ fn worldPointToViewportScreen(
     };
 }
 
-fn mulPoint4(matrix_value: engine.math.mat4.Mat4, point: [4]f32) [4]f32 {
+fn transformPoint4(matrix_value: engine.math.mat4.Mat4, point: [4]f32) [4]f32 {
     return .{
         matrix_value[0] * point[0] + matrix_value[4] * point[1] + matrix_value[8] * point[2] + matrix_value[12] * point[3],
         matrix_value[1] * point[0] + matrix_value[5] * point[1] + matrix_value[9] * point[2] + matrix_value[13] * point[3],
@@ -361,7 +361,7 @@ fn drawViewportSceneEntityIcons(state: *EditorState, layer_context: *engine.core
         if (entity.camera == null and entity.light == null) continue;
 
         const world_transform = layer_context.scene.worldTransformConst(entity.id) orelse entity.local_transform;
-        const screen_pos = worldPointToViewportScreen(state, layer_context, world_transform.translation) orelse continue;
+        const screen_pos = projectWorldPointToViewport(state, layer_context, world_transform.translation) orelse continue;
 
         var is_selected = false;
         for (selected_entities) |selected_id| {
@@ -448,28 +448,28 @@ fn drawViewportToolbarStrip(state: *EditorState, layer_context: *engine.core.Lay
     defer gui.popStyleVar(1);
 
     if (try drawToolbarIconButton(state, layer_context, "toolbar_select", ui_icons.paths.toolbar.select, state.manipulation_mode == .none)) {
-        try manipulation.selectTool(state, layer_context);
+        try manipulation.activateSelectTool(state, layer_context);
     }
     if (gui.isItemHovered()) {
         gui.setTooltip(state.text(.select_tool));
     }
     gui.sameLine();
     if (try drawToolbarIconButton(state, layer_context, "toolbar_move", ui_icons.paths.toolbar.move, state.manipulation_mode == .translate)) {
-        try manipulation.beginManipulation(state, layer_context, .translate);
+        try manipulation.activateTransformTool(state, layer_context, .translate);
     }
     if (gui.isItemHovered()) {
         gui.setTooltip(state.text(.move_tool));
     }
     gui.sameLine();
     if (try drawToolbarIconButton(state, layer_context, "toolbar_rotate", ui_icons.paths.toolbar.rotate, state.manipulation_mode == .rotate)) {
-        try manipulation.beginManipulation(state, layer_context, .rotate);
+        try manipulation.activateTransformTool(state, layer_context, .rotate);
     }
     if (gui.isItemHovered()) {
         gui.setTooltip(state.text(.rotate_tool));
     }
     gui.sameLine();
     if (try drawToolbarIconButton(state, layer_context, "toolbar_scale", ui_icons.paths.toolbar.scale, state.manipulation_mode == .scale)) {
-        try manipulation.beginManipulation(state, layer_context, .scale);
+        try manipulation.activateTransformTool(state, layer_context, .scale);
     }
     if (gui.isItemHovered()) {
         gui.setTooltip(state.text(.scale_tool));
@@ -709,7 +709,7 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
 
     // Use ImGui mouse coordinates so hover/mouse hit-testing stays in the same space
     // as the docked viewport item on HiDPI platforms.
-    var mouse_pos = effectiveViewportMousePos(layer_context);
+    var mouse_pos = effectiveCursorPos(layer_context);
     state.viewport_hovered = window_hovered and isPointInViewportRect(mouse_pos, state.viewport_origin, state.viewport_extent);
 
     const drawable_size = if (state.render_output_job_stage == .resize_and_render)
@@ -762,7 +762,7 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
             @max(image_max[0] - image_min[0], 0.0),
             @max(image_max[1] - image_min[1], 0.0),
         };
-        mouse_pos = effectiveViewportMousePos(layer_context);
+        mouse_pos = effectiveCursorPos(layer_context);
         state.viewport_hovered = gui.isItemHovered() and isPointInViewportRect(mouse_pos, state.viewport_origin, state.viewport_extent);
         state.viewport_has_image = true;
 
@@ -954,7 +954,7 @@ pub fn handleViewportSelection(state: *EditorState, layer_context: *engine.core.
                 if (camera.activeCameraRayFromViewportPixel(state, layer_context, pixel, viewport_size)) |ray| {
                     if (manipulation.pickGizmoHandle(state, layer_context, ray)) |picked_handle| {
                         viewport_log.info("picked gizmo handle axis={s} mode={s}", .{ @tagName(picked_handle.axis), @tagName(picked_handle.mode) });
-                        try manipulation.beginManipulationFromPickedGizmoHandle(state, layer_context, picked_handle, ray);
+                        try manipulation.beginGizmoHandleDrag(state, layer_context, picked_handle, ray);
                         return;
                     }
                 }
@@ -1073,16 +1073,16 @@ fn drawViewportContextMenu(state: *EditorState, layer_context: *engine.core.Laye
         }
         gui.separator();
         if (gui.menuItem(state.text(.select_tool), "Q", state.manipulation_mode == .none, true)) {
-            try manipulation.selectTool(state, layer_context);
+            try manipulation.activateSelectTool(state, layer_context);
         }
         if (gui.menuItem(state.text(.move_tool), "W", state.manipulation_mode == .translate, true)) {
-            try manipulation.beginManipulation(state, layer_context, .translate);
+            try manipulation.activateTransformTool(state, layer_context, .translate);
         }
         if (gui.menuItem(state.text(.rotate_tool), "E", state.manipulation_mode == .rotate, true)) {
-            try manipulation.beginManipulation(state, layer_context, .rotate);
+            try manipulation.activateTransformTool(state, layer_context, .rotate);
         }
         if (gui.menuItem(state.text(.scale_tool), "R", state.manipulation_mode == .scale, true)) {
-            try manipulation.beginManipulation(state, layer_context, .scale);
+            try manipulation.activateTransformTool(state, layer_context, .scale);
         }
         gui.separator();
         if (gui.menuItem(state.text(.delete), null, false, has_selection)) {
@@ -1161,7 +1161,7 @@ fn viewportPixelUnderMouse(state: *const EditorState, layer_context: *const engi
         return null;
     }
 
-    const mouse_pos = effectiveViewportMousePos(layer_context);
+    const mouse_pos = effectiveCursorPos(layer_context);
     const local_x = mouse_pos[0] - state.viewport_origin[0];
     const local_y = mouse_pos[1] - state.viewport_origin[1];
     if (local_x < 0.0 or local_y < 0.0 or local_x > state.viewport_extent[0] or local_y > state.viewport_extent[1]) {
@@ -1841,7 +1841,7 @@ fn logViewportStateChange(state: *const EditorState, layer_context: *const engin
         g_last_viewport_has_image == null or
         g_last_viewport_has_image.? != state.viewport_has_image)
     {
-        const mouse_pos = effectiveViewportMousePos(layer_context);
+        const mouse_pos = effectiveCursorPos(layer_context);
         viewport_log.info(
             "viewport state hovered={} overlay_hovered={} has_image={} mouse=({d:.1},{d:.1}) origin=({d:.1},{d:.1}) extent=({d:.1},{d:.1})",
             .{
@@ -1862,7 +1862,7 @@ fn logViewportStateChange(state: *const EditorState, layer_context: *const engin
     }
 }
 
-fn effectiveViewportMousePos(layer_context: *const engine.core.LayerContext) [2]f32 {
+fn effectiveCursorPos(layer_context: *const engine.core.LayerContext) [2]f32 {
     const imgui_mouse_pos = gui.mousePos();
     const invalid_imgui_mouse = !std.math.isFinite(imgui_mouse_pos[0]) or
         !std.math.isFinite(imgui_mouse_pos[1]) or

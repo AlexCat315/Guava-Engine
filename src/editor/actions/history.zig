@@ -262,7 +262,7 @@ pub fn deleteEntities(
     defer if (before_owned) deinitEntitySnapshots(state, &before);
     const selection_before = layer_context.renderer.selectedEntities();
 
-    manipulation.endManipulation(state);
+    manipulation.clearTransformTool(state);
     var changed = false;
     if (layer_context.command_queue) |queue| {
         for (roots.items) |entity_id| {
@@ -740,7 +740,7 @@ pub fn loadScene(state: *EditorState, layer_context: *engine.core.LayerContext) 
 }
 
 pub fn newScene(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
-    manipulation.endManipulation(state);
+    manipulation.clearTransformTool(state);
     vfx_runtime.clearAll(layer_context);
     layer_context.world.clear();
     try layer_context.renderer.resetSceneState();
@@ -759,7 +759,7 @@ pub fn newScene(state: *EditorState, layer_context: *engine.core.LayerContext) !
 }
 
 pub fn loadScenePath(state: *EditorState, layer_context: *engine.core.LayerContext, path: []const u8) !void {
-    manipulation.endManipulation(state);
+    manipulation.clearTransformTool(state);
     vfx_runtime.clearAll(layer_context);
     var runtime_state = engine.scene.SceneRuntimeState{};
     engine.scene.loadWorldWithRuntimeStateFromPath(
@@ -1136,7 +1136,7 @@ fn applySceneSnapshot(
     snapshot: []const u8,
     selection: *const command_mod.SelectionSnapshot,
 ) !void {
-    manipulation.endManipulation(state);
+    manipulation.clearTransformTool(state);
     vfx_runtime.clearAll(layer_context);
     try engine.scene.deserializeWorldFromSlice(layer_context.world.allocator, layer_context.world, snapshot);
     try layer_context.renderer.resetSceneState();
@@ -1159,7 +1159,7 @@ fn applySubtreeDeltaCommand(
     selection: *const command_mod.SelectionSnapshot,
     direction: ApplyDirection,
 ) !void {
-    manipulation.endManipulation(state);
+    manipulation.clearTransformTool(state);
     vfx_runtime.clearAll(layer_context);
 
     for (command.deltas.items) |*delta| {

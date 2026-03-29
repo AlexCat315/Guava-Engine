@@ -66,25 +66,25 @@ pub const ManipulationTarget = enum {
     staged_preview,
 };
 
-pub const ManipulationDragSolver = enum {
+pub const GizmoDragMode = enum {
     none,
-    pixel_delta,
-    translate_plane,
-    translate_axis,
+    mouse_delta,
+    move_plane,
+    move_axis,
     rotate_ring,
-    scale_plane,
-    scale_axis,
+    uniform_scale,
+    axis_scale,
 };
 
-pub const ManipulationDragProjection = struct {
-    solver: ManipulationDragSolver = .none,
+pub const GizmoDragSession = struct {
+    mode: GizmoDragMode = .none,
     plane_origin: [3]f32 = .{ 0.0, 0.0, 0.0 },
     plane_normal: [3]f32 = .{ 0.0, 0.0, -1.0 },
-    axis_world: [3]f32 = .{ 1.0, 0.0, 0.0 },
-    start_point: [3]f32 = .{ 0.0, 0.0, 0.0 },
-    start_vector: [3]f32 = .{ 1.0, 0.0, 0.0 },
-    start_distance: f32 = 1.0,
-    gizmo_scale: f32 = 1.0,
+    handle_axis_world: [3]f32 = .{ 1.0, 0.0, 0.0 },
+    drag_start_point: [3]f32 = .{ 0.0, 0.0, 0.0 },
+    drag_start_vector: [3]f32 = .{ 1.0, 0.0, 0.0 },
+    drag_start_distance: f32 = 1.0,
+    draw_scale: f32 = 1.0,
 };
 
 pub const HierarchyCategory = enum {
@@ -390,7 +390,7 @@ pub const EditorState = struct {
     manipulation_started_from_ui: bool = false, // 记录拖拽是否从UI元素开始，防止事件穿透
     manipulation_drag_accumulator: [2]f32 = .{ 0.0, 0.0 },
     manipulation_accumulated_delta: [2]f32 = .{ 0.0, 0.0 }, // 用于记录单次操作中鼠标的累计X/Y偏移
-    manipulation_projection: ManipulationDragProjection = .{},
+    gizmo_drag_session: GizmoDragSession = .{},
     manipulation_snapshot: ?command_mod.EntitySnapshot = null,
     transform_component_clipboard: ?engine.scene.Transform = null,
     mesh_component_clipboard: ?MeshComponentClipboard = null,
@@ -884,7 +884,7 @@ test "viewport drop defaults and payload constants stay stable" {
     try std.testing.expectEqual(@as(f32, 0.01), state.scale_drag_sensitivity);
     try std.testing.expect(!state.manipulation_drag_active);
     try std.testing.expectEqual([2]f32{ 0.0, 0.0 }, state.manipulation_drag_accumulator);
-    try std.testing.expectEqual(ManipulationDragSolver.none, state.manipulation_projection.solver);
+    try std.testing.expectEqual(GizmoDragMode.none, state.gizmo_drag_session.mode);
     try std.testing.expect(state.pending_viewport_drop == null);
 
     const pending = PendingViewportDrop{

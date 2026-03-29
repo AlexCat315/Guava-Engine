@@ -1263,15 +1263,15 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
 
         gui.dummy(0.0, 6.0);
         if (gui.buttonEx(state.text(.move), action_button_width, 0.0)) {
-            try manipulation.beginManipulation(state, layer_context, .translate);
+            try manipulation.activateTransformTool(state, layer_context, .translate);
         }
         layout.advanceResponsiveRow(1, action_columns);
         if (gui.buttonEx(state.text(.rotate), action_button_width, 0.0)) {
-            try manipulation.beginManipulation(state, layer_context, .rotate);
+            try manipulation.activateTransformTool(state, layer_context, .rotate);
         }
         layout.advanceResponsiveRow(2, action_columns);
         if (gui.buttonEx(state.text(.scale), action_button_width, 0.0)) {
-            try manipulation.beginManipulation(state, layer_context, .scale);
+            try manipulation.activateTransformTool(state, layer_context, .scale);
         }
     }
 }

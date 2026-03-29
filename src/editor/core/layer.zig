@@ -184,7 +184,7 @@ pub const EditorLayer = struct {
         self.camera_bookmark_manager = camera_bookmarks.CameraBookmarkManager.init(layer_context.world.allocator);
 
         try camera.createEditorCamera(&self.state, layer_context);
-        manipulation.syncGizmoState(&self.state, layer_context);
+        manipulation.refreshGizmoState(&self.state, layer_context);
         utils.syncInspectorNameBuffer(&self.state, layer_context);
         try history.resetSnapshotHistory(&self.state, layer_context);
         try content_browser.refreshAssetBrowser(&self.state, layer_context);
@@ -270,10 +270,10 @@ pub const EditorLayer = struct {
         try viewport.drawEditorUi(&self.state, &self.post_process_viewport_state, layer_context);
         try content_browser.flushMaterialThumbnailRequests(&self.state, layer_context);
         try manipulation.handleEditingShortcuts(&self.state, layer_context);
-        manipulation.applyManipulation(&self.state, layer_context);
+        manipulation.updateActiveTransform(&self.state, layer_context);
         camera.handleCameraControls(&self.state, layer_context);
         try viewport.handleViewportSelection(&self.state, layer_context);
-        manipulation.syncGizmoState(&self.state, layer_context);
+        manipulation.refreshGizmoState(&self.state, layer_context);
         ai_collaboration.syncContext(&self.state, layer_context) catch |err| {
             std.log.warn("failed to sync AI collaboration context: {s}", .{@errorName(err)});
         };

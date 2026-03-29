@@ -14,8 +14,7 @@ const scene_hierarchy = @import("../ui/panels/scene/scene_hierarchy.zig");
 const ManipulationMode = state_mod.ManipulationMode;
 const TransformSpace = state_mod.TransformSpace;
 const AxisConstraint = state_mod.AxisConstraint;
-const ManipulationDragProjection = state_mod.ManipulationDragProjection;
-const ManipulationDragSolver = state_mod.ManipulationDragSolver;
+const GizmoDragSession = state_mod.GizmoDragSession;
 
 pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const input = layer_context.input;
@@ -39,7 +38,7 @@ pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.L
 
     if (state.manipulation_mode != .none) {
         if (input.wasKeyPressed(.q)) {
-            try selectTool(state, layer_context);
+            try activateSelectTool(state, layer_context);
             return;
         }
         if (input.wasKeyPressed(.x)) {
@@ -52,25 +51,25 @@ pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.L
             state.manipulation_axis = .z;
         }
         if (input.wasKeyPressed(.space)) {
-            try commitManipulation(state, layer_context);
+            try commitActiveTransform(state, layer_context);
         }
         if (input.wasKeyPressed(.escape)) {
-            cancelManipulation(state, layer_context);
+            cancelActiveTransform(state, layer_context);
         }
         if (input.wasKeyPressed(.g)) {
-            try beginDirectManipulation(state, layer_context, .translate);
+            try beginQuickTransform(state, layer_context, .translate);
         }
         if (input.wasKeyPressed(.w) and !input.isMouseDown(.right)) {
-            try beginManipulation(state, layer_context, .translate);
+            try activateTransformTool(state, layer_context, .translate);
         }
         if (input.wasKeyPressed(.e)) {
-            try beginManipulation(state, layer_context, .rotate);
+            try activateTransformTool(state, layer_context, .rotate);
         }
         if (input.wasKeyPressed(.r)) {
-            try beginManipulation(state, layer_context, .scale);
+            try activateTransformTool(state, layer_context, .scale);
         }
         if (input.wasKeyPressed(.s) and !input.isMouseDown(.right)) {
-            try beginDirectManipulation(state, layer_context, .scale);
+            try beginQuickTransform(state, layer_context, .scale);
         }
         return;
     }
@@ -121,22 +120,22 @@ pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.L
         }
     }
     if (input.wasKeyPressed(.g)) {
-        try beginDirectManipulation(state, layer_context, .translate);
+        try beginQuickTransform(state, layer_context, .translate);
     }
     if (input.wasKeyPressed(.q)) {
-        try selectTool(state, layer_context);
+        try activateSelectTool(state, layer_context);
     }
     if (input.wasKeyPressed(.w) and !input.isMouseDown(.right)) {
-        try beginManipulation(state, layer_context, .translate);
+        try activateTransformTool(state, layer_context, .translate);
     }
     if (input.wasKeyPressed(.e)) {
-        try beginManipulation(state, layer_context, .rotate);
+        try activateTransformTool(state, layer_context, .rotate);
     }
     if (input.wasKeyPressed(.r)) {
-        try beginManipulation(state, layer_context, .scale);
+        try activateTransformTool(state, layer_context, .scale);
     }
     if (input.wasKeyPressed(.s) and !input.modifiers.ctrl and !input.isMouseDown(.right)) {
-        try beginDirectManipulation(state, layer_context, .scale);
+        try beginQuickTransform(state, layer_context, .scale);
     }
     if (input.wasKeyPressed(.one)) {
         try history.spawnPrimitive(state, layer_context, .cube);
@@ -152,7 +151,7 @@ pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.L
     }
 }
 
-pub fn beginManipulation(
+pub fn activateTransformTool(
     state: *EditorState,
     layer_context: *engine.core.LayerContext,
     mode: ManipulationMode,
@@ -165,36 +164,36 @@ pub fn beginManipulation(
     state.manipulation_keyboard_mode = false;
     state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
     state.manipulation_accumulated_delta = .{ 0.0, 0.0 };
-    state.manipulation_projection = .{};
+    state.gizmo_drag_session = .{};
     state.manipulation_started_from_ui = false;
-    clearManipulationSnapshot(state);
-    try syncManipulationTarget(state, layer_context);
-    syncGizmoState(state, layer_context);
+    clearTransformSnapshot(state);
+    try refreshTransformToolTarget(state, layer_context);
+    refreshGizmoState(state, layer_context);
     try history.refreshWindowTitle(state, layer_context);
 }
 
-pub fn beginDirectManipulation(
+pub fn beginQuickTransform(
     state: *EditorState,
     layer_context: *engine.core.LayerContext,
     mode: ManipulationMode,
 ) !void {
-    try beginManipulation(state, layer_context, mode);
+    try activateTransformTool(state, layer_context, mode);
     state.manipulation_keyboard_mode = true;
-    state.manipulation_projection = .{ .solver = .pixel_delta };
+    state.gizmo_drag_session = .{ .mode = .mouse_delta };
     if (state.manipulation_entity != null) {
         state.manipulation_drag_active = true;
         ai_collaboration.noteManipulationBegin(state);
     }
 }
 
-pub fn selectTool(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
-    endManipulation(state);
-    syncGizmoState(state, layer_context);
+pub fn activateSelectTool(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    clearTransformTool(state);
+    refreshGizmoState(state, layer_context);
     try history.refreshWindowTitle(state, layer_context);
 }
 
-pub fn endManipulation(state: *EditorState) void {
-    clearManipulationSnapshot(state);
+pub fn clearTransformTool(state: *EditorState) void {
+    clearTransformSnapshot(state);
     state.manipulation_mode = .none;
     state.manipulation_axis = .free;
     state.manipulation_entity = null;
@@ -203,13 +202,13 @@ pub fn endManipulation(state: *EditorState) void {
     state.manipulation_keyboard_mode = false;
     state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
     state.manipulation_accumulated_delta = .{ 0.0, 0.0 };
-    state.manipulation_projection = .{};
+    state.gizmo_drag_session = .{};
     state.manipulation_started_from_ui = false;
 }
 
-pub fn cancelManipulation(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+pub fn cancelActiveTransform(state: *EditorState, layer_context: *engine.core.LayerContext) void {
     const entity_id = state.manipulation_entity orelse {
-        endManipulation(state);
+        clearTransformTool(state);
         return;
     };
     ai_collaboration.noteManipulationCancel(state, entity_id);
@@ -217,32 +216,32 @@ pub fn cancelManipulation(state: *EditorState, layer_context: *engine.core.Layer
         .main_world => _ = layer_context.world.setEntityWorldTransform(entity_id, state.manipulation_origin),
         .staged_preview => ai_collaboration.cancelPreviewEntityTransform(state, layer_context, entity_id, state.manipulation_origin),
     }
-    endManipulation(state);
-    syncGizmoState(state, layer_context);
+    clearTransformTool(state);
+    refreshGizmoState(state, layer_context);
 }
 
-fn commitManipulation(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+fn commitActiveTransform(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const entity_id = state.manipulation_entity orelse {
-        endManipulation(state);
+        clearTransformTool(state);
         return;
     };
     ai_collaboration.noteManipulationCommit(state, entity_id);
     if (state.manipulation_target == .staged_preview) {
         const runtime = state.ai_preview_runtime orelse {
-            endManipulation(state);
+            clearTransformTool(state);
             return;
         };
         const transform = runtime.world.worldTransformConst(entity_id) orelse {
-            endManipulation(state);
+            clearTransformTool(state);
             return;
         };
         _ = try ai_collaboration.commitPreviewEntityTransform(state, layer_context, entity_id, transform);
-        endManipulation(state);
-        syncGizmoState(state, layer_context);
+        clearTransformTool(state);
+        refreshGizmoState(state, layer_context);
         return;
     }
     const before = state.manipulation_snapshot orelse {
-        endManipulation(state);
+        clearTransformTool(state);
         return;
     };
     state.manipulation_snapshot = null;
@@ -253,13 +252,13 @@ fn commitManipulation(state: *EditorState, layer_context: *engine.core.LayerCont
     state.manipulation_drag_active = false;
     state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
     state.manipulation_accumulated_delta = .{ 0.0, 0.0 };
-    state.manipulation_projection = .{};
+    state.gizmo_drag_session = .{};
     state.manipulation_started_from_ui = false;
     try history.recordEntityMutation(state, layer_context, before, &.{entity_id});
-    syncGizmoState(state, layer_context);
+    refreshGizmoState(state, layer_context);
 }
 
-fn clearManipulationSnapshot(state: *EditorState) void {
+fn clearTransformSnapshot(state: *EditorState) void {
     const allocator = state.allocator orelse {
         state.manipulation_snapshot = null;
         return;
@@ -270,7 +269,7 @@ fn clearManipulationSnapshot(state: *EditorState) void {
     }
 }
 
-pub fn applyManipulation(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+pub fn updateActiveTransform(state: *EditorState, layer_context: *engine.core.LayerContext) void {
     const input = layer_context.input;
 
     // Keyboard-mode (Blender-style): mouse moves freely, left-click confirms,
@@ -278,12 +277,12 @@ pub fn applyManipulation(state: *EditorState, layer_context: *engine.core.LayerC
     if (state.manipulation_keyboard_mode and state.manipulation_drag_active) {
         // Right-click or Escape → cancel
         if (input.wasMousePressed(.right)) {
-            cancelManipulation(state, layer_context);
+            cancelActiveTransform(state, layer_context);
             return;
         }
         // Left-click → confirm (commit history and end)
         if (input.wasMousePressed(.left)) {
-            commitManipulation(state, layer_context) catch |err| {
+            commitActiveTransform(state, layer_context) catch |err| {
                 std.log.err("Failed to commit keyboard manipulation: {}", .{err});
             };
             return;
@@ -299,9 +298,9 @@ pub fn applyManipulation(state: *EditorState, layer_context: *engine.core.LayerC
         var entity_transform = state.manipulation_origin;
         switch (state.manipulation_mode) {
             .none => {},
-            .translate => applyTranslate(state, layer_context, &entity_transform),
-            .rotate => applyRotate(state, &entity_transform),
-            .scale => applyScale(state, &entity_transform),
+            .translate => applyQuickTranslate(state, layer_context, &entity_transform),
+            .rotate => applyQuickRotate(state, &entity_transform),
+            .scale => applyQuickScale(state, &entity_transform),
         }
         switch (state.manipulation_target) {
             .main_world => _ = layer_context.world.setEntityWorldTransform(entity_id, entity_transform),
@@ -335,7 +334,7 @@ pub fn applyManipulation(state: *EditorState, layer_context: *engine.core.LayerC
                         std.log.err("Failed to commit manipulation history: {}", .{err});
                     };
 
-                    clearManipulationSnapshot(state); // Now safe since snapshot is null
+                    clearTransformSnapshot(state); // Now safe since snapshot is null
                     if (history.captureEntitySnapshot(state, layer_context.world, entity_id)) |new_snapshot| {
                         state.manipulation_snapshot = new_snapshot;
                     } else |err| {
@@ -350,7 +349,7 @@ pub fn applyManipulation(state: *EditorState, layer_context: *engine.core.LayerC
             state.manipulation_drag_active = false;
             state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
             state.manipulation_accumulated_delta = .{ 0.0, 0.0 };
-            state.manipulation_projection = .{};
+            state.gizmo_drag_session = .{};
         }
         return;
     }
@@ -361,22 +360,22 @@ pub fn applyManipulation(state: *EditorState, layer_context: *engine.core.LayerC
     }
 
     const entity_id = state.manipulation_entity orelse return;
-    _ = currentManipulationTransform(state, layer_context, entity_id) orelse {
-        endManipulation(state);
+    _ = currentToolTargetTransform(state, layer_context, entity_id) orelse {
+        clearTransformTool(state);
         return;
     };
 
     if (!state.manipulation_drag_active) return;
 
-    if (state.manipulation_projection.solver != .none and state.manipulation_projection.solver != .pixel_delta) {
-        const ray = currentViewportRay(state, layer_context, true) orelse return;
+    if (state.gizmo_drag_session.mode != .none and state.gizmo_drag_session.mode != .mouse_delta) {
+        const ray = viewportRayUnderCursor(state, layer_context, true) orelse return;
         var entity_transform = state.manipulation_origin;
 
         switch (state.manipulation_mode) {
             .none => {},
-            .translate => applyProjectedTranslate(state, layer_context, ray, &entity_transform),
-            .rotate => applyProjectedRotate(state, ray, &entity_transform),
-            .scale => applyProjectedScale(state, ray, &entity_transform),
+            .translate => applyGizmoDragTranslate(state, layer_context, ray, &entity_transform),
+            .rotate => applyGizmoDragRotate(state, ray, &entity_transform),
+            .scale => applyGizmoDragScale(state, ray, &entity_transform),
         }
 
         switch (state.manipulation_target) {
@@ -404,9 +403,9 @@ pub fn applyManipulation(state: *EditorState, layer_context: *engine.core.LayerC
 
     switch (state.manipulation_mode) {
         .none => {},
-        .translate => applyTranslate(state, layer_context, &entity_transform),
-        .rotate => applyRotate(state, &entity_transform),
-        .scale => applyScale(state, &entity_transform),
+        .translate => applyQuickTranslate(state, layer_context, &entity_transform),
+        .rotate => applyQuickRotate(state, &entity_transform),
+        .scale => applyQuickScale(state, &entity_transform),
     }
 
     switch (state.manipulation_target) {
@@ -420,13 +419,13 @@ pub fn applyManipulation(state: *EditorState, layer_context: *engine.core.LayerC
     }
 }
 
-const ManipulationCameraBasis = struct {
+const GizmoViewBasis = struct {
     right: [3]f32,
     up: [3]f32,
     forward: [3]f32,
 };
 
-fn effectiveViewportMousePos(layer_context: *const engine.core.LayerContext) [2]f32 {
+fn effectiveCursorPos(layer_context: *const engine.core.LayerContext) [2]f32 {
     const imgui_mouse_pos = gui.mousePos();
     const invalid_imgui_mouse = !std.math.isFinite(imgui_mouse_pos[0]) or
         !std.math.isFinite(imgui_mouse_pos[1]) or
@@ -435,14 +434,14 @@ fn effectiveViewportMousePos(layer_context: *const engine.core.LayerContext) [2]
     return if (invalid_imgui_mouse) layer_context.input.mouse_position else imgui_mouse_pos;
 }
 
-fn viewportPixelFromMouse(
+fn viewportPixelUnderCursor(
     state: *const EditorState,
     layer_context: *const engine.core.LayerContext,
     clamp_to_viewport: bool,
 ) ?[2]u32 {
     if (state.viewport_extent[0] <= 1.0 or state.viewport_extent[1] <= 1.0) return null;
 
-    const mouse_pos = effectiveViewportMousePos(layer_context);
+    const mouse_pos = effectiveCursorPos(layer_context);
     var local_x = mouse_pos[0] - state.viewport_origin[0];
     var local_y = mouse_pos[1] - state.viewport_origin[1];
     if (clamp_to_viewport) {
@@ -471,12 +470,12 @@ fn viewportPixelFromMouse(
     };
 }
 
-fn currentViewportRay(
+fn viewportRayUnderCursor(
     state: *const EditorState,
     layer_context: *engine.core.LayerContext,
     clamp_to_viewport: bool,
 ) ?engine.scene.Ray {
-    const pixel = viewportPixelFromMouse(state, layer_context, clamp_to_viewport) orelse return null;
+    const pixel = viewportPixelUnderCursor(state, layer_context, clamp_to_viewport) orelse return null;
     const viewport_size = layer_context.renderer.sceneViewportSize();
     return camera.activeCameraRayFromViewportPixel(state, layer_context, pixel, viewport_size);
 }
@@ -486,7 +485,7 @@ fn safeNormalizeOr(vector: [3]f32, fallback: [3]f32) [3]f32 {
     return vec3.normalize(vector);
 }
 
-fn manipulationCameraBasis(state: *const EditorState, layer_context: *engine.core.LayerContext) ManipulationCameraBasis {
+fn currentGizmoViewBasis(state: *const EditorState, layer_context: *engine.core.LayerContext) GizmoViewBasis {
     const camera_transform = camera.activeCameraTransform(state, layer_context);
     return .{
         .right = vec3.normalize(quat.rotateVec3(camera_transform.rotation, .{ 1.0, 0.0, 0.0 })),
@@ -495,7 +494,7 @@ fn manipulationCameraBasis(state: *const EditorState, layer_context: *engine.cor
     };
 }
 
-fn rayPlaneIntersection(ray: engine.scene.Ray, plane_origin: [3]f32, plane_normal: [3]f32) ?[3]f32 {
+fn rayPlaneHitPoint(ray: engine.scene.Ray, plane_origin: [3]f32, plane_normal: [3]f32) ?[3]f32 {
     const normal = safeNormalizeOr(plane_normal, .{ 0.0, 0.0, -1.0 });
     const denom = vec3.dot(ray.direction, normal);
     if (@abs(denom) < 1e-5) return null;
@@ -505,7 +504,7 @@ fn rayPlaneIntersection(ray: engine.scene.Ray, plane_origin: [3]f32, plane_norma
     return vec3.add(ray.origin, vec3.scale(ray.direction, t));
 }
 
-fn axisDragPlaneNormal(axis_world: [3]f32, camera_forward: [3]f32, camera_up: [3]f32) [3]f32 {
+fn axisHandleDragPlaneNormal(axis_world: [3]f32, camera_forward: [3]f32, camera_up: [3]f32) [3]f32 {
     const view_cross_axis = vec3.cross(camera_forward, axis_world);
     var normal = vec3.cross(axis_world, view_cross_axis);
     if (vec3.length(normal) <= 0.0001) {
@@ -517,11 +516,11 @@ fn axisDragPlaneNormal(axis_world: [3]f32, camera_forward: [3]f32, camera_up: [3
     return safeNormalizeOr(normal, camera_forward);
 }
 
-fn scalePlaneDirection(camera_right: [3]f32, camera_up: [3]f32) [3]f32 {
+fn uniformScaleDragDirection(camera_right: [3]f32, camera_up: [3]f32) [3]f32 {
     return safeNormalizeOr(vec3.add(camera_right, camera_up), camera_right);
 }
 
-fn signedAngleAroundAxis(from_vector: [3]f32, to_vector: [3]f32, axis: [3]f32) f32 {
+fn signedRotationAroundAxis(from_vector: [3]f32, to_vector: [3]f32, axis: [3]f32) f32 {
     const from_norm = safeNormalizeOr(from_vector, .{ 1.0, 0.0, 0.0 });
     const to_norm = safeNormalizeOr(to_vector, .{ 1.0, 0.0, 0.0 });
     const axis_norm = safeNormalizeOr(axis, .{ 0.0, 1.0, 0.0 });
@@ -531,132 +530,132 @@ fn signedAngleAroundAxis(from_vector: [3]f32, to_vector: [3]f32, axis: [3]f32) f
     return std.math.atan2(sin_angle, cos_angle);
 }
 
-fn initializeProjectedManipulationDrag(
+fn startGizmoDragSession(
     state: *EditorState,
     layer_context: *engine.core.LayerContext,
     picked_handle: PickedGizmoHandle,
     ray: engine.scene.Ray,
 ) void {
     const entity_id = state.manipulation_entity orelse {
-        state.manipulation_projection = .{ .solver = .pixel_delta };
+        state.gizmo_drag_session = .{ .mode = .mouse_delta };
         return;
     };
-    const entity_transform = currentManipulationTransform(state, layer_context, entity_id) orelse {
-        state.manipulation_projection = .{ .solver = .pixel_delta };
+    const entity_transform = currentToolTargetTransform(state, layer_context, entity_id) orelse {
+        state.gizmo_drag_session = .{ .mode = .mouse_delta };
         return;
     };
-    const camera_basis = manipulationCameraBasis(state, layer_context);
+    const camera_basis = currentGizmoViewBasis(state, layer_context);
     const camera_transform = camera.activeCameraTransform(state, layer_context);
     const axis_world = if (picked_handle.axis == .free)
         [3]f32{ 0.0, 0.0, 0.0 }
     else
-        manipulationAxisVector(state.transform_space, picked_handle.axis, entity_transform.rotation);
-    const gizmo_scale_value = gizmoScale(camera_transform.translation, entity_transform.translation);
+        gizmoAxisDirection(state.transform_space, picked_handle.axis, entity_transform.rotation);
+    const gizmo_scale_value = gizmoDrawScale(camera_transform.translation, entity_transform.translation);
 
-    var projection = ManipulationDragProjection{
-        .solver = .pixel_delta,
+    var projection = GizmoDragSession{
+        .mode = .mouse_delta,
         .plane_origin = entity_transform.translation,
         .plane_normal = camera_basis.forward,
-        .axis_world = if (picked_handle.axis == .free) scalePlaneDirection(camera_basis.right, camera_basis.up) else axis_world,
-        .gizmo_scale = gizmo_scale_value,
+        .handle_axis_world = if (picked_handle.axis == .free) uniformScaleDragDirection(camera_basis.right, camera_basis.up) else axis_world,
+        .draw_scale = gizmo_scale_value,
     };
 
     switch (picked_handle.mode) {
         .translate => {
             if (picked_handle.axis == .free) {
-                projection.solver = .translate_plane;
+                projection.mode = .move_plane;
                 projection.plane_normal = camera_basis.forward;
             } else {
-                projection.solver = .translate_axis;
-                projection.plane_normal = axisDragPlaneNormal(axis_world, camera_basis.forward, camera_basis.up);
+                projection.mode = .move_axis;
+                projection.plane_normal = axisHandleDragPlaneNormal(axis_world, camera_basis.forward, camera_basis.up);
             }
-            projection.start_point = rayPlaneIntersection(ray, projection.plane_origin, projection.plane_normal) orelse {
-                projection.solver = .pixel_delta;
-                state.manipulation_projection = projection;
+            projection.drag_start_point = rayPlaneHitPoint(ray, projection.plane_origin, projection.plane_normal) orelse {
+                projection.mode = .mouse_delta;
+                state.gizmo_drag_session = projection;
                 return;
             };
         },
         .rotate => {
-            projection.solver = .rotate_ring;
-            projection.axis_world = axis_world;
+            projection.mode = .rotate_ring;
+            projection.handle_axis_world = axis_world;
             projection.plane_normal = safeNormalizeOr(axis_world, camera_basis.up);
-            const start_point = rayPlaneIntersection(ray, projection.plane_origin, projection.plane_normal) orelse {
-                projection.solver = .pixel_delta;
-                state.manipulation_projection = projection;
+            const start_point = rayPlaneHitPoint(ray, projection.plane_origin, projection.plane_normal) orelse {
+                projection.mode = .mouse_delta;
+                state.gizmo_drag_session = projection;
                 return;
             };
-            projection.start_vector = vec3.sub(start_point, projection.plane_origin);
-            if (vec3.length(projection.start_vector) <= 0.0001) {
-                projection.solver = .pixel_delta;
-                state.manipulation_projection = projection;
+            projection.drag_start_vector = vec3.sub(start_point, projection.plane_origin);
+            if (vec3.length(projection.drag_start_vector) <= 0.0001) {
+                projection.mode = .mouse_delta;
+                state.gizmo_drag_session = projection;
                 return;
             }
-            projection.start_vector = vec3.normalize(projection.start_vector);
+            projection.drag_start_vector = vec3.normalize(projection.drag_start_vector);
         },
         .scale => {
             if (picked_handle.axis == .free) {
-                projection.solver = .scale_plane;
+                projection.mode = .uniform_scale;
                 projection.plane_normal = camera_basis.forward;
-                projection.axis_world = scalePlaneDirection(camera_basis.right, camera_basis.up);
+                projection.handle_axis_world = uniformScaleDragDirection(camera_basis.right, camera_basis.up);
             } else {
-                projection.solver = .scale_axis;
-                projection.plane_normal = axisDragPlaneNormal(axis_world, camera_basis.forward, camera_basis.up);
+                projection.mode = .axis_scale;
+                projection.plane_normal = axisHandleDragPlaneNormal(axis_world, camera_basis.forward, camera_basis.up);
             }
-            projection.start_point = rayPlaneIntersection(ray, projection.plane_origin, projection.plane_normal) orelse {
-                projection.solver = .pixel_delta;
-                state.manipulation_projection = projection;
+            projection.drag_start_point = rayPlaneHitPoint(ray, projection.plane_origin, projection.plane_normal) orelse {
+                projection.mode = .mouse_delta;
+                state.gizmo_drag_session = projection;
                 return;
             };
         },
-        .none => projection.solver = .none,
+        .none => projection.mode = .none,
     }
 
-    state.manipulation_projection = projection;
+    state.gizmo_drag_session = projection;
 }
 
-fn applyProjectedTranslate(
+fn applyGizmoDragTranslate(
     state: *EditorState,
     layer_context: *engine.core.LayerContext,
     ray: engine.scene.Ray,
     entity_transform: *engine.scene.Transform,
 ) void {
     _ = layer_context;
-    const projection = state.manipulation_projection;
-    const current_point = rayPlaneIntersection(ray, projection.plane_origin, projection.plane_normal) orelse return;
+    const projection = state.gizmo_drag_session;
+    const current_point = rayPlaneHitPoint(ray, projection.plane_origin, projection.plane_normal) orelse return;
 
-    var target = switch (projection.solver) {
-        .translate_plane => vec3.add(
+    var target = switch (projection.mode) {
+        .move_plane => vec3.add(
             state.manipulation_origin.translation,
-            vec3.sub(current_point, projection.start_point),
+            vec3.sub(current_point, projection.drag_start_point),
         ),
-        .translate_axis => vec3.add(
+        .move_axis => vec3.add(
             state.manipulation_origin.translation,
             vec3.scale(
-                projection.axis_world,
-                vec3.dot(vec3.sub(current_point, projection.start_point), projection.axis_world),
+                projection.handle_axis_world,
+                vec3.dot(vec3.sub(current_point, projection.drag_start_point), projection.handle_axis_world),
             ),
         ),
         else => return,
     };
 
     if (state.translation_snap_enabled) {
-        target = snapVec3FromOrigin(state.manipulation_origin.translation, target, state.translation_snap_step);
+        target = snapPositionFromOrigin(state.manipulation_origin.translation, target, state.translation_snap_step);
     }
 
     entity_transform.translation = target;
 }
 
-fn applyProjectedRotate(
+fn applyGizmoDragRotate(
     state: *EditorState,
     ray: engine.scene.Ray,
     entity_transform: *engine.scene.Transform,
 ) void {
-    const projection = state.manipulation_projection;
-    const current_point = rayPlaneIntersection(ray, projection.plane_origin, projection.plane_normal) orelse return;
+    const projection = state.gizmo_drag_session;
+    const current_point = rayPlaneHitPoint(ray, projection.plane_origin, projection.plane_normal) orelse return;
     const current_vector = vec3.sub(current_point, projection.plane_origin);
     if (vec3.length(current_vector) <= 0.0001) return;
 
-    var angle = signedAngleAroundAxis(projection.start_vector, current_vector, projection.axis_world);
+    var angle = signedRotationAroundAxis(projection.drag_start_vector, current_vector, projection.handle_axis_world);
     if (state.rotation_snap_enabled) {
         const snap_radians = state.rotation_snap_step_degrees * std.math.pi / 180.0;
         angle = @round(angle / snap_radians) * snap_radians;
@@ -668,31 +667,31 @@ fn applyProjectedRotate(
             quat.fromAxisAngle(engine.math.axis.vector(state.manipulation_axis), angle),
         )),
         .world => quat.normalize(quat.mul(
-            quat.fromAxisAngle(projection.axis_world, angle),
+            quat.fromAxisAngle(projection.handle_axis_world, angle),
             state.manipulation_origin.rotation,
         )),
     };
 }
 
-fn applyProjectedScale(
+fn applyGizmoDragScale(
     state: *EditorState,
     ray: engine.scene.Ray,
     entity_transform: *engine.scene.Transform,
 ) void {
-    const projection = state.manipulation_projection;
-    const current_point = rayPlaneIntersection(ray, projection.plane_origin, projection.plane_normal) orelse return;
-    const amount = vec3.dot(vec3.sub(current_point, projection.start_point), projection.axis_world) /
-        @max(projection.gizmo_scale, 0.05);
+    const projection = state.gizmo_drag_session;
+    const current_point = rayPlaneHitPoint(ray, projection.plane_origin, projection.plane_normal) orelse return;
+    const amount = vec3.dot(vec3.sub(current_point, projection.drag_start_point), projection.handle_axis_world) /
+        @max(projection.draw_scale, 0.05);
     const scalar = @max(0.05, 1.0 + amount);
 
     var raw_scale = state.manipulation_origin.scale;
-    switch (projection.solver) {
-        .scale_plane => {
+    switch (projection.mode) {
+        .uniform_scale => {
             raw_scale[0] *= scalar;
             raw_scale[1] *= scalar;
             raw_scale[2] *= scalar;
         },
-        .scale_axis => switch (state.manipulation_axis) {
+        .axis_scale => switch (state.manipulation_axis) {
             .free => {
                 raw_scale[0] *= scalar;
                 raw_scale[1] *= scalar;
@@ -716,7 +715,7 @@ fn applyProjectedScale(
     };
 }
 
-pub fn applyTranslate(
+pub fn applyQuickTranslate(
     state: *EditorState,
     layer_context: *engine.core.LayerContext,
     entity_transform: *engine.scene.Transform,
@@ -741,8 +740,8 @@ pub fn applyTranslate(
             entity_transform.translation = vec3.add(state.manipulation_origin.translation, delta);
         },
         .x, .y, .z => {
-            const axis = manipulationAxisVector(state.transform_space, state.manipulation_axis, state.manipulation_origin.rotation);
-            const scalar = combinedDrag(state.manipulation_accumulated_delta) * move_scale;
+            const axis = gizmoAxisDirection(state.transform_space, state.manipulation_axis, state.manipulation_origin.rotation);
+            const scalar = combinedMouseDrag(state.manipulation_accumulated_delta) * move_scale;
             entity_transform.translation = vec3.add(state.manipulation_origin.translation, vec3.scale(axis, scalar));
         },
     }
@@ -762,9 +761,9 @@ pub fn applyTranslate(
         };
     }
 }
-pub fn applyRotate(state: *EditorState, entity_transform: *engine.scene.Transform) void {
+pub fn applyQuickRotate(state: *EditorState, entity_transform: *engine.scene.Transform) void {
     // 基于累计偏移量计算旋转
-    const scalar = combinedDrag(state.manipulation_accumulated_delta) * state.rotation_drag_sensitivity;
+    const scalar = combinedMouseDrag(state.manipulation_accumulated_delta) * state.rotation_drag_sensitivity;
     const origin_euler = quat.toEuler(state.manipulation_origin.rotation);
     var euler = origin_euler;
 
@@ -795,9 +794,9 @@ pub fn applyRotate(state: *EditorState, entity_transform: *engine.scene.Transfor
     entity_transform.rotation = quat.fromEuler(euler);
 }
 
-pub fn applyScale(state: *EditorState, entity_transform: *engine.scene.Transform) void {
+pub fn applyQuickScale(state: *EditorState, entity_transform: *engine.scene.Transform) void {
     // 使用累计偏移量计算标量
-    const scalar = 1.0 + combinedDrag(state.manipulation_accumulated_delta) * state.scale_drag_sensitivity;
+    const scalar = 1.0 + combinedMouseDrag(state.manipulation_accumulated_delta) * state.scale_drag_sensitivity;
 
     // 始终从原点计算，避免精度丢失
     var raw_scale = state.manipulation_origin.scale;
@@ -834,9 +833,9 @@ pub fn applyScale(state: *EditorState, entity_transform: *engine.scene.Transform
     };
 }
 
-pub fn syncGizmoState(state: *EditorState, layer_context: *engine.core.LayerContext) void {
-    syncManipulationTarget(state, layer_context) catch |err| {
-        std.log.err("failed to sync manipulation target: {}", .{err});
+pub fn refreshGizmoState(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+    refreshTransformToolTarget(state, layer_context) catch |err| {
+        std.log.err("failed to refresh transform tool target: {}", .{err});
     };
     layer_context.renderer.setEditorGizmoState(.{
         .mode = switch (state.manipulation_mode) {
@@ -853,22 +852,22 @@ pub fn syncGizmoState(state: *EditorState, layer_context: *engine.core.LayerCont
     });
 }
 
-fn syncManipulationTarget(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+fn refreshTransformToolTarget(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     if (state.manipulation_mode == .none or state.manipulation_drag_active) {
         if (state.manipulation_mode == .none) {
-            clearManipulationSnapshot(state);
+            clearTransformSnapshot(state);
             state.manipulation_entity = null;
         }
         return;
     }
 
-    const next = nextManipulationTarget(state, layer_context);
+    const next = nextTransformToolTarget(state, layer_context);
 
     if (next.entity_id == state.manipulation_entity and next.target == state.manipulation_target) {
         return;
     }
 
-    clearManipulationSnapshot(state);
+    clearTransformSnapshot(state);
     state.manipulation_entity = next.entity_id;
     state.manipulation_target = next.target;
     state.manipulation_drag_active = false;
@@ -876,19 +875,19 @@ fn syncManipulationTarget(state: *EditorState, layer_context: *engine.core.Layer
     state.manipulation_accumulated_delta = .{ 0.0, 0.0 };
 
     if (next.entity_id) |entity_id| {
-        state.manipulation_origin = currentManipulationTransform(state, layer_context, entity_id) orelse return;
+        state.manipulation_origin = currentToolTargetTransform(state, layer_context, entity_id) orelse return;
         if (next.target == .main_world) {
             state.manipulation_snapshot = try history.captureEntitySnapshot(state, layer_context.world, entity_id);
         }
     }
 }
 
-const NextManipulationTarget = struct {
+const NextTransformToolTarget = struct {
     entity_id: ?engine.scene.EntityId = null,
     target: state_mod.ManipulationTarget = .main_world,
 };
 
-fn nextManipulationTarget(state: *EditorState, layer_context: *engine.core.LayerContext) NextManipulationTarget {
+fn nextTransformToolTarget(state: *EditorState, layer_context: *engine.core.LayerContext) NextTransformToolTarget {
     if (state.ai_preview_selected_entity) |entity_id| {
         if (state.ai_preview_runtime) |*runtime| {
             if (runtime.world.hasEntity(entity_id)) {
@@ -917,7 +916,7 @@ fn nextManipulationTarget(state: *EditorState, layer_context: *engine.core.Layer
     };
 }
 
-fn currentManipulationTransform(
+fn currentToolTargetTransform(
     state: *EditorState,
     layer_context: *engine.core.LayerContext,
     entity_id: engine.scene.EntityId,
@@ -931,7 +930,7 @@ fn currentManipulationTransform(
     };
 }
 
-fn manipulationAxisVector(space: TransformSpace, axis: state_mod.AxisConstraint, rotation: [4]f32) [3]f32 {
+fn gizmoAxisDirection(space: TransformSpace, axis: state_mod.AxisConstraint, rotation: [4]f32) [3]f32 {
     const base_axis = engine.math.axis.vector(axis);
     return switch (space) {
         .world => base_axis,
@@ -939,11 +938,11 @@ fn manipulationAxisVector(space: TransformSpace, axis: state_mod.AxisConstraint,
     };
 }
 
-fn combinedDrag(drag: [2]f32) f32 {
+fn combinedMouseDrag(drag: [2]f32) f32 {
     return drag[0] + drag[1];
 }
 
-fn snapVec3FromOrigin(origin: [3]f32, target: [3]f32, step: f32) [3]f32 {
+fn snapPositionFromOrigin(origin: [3]f32, target: [3]f32, step: f32) [3]f32 {
     return .{
         origin[0] + @round((target[0] - origin[0]) / step) * step,
         origin[1] + @round((target[1] - origin[1]) / step) * step,
@@ -1002,8 +1001,8 @@ pub const PickedGizmoHandle = struct {
     distance: f32,
 };
 
-/// Compute the gizmo visual scale matching gizmo_pass.scaleForSelection.
-fn gizmoScale(camera_position: [3]f32, target_position: [3]f32) f32 {
+/// Match the interactive gizmo draw scale used by gizmo_pass.scaleForSelection.
+fn gizmoDrawScale(camera_position: [3]f32, target_position: [3]f32) f32 {
     const dx = camera_position[0] - target_position[0];
     const dy = camera_position[1] - target_position[1];
     const dz = camera_position[2] - target_position[2];
@@ -1011,10 +1010,8 @@ fn gizmoScale(camera_position: [3]f32, target_position: [3]f32) f32 {
     return std.math.clamp(distance * 0.18, 0.7, 3.4);
 }
 
-/// Ray-capsule distance test: returns the closest approach distance of a ray to
-/// a line segment (axis_start → axis_end), or null if the closest point is not
-/// within `threshold` world units.
-fn rayAxisDistance(
+/// Fallback world-space pick test for an axis handle segment.
+fn rayToAxisHandleDistance(
     ray_origin: [3]f32,
     ray_direction: [3]f32,
     axis_start: [3]f32,
@@ -1053,7 +1050,7 @@ fn rayAxisDistance(
     return vec3.length(vec3.sub(closest_on_ray, closest_on_seg));
 }
 
-fn mulPoint4(matrix_value: engine.math.mat4.Mat4, point: [4]f32) [4]f32 {
+fn transformPoint4(matrix_value: engine.math.mat4.Mat4, point: [4]f32) [4]f32 {
     return .{
         matrix_value[0] * point[0] + matrix_value[4] * point[1] + matrix_value[8] * point[2] + matrix_value[12] * point[3],
         matrix_value[1] * point[0] + matrix_value[5] * point[1] + matrix_value[9] * point[2] + matrix_value[13] * point[3],
@@ -1062,7 +1059,7 @@ fn mulPoint4(matrix_value: engine.math.mat4.Mat4, point: [4]f32) [4]f32 {
     };
 }
 
-fn worldPointToViewportScreen(
+fn projectWorldPointToViewport(
     state: *const EditorState,
     layer_context: *engine.core.LayerContext,
     world_position: [3]f32,
@@ -1076,7 +1073,7 @@ fn worldPointToViewportScreen(
     const aspect = @as(f32, @floatFromInt(viewport_size[0])) / @as(f32, @floatFromInt(viewport_size[1]));
     const projection = engine.math.mat4.projectionForCamera(camera.activeCameraComponent(state, layer_context), aspect);
     const view_projection = engine.math.mat4.mul(projection, view);
-    const clip = mulPoint4(view_projection, .{ world_position[0], world_position[1], world_position[2], 1.0 });
+    const clip = transformPoint4(view_projection, .{ world_position[0], world_position[1], world_position[2], 1.0 });
     if (@abs(clip[3]) <= 0.00001 or clip[3] <= 0.0) return null;
 
     const ndc_x = clip[0] / clip[3];
@@ -1104,7 +1101,7 @@ fn distancePointToSegment2d(point: [2]f32, a: [2]f32, b: [2]f32) f32 {
     return length2d(.{ point[0] - closest[0], point[1] - closest[1] });
 }
 
-fn perpendicularBasis(normal: [3]f32) [2][3]f32 {
+fn buildRingBasis(normal: [3]f32) [2][3]f32 {
     const n = safeNormalizeOr(normal, .{ 0.0, 1.0, 0.0 });
     const reference = if (@abs(n[1]) < 0.9)
         [3]f32{ 0.0, 1.0, 0.0 }
@@ -1115,7 +1112,7 @@ fn perpendicularBasis(normal: [3]f32) [2][3]f32 {
     return .{ tangent, bitangent };
 }
 
-fn pickTranslateOrScaleHandleScreenSpace(
+fn pickMoveOrScaleHandleOnScreen(
     state: *const EditorState,
     layer_context: *engine.core.LayerContext,
     origin: [3]f32,
@@ -1124,8 +1121,8 @@ fn pickTranslateOrScaleHandleScreenSpace(
     mode: ManipulationMode,
     scale: f32,
 ) ?PickedGizmoHandle {
-    const mouse = effectiveViewportMousePos(layer_context);
-    const origin_screen = worldPointToViewportScreen(state, layer_context, origin) orelse return null;
+    const mouse = effectiveCursorPos(layer_context);
+    const origin_screen = projectWorldPointToViewport(state, layer_context, origin) orelse return null;
 
     const axis_pick_radius_px: f32 = 12.0;
     const center_pick_radius_px: f32 = if (mode == .translate) 14.0 else 16.0;
@@ -1134,7 +1131,7 @@ fn pickTranslateOrScaleHandleScreenSpace(
 
     for (axes, axis_ids) |axis_dir, axis_id| {
         const axis_end = vec3.add(origin, vec3.scale(axis_dir, scale));
-        const axis_end_screen = worldPointToViewportScreen(state, layer_context, axis_end) orelse continue;
+        const axis_end_screen = projectWorldPointToViewport(state, layer_context, axis_end) orelse continue;
         if (length2d(.{ axis_end_screen[0] - origin_screen[0], axis_end_screen[1] - origin_screen[1] }) < min_axis_projected_len_px) {
             continue;
         }
@@ -1151,7 +1148,7 @@ fn pickTranslateOrScaleHandleScreenSpace(
     return best;
 }
 
-fn pickRotateHandleScreenSpace(
+fn pickRotateHandleOnScreen(
     state: *const EditorState,
     layer_context: *engine.core.LayerContext,
     origin: [3]f32,
@@ -1159,14 +1156,14 @@ fn pickRotateHandleScreenSpace(
     axis_ids: [3]AxisConstraint,
     scale: f32,
 ) ?PickedGizmoHandle {
-    const mouse = effectiveViewportMousePos(layer_context);
+    const mouse = effectiveCursorPos(layer_context);
     const ring_radius = 0.9 * scale;
     const ring_pick_radius_px: f32 = 12.0;
     const samples: usize = 40;
     var best: ?PickedGizmoHandle = null;
 
     for (axes, axis_ids) |axis_normal, axis_id| {
-        const basis = perpendicularBasis(axis_normal);
+        const basis = buildRingBasis(axis_normal);
         var previous_screen: ?[2]f32 = null;
         var min_dist = std.math.inf(f32);
         var visible_segments: usize = 0;
@@ -1181,7 +1178,7 @@ fn pickRotateHandleScreenSpace(
                     vec3.scale(basis[1], std.math.sin(t) * ring_radius),
                 ),
             );
-            const screen_point = worldPointToViewportScreen(state, layer_context, ring_point);
+            const screen_point = projectWorldPointToViewport(state, layer_context, ring_point);
             if (previous_screen) |previous| {
                 if (screen_point) |current| {
                     visible_segments += 1;
@@ -1221,7 +1218,7 @@ pub fn pickGizmoHandle(
     };
 
     const cam_transform = camera.activeCameraTransform(state, layer_context);
-    const scale = gizmoScale(cam_transform.translation, entity_transform.translation);
+    const scale = gizmoDrawScale(cam_transform.translation, entity_transform.translation);
     const threshold = scale * 0.18; // click tolerance in world units
 
     const rotation_euler = switch (state.transform_space) {
@@ -1245,13 +1242,13 @@ pub fn pickGizmoHandle(
 
     switch (mode) {
         .translate, .scale => {
-            if (pickTranslateOrScaleHandleScreenSpace(state, layer_context, origin, axes, axis_ids, mode, scale)) |picked_handle| {
+            if (pickMoveOrScaleHandleOnScreen(state, layer_context, origin, axes, axis_ids, mode, scale)) |picked_handle| {
                 return picked_handle;
             }
             // Test ray against each axis line segment (length = scale in world)
             for (axes, axis_ids) |axis_dir, axis_id| {
                 const axis_end = vec3.add(origin, vec3.scale(axis_dir, scale));
-                const dist = rayAxisDistance(ray.origin, ray_dir, origin, axis_end);
+                const dist = rayToAxisHandleDistance(ray.origin, ray_dir, origin, axis_end);
                 if (dist < threshold) {
                     if (best == null or dist < best.?.distance) {
                         best = .{ .axis = axis_id, .mode = mode, .distance = dist };
@@ -1270,7 +1267,7 @@ pub fn pickGizmoHandle(
             }
         },
         .rotate => {
-            if (pickRotateHandleScreenSpace(state, layer_context, origin, axes, axis_ids, scale)) |picked_handle| {
+            if (pickRotateHandleOnScreen(state, layer_context, origin, axes, axis_ids, scale)) |picked_handle| {
                 return picked_handle;
             }
             // Test ray against each rotation ring (radius = 0.9 * scale)
@@ -1298,8 +1295,8 @@ pub fn pickGizmoHandle(
     return best;
 }
 
-/// Begin manipulation from a picked gizmo handle (mouse-hold drag mode, not keyboard mode).
-pub fn beginManipulationFromPickedGizmoHandle(
+/// Begin dragging a picked gizmo handle (mouse-hold drag mode, not keyboard mode).
+pub fn beginGizmoHandleDrag(
     state: *EditorState,
     layer_context: *engine.core.LayerContext,
     picked_handle: PickedGizmoHandle,
@@ -1314,19 +1311,19 @@ pub fn beginManipulationFromPickedGizmoHandle(
     state.manipulation_started_from_ui = false;
     state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
     state.manipulation_accumulated_delta = .{ 0.0, 0.0 };
-    clearManipulationSnapshot(state);
-    try syncManipulationTarget(state, layer_context);
+    clearTransformSnapshot(state);
+    try refreshTransformToolTarget(state, layer_context);
     if (state.manipulation_entity != null) {
-        initializeProjectedManipulationDrag(state, layer_context, picked_handle, ray);
+        startGizmoDragSession(state, layer_context, picked_handle, ray);
         state.manipulation_drag_active = true;
     }
-    syncGizmoState(state, layer_context);
+    refreshGizmoState(state, layer_context);
     try history.refreshWindowTitle(state, layer_context);
     ai_collaboration.noteManipulationBegin(state);
 }
 
-test "manipulationAxisVector rotates constrained local axes" {
-    const axis = manipulationAxisVector(.local, .x, .{ 0.0, std.math.pi * 0.5, 0.0 });
+test "gizmoAxisDirection rotates constrained local axes" {
+    const axis = gizmoAxisDirection(.local, .x, .{ 0.0, std.math.pi * 0.5, 0.0 });
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), axis[0], 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), axis[1], 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, -1.0), axis[2], 0.0001);
@@ -1343,12 +1340,12 @@ test "scale snap uses accumulated delta from manipulation origin" {
     // 使用manipulation_accumulated_delta而不是manipulation_drag_accumulator
     state.manipulation_accumulated_delta = .{ 0.4, 0.0 };
     var transform = state.manipulation_origin;
-    applyScale(&state, &transform);
+    applyQuickScale(&state, &transform);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), transform.scale[0], 0.0001);
 
     state.manipulation_accumulated_delta = .{ 0.6, 0.0 };
     transform = state.manipulation_origin;
-    applyScale(&state, &transform);
+    applyQuickScale(&state, &transform);
     try std.testing.expectApproxEqAbs(@as(f32, 1.1), transform.scale[0], 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 1.1), transform.scale[1], 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 1.1), transform.scale[2], 0.0001);
@@ -1364,7 +1361,7 @@ test "rotation snap uses accumulated drag from manipulation origin" {
 
     state.manipulation_drag_accumulator = .{ 0.5, 0.0 };
     var transform = state.manipulation_origin;
-    applyRotate(&state, &transform);
+    applyQuickRotate(&state, &transform);
     const euler = quat.toEuler(transform.rotation);
     try std.testing.expectApproxEqAbs(@as(f32, std.math.pi / 4.0), euler[1], 0.0001);
 }
@@ -1410,11 +1407,11 @@ test "translation snap uses accumulated drag from manipulation origin" {
     // The helper only reads the active camera transform, so no world state is needed here.
     state.manipulation_drag_accumulator = .{ 0.4, 0.0 };
     var transform = state.manipulation_origin;
-    applyTranslate(&state, &layer_context, &transform);
+    applyQuickTranslate(&state, &layer_context, &transform);
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), transform.translation[0], 0.0001);
 
     state.manipulation_drag_accumulator = .{ 0.6, 0.0 };
     transform = state.manipulation_origin;
-    applyTranslate(&state, &layer_context, &transform);
+    applyQuickTranslate(&state, &layer_context, &transform);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), transform.translation[0], 0.0001);
 }
