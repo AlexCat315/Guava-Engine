@@ -25,9 +25,17 @@ pub const SSAOUniforms = extern struct {
     intensity: f32 = 1.0,
     power: f32 = 2.0,
     kernel_size: u32 = 16,
+    // std140 rounds the following vec2 up to the next 8-byte boundary.
+    kernel_padding: u32 = 0,
     noise_scale: [2]f32 = .{ 1.0, 1.0 },
     padding: [2]f32 = .{ 0.0, 0.0 },
 };
+
+comptime {
+    std.debug.assert(@sizeOf(SSAOUniforms) == 304);
+    std.debug.assert(@offsetOf(SSAOUniforms, "noise_scale") == 288);
+    std.debug.assert(@offsetOf(SSAOUniforms, "padding") == 296);
+}
 
 pub const SSAOPass = struct {
     fullscreen_vertex_buffer: ?rhi_mod.Buffer = null,
