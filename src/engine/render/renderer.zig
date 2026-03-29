@@ -97,6 +97,11 @@ const renderer_path_trace = @import("renderer_path_trace.zig");
 const renderer_resources = @import("renderer_resources.zig");
 const renderer_thumbnails = @import("renderer_thumbnails.zig");
 
+const renderer_export = @import("renderer_export.zig");
+const renderer_debug = @import("renderer_debug.zig");
+const renderer_shadow_cascade = @import("renderer_shadow_cascade.zig");
+const renderer_selection = @import("renderer_selection.zig");
+
 /// 是否已记录视口后端日志
 var g_logged_viewport_backend: bool = false;
 /// 已记录的后处理状态
@@ -177,40 +182,9 @@ pub const FrameReport = struct {
     binding_cache_evictions_delta: u64 = 0,
 };
 
-/// 选择回读请求
-const SelectionReadbackRequest = struct {
-    /// 像素 X 坐标
-    pixel_x: u32,
-    /// 像素 Y 坐标
-    pixel_y: u32,
-    /// 选择更新模式
-    mode: SelectionUpdateMode,
-};
-
-/// 飞行中的选择回读
-const InFlightSelectionReadback = struct {
-    /// 请求信息
-    request: SelectionReadbackRequest,
-    /// 缓冲区偏移
-    offset: u32,
-};
-
-/// 飞行中的选择批次
-const InFlightSelectionBatch = struct {
-    /// GPU 同步围栏
-    fence: rhi_mod.Fence,
-    /// 传输缓冲区
-    transfer_buffer: rhi_mod.TransferBuffer,
-    /// 回读列表
-    readbacks: []InFlightSelectionReadback,
-
-    fn deinit(self: *InFlightSelectionBatch, allocator: std.mem.Allocator, device: *rhi_mod.RhiDevice) void {
-        device.releaseTransferBuffer(&self.transfer_buffer);
-        allocator.free(self.readbacks);
-        device.releaseFence(&self.fence);
-        self.* = undefined;
-    }
-};
+const SelectionReadbackRequest = renderer_selection.SelectionReadbackRequest;
+const InFlightSelectionReadback = renderer_selection.InFlightSelectionReadback;
+const InFlightSelectionBatch = renderer_selection.InFlightSelectionBatch;
 
 /// 构建场景提取视锥体
 ///
@@ -1085,7 +1059,7 @@ pub const Renderer = struct {
                     const texel_size = @as(f32, @floatFromInt(self.shadow_map.size));
 
                     // Compute cascade splits (practical-split-scheme, lambda=0.7)
-                    const splits = computeCascadeSplits(cam_near, cam_far, csm_cascade_count, 0.82);
+                    const splits = renderer_shadow_cascade.computeCascadeSplits(cam_near, cam_far, renderer_resources.csm_cascade_count, 0.82);
                     self.shadow_map.cascade_splits = splits;
 
                     // Compute per-cascade matrices
@@ -1093,7 +1067,7 @@ pub const Renderer = struct {
                     for (0..csm_cascade_count) |ci| {
                         const split_near = if (ci == 0) cam_near else splits[ci - 1];
                         const split_far = splits[ci];
-                        const cascade_mat = computeCascadeMatrix(inv_vp, split_near, split_far, cam_near, cam_far, light_dir, texel_size);
+                        const cascade_mat = renderer_shadow_cascade.computeCascadeMatrix(inv_vp, split_near, split_far, cam_near, cam_far, light_dir, texel_size);
                         self.shadow_map.cascade_matrices[ci] = cascade_mat;
                         if (ci == 0) first_mat = cascade_mat;
                     }
@@ -2257,120 +2231,6 @@ pub const Renderer = struct {
         }
     }
 
-    fn renderCpuPathTraceTiles(pt: *PathTraceProgressiveState, use_progressive_budget: bool, budget_ns: i128) void {
-        if (pt.complete) return;
-        const trace_linear = pt.trace_linear_rgb orelse return;
-        if (pt.trace_width == 0 or pt.trace_height == 0 or pt.cached_samples == 0) return;
-
-        const start_time = std.time.nanoTimestamp();
-        const tile_span = pathTraceAdaptiveTileSpan(pt.sample_step);
-        const use_adaptive_sampling = use_progressive_budget;
-        const min_samples = if (use_adaptive_sampling)
-            pathTraceAdaptiveMinSamples(pt.cached_samples)
-        else
-            pt.cached_samples;
-
-        while (pt.current_tile_y < pt.trace_height) {
-            var tile_blocks: [path_trace_adaptive_tile_capacity]PathTraceAdaptiveTileBlock = undefined;
-            var tile_block_count: usize = 0;
-            var tile_noise_metric_sum: f32 = 0.0;
-            const tile_end_y = @min(pt.trace_height, pt.current_tile_y + tile_span);
-            const tile_end_x = @min(pt.trace_width, pt.current_tile_x + tile_span);
-
-            var y = pt.current_tile_y;
-            while (y < tile_end_y) : (y += pt.sample_step) {
-                var x = pt.current_tile_x;
-                while (x < tile_end_x) : (x += pt.sample_step) {
-                    var block = PathTraceAdaptiveTileBlock{
-                        .x = x,
-                        .y = y,
-                    };
-                    var sample_index: u32 = 0;
-                    while (sample_index < min_samples) : (sample_index += 1) {
-                        const sample_color = tracePathTracePixelSample(pt, x, y, sample_index);
-                        block.color_sum = vec3.add(block.color_sum, sample_color);
-                        const sample_luminance = luminance(sample_color);
-                        block.luminance_sum += sample_luminance;
-                        block.luminance_sum_sq += sample_luminance * sample_luminance;
-                    }
-
-                    tile_noise_metric_sum += pathTraceAdaptiveNoiseMetric(
-                        block.luminance_sum,
-                        block.luminance_sum_sq,
-                        min_samples,
-                    );
-                    tile_blocks[tile_block_count] = block;
-                    tile_block_count += 1;
-                }
-            }
-
-            const tile_noise_metric = if (tile_block_count > 0)
-                tile_noise_metric_sum / @as(f32, @floatFromInt(tile_block_count))
-            else
-                0.0;
-            const target_samples = if (use_adaptive_sampling)
-                pathTraceAdaptiveTargetSamples(pt.cached_samples, tile_noise_metric)
-            else
-                pt.cached_samples;
-
-            var block_index: usize = 0;
-            while (block_index < tile_block_count) : (block_index += 1) {
-                var block = tile_blocks[block_index];
-                var sample_index = min_samples;
-                while (sample_index < target_samples) : (sample_index += 1) {
-                    const sample_color = tracePathTracePixelSample(pt, block.x, block.y, sample_index);
-                    block.color_sum = vec3.add(block.color_sum, sample_color);
-                }
-
-                const hdr_rgb = vec3.scale(block.color_sum, 1.0 / @as(f32, @floatFromInt(target_samples)));
-                var fy: u32 = 0;
-                while (fy < pt.sample_step and block.y + fy < pt.trace_height) : (fy += 1) {
-                    var fx: u32 = 0;
-                    while (fx < pt.sample_step and block.x + fx < pt.trace_width) : (fx += 1) {
-                        const out_x = block.x + fx;
-                        const out_y = block.y + fy;
-                        const pixel_index: usize = @as(usize, out_y) * @as(usize, pt.trace_width) + @as(usize, out_x);
-                        const linear_index: usize = pixel_index * 3;
-                        trace_linear[linear_index + 0] = hdr_rgb[0];
-                        trace_linear[linear_index + 1] = hdr_rgb[1];
-                        trace_linear[linear_index + 2] = hdr_rgb[2];
-                    }
-                }
-            }
-
-            advancePathTraceTileCursor(&pt.current_tile_x, &pt.current_tile_y, pt.trace_width, tile_span);
-            if (use_progressive_budget and std.time.nanoTimestamp() - start_time >= budget_ns) break;
-        }
-
-        if (pt.current_tile_y >= pt.trace_height) {
-            pt.complete = true;
-        }
-    }
-
-    fn resolvePathTraceDisplayPixels(pt: *PathTraceProgressiveState) void {
-        const trace_linear = pt.trace_linear_rgb orelse return;
-        const display_pixels = pt.display_pixels orelse return;
-        if (pt.trace_width == 0 or pt.trace_height == 0 or pt.target_width == 0 or pt.target_height == 0) return;
-
-        var out_y: u32 = 0;
-        while (out_y < pt.target_height) : (out_y += 1) {
-            const src_y_u64 = (@as(u64, out_y) * @as(u64, pt.trace_height)) / @as(u64, pt.target_height);
-            const src_y: u32 = @min(pt.trace_height - 1, @as(u32, @intCast(src_y_u64)));
-            var out_x: u32 = 0;
-            while (out_x < pt.target_width) : (out_x += 1) {
-                const src_x_u64 = (@as(u64, out_x) * @as(u64, pt.trace_width)) / @as(u64, pt.target_width);
-                const src_x: u32 = @min(pt.trace_width - 1, @as(u32, @intCast(src_x_u64)));
-                const src_index: usize = (@as(usize, src_y) * @as(usize, pt.trace_width) + @as(usize, src_x)) * 3;
-                const dst_pixel: usize = @as(usize, out_y) * @as(usize, pt.target_width) + @as(usize, out_x);
-                image_export.writeHdrPixelRgba16f(display_pixels, dst_pixel, .{
-                    trace_linear[src_index + 0],
-                    trace_linear[src_index + 1],
-                    trace_linear[src_index + 2],
-                });
-            }
-        }
-    }
-
     fn buildOfflinePathTraceExportState(
         self: *Renderer,
         scene: *scene_mod.Scene,
@@ -2412,8 +2272,8 @@ pub const Renderer = struct {
         try self.populatePathTraceSceneState(&pt, &prepared_scene, scene, resolvePathTraceEnvironment(self, scene));
         if (render_beauty) {
             try self.ensurePathTraceBuffers(&pt, width, height, width, height);
-            renderCpuPathTraceTiles(&pt, false, 0);
-            resolvePathTraceDisplayPixels(&pt);
+            renderer_path_trace.renderCpuPathTraceTiles(&pt, false, 0);
+            renderer_path_trace.resolvePathTraceDisplayPixels(&pt);
         }
         return pt;
     }
@@ -2491,8 +2351,8 @@ pub const Renderer = struct {
         pt.environment_texture = path_trace_environment.texture;
         pt.sample_step = computePathTraceSampleStep(trace_width, trace_height);
 
-        renderCpuPathTraceTiles(pt, !self.editor_viewport_state.path_trace_force_cpu, 8_000_000);
-        resolvePathTraceDisplayPixels(pt);
+        renderer_path_trace.renderCpuPathTraceTiles(pt, !self.editor_viewport_state.path_trace_force_cpu, 8_000_000);
+        renderer_path_trace.resolvePathTraceDisplayPixels(pt);
         try self.rhi.uploadTextureData(target, pt.display_pixels.?, width, height);
     }
 
@@ -3209,62 +3069,43 @@ pub const Renderer = struct {
     ///
     /// Thread-safety: NOT thread-safe. Must be called from render thread.
     pub fn downloadFinalFrameAlloc(self: *Renderer, allocator: std.mem.Allocator) ![]u8 {
-        const pixels = try self.downloadFramePixelsAlloc(allocator);
-        defer allocator.free(pixels.data);
-
-        // Build PPM P6: "P6\n<width> <height>\n255\n<RGB data>"
-        const rgb_size = @as(usize, pixels.width) * @as(usize, pixels.height) * 3;
-        var header_buf: [64]u8 = undefined;
-        const header = std.fmt.bufPrint(&header_buf, "P6\n{d} {d}\n255\n", .{ pixels.width, pixels.height }) catch return error.HeaderOverflow;
-
-        const ppm = try allocator.alloc(u8, header.len + rgb_size);
-        @memcpy(ppm[0..header.len], header);
-
-        // Convert BGRA (4 bpp) → RGB (3 bpp) in one pass
-        var src: usize = 0;
-        var dst: usize = header.len;
-        while (src + 3 < pixels.data.len) : (src += 4) {
-            ppm[dst + 0] = pixels.data[src + 2]; // R (from BGRA position 2)
-            ppm[dst + 1] = pixels.data[src + 1]; // G
-            ppm[dst + 2] = pixels.data[src + 0]; // B (from BGRA position 0)
-            dst += 3;
-        }
-        return ppm;
+        return renderer_export.downloadFinalFrameAlloc(&self.rhi, self.scene_viewport.color_texture, allocator);
     }
 
     /// Download final frame pixels as raw BGRA byte data from the LDR color texture.
     /// Returns allocated byte slice (caller owns memory).
     pub fn downloadFramePixelsAlloc(self: *Renderer, allocator: std.mem.Allocator) !FramePixels {
-        const texture = self.scene_viewport.color_texture orelse return error.TextureNotFound;
-        const width = texture.desc.width;
-        const height = texture.desc.height;
-        const row_bytes = width * 4;
-        const byte_count = row_bytes * height;
-
-        const data = try allocator.alloc(u8, byte_count);
-        errdefer allocator.free(data);
-
-        try self.rhi.readTextureData(&texture, row_bytes, data);
-
-        return .{ .data = data, .width = width, .height = height };
+        return renderer_export.downloadFramePixelsAlloc(&self.rhi, self.scene_viewport.color_texture, allocator);
     }
 
-    pub const FramePixels = struct {
-        data: []u8,
+    fn copyHalfTracePixelsToRgbAlloc(
+        alloc2: std.mem.Allocator,
+        pixels: []const u8,
         width: u32,
         height: u32,
-    };
+    ) ![]f32 {
+        return renderer_export.copyHalfTracePixelsToRgbAlloc(alloc2, pixels, width, height);
+    }
 
-    pub const HdrFramePixels = struct {
-        data: []f32,
-        width: u32,
-        height: u32,
-    };
+    pub fn downloadHdrFramePixelsAlloc(self: *Renderer, allocator: std.mem.Allocator) !HdrFramePixels {
+        return renderer_export.downloadHdrFramePixelsAlloc(&self.rhi, self.scene_viewport.hdr_color_texture, allocator);
+    }
 
-    pub const PathTracePngExportOptions = struct {
-        denoise: bool = true,
-        write_aov_sidecars: bool = true,
-    };
+    pub fn downloadHdrFrameExrAlloc(self: *Renderer, allocator: std.mem.Allocator) ![]u8 {
+        return renderer_export.downloadHdrFrameExrAlloc(&self.rhi, self.scene_viewport.hdr_color_texture, allocator);
+    }
+
+    pub fn exportFramePng(self: *Renderer, allocator: std.mem.Allocator, out_path: []const u8) !void {
+        return renderer_export.exportFramePng(&self.rhi, self.scene_viewport.color_texture, allocator, out_path);
+    }
+
+    pub fn exportFrameExr(self: *Renderer, allocator: std.mem.Allocator, out_path: []const u8) !void {
+        return renderer_export.exportFrameExr(&self.rhi, self.scene_viewport.hdr_color_texture, allocator, out_path);
+    }
+
+    pub const FramePixels = renderer_export.FramePixels;
+    pub const HdrFramePixels = renderer_export.HdrFramePixels;
+    pub const PathTracePngExportOptions = renderer_export.PathTracePngExportOptions;
 
     fn exportableHwRtTraceBeauty(self: *Renderer, viewport_size: [2]u32) ?struct {
         pixels: []const u8,
@@ -3279,96 +3120,6 @@ pub const Renderer = struct {
             .width = mrt.trace_width,
             .height = mrt.trace_height,
         };
-    }
-
-    fn copyHalfTracePixelsToRgbAlloc(
-        allocator: std.mem.Allocator,
-        pixels: []const u8,
-        width: u32,
-        height: u32,
-    ) ![]f32 {
-        const pixel_count = @as(usize, width) * @as(usize, height);
-        if (pixels.len < pixel_count * 8) return error.InvalidPixelBuffer;
-        const rgb = try allocator.alloc(f32, pixel_count * 3);
-        errdefer allocator.free(rgb);
-
-        var pixel_index: usize = 0;
-        while (pixel_index < pixel_count) : (pixel_index += 1) {
-            const src = pixel_index * 8;
-            const dst = pixel_index * 3;
-            rgb[dst + 0] = image_export.readF16Le(pixels, src + 0);
-            rgb[dst + 1] = image_export.readF16Le(pixels, src + 2);
-            rgb[dst + 2] = image_export.readF16Le(pixels, src + 4);
-        }
-        return rgb;
-    }
-
-    /// Download final HDR frame pixels as linear RGBA32F data from the HDR viewport target.
-    pub fn downloadHdrFramePixelsAlloc(self: *Renderer, allocator: std.mem.Allocator) !HdrFramePixels {
-        const texture = self.scene_viewport.hdr_color_texture orelse return error.TextureNotFound;
-        const width = texture.desc.width;
-        const height = texture.desc.height;
-        const row_bytes = width * texture.desc.format.bytesPerPixel();
-        const byte_count = row_bytes * height;
-
-        const raw = try allocator.alloc(u8, byte_count);
-        defer allocator.free(raw);
-        try self.rhi.readTextureData(&texture, row_bytes, raw);
-
-        const pixel_count = @as(usize, width) * @as(usize, height);
-        const hdr = try allocator.alloc(f32, pixel_count * 4);
-        errdefer allocator.free(hdr);
-
-        switch (texture.desc.format) {
-            .rgba16_float => {
-                var pixel_index: usize = 0;
-                while (pixel_index < pixel_count) : (pixel_index += 1) {
-                    const src = pixel_index * 8;
-                    const dst = pixel_index * 4;
-                    hdr[dst + 0] = image_export.readF16Le(raw, src + 0);
-                    hdr[dst + 1] = image_export.readF16Le(raw, src + 2);
-                    hdr[dst + 2] = image_export.readF16Le(raw, src + 4);
-                    hdr[dst + 3] = image_export.readF16Le(raw, src + 6);
-                }
-            },
-            .rgba32_float => {
-                var pixel_index: usize = 0;
-                while (pixel_index < pixel_count) : (pixel_index += 1) {
-                    const src = pixel_index * 16;
-                    const dst = pixel_index * 4;
-                    const r_bits: u32 = @as(u32, raw[src + 0]) |
-                        (@as(u32, raw[src + 1]) << 8) |
-                        (@as(u32, raw[src + 2]) << 16) |
-                        (@as(u32, raw[src + 3]) << 24);
-                    const g_bits: u32 = @as(u32, raw[src + 4]) |
-                        (@as(u32, raw[src + 5]) << 8) |
-                        (@as(u32, raw[src + 6]) << 16) |
-                        (@as(u32, raw[src + 7]) << 24);
-                    const b_bits: u32 = @as(u32, raw[src + 8]) |
-                        (@as(u32, raw[src + 9]) << 8) |
-                        (@as(u32, raw[src + 10]) << 16) |
-                        (@as(u32, raw[src + 11]) << 24);
-                    const a_bits: u32 = @as(u32, raw[src + 12]) |
-                        (@as(u32, raw[src + 13]) << 8) |
-                        (@as(u32, raw[src + 14]) << 16) |
-                        (@as(u32, raw[src + 15]) << 24);
-                    hdr[dst + 0] = @bitCast(r_bits);
-                    hdr[dst + 1] = @bitCast(g_bits);
-                    hdr[dst + 2] = @bitCast(b_bits);
-                    hdr[dst + 3] = @bitCast(a_bits);
-                }
-            },
-            else => return error.UnsupportedTextureFormat,
-        }
-
-        return .{ .data = hdr, .width = width, .height = height };
-    }
-
-    /// Download final HDR frame as an uncompressed scanline OpenEXR file.
-    pub fn downloadHdrFrameExrAlloc(self: *Renderer, allocator: std.mem.Allocator) ![]u8 {
-        const pixels = try self.downloadHdrFramePixelsAlloc(allocator);
-        defer allocator.free(pixels.data);
-        return image_export.encodeExrRgb32fAlloc(allocator, pixels.data, pixels.width, pixels.height);
     }
 
     /// Export path-traced PNG with optional albedo/normal sidecars and AOV-guided denoise.
@@ -3403,8 +3154,8 @@ pub const Renderer = struct {
                 pt.sample_step = computePathTraceSampleStep(pt.trace_width, pt.trace_height);
             }
             if (!pt.complete) {
-                renderCpuPathTraceTiles(pt, false, 0);
-                resolvePathTraceDisplayPixels(pt);
+                renderer_path_trace.renderCpuPathTraceTiles(pt, false, 0);
+                renderer_path_trace.resolvePathTraceDisplayPixels(pt);
             }
             beauty_rgb = try allocator.dupe(f32, pt.trace_linear_rgb.?);
             if (options.denoise or options.write_aov_sidecars) {
@@ -3519,8 +3270,8 @@ pub const Renderer = struct {
                 pt.sample_step = computePathTraceSampleStep(pt.trace_width, pt.trace_height);
             }
             if (!pt.complete) {
-                renderCpuPathTraceTiles(pt, false, 0);
-                resolvePathTraceDisplayPixels(pt);
+                renderer_path_trace.renderCpuPathTraceTiles(pt, false, 0);
+                renderer_path_trace.resolvePathTraceDisplayPixels(pt);
             }
             beauty_rgb = try allocator.dupe(f32, pt.trace_linear_rgb.?);
             beauty_width = pt.trace_width;
@@ -3540,32 +3291,6 @@ pub const Renderer = struct {
         const beauty_rgba = try image_export.copyHdrRgbToRgbaAlloc(allocator, beauty_rgb, beauty_width, beauty_height);
         defer allocator.free(beauty_rgba);
         const exr = try image_export.encodeExrRgb32fAlloc(allocator, beauty_rgba, beauty_width, beauty_height);
-        defer allocator.free(exr);
-        try image_export.writeFileEnsuringParent(out_path, exr);
-    }
-
-    /// Export a single frame to PNG at the given path.
-    /// Performs GPU readback + CPU-side PNG encode + disk write.
-    pub fn exportFramePng(self: *Renderer, allocator: std.mem.Allocator, out_path: []const u8) !void {
-        const pixels = try self.downloadFramePixelsAlloc(allocator);
-        defer allocator.free(pixels.data);
-
-        // BGRA → RGBA in-place
-        var i: usize = 0;
-        while (i < pixels.data.len) : (i += 4) {
-            const b = pixels.data[i];
-            pixels.data[i] = pixels.data[i + 2];
-            pixels.data[i + 2] = b;
-        }
-
-        const png = try image_export.encodePngAlloc(allocator, pixels.data, pixels.width, pixels.height);
-        defer allocator.free(png);
-        try image_export.writeFileEnsuringParent(out_path, png);
-    }
-
-    /// Export a single HDR frame to OpenEXR at the given path.
-    pub fn exportFrameExr(self: *Renderer, allocator: std.mem.Allocator, out_path: []const u8) !void {
-        const exr = try self.downloadHdrFrameExrAlloc(allocator);
         defer allocator.free(exr);
         try image_export.writeFileEnsuringParent(out_path, exr);
     }
@@ -3661,8 +3386,7 @@ pub const Renderer = struct {
         if (self.editor_viewport_state.show_grid) {
             var grid_lines = std.ArrayList(gizmo_pass_mod.WorldLineVertex).empty;
             defer grid_lines.deinit(self.allocator);
-            try appendGridLines(self.allocator, &grid_lines, prepared_scene.camera_world_position);
-            // Darker grid color (0.12, 0.14, 0.18) - subtle gray that won't compete with scene objects
+            try renderer_debug.appendGridLines(self.allocator, &grid_lines, prepared_scene.camera_world_position);
             const grid_stats = try self.gizmo_pass.drawWorldLines(
                 &self.rhi,
                 frame,
@@ -3677,7 +3401,7 @@ pub const Renderer = struct {
         if (self.editor_viewport_state.show_bones) {
             var bone_lines = std.ArrayList(gizmo_pass_mod.WorldLineVertex).empty;
             defer bone_lines.deinit(self.allocator);
-            try appendBoneLines(self.allocator, scene, &bone_lines);
+            try renderer_debug.appendBoneLines(self.allocator, scene, &bone_lines);
             const bone_stats = try self.gizmo_pass.drawWorldLines(
                 &self.rhi,
                 frame,
@@ -3695,7 +3419,7 @@ pub const Renderer = struct {
             var trigger_lines = std.ArrayList(gizmo_pass_mod.WorldLineVertex).empty;
             defer trigger_lines.deinit(self.allocator);
 
-            try appendCollisionLines(self.allocator, scene, prepared_scene, &solid_lines, &trigger_lines, physics_state_opt);
+            try renderer_debug.appendCollisionLines(self.allocator, scene, prepared_scene, &solid_lines, &trigger_lines, physics_state_opt);
 
             var collision_stats = mesh_pass_mod.DrawStats{};
             if (solid_lines.items.len > 0) {
@@ -3724,168 +3448,6 @@ pub const Renderer = struct {
         }
 
         return stats;
-    }
-
-    fn appendGridLines(
-        allocator: std.mem.Allocator,
-        lines: *std.ArrayList(gizmo_pass_mod.WorldLineVertex),
-        camera_world_position: [4]f32,
-    ) !void {
-        const spacing: f32 = 1.0;
-        const half_cells: i32 = 80;
-        const extent = @as(f32, @floatFromInt(half_cells)) * spacing;
-        const center_x = @floor(camera_world_position[0] / spacing) * spacing;
-        const center_z = @floor(camera_world_position[2] / spacing) * spacing;
-
-        var index: i32 = -half_cells;
-        while (index <= half_cells) : (index += 1) {
-            const offset = @as(f32, @floatFromInt(index)) * spacing;
-            const x = center_x + offset;
-            const z = center_z + offset;
-            try appendLine(allocator, lines, .{ x, 0.0, center_z - extent }, .{ x, 0.0, center_z + extent });
-            try appendLine(allocator, lines, .{ center_x - extent, 0.0, z }, .{ center_x + extent, 0.0, z });
-        }
-    }
-
-    fn appendBoneLines(
-        allocator: std.mem.Allocator,
-        scene: *const scene_mod.Scene,
-        lines: *std.ArrayList(gizmo_pass_mod.WorldLineVertex),
-    ) !void {
-        for (scene.entities.items) |entity| {
-            const parent_id = entity.parent orelse continue;
-            const parent_transform = scene.worldTransformConst(parent_id) orelse continue;
-            const child_transform = scene.worldTransformConst(entity.id) orelse entity.local_transform;
-            try appendLine(allocator, lines, parent_transform.translation, child_transform.translation);
-        }
-    }
-
-    fn appendCollisionLines(
-        allocator: std.mem.Allocator,
-        scene: *scene_mod.Scene,
-        prepared_scene: *const mesh_pass_mod.PreparedScene,
-        solid_lines: *std.ArrayList(gizmo_pass_mod.WorldLineVertex),
-        trigger_lines: *std.ArrayList(gizmo_pass_mod.WorldLineVertex),
-        physics_state_opt: ?*physics_mod.PhysicsState,
-    ) !void {
-        // 优先使用物理调试信息绘制真实的 collider 形状
-        const debug_shapes = if (physics_state_opt) |ps|
-            try ps.collectDebugShapes(scene, allocator)
-        else
-            &[0]physics_mod.PhysicsDebugInfo{};
-        defer allocator.free(debug_shapes);
-
-        if (debug_shapes.len > 0) {
-            if (g_logged_collision_overlay_boxes == null or g_logged_collision_overlay_boxes.? != debug_shapes.len) {
-                render_log.info("physics debug draw shapes={}", .{debug_shapes.len});
-                g_logged_collision_overlay_boxes = debug_shapes.len;
-            }
-
-            for (debug_shapes) |shape| {
-                switch (shape.shape) {
-                    .box => |box| {
-                        const aabb = AABB{
-                            .min = vec3.sub(box.center, box.half_extents),
-                            .max = vec3.add(box.center, box.half_extents),
-                        };
-                        if (shape.is_trigger) {
-                            try appendBoxEdges(allocator, trigger_lines, cornersForAabb(aabb));
-                        } else {
-                            try appendBoxEdges(allocator, solid_lines, cornersForAabb(aabb));
-                        }
-                    },
-                    .sphere => |sphere| {
-                        if (shape.is_trigger) {
-                            try appendSphereEdges(allocator, trigger_lines, sphere.center, sphere.radius, 16);
-                        } else {
-                            try appendSphereEdges(allocator, solid_lines, sphere.center, sphere.radius, 16);
-                        }
-                    },
-                }
-            }
-            return;
-        }
-
-        // 回退到渲染 BVH bounds
-        const collision_frustum = frustum_mod.Frustum.fromViewProjection(prepared_scene.view_projection);
-        const bounds_items = try scene.queryRenderableBoundsInFrustum(allocator, collision_frustum);
-        defer allocator.free(bounds_items);
-
-        if (g_logged_collision_overlay_boxes == null or g_logged_collision_overlay_boxes.? != bounds_items.len) {
-            render_log.info("collision overlay reusing renderable BVH bounds boxes={}", .{bounds_items.len});
-            g_logged_collision_overlay_boxes = bounds_items.len;
-        }
-
-        // 碰撞可视化直接吃 world bounds cache + BVH 视锥候选，后续 selection debug 可以复用同一路。
-        for (bounds_items) |item| {
-            try appendBoxEdges(allocator, solid_lines, cornersForAabb(item.bounds));
-        }
-    }
-
-    fn cornersForAabb(bounds: AABB) [8][3]f32 {
-        const min = bounds.min;
-        const max = bounds.max;
-        return .{
-            .{ min[0], min[1], min[2] },
-            .{ max[0], min[1], min[2] },
-            .{ max[0], max[1], min[2] },
-            .{ min[0], max[1], min[2] },
-            .{ min[0], min[1], max[2] },
-            .{ max[0], min[1], max[2] },
-            .{ max[0], max[1], max[2] },
-            .{ min[0], max[1], max[2] },
-        };
-    }
-
-    fn appendBoxEdges(allocator: std.mem.Allocator, lines: *std.ArrayList(gizmo_pass_mod.WorldLineVertex), corners: [8][3]f32) !void {
-        try appendLine(allocator, lines, corners[0], corners[1]);
-        try appendLine(allocator, lines, corners[1], corners[2]);
-        try appendLine(allocator, lines, corners[2], corners[3]);
-        try appendLine(allocator, lines, corners[3], corners[0]);
-        try appendLine(allocator, lines, corners[4], corners[5]);
-        try appendLine(allocator, lines, corners[5], corners[6]);
-        try appendLine(allocator, lines, corners[6], corners[7]);
-        try appendLine(allocator, lines, corners[7], corners[4]);
-        try appendLine(allocator, lines, corners[0], corners[4]);
-        try appendLine(allocator, lines, corners[1], corners[5]);
-        try appendLine(allocator, lines, corners[2], corners[6]);
-        try appendLine(allocator, lines, corners[3], corners[7]);
-    }
-
-    fn appendLine(allocator: std.mem.Allocator, lines: *std.ArrayList(gizmo_pass_mod.WorldLineVertex), a: [3]f32, b: [3]f32) !void {
-        try lines.append(allocator, .{ .position = a });
-        try lines.append(allocator, .{ .position = b });
-    }
-
-    fn appendSphereEdges(allocator: std.mem.Allocator, lines: *std.ArrayList(gizmo_pass_mod.WorldLineVertex), center: [3]f32, radius: f32, segments: u32) !void {
-        const pi = std.math.pi;
-
-        // 绘制纬线
-        var i: u32 = 0;
-        while (i < segments) : (i += 1) {
-            const lat1 = pi * @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(segments)) - pi / 2.0;
-            const lat2 = pi * @as(f32, @floatFromInt(i + 1)) / @as(f32, @floatFromInt(segments)) - pi / 2.0;
-
-            var j: u32 = 0;
-            while (j < segments) : (j += 1) {
-                const lon1 = 2.0 * pi * @as(f32, @floatFromInt(j)) / @as(f32, @floatFromInt(segments));
-                const lon2 = 2.0 * pi * @as(f32, @floatFromInt(j + 1)) / @as(f32, @floatFromInt(segments));
-
-                const p1 = sphericalToCartesian(center, radius, lat1, lon1);
-                const p2 = sphericalToCartesian(center, radius, lat1, lon2);
-                const p3 = sphericalToCartesian(center, radius, lat2, lon1);
-
-                try appendLine(allocator, lines, p1, p2);
-                try appendLine(allocator, lines, p1, p3);
-            }
-        }
-    }
-
-    fn sphericalToCartesian(center: [3]f32, radius: f32, lat: f32, lon: f32) [3]f32 {
-        const x = radius * std.math.cos(lat) * std.math.cos(lon);
-        const y = radius * std.math.sin(lat);
-        const z = radius * std.math.cos(lat) * std.math.sin(lon);
-        return .{ center[0] + x, center[1] + y, center[2] + z };
     }
 
     fn enqueueSelectionReadbacks(self: *Renderer, frame: rhi_mod.Frame, id_texture: *const rhi_mod.Texture) !void {
@@ -3967,126 +3529,6 @@ pub const Renderer = struct {
         self.in_flight_selection_batches.deinit(self.allocator);
     }
 };
-
-fn shadowViewUpVector(light_dir: [3]f32) [3]f32 {
-    const default_up = [3]f32{ 0.0, 1.0, 0.0 };
-    if (@abs(vec3.dot(light_dir, default_up)) > 0.99) {
-        return .{ 0.0, 0.0, 1.0 };
-    }
-    return default_up;
-}
-
-/// Practical split scheme: lerp between logarithmic and uniform distribution.
-/// lambda = 1.0 → fully logarithmic, lambda = 0.0 → fully uniform.
-fn computeCascadeSplits(near: f32, far: f32, comptime count: usize, lambda: f32) [count]f32 {
-    var splits: [count]f32 = undefined;
-    for (0..count) |i| {
-        const p = @as(f32, @floatFromInt(i + 1)) / @as(f32, @floatFromInt(count));
-        const log_split = near * std.math.pow(f32, far / near, p);
-        const uni_split = near + (far - near) * p;
-        splits[i] = lambda * log_split + (1.0 - lambda) * uni_split;
-    }
-    return splits;
-}
-
-/// Transform a Vec4 (x,y,z,w) by a 4×4 column-major matrix, return (x,y,z) after perspective divide.
-fn transformPoint4(m: [16]f32, pt: [4]f32) [3]f32 {
-    var out: [4]f32 = undefined;
-    for (0..4) |r| {
-        out[r] = m[0 * 4 + r] * pt[0] + m[1 * 4 + r] * pt[1] + m[2 * 4 + r] * pt[2] + m[3 * 4 + r] * pt[3];
-    }
-    const w = if (@abs(out[3]) > 1e-7) out[3] else 1.0;
-    return .{ out[0] / w, out[1] / w, out[2] / w };
-}
-
-/// Compute a tight-fit light-space VP matrix for one cascade.
-/// `split_near`/`split_far` are view-space Z distances (positive values).
-fn computeCascadeMatrix(
-    camera_inv_vp: [16]f32,
-    split_near: f32,
-    split_far: f32,
-    cam_near: f32,
-    cam_far: f32,
-    light_dir: [3]f32,
-    shadow_resolution: f32,
-) [16]f32 {
-    const mat4 = @import("../math/mat4.zig");
-
-    // Map split_near/split_far into NDC Z range [0,1] (our perspective maps near→0, far→1).
-    // perspective: Z_ndc = far*(z - near) / (z*(near - far))  ... after w divide.
-    // We need the clip-space z/w for a given view-space depth.
-    // For our reversed-depth-style: z_ndc = (far * near / z - near) / (far - near) ... simplified.
-    // Actually let's just linearly remap: NDC_z for a view-space depth d =
-    //   (far / (near - far)) * (near / d) + far*near/(near-far) ... let's compute directly.
-    // Our perspective: M[2][2] = far/(near-far), M[3][2] = far*near/(near-far), M[2][3] = -1
-    // clip_z = M[2][2]*z_view + M[3][2],  clip_w = -z_view  →  ndc_z = clip_z / clip_w
-    // z_view is negative in view space (camera looks -Z).  So for a depth d (positive):
-    //   z_view = -d, clip_z = M[2][2]*(-d) + M[3][2], clip_w = d
-    //   ndc_z = (-M[2][2]*d + M[3][2]) / d
-    // With M[2][2] = far/(near-far), M[3][2] = far*near/(near-far):
-    //   ndc_z = (-far*d/(near-far) + far*near/(near-far)) / d
-    //         = far*(near - d) / (d*(near - far))
-    const ndc_near = cam_far * (cam_near - split_near) / (split_near * (cam_near - cam_far));
-    const ndc_far = cam_far * (cam_near - split_far) / (split_far * (cam_near - cam_far));
-
-    // 8 corners of the sub-frustum in NDC: x,y ∈ {-1,1}, z ∈ {ndc_near, ndc_far}
-    const ndc_corners = [8][4]f32{
-        .{ -1, -1, ndc_near, 1 }, .{ 1, -1, ndc_near, 1 },
-        .{ -1, 1, ndc_near, 1 },  .{ 1, 1, ndc_near, 1 },
-        .{ -1, -1, ndc_far, 1 },  .{ 1, -1, ndc_far, 1 },
-        .{ -1, 1, ndc_far, 1 },   .{ 1, 1, ndc_far, 1 },
-    };
-
-    // Transform corners to world space
-    var world_corners: [8][3]f32 = undefined;
-    var center: [3]f32 = .{ 0, 0, 0 };
-    for (0..8) |i| {
-        world_corners[i] = transformPoint4(camera_inv_vp, ndc_corners[i]);
-        center[0] += world_corners[i][0];
-        center[1] += world_corners[i][1];
-        center[2] += world_corners[i][2];
-    }
-    center = vec3.scale(center, 1.0 / 8.0);
-
-    // Build light view looking at cascade center
-    const light_pos = vec3.sub(center, vec3.scale(light_dir, split_far + 50.0));
-    const light_view = mat4.lookAt(light_pos, center, shadowViewUpVector(light_dir));
-
-    // Transform world corners into light view space and build a stable square footprint.
-    var center_ls = transformPoint4(light_view, .{ center[0], center[1], center[2], 1.0 });
-    var min_z: f32 = std.math.floatMax(f32);
-    var max_z: f32 = -std.math.floatMax(f32);
-    var radius: f32 = 0.0;
-    for (world_corners) |corner| {
-        const lv = transformPoint4(light_view, .{ corner[0], corner[1], corner[2], 1.0 });
-        min_z = @min(min_z, lv[2]);
-        max_z = @max(max_z, lv[2]);
-        const dx = lv[0] - center_ls[0];
-        const dy = lv[1] - center_ls[1];
-        radius = @max(radius, @sqrt(dx * dx + dy * dy));
-    }
-    radius = @ceil(radius * 16.0) / 16.0;
-
-    // Extend Z range to catch shadow casters behind the camera
-    const z_range = max_z - min_z;
-    min_z -= z_range * 2.5;
-    max_z += z_range * 0.25;
-
-    // Snap to texel grid to prevent shadow swimming when the camera moves
-    if (shadow_resolution > 0 and radius > 0) {
-        const world_units_per_texel = (radius * 2.0) / shadow_resolution;
-        center_ls[0] = @floor(center_ls[0] / world_units_per_texel) * world_units_per_texel;
-        center_ls[1] = @floor(center_ls[1] / world_units_per_texel) * world_units_per_texel;
-    }
-
-    const min_x = center_ls[0] - radius;
-    const max_x = center_ls[0] + radius;
-    const min_y = center_ls[1] - radius;
-    const max_y = center_ls[1] + radius;
-
-    const light_proj = mat4.orthographicOffCenter(min_x, max_x, min_y, max_y, min_z, max_z);
-    return mat4.mul(light_proj, light_view);
-}
 
 fn resolveEnvironmentTextures(
     self: *Renderer,

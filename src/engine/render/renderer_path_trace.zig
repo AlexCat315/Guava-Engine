@@ -13,6 +13,7 @@ const vec3 = @import("../math/vec3.zig");
 const rhi_types = @import("../rhi/types.zig");
 const path_trace_common = @import("path_trace_common.zig");
 const rt_backend = @import("../rt/rt_backend.zig");
+const image_export = @import("image_export.zig");
 
 pub const PathTraceTriangle = path_trace_common.PathTraceTriangle;
 pub const PathTraceTexture = path_trace_common.PathTraceTexture;
@@ -1970,4 +1971,118 @@ pub fn buildHwRtSamplingTables(
         .data = data,
         .meta = meta,
     };
+}
+
+pub fn renderCpuPathTraceTiles(pt: *PathTraceProgressiveState, use_progressive_budget: bool, budget_ns: i128) void {
+    if (pt.complete) return;
+    const trace_linear = pt.trace_linear_rgb orelse return;
+    if (pt.trace_width == 0 or pt.trace_height == 0 or pt.cached_samples == 0) return;
+
+    const start_time = std.time.nanoTimestamp();
+    const tile_span = pathTraceAdaptiveTileSpan(pt.sample_step);
+    const use_adaptive_sampling = use_progressive_budget;
+    const min_samples = if (use_adaptive_sampling)
+        pathTraceAdaptiveMinSamples(pt.cached_samples)
+    else
+        pt.cached_samples;
+
+    while (pt.current_tile_y < pt.trace_height) {
+        var tile_blocks: [path_trace_adaptive_tile_capacity]PathTraceAdaptiveTileBlock = undefined;
+        var tile_block_count: usize = 0;
+        var tile_noise_metric_sum: f32 = 0.0;
+        const tile_end_y = @min(pt.trace_height, pt.current_tile_y + tile_span);
+        const tile_end_x = @min(pt.trace_width, pt.current_tile_x + tile_span);
+
+        var y = pt.current_tile_y;
+        while (y < tile_end_y) : (y += pt.sample_step) {
+            var x = pt.current_tile_x;
+            while (x < tile_end_x) : (x += pt.sample_step) {
+                var block = PathTraceAdaptiveTileBlock{
+                    .x = x,
+                    .y = y,
+                };
+                var sample_index: u32 = 0;
+                while (sample_index < min_samples) : (sample_index += 1) {
+                    const sample_color = tracePathTracePixelSample(pt, x, y, sample_index);
+                    block.color_sum = vec3.add(block.color_sum, sample_color);
+                    const sample_luminance = luminance(sample_color);
+                    block.luminance_sum += sample_luminance;
+                    block.luminance_sum_sq += sample_luminance * sample_luminance;
+                }
+
+                tile_noise_metric_sum += pathTraceAdaptiveNoiseMetric(
+                    block.luminance_sum,
+                    block.luminance_sum_sq,
+                    min_samples,
+                );
+                tile_blocks[tile_block_count] = block;
+                tile_block_count += 1;
+            }
+        }
+
+        const tile_noise_metric = if (tile_block_count > 0)
+            tile_noise_metric_sum / @as(f32, @floatFromInt(tile_block_count))
+        else
+            0.0;
+        const target_samples = if (use_adaptive_sampling)
+            pathTraceAdaptiveTargetSamples(pt.cached_samples, tile_noise_metric)
+        else
+            pt.cached_samples;
+
+        var block_index: usize = 0;
+        while (block_index < tile_block_count) : (block_index += 1) {
+            var block = tile_blocks[block_index];
+            var sample_index = min_samples;
+            while (sample_index < target_samples) : (sample_index += 1) {
+                const sample_color = tracePathTracePixelSample(pt, block.x, block.y, sample_index);
+                block.color_sum = vec3.add(block.color_sum, sample_color);
+            }
+
+            const hdr_rgb = vec3.scale(block.color_sum, 1.0 / @as(f32, @floatFromInt(target_samples)));
+            var fy: u32 = 0;
+            while (fy < pt.sample_step and block.y + fy < pt.trace_height) : (fy += 1) {
+                var fx: u32 = 0;
+                while (fx < pt.sample_step and block.x + fx < pt.trace_width) : (fx += 1) {
+                    const out_x = block.x + fx;
+                    const out_y = block.y + fy;
+                    const pixel_index: usize = @as(usize, out_y) * @as(usize, pt.trace_width) + @as(usize, out_x);
+                    const linear_index: usize = pixel_index * 3;
+                    trace_linear[linear_index + 0] = hdr_rgb[0];
+                    trace_linear[linear_index + 1] = hdr_rgb[1];
+                    trace_linear[linear_index + 2] = hdr_rgb[2];
+                }
+            }
+        }
+
+        advancePathTraceTileCursor(&pt.current_tile_x, &pt.current_tile_y, pt.trace_width, tile_span);
+        if (use_progressive_budget and std.time.nanoTimestamp() - start_time >= budget_ns) break;
+    }
+
+    if (pt.current_tile_y >= pt.trace_height) {
+        pt.complete = true;
+    }
+}
+
+pub fn resolvePathTraceDisplayPixels(pt: *PathTraceProgressiveState) void {
+    const trace_linear = pt.trace_linear_rgb orelse return;
+    const display_pixels = pt.display_pixels orelse return;
+    if (pt.trace_width == 0 or pt.trace_height == 0 or pt.target_width == 0 or pt.target_height == 0) return;
+
+    var out_y: u32 = 0;
+    while (out_y < pt.target_height) : (out_y += 1) {
+        const src_y_u64 = (@as(u64, out_y) * @as(u64, pt.trace_height)) / @as(u64, pt.target_height);
+        const src_y: u32 = @min(pt.trace_height - 1, @as(u32, @intCast(src_y_u64)));
+        var out_x: u32 = 0;
+        while (out_x < pt.target_width) : (out_x += 1) {
+            const src_x_u64 = (@as(u64, out_x) * @as(u64, pt.trace_width)) / @as(u64, pt.target_width);
+            const src_x: u32 = @min(pt.trace_width - 1, @as(u32, @intCast(src_x_u64)));
+            const src_index: usize = (@as(usize, src_y) * @as(usize, pt.trace_width) + @as(usize, src_x)) * 3;
+            const dst_pixel: usize = @as(usize, out_y) * @as(usize, pt.target_width) + @as(usize, out_x);
+            image_export.writeHdrPixelRgba16f(display_pixels, dst_pixel, .{
+                trace_linear[src_index + 0],
+                trace_linear[src_index + 1],
+                trace_linear[src_index + 2],
+            });
+        }
+    }
 }
