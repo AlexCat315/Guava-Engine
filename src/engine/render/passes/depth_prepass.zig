@@ -1,14 +1,11 @@
 const std = @import("std");
 const mesh_pass_mod = @import("mesh_pass.zig");
 const rhi_mod = @import("../../rhi/device.zig");
-const rhi_types = @import("../../rhi/types.zig");
 const shader_support = @import("../shader_support.zig");
-const base_pass_mod = @import("base_pass.zig");
 
 pub const DepthPrepass = struct {
-    pipeline_hdr: ?rhi_mod.GraphicsPipeline = null,
-    pipeline_ldr: ?rhi_mod.GraphicsPipeline = null,
-    stages: ?shader_support.ProgramStages = null,
+    pipeline: ?rhi_mod.GraphicsPipeline = null,
+    vertex_stage: ?rhi_mod.ShaderModule = null,
 
     pub fn init(device: *rhi_mod.RhiDevice) !DepthPrepass {
         var pass = DepthPrepass{};
@@ -17,20 +14,17 @@ pub const DepthPrepass = struct {
     }
 
     pub fn deinit(self: *DepthPrepass, device: *rhi_mod.RhiDevice) void {
-        if (self.pipeline_ldr) |*pipeline| {
+        if (self.pipeline) |*pipeline| {
             device.releaseGraphicsPipeline(pipeline);
         }
-        if (self.pipeline_hdr) |*pipeline| {
-            device.releaseGraphicsPipeline(pipeline);
-        }
-        if (self.stages) |*stages| {
-            stages.deinit(device);
+        if (self.vertex_stage) |*vertex_stage| {
+            device.releaseShaderModule(vertex_stage);
         }
         self.* = undefined;
     }
 
     pub fn isReady(self: *const DepthPrepass) bool {
-        return self.pipeline_hdr != null and self.pipeline_ldr != null;
+        return self.pipeline != null;
     }
 
     pub fn draw(
@@ -39,18 +33,13 @@ pub const DepthPrepass = struct {
         frame: rhi_mod.Frame,
         pass: rhi_mod.RenderPass,
         prepared_scene: *const mesh_pass_mod.PreparedScene,
-        target: base_pass_mod.DrawTarget,
     ) mesh_pass_mod.DrawStats {
         var stats = mesh_pass_mod.DrawStats{};
         if (!self.isReady()) {
             return stats;
         }
 
-        const pipeline = switch (target) {
-            .hdr => &self.pipeline_hdr.?,
-            .ldr => &self.pipeline_ldr.?,
-        };
-        device.bindGraphicsPipeline(pass, pipeline);
+        device.bindGraphicsPipeline(pass, &self.pipeline.?);
         for (prepared_scene.opaque_meshes) |item| {
             var vertex_uniforms = mesh_pass_mod.VertexUniforms{
                 .view_projection = prepared_scene.view_projection,
@@ -70,9 +59,9 @@ pub const DepthPrepass = struct {
     }
 
     fn createResources(self: *DepthPrepass, device: *rhi_mod.RhiDevice) !void {
-        self.stages = try shader_support.loadProgramStages(device, "depth_prepass");
-        errdefer if (self.stages) |*stages| {
-            stages.deinit(device);
+        self.vertex_stage = try shader_support.loadVertexStage(device, "depth_prepass");
+        errdefer if (self.vertex_stage) |*vertex_stage| {
+            device.releaseShaderModule(vertex_stage);
         };
 
         const vertex_layouts = [_]rhi_mod.VertexBufferLayoutDesc{
@@ -103,11 +92,7 @@ pub const DepthPrepass = struct {
             },
         };
 
-        self.pipeline_hdr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .rgba16_float);
-        errdefer if (self.pipeline_hdr) |*pipeline| {
-            device.releaseGraphicsPipeline(pipeline);
-        };
-        self.pipeline_ldr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .bgra8_unorm_srgb);
+        self.pipeline = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..]);
     }
 
     fn createPipeline(
@@ -115,14 +100,12 @@ pub const DepthPrepass = struct {
         device: *rhi_mod.RhiDevice,
         vertex_layouts: []const rhi_mod.VertexBufferLayoutDesc,
         vertex_attributes: []const rhi_mod.VertexAttributeDesc,
-        color_format: rhi_types.TextureFormat,
     ) !rhi_mod.GraphicsPipeline {
         return device.createGraphicsPipeline(.{
-            .vertex_shader = &self.stages.?.vertex,
-            .fragment_shader = &self.stages.?.fragment,
+            .vertex_shader = &self.vertex_stage.?,
             .vertex_buffer_layouts = vertex_layouts,
             .vertex_attributes = vertex_attributes,
-            .color_format = color_format,
+            .color_format = null,
             .depth_format = .d32_float,
             .primitive_type = .triangle_list,
             .fill_mode = .fill,

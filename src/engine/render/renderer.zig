@@ -1333,10 +1333,10 @@ pub const Renderer = struct {
                     const active_render_mode = effectiveViewportRenderMode(self.editor_viewport_state);
                     var scene_pass: rhi_mod.RenderPass = undefined;
                     if (run_rt_shadow_denoise) {
-                        const depth_prepass_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.colorWithDepth(base_pass_target, clear.color, scene_depth_target));
+                        const depth_prepass_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.depthOnly(scene_depth_target.?));
                         const depth_start = std.time.nanoTimestamp();
                         const depth_stats = if (active_render_mode != .wireframe)
-                            self.depth_prepass.draw(&self.rhi, frame, depth_prepass_pass, &prepared_scene, if (viewport_active) .hdr else .ldr)
+                            self.depth_prepass.draw(&self.rhi, frame, depth_prepass_pass, &prepared_scene)
                         else
                             mesh_pass_mod.DrawStats{};
                         self.graph.recordPassStat(pass_stats, .depth_prepass, durationNs(depth_start, std.time.nanoTimestamp()), depth_stats.draw_calls, depth_stats.triangles_drawn);
@@ -1379,14 +1379,35 @@ pub const Renderer = struct {
                             .depth = loaded_depth_target,
                         });
                     } else {
-                        scene_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.colorWithDepth(base_pass_target, clear.color, scene_depth_target));
-                        const depth_start = std.time.nanoTimestamp();
-                        const depth_stats = if (active_render_mode != .wireframe)
-                            self.depth_prepass.draw(&self.rhi, frame, scene_pass, &prepared_scene, if (viewport_active) .hdr else .ldr)
-                        else
-                            mesh_pass_mod.DrawStats{};
-                        self.graph.recordPassStat(pass_stats, .depth_prepass, durationNs(depth_start, std.time.nanoTimestamp()), depth_stats.draw_calls, depth_stats.triangles_drawn);
-                        draw_stats.add(depth_stats);
+                        if (active_render_mode != .wireframe and scene_depth_target != null) {
+                            const depth_prepass_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.depthOnly(scene_depth_target.?));
+                            const depth_start = std.time.nanoTimestamp();
+                            const depth_stats = self.depth_prepass.draw(&self.rhi, frame, depth_prepass_pass, &prepared_scene);
+                            self.graph.recordPassStat(pass_stats, .depth_prepass, durationNs(depth_start, std.time.nanoTimestamp()), depth_stats.draw_calls, depth_stats.triangles_drawn);
+                            draw_stats.add(depth_stats);
+                            self.rhi.endRenderPass(depth_prepass_pass);
+
+                            const loaded_depth_target: rhi_mod.DepthAttachmentDesc = .{
+                                .texture = scene_depth_target.?.texture,
+                                .clear_depth = scene_depth_target.?.clear_depth,
+                                .clear_stencil = scene_depth_target.?.clear_stencil,
+                                .load_op = .load,
+                                .store_op = .store,
+                                .stencil_load_op = scene_depth_target.?.stencil_load_op,
+                                .stencil_store_op = scene_depth_target.?.stencil_store_op,
+                            };
+                            scene_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
+                                .color = .{
+                                    .target = base_pass_target,
+                                    .clear_color = clear.color,
+                                    .load_op = .clear,
+                                    .store_op = .store,
+                                },
+                                .depth = loaded_depth_target,
+                            });
+                        } else {
+                            scene_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.colorWithDepth(base_pass_target, clear.color, scene_depth_target));
+                        }
                     }
 
                     // 渲染主几何（Opaque）：调用 BasePass.draw 来绘制不透明物体（会遍历 DrawItem 列表并发出 draw 调用）

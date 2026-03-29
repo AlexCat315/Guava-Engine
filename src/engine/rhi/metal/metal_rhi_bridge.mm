@@ -448,17 +448,24 @@ uint32_t guava_metal_rhi_create_graphics_pipeline(
         auto* ctx = static_cast<GuavaMetalRhiContext*>(raw);
 
         auto vit = ctx->shader_functions.find(desc->vertex_shader_id);
-        auto fit = ctx->shader_functions.find(desc->fragment_shader_id);
-        if (vit == ctx->shader_functions.end() ||
-            fit == ctx->shader_functions.end()) {
+        if (vit == ctx->shader_functions.end()) {
             fprintf(stderr, "[GuavaMetal] Graphics pipeline creation: shader not found\n");
             return 0;
+        }
+        id<MTLFunction> fragment_function = nil;
+        if (desc->fragment_shader_id != 0) {
+            auto fit = ctx->shader_functions.find(desc->fragment_shader_id);
+            if (fit == ctx->shader_functions.end()) {
+                fprintf(stderr, "[GuavaMetal] Graphics pipeline creation: shader not found\n");
+                return 0;
+            }
+            fragment_function = fit->second;
         }
 
         MTLRenderPipelineDescriptor* pd =
             [[MTLRenderPipelineDescriptor alloc] init];
         pd.vertexFunction   = vit->second;
-        pd.fragmentFunction = fit->second;
+        pd.fragmentFunction = fragment_function;
         if (desc->color_format != 0) {
             pd.colorAttachments[0].pixelFormat = mapPixelFormat(desc->color_format);
         } else {
@@ -466,7 +473,7 @@ uint32_t guava_metal_rhi_create_graphics_pipeline(
         }
 
         // ── Blend state ───────────────────────────────────────────────
-        if (desc->blend_enabled) {
+        if (desc->blend_enabled && desc->color_format != 0) {
             pd.colorAttachments[0].blendingEnabled             = YES;
             pd.colorAttachments[0].sourceRGBBlendFactor        = mapBlendFactor(desc->src_color_blend);
             pd.colorAttachments[0].destinationRGBBlendFactor   = mapBlendFactor(desc->dst_color_blend);

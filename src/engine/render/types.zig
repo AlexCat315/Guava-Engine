@@ -64,7 +64,7 @@ pub const EditorViewportState = struct {
     ssr_ray_thickness: f32 = 0.5,
     ssr_fade_distance: f32 = 10.0,
     ssr_edge_fade: f32 = 0.1,
-    
+
     // SSGI 屏幕空间全局光照
     ssgi_enabled: bool = false,
     ssgi_radius: f32 = 2.0,
@@ -72,7 +72,7 @@ pub const EditorViewportState = struct {
     ssgi_bias: f32 = 0.05,
     ssgi_ray_count: u32 = 8,
     ssgi_step_count: u32 = 8,
-    
+
     // TAA 时域抗锯齿
     taa_enabled: bool = false,
     taa_blend_factor: f32 = 0.1,

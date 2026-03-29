@@ -54,6 +54,22 @@ pub fn loadProgramStages(device: *rhi_mod.RhiDevice, name: []const u8) !ProgramS
     };
 }
 
+pub fn loadVertexStage(device: *rhi_mod.RhiDevice, name: []const u8) !rhi_mod.ShaderModule {
+    const program = generated_shaders.findProgram(name) orelse return error.MissingShaderProgram;
+    const vertex_variant = program.stageForBackend(device.api, .vertex) orelse return error.UnsupportedShaderBackend;
+
+    return device.createShaderModule(.{
+        .code = vertex_variant.code,
+        .stage = .vertex,
+        .format = vertex_variant.format,
+        .entry_point = vertex_variant.entry_point,
+        .num_samplers = vertex_variant.reflection.num_samplers,
+        .num_storage_textures = vertex_variant.reflection.num_storage_textures,
+        .num_storage_buffers = vertex_variant.reflection.num_storage_buffers,
+        .num_uniform_buffers = vertex_variant.reflection.num_uniform_buffers,
+    });
+}
+
 /// Load a compute shader program by name and create the compute pipeline.
 pub fn loadComputePipeline(device: *rhi_mod.RhiDevice, name: []const u8) !rhi_mod.ComputePipeline {
     const program = generated_shaders.findComputeProgram(name) orelse return error.MissingShaderProgram;

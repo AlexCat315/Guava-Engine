@@ -183,8 +183,8 @@ pub const VertexLayoutDesc = struct {
 pub const GraphicsPipelineDesc = struct {
     layout: PipelineLayout,
     vertex: ShaderModule,
-    fragment: ShaderModule,
-    color_format: rhi_types.TextureFormat,
+    fragment: ?ShaderModule = null,
+    color_format: rhi_types.TextureFormat = .unknown,
     depth_format: ?rhi_types.TextureFormat = .d32_float,
     primitive: rhi_types.PrimitiveType = .triangle_list,
     depth_stencil: ?DepthStencilState = .{},

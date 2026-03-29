@@ -34,13 +34,20 @@ fn durationNs(start: i128, end: i128) u64 {
 pub const PassDescriptors = struct {
     pub fn shadowOnly(depth_texture: *const rhi_mod.Texture) rhi_mod.RenderPassDesc {
         return .{
-            .color = .{},
+            .color = .{ .target = .none, .load_op = .dont_care, .store_op = .dont_care },
             .depth = .{
                 .texture = depth_texture,
                 .clear_depth = 1.0,
                 .load_op = .clear,
                 .store_op = .store,
             },
+        };
+    }
+
+    pub fn depthOnly(depth: rhi_mod.DepthAttachmentDesc) rhi_mod.RenderPassDesc {
+        return .{
+            .color = .{ .target = .none, .load_op = .dont_care, .store_op = .dont_care },
+            .depth = depth,
         };
     }
 

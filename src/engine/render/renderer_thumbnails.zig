@@ -325,7 +325,7 @@ pub fn processMaterialThumbnailRequests(
             },
         });
 
-        const depth_stats = self.depth_prepass.draw(&self.rhi, frame, render_pass, &prepared_scene, .ldr);
+        const depth_stats = self.depth_prepass.draw(&self.rhi, frame, render_pass, &prepared_scene);
         stats.add(depth_stats);
         const base_stats = try self.base_pass.draw(&self.rhi, frame, render_pass, &prepared_scene, .{
             .render_mode = thumbnail_viewport_state.render_mode,

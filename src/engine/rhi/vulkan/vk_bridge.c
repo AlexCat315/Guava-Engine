@@ -475,7 +475,7 @@ static VkFramebuffer find_or_create_framebuffer(GuavaVkContext* ctx, VkRenderPas
 
     VkImageView views[2];
     uint32_t view_count = 0;
-    views[view_count++] = color_view;
+    if (color_view) views[view_count++] = color_view;
     if (depth_view) views[view_count++] = depth_view;
 
     VkFramebufferCreateInfo fb_info = {
@@ -1233,24 +1233,26 @@ uint32_t guava_vk_rhi_create_graphics_pipeline(void* raw,
     GuavaVkContext* ctx = (GuavaVkContext*)raw;
 
     ShaderEntry* vs = find_shader(ctx, desc->vertex_shader_id);
-    ShaderEntry* fs = find_shader(ctx, desc->fragment_shader_id);
-    if (!vs || !fs) return 0;
+    ShaderEntry* fs = desc->fragment_shader_id != 0 ? find_shader(ctx, desc->fragment_shader_id) : NULL;
+    if (!vs || (desc->fragment_shader_id != 0 && !fs)) return 0;
 
     // ── Shader stages ──────────────────────────────────────────────
-    VkPipelineShaderStageCreateInfo stages[2] = {
-        {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-            .stage = VK_SHADER_STAGE_VERTEX_BIT,
-            .module = vs->module,
-            .pName = vs->entry_point,
-        },
-        {
+    VkPipelineShaderStageCreateInfo stages[2] = {0};
+    uint32_t stage_count = 0;
+    stages[stage_count++] = (VkPipelineShaderStageCreateInfo){
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        .stage = VK_SHADER_STAGE_VERTEX_BIT,
+        .module = vs->module,
+        .pName = vs->entry_point,
+    };
+    if (fs) {
+        stages[stage_count++] = (VkPipelineShaderStageCreateInfo){
             .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
             .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
             .module = fs->module,
             .pName = fs->entry_point,
-        },
-    };
+        };
+    }
 
     // ── Vertex input ───────────────────────────────────────────────
     VkVertexInputAttributeDescription vk_attrs[32];
@@ -1335,11 +1337,14 @@ uint32_t guava_vk_rhi_create_graphics_pipeline(void* raw,
         .stencilTestEnable = VK_FALSE,
     };
 
+    VkFormat color_format = map_texture_format(desc->color_format);
+    bool has_color = color_format != VK_FORMAT_UNDEFINED;
+
     // ── Color blending ─────────────────────────────────────────────
     VkPipelineColorBlendAttachmentState color_blend_attachment = {
         .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                           VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
-        .blendEnable = desc->blend_enabled ? VK_TRUE : VK_FALSE,
+        .blendEnable = (has_color && desc->blend_enabled) ? VK_TRUE : VK_FALSE,
         .srcColorBlendFactor = map_blend_factor(desc->src_color_blend),
         .dstColorBlendFactor = map_blend_factor(desc->dst_color_blend),
         .colorBlendOp = map_blend_op(desc->color_blend_op),
@@ -1351,13 +1356,13 @@ uint32_t guava_vk_rhi_create_graphics_pipeline(void* raw,
     VkPipelineColorBlendStateCreateInfo color_blending = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
         .logicOpEnable = VK_FALSE,
-        .attachmentCount = 1,
-        .pAttachments = &color_blend_attachment,
+        .attachmentCount = has_color ? 1 : 0,
+        .pAttachments = has_color ? &color_blend_attachment : NULL,
     };
 
     // ── Pipeline layout (push constants + descriptor set layouts) ──
     VkPushConstantRange push_range = {
-        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | (fs ? VK_SHADER_STAGE_FRAGMENT_BIT : 0),
         .offset = 0,
         .size = 256, // max push constant size
     };
@@ -1388,19 +1393,20 @@ uint32_t guava_vk_rhi_create_graphics_pipeline(void* raw,
     uint32_t attachment_count = 0;
 
     VkAttachmentReference color_ref = { .attachment = 0, .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
-    VkAttachmentReference depth_ref = { .attachment = 1, .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
+    VkAttachmentReference depth_ref = { .attachment = has_color ? 1 : 0, .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
 
-    VkFormat color_format = map_texture_format(desc->color_format);
-    attachments[attachment_count++] = (VkAttachmentDescription){
-        .format = color_format,
-        .samples = VK_SAMPLE_COUNT_1_BIT,
-        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-    };
+    if (has_color) {
+        attachments[attachment_count++] = (VkAttachmentDescription){
+            .format = color_format,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+            .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        };
+    }
 
     bool has_depth = desc->depth_format != 0;
     if (has_depth) {
@@ -1418,18 +1424,18 @@ uint32_t guava_vk_rhi_create_graphics_pipeline(void* raw,
 
     VkSubpassDescription subpass = {
         .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
-        .colorAttachmentCount = 1,
-        .pColorAttachments = &color_ref,
+        .colorAttachmentCount = has_color ? 1 : 0,
+        .pColorAttachments = has_color ? &color_ref : NULL,
         .pDepthStencilAttachment = has_depth ? &depth_ref : NULL,
     };
 
     VkSubpassDependency dependency = {
         .srcSubpass = VK_SUBPASS_EXTERNAL,
         .dstSubpass = 0,
-        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+        .srcStageMask = (has_color ? VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT : 0) | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
         .srcAccessMask = 0,
-        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | (has_depth ? VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT : 0),
+        .dstStageMask = (has_color ? VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT : 0) | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+        .dstAccessMask = (has_color ? VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT : 0) | (has_depth ? VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT : 0),
     };
 
     VkRenderPassCreateInfo rp_info = {
@@ -1451,7 +1457,7 @@ uint32_t guava_vk_rhi_create_graphics_pipeline(void* raw,
     // ── Create pipeline ────────────────────────────────────────────
     VkGraphicsPipelineCreateInfo pipe_info = {
         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-        .stageCount = 2,
+        .stageCount = stage_count,
         .pStages = stages,
         .pVertexInputState = &vertex_input,
         .pInputAssemblyState = &input_assembly,
@@ -2028,18 +2034,18 @@ bool guava_vk_rhi_submit(void* raw, uint32_t queue_class,
                 const CmdBeginRenderPass* rp = (const CmdBeginRenderPass*)(cmd_bytes + offset);
                 offset += sizeof(CmdBeginRenderPass);
 
-                TextureEntry* color_tex = find_texture(ctx, rp->color_target_id);
-                if (!color_tex) { in_render_pass = true; break; }
-
+                TextureEntry* color_tex = rp->color_target_id ? find_texture(ctx, rp->color_target_id) : NULL;
                 TextureEntry* depth_tex = rp->depth_target_id ? find_texture(ctx, rp->depth_target_id) : NULL;
+                if (!color_tex && !depth_tex) { in_render_pass = true; break; }
+                VkFormat color_fmt = color_tex ? color_tex->format : VK_FORMAT_UNDEFINED;
                 VkFormat depth_fmt = depth_tex ? depth_tex->format : VK_FORMAT_UNDEFINED;
 
                 // Find or create compatible render pass
-                active_render_pass = find_or_create_render_pass(ctx, color_tex->format, depth_fmt, rp->clear_mask);
+                active_render_pass = find_or_create_render_pass(ctx, color_fmt, depth_fmt, rp->clear_mask);
                 if (!active_render_pass) { in_render_pass = true; break; }
 
                 // Transition images to attachment layouts
-                if (color_tex->current_layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+                if (color_tex && color_tex->current_layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
                     transition_image_layout(ctx, cmd, color_tex->image,
                         color_tex->current_layout, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                         VK_IMAGE_ASPECT_COLOR_BIT);
@@ -2054,16 +2060,21 @@ bool guava_vk_rhi_submit(void* raw, uint32_t queue_class,
 
                 // Find or create framebuffer
                 VkImageView depth_view = depth_tex ? depth_tex->view : VK_NULL_HANDLE;
+                VkImageView color_view = color_tex ? color_tex->view : VK_NULL_HANDLE;
+                uint32_t target_width = color_tex ? color_tex->width : depth_tex->width;
+                uint32_t target_height = color_tex ? color_tex->height : depth_tex->height;
                 active_framebuffer = find_or_create_framebuffer(ctx, active_render_pass,
-                    color_tex->view, depth_view, color_tex->width, color_tex->height);
+                    color_view, depth_view, target_width, target_height);
                 if (!active_framebuffer) { in_render_pass = true; break; }
 
                 // Begin render pass
                 VkClearValue clear_values[2];
                 uint32_t clear_count = 0;
-                clear_values[clear_count++] = (VkClearValue){
-                    .color = {{ rp->clear_r, rp->clear_g, rp->clear_b, rp->clear_a }}
-                };
+                if (color_tex) {
+                    clear_values[clear_count++] = (VkClearValue){
+                        .color = {{ rp->clear_r, rp->clear_g, rp->clear_b, rp->clear_a }}
+                    };
+                }
                 if (depth_tex) {
                     clear_values[clear_count++] = (VkClearValue){
                         .depthStencil = { rp->clear_depth, 0 }
@@ -2074,7 +2085,7 @@ bool guava_vk_rhi_submit(void* raw, uint32_t queue_class,
                     .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
                     .renderPass = active_render_pass,
                     .framebuffer = active_framebuffer,
-                    .renderArea = { {0, 0}, {color_tex->width, color_tex->height} },
+                    .renderArea = { {0, 0}, {target_width, target_height} },
                     .clearValueCount = clear_count,
                     .pClearValues = clear_values,
                 };

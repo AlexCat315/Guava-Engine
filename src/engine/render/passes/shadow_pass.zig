@@ -1,12 +1,11 @@
 const std = @import("std");
 const mesh_pass_mod = @import("mesh_pass.zig");
 const rhi_mod = @import("../../rhi/device.zig");
-const rhi_types = @import("../../rhi/types.zig");
 const shader_support = @import("../shader_support.zig");
 
 pub const ShadowPass = struct {
     pipeline: ?rhi_mod.GraphicsPipeline = null,
-    stages: ?shader_support.ProgramStages = null,
+    vertex_stage: ?rhi_mod.ShaderModule = null,
 
     pub fn init(device: *rhi_mod.RhiDevice) !ShadowPass {
         var pass = ShadowPass{};
@@ -18,8 +17,8 @@ pub const ShadowPass = struct {
         if (self.pipeline) |*pipeline| {
             device.releaseGraphicsPipeline(pipeline);
         }
-        if (self.stages) |*stages| {
-            stages.deinit(device);
+        if (self.vertex_stage) |*vertex_stage| {
+            device.releaseShaderModule(vertex_stage);
         }
         self.* = undefined;
     }
@@ -61,9 +60,9 @@ pub const ShadowPass = struct {
     }
 
     fn createResources(self: *ShadowPass, device: *rhi_mod.RhiDevice) !void {
-        self.stages = try shader_support.loadProgramStages(device, "shadow_pass");
-        errdefer if (self.stages) |*stages| {
-            stages.deinit(device);
+        self.vertex_stage = try shader_support.loadVertexStage(device, "shadow_pass");
+        errdefer if (self.vertex_stage) |*vertex_stage| {
+            device.releaseShaderModule(vertex_stage);
         };
 
         const vertex_layouts = [_]rhi_mod.VertexBufferLayoutDesc{
@@ -95,15 +94,14 @@ pub const ShadowPass = struct {
         };
 
         self.pipeline = try device.createGraphicsPipeline(.{
-            .vertex_shader = &self.stages.?.vertex,
-            .fragment_shader = &self.stages.?.fragment,
+            .vertex_shader = &self.vertex_stage.?,
             .vertex_buffer_layouts = vertex_layouts[0..],
             .vertex_attributes = vertex_attributes[0..],
             .color_format = null, // Depth only
             .depth_format = .d32_float,
             .primitive_type = .triangle_list,
             .fill_mode = .fill,
-            .cull_mode = .front, // Cull front faces to avoid Peter Panning
+            .cull_mode = .front,
             .front_face = .counter_clockwise,
             .depth_compare = .less_or_equal,
             .depth_test = true,

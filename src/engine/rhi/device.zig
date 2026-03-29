@@ -129,7 +129,7 @@ pub const Sampler = struct {
 
 pub const GraphicsPipelineDesc = struct {
     vertex_shader: *const ShaderModule,
-    fragment_shader: *const ShaderModule,
+    fragment_shader: ?*const ShaderModule = null,
     vertex_buffer_layouts: []const VertexBufferLayoutDesc,
     vertex_attributes: []const VertexAttributeDesc,
     color_format: ?types.TextureFormat = null,
@@ -240,6 +240,7 @@ pub const StoreOp = enum {
 };
 
 pub const ColorTarget = union(enum) {
+    none,
     swapchain,
     texture: *const Texture,
 };
@@ -728,6 +729,7 @@ pub const RhiDevice = struct {
         var cmd_mut = &self.current_frame.?.command_buffer;
 
         const color_id = switch (desc.color.target) {
+            .none => 0,
             .swapchain => self.current_frame.?.swapchain_image.id,
             .texture => |texture| texture.id,
         };
@@ -735,7 +737,7 @@ pub const RhiDevice = struct {
         const depth_id = if (desc.depth) |d| d.texture.id else 0;
 
         var clear_mask: u32 = 0;
-        if (desc.color.load_op == .clear) clear_mask |= 0x1;
+        if (desc.color.target != .none and desc.color.load_op == .clear) clear_mask |= 0x1;
         if (desc.depth) |d| {
             if (d.load_op == .clear) clear_mask |= 0x2;
         }
@@ -1050,8 +1052,11 @@ pub const RhiDevice = struct {
         const pipeline = try self.device.createGraphicsPipeline(.{
             .layout = layout,
             .vertex = .{ .id = desc.vertex_shader.id },
-            .fragment = .{ .id = desc.fragment_shader.id },
-            .color_format = desc.color_format orelse self.runtime_info.swapchain_format,
+            .fragment = if (desc.fragment_shader) |fragment_shader| .{ .id = fragment_shader.id } else null,
+            .color_format = if (desc.fragment_shader == null)
+                .unknown
+            else
+                desc.color_format orelse self.runtime_info.swapchain_format,
             .depth_format = desc.depth_format,
             .primitive = desc.primitive_type,
             .depth_stencil = if (desc.depth_test)

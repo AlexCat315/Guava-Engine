@@ -498,11 +498,11 @@ pub const BasePass = struct {
         errdefer if (self.fill_pipeline_ldr) |*pipeline| {
             device.releaseGraphicsPipeline(pipeline);
         };
-        self.ghost_fill_pipeline_hdr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .rgba16_float, .ghost_fill, true, true);
+        self.ghost_fill_pipeline_hdr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .rgba16_float, .ghost_fill, true, false);
         errdefer if (self.ghost_fill_pipeline_hdr) |*pipeline| {
             device.releaseGraphicsPipeline(pipeline);
         };
-        self.ghost_fill_pipeline_ldr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .bgra8_unorm_srgb, .ghost_fill, true, true);
+        self.ghost_fill_pipeline_ldr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .bgra8_unorm_srgb, .ghost_fill, true, false);
         errdefer if (self.ghost_fill_pipeline_ldr) |*pipeline| {
             device.releaseGraphicsPipeline(pipeline);
         };

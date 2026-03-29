@@ -368,7 +368,7 @@ fn vtCreateGraphicsPipeline(ctx: *anyopaque, desc: rhi.GraphicsPipelineDesc) rhi
 
     const c_desc = MetalDevice.GfxPipelineDescC{
         .vertex_shader_id = desc.vertex.id,
-        .fragment_shader_id = desc.fragment.id,
+        .fragment_shader_id = if (desc.fragment) |fragment| fragment.id else 0,
         .color_format = @intFromEnum(desc.color_format),
         .depth_format = if (desc.depth_format) |df| @intFromEnum(df) else 0,
         .primitive = @intFromEnum(desc.primitive),

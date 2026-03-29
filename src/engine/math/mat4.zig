@@ -229,7 +229,7 @@ pub fn orthographic(size: f32, aspect_ratio: f32, near_clip: f32, far_clip: f32)
     set(&result, 0, 0, 1.0 / half_width);
     set(&result, 1, 1, 1.0 / half_height);
     set(&result, 2, 2, 1.0 / (near_clip - far_clip));
-    set(&result, 3, 2, near_clip / (near_clip - far_clip));
+    set(&result, 2, 3, near_clip / (near_clip - far_clip));
     return result;
 }
 
@@ -241,7 +241,7 @@ pub fn orthographicOffCenter(left: f32, right: f32, bottom: f32, top: f32, near_
     set(&result, 2, 2, 1.0 / (near_clip - far_clip));
     set(&result, 0, 3, -(right + left) / (right - left));
     set(&result, 1, 3, -(top + bottom) / (top - bottom));
-    set(&result, 3, 2, near_clip / (near_clip - far_clip));
+    set(&result, 2, 3, near_clip / (near_clip - far_clip));
     set(&result, 3, 3, 1.0);
     return result;
 }
@@ -294,6 +294,30 @@ test "perspective matrix keeps clip w positive for points in front of the camera
         matrix[15] * view_space_point[3];
 
     try std.testing.expect(clip_w > 0.0);
+}
+
+test "orthographic matrix keeps clip w constant and maps depth into 0..1" {
+    const matrix = orthographic(10.0, 1.0, 0.1, 100.0);
+    const near_point = [_]f32{ 0.0, 0.0, -0.1, 1.0 };
+    const far_point = [_]f32{ 0.0, 0.0, -100.0, 1.0 };
+
+    const near_clip = [_]f32{
+        matrix[0] * near_point[0] + matrix[4] * near_point[1] + matrix[8] * near_point[2] + matrix[12] * near_point[3],
+        matrix[1] * near_point[0] + matrix[5] * near_point[1] + matrix[9] * near_point[2] + matrix[13] * near_point[3],
+        matrix[2] * near_point[0] + matrix[6] * near_point[1] + matrix[10] * near_point[2] + matrix[14] * near_point[3],
+        matrix[3] * near_point[0] + matrix[7] * near_point[1] + matrix[11] * near_point[2] + matrix[15] * near_point[3],
+    };
+    const far_clip = [_]f32{
+        matrix[0] * far_point[0] + matrix[4] * far_point[1] + matrix[8] * far_point[2] + matrix[12] * far_point[3],
+        matrix[1] * far_point[0] + matrix[5] * far_point[1] + matrix[9] * far_point[2] + matrix[13] * far_point[3],
+        matrix[2] * far_point[0] + matrix[6] * far_point[1] + matrix[10] * far_point[2] + matrix[14] * far_point[3],
+        matrix[3] * far_point[0] + matrix[7] * far_point[1] + matrix[11] * far_point[2] + matrix[15] * far_point[3],
+    };
+
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), near_clip[3], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), far_clip[3], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), near_clip[2], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), far_clip[2], 0.0001);
 }
 
 test "inverse transform matrix cancels transform matrix" {
