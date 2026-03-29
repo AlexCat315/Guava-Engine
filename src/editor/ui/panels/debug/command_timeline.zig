@@ -2,8 +2,46 @@ const std = @import("std");
 const engine = @import("guava");
 const gui = @import("../../gui.zig");
 const EditorState = @import("../../../core/state.zig").EditorState;
+const command_mod = @import("../../../actions/command.zig");
 const history = @import("../../../actions/history.zig");
+const i18n = @import("../../../i18n/mod.zig");
 const ui_icons = @import("../../icons.zig");
+
+fn timelineSourceText(state: *const EditorState, source: command_mod.TimelineSource) []const u8 {
+    return switch (source) {
+        .human => state.text(.command_timeline_source_human),
+        .ai => state.text(.command_timeline_source_ai),
+    };
+}
+
+fn setEntryTooltip(state: *const EditorState, entry: *const command_mod.TimelineEntry) void {
+    var source_buffer: [96]u8 = undefined;
+    const source_text = i18n.bufPrintMessage(
+        &source_buffer,
+        .command_timeline_source_fmt,
+        state.language,
+        .{timelineSourceText(state, entry.source)},
+    ) catch timelineSourceText(state, entry.source);
+
+    const trimmed_detail = std.mem.trim(u8, entry.detail, " \t\r\n");
+    var tooltip_buffer: [512]u8 = undefined;
+    const tooltip = if (trimmed_detail.len != 0 and !std.mem.eql(u8, trimmed_detail, entry.label))
+        i18n.bufPrintMessage(
+            &tooltip_buffer,
+            .command_timeline_tooltip_with_detail_fmt,
+            state.language,
+            .{ source_text, entry.label, trimmed_detail },
+        ) catch entry.label
+    else
+        i18n.bufPrintMessage(
+            &tooltip_buffer,
+            .command_timeline_tooltip_label_only_fmt,
+            state.language,
+            .{ source_text, entry.label },
+        ) catch entry.label;
+
+    gui.setTooltip(tooltip);
+}
 
 /// 在底部面板内绘制命令时间线内容（无窗口边框）
 pub fn drawCommandTimelinePanel(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -17,11 +55,12 @@ pub fn drawCommandTimelinePanel(state: *EditorState, layer_context: *engine.core
         const available_w = gui.contentRegionAvail()[0];
 
         var summary_buffer: [160]u8 = undefined;
-        const summary = try std.fmt.bufPrint(
+        const summary = i18n.bufPrintMessage(
             &summary_buffer,
-            "条目: {d}   光标: {d}/{d}",
+            .command_timeline_summary_fmt,
+            state.language,
             .{ state.timeline_entries.items.len, current_cursor, total_history_commands },
-        );
+        ) catch state.text(.command_timeline);
         gui.pushStyleColor(.text, .{ 0.55, 0.60, 0.68, 1.0 });
         gui.text(summary);
         gui.popStyleColor(1);
@@ -34,7 +73,13 @@ pub fn drawCommandTimelinePanel(state: *EditorState, layer_context: *engine.core
             gui.dummy(0.0, 2.0);
         }
 
-        if (gui.checkbox("悬停预览+点击确认##timeline_hover", &state.timeline_hover_preview_confirm_mode)) {
+        var hover_toggle_buffer: [160]u8 = undefined;
+        const hover_toggle_label = std.fmt.bufPrint(
+            &hover_toggle_buffer,
+            "{s}##timeline_hover",
+            .{state.text(.command_timeline_hover_preview_confirm)},
+        ) catch "##timeline_hover";
+        if (gui.checkbox(hover_toggle_label, &state.timeline_hover_preview_confirm_mode)) {
             if (!state.timeline_hover_preview_confirm_mode) {
                 state.timeline_preview_sequence = null;
                 state.timeline_preview_target_cursor = null;
@@ -53,11 +98,12 @@ pub fn drawCommandTimelinePanel(state: *EditorState, layer_context: *engine.core
             const preview_cursor = preview_cursor_opt.?;
             const preview_entry = state.timeline_entries.items[timeline_start_index + preview_cursor - 1];
             var preview_buffer: [224]u8 = undefined;
-            const preview_text = std.fmt.bufPrint(
+            const preview_text = i18n.bufPrintMessage(
                 &preview_buffer,
-                "预览: #{d} {s}",
+                .command_timeline_preview_fmt,
+                state.language,
                 .{ preview_entry.sequence, preview_entry.label },
-            ) catch "预览中...";
+            ) catch state.text(.command_timeline_preview_pending);
             gui.pushStyleColor(.text, .{ 0.80, 0.95, 1.0, 1.0 });
             gui.text(preview_text);
             gui.popStyleColor(1);
@@ -65,7 +111,13 @@ pub fn drawCommandTimelinePanel(state: *EditorState, layer_context: *engine.core
             gui.pushStyleColor(.button, .{ 0.13, 0.50, 0.36, 0.90 });
             gui.pushStyleColor(.button_hovered, .{ 0.15, 0.62, 0.43, 1.0 });
             gui.pushStyleColor(.button_active, .{ 0.10, 0.40, 0.28, 1.0 });
-            if (gui.buttonEx("确认时间穿越##timeline_confirm", 140.0, 0.0)) {
+            var confirm_button_buffer: [160]u8 = undefined;
+            const confirm_button_label = std.fmt.bufPrint(
+                &confirm_button_buffer,
+                "{s}##timeline_confirm",
+                .{state.text(.command_timeline_confirm_time_travel)},
+            ) catch "##timeline_confirm";
+            if (gui.buttonEx(confirm_button_label, 140.0, 0.0)) {
                 try history.timeTravelToCursor(state, layer_context, preview_cursor);
                 state.timeline_preview_sequence = null;
                 state.timeline_preview_target_cursor = null;
@@ -73,7 +125,7 @@ pub fn drawCommandTimelinePanel(state: *EditorState, layer_context: *engine.core
             gui.popStyleColor(3);
         } else {
             gui.pushStyleColor(.text, .{ 0.50, 0.52, 0.56, 1.0 });
-            gui.text("悬停节点以预览，再点击「确认时间穿越」。");
+            gui.text(state.text(.command_timeline_hover_hint));
             gui.popStyleColor(1);
         }
     }
@@ -83,7 +135,7 @@ pub fn drawCommandTimelinePanel(state: *EditorState, layer_context: *engine.core
     if (available_entries == 0) {
         gui.dummy(0.0, 6.0);
         gui.pushStyleColor(.text, .{ 0.40, 0.42, 0.46, 1.0 });
-        gui.text("暂无命令记录。创建实体、调整属性后此处将显示操作历史。");
+        gui.text(state.text(.command_timeline_empty));
         gui.popStyleColor(1);
         return;
     }
@@ -170,13 +222,7 @@ pub fn drawCommandTimelinePanel(state: *EditorState, layer_context: *engine.core
         }
 
         if (gui.isItemHovered()) {
-            var tip_buffer: [320]u8 = undefined;
-            const tip_text = std.fmt.bufPrint(
-                &tip_buffer,
-                "[{s}] {s}\n{s}",
-                .{ @tagName(entry.source), entry.command_kind, entry.detail },
-            ) catch entry.detail;
-            gui.setTooltip(tip_text);
+            setEntryTooltip(state, &entry);
         }
     }
 }

@@ -8,6 +8,7 @@ const state_mod = @import("../../../core/state.zig");
 const preferences = @import("../../../core/preferences.zig");
 const i18n = @import("../../../i18n/mod.zig");
 const chat_view = @import("chat_view.zig");
+const provider_client = @import("provider_client.zig");
 const provider_support = @import("provider_support.zig");
 const EditorState = state_mod.EditorState;
 const AiProviderType = state_mod.AiProviderType;
@@ -141,13 +142,6 @@ const ProviderPanelFeedback = struct {
 
 var g_provider_feedback: ProviderPanelFeedback = .{};
 
-const ProviderRequestFlavor = enum {
-    openai_chat_completions,
-    openai_responses,
-    anthropic_messages,
-    ollama_chat,
-};
-
 fn roleLogText(role: Role) []const u8 {
     return switch (role) {
         .user => "user",
@@ -276,159 +270,6 @@ fn providerDisplayNameForUi(state: *const EditorState, provider: *const state_mo
 
 fn applyProviderDefaults(state: *EditorState) void {
     provider_support.applyProviderDefaults(state);
-}
-
-fn endpointPathSlice(endpoint: []const u8) []const u8 {
-    if (std.mem.indexOf(u8, endpoint, "://")) |scheme_index| {
-        const host_start = scheme_index + 3;
-        if (std.mem.indexOfScalarPos(u8, endpoint, host_start, '/')) |path_start| {
-            return endpoint[path_start..];
-        }
-        return "";
-    }
-    if (std.mem.indexOfScalar(u8, endpoint, '/')) |path_start| {
-        return endpoint[path_start..];
-    }
-    return "";
-}
-
-fn endpointHostSlice(endpoint: []const u8) []const u8 {
-    if (std.mem.indexOf(u8, endpoint, "://")) |scheme_index| {
-        const host_start = scheme_index + 3;
-        const path_start = std.mem.indexOfScalarPos(u8, endpoint, host_start, '/') orelse endpoint.len;
-        return endpoint[host_start..path_start];
-    }
-    const path_start = std.mem.indexOfScalar(u8, endpoint, '/') orelse endpoint.len;
-    return endpoint[0..path_start];
-}
-
-fn asciiContainsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
-    if (needle.len == 0) return true;
-    if (needle.len > haystack.len) return false;
-    var start: usize = 0;
-    while (start + needle.len <= haystack.len) : (start += 1) {
-        var matches = true;
-        for (needle, 0..) |needle_char, offset| {
-            if (std.ascii.toLower(haystack[start + offset]) != std.ascii.toLower(needle_char)) {
-                matches = false;
-                break;
-            }
-        }
-        if (matches) return true;
-    }
-    return false;
-}
-
-fn asciiStartsWithIgnoreCase(haystack: []const u8, prefix: []const u8) bool {
-    if (prefix.len > haystack.len) return false;
-    for (prefix, 0..) |needle_char, index| {
-        if (std.ascii.toLower(haystack[index]) != std.ascii.toLower(needle_char)) {
-            return false;
-        }
-    }
-    return true;
-}
-
-fn modelSupportsAnthropicThinking(model: []const u8) bool {
-    return asciiContainsIgnoreCase(model, "claude-3-7") or
-        asciiContainsIgnoreCase(model, "claude-sonnet-4") or
-        asciiContainsIgnoreCase(model, "claude-opus-4") or
-        asciiContainsIgnoreCase(model, "claude-4");
-}
-
-fn shouldRequestOpenAiReasoningSummary(provider_type: AiProviderType, endpoint: []const u8) bool {
-    if (provider_type == .openai) return true;
-    return asciiContainsIgnoreCase(endpointHostSlice(endpoint), "openai.com");
-}
-
-fn requestFlavorForProvider(provider_type: AiProviderType, endpoint_raw: []const u8, model: []const u8) ProviderRequestFlavor {
-    const endpoint = std.mem.trim(u8, endpoint_raw, " \t\r\n");
-    const path = endpointPathSlice(endpoint);
-    const host = endpointHostSlice(endpoint);
-
-    return switch (provider_type) {
-        .openai => .openai_responses,
-        .anthropic => .anthropic_messages,
-        .ollama => .ollama_chat,
-        .custom => if (asciiContainsIgnoreCase(path, "/api/chat"))
-            .ollama_chat
-        else if (asciiContainsIgnoreCase(path, "/messages") or
-            asciiContainsIgnoreCase(host, "anthropic.com") or
-            asciiStartsWithIgnoreCase(model, "claude"))
-            .anthropic_messages
-        else if (asciiContainsIgnoreCase(path, "/responses") or
-            asciiContainsIgnoreCase(host, "openai.com"))
-            .openai_responses
-        else
-            .openai_chat_completions,
-    };
-}
-
-fn replaceEndpointSuffixAlloc(endpoint: []const u8, old_suffix: []const u8, new_suffix: []const u8) ![]u8 {
-    if (!std.mem.endsWith(u8, endpoint, old_suffix)) {
-        return std.heap.page_allocator.dupe(u8, endpoint);
-    }
-    const base = endpoint[0 .. endpoint.len - old_suffix.len];
-    return std.fmt.allocPrint(std.heap.page_allocator, "{s}{s}", .{ base, new_suffix });
-}
-
-fn normalizeProviderEndpointAlloc(flavor: ProviderRequestFlavor, endpoint_raw: []const u8) ![]u8 {
-    const endpoint = std.mem.trim(u8, endpoint_raw, " \t\r\n");
-    if (endpoint.len == 0) {
-        return std.heap.page_allocator.dupe(u8, endpoint);
-    }
-
-    const path = endpointPathSlice(endpoint);
-    const already_targeted = switch (flavor) {
-        .openai_chat_completions => std.mem.indexOf(u8, path, "/chat/completions") != null,
-        .openai_responses => std.mem.indexOf(u8, path, "/responses") != null,
-        .anthropic_messages => std.mem.indexOf(u8, path, "/messages") != null,
-        .ollama_chat => std.mem.indexOf(u8, path, "/api/chat") != null,
-    };
-    if (already_targeted) {
-        return std.heap.page_allocator.dupe(u8, endpoint);
-    }
-
-    const should_append = switch (flavor) {
-        .openai_chat_completions, .openai_responses => path.len == 0 or
-            std.mem.eql(u8, path, "/") or
-            std.mem.eql(u8, path, "/v1") or
-            std.mem.eql(u8, path, "/v1/"),
-        .anthropic_messages => path.len == 0 or
-            std.mem.eql(u8, path, "/") or
-            std.mem.eql(u8, path, "/v1") or
-            std.mem.eql(u8, path, "/v1/"),
-        .ollama_chat => path.len == 0 or std.mem.eql(u8, path, "/"),
-    };
-
-    const base = std.mem.trimRight(u8, endpoint, "/");
-    if (should_append) {
-        const suffix = switch (flavor) {
-            .openai_chat_completions => if (std.mem.endsWith(u8, base, "/v1")) "/chat/completions" else "/v1/chat/completions",
-            .openai_responses => if (std.mem.endsWith(u8, base, "/v1")) "/responses" else "/v1/responses",
-            .anthropic_messages => "/v1/messages",
-            .ollama_chat => "/api/chat",
-        };
-        return std.fmt.allocPrint(std.heap.page_allocator, "{s}{s}", .{ base, suffix });
-    }
-
-    return switch (flavor) {
-        .openai_responses => if (std.mem.endsWith(u8, base, "/chat/completions"))
-            replaceEndpointSuffixAlloc(base, "/chat/completions", "/responses")
-        else
-            std.heap.page_allocator.dupe(u8, endpoint),
-        .openai_chat_completions => if (std.mem.endsWith(u8, base, "/responses"))
-            replaceEndpointSuffixAlloc(base, "/responses", "/chat/completions")
-        else
-            std.heap.page_allocator.dupe(u8, endpoint),
-        .anthropic_messages => if (std.mem.endsWith(u8, base, "/chat/completions"))
-            replaceEndpointSuffixAlloc(base, "/chat/completions", "/messages")
-        else if (std.mem.endsWith(u8, base, "/responses"))
-            replaceEndpointSuffixAlloc(base, "/responses", "/messages")
-        else
-            std.heap.page_allocator.dupe(u8, endpoint),
-        .ollama_chat => std.heap.page_allocator.dupe(u8, endpoint),
-    };
 }
 
 fn testHttpConnectionAlloc(
@@ -580,15 +421,244 @@ fn clipped(slice: []const u8, max_len: usize) []const u8 {
     return if (slice.len <= max_len) slice else slice[0..max_len];
 }
 
-fn makeAiTimelineEventAlloc(language: i18n.Language, tool_name: []const u8, detail: []const u8) !AsyncTimelineEvent {
+fn jsonObjectField(root: ?std.json.Value, key: []const u8) ?std.json.Value {
+    const resolved_root = root orelse return null;
+    if (resolved_root != .object) return null;
+    return resolved_root.object.get(key);
+}
+
+fn jsonStringField(root: ?std.json.Value, key: []const u8) ?[]const u8 {
+    const value = jsonObjectField(root, key) orelse return null;
+    return switch (value) {
+        .string => |text| if (text.len == 0) null else text,
+        .number_string => |text| if (text.len == 0) null else text,
+        else => null,
+    };
+}
+
+fn jsonBoolField(root: ?std.json.Value, key: []const u8) ?bool {
+    const value = jsonObjectField(root, key) orelse return null;
+    return switch (value) {
+        .bool => |resolved| resolved,
+        else => null,
+    };
+}
+
+fn sliceIsDigits(slice: []const u8) bool {
+    if (slice.len == 0) return false;
+    for (slice) |ch| {
+        if (!std.ascii.isDigit(ch)) return false;
+    }
+    return true;
+}
+
+fn allocReferenceText(value: std.json.Value) !?[]u8 {
+    return switch (value) {
+        .integer => |number| try std.fmt.allocPrint(std.heap.page_allocator, "#{d}", .{number}),
+        .float => |number| blk: {
+            if (!std.math.isFinite(number) or number < 0) break :blk null;
+            const rounded = @round(number);
+            if (@abs(number - rounded) > 0.0001) break :blk null;
+            break :blk try std.fmt.allocPrint(std.heap.page_allocator, "#{d}", .{@as(u64, @intFromFloat(rounded))});
+        },
+        .number_string => |text| blk: {
+            if (text.len == 0) break :blk null;
+            if (sliceIsDigits(text)) {
+                break :blk try std.fmt.allocPrint(std.heap.page_allocator, "#{s}", .{text});
+            }
+            break :blk try std.heap.page_allocator.dupe(u8, text);
+        },
+        .string => |text| blk: {
+            if (text.len == 0) break :blk null;
+            if (sliceIsDigits(text)) {
+                break :blk try std.fmt.allocPrint(std.heap.page_allocator, "#{s}", .{text});
+            }
+            break :blk try std.heap.page_allocator.dupe(u8, text);
+        },
+        else => null,
+    };
+}
+
+fn allocReferenceForKey(root: ?std.json.Value, key: []const u8) !?[]u8 {
+    const value = jsonObjectField(root, key) orelse return null;
+    if (value == .null) return null;
+    return allocReferenceText(value);
+}
+
+fn allocLocalizedMessage(language: i18n.Language, id: i18n.MessageId) ![]u8 {
+    return std.heap.page_allocator.dupe(u8, i18n.text(language, id));
+}
+
+fn makeAiTimelineLabelAlloc(language: i18n.Language, tool_name: []const u8, arguments_value: ?std.json.Value) ![]u8 {
+    if (std.mem.eql(u8, tool_name, "create_entity")) {
+        if (jsonStringField(arguments_value, "name")) |name| {
+            return i18n.allocPrintMessage(
+                .ai_chat_timeline_create_entity_named_fmt,
+                std.heap.page_allocator,
+                language,
+                .{name},
+            );
+        }
+        return allocLocalizedMessage(language, .ai_chat_timeline_create_entity);
+    }
+
+    if (std.mem.eql(u8, tool_name, "delete_entity")) {
+        if (try allocReferenceForKey(arguments_value, "entity_id")) |entity_ref| {
+            defer std.heap.page_allocator.free(entity_ref);
+            return i18n.allocPrintMessage(
+                .ai_chat_timeline_delete_entity_fmt,
+                std.heap.page_allocator,
+                language,
+                .{entity_ref},
+            );
+        }
+    }
+
+    if (std.mem.eql(u8, tool_name, "rename_entity")) {
+        const maybe_name = jsonStringField(arguments_value, "name");
+        if (maybe_name) |name| {
+            if (try allocReferenceForKey(arguments_value, "entity_id")) |entity_ref| {
+                defer std.heap.page_allocator.free(entity_ref);
+                return i18n.allocPrintMessage(
+                    .ai_chat_timeline_rename_entity_fmt,
+                    std.heap.page_allocator,
+                    language,
+                    .{ entity_ref, name },
+                );
+            }
+        }
+    }
+
+    if (std.mem.eql(u8, tool_name, "set_parent")) {
+        if (try allocReferenceForKey(arguments_value, "entity_id")) |entity_ref| {
+            defer std.heap.page_allocator.free(entity_ref);
+
+            if (jsonObjectField(arguments_value, "parent_id")) |parent_value| {
+                if (parent_value == .null) {
+                    return i18n.allocPrintMessage(
+                        .ai_chat_timeline_unparent_entity_fmt,
+                        std.heap.page_allocator,
+                        language,
+                        .{entity_ref},
+                    );
+                }
+            }
+
+            if (try allocReferenceForKey(arguments_value, "parent_id")) |parent_ref| {
+                defer std.heap.page_allocator.free(parent_ref);
+                return i18n.allocPrintMessage(
+                    .ai_chat_timeline_reparent_entity_fmt,
+                    std.heap.page_allocator,
+                    language,
+                    .{ entity_ref, parent_ref },
+                );
+            }
+        }
+    }
+
+    if (std.mem.eql(u8, tool_name, "set_local_transform")) {
+        if (try allocReferenceForKey(arguments_value, "entity_id")) |entity_ref| {
+            defer std.heap.page_allocator.free(entity_ref);
+            return i18n.allocPrintMessage(
+                .ai_chat_timeline_set_local_transform_fmt,
+                std.heap.page_allocator,
+                language,
+                .{entity_ref},
+            );
+        }
+    }
+
+    if (std.mem.eql(u8, tool_name, "set_world_transform")) {
+        if (try allocReferenceForKey(arguments_value, "entity_id")) |entity_ref| {
+            defer std.heap.page_allocator.free(entity_ref);
+            return i18n.allocPrintMessage(
+                .ai_chat_timeline_set_world_transform_fmt,
+                std.heap.page_allocator,
+                language,
+                .{entity_ref},
+            );
+        }
+    }
+
+    if (std.mem.eql(u8, tool_name, "set_visible")) {
+        if (try allocReferenceForKey(arguments_value, "entity_id")) |entity_ref| {
+            defer std.heap.page_allocator.free(entity_ref);
+            if (jsonBoolField(arguments_value, "visible")) |visible| {
+                if (visible) {
+                    return i18n.allocPrintMessage(
+                        .ai_chat_timeline_show_entity_fmt,
+                        std.heap.page_allocator,
+                        language,
+                        .{entity_ref},
+                    );
+                }
+                return i18n.allocPrintMessage(
+                    .ai_chat_timeline_hide_entity_fmt,
+                    std.heap.page_allocator,
+                    language,
+                    .{entity_ref},
+                );
+            }
+        }
+    }
+
+    if (std.mem.eql(u8, tool_name, "compile_script")) {
+        if (try allocReferenceForKey(arguments_value, "entity_id")) |entity_ref| {
+            defer std.heap.page_allocator.free(entity_ref);
+            return i18n.allocPrintMessage(
+                .ai_chat_timeline_compile_script_for_entity_fmt,
+                std.heap.page_allocator,
+                language,
+                .{entity_ref},
+            );
+        }
+        return allocLocalizedMessage(language, .ai_chat_timeline_compile_script);
+    }
+
+    if (std.mem.eql(u8, tool_name, "compile_editor_utility")) {
+        if (jsonStringField(arguments_value, "utility_name")) |utility_name| {
+            return i18n.allocPrintMessage(
+                .ai_chat_timeline_compile_editor_utility_fmt,
+                std.heap.page_allocator,
+                language,
+                .{utility_name},
+            );
+        }
+        return allocLocalizedMessage(language, .ai_chat_timeline_compile_editor_utility);
+    }
+
+    if (std.mem.eql(u8, tool_name, "stage_transaction")) {
+        return allocLocalizedMessage(language, .ai_chat_timeline_stage_transaction);
+    }
+    if (std.mem.eql(u8, tool_name, "apply_staged_transaction")) {
+        return allocLocalizedMessage(language, .ai_chat_timeline_apply_staged_transaction);
+    }
+    if (std.mem.eql(u8, tool_name, "discard_staged_transaction")) {
+        return allocLocalizedMessage(language, .ai_chat_timeline_discard_staged_transaction);
+    }
+
+    return allocLocalizedMessage(language, .history_timeline_label_ai_scene_edited);
+}
+
+fn makeAiTimelineEventAlloc(
+    language: i18n.Language,
+    tool_name: []const u8,
+    arguments_value: ?std.json.Value,
+    detail: []const u8,
+) !AsyncTimelineEvent {
+    const label = try makeAiTimelineLabelAlloc(language, tool_name, arguments_value);
+    errdefer std.heap.page_allocator.free(label);
+
+    const trimmed_detail = std.mem.trim(u8, detail, " \t\r\n");
+    const use_label_for_detail = trimmed_detail.len == 0 or
+        std.mem.eql(u8, trimmed_detail, i18n.text(language, .ai_chat_tool_ok)) or
+        std.mem.eql(u8, trimmed_detail, i18n.text(language, .ai_chat_collaboration_tool_ok));
     return .{
-        .label = try i18n.allocPrintMessage(
-            .ai_chat_timeline_tool_label_fmt,
-            std.heap.page_allocator,
-            language,
-            .{tool_name},
+        .label = label,
+        .detail = try std.heap.page_allocator.dupe(
+            u8,
+            if (use_label_for_detail) label else trimmed_detail,
         ),
-        .detail = try std.heap.page_allocator.dupe(u8, detail),
         .command_kind = try std.heap.page_allocator.dupe(u8, tool_name),
     };
 }
@@ -610,26 +680,7 @@ fn recordAiTimelineEvent(
     };
 }
 
-const HttpJsonResponse = struct {
-    status: std.http.Status,
-    body: []u8,
-
-    fn deinit(self: *HttpJsonResponse, allocator: std.mem.Allocator) void {
-        allocator.free(self.body);
-        self.* = undefined;
-    }
-};
-
-const ProviderCompletion = struct {
-    content: []u8,
-    reasoning: ?[]u8 = null,
-
-    fn deinit(self: *ProviderCompletion, allocator: std.mem.Allocator) void {
-        allocator.free(self.content);
-        if (self.reasoning) |value| allocator.free(value);
-        self.* = undefined;
-    }
-};
+const ProviderCompletion = provider_client.ProviderCompletion;
 
 const LlmDecision = union(enum) {
     tool_call: struct {
@@ -701,659 +752,17 @@ fn buildImplicitContextAlloc(store: ?*engine.mcp.resources.SnapshotStore) ![]u8 
     );
 }
 
-fn httpPostJsonAlloc(
-    endpoint: []const u8,
-    payload: []const u8,
-    extra_headers: []const std.http.Header,
-) !HttpJsonResponse {
-    var client = std.http.Client{ .allocator = std.heap.page_allocator };
-    defer client.deinit();
-
-    var response_out: std.io.Writer.Allocating = .init(std.heap.page_allocator);
-    defer response_out.deinit();
-
-    const fetch_result = try client.fetch(.{
-        .location = .{ .url = endpoint },
-        .method = .POST,
-        .payload = payload,
-        .keep_alive = false,
-        .headers = .{
-            .content_type = .{ .override = "application/json" },
-        },
-        .extra_headers = extra_headers,
-        .response_writer = &response_out.writer,
-    });
-
-    return .{
-        .status = fetch_result.status,
-        .body = try std.heap.page_allocator.dupe(u8, response_out.written()),
-    };
-}
-
-const StreamAccumulator = struct {
-    content: std.ArrayList(u8) = .empty,
-    reasoning: std.ArrayList(u8) = .empty,
-
-    fn deinit(self: *StreamAccumulator) void {
-        self.content.deinit(std.heap.page_allocator);
-        self.reasoning.deinit(std.heap.page_allocator);
-        self.* = undefined;
-    }
-
-    fn appendRole(self: *StreamAccumulator, role: Role, chunk: []const u8) !void {
-        if (chunk.len == 0) return;
-
-        switch (role) {
-            .assistant => try self.content.appendSlice(std.heap.page_allocator, chunk),
-            .reasoning => try self.reasoning.appendSlice(std.heap.page_allocator, chunk),
-            else => return,
-        }
-        asyncAppendStreamChunk(role, chunk);
-    }
-
-    fn appendCompletionTail(self: *StreamAccumulator, role: Role, full_text: []const u8) !void {
-        if (full_text.len == 0) return;
-
-        const existing = switch (role) {
-            .assistant => self.content.items,
-            .reasoning => self.reasoning.items,
-            else => return,
-        };
-
-        if (existing.len == 0) {
-            try self.appendRole(role, full_text);
-            return;
-        }
-        if (full_text.len <= existing.len) return;
-        if (!std.mem.startsWith(u8, full_text, existing)) return;
-        try self.appendRole(role, full_text[existing.len..]);
-    }
-
-    fn appendResolvedCompletion(self: *StreamAccumulator, completion: *const ProviderCompletion) !void {
-        try self.appendCompletionTail(.assistant, completion.content);
-        if (completion.reasoning) |reasoning| {
-            try self.appendCompletionTail(.reasoning, reasoning);
-        }
-    }
-
-    fn finish(self: *const StreamAccumulator) !ProviderCompletion {
-        return .{
-            .content = try std.heap.page_allocator.dupe(u8, self.content.items),
-            .reasoning = if (self.reasoning.items.len > 0)
-                try std.heap.page_allocator.dupe(u8, self.reasoning.items)
-            else
-                null,
-        };
-    }
-};
-
-fn appendStreamValueChunk(accumulator: *StreamAccumulator, role: Role, value: std.json.Value) !void {
-    if (try parseMessageTextValueAlloc(value)) |text| {
-        defer std.heap.page_allocator.free(text);
-        try accumulator.appendRole(role, text);
-    }
-}
-
-fn appendStreamObjectFieldChunk(
-    accumulator: *StreamAccumulator,
-    role: Role,
-    object: std.json.ObjectMap,
-    field_name: []const u8,
-) !bool {
-    const value = object.get(field_name) orelse return false;
-    try appendStreamValueChunk(accumulator, role, value);
-    return true;
-}
-
-fn processOpenAiChatStreamPayload(data: []const u8, accumulator: *StreamAccumulator) !void {
-    var parsed = try std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, data, .{
-        .allocate = .alloc_always,
-        .ignore_unknown_fields = true,
-    });
-    defer parsed.deinit();
-
-    if (parsed.value != .object) return error.InvalidProviderResponse;
-    const choices_value = parsed.value.object.get("choices") orelse return error.InvalidProviderResponse;
-    if (choices_value != .array) return error.InvalidProviderResponse;
-
-    for (choices_value.array.items) |choice| {
-        if (choice != .object) continue;
-        const delta_value = choice.object.get("delta") orelse continue;
-        if (delta_value != .object) continue;
-
-        _ = try appendStreamObjectFieldChunk(accumulator, .assistant, delta_value.object, "content");
-        if (!(try appendStreamObjectFieldChunk(accumulator, .reasoning, delta_value.object, "reasoning_content"))) {
-            _ = try appendStreamObjectFieldChunk(accumulator, .reasoning, delta_value.object, "reasoning");
-        }
-    }
-}
-
-fn processOpenAiResponsesStreamPayload(data: []const u8, accumulator: *StreamAccumulator) !void {
-    var parsed = try std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, data, .{
-        .allocate = .alloc_always,
-        .ignore_unknown_fields = true,
-    });
-    defer parsed.deinit();
-
-    if (parsed.value != .object) return error.InvalidProviderResponse;
-    const event_type_value = parsed.value.object.get("type") orelse return;
-    if (event_type_value != .string) return;
-    const event_type = event_type_value.string;
-
-    if (std.mem.eql(u8, event_type, "response.output_text.delta")) {
-        _ = try appendStreamObjectFieldChunk(accumulator, .assistant, parsed.value.object, "delta");
-        return;
-    }
-
-    if (asciiContainsIgnoreCase(event_type, "reasoning")) {
-        if (!(try appendStreamObjectFieldChunk(accumulator, .reasoning, parsed.value.object, "delta"))) {
-            if (!(try appendStreamObjectFieldChunk(accumulator, .reasoning, parsed.value.object, "text"))) {
-                _ = try appendStreamObjectFieldChunk(accumulator, .reasoning, parsed.value.object, "summary");
-            }
-        }
-        return;
-    }
-
-    if (std.mem.eql(u8, event_type, "response.output_item.done")) {
-        const item_value = parsed.value.object.get("item") orelse return;
-        if (item_value != .object) return;
-        const item_type_value = item_value.object.get("type") orelse return;
-        if (item_type_value != .string) return;
-
-        if (std.mem.eql(u8, item_type_value.string, "message")) {
-            if (item_value.object.get("content")) |content_value| {
-                if (try parseMessageTextValueAlloc(content_value)) |text| {
-                    defer std.heap.page_allocator.free(text);
-                    try accumulator.appendCompletionTail(.assistant, text);
-                }
-            }
-        } else if (std.mem.eql(u8, item_type_value.string, "reasoning")) {
-            if (item_value.object.get("content")) |reasoning_value| {
-                if (try parseMessageTextValueAlloc(reasoning_value)) |text| {
-                    defer std.heap.page_allocator.free(text);
-                    try accumulator.appendCompletionTail(.reasoning, text);
-                }
-            }
-            if (item_value.object.get("summary")) |summary_value| {
-                if (try parseMessageTextValueAlloc(summary_value)) |text| {
-                    defer std.heap.page_allocator.free(text);
-                    try accumulator.appendCompletionTail(.reasoning, text);
-                }
-            }
-        }
-        return;
-    }
-
-    if (std.mem.eql(u8, event_type, "response.completed")) {
-        const response_value = parsed.value.object.get("response") orelse return;
-        var completion = try parseOpenAiResponsesCompletionValueAlloc(response_value);
-        defer completion.deinit(std.heap.page_allocator);
-        try accumulator.appendResolvedCompletion(&completion);
-    }
-}
-
-fn processAnthropicStreamPayload(data: []const u8, accumulator: *StreamAccumulator) !void {
-    var parsed = try std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, data, .{
-        .allocate = .alloc_always,
-        .ignore_unknown_fields = true,
-    });
-    defer parsed.deinit();
-
-    if (parsed.value != .object) return error.InvalidProviderResponse;
-    const event_type_value = parsed.value.object.get("type") orelse return;
-    if (event_type_value != .string) return;
-    const event_type = event_type_value.string;
-
-    if (std.mem.eql(u8, event_type, "content_block_delta")) {
-        const delta_value = parsed.value.object.get("delta") orelse return;
-        if (delta_value != .object) return;
-        const delta_type_value = delta_value.object.get("type") orelse return;
-        if (delta_type_value != .string) return;
-
-        if (std.mem.eql(u8, delta_type_value.string, "text_delta")) {
-            _ = try appendStreamObjectFieldChunk(accumulator, .assistant, delta_value.object, "text");
-        } else if (std.mem.eql(u8, delta_type_value.string, "thinking_delta")) {
-            _ = try appendStreamObjectFieldChunk(accumulator, .reasoning, delta_value.object, "thinking");
-        }
-        return;
-    }
-
-    if (std.mem.eql(u8, event_type, "content_block_start")) {
-        const block_value = parsed.value.object.get("content_block") orelse return;
-        if (block_value != .object) return;
-        const block_type_value = block_value.object.get("type") orelse return;
-        if (block_type_value != .string) return;
-
-        if (std.mem.eql(u8, block_type_value.string, "text")) {
-            _ = try appendStreamObjectFieldChunk(accumulator, .assistant, block_value.object, "text");
-        } else if (std.mem.eql(u8, block_type_value.string, "thinking")) {
-            if (!(try appendStreamObjectFieldChunk(accumulator, .reasoning, block_value.object, "thinking"))) {
-                _ = try appendStreamObjectFieldChunk(accumulator, .reasoning, block_value.object, "text");
-            }
-        }
-        return;
-    }
-
-    if (std.mem.eql(u8, event_type, "message_stop")) {
-        return;
-    }
-
-    if (std.mem.eql(u8, event_type, "error")) {
-        return error.ProviderStreamEventFailed;
-    }
-}
-
-fn processOllamaStreamPayload(data: []const u8, accumulator: *StreamAccumulator) !bool {
-    var parsed = try std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, data, .{
-        .allocate = .alloc_always,
-        .ignore_unknown_fields = true,
-    });
-    defer parsed.deinit();
-
-    if (parsed.value != .object) return error.InvalidProviderResponse;
-    if (parsed.value.object.get("message")) |message_value| {
-        if (message_value == .object) {
-            _ = try appendStreamObjectFieldChunk(accumulator, .assistant, message_value.object, "content");
-        }
-    }
-
-    if (parsed.value.object.get("done")) |done_value| {
-        if (done_value == .bool) return done_value.bool;
-    }
-    return false;
-}
-
-fn processProviderStreamPayload(
-    flavor: ProviderRequestFlavor,
-    event_name: []const u8,
-    data: []const u8,
-    accumulator: *StreamAccumulator,
-) !bool {
-    _ = event_name;
-
-    const trimmed = std.mem.trim(u8, data, " \t\r\n");
-    if (trimmed.len == 0) return false;
-    if (std.mem.eql(u8, trimmed, "[DONE]")) return true;
-
-    switch (flavor) {
-        .openai_chat_completions => try processOpenAiChatStreamPayload(trimmed, accumulator),
-        .openai_responses => try processOpenAiResponsesStreamPayload(trimmed, accumulator),
-        .anthropic_messages => try processAnthropicStreamPayload(trimmed, accumulator),
-        .ollama_chat => return try processOllamaStreamPayload(trimmed, accumulator),
-    }
-    return false;
-}
-
-fn flushSseEvent(
-    flavor: ProviderRequestFlavor,
-    event_name: *std.ArrayList(u8),
-    event_data: *std.ArrayList(u8),
-    accumulator: *StreamAccumulator,
-) !bool {
-    if (event_data.items.len == 0) {
-        event_name.clearRetainingCapacity();
-        event_data.clearRetainingCapacity();
-        return false;
-    }
-
-    const finished = try processProviderStreamPayload(flavor, event_name.items, event_data.items, accumulator);
-    event_name.clearRetainingCapacity();
-    event_data.clearRetainingCapacity();
-    return finished;
-}
-
-fn httpPostStreamAlloc(
-    flavor: ProviderRequestFlavor,
-    endpoint: []const u8,
-    payload: []u8,
-    extra_headers: []const std.http.Header,
-) !ProviderCompletion {
-    var accumulator: StreamAccumulator = .{};
-    defer accumulator.deinit();
-
-    var client = std.http.Client{ .allocator = std.heap.page_allocator };
-    defer client.deinit();
-
-    const uri = std.Uri.parse(endpoint) catch return error.InvalidEndpoint;
-
-    const accept_header = std.http.Header{
-        .name = "accept",
-        .value = if (flavor == .ollama_chat) "application/x-ndjson" else "text/event-stream",
-    };
-    var full_headers_buf: [4]std.http.Header = undefined;
-    full_headers_buf[0] = accept_header;
-    for (extra_headers, 0..) |h, i| {
-        full_headers_buf[i + 1] = h;
-    }
-    const full_headers = full_headers_buf[0 .. extra_headers.len + 1];
-
-    var req = try client.request(.POST, uri, .{
-        .headers = .{
-            .content_type = .{ .override = "application/json" },
-        },
-        .extra_headers = full_headers,
-    });
-    defer req.deinit();
-
-    req.transfer_encoding = .{ .content_length = payload.len };
-    var body_writer = try req.sendBodyUnflushed(&.{});
-    try body_writer.writer.writeAll(payload);
-    try body_writer.end();
-    try req.connection.?.flush();
-
-    var response = try req.receiveHead(&.{});
-    if (response.head.status.class() != .success) {
-        return error.HttpError;
-    }
-
-    var transfer_buffer: [4096]u8 = undefined;
-    const reader = response.reader(&transfer_buffer);
-    var buffer: [8192]u8 = undefined;
-    var line_buf = std.ArrayList(u8).empty;
-    defer line_buf.deinit(std.heap.page_allocator);
-    var event_name = std.ArrayList(u8).empty;
-    defer event_name.deinit(std.heap.page_allocator);
-    var event_data = std.ArrayList(u8).empty;
-    defer event_data.deinit(std.heap.page_allocator);
-
-    while (true) {
-        const bytes_read = reader.readSliceShort(buffer[0..]) catch |err| switch (err) {
-            error.ReadFailed => return error.ReadFailed,
-        };
-        if (bytes_read == 0) break;
-        var i: usize = 0;
-        while (i < bytes_read) {
-            if (buffer[i] == '\n') {
-                const line = std.mem.trimRight(u8, line_buf.items, "\r");
-                if (flavor == .ollama_chat) {
-                    if (line.len > 0 and try processProviderStreamPayload(flavor, "", line, &accumulator)) {
-                        return accumulator.finish();
-                    }
-                } else if (line.len == 0) {
-                    if (try flushSseEvent(flavor, &event_name, &event_data, &accumulator)) {
-                        return accumulator.finish();
-                    }
-                } else if (std.mem.startsWith(u8, line, "event:")) {
-                    event_name.clearRetainingCapacity();
-                    try event_name.appendSlice(std.heap.page_allocator, std.mem.trimLeft(u8, line["event:".len..], " "));
-                } else if (std.mem.startsWith(u8, line, "data:")) {
-                    if (event_data.items.len > 0) {
-                        try event_data.append(std.heap.page_allocator, '\n');
-                    }
-                    try event_data.appendSlice(std.heap.page_allocator, std.mem.trimLeft(u8, line["data:".len..], " "));
-                } else if (line[0] != ':') {
-                    if (try processProviderStreamPayload(flavor, "", line, &accumulator)) {
-                        return accumulator.finish();
-                    }
-                }
-                line_buf.clearRetainingCapacity();
-            } else {
-                if (line_buf.items.len < 16 * 1024) {
-                    try line_buf.append(std.heap.page_allocator, buffer[i]);
-                }
-            }
-            i += 1;
-        }
-    }
-
-    if (line_buf.items.len > 0) {
-        const line = std.mem.trimRight(u8, line_buf.items, "\r");
-        if (flavor == .ollama_chat) {
-            _ = try processProviderStreamPayload(flavor, "", line, &accumulator);
-        } else if (line.len > 0 and std.mem.startsWith(u8, line, "data:")) {
-            if (event_data.items.len > 0) {
-                try event_data.append(std.heap.page_allocator, '\n');
-            }
-            try event_data.appendSlice(std.heap.page_allocator, std.mem.trimLeft(u8, line["data:".len..], " "));
-        }
-    }
-    if (flavor != .ollama_chat) {
-        _ = try flushSseEvent(flavor, &event_name, &event_data, &accumulator);
-    }
-    return accumulator.finish();
-}
-
-fn parseMessageTextValueAlloc(value: std.json.Value) !?[]u8 {
-    switch (value) {
-        .string => |content| return try std.heap.page_allocator.dupe(u8, content),
-        .array => |parts| {
-            var out: std.io.Writer.Allocating = .init(std.heap.page_allocator);
-            defer out.deinit();
-            for (parts.items) |part| {
-                switch (part) {
-                    .string => |text| try out.writer.writeAll(text),
-                    .object => |obj| {
-                        if (obj.get("text")) |text_value| {
-                            if (text_value == .string) {
-                                try out.writer.writeAll(text_value.string);
-                            }
-                        }
-                    },
-                    else => {},
-                }
-            }
-            if (out.written().len == 0) return null;
-            return try std.heap.page_allocator.dupe(u8, out.written());
-        },
-        .null => return null,
-        else => return error.InvalidProviderResponse,
-    }
-}
-
-fn appendJoinedText(buffer: *std.ArrayList(u8), allocator: std.mem.Allocator, text: []const u8) !void {
-    const trimmed = std.mem.trim(u8, text, " \t\r\n");
-    if (trimmed.len == 0) return;
-    if (buffer.items.len > 0) {
-        try buffer.appendSlice(allocator, "\n\n");
-    }
-    try buffer.appendSlice(allocator, trimmed);
-}
-
-fn parseOpenAiCompletionValueAlloc(root: std.json.Value) !ProviderCompletion {
-    if (root != .object) return error.InvalidProviderResponse;
-    const choices_value = root.object.get("choices") orelse return error.InvalidProviderResponse;
-    if (choices_value != .array or choices_value.array.items.len == 0) return error.InvalidProviderResponse;
-
-    const choice = choices_value.array.items[0];
-    if (choice != .object) return error.InvalidProviderResponse;
-
-    const message_value = choice.object.get("message") orelse return error.InvalidProviderResponse;
-    if (message_value != .object) return error.InvalidProviderResponse;
-
-    const content = if (message_value.object.get("content")) |content_value|
-        if (try parseMessageTextValueAlloc(content_value)) |resolved|
-            resolved
-        else
-            try std.heap.page_allocator.dupe(u8, "")
-    else
-        try std.heap.page_allocator.dupe(u8, "");
-    errdefer std.heap.page_allocator.free(content);
-
-    const reasoning = if (message_value.object.get("reasoning_content")) |value|
-        try parseMessageTextValueAlloc(value)
-    else if (message_value.object.get("reasoning")) |value|
-        try parseMessageTextValueAlloc(value)
-    else
-        null;
-
-    return .{ .content = content, .reasoning = reasoning };
-}
-
-fn parseOpenAiCompletionAlloc(body: []const u8) !ProviderCompletion {
-    var parsed = try std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, body, .{
-        .allocate = .alloc_always,
-        .ignore_unknown_fields = true,
-    });
-    defer parsed.deinit();
-    return parseOpenAiCompletionValueAlloc(parsed.value);
-}
-
-fn parseOpenAiResponsesCompletionValueAlloc(root: std.json.Value) !ProviderCompletion {
-    if (root != .object) return error.InvalidProviderResponse;
-    var content_parts = std.ArrayList(u8).empty;
-    defer content_parts.deinit(std.heap.page_allocator);
-    var reasoning_parts = std.ArrayList(u8).empty;
-    defer reasoning_parts.deinit(std.heap.page_allocator);
-
-    if (root.object.get("output")) |output_value| {
-        if (output_value != .array) return error.InvalidProviderResponse;
-        for (output_value.array.items) |item| {
-            if (item != .object) continue;
-            const type_value = item.object.get("type") orelse continue;
-            if (type_value != .string) continue;
-
-            if (std.mem.eql(u8, type_value.string, "message")) {
-                if (item.object.get("content")) |content_value| {
-                    if (try parseMessageTextValueAlloc(content_value)) |text| {
-                        defer std.heap.page_allocator.free(text);
-                        try appendJoinedText(&content_parts, std.heap.page_allocator, text);
-                    }
-                }
-            } else if (std.mem.eql(u8, type_value.string, "reasoning")) {
-                if (item.object.get("content")) |reasoning_value| {
-                    if (try parseMessageTextValueAlloc(reasoning_value)) |text| {
-                        defer std.heap.page_allocator.free(text);
-                        try appendJoinedText(&reasoning_parts, std.heap.page_allocator, text);
-                    }
-                }
-                if (item.object.get("summary")) |summary_value| {
-                    if (try parseMessageTextValueAlloc(summary_value)) |text| {
-                        defer std.heap.page_allocator.free(text);
-                        try appendJoinedText(&reasoning_parts, std.heap.page_allocator, text);
-                    }
-                }
-            }
-        }
-    }
-
-    if (reasoning_parts.items.len == 0) {
-        if (root.object.get("reasoning")) |reasoning_value| {
-            if (reasoning_value == .object) {
-                if (reasoning_value.object.get("content")) |content_value| {
-                    if (try parseMessageTextValueAlloc(content_value)) |text| {
-                        defer std.heap.page_allocator.free(text);
-                        try appendJoinedText(&reasoning_parts, std.heap.page_allocator, text);
-                    }
-                }
-                if (reasoning_value.object.get("summary")) |summary_value| {
-                    if (try parseMessageTextValueAlloc(summary_value)) |text| {
-                        defer std.heap.page_allocator.free(text);
-                        try appendJoinedText(&reasoning_parts, std.heap.page_allocator, text);
-                    }
-                }
-            }
-        }
-    }
-
-    if (content_parts.items.len == 0) {
-        if (root.object.get("output_text")) |output_text| {
-            if (output_text == .string) {
-                try appendJoinedText(&content_parts, std.heap.page_allocator, output_text.string);
-            }
-        }
-    }
-
-    return .{
-        .content = try std.heap.page_allocator.dupe(u8, content_parts.items),
-        .reasoning = if (reasoning_parts.items.len > 0)
-            try std.heap.page_allocator.dupe(u8, reasoning_parts.items)
-        else
-            null,
-    };
-}
-
-fn parseOpenAiResponsesCompletionAlloc(body: []const u8) !ProviderCompletion {
-    var parsed = try std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, body, .{
-        .allocate = .alloc_always,
-        .ignore_unknown_fields = true,
-    });
-    defer parsed.deinit();
-    return parseOpenAiResponsesCompletionValueAlloc(parsed.value);
-}
-
-fn parseAnthropicCompletionValueAlloc(root: std.json.Value) !ProviderCompletion {
-    if (root != .object) return error.InvalidProviderResponse;
-    const content_value = root.object.get("content") orelse return error.InvalidProviderResponse;
-    if (content_value != .array) return error.InvalidProviderResponse;
-
-    var final_text = std.ArrayList(u8).empty;
-    defer final_text.deinit(std.heap.page_allocator);
-    var reasoning_text = std.ArrayList(u8).empty;
-    defer reasoning_text.deinit(std.heap.page_allocator);
-    for (content_value.array.items) |item| {
-        if (item != .object) continue;
-        const type_value = item.object.get("type") orelse continue;
-        if (type_value != .string) continue;
-        if (std.mem.eql(u8, type_value.string, "text")) {
-            const text_value = item.object.get("text") orelse continue;
-            if (text_value != .string) continue;
-            try appendJoinedText(&final_text, std.heap.page_allocator, text_value.string);
-        } else if (std.mem.eql(u8, type_value.string, "thinking")) {
-            const text_value = item.object.get("thinking") orelse item.object.get("text") orelse continue;
-            if (text_value != .string) continue;
-            try appendJoinedText(&reasoning_text, std.heap.page_allocator, text_value.string);
-        }
-    }
-    return .{
-        .content = try std.heap.page_allocator.dupe(u8, final_text.items),
-        .reasoning = if (reasoning_text.items.len > 0)
-            try std.heap.page_allocator.dupe(u8, reasoning_text.items)
-        else
-            null,
-    };
-}
-
-fn parseAnthropicCompletionAlloc(body: []const u8) !ProviderCompletion {
-    var parsed = try std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, body, .{
-        .allocate = .alloc_always,
-        .ignore_unknown_fields = true,
-    });
-    defer parsed.deinit();
-    return parseAnthropicCompletionValueAlloc(parsed.value);
-}
-
-fn parseOllamaCompletionAlloc(body: []const u8) !ProviderCompletion {
-    var parsed = try std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, body, .{
-        .allocate = .alloc_always,
-        .ignore_unknown_fields = true,
-    });
-    defer parsed.deinit();
-
-    if (parsed.value != .object) return error.InvalidProviderResponse;
-    const message_value = parsed.value.object.get("message") orelse return error.InvalidProviderResponse;
-    if (message_value != .object) return error.InvalidProviderResponse;
-    const content_value = message_value.object.get("content") orelse return error.InvalidProviderResponse;
-    if (content_value != .string) return error.InvalidProviderResponse;
-    return .{
-        .content = try std.heap.page_allocator.dupe(u8, content_value.string),
-    };
-}
-
-fn parseProviderCompletionAlloc(provider_type: AiProviderType, body: []const u8) !ProviderCompletion {
-    _ = provider_type;
-
-    var parsed = try std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, body, .{
-        .allocate = .alloc_always,
-        .ignore_unknown_fields = true,
-    });
-    defer parsed.deinit();
-
-    if (parsed.value != .object) return error.InvalidProviderResponse;
-    if (parsed.value.object.get("output") != null) return parseOpenAiResponsesCompletionAlloc(body);
-    if (parsed.value.object.get("choices") != null) return parseOpenAiCompletionAlloc(body);
-    if (parsed.value.object.get("message") != null) return parseOllamaCompletionAlloc(body);
-    if (parsed.value.object.get("content") != null) return parseAnthropicCompletionAlloc(body);
-    return error.InvalidProviderResponse;
+fn providerStreamSinkAppend(_: ?*anyopaque, role: provider_client.StreamRole, chunk: []const u8) void {
+    asyncAppendStreamChunk(switch (role) {
+        .assistant => .assistant,
+        .reasoning => .reasoning,
+    }, chunk);
 }
 
 fn requestProviderCompletionAlloc(task: *const AsyncTaskContext, prompt: []const u8) !ProviderCompletion {
-    const endpoint_raw = task.provider_endpoint orelse return error.MissingProviderEndpoint;
+    const endpoint = task.provider_endpoint orelse return error.MissingProviderEndpoint;
     const model = task.provider_model orelse return error.MissingProviderModel;
     const api_key = task.provider_api_key orelse "";
-    const request_flavor = requestFlavorForProvider(task.provider_type, endpoint_raw, model);
-    const endpoint = try normalizeProviderEndpointAlloc(request_flavor, endpoint_raw);
-    defer std.heap.page_allocator.free(endpoint);
-
     const implicit_context = try buildImplicitContextAlloc(task.snapshot_store);
     defer std.heap.page_allocator.free(implicit_context);
     const user_prompt = try std.fmt.allocPrint(
@@ -1363,198 +772,18 @@ fn requestProviderCompletionAlloc(task: *const AsyncTaskContext, prompt: []const
     );
     defer std.heap.page_allocator.free(user_prompt);
 
-    ai_chat_log.info("Submitting provider request: type={s} flavor={s} model={s} endpoint={s} prompt_len={d}", .{
-        @tagName(task.provider_type),
-        @tagName(request_flavor),
-        model,
-        endpoint,
-        prompt.len,
+    return provider_client.requestCompletionAlloc(&.{
+        .language = task.language,
+        .provider_type = task.provider_type,
+        .endpoint_raw = endpoint,
+        .model = model,
+        .api_key = api_key,
+        .system_prompt = llm_tool_system_prompt,
+        .user_prompt = user_prompt,
+        .stream_sink = .{
+            .append_fn = providerStreamSinkAppend,
+        },
     });
-
-    const OpenAiMessage = struct {
-        role: []const u8,
-        content: []const u8,
-    };
-
-    return switch (request_flavor) {
-        .openai_chat_completions => blk: {
-            const RequestBody = struct {
-                model: []const u8,
-                temperature: f32 = 0.0,
-                messages: []const OpenAiMessage,
-                stream: bool = true,
-            };
-            const messages = [_]OpenAiMessage{
-                .{ .role = "system", .content = llm_tool_system_prompt },
-                .{ .role = "user", .content = user_prompt },
-            };
-            const payload = try stringifyJsonValueAlloc(RequestBody{
-                .model = model,
-                .messages = &messages,
-                .stream = true,
-            });
-            defer std.heap.page_allocator.free(payload);
-
-            var auth_value: ?[]u8 = null;
-            defer if (auth_value) |value| std.heap.page_allocator.free(value);
-            const headers: []const std.http.Header = if (api_key.len > 0) blk_headers: {
-                auth_value = try std.fmt.allocPrint(std.heap.page_allocator, "Bearer {s}", .{api_key});
-                break :blk_headers @as([]const std.http.Header, &.{.{ .name = "Authorization", .value = auth_value.? }});
-            } else @as([]const std.http.Header, &[_]std.http.Header{});
-
-            break :blk httpPostStreamAlloc(request_flavor, endpoint, payload, headers) catch |err| {
-                ai_chat_log.warn("Provider stream request failed: flavor={s} error={s}", .{
-                    @tagName(request_flavor),
-                    @errorName(err),
-                });
-                break :blk .{
-                    .content = i18n.allocPrintMessage(
-                        .ai_chat_provider_request_failed_error_fmt,
-                        std.heap.page_allocator,
-                        task.language,
-                        .{@errorName(err)},
-                    ) catch try std.heap.page_allocator.dupe(
-                        u8,
-                        i18n.text(task.language, .ai_chat_provider_request_failed_fallback),
-                    ),
-                };
-            };
-        },
-        .openai_responses => blk: {
-            const ResponseReasoning = struct {
-                summary: []const u8 = "detailed",
-            };
-            const RequestBody = struct {
-                model: []const u8,
-                instructions: []const u8,
-                input: []const u8,
-                store: bool = false,
-                reasoning: ?ResponseReasoning = null,
-                stream: bool = true,
-            };
-            const payload = try stringifyJsonValueAlloc(RequestBody{
-                .model = model,
-                .instructions = llm_tool_system_prompt,
-                .input = user_prompt,
-                .reasoning = if (shouldRequestOpenAiReasoningSummary(task.provider_type, endpoint))
-                    .{}
-                else
-                    null,
-                .stream = true,
-            });
-            defer std.heap.page_allocator.free(payload);
-
-            var auth_value: ?[]u8 = null;
-            defer if (auth_value) |value| std.heap.page_allocator.free(value);
-            const headers: []const std.http.Header = if (api_key.len > 0) blk_headers: {
-                auth_value = try std.fmt.allocPrint(std.heap.page_allocator, "Bearer {s}", .{api_key});
-                break :blk_headers @as([]const std.http.Header, &.{.{ .name = "Authorization", .value = auth_value.? }});
-            } else @as([]const std.http.Header, &[_]std.http.Header{});
-
-            break :blk httpPostStreamAlloc(request_flavor, endpoint, payload, headers) catch |err| {
-                ai_chat_log.warn("Provider stream request failed: flavor={s} error={s}", .{
-                    @tagName(request_flavor),
-                    @errorName(err),
-                });
-                break :blk .{
-                    .content = i18n.allocPrintMessage(
-                        .ai_chat_provider_request_failed_error_fmt,
-                        std.heap.page_allocator,
-                        task.language,
-                        .{@errorName(err)},
-                    ) catch try std.heap.page_allocator.dupe(
-                        u8,
-                        i18n.text(task.language, .ai_chat_provider_request_failed_fallback),
-                    ),
-                };
-            };
-        },
-        .anthropic_messages => blk: {
-            const AnthropicMessage = struct {
-                role: []const u8,
-                content: []const u8,
-            };
-            const AnthropicThinking = struct {
-                type: []const u8 = "enabled",
-                budget_tokens: u32 = 2048,
-            };
-            const RequestBody = struct {
-                model: []const u8,
-                max_tokens: u32 = 4096,
-                system: []const u8,
-                messages: []const AnthropicMessage,
-                thinking: ?AnthropicThinking = null,
-                stream: bool = true,
-            };
-            const messages = [_]AnthropicMessage{
-                .{ .role = "user", .content = user_prompt },
-            };
-            const payload = try stringifyJsonValueAlloc(RequestBody{
-                .model = model,
-                .system = llm_tool_system_prompt,
-                .messages = &messages,
-                .thinking = if (modelSupportsAnthropicThinking(model)) .{} else null,
-                .stream = true,
-            });
-            defer std.heap.page_allocator.free(payload);
-
-            const headers = [_]std.http.Header{
-                .{ .name = "x-api-key", .value = api_key },
-                .{ .name = "anthropic-version", .value = "2023-06-01" },
-            };
-            break :blk httpPostStreamAlloc(request_flavor, endpoint, payload, &headers) catch |err| {
-                ai_chat_log.warn("Provider stream request failed: flavor={s} error={s}", .{
-                    @tagName(request_flavor),
-                    @errorName(err),
-                });
-                break :blk .{
-                    .content = i18n.allocPrintMessage(
-                        .ai_chat_provider_request_failed_error_fmt,
-                        std.heap.page_allocator,
-                        task.language,
-                        .{@errorName(err)},
-                    ) catch try std.heap.page_allocator.dupe(
-                        u8,
-                        i18n.text(task.language, .ai_chat_provider_request_failed_fallback),
-                    ),
-                };
-            };
-        },
-        .ollama_chat => blk: {
-            const RequestBody = struct {
-                model: []const u8,
-                stream: bool = true,
-                messages: []const OpenAiMessage,
-            };
-            const messages = [_]OpenAiMessage{
-                .{ .role = "system", .content = llm_tool_system_prompt },
-                .{ .role = "user", .content = user_prompt },
-            };
-            const payload = try stringifyJsonValueAlloc(RequestBody{
-                .model = model,
-                .messages = &messages,
-                .stream = true,
-            });
-            defer std.heap.page_allocator.free(payload);
-            break :blk httpPostStreamAlloc(request_flavor, endpoint, payload, &.{}) catch |err| {
-                ai_chat_log.warn("Provider stream request failed: flavor={s} error={s}", .{
-                    @tagName(request_flavor),
-                    @errorName(err),
-                });
-                break :blk .{
-                    .content = i18n.allocPrintMessage(
-                        .ai_chat_provider_request_failed_error_fmt,
-                        std.heap.page_allocator,
-                        task.language,
-                        .{@errorName(err)},
-                    ) catch try std.heap.page_allocator.dupe(
-                        u8,
-                        i18n.text(task.language, .ai_chat_provider_request_failed_fallback),
-                    ),
-                };
-            };
-        },
-    };
 }
 
 fn stripCodeFence(text: []const u8) []const u8 {
@@ -1713,7 +942,7 @@ fn executeToolCallAsync(
             },
         };
         if (result.snapshot_dirty) {
-            result.timeline_event = try makeAiTimelineEventAlloc(language, tool_name, summary);
+            result.timeline_event = try makeAiTimelineEventAlloc(language, tool_name, arguments_value, summary);
         }
         return result;
     }
@@ -1748,7 +977,7 @@ fn executeToolCallAsync(
         },
     };
     if (result.snapshot_dirty) {
-        result.timeline_event = try makeAiTimelineEventAlloc(language, tool_name, summary);
+        result.timeline_event = try makeAiTimelineEventAlloc(language, tool_name, arguments_value, summary);
     }
     return result;
 }
@@ -2013,7 +1242,7 @@ fn handleMcpToolCommandImmediate(state: *EditorState, layer_context: *engine.cor
             defer std.heap.page_allocator.free(resolved_summary);
             appendMessage(.assistant, resolved_summary);
             if (outcome.world_changed) {
-                var event = makeAiTimelineEventAlloc(state.language, command.name, resolved_summary) catch null;
+                var event = makeAiTimelineEventAlloc(state.language, command.name, args_value, resolved_summary) catch null;
                 if (event) |*resolved_event| {
                     defer resolved_event.deinit(std.heap.page_allocator);
                     recordAiTimelineEvent(state, layer_context, resolved_event);
@@ -2026,9 +1255,15 @@ fn handleMcpToolCommandImmediate(state: *EditorState, layer_context: *engine.cor
         } else {
             appendMessage(.assistant, state.text(.ai_chat_collaboration_tool_ok));
             if (outcome.world_changed) {
-                history.captureSnapshotWithSource(state, layer_context, .ai) catch |err| {
-                    ai_chat_log.warn("failed to capture AI snapshot history: {s}", .{@errorName(err)});
-                };
+                var event = makeAiTimelineEventAlloc(state.language, command.name, args_value, "") catch null;
+                if (event) |*resolved_event| {
+                    defer resolved_event.deinit(std.heap.page_allocator);
+                    recordAiTimelineEvent(state, layer_context, resolved_event);
+                } else {
+                    history.captureSnapshotWithSource(state, layer_context, .ai) catch |err| {
+                        ai_chat_log.warn("failed to capture AI snapshot history: {s}", .{@errorName(err)});
+                    };
+                }
             }
         }
 
@@ -2059,7 +1294,7 @@ fn handleMcpToolCommandImmediate(state: *EditorState, layer_context: *engine.cor
         defer std.heap.page_allocator.free(resolved_summary);
         appendMessage(.assistant, resolved_summary);
         if (outcome.snapshot_dirty) {
-            var event = makeAiTimelineEventAlloc(state.language, command.name, resolved_summary) catch null;
+            var event = makeAiTimelineEventAlloc(state.language, command.name, args_value, resolved_summary) catch null;
             if (event) |*resolved_event| {
                 defer resolved_event.deinit(std.heap.page_allocator);
                 recordAiTimelineEvent(state, layer_context, resolved_event);
@@ -2072,9 +1307,15 @@ fn handleMcpToolCommandImmediate(state: *EditorState, layer_context: *engine.cor
     } else {
         appendMessage(.assistant, state.text(.ai_chat_tool_ok));
         if (outcome.snapshot_dirty) {
-            history.captureSnapshotWithSource(state, layer_context, .ai) catch |err| {
-                ai_chat_log.warn("failed to capture AI snapshot history: {s}", .{@errorName(err)});
-            };
+            var event = makeAiTimelineEventAlloc(state.language, command.name, args_value, "") catch null;
+            if (event) |*resolved_event| {
+                defer resolved_event.deinit(std.heap.page_allocator);
+                recordAiTimelineEvent(state, layer_context, resolved_event);
+            } else {
+                history.captureSnapshotWithSource(state, layer_context, .ai) catch |err| {
+                    ai_chat_log.warn("failed to capture AI snapshot history: {s}", .{@errorName(err)});
+                };
+            }
         }
     }
 
@@ -2148,6 +1389,7 @@ fn enqueuePromptIntent(state: *EditorState, layer_context: *engine.core.LayerCon
         ) catch state.text(.ai_chat_provider_setup_incomplete_prefix);
         appendMessage(.system, message);
         state.ai_provider_settings_open = true;
+        requestAiFocus(.provider_name);
         return false;
     }
     const provider = &state.ai_providers[state.ai_active_provider];
@@ -2356,9 +1598,7 @@ fn drawHeaderBar(state: *EditorState) void {
         gui.sameLine();
         if (gui.buttonEx(state.text(.ai_chat_configure), config_w, 0.0)) {
             state.ai_provider_settings_open = !state.ai_provider_settings_open;
-            if (!state.ai_provider_settings_open) {
-                g_focus_ai_input_next_frame = true;
-            }
+            requestAiFocus(if (state.ai_provider_settings_open) .provider_name else .chat_input);
             ai_chat_log.info("Provider settings panel toggled: {s}", .{if (state.ai_provider_settings_open) "open" else "closed"});
         }
         gui.popStyleColor(3);
@@ -2655,6 +1895,7 @@ fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerCo
                     applyProviderDefaults(state);
                     provider_prefs_dirty = true;
                     g_provider_feedback.clear();
+                    requestAiFocus(.provider_name);
                 }
             }
             gui.sameLine();
@@ -2703,22 +1944,25 @@ fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerCo
         const provider = provider_support.activeProviderMut(state);
 
         layout.drawInspectorPropertyRow(state.text(.ai_chat_display_name), null);
+        applyAiFocusIfRequested(.provider_name);
         if (inputTextWithHintStyled("##name", state.text(.ai_chat_hint_provider_name), provider.name[0..])) {
             provider_prefs_dirty = true;
         }
-        _ = refocusAiTextFieldIfClicked(layer_context);
+        requestAiFocusIfClicked(layer_context, .provider_name);
 
         layout.drawInspectorPropertyRow(state.text(.ai_chat_api_endpoint), null);
+        applyAiFocusIfRequested(.provider_endpoint);
         if (inputTextWithHintStyled("##endpoint", state.text(.ai_chat_hint_endpoint), provider.endpoint[0..])) {
             provider_prefs_dirty = true;
         }
-        _ = refocusAiTextFieldIfClicked(layer_context);
+        requestAiFocusIfClicked(layer_context, .provider_endpoint);
 
         layout.drawInspectorPropertyRow(state.text(.ai_chat_model), null);
+        applyAiFocusIfRequested(.provider_model);
         if (inputTextWithHintStyled("##model", state.text(.ai_chat_hint_model), provider.model[0..])) {
             provider_prefs_dirty = true;
         }
-        _ = refocusAiTextFieldIfClicked(layer_context);
+        requestAiFocusIfClicked(layer_context, .provider_model);
 
         layout.drawInspectorPropertyRow(state.text(.ai_chat_api_key), null);
         {
@@ -2726,6 +1970,7 @@ fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerCo
             const key_gap: f32 = 6.0;
             const field_width = @max(60.0, gui.contentRegionAvail()[0] - toggle_width - key_gap);
             gui.setNextItemWidth(field_width);
+            applyAiFocusIfRequested(.provider_api_key);
             if (state.ai_provider_api_key_visible) {
                 if (inputTextWithHintStyled("##apikey", state.text(.ai_chat_hint_api_key), provider.api_key[0..])) {
                     provider_prefs_dirty = true;
@@ -2735,7 +1980,7 @@ fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerCo
                     provider_prefs_dirty = true;
                 }
             }
-            _ = refocusAiTextFieldIfClicked(layer_context);
+            requestAiFocusIfClicked(layer_context, .provider_api_key);
             gui.sameLine();
             if (gui.buttonEx(
                 if (state.ai_provider_api_key_visible) state.text(.ai_chat_hide) else state.text(.ai_chat_show),
@@ -2743,6 +1988,7 @@ fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerCo
                 0.0,
             )) {
                 state.ai_provider_api_key_visible = !state.ai_provider_api_key_visible;
+                requestAiFocus(.provider_api_key);
             }
         }
     }
@@ -2851,21 +2097,39 @@ fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerCo
 
 var g_window_initialized = false;
 var g_prev_ai_chat_open = false;
-var g_focus_ai_input_next_frame = true;
+
+const AiFocusTarget = enum {
+    none,
+    chat_input,
+    provider_name,
+    provider_endpoint,
+    provider_model,
+    provider_api_key,
+};
+
+var g_focus_target_next_frame: AiFocusTarget = .chat_input;
 
 fn pointInRect(point: [2]f32, min: [2]f32, max: [2]f32) bool {
     return point[0] >= min[0] and point[0] <= max[0] and
         point[1] >= min[1] and point[1] <= max[1];
 }
 
-fn refocusAiTextFieldIfClicked(layer_context: *engine.core.LayerContext) bool {
+fn requestAiFocus(target: AiFocusTarget) void {
+    g_focus_target_next_frame = target;
+}
+
+fn applyAiFocusIfRequested(target: AiFocusTarget) void {
+    if (g_focus_target_next_frame != target) return;
+    gui.setKeyboardFocusHere(0);
+    g_focus_target_next_frame = .none;
+}
+
+fn requestAiFocusIfClicked(layer_context: *engine.core.LayerContext, target: AiFocusTarget) void {
     const clicked = layer_context.input.wasMousePressed(.left) and
         pointInRect(gui.mousePos(), gui.getItemRectMin(), gui.getItemRectMax());
     if (clicked and !gui.isItemActive()) {
-        gui.setKeyboardFocusHere(-1);
-        return true;
+        requestAiFocus(target);
     }
-    return false;
 }
 
 pub fn drawAiChatPanel(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -2875,9 +2139,7 @@ pub fn drawAiChatPanel(state: *EditorState, layer_context: *engine.core.LayerCon
         return;
     }
 
-    if (!g_prev_ai_chat_open) {
-        g_focus_ai_input_next_frame = true;
-    }
+    if (!g_prev_ai_chat_open) requestAiFocus(.chat_input);
     g_prev_ai_chat_open = true;
 
     var window_title_buffer: [96]u8 = undefined;
@@ -2929,29 +2191,24 @@ pub fn drawAiChatPanel(state: *EditorState, layer_context: *engine.core.LayerCon
     const input_height: f32 = 72.0;
 
     if (input_width > 30.0) {
-        if (g_focus_ai_input_next_frame and !busy) {
-            gui.setKeyboardFocusHere(0);
-            g_focus_ai_input_next_frame = false;
-        }
+        if (!busy) applyAiFocusIfRequested(.chat_input);
         gui.pushStyleColor(.text, .{ 0.52, 0.57, 0.66, 1.0 });
         gui.text(if (busy) state.text(.ai_chat_background_processing) else state.text(.ai_chat_input_hint));
         gui.popStyleColor(1);
 
         _ = inputTextMultilineStyled("##ai_input", g_input_buffer[0..], input_width, input_height);
-        if (!busy and refocusAiTextFieldIfClicked(layer_context)) {
-            g_focus_ai_input_next_frame = true;
-        }
+        if (!busy) requestAiFocusIfClicked(layer_context, .chat_input);
 
         gui.sameLine();
         gui.pushStyleColor(.button, .{ 0.13, 0.50, 0.36, 0.88 });
         gui.pushStyleColor(.button_hovered, .{ 0.15, 0.62, 0.43, 1.0 });
         gui.pushStyleColor(.button_active, .{ 0.10, 0.40, 0.28, 1.0 });
-        const send_pressed = gui.buttonEx(if (busy) state.text(.ai_chat_wait) else state.text(.ai_chat_send), send_btn_width, 32.0);
+        const send_pressed = gui.buttonEx(if (busy) state.text(.ai_chat_wait) else state.text(.ai_chat_send), send_btn_width, input_height);
         gui.popStyleColor(3);
 
         if (send_pressed) {
             submitInput(state, layer_context);
-            g_focus_ai_input_next_frame = true;
+            requestAiFocus(.chat_input);
         }
     }
 }

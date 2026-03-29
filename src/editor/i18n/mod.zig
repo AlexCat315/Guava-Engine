@@ -44,6 +44,22 @@ pub fn allocPrintMessage(
     };
 }
 
+pub fn bufPrintMessage(
+    buffer: []u8,
+    comptime id: MessageId,
+    language: Language,
+    args: anytype,
+) ![]u8 {
+    return switch (language) {
+        .en_us => std.fmt.bufPrint(buffer, en_us.locale.translations.get(id).?, args),
+        .zh_cn => std.fmt.bufPrint(
+            buffer,
+            zh_cn.locale.translations.get(id) orelse en_us.locale.translations.get(id).?,
+            args,
+        ),
+    };
+}
+
 pub fn panelLabel(language: Language, buffer: []u8, id: MessageId, stable_id: []const u8) ![]const u8 {
     return std.fmt.bufPrint(buffer, "{s}###{s}", .{ text(language, id), stable_id });
 }

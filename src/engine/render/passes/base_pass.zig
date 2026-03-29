@@ -48,37 +48,23 @@ pub const BasePass = struct {
         return pass;
     }
 
+    fn releasePipeline(device: *rhi_mod.RhiDevice, p: ?rhi_mod.GraphicsPipeline) void {
+        if (p) |pipeline| device.releaseGraphicsPipeline(pipeline);
+    }
+
     pub fn deinit(self: *BasePass, device: *rhi_mod.RhiDevice) void {
-        if (self.wireframe_pipeline_ldr) |*pipeline| {
-            device.releaseGraphicsPipeline(pipeline);
-        }
-        if (self.wireframe_pipeline_hdr) |*pipeline| {
-            device.releaseGraphicsPipeline(pipeline);
-        }
-        if (self.ghost_fill_pipeline_ldr) |*pipeline| {
-            device.releaseGraphicsPipeline(pipeline);
-        }
-        if (self.ghost_fill_pipeline_hdr) |*pipeline| {
-            device.releaseGraphicsPipeline(pipeline);
-        }
-        if (self.transparent_fill_pipeline_ldr) |*pipeline| {
-            device.releaseGraphicsPipeline(pipeline);
-        }
-        if (self.transparent_fill_pipeline_hdr) |*pipeline| {
-            device.releaseGraphicsPipeline(pipeline);
-        }
-        if (self.fill_pipeline_ldr) |*pipeline| {
-            device.releaseGraphicsPipeline(pipeline);
-        }
-        if (self.fill_pipeline_hdr) |*pipeline| {
-            device.releaseGraphicsPipeline(pipeline);
-        }
-        if (self.stages) |*stages| {
-            stages.deinit(device);
-        }
-        if (self.wireframe_stages) |*stages| {
-            stages.deinit(device);
-        }
+        releasePipeline(device, self.wireframe_pipeline_ldr);
+        releasePipeline(device, self.wireframe_pipeline_hdr);
+        releasePipeline(device, self.ghost_fill_pipeline_ldr);
+        releasePipeline(device, self.ghost_fill_pipeline_hdr);
+        releasePipeline(device, self.transparent_fill_pipeline_ldr);
+        releasePipeline(device, self.transparent_fill_pipeline_hdr);
+        releasePipeline(device, self.fill_pipeline_ldr);
+        releasePipeline(device, self.fill_pipeline_hdr);
+
+        if (self.stages) |*stages| stages.deinit(device);
+        if (self.wireframe_stages) |*stages| stages.deinit(device);
+
         self.* = undefined;
     }
 

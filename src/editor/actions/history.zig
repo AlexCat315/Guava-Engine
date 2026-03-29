@@ -1065,14 +1065,18 @@ fn pushCommandInternal(state: *EditorState, command: command_mod.EditorCommand) 
 
 fn appendTimelineFromCommand(state: *EditorState, command: command_mod.EditorCommand, source: command_mod.TimelineSource) !void {
     const label = switch (source) {
-        .human => "Human Command",
-        .ai => "AI Command",
+        .human => state.text(.history_timeline_label_scene_edited),
+        .ai => state.text(.history_timeline_label_ai_scene_edited),
+    };
+    const detail = switch (command) {
+        .scene_snapshot => state.text(.history_timeline_kind_scene_snapshot),
+        .subtree_delta => state.text(.history_timeline_kind_subtree_delta),
     };
     const kind = switch (command) {
         .scene_snapshot => "scene_snapshot",
         .subtree_delta => "subtree_delta",
     };
-    try appendTimelineEvent(state, source, label, kind, kind);
+    try appendTimelineEvent(state, source, label, detail, kind);
 }
 
 fn pushSubtreeDeltaCommand(
