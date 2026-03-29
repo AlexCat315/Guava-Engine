@@ -1,6 +1,6 @@
 const std = @import("std");
-const rhi = @import("../rhi/rhi.zig");
-const render_graph = @import("render_graph.zig");
+const rhi = @import("../../rhi/rhi.zig");
+const render_graph = @import("../render_graph.zig");
 
 /// Depth-of-Field pass
 ///

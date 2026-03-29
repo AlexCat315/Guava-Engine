@@ -1,9 +1,9 @@
 const std = @import("std");
-const mesh_mod = @import("../assets/mesh_resource.zig");
-const math = @import("../math/mat4.zig");
-const vec3 = @import("../math/vec3.zig");
-const components = @import("../scene/components.zig");
-const scene_mod = @import("../scene/scene.zig");
+const mesh_mod = @import("../../assets/mesh_resource.zig");
+const math = @import("../../math/mat4.zig");
+const vec3 = @import("../../math/vec3.zig");
+const components = @import("../../scene/components.zig");
+const scene_mod = @import("../../scene/scene.zig");
 
 const RasterVertex = struct {
     screen: [2]f32,
@@ -303,7 +303,7 @@ fn chooseMainLight(scene: *const scene_mod.Scene) LightState {
             continue;
         }
         const world_transform = scene.worldTransformConst(entity.id) orelse entity.local_transform;
-        const quat = @import("../math/quat.zig");
+        const quat = @import("../../math/quat.zig");
         return .{
             .direction = quat.rotateVec3(world_transform.rotation, .{ 0.0, 0.0, -1.0 }),
             .color = light.color,
@@ -492,7 +492,7 @@ test "shadow pass baseline verifies light space matrix and directional light" {
     try std.testing.expect(light_entity.light.?.intensity > 0.0);
 
     // Verify light direction is normalized (rotation quaternion)
-    const quat = @import("../math/quat.zig");
+    const quat = @import("../../math/quat.zig");
     const light_dir = quat.rotateVec3(light_entity.local_transform.rotation, .{ 0.0, 0.0, -1.0 });
     const dir_len = @sqrt(light_dir[0] * light_dir[0] + light_dir[1] * light_dir[1] + light_dir[2] * light_dir[2]);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), dir_len, 0.001);

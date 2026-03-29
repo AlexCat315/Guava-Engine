@@ -1,7 +1,7 @@
 const std = @import("std");
-const rhi_mod = @import("../rhi/device.zig");
-const shader_support = @import("shader_support.zig");
-const math = @import("../math/mat4.zig");
+const rhi_mod = @import("../../rhi/device.zig");
+const shader_support = @import("../shader_support.zig");
+const math = @import("../../math/mat4.zig");
 const mesh_pass_mod = @import("mesh_pass.zig");
 
 const fullscreen_triangle_vertex_count: u32 = 3;

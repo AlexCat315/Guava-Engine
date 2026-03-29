@@ -1,7 +1,7 @@
 const std = @import("std");
-const rhi_mod = @import("../rhi/device.zig");
-const rhi_types = @import("../rhi/types.zig");
-const shader_support = @import("shader_support.zig");
+const rhi_mod = @import("../../rhi/device.zig");
+const rhi_types = @import("../../rhi/types.zig");
+const shader_support = @import("../shader_support.zig");
 
 /// GPU-accelerated IBL precomputation using compute shaders.
 /// Provides BRDF LUT generation and irradiance convolution on the GPU,

@@ -1,19 +1,19 @@
 const std = @import("std");
-const handles = @import("../assets/handles.zig");
-const material_mod = @import("../assets/material_resource.zig");
-const mesh_mod = @import("../assets/mesh_resource.zig");
-const texture_mod = @import("../assets/texture_resource.zig");
-const math = @import("../math/mat4.zig");
-const vec3 = @import("../math/vec3.zig");
-const quat = @import("../math/quat.zig");
-const rhi_mod = @import("../rhi/device.zig");
-const rhi_types = @import("../rhi/types.zig");
-const components = @import("../scene/components.zig");
-const scene_mod = @import("../scene/scene.zig");
-const scene_extraction = @import("scene_extraction.zig");
-const ibl_precompute = @import("ibl_precompute.zig");
+const handles = @import("../../assets/handles.zig");
+const material_mod = @import("../../assets/material_resource.zig");
+const mesh_mod = @import("../../assets/mesh_resource.zig");
+const texture_mod = @import("../../assets/texture_resource.zig");
+const math = @import("../../math/mat4.zig");
+const vec3 = @import("../../math/vec3.zig");
+const quat = @import("../../math/quat.zig");
+const rhi_mod = @import("../../rhi/device.zig");
+const rhi_types = @import("../../rhi/types.zig");
+const components = @import("../../scene/components.zig");
+const scene_mod = @import("../../scene/scene.zig");
+const scene_extraction = @import("../scene_extraction.zig");
+const ibl_precompute = @import("../ibl_precompute.zig");
 
-const frustum_mod = @import("../math/frustum.zig");
+const frustum_mod = @import("../../math/frustum.zig");
 
 pub const max_skin_joints: usize = 64;
 
@@ -853,7 +853,7 @@ pub const MeshSceneCache = struct {
         for (render_world.lights.point.items) |render_light| {
             const light = render_light.light;
             const world_transform = render_light.transform;
-            const light_bounds = @import("../math/aabb.zig").AABB{
+            const light_bounds = @import("../../math/aabb.zig").AABB{
                 .min = .{
                     world_transform.translation[0] - light.range,
                     world_transform.translation[1] - light.range,
@@ -878,7 +878,7 @@ pub const MeshSceneCache = struct {
         for (render_world.lights.spot.items) |render_light| {
             const light = render_light.light;
             const world_transform = render_light.transform;
-            const light_bounds = @import("../math/aabb.zig").AABB{
+            const light_bounds = @import("../../math/aabb.zig").AABB{
                 .min = .{
                     world_transform.translation[0] - light.range,
                     world_transform.translation[1] - light.range,

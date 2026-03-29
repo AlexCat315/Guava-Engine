@@ -1,10 +1,10 @@
 const std = @import("std");
 const id_pass_mod = @import("id_pass.zig");
 const mesh_pass_mod = @import("mesh_pass.zig");
-const rhi_mod = @import("../rhi/device.zig");
-const rhi_types = @import("../rhi/types.zig");
-const scene_mod = @import("../scene/scene.zig");
-const shader_support = @import("shader_support.zig");
+const rhi_mod = @import("../../rhi/device.zig");
+const rhi_types = @import("../../rhi/types.zig");
+const scene_mod = @import("../../scene/scene.zig");
+const shader_support = @import("../shader_support.zig");
 
 const FullscreenVertex = extern struct {
     position: [2]f32,

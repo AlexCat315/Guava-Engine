@@ -1,6 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const vec3 = @import("../math/vec3.zig");
+const vec3 = @import("../../math/vec3.zig");
 const common = @import("path_trace_common.zig");
 
 pub const BackendPreference = enum {

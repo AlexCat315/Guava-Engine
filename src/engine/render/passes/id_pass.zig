@@ -1,9 +1,9 @@
 const std = @import("std");
 const mesh_pass_mod = @import("mesh_pass.zig");
-const rhi_mod = @import("../rhi/device.zig");
-const rhi_types = @import("../rhi/types.zig");
-const scene_mod = @import("../scene/scene.zig");
-const shader_support = @import("shader_support.zig");
+const rhi_mod = @import("../../rhi/device.zig");
+const rhi_types = @import("../../rhi/types.zig");
+const scene_mod = @import("../../scene/scene.zig");
+const shader_support = @import("../shader_support.zig");
 
 pub const IdPassUniforms = extern struct {
     entity_color: [4]f32,

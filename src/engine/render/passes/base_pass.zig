@@ -1,10 +1,10 @@
 const std = @import("std");
 const mesh_pass_mod = @import("mesh_pass.zig");
-const rhi_mod = @import("../rhi/device.zig");
-const rhi_types = @import("../rhi/types.zig");
-const shader_support = @import("shader_support.zig");
-const render_types = @import("types.zig");
-const vec3 = @import("../math/vec3.zig");
+const rhi_mod = @import("../../rhi/device.zig");
+const rhi_types = @import("../../rhi/types.zig");
+const shader_support = @import("../shader_support.zig");
+const render_types = @import("../types.zig");
+const vec3 = @import("../../math/vec3.zig");
 const render_log = std.log.scoped(.viewport_render);
 
 var g_logged_metal_binding_mode: bool = false;

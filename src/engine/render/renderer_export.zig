@@ -1,10 +1,10 @@
 const std = @import("std");
 const rhi_mod = @import("../rhi/device.zig");
 const image_export = @import("image_export.zig");
-const renderer_path_trace = @import("renderer_path_trace.zig");
+const renderer_path_trace = @import("path_trace/renderer_path_trace.zig");
 const types = @import("types.zig");
 
-const path_trace_denoise = @import("path_trace_denoise.zig");
+const path_trace_denoise = @import("path_trace/path_trace_denoise.zig");
 const samplePathTraceGuidePixel = renderer_path_trace.samplePathTraceGuidePixel;
 
 pub const FramePixels = struct {

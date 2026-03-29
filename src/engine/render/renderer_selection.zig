@@ -1,6 +1,6 @@
 const std = @import("std");
 const rhi_mod = @import("../rhi/device.zig");
-const id_pass_mod = @import("id_pass.zig");
+const id_pass_mod = @import("passes/id_pass.zig");
 const selection_history_mod = @import("selection_history.zig");
 
 const selection_readback_bytes: u32 = 4;

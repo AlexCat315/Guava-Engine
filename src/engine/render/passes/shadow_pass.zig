@@ -1,8 +1,8 @@
 const std = @import("std");
 const mesh_pass_mod = @import("mesh_pass.zig");
-const rhi_mod = @import("../rhi/device.zig");
-const rhi_types = @import("../rhi/types.zig");
-const shader_support = @import("shader_support.zig");
+const rhi_mod = @import("../../rhi/device.zig");
+const rhi_types = @import("../../rhi/types.zig");
+const shader_support = @import("../shader_support.zig");
 
 pub const ShadowPass = struct {
     pipeline: ?rhi_mod.GraphicsPipeline = null,

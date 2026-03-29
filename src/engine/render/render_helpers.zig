@@ -1,6 +1,6 @@
 const std = @import("std");
 const rhi_mod = @import("../rhi/device.zig");
-const mesh_pass_mod = @import("mesh_pass.zig");
+const mesh_pass_mod = @import("passes/mesh_pass.zig");
 const graph_mod = @import("render_graph.zig");
 
 /// Execute a render pass with timing and stat recording.

@@ -1,7 +1,7 @@
 const std = @import("std");
-const rhi_mod = @import("../rhi/device.zig");
-const rhi_types = @import("../rhi/types.zig");
-const shader_support = @import("shader_support.zig");
+const rhi_mod = @import("../../rhi/device.zig");
+const rhi_types = @import("../../rhi/types.zig");
+const shader_support = @import("../shader_support.zig");
 
 pub const SSGIUniforms = extern struct {
     projection: [16]f32,

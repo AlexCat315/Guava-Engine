@@ -1,7 +1,7 @@
 const std = @import("std");
 const mesh_pass_mod = @import("mesh_pass.zig");
-const rhi_mod = @import("../rhi/device.zig");
-const shader_support = @import("shader_support.zig");
+const rhi_mod = @import("../../rhi/device.zig");
+const shader_support = @import("../shader_support.zig");
 
 pub const RtShadowDenoiseUniforms = extern struct {
     resolution: [2]f32 = .{ 1.0, 1.0 },

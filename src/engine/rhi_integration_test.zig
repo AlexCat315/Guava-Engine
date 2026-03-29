@@ -4,13 +4,13 @@ const metal_backend = @import("rhi/metal/metal_backend.zig");
 const rhi = @import("rhi/rhi.zig");
 const binding_cache = @import("rhi/binding_cache.zig");
 const command_buffer = @import("rhi/command_buffer.zig");
-const fullscreen_post = @import("render/fullscreen_post_pass.zig");
-const bloom_pass = @import("render/bloom_pass.zig");
-const tonemap_pass = @import("render/tonemap_pass.zig");
-const contact_shadow = @import("render/contact_shadow_pass.zig");
-const dof_pass = @import("render/dof_pass.zig");
-const ssr_pass = @import("render/ssr_pass.zig");
-const volumetric_fog = @import("render/volumetric_fog_pass.zig");
+const fullscreen_post = @import("render/passes/fullscreen_post_pass.zig");
+const bloom_pass = @import("render/passes/bloom_pass.zig");
+const tonemap_pass = @import("render/passes/tonemap_pass.zig");
+const contact_shadow = @import("render/passes/contact_shadow_pass.zig");
+const dof_pass = @import("render/passes/dof_pass.zig");
+const ssr_pass = @import("render/passes/ssr_pass.zig");
+const volumetric_fog = @import("render/passes/volumetric_fog_pass.zig");
 const render_graph = @import("render/render_graph.zig");
 
 test "metal backend compute queue submission path" {
