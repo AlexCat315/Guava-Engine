@@ -1410,7 +1410,6 @@ fn syncViewportState(
         .bloom_threshold = post_process_state.bloom_threshold,
         .bloom_intensity = post_process_state.bloom_intensity,
         .ssao_enabled = post_process_state.ssao_enabled,
-        .ssao_use_legacy_path = post_process_state.ssao_use_legacy_path,
         .ssao_radius = post_process_state.ssao_radius,
         .ssao_bias = post_process_state.ssao_bias,
         .ssao_intensity = post_process_state.ssao_intensity,

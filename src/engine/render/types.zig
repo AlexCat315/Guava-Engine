@@ -44,7 +44,6 @@ pub const EditorViewportState = struct {
     bloom_intensity: f32 = 0.35,
     // SSAO 环境光遮蔽
     ssao_enabled: bool = false,
-    ssao_use_legacy_path: bool = false,
     ssao_radius: f32 = 0.5,
     ssao_bias: f32 = 0.025,
     ssao_intensity: f32 = 1.0,

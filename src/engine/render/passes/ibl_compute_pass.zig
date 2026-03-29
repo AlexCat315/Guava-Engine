@@ -56,8 +56,7 @@ pub const IBLComputePass = struct {
         const compute_pass = try device.beginComputePass(frame, &.{output}, &.{});
         device.bindComputePipeline(compute_pass, &pipeline);
 
-        // Bind output storage texture at slot 0 → Metal texture(0)
-        device.bindComputeStorageTextures(compute_pass, 0, &.{output});
+        device.bindComputeStorageTextureBinding(compute_pass, 0, output);
 
         const BRDFParams = extern struct {
             size: u32,
@@ -93,13 +92,8 @@ pub const IBLComputePass = struct {
         const compute_pass = try device.beginComputePass(frame, &.{output}, &.{});
         device.bindComputePipeline(compute_pass, &pipeline);
 
-        // Bind environment map as sampler at slot 0 → Metal texture(0)+sampler(0)
-        device.bindComputeSamplers(compute_pass, 0, &.{
-            .{ .texture = env_texture, .sampler = &sampler },
-        });
-
-        // Bind output storage texture at slot 2 → Metal texture(1) (2/2=1)
-        device.bindComputeStorageTextures(compute_pass, 2, &.{output});
+        device.bindComputeSampledTextureBinding(compute_pass, 0, env_texture, &sampler);
+        device.bindComputeStorageTextureBinding(compute_pass, 1, output);
 
         const IrradianceParams = extern struct {
             output_size: u32,

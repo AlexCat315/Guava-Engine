@@ -2,7 +2,29 @@ const std = @import("std");
 const rhi_mod = @import("../../rhi/device.zig");
 const rhi_types = @import("../../rhi/types.zig");
 const shader_support = @import("../shader_support.zig");
-const ssao_pass_mod = @import("ssao_pass.zig");
+
+pub const SSAOUniforms = extern struct {
+    projection: [16]f32 = std.mem.zeroes([16]f32),
+    inv_projection: [16]f32 = std.mem.zeroes([16]f32),
+    view: [16]f32 = std.mem.zeroes([16]f32),
+    inv_view: [16]f32 = std.mem.zeroes([16]f32),
+    resolution: [2]f32 = .{ 1.0, 1.0 },
+    radius: f32 = 0.5,
+    bias: f32 = 0.025,
+    intensity: f32 = 1.0,
+    power: f32 = 2.0,
+    kernel_size: u32 = 16,
+    // std140 rounds the following vec2 up to the next 8-byte boundary.
+    kernel_padding: u32 = 0,
+    noise_scale: [2]f32 = .{ 1.0, 1.0 },
+    padding: [2]f32 = .{ 0.0, 0.0 },
+};
+
+comptime {
+    std.debug.assert(@sizeOf(SSAOUniforms) == 304);
+    std.debug.assert(@offsetOf(SSAOUniforms, "noise_scale") == 288);
+    std.debug.assert(@offsetOf(SSAOUniforms, "padding") == 296);
+}
 
 pub const SSAOComputePass = struct {
     pipeline: ?rhi_mod.ComputePipeline = null,
@@ -34,18 +56,15 @@ pub const SSAOComputePass = struct {
         frame: rhi_mod.Frame,
         depth_texture: *const rhi_mod.Texture,
         output_texture: *const rhi_mod.Texture,
-        uniforms: ssao_pass_mod.SSAOUniforms,
+        uniforms: SSAOUniforms,
     ) void {
         if (!self.isReady()) return;
 
         const compute_pass = device.beginComputePass(frame, &.{output_texture}, &.{}) catch return;
         device.bindComputePipeline(compute_pass, &self.pipeline.?);
-        device.bindComputeSamplers(compute_pass, 0, &.{
-            .{ .texture = depth_texture, .sampler = &self.sampler.? },
-            .{ .texture = &self.noise_texture.?, .sampler = &self.noise_sampler.? },
-        });
-        // Bind output storage texture: slot 4 → Metal texture(4/2=2), after 2 sampled textures.
-        device.bindComputeStorageTextures(compute_pass, 4, &.{output_texture});
+        device.bindComputeSampledTextureBinding(compute_pass, 0, depth_texture, &self.sampler.?);
+        device.bindComputeStorageTextureBinding(compute_pass, 1, output_texture);
+        device.bindComputeSampledTextureBinding(compute_pass, 2, &self.noise_texture.?, &self.noise_sampler.?);
         device.pushComputeUniformData(frame, 0, std.mem.asBytes(&uniforms));
 
         const group_x = (output_texture.desc.width + 7) / 8;

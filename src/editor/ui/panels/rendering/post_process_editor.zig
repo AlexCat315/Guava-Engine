@@ -476,7 +476,6 @@ fn drawEffectParameters(
                 _ = props.float("Intensity", &viewport_state.bloom_intensity, 0.1, 0.0, 5.0);
             },
             .ssao => {
-                _ = props.boolean("Legacy Path", &viewport_state.ssao_use_legacy_path);
                 _ = props.float("Radius", &viewport_state.ssao_radius, 0.1, 0.0, 5.0);
                 _ = props.float("Bias", &viewport_state.ssao_bias, 0.01, 0.0, 1.0);
                 _ = props.float("Intensity", &viewport_state.ssao_intensity, 0.1, 0.0, 5.0);

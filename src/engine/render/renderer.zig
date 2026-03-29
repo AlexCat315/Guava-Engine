@@ -54,7 +54,6 @@ const id_pass_mod = @import("passes/id_pass.zig");
 const gizmo_pass_mod = @import("passes/gizmo_pass.zig");
 const outline_pass_mod = @import("passes/outline_pass.zig");
 const volumetric_fog_pass_mod = @import("passes/volumetric_fog_pass.zig");
-const ssao_pass_mod = @import("passes/ssao_pass.zig");
 const ssao_compute_pass_mod = @import("passes/ssao_compute_pass_runtime.zig");
 const ssgi_compute_pass_mod = @import("passes/ssgi_compute_pass.zig");
 const ssgi_composite_pass_mod = @import("passes/ssgi_composite_pass.zig");
@@ -325,8 +324,6 @@ pub const Renderer = struct {
     outline_pass: outline_pass_mod.OutlinePass,
     /// Gizmo 通道（编辑器可视化）
     gizmo_pass: gizmo_pass_mod.GizmoPass,
-    /// SSAO 后处理通道
-    ssao_pass: ssao_pass_mod.SSAOPass,
     /// SSAO Compute 通道（GPU Compute 加速）
     ssao_compute_pass: ?ssao_compute_pass_mod.SSAOComputePass = null,
     ssgi_compute_pass: ?ssgi_compute_pass_mod.SSGIComputePass = null,
@@ -452,7 +449,6 @@ pub const Renderer = struct {
             .skybox_pass = undefined,
             .outline_pass = undefined,
             .gizmo_pass = undefined,
-            .ssao_pass = undefined,
             .ssao_compute_pass = null,
             .ssgi_compute_pass = null,
             .ssgi_composite_pass = undefined,
@@ -506,11 +502,8 @@ pub const Renderer = struct {
             pass.deinit(&renderer.rhi);
         };
 
-        renderer.ssao_pass = try ssao_pass_mod.SSAOPass.init(&renderer.rhi);
-        errdefer renderer.ssao_pass.deinit(&renderer.rhi);
-
         renderer.ssao_compute_pass = ssao_compute_pass_mod.SSAOComputePass.init(&renderer.rhi) catch |err| blk: {
-            std.log.warn("SSAO compute pass init failed (falling back to fragment): {}", .{err});
+            std.log.warn("SSAO compute pass init failed: {}", .{err});
             break :blk null;
         };
 
@@ -619,7 +612,6 @@ pub const Renderer = struct {
         if (self.skybox_pass) |*pass| {
             pass.deinit(&self.rhi);
         }
-        self.ssao_pass.deinit(&self.rhi);
         if (self.ssao_compute_pass) |*p| p.deinit(&self.rhi);
         if (self.gpu_brdf_lut) |*t| self.rhi.releaseTexture(t);
         if (self.ibl_compute_pass) |*p| p.deinit(&self.rhi);
@@ -1521,7 +1513,7 @@ pub const Renderer = struct {
                             const inv_proj = mat4_ssao.inverse(prepared_scene.projection_matrix) orelse mat4_ssao.identity();
                             const inv_view = mat4_ssao.inverse(prepared_scene.view_matrix) orelse mat4_ssao.identity();
 
-                            const ssao_uniforms = ssao_pass_mod.SSAOUniforms{
+                            const ssao_uniforms = ssao_compute_pass_mod.SSAOUniforms{
                                 .projection = prepared_scene.projection_matrix,
                                 .inv_projection = inv_proj,
                                 .view = prepared_scene.view_matrix,
@@ -1538,29 +1530,16 @@ pub const Renderer = struct {
                                 },
                             };
 
-                            // Prefer compute path when available; keep fragment path as fallback.
-                            const use_legacy_path = self.editor_viewport_state.ssao_use_legacy_path;
-                            var dispatched_compute = false;
-                            if (!use_legacy_path) {
-                                if (self.ssao_compute_pass) |*compute_pass| {
-                                    if (compute_pass.isReady()) {
-                                        compute_pass.dispatch(
-                                            &self.rhi,
-                                            frame,
-                                            self.scene_viewport.depth().?,
-                                            self.scene_viewport.ssao().?,
-                                            ssao_uniforms,
-                                        );
-                                        dispatched_compute = true;
-                                    }
+                            if (self.ssao_compute_pass) |*compute_pass| {
+                                if (compute_pass.isReady()) {
+                                    compute_pass.dispatch(
+                                        &self.rhi,
+                                        frame,
+                                        self.scene_viewport.depth().?,
+                                        self.scene_viewport.ssao().?,
+                                        ssao_uniforms,
+                                    );
                                 }
-                            }
-                            if (!dispatched_compute and self.ssao_pass.isReady()) {
-                                try self.ssao_pass.syncTextures(&self.rhi, self.scene_viewport.depth().?, null);
-                                const ssao_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.ssao().? }));
-                                const ssao_stats = self.ssao_pass.draw(&self.rhi, frame, ssao_render_pass, ssao_uniforms);
-                                draw_stats.add(ssao_stats);
-                                self.rhi.endRenderPass(ssao_render_pass);
                             }
 
                             // SSAO 合成: 将 SSAO 纹理以乘法混合叠加到颜色缓冲，

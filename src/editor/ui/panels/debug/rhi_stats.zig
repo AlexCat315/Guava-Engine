@@ -94,8 +94,7 @@ pub fn drawRhiStatsWindow(state: *EditorState, layer_context: *engine.core.Layer
 
     // ── RHI Pass Status ───────────────────────────────────────────
     if (gui.collapsingHeader("RHI Pass Status", true)) {
-        const vs = renderer.editor_viewport_state;
-        gui.labelText("SSAO", if (!vs.ssao_use_legacy_path) "compute" else "legacy");
+        gui.labelText("SSAO", "compute");
         gui.labelText("FXAA", "RHI");
         gui.labelText("Bloom", "RHI");
         gui.labelText("Tonemap", "RHI");

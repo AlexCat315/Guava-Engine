@@ -844,6 +844,19 @@ pub const RhiDevice = struct {
         }
     }
 
+    pub fn bindComputeSampledTextureBinding(
+        self: *RhiDevice,
+        pass: ComputePass,
+        binding: u32,
+        texture: *const Texture,
+        sampler: *const Sampler,
+    ) void {
+        self.bindComputeSamplers(pass, binding * 2, &.{.{
+            .texture = texture,
+            .sampler = sampler,
+        }});
+    }
+
     pub fn bindComputeStorageTextures(self: *RhiDevice, pass: ComputePass, first_slot: u32, textures: []const *const Texture) void {
         _ = pass;
         if (self.current_frame == null) return;
@@ -864,6 +877,15 @@ pub const RhiDevice = struct {
         if (self.current_frame) |*frame| {
             frame.command_buffer.encodeSetBindingSet(.{ .slot = first_slot, .set_id = set.id }) catch {};
         }
+    }
+
+    pub fn bindComputeStorageTextureBinding(
+        self: *RhiDevice,
+        pass: ComputePass,
+        binding: u32,
+        texture: *const Texture,
+    ) void {
+        self.bindComputeStorageTextures(pass, binding * 2, &.{texture});
     }
 
     pub fn bindComputeStorageBuffers(self: *RhiDevice, pass: ComputePass, first_slot: u32, buffers: []const *const Buffer) void {
@@ -917,7 +939,7 @@ pub const RhiDevice = struct {
     pub fn createBuffer(self: *RhiDevice, desc: types.BufferDesc) Error!Buffer {
         const rhi_desc = rhi.BufferDesc{
             .size = desc.size,
-            .usage = @bitCast(desc.usage),
+            .usage = legacyBufferUsageToRhi(desc.usage),
             .label = desc.label,
         };
         const buf = try self.device.createBuffer(rhi_desc);
@@ -966,7 +988,7 @@ pub const RhiDevice = struct {
             .width = desc.width,
             .height = desc.height,
             .format = desc.format,
-            .usage = @bitCast(desc.usage),
+            .usage = legacyTextureUsageToRhi(desc.usage),
             .sample_count = desc.sample_count,
             .label = desc.label,
         };
@@ -1467,6 +1489,36 @@ pub const RhiDevice = struct {
     ) void {
         self.bindIndexBuffer(pass, buffer, index_size, offset);
         _ = state;
+    }
+
+    fn legacyBufferUsageToRhi(usage: u32) rhi.BufferUsageFlags {
+        return .{
+            .vertex = (usage & types.BufferUsage.vertex) != 0,
+            .index = (usage & types.BufferUsage.index) != 0,
+            .uniform = false,
+            .storage_read = (usage & types.BufferUsage.graphics_storage_read) != 0 or
+                (usage & types.BufferUsage.compute_storage_read) != 0,
+            .storage_write = (usage & types.BufferUsage.compute_storage_write) != 0,
+            .indirect = (usage & types.BufferUsage.indirect) != 0,
+            .transfer_src = false,
+            .transfer_dst = false,
+        };
+    }
+
+    fn legacyTextureUsageToRhi(usage: u32) rhi.TextureUsageFlags {
+        return .{
+            .sampled = (usage & types.TextureUsage.sampler) != 0,
+            .color_target = (usage & types.TextureUsage.color_target) != 0,
+            .depth_stencil_target = (usage & types.TextureUsage.depth_stencil_target) != 0,
+            .storage_read = (usage & types.TextureUsage.graphics_storage_read) != 0 or
+                (usage & types.TextureUsage.compute_storage_read) != 0 or
+                (usage & types.TextureUsage.compute_storage_rw) != 0,
+            .storage_write = (usage & types.TextureUsage.compute_storage_write) != 0 or
+                (usage & types.TextureUsage.compute_storage_rw) != 0,
+            .transfer_src = false,
+            .transfer_dst = false,
+            .present = false,
+        };
     }
 
     fn ensureDefaultPipelineLayout(self: *RhiDevice) Error!rhi.PipelineLayout {
