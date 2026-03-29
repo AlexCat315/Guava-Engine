@@ -1377,11 +1377,7 @@ pub const Renderer = struct {
                             .depth = loaded_depth_target,
                         });
                     } else {
-                        // Editor viewport correctness first:
-                        // the refactored depth-only prepass path still shows visible striping on Metal
-                        // for regular raster viewport rendering, so keep the viewport on a single
-                        // scene pass until the backend depth-only path is fully trustworthy.
-                        if (active_render_mode != .wireframe and scene_depth_target != null and !viewport_active) {
+                        if (active_render_mode != .wireframe and scene_depth_target != null) {
                             const depth_prepass_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.depthOnly(scene_depth_target.?));
                             const depth_start = std.time.nanoTimestamp();
                             const depth_stats = self.depth_prepass.draw(&self.rhi, frame, depth_prepass_pass, &prepared_scene);

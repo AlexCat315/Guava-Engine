@@ -26,6 +26,57 @@ pub const GpuVertex = extern struct {
     weights: [4]f32,
 };
 
+pub fn gpuVertexBufferLayouts() [1]rhi_mod.VertexBufferLayoutDesc {
+    return .{
+        .{
+            .slot = 0,
+            .stride = @sizeOf(GpuVertex),
+            .input_rate = .per_vertex,
+        },
+    };
+}
+
+pub fn gpuVertexAttributes() [6]rhi_mod.VertexAttributeDesc {
+    return .{
+        .{
+            .location = 0,
+            .buffer_slot = 0,
+            .format = .float3,
+            .offset = @offsetOf(GpuVertex, "position"),
+        },
+        .{
+            .location = 1,
+            .buffer_slot = 0,
+            .format = .float3,
+            .offset = @offsetOf(GpuVertex, "normal"),
+        },
+        .{
+            .location = 2,
+            .buffer_slot = 0,
+            .format = .float4,
+            .offset = @offsetOf(GpuVertex, "color"),
+        },
+        .{
+            .location = 3,
+            .buffer_slot = 0,
+            .format = .float2,
+            .offset = @offsetOf(GpuVertex, "uv"),
+        },
+        .{
+            .location = 4,
+            .buffer_slot = 0,
+            .format = .float4,
+            .offset = @offsetOf(GpuVertex, "joints"),
+        },
+        .{
+            .location = 5,
+            .buffer_slot = 0,
+            .format = .float4,
+            .offset = @offsetOf(GpuVertex, "weights"),
+        },
+    };
+}
+
 pub const DrawStats = struct {
     draw_calls: usize = 0,
     triangles_drawn: usize = 0,

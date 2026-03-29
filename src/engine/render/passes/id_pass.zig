@@ -149,33 +149,8 @@ pub const IdPass = struct {
             stages.deinit(device);
         };
 
-        const vertex_layouts = [_]rhi_mod.VertexBufferLayoutDesc{
-            .{
-                .slot = 0,
-                .stride = @sizeOf(mesh_pass_mod.GpuVertex),
-                .input_rate = .per_vertex,
-            },
-        };
-        const vertex_attributes = [_]rhi_mod.VertexAttributeDesc{
-            .{
-                .location = 0,
-                .buffer_slot = 0,
-                .format = .float3,
-                .offset = @offsetOf(mesh_pass_mod.GpuVertex, "position"),
-            },
-            .{
-                .location = 4,
-                .buffer_slot = 0,
-                .format = .float4,
-                .offset = @offsetOf(mesh_pass_mod.GpuVertex, "joints"),
-            },
-            .{
-                .location = 5,
-                .buffer_slot = 0,
-                .format = .float4,
-                .offset = @offsetOf(mesh_pass_mod.GpuVertex, "weights"),
-            },
-        };
+        const vertex_layouts = mesh_pass_mod.gpuVertexBufferLayouts();
+        const vertex_attributes = mesh_pass_mod.gpuVertexAttributes();
 
         self.pipeline = try device.createGraphicsPipeline(.{
             .vertex_shader = &self.stages.?.vertex,

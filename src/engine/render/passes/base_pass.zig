@@ -444,51 +444,8 @@ pub const BasePass = struct {
             stages.deinit(device);
         };
 
-        const vertex_layouts = [_]rhi_mod.VertexBufferLayoutDesc{
-            .{
-                .slot = 0,
-                .stride = @sizeOf(mesh_pass_mod.GpuVertex),
-                .input_rate = .per_vertex,
-            },
-        };
-        const vertex_attributes = [_]rhi_mod.VertexAttributeDesc{
-            .{
-                .location = 0,
-                .buffer_slot = 0,
-                .format = .float3,
-                .offset = @offsetOf(mesh_pass_mod.GpuVertex, "position"),
-            },
-            .{
-                .location = 1,
-                .buffer_slot = 0,
-                .format = .float3,
-                .offset = @offsetOf(mesh_pass_mod.GpuVertex, "normal"),
-            },
-            .{
-                .location = 2,
-                .buffer_slot = 0,
-                .format = .float4,
-                .offset = @offsetOf(mesh_pass_mod.GpuVertex, "color"),
-            },
-            .{
-                .location = 3,
-                .buffer_slot = 0,
-                .format = .float2,
-                .offset = @offsetOf(mesh_pass_mod.GpuVertex, "uv"),
-            },
-            .{
-                .location = 4,
-                .buffer_slot = 0,
-                .format = .float4,
-                .offset = @offsetOf(mesh_pass_mod.GpuVertex, "joints"),
-            },
-            .{
-                .location = 5,
-                .buffer_slot = 0,
-                .format = .float4,
-                .offset = @offsetOf(mesh_pass_mod.GpuVertex, "weights"),
-            },
-        };
+        const vertex_layouts = mesh_pass_mod.gpuVertexBufferLayouts();
+        const vertex_attributes = mesh_pass_mod.gpuVertexAttributes();
 
         self.fill_pipeline_hdr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .rgba16_float, .fill, false, true, true);
         errdefer if (self.fill_pipeline_hdr) |*pipeline| {
