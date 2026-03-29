@@ -1497,6 +1497,87 @@ fn drawStatusDot(color: [4]f32) void {
     gui.sameLine();
 }
 
+const StatusChipPalette = struct {
+    background: [4]f32,
+    border: [4]f32,
+    text: [4]f32,
+};
+
+fn drawStatusChip(label: []const u8, palette: StatusChipPalette) void {
+    const text_size = gui.calcTextSize(label, false, 0.0);
+    const chip_width = text_size[0] + 22.0;
+
+    gui.pushStyleColor(.button, palette.background);
+    gui.pushStyleColor(.button_hovered, palette.background);
+    gui.pushStyleColor(.button_active, palette.background);
+    gui.pushStyleColor(.border, palette.border);
+    gui.pushStyleColor(.text, palette.text);
+    gui.pushStyleVarVec2(.frame_padding, .{ 10.0, 6.0 });
+    gui.pushStyleVarFloat(.frame_rounding, 999.0);
+    defer {
+        gui.popStyleVar(2);
+        gui.popStyleColor(5);
+    }
+
+    _ = gui.buttonEx(label, chip_width, 0.0);
+}
+
+fn chatHasVisibleContent(preview: *const StreamState) bool {
+    for (g_messages[0..g_message_count]) |msg| {
+        if (msg.text_len != 0) return true;
+    }
+    return preview.hasVisibleContent();
+}
+
+fn drawProviderSetupGuideCard(state: *EditorState) void {
+    const provider_error = activeProviderValidationError(state) orelse {
+        gui.pushStyleColor(.text, .{ 0.44, 0.47, 0.53, 1.0 });
+        gui.textWrapped(state.text(.ai_chat_empty));
+        gui.popStyleColor(1);
+        return;
+    };
+
+    const card_height: f32 = 176.0;
+    gui.pushStyleColor(.border, .{ 0.23, 0.42, 0.38, 0.92 });
+    gui.pushStyleVarVec2(.window_padding, .{ 16.0, 14.0 });
+    defer {
+        gui.popStyleVar(1);
+        gui.popStyleColor(1);
+    }
+
+    _ = gui.beginChild("ai_provider_setup_guide##jt", 0.0, card_height, true);
+    defer gui.endChild();
+
+    gui.pushStyleColor(.text, .{ 0.95, 0.84, 0.44, 1.0 });
+    gui.text(state.text(.ai_chat_provider_not_configured));
+    gui.popStyleColor(1);
+
+    gui.dummy(0.0, 6.0);
+    gui.pushStyleColor(.text, .{ 0.80, 0.85, 0.92, 1.0 });
+    gui.textWrapped(state.text(.ai_chat_provider_setup_incomplete_prefix));
+    gui.popStyleColor(1);
+
+    gui.dummy(0.0, 4.0);
+    gui.pushStyleColor(.text, .{ 0.58, 0.66, 0.76, 1.0 });
+    gui.textWrapped(providerValidationErrorText(state, provider_error));
+    gui.popStyleColor(1);
+
+    gui.dummy(0.0, 8.0);
+    gui.pushStyleColor(.text, .{ 0.58, 0.66, 0.76, 1.0 });
+    gui.textWrapped(state.text(.ai_chat_provider_setup_open_config_hint));
+    gui.popStyleColor(1);
+
+    gui.dummy(0.0, 12.0);
+    gui.pushStyleColor(.button, .{ 0.13, 0.50, 0.36, 0.90 });
+    gui.pushStyleColor(.button_hovered, .{ 0.15, 0.62, 0.43, 1.0 });
+    gui.pushStyleColor(.button_active, .{ 0.10, 0.40, 0.28, 1.0 });
+    if (gui.buttonEx(state.text(.ai_chat_configure), 108.0, 0.0)) {
+        state.ai_provider_settings_open = true;
+        requestAiFocus(.provider_name);
+    }
+    gui.popStyleColor(3);
+}
+
 fn providerFeedbackColor(kind: ProviderPanelFeedbackKind) [4]f32 {
     return switch (kind) {
         .success => .{ 0.44, 0.86, 0.60, 1.0 },
@@ -1510,75 +1591,82 @@ fn drawHeaderBar(state: *EditorState) void {
     const mcp_ready = isMcpBridgeReady(state);
     const provider_error = activeProviderValidationError(state);
     const provider_ready = provider_error == null;
-    const dot_color: [4]f32 = if (!mcp_ready)
-        .{ 0.80, 0.28, 0.28, 1.0 }
-    else if (!provider_ready)
-        .{ 0.95, 0.80, 0.30, 1.0 }
-    else
-        .{ 0.22, 0.82, 0.46, 1.0 };
-
-    drawStatusDot(dot_color);
-
-    if (!mcp_ready) {
-        gui.pushStyleColor(.text, .{ 0.85, 0.35, 0.35, 1.0 });
-        gui.text(state.text(.ai_chat_mcp_not_ready));
+    const header_height: f32 = if (provider_error != null) 88.0 else 62.0;
+    gui.pushStyleColor(.border, .{ 0.18, 0.22, 0.28, 0.98 });
+    gui.pushStyleVarVec2(.window_padding, .{ 12.0, 10.0 });
+    defer {
+        gui.popStyleVar(1);
         gui.popStyleColor(1);
-    } else {
-        gui.pushStyleColor(.text, .{ 0.60, 0.68, 0.80, 1.0 });
-        gui.text(state.text(.ai_chat_mcp_ready_builtin));
-        gui.popStyleColor(1);
+    }
 
-        gui.sameLine();
-        gui.pushStyleColor(.text, .{ 0.42, 0.46, 0.52, 1.0 });
-        gui.text("|");
-        gui.popStyleColor(1);
-        gui.sameLine();
+    _ = gui.beginChild("ai_header_card##jt", 0.0, header_height, true);
+    defer gui.endChild();
 
-        if (provider_ready) {
-            gui.pushStyleColor(.text, .{ 0.48, 0.82, 0.60, 1.0 });
-            gui.text(state.text(.ai_chat_provider_configured));
-            gui.popStyleColor(1);
-        } else {
-            gui.pushStyleColor(.text, .{ 0.95, 0.80, 0.30, 1.0 });
-            gui.text(state.text(.ai_chat_provider_not_configured));
-            gui.popStyleColor(1);
-            if (provider_error) |validation_error| {
-                gui.sameLine();
-                gui.pushStyleColor(.text, .{ 0.58, 0.62, 0.70, 1.0 });
-                gui.text(providerValidationErrorText(state, validation_error));
-                gui.popStyleColor(1);
-            }
-        }
+    drawStatusChip(
+        if (mcp_ready) state.text(.ai_chat_mcp_ready_builtin) else state.text(.ai_chat_mcp_not_ready),
+        if (mcp_ready) .{
+            .background = .{ 0.10, 0.18, 0.15, 1.0 },
+            .border = .{ 0.27, 0.58, 0.46, 1.0 },
+            .text = .{ 0.78, 0.94, 0.86, 1.0 },
+        } else .{
+            .background = .{ 0.22, 0.11, 0.12, 1.0 },
+            .border = .{ 0.72, 0.28, 0.31, 1.0 },
+            .text = .{ 0.97, 0.79, 0.80, 1.0 },
+        },
+    );
 
-        if (provider_ready) {
-            if (state.ai_collaboration) |store| {
-                gui.sameLine();
-                gui.pushStyleColor(.text, .{ 0.42, 0.46, 0.52, 1.0 });
-                gui.text("|");
-                gui.popStyleColor(1);
-                gui.sameLine();
+    gui.sameLine();
+    drawStatusChip(
+        if (provider_ready) state.text(.ai_chat_provider_configured) else state.text(.ai_chat_provider_not_configured),
+        if (provider_ready) .{
+            .background = .{ 0.10, 0.18, 0.15, 1.0 },
+            .border = .{ 0.27, 0.58, 0.46, 1.0 },
+            .text = .{ 0.78, 0.94, 0.86, 1.0 },
+        } else .{
+            .background = .{ 0.24, 0.18, 0.08, 1.0 },
+            .border = .{ 0.82, 0.63, 0.24, 1.0 },
+            .text = .{ 0.98, 0.90, 0.66, 1.0 },
+        },
+    );
 
-                if (asyncIsRunning()) {
-                    gui.pushStyleColor(.text, .{ 0.95, 0.80, 0.30, 1.0 });
-                    gui.text(state.text(.ai_chat_running));
-                    gui.popStyleColor(1);
-                } else {
-                    const ai_status = store.aiStatusSnapshot();
-                    const stage_label = switch (ai_status.stage) {
-                        .ready => state.text(.ai_chat_stage_ready),
-                        .analyzing_screenshot => state.text(.ai_chat_stage_analyzing_screenshot),
-                        .compiling_shader => state.text(.ai_chat_stage_compiling_shader),
-                        .waiting_approval => state.text(.ai_chat_stage_waiting_approval),
-                    };
-                    const stage_color: [4]f32 = switch (ai_status.stage) {
-                        .ready => .{ 0.55, 0.62, 0.70, 1.0 },
-                        .analyzing_screenshot, .compiling_shader => .{ 0.95, 0.80, 0.30, 1.0 },
-                        .waiting_approval => .{ 0.95, 0.55, 0.20, 1.0 },
-                    };
-                    gui.pushStyleColor(.text, stage_color);
-                    gui.text(stage_label);
-                    gui.popStyleColor(1);
-                }
+    if (mcp_ready and provider_ready) {
+        if (state.ai_collaboration) |store| {
+            gui.sameLine();
+            if (asyncIsRunning()) {
+                drawStatusChip(
+                    state.text(.ai_chat_running),
+                    .{
+                        .background = .{ 0.24, 0.18, 0.08, 1.0 },
+                        .border = .{ 0.82, 0.63, 0.24, 1.0 },
+                        .text = .{ 0.98, 0.90, 0.66, 1.0 },
+                    },
+                );
+            } else {
+                const ai_status = store.aiStatusSnapshot();
+                const stage_label = switch (ai_status.stage) {
+                    .ready => state.text(.ai_chat_stage_ready),
+                    .analyzing_screenshot => state.text(.ai_chat_stage_analyzing_screenshot),
+                    .compiling_shader => state.text(.ai_chat_stage_compiling_shader),
+                    .waiting_approval => state.text(.ai_chat_stage_waiting_approval),
+                };
+                const stage_palette: StatusChipPalette = switch (ai_status.stage) {
+                    .ready => .{
+                        .background = .{ 0.14, 0.17, 0.22, 1.0 },
+                        .border = .{ 0.36, 0.42, 0.53, 1.0 },
+                        .text = .{ 0.77, 0.82, 0.90, 1.0 },
+                    },
+                    .analyzing_screenshot, .compiling_shader => .{
+                        .background = .{ 0.24, 0.18, 0.08, 1.0 },
+                        .border = .{ 0.82, 0.63, 0.24, 1.0 },
+                        .text = .{ 0.98, 0.90, 0.66, 1.0 },
+                    },
+                    .waiting_approval => .{
+                        .background = .{ 0.28, 0.16, 0.08, 1.0 },
+                        .border = .{ 0.92, 0.46, 0.18, 1.0 },
+                        .text = .{ 0.99, 0.84, 0.67, 1.0 },
+                    },
+                };
+                drawStatusChip(stage_label, stage_palette);
             }
         }
     }
@@ -1587,8 +1675,16 @@ fn drawHeaderBar(state: *EditorState) void {
     const config_w: f32 = 58.0;
     const btn_gap: f32 = 6.0;
     const total_btns = clear_w + config_w + btn_gap;
+    if (provider_error) |validation_error| {
+        gui.dummy(0.0, 8.0);
+        gui.pushStyleColor(.text, .{ 0.60, 0.68, 0.78, 1.0 });
+        gui.textWrapped(providerValidationErrorText(state, validation_error));
+        gui.popStyleColor(1);
+    }
+
+    gui.dummy(0.0, if (provider_error != null) 8.0 else 10.0);
     if (full_width > total_btns + 80.0) {
-        gui.sameLineEx(full_width - total_btns, 0.0);
+        gui.sameLineEx(@max(0.0, gui.contentRegionAvail()[0] - total_btns), 0.0);
         gui.pushStyleColor(.button, .{ 0.18, 0.20, 0.24, 0.0 });
         gui.pushStyleColor(.button_hovered, .{ 0.26, 0.29, 0.34, 0.90 });
         gui.pushStyleColor(.button_active, .{ 0.20, 0.22, 0.27, 1.0 });
@@ -2175,7 +2271,11 @@ pub fn drawAiChatPanel(state: *EditorState, layer_context: *engine.core.LayerCon
         _ = gui.beginChild("ai_messages##jt", 0.0, messages_height, false);
         defer gui.endChild();
 
-        drawMessages(state);
+        if (!chatHasVisibleContent(&g_stream_preview) and activeProviderValidationError(state) != null) {
+            drawProviderSetupGuideCard(state);
+        } else {
+            drawMessages(state);
+        }
 
         if (g_scroll_to_bottom) {
             gui.setScrollHereY(1.0);

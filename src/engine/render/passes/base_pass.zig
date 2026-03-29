@@ -48,23 +48,28 @@ pub const BasePass = struct {
         return pass;
     }
 
-    fn releasePipeline(device: *rhi_mod.RhiDevice, p: ?rhi_mod.GraphicsPipeline) void {
-        if (p) |pipeline| device.releaseGraphicsPipeline(pipeline);
+    fn releasePipeline(device: *rhi_mod.RhiDevice, p: *?rhi_mod.GraphicsPipeline) void {
+        if (p.*) |*pipeline| {
+            device.releaseGraphicsPipeline(pipeline);
+            p.* = null;
+        }
     }
 
     pub fn deinit(self: *BasePass, device: *rhi_mod.RhiDevice) void {
-        releasePipeline(device, self.wireframe_pipeline_ldr);
-        releasePipeline(device, self.wireframe_pipeline_hdr);
-        releasePipeline(device, self.ghost_fill_pipeline_ldr);
-        releasePipeline(device, self.ghost_fill_pipeline_hdr);
-        releasePipeline(device, self.transparent_fill_pipeline_ldr);
-        releasePipeline(device, self.transparent_fill_pipeline_hdr);
-        releasePipeline(device, self.fill_pipeline_ldr);
-        releasePipeline(device, self.fill_pipeline_hdr);
+        releasePipeline(device, &self.wireframe_pipeline_ldr);
+        releasePipeline(device, &self.wireframe_pipeline_hdr);
+        releasePipeline(device, &self.ghost_fill_pipeline_ldr);
+        releasePipeline(device, &self.ghost_fill_pipeline_hdr);
+        releasePipeline(device, &self.transparent_fill_pipeline_ldr);
+        releasePipeline(device, &self.transparent_fill_pipeline_hdr);
+        releasePipeline(device, &self.fill_pipeline_ldr);
+        releasePipeline(device, &self.fill_pipeline_hdr);
 
+        // 释放 shader program stage 相关的资源（如果存在）
         if (self.stages) |*stages| stages.deinit(device);
         if (self.wireframe_stages) |*stages| stages.deinit(device);
 
+        // 把结构体置为 undefined，避免在析构后误用已释放的字段
         self.* = undefined;
     }
 
@@ -237,6 +242,9 @@ pub const BasePass = struct {
         return stats;
     }
 
+    // 绘制一组 DrawItem。
+    // 对每个项的典型顺序：构建 vertex/fragment uniforms -> 绑定 vertex/index buffers -> 绑定材质 bind group（或 Metal 的合并绑定）
+    // -> 推送 uniform 数据 -> 发出 drawIndexedPrimitives。
     fn drawMeshList(
         self: *BasePass,
         device: *rhi_mod.RhiDevice,
@@ -252,12 +260,14 @@ pub const BasePass = struct {
         const is_wireframe = settings.render_mode == .wireframe;
 
         for (items) |item| {
+            // 顶点阶段 uniforms：包含 VP 矩阵、模型矩阵以及蒙皮信息（若有）
             var vertex_uniforms = mesh_pass_mod.VertexUniforms{
                 .view_projection = prepared_scene.view_projection,
                 .model = item.model,
                 .skinning_meta = item.skinning_meta,
                 .skin_matrices = item.skin_matrices,
             };
+            // 片段阶段 uniforms：光照、IBL、阴影参数等由 makeFragmentUniforms 汇总
             var fragment_uniforms = self.makeFragmentUniforms(
                 item,
                 prepared_scene,
@@ -265,8 +275,9 @@ pub const BasePass = struct {
                 transparent_pass,
             );
 
-            device.bindVertexBuffer(pass, 0, &item.vertex_buffer, 0);
-            const draw_index_buffer = if (is_wireframe) &item.wireframe_index_buffer else &item.index_buffer;
+            // 绑定顶点/索引缓冲
+            device.bindVertexBuffer(pass, 0, &item.vertex_buffer, 0); // vertex slot 0
+            const draw_index_buffer = if (is_wireframe) &item.wireframe_index_buffer else &item.index_buffer; // 线框使用 wireframe 索引
             const draw_index_count = if (is_wireframe) item.wireframe_index_count else item.index_count;
             device.bindIndexBuffer(pass, draw_index_buffer, .u32, 0);
             if (use_metal_combined_bindings) {
@@ -295,6 +306,7 @@ pub const BasePass = struct {
                     .{ .texture = environment_map, .sampler = texture_sampler }, // binding 12: u_environment_map
                     .{ .texture = rt_shadow_texture, .sampler = texture_sampler }, // binding 13: u_rt_shadow_mask
                 };
+                // Metal 后端：将所有纹理/采样器合并成单个 bind group，便于 shader 的单绑定点访问
                 var combined_bg = try device.createBindGroup(.{
                     .stage = .fragment,
                     .texture_sampler_bindings = combined_bindings[0..],
@@ -305,8 +317,10 @@ pub const BasePass = struct {
                 device.bindGroup(pass, &item.bind_group);
             }
 
+            // 推送 uniforms 到 GPU（通常写入环形 uniform buffer / dynamic buffer）
             device.pushVertexUniformData(frame, 0, std.mem.asBytes(&vertex_uniforms));
             device.pushFragmentUniformData(frame, 0, std.mem.asBytes(&fragment_uniforms));
+            // 发起索引绘制：count, instanceCount, firstIndex, baseVertex, firstInstance
             device.drawIndexedPrimitives(pass, draw_index_count, 1, 0, 0, 0);
 
             stats.draw_calls += 1;

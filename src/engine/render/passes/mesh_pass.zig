@@ -544,26 +544,36 @@ pub const MeshSceneCache = struct {
         });
     }
 
+    // 确保指定 mesh 的 GPU 缓存存在：
+    // 1) 检查缓存，若存在直接返回 CachedMesh
+    // 2) 创建 GPU 顶点/索引缓冲并上传数据（将 CPU `Vertex` 转换为 `GpuVertex`）
+    // 3) 构建并上传线框索引（wireframe indices）以支持线框渲染
+    // 4) 将结果写入缓存并返回
     fn ensureMesh(
         self: *MeshSceneCache,
         device: *rhi_mod.RhiDevice,
         handle: handles.MeshHandle,
         mesh: *const mesh_mod.MeshResource,
     ) !CachedMesh {
+        // 查找缓存，避免重复创建 GPU 资源
         for (self.meshes.items) |cached| {
             if (cached.handle == handle) {
                 return cached;
             }
         }
 
+        // 创建顶点缓冲（GPU），大小按 GpuVertex * 顶点数
         const vertex_buffer = try device.createBuffer(.{
             .size = @intCast(@sizeOf(GpuVertex) * mesh.vertices.len),
             .usage = rhi_types.BufferUsage.vertex,
         });
+        // 出错时释放已经创建的 buffer
         errdefer {
             var copy = vertex_buffer;
             device.releaseBuffer(&copy);
         }
+
+        // 在临时内存中把 CPU 顶点打包为与 shader 匹配的 GpuVertex 布局
         const gpu_vertices = try self.allocator.alloc(GpuVertex, mesh.vertices.len);
         defer self.allocator.free(gpu_vertices);
         for (mesh.vertices, 0..) |vertex, index| {
@@ -572,6 +582,7 @@ pub const MeshSceneCache = struct {
                 .normal = vertex.normal,
                 .color = vertex.color,
                 .uv = vertex.uv,
+                // 注意：将 16-bit 的 joint 索引转换为 float，shader 端期望 float 存储（或根据 shader 修改）
                 .joints = .{
                     @floatFromInt(vertex.joints[0]),
                     @floatFromInt(vertex.joints[1]),
@@ -581,8 +592,10 @@ pub const MeshSceneCache = struct {
                 .weights = vertex.weights,
             };
         }
+        // 上传顶点数据到 GPU
         try device.uploadBufferData(&vertex_buffer, std.mem.sliceAsBytes(gpu_vertices));
 
+        // 创建并上传索引缓冲（u32）
         const index_buffer = try device.createBuffer(.{
             .size = @intCast(@sizeOf(u32) * mesh.indices.len),
             .usage = rhi_types.BufferUsage.index,
@@ -593,6 +606,7 @@ pub const MeshSceneCache = struct {
         }
         try device.uploadBufferData(&index_buffer, std.mem.sliceAsBytes(mesh.indices));
 
+        // 为线框渲染构建边索引并上传
         const wireframe_indices = try buildWireframeIndices(self.allocator, mesh.indices);
         defer self.allocator.free(wireframe_indices);
         const wireframe_index_buffer = try device.createBuffer(.{
@@ -605,6 +619,7 @@ pub const MeshSceneCache = struct {
         }
         try device.uploadBufferData(&wireframe_index_buffer, std.mem.sliceAsBytes(wireframe_indices));
 
+        // 构建缓存记录并保存
         const cached = CachedMesh{
             .handle = handle,
             .vertex_buffer = vertex_buffer,
