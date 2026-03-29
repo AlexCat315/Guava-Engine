@@ -45,19 +45,43 @@ pub fn captureSnapshotWithLabel(
     detail: []const u8,
     source: command_mod.TimelineSource,
 ) !void {
-    const before_count = state.undo_stack.items.len;
-    try captureSnapshotWithSource(state, layer_context, source);
-    const after_count = state.undo_stack.items.len;
-    // Only append a labelled timeline entry when the snapshot actually produced a new command.
-    if (after_count > before_count) {
-        try appendTimelineEvent(state, source, label, detail, "scene_snapshot");
-    }
+    try captureSnapshotWithTimelineDetails(state, layer_context, source, label, detail, "scene_snapshot");
+}
+
+pub fn captureSnapshotWithTimelineDetails(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    source: command_mod.TimelineSource,
+    label: []const u8,
+    detail: []const u8,
+    command_kind: []const u8,
+) !void {
+    return captureSnapshotInternal(state, layer_context, source, .{
+        .label = label,
+        .detail = detail,
+        .command_kind = command_kind,
+    });
 }
 
 pub fn captureSnapshotWithSource(
     state: *EditorState,
     layer_context: *engine.core.LayerContext,
     source: command_mod.TimelineSource,
+) !void {
+    return captureSnapshotInternal(state, layer_context, source, null);
+}
+
+const TimelineOverride = struct {
+    label: []const u8,
+    detail: []const u8,
+    command_kind: []const u8,
+};
+
+fn captureSnapshotInternal(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    source: command_mod.TimelineSource,
+    timeline_override: ?TimelineOverride,
 ) !void {
     if (state.play_mode_active) {
         return;
@@ -90,7 +114,12 @@ pub fn captureSnapshotWithSource(
     };
     errdefer command.deinit(allocator);
 
-    try pushCommand(state, command, source);
+    try pushCommandInternal(state, command);
+    if (timeline_override) |override| {
+        try appendTimelineEvent(state, source, override.label, override.detail, override.command_kind);
+    } else {
+        try appendTimelineFromCommand(state, command, source);
+    }
     try replaceHistoryWorldSnapshot(state, after);
 }
 
@@ -1010,6 +1039,11 @@ pub fn refreshSnapshotBaseline(state: *EditorState, world: *engine.scene.World) 
 }
 
 fn pushCommand(state: *EditorState, command: command_mod.EditorCommand, source: command_mod.TimelineSource) !void {
+    try pushCommandInternal(state, command);
+    try appendTimelineFromCommand(state, command, source);
+}
+
+fn pushCommandInternal(state: *EditorState, command: command_mod.EditorCommand) !void {
     const allocator = state.allocator orelse return;
     clearCommandStack(allocator, &state.redo_stack);
     if (state.saved_command_cursor) |saved_command_cursor| {
@@ -1019,7 +1053,6 @@ fn pushCommand(state: *EditorState, command: command_mod.EditorCommand, source: 
     }
 
     try state.undo_stack.append(allocator, command);
-    try appendTimelineFromCommand(state, command, source);
 
     while (state.undo_stack.items.len > state.max_history_commands) {
         var removed = state.undo_stack.orderedRemove(0);

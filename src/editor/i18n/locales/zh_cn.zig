@@ -419,6 +419,8 @@ pub const locale = blk: {
             .ai_chat_error_input_api_key = "错误: 请先输入 API Key",
             .ai_chat_connection_test_failed_fmt = "连接测试失败: {s}",
             .ai_chat_connection_test_failed_fallback = "连接测试失败。",
+            .ai_chat_connection_test_succeeded_fmt = "连接测试成功，Provider 回复: {s}",
+            .ai_chat_connection_test_succeeded_fallback = "连接测试成功。",
             .ai_chat_provider_request_failed_http_fmt = "Provider 请求失败: HTTP {d} ({s})\n{s}",
             .ai_chat_provider_request_failed_fallback = "Provider 请求失败。",
             .ai_chat_provider_request_failed_error_fmt = "Provider 请求失败: {s}",
@@ -451,6 +453,7 @@ pub const locale = blk: {
             .ai_chat_failed_allocate_api_key = "分配 API Key 缓冲区失败。",
             .ai_chat_previous_request_running = "上一条请求仍在执行，请稍候。",
             .ai_chat_mcp_local_bridge_not_ready = "MCP 本地桥接尚未就绪，暂时无法处理请求。",
+            .ai_chat_timeline_tool_label_fmt = "AI 操作: {s}",
         }),
     };
 };

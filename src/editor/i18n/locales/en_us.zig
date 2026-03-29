@@ -419,6 +419,8 @@ pub const locale = blk: {
             .ai_chat_error_input_api_key = "Error: please input API key first",
             .ai_chat_connection_test_failed_fmt = "Connection test failed: {s}",
             .ai_chat_connection_test_failed_fallback = "Connection test failed.",
+            .ai_chat_connection_test_succeeded_fmt = "Connection test succeeded. Provider replied: {s}",
+            .ai_chat_connection_test_succeeded_fallback = "Connection test succeeded.",
             .ai_chat_provider_request_failed_http_fmt = "Provider request failed: HTTP {d} ({s})\n{s}",
             .ai_chat_provider_request_failed_fallback = "Provider request failed.",
             .ai_chat_provider_request_failed_error_fmt = "Provider request failed: {s}",
@@ -451,6 +453,7 @@ pub const locale = blk: {
             .ai_chat_failed_allocate_api_key = "Failed to allocate API key buffer.",
             .ai_chat_previous_request_running = "Previous request is still running. Please wait.",
             .ai_chat_mcp_local_bridge_not_ready = "MCP local bridge is not ready. Request cannot be processed now.",
+            .ai_chat_timeline_tool_label_fmt = "AI action: {s}",
         }),
     };
 };

@@ -1,5 +1,6 @@
 const std = @import("std");
 const gui = @import("../ui/gui.zig");
+const provider_support = @import("../ui/panels/ai/provider_support.zig");
 const state_mod = @import("state.zig");
 
 const EditorState = state_mod.EditorState;
@@ -10,6 +11,7 @@ const prefs_file_name = "ai_provider_settings.json";
 const max_prefs_file_size: usize = 256 * 1024;
 
 const PersistedProvider = struct {
+    provider_type: ?[]const u8 = null,
     name: []const u8 = "",
     endpoint: []const u8 = "",
     model: []const u8 = "",
@@ -17,7 +19,7 @@ const PersistedProvider = struct {
 };
 
 const PersistedPrefs = struct {
-    version: u32 = 1,
+    version: u32 = 2,
     provider_type: []const u8 = "openai",
     active_provider: usize = 0,
     providers: []const PersistedProvider = &.{},
@@ -36,8 +38,7 @@ const provider_defaults = [_]ProviderDefaults{
 };
 
 fn fixedBufferSlice(buffer: []const u8) []const u8 {
-    const len = std.mem.indexOfScalar(u8, buffer, 0) orelse buffer.len;
-    return buffer[0..len];
+    return provider_support.fixedBufferSlice(buffer);
 }
 
 fn persistedFieldSlice(value: []const u8) []const u8 {
@@ -46,10 +47,7 @@ fn persistedFieldSlice(value: []const u8) []const u8 {
 }
 
 fn writeFixedBuffer(buffer: []u8, value: []const u8) void {
-    @memset(buffer, 0);
-    if (buffer.len == 0) return;
-    const copy_len = @min(buffer.len - 1, value.len);
-    @memcpy(buffer[0..copy_len], value[0..copy_len]);
+    provider_support.writeFixedBuffer(buffer, value);
 }
 
 fn providerIsEmpty(provider: PersistedProvider) bool {
@@ -122,6 +120,11 @@ fn providerHasCompleteConfig(provider: *const state_mod.AiProviderConfig, provid
     return true;
 }
 
+fn persistedProviderType(provider: PersistedProvider, fallback: AiProviderType) AiProviderType {
+    const resolved = provider.provider_type orelse return fallback;
+    return std.meta.stringToEnum(AiProviderType, resolved) orelse fallback;
+}
+
 fn prefsPathAlloc(allocator: std.mem.Allocator) ![]u8 {
     const pref_path = try gui.editorPrefPathAlloc(allocator);
     defer allocator.free(pref_path);
@@ -135,19 +138,31 @@ fn saveAiProviderSettingsToPath(state: *const EditorState, path: []const u8) !vo
     const persisted_providers = try allocator.alloc(PersistedProvider, provider_count);
     defer allocator.free(persisted_providers);
 
+    var has_meaningful_provider = false;
     for (persisted_providers, 0..) |*provider, index| {
         const source = state.ai_providers[index];
         provider.* = .{
+            .provider_type = @tagName(source.provider_type),
             .name = fixedBufferSlice(source.name[0..]),
             .endpoint = fixedBufferSlice(source.endpoint[0..]),
             .model = fixedBufferSlice(source.model[0..]),
             .api_key = fixedBufferSlice(source.api_key[0..]),
         };
+        if (!providerLooksLikePlaceholder(provider.*, source.provider_type)) {
+            has_meaningful_provider = true;
+        }
     }
 
+    if (!has_meaningful_provider) {
+        return;
+    }
+
+    const active_provider_index = @min(state.ai_active_provider, provider_count - 1);
+    const active_provider_type = state.ai_providers[active_provider_index].provider_type;
+
     const payload = PersistedPrefs{
-        .provider_type = @tagName(state.ai_provider_type),
-        .active_provider = @min(state.ai_active_provider, provider_count - 1),
+        .provider_type = @tagName(active_provider_type),
+        .active_provider = active_provider_index,
         .providers = persisted_providers,
     };
 
@@ -162,18 +177,31 @@ fn saveAiProviderSettingsToPath(state: *const EditorState, path: []const u8) !vo
     if (std.fs.path.dirname(path)) |dir_path| {
         try std.fs.cwd().makePath(dir_path);
     }
-    const file = try std.fs.cwd().createFile(path, .{ .truncate = true });
+    const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp", .{path});
+    defer allocator.free(tmp_path);
+
+    const file = try std.fs.createFileAbsolute(tmp_path, .{ .truncate = true });
     defer file.close();
     try file.writeAll(output.items);
+    file.sync() catch {};
+
+    std.fs.deleteFileAbsolute(path) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
+    try std.fs.renameAbsolute(tmp_path, path);
 }
 
 fn loadAiProviderSettingsFromPath(state: *EditorState, path: []const u8) !void {
     const allocator = state.allocator orelse return error.AllocatorNotInitialized;
 
-    const bytes = std.fs.cwd().readFileAlloc(allocator, path, max_prefs_file_size) catch |err| switch (err) {
+    const file = std.fs.openFileAbsolute(path, .{}) catch |err| switch (err) {
         error.FileNotFound => return,
         else => return err,
     };
+    defer file.close();
+
+    const bytes = try file.readToEndAlloc(allocator, max_prefs_file_size);
     defer allocator.free(bytes);
 
     var parsed = try std.json.parseFromSlice(PersistedPrefs, allocator, bytes, .{
@@ -184,7 +212,6 @@ fn loadAiProviderSettingsFromPath(state: *EditorState, path: []const u8) !void {
 
     const doc = parsed.value;
     const parsed_type = std.meta.stringToEnum(AiProviderType, doc.provider_type) orelse .openai;
-    state.ai_provider_type = parsed_type;
 
     @memset(&state.ai_providers, .{});
     state.ai_provider_count = 0;
@@ -192,7 +219,8 @@ fn loadAiProviderSettingsFromPath(state: *EditorState, path: []const u8) !void {
     const persisted_count = @min(doc.providers.len, max_ai_providers);
     var meaningful_count: usize = 0;
     for (doc.providers[0..persisted_count]) |provider| {
-        if (!providerLooksLikePlaceholder(provider, parsed_type)) {
+        const provider_type = persistedProviderType(provider, parsed_type);
+        if (!providerLooksLikePlaceholder(provider, provider_type)) {
             meaningful_count += 1;
         }
     }
@@ -201,11 +229,13 @@ fn loadAiProviderSettingsFromPath(state: *EditorState, path: []const u8) !void {
     var resolved_active_provider: usize = 0;
     var resolved_active_found = false;
     for (doc.providers[0..persisted_count], 0..) |provider, source_index| {
-        if (collapse_placeholder_tail and providerLooksLikePlaceholder(provider, parsed_type) and state.ai_provider_count > 0) {
+        const provider_type = persistedProviderType(provider, parsed_type);
+        if (collapse_placeholder_tail and providerLooksLikePlaceholder(provider, provider_type) and state.ai_provider_count > 0) {
             continue;
         }
         if (state.ai_provider_count >= max_ai_providers) break;
         const index = state.ai_provider_count;
+        state.ai_providers[index].provider_type = provider_type;
         writeFixedBuffer(state.ai_providers[index].name[0..], persistedFieldSlice(provider.name));
         writeFixedBuffer(state.ai_providers[index].endpoint[0..], persistedFieldSlice(provider.endpoint));
         writeFixedBuffer(state.ai_providers[index].model[0..], persistedFieldSlice(provider.model));
@@ -219,6 +249,7 @@ fn loadAiProviderSettingsFromPath(state: *EditorState, path: []const u8) !void {
 
     if (state.ai_provider_count == 0) {
         state.ai_provider_count = 1;
+        state.ai_providers[0].provider_type = parsed_type;
     }
     if (resolved_active_found) {
         state.ai_active_provider = resolved_active_provider;
@@ -226,14 +257,19 @@ fn loadAiProviderSettingsFromPath(state: *EditorState, path: []const u8) !void {
         state.ai_active_provider = @min(doc.active_provider, state.ai_provider_count - 1);
     }
 
-    if (!providerHasCompleteConfig(&state.ai_providers[state.ai_active_provider], parsed_type)) {
+    if (!providerHasCompleteConfig(
+        &state.ai_providers[state.ai_active_provider],
+        state.ai_providers[state.ai_active_provider].provider_type,
+    )) {
         for (0..state.ai_provider_count) |index| {
-            if (providerHasCompleteConfig(&state.ai_providers[index], parsed_type)) {
+            if (providerHasCompleteConfig(&state.ai_providers[index], state.ai_providers[index].provider_type)) {
                 state.ai_active_provider = index;
                 break;
             }
         }
     }
+
+    state.ai_provider_type = state.ai_providers[state.ai_active_provider].provider_type;
 }
 
 pub fn loadAiProviderSettings(state: *EditorState) !void {

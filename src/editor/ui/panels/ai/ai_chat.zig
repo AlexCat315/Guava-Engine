@@ -1,36 +1,25 @@
 const std = @import("std");
 const engine = @import("guava");
 const gui = @import("../../gui.zig");
+const layout = @import("../../layout.zig");
 const ui_icons = @import("../../icons.zig");
+const history = @import("../../../actions/history.zig");
 const state_mod = @import("../../../core/state.zig");
 const preferences = @import("../../../core/preferences.zig");
 const i18n = @import("../../../i18n/mod.zig");
+const chat_view = @import("chat_view.zig");
+const provider_support = @import("provider_support.zig");
 const EditorState = state_mod.EditorState;
 const AiProviderType = state_mod.AiProviderType;
 
 const ai_chat_log = std.log.scoped(.ai_chat);
 
-const max_messages = 128;
-const max_message_len = 2048;
-const max_input_len = 1024;
-
-pub const Role = enum {
-    user,
-    assistant,
-    reasoning,
-    system,
-};
-
-pub const Message = struct {
-    role: Role,
-    text_len: usize = 0,
-    text: [max_message_len]u8 = [_]u8{0} ** max_message_len,
-    timestamp: i64 = 0,
-
-    pub fn content(self: *const Message) []const u8 {
-        return self.text[0..self.text_len];
-    }
-};
+const max_messages = chat_view.max_messages;
+const max_message_len = chat_view.max_message_len;
+const max_input_len = chat_view.max_input_len;
+pub const Role = chat_view.Role;
+pub const Message = chat_view.Message;
+const StreamState = chat_view.StreamPreview;
 
 var g_messages: [max_messages]Message = undefined;
 var g_message_count: usize = 0;
@@ -41,28 +30,22 @@ var g_meta_request_counter: u64 = 0;
 var g_meta_session_id_len: usize = 0;
 var g_meta_session_id_buffer: [64]u8 = [_]u8{0} ** 64;
 
-const ProviderDefaults = struct {
-    endpoint: []const u8,
-    model: []const u8,
-};
-
-const provider_defaults: [4]ProviderDefaults = .{
-    .{ .endpoint = "https://api.openai.com/v1/responses", .model = "gpt-4o" },
-    .{ .endpoint = "https://api.anthropic.com/v1/messages", .model = "claude-sonnet-4-20250514" },
-    .{ .endpoint = "http://localhost:11434/api/chat", .model = "llama3.2" },
-    .{ .endpoint = "", .model = "" },
-};
-
-const provider_types = [_]AiProviderType{
-    .openai,
-    .anthropic,
-    .ollama,
-    .custom,
-};
-
 const AsyncMessageRole = enum {
     assistant,
     system,
+};
+
+const AsyncTimelineEvent = struct {
+    label: []u8,
+    detail: []u8,
+    command_kind: []u8,
+
+    fn deinit(self: *AsyncTimelineEvent, allocator: std.mem.Allocator) void {
+        allocator.free(self.label);
+        allocator.free(self.detail);
+        allocator.free(self.command_kind);
+        self.* = undefined;
+    }
 };
 
 const AsyncResult = struct {
@@ -70,10 +53,12 @@ const AsyncResult = struct {
     text: []u8,
     reasoning: ?[]u8 = null,
     snapshot_dirty: bool = false,
+    timeline_event: ?AsyncTimelineEvent = null,
 
     fn deinit(self: *AsyncResult, allocator: std.mem.Allocator) void {
         allocator.free(self.text);
         if (self.reasoning) |value| allocator.free(value);
+        if (self.timeline_event) |*value| value.deinit(allocator);
         self.* = undefined;
     }
 };
@@ -119,49 +104,42 @@ const AsyncState = struct {
 
 var g_async_state: AsyncState = .{};
 
-const StreamState = struct {
-    active: bool = false,
-    dirty: bool = false,
-    assistant_len: usize = 0,
-    assistant: [max_message_len]u8 = [_]u8{0} ** max_message_len,
-    reasoning_len: usize = 0,
-    reasoning: [max_message_len]u8 = [_]u8{0} ** max_message_len,
+var g_stream_preview: StreamState = .{};
 
-    fn clear(self: *StreamState) void {
+const max_provider_feedback_len = 256;
+
+const ProviderPanelFeedbackKind = enum {
+    none,
+    success,
+    failure,
+};
+
+const ProviderPanelFeedback = struct {
+    kind: ProviderPanelFeedbackKind = .none,
+    text_len: usize = 0,
+    text: [max_provider_feedback_len]u8 = [_]u8{0} ** max_provider_feedback_len,
+
+    fn clear(self: *ProviderPanelFeedback) void {
         self.* = .{};
-        self.dirty = true;
     }
 
-    fn appendChunk(self: *StreamState, role: Role, chunk: []const u8) void {
-        if (chunk.len == 0) return;
-
-        const target: []u8 = switch (role) {
-            .assistant => self.assistant[0..],
-            .reasoning => self.reasoning[0..],
-            else => return,
-        };
-        const target_len: *usize = switch (role) {
-            .assistant => &self.assistant_len,
-            .reasoning => &self.reasoning_len,
-            else => return,
-        };
-
-        self.active = true;
-        const available = target.len - target_len.*;
-        const copy_len = @min(chunk.len, available);
-        if (copy_len > 0) {
-            @memcpy(target[target_len.* .. target_len.* + copy_len], chunk[0..copy_len]);
-            target_len.* += copy_len;
+    fn set(self: *ProviderPanelFeedback, kind: ProviderPanelFeedbackKind, value: []const u8) void {
+        self.kind = kind;
+        self.text_len = @min(value.len, self.text.len);
+        if (self.text_len > 0) {
+            @memcpy(self.text[0..self.text_len], value[0..self.text_len]);
         }
-        self.dirty = true;
+        if (self.text_len < self.text.len) {
+            @memset(self.text[self.text_len..], 0);
+        }
     }
 
-    fn hasVisibleContent(self: *const StreamState) bool {
-        return self.assistant_len > 0 or self.reasoning_len > 0;
+    fn slice(self: *const ProviderPanelFeedback) []const u8 {
+        return self.text[0..self.text_len];
     }
 };
 
-var g_stream_preview: StreamState = .{};
+var g_provider_feedback: ProviderPanelFeedback = .{};
 
 const ProviderRequestFlavor = enum {
     openai_chat_completions,
@@ -289,32 +267,15 @@ fn deriveToolCommandMetaAlloc(
 }
 
 fn providerTypeText(state: *const EditorState, provider_type: AiProviderType) []const u8 {
-    return switch (provider_type) {
-        .openai => state.text(.ai_chat_provider_type_openai),
-        .anthropic => state.text(.ai_chat_provider_type_anthropic),
-        .ollama => state.text(.ai_chat_provider_type_ollama),
-        .custom => state.text(.ai_chat_provider_type_custom),
-    };
+    return provider_support.providerTypeText(state, provider_type);
 }
 
 fn providerDisplayNameForUi(state: *const EditorState, provider: *const state_mod.AiProviderConfig) []const u8 {
-    const name = fixedBufferSlice(provider.name[0..]);
-    if (name.len > 0) return name;
-    return state.text(.ai_chat_provider_default_name);
+    return provider_support.providerDisplayNameForUi(state, provider);
 }
 
 fn applyProviderDefaults(state: *EditorState) void {
-    const p = &state.ai_providers[state.ai_active_provider];
-    const defaults = provider_defaults[@intFromEnum(state.ai_provider_type)];
-
-    if (p.endpoint[0] == 0 and defaults.endpoint.len > 0) {
-        @memcpy(p.endpoint[0..defaults.endpoint.len], defaults.endpoint);
-        ai_chat_log.info("Applied default endpoint for {s}: {s}", .{ @tagName(state.ai_provider_type), defaults.endpoint });
-    }
-    if (p.model[0] == 0 and defaults.model.len > 0) {
-        @memcpy(p.model[0..defaults.model.len], defaults.model);
-        ai_chat_log.info("Applied default model for {s}: {s}", .{ @tagName(state.ai_provider_type), defaults.model });
-    }
+    provider_support.applyProviderDefaults(state);
 }
 
 fn endpointPathSlice(endpoint: []const u8) []const u8 {
@@ -497,20 +458,24 @@ fn testHttpConnectionAlloc(
     defer completion.deinit(std.heap.page_allocator);
 
     const trimmed = std.mem.trim(u8, completion.content, " \t\r\n");
-    if (std.mem.startsWith(u8, trimmed, "Provider request failed")) {
+    if (std.mem.startsWith(u8, trimmed, i18n.text(language, .ai_chat_provider_request_failed_fallback))) {
         return std.heap.page_allocator.dupe(u8, trimmed);
     }
-    return allocMessage(
-        "Connection test succeeded. Provider replied: {s}",
+    return i18n.allocPrintMessage(
+        .ai_chat_connection_test_succeeded_fmt,
+        std.heap.page_allocator,
+        language,
         .{clipped(trimmed, 220)},
-        "Connection test succeeded.",
+    ) catch try std.heap.page_allocator.dupe(
+        u8,
+        i18n.text(language, .ai_chat_connection_test_succeeded_fallback),
     );
 }
 
 fn logProviderConfig(state: *EditorState) void {
-    const p = &state.ai_providers[state.ai_active_provider];
+    const p = provider_support.activeProvider(state);
     ai_chat_log.info("=== Provider Configuration ===", .{});
-    ai_chat_log.info("Type: {s}", .{@tagName(state.ai_provider_type)});
+    ai_chat_log.info("Type: {s}", .{@tagName(provider_support.activeProviderType(state))});
     ai_chat_log.info("Name: {s}", .{providerDisplayNameForUi(state, p)});
 
     const endpoint_len = std.mem.indexOfScalar(u8, &p.endpoint, 0) orelse p.endpoint.len;
@@ -594,42 +559,55 @@ fn allocMessage(comptime fmt: []const u8, args: anytype, fallback: []const u8) !
 }
 
 fn fixedBufferSlice(buffer: []const u8) []const u8 {
-    const len = std.mem.indexOfScalar(u8, buffer, 0) orelse buffer.len;
-    return buffer[0..len];
+    return provider_support.fixedBufferSlice(buffer);
 }
 
 fn isMcpBridgeReady(state: *const EditorState) bool {
     return state.ai_collaboration != null and state.ai_tool_bridge != null and state.ai_collaboration_bridge != null;
 }
 
-const ProviderValidationError = enum {
-    endpoint_empty,
-    model_empty,
-    api_key_empty,
-};
+const ProviderValidationError = provider_support.ProviderValidationError;
 
 fn activeProviderValidationError(state: *const EditorState) ?ProviderValidationError {
-    const provider = &state.ai_providers[state.ai_active_provider];
-    const endpoint = fixedBufferSlice(provider.endpoint[0..]);
-    const model = fixedBufferSlice(provider.model[0..]);
-    const api_key = fixedBufferSlice(provider.api_key[0..]);
-
-    if (endpoint.len == 0) return .endpoint_empty;
-    if (model.len == 0) return .model_empty;
-    if (state.ai_provider_type != .ollama and api_key.len == 0) return .api_key_empty;
-    return null;
+    return provider_support.activeProviderValidationError(state);
 }
 
 fn providerValidationErrorText(state: *const EditorState, validation_error: ProviderValidationError) []const u8 {
-    return switch (validation_error) {
-        .endpoint_empty => state.text(.ai_chat_validation_endpoint_empty),
-        .model_empty => state.text(.ai_chat_validation_model_empty),
-        .api_key_empty => state.text(.ai_chat_validation_api_key_empty),
-    };
+    return provider_support.providerValidationErrorText(state, validation_error);
 }
 
 fn clipped(slice: []const u8, max_len: usize) []const u8 {
     return if (slice.len <= max_len) slice else slice[0..max_len];
+}
+
+fn makeAiTimelineEventAlloc(language: i18n.Language, tool_name: []const u8, detail: []const u8) !AsyncTimelineEvent {
+    return .{
+        .label = try i18n.allocPrintMessage(
+            .ai_chat_timeline_tool_label_fmt,
+            std.heap.page_allocator,
+            language,
+            .{tool_name},
+        ),
+        .detail = try std.heap.page_allocator.dupe(u8, detail),
+        .command_kind = try std.heap.page_allocator.dupe(u8, tool_name),
+    };
+}
+
+fn recordAiTimelineEvent(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    event: *const AsyncTimelineEvent,
+) void {
+    history.captureSnapshotWithTimelineDetails(
+        state,
+        layer_context,
+        .ai,
+        event.label,
+        event.detail,
+        event.command_kind,
+    ) catch |err| {
+        ai_chat_log.warn("failed to capture AI timeline snapshot: {s}", .{@errorName(err)});
+    };
 }
 
 const HttpJsonResponse = struct {
@@ -1676,6 +1654,7 @@ fn touchImplicitContext(store: ?*engine.mcp.resources.SnapshotStore) void {
 }
 
 fn executeToolCallAsync(
+    language: i18n.Language,
     tool_bridge: ?*engine.mcp.tools.Bridge,
     collaboration_bridge: ?*engine.mcp.collaboration.Bridge,
     tool_name: []const u8,
@@ -1695,7 +1674,7 @@ fn executeToolCallAsync(
         }) catch {
             return .{
                 .role = .system,
-                .text = try std.heap.page_allocator.dupe(u8, "JSON parse failed. Example: /mcp query_entities {\"limit\":8}"),
+                .text = try std.heap.page_allocator.dupe(u8, i18n.text(language, .ai_chat_json_parse_failed_example)),
             };
         };
         break :blk parsed_args.?.value;
@@ -1708,20 +1687,24 @@ fn executeToolCallAsync(
         const bridge = collaboration_bridge orelse {
             return .{
                 .role = .system,
-                .text = try std.heap.page_allocator.dupe(u8, "MCP collaboration bridge is not connected."),
+                .text = try std.heap.page_allocator.dupe(u8, i18n.text(language, .ai_chat_disconnected)),
             };
         };
         var response = bridge.submitJsonWithMeta(tool_name, arguments_value, &tool_meta) catch |err| {
             return .{
                 .role = .system,
-                .text = try allocMessage("MCP collaboration tool call failed: {s}", .{@errorName(err)}, "MCP collaboration tool call failed."),
+                .text = try allocMessage(
+                    "{s}: {s}",
+                    .{ i18n.text(language, .ai_chat_collaboration_tool_call_failed_fallback), @errorName(err) },
+                    i18n.text(language, .ai_chat_collaboration_tool_call_failed_fallback),
+                ),
             };
         };
         defer response.deinit(bridge.allocator);
 
         const summary = engine.mcp.collaboration.buildSummaryAlloc(std.heap.page_allocator, response) catch
-            try std.heap.page_allocator.dupe(u8, "collaboration tool ok");
-        return .{
+            try std.heap.page_allocator.dupe(u8, i18n.text(language, .ai_chat_collaboration_tool_ok));
+        var result: AsyncResult = .{
             .role = .assistant,
             .text = summary,
             .snapshot_dirty = switch (response.outcome) {
@@ -1729,25 +1712,33 @@ fn executeToolCallAsync(
                 else => false,
             },
         };
+        if (result.snapshot_dirty) {
+            result.timeline_event = try makeAiTimelineEventAlloc(language, tool_name, summary);
+        }
+        return result;
     }
 
     const bridge = tool_bridge orelse {
         return .{
             .role = .system,
-            .text = try std.heap.page_allocator.dupe(u8, "MCP tool bridge is not connected."),
+            .text = try std.heap.page_allocator.dupe(u8, i18n.text(language, .ai_chat_disconnected)),
         };
     };
     var response = bridge.submitJsonWithMeta(tool_name, arguments_value, &tool_meta) catch |err| {
         return .{
             .role = .system,
-            .text = try allocMessage("MCP tool call failed: {s}", .{@errorName(err)}, "MCP tool call failed."),
+            .text = try allocMessage(
+                "{s}: {s}",
+                .{ i18n.text(language, .ai_chat_tool_call_failed_fallback), @errorName(err) },
+                i18n.text(language, .ai_chat_tool_call_failed_fallback),
+            ),
         };
     };
     defer response.deinit(bridge.allocator);
 
     const summary = engine.mcp.tools.buildSummaryAlloc(std.heap.page_allocator, response) catch
-        try std.heap.page_allocator.dupe(u8, "tool ok");
-    return .{
+        try std.heap.page_allocator.dupe(u8, i18n.text(language, .ai_chat_tool_ok));
+    var result: AsyncResult = .{
         .role = .assistant,
         .text = summary,
         .snapshot_dirty = switch (response.result.kind) {
@@ -1756,6 +1747,10 @@ fn executeToolCallAsync(
             .screenshot, .query => false,
         },
     };
+    if (result.snapshot_dirty) {
+        result.timeline_event = try makeAiTimelineEventAlloc(language, tool_name, summary);
+    }
+    return result;
 }
 
 fn executePromptIntentAsync(task: *const AsyncTaskContext) !AsyncResult {
@@ -1804,6 +1799,7 @@ fn executePromptIntentAsync(task: *const AsyncTaskContext) !AsyncResult {
                 if (tool_call.arguments_json) |arguments_json| clipped(arguments_json, 320) else "{}",
             });
             var result = try executeToolCallAsync(
+                task.language,
                 task.tool_bridge,
                 task.collaboration_bridge,
                 tool_call.tool_name,
@@ -1837,6 +1833,7 @@ fn runAsyncTaskMain(context: ?*anyopaque) void {
 
     const result = switch (task.kind) {
         .tool_command => executeToolCallAsync(
+            task.language,
             task.tool_bridge,
             task.collaboration_bridge,
             task.tool_name orelse "",
@@ -1914,6 +1911,13 @@ fn pumpAsyncResults(state: *EditorState, layer_context: *engine.core.LayerContex
             .system => appendMessage(.system, result.text),
         }
         if (result.snapshot_dirty) {
+            if (result.timeline_event) |*event| {
+                recordAiTimelineEvent(state, layer_context, event);
+            } else {
+                history.captureSnapshotWithSource(state, layer_context, .ai) catch |err| {
+                    ai_chat_log.warn("failed to capture AI snapshot history: {s}", .{@errorName(err)});
+                };
+            }
             refreshMcpSnapshot(state, layer_context);
         }
     }
@@ -2008,8 +2012,24 @@ fn handleMcpToolCommandImmediate(state: *EditorState, layer_context: *engine.cor
         if (summary) |resolved_summary| {
             defer std.heap.page_allocator.free(resolved_summary);
             appendMessage(.assistant, resolved_summary);
+            if (outcome.world_changed) {
+                var event = makeAiTimelineEventAlloc(state.language, command.name, resolved_summary) catch null;
+                if (event) |*resolved_event| {
+                    defer resolved_event.deinit(std.heap.page_allocator);
+                    recordAiTimelineEvent(state, layer_context, resolved_event);
+                } else {
+                    history.captureSnapshotWithSource(state, layer_context, .ai) catch |err| {
+                        ai_chat_log.warn("failed to capture AI snapshot history: {s}", .{@errorName(err)});
+                    };
+                }
+            }
         } else {
             appendMessage(.assistant, state.text(.ai_chat_collaboration_tool_ok));
+            if (outcome.world_changed) {
+                history.captureSnapshotWithSource(state, layer_context, .ai) catch |err| {
+                    ai_chat_log.warn("failed to capture AI snapshot history: {s}", .{@errorName(err)});
+                };
+            }
         }
 
         if (outcome.world_changed) {
@@ -2038,8 +2058,24 @@ fn handleMcpToolCommandImmediate(state: *EditorState, layer_context: *engine.cor
     if (summary) |resolved_summary| {
         defer std.heap.page_allocator.free(resolved_summary);
         appendMessage(.assistant, resolved_summary);
+        if (outcome.snapshot_dirty) {
+            var event = makeAiTimelineEventAlloc(state.language, command.name, resolved_summary) catch null;
+            if (event) |*resolved_event| {
+                defer resolved_event.deinit(std.heap.page_allocator);
+                recordAiTimelineEvent(state, layer_context, resolved_event);
+            } else {
+                history.captureSnapshotWithSource(state, layer_context, .ai) catch |err| {
+                    ai_chat_log.warn("failed to capture AI snapshot history: {s}", .{@errorName(err)});
+                };
+            }
+        }
     } else {
         appendMessage(.assistant, state.text(.ai_chat_tool_ok));
+        if (outcome.snapshot_dirty) {
+            history.captureSnapshotWithSource(state, layer_context, .ai) catch |err| {
+                ai_chat_log.warn("failed to capture AI snapshot history: {s}", .{@errorName(err)});
+            };
+        }
     }
 
     if (outcome.snapshot_dirty) {
@@ -2126,7 +2162,7 @@ fn enqueuePromptIntent(state: *EditorState, layer_context: *engine.core.LayerCon
     task.* = .{
         .kind = .prompt_intent,
         .language = state.language,
-        .provider_type = state.ai_provider_type,
+        .provider_type = provider_support.activeProviderType(state),
         .tool_bridge = state.ai_tool_bridge,
         .collaboration_bridge = state.ai_collaboration_bridge,
         .snapshot_store = state.ai_snapshot_store,
@@ -2211,6 +2247,22 @@ fn submitInput(state: *EditorState, layer_context: *engine.core.LayerContext) vo
     @memset(&g_input_buffer, 0);
 }
 
+fn drawStatusDot(color: [4]f32) void {
+    const cursor = gui.cursorScreenPos();
+    const center = [2]f32{ cursor[0] + 5.0, cursor[1] + 8.0 };
+    gui.getWindowDrawList().addCircleFilled(center, 4.5, gui.getColorU32(color), 12);
+    gui.dummy(12.0, 10.0);
+    gui.sameLine();
+}
+
+fn providerFeedbackColor(kind: ProviderPanelFeedbackKind) [4]f32 {
+    return switch (kind) {
+        .success => .{ 0.44, 0.86, 0.60, 1.0 },
+        .failure => .{ 0.93, 0.42, 0.38, 1.0 },
+        .none => .{ 0.56, 0.60, 0.66, 1.0 },
+    };
+}
+
 fn drawHeaderBar(state: *EditorState) void {
     const full_width = gui.contentRegionAvail()[0];
     const mcp_ready = isMcpBridgeReady(state);
@@ -2223,10 +2275,7 @@ fn drawHeaderBar(state: *EditorState) void {
     else
         .{ 0.22, 0.82, 0.46, 1.0 };
 
-    gui.pushStyleColor(.text, dot_color);
-    gui.text("●");
-    gui.popStyleColor(1);
-    gui.sameLine();
+    drawStatusDot(dot_color);
 
     if (!mcp_ready) {
         gui.pushStyleColor(.text, .{ 0.85, 0.35, 0.35, 1.0 });
@@ -2354,83 +2403,8 @@ fn drawStageDetail(state: *EditorState) void {
     gui.popStyleColor(1);
 }
 
-fn drawMessageEntry(state: *EditorState, role: Role, content_text: []const u8) void {
-    switch (role) {
-        .user => {
-            gui.pushStyleColor(.text, .{ 0.60, 0.68, 0.80, 0.72 });
-            gui.text(state.text(.ai_chat_role_you));
-            gui.popStyleColor(1);
-            gui.pushStyleColor(.text, .{ 0.88, 0.92, 0.98, 1.0 });
-            gui.textWrapped(content_text);
-            gui.popStyleColor(1);
-        },
-        .assistant => {
-            gui.pushStyleColor(.text, .{ 0.22, 0.82, 0.52, 0.80 });
-            gui.text(state.text(.ai_chat_role_assistant));
-            gui.popStyleColor(1);
-            gui.pushStyleColor(.text, .{ 0.78, 0.94, 0.82, 1.0 });
-            gui.textWrapped(content_text);
-            gui.popStyleColor(1);
-        },
-        .reasoning => {
-            gui.pushStyleColor(.text, .{ 0.92, 0.74, 0.34, 0.88 });
-            gui.text(state.text(.ai_chat_role_reasoning));
-            gui.popStyleColor(1);
-            gui.pushStyleColor(.text, .{ 0.88, 0.84, 0.72, 1.0 });
-            gui.textWrapped(content_text);
-            gui.popStyleColor(1);
-        },
-        .system => {
-            gui.pushStyleColor(.text, .{ 0.46, 0.48, 0.52, 1.0 });
-            gui.textWrapped(content_text);
-            gui.popStyleColor(1);
-        },
-    }
-}
-
 fn drawMessages(state: *EditorState) void {
-    var rendered_any = false;
-
-    for (0..g_message_count) |i| {
-        const msg = &g_messages[i];
-        const content_text = msg.content();
-        if (content_text.len == 0) continue;
-
-        if (rendered_any) {
-            gui.dummy(0.0, 2.0);
-            gui.separator();
-            gui.dummy(0.0, 2.0);
-        }
-        drawMessageEntry(state, msg.role, content_text);
-        rendered_any = true;
-    }
-
-    if (g_stream_preview.reasoning_len > 0) {
-        if (rendered_any) {
-            gui.dummy(0.0, 2.0);
-            gui.separator();
-            gui.dummy(0.0, 2.0);
-        }
-        drawMessageEntry(state, .reasoning, g_stream_preview.reasoning[0..g_stream_preview.reasoning_len]);
-        rendered_any = true;
-    }
-
-    if (g_stream_preview.assistant_len > 0) {
-        if (rendered_any) {
-            gui.dummy(0.0, 2.0);
-            gui.separator();
-            gui.dummy(0.0, 2.0);
-        }
-        drawMessageEntry(state, .assistant, g_stream_preview.assistant[0..g_stream_preview.assistant_len]);
-        rendered_any = true;
-    }
-
-    if (!rendered_any) {
-        gui.dummy(0.0, 8.0);
-        gui.pushStyleColor(.text, .{ 0.38, 0.40, 0.44, 1.0 });
-        gui.textWrapped(state.text(.ai_chat_empty));
-        gui.popStyleColor(1);
-    }
+    chat_view.drawMessages(state, g_messages[0..], g_message_count, &g_stream_preview);
 }
 
 const provider_action_icon_size: f32 = 16.0;
@@ -2507,6 +2481,12 @@ fn inputTextPasswordStyled(label: []const u8, buffer: []u8) bool {
     return gui.inputTextPassword(label, buffer);
 }
 
+fn inputTextMultilineStyled(label: []const u8, buffer: []u8, width: f32, height: f32) bool {
+    pushAiInputWidgetStyle();
+    defer popAiInputWidgetStyle();
+    return gui.inputTextMultiline(label, buffer, width, height);
+}
+
 fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     if (!state.ai_provider_settings_open) return;
     var provider_prefs_dirty = false;
@@ -2516,291 +2496,276 @@ fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerCo
     _ = gui.beginChild("ai_provider_settings##jt", 0.0, settings_height, true);
     defer gui.endChild();
 
-    gui.pushStyleColor(.text, .{ 0.78, 0.83, 0.92, 1.0 });
+    const content_width = gui.contentRegionAvail()[0];
+    const form_width = @min(content_width, 820.0);
+    const side_padding = @max(0.0, (content_width - form_width) * 0.5);
+    if (side_padding > 0.0) gui.indent(side_padding);
+    defer if (side_padding > 0.0) gui.unindent(side_padding);
+
+    gui.pushStyleColor(.text, .{ 0.90, 0.93, 0.98, 1.0 });
     gui.text(state.text(.ai_chat_provider_settings_title));
     gui.popStyleColor(1);
-    gui.pushStyleColor(.text, .{ 0.52, 0.57, 0.66, 1.0 });
+    gui.pushStyleColor(.text, .{ 0.55, 0.60, 0.68, 1.0 });
     gui.textWrapped(state.text(.ai_chat_provider_settings_desc));
     gui.popStyleColor(1);
-    gui.dummy(0.0, 2.0);
+    gui.dummy(0.0, 8.0);
 
     const mcp_ready = isMcpBridgeReady(state);
-    if (mcp_ready) {
-        gui.pushStyleColor(.text, .{ 0.48, 0.82, 0.60, 1.0 });
-        gui.text(state.text(.ai_chat_provider_status_ready_builtin));
-        gui.popStyleColor(1);
-    } else {
-        gui.pushStyleColor(.text, .{ 0.85, 0.35, 0.35, 1.0 });
-        gui.text(state.text(.ai_chat_provider_status_not_ready));
-        gui.popStyleColor(1);
-    }
+    const provider_error = activeProviderValidationError(state);
+    const provider_ready = provider_error == null;
 
-    if (activeProviderValidationError(state)) |validation_error| {
-        const validation_error_text = providerValidationErrorText(state, validation_error);
-        gui.pushStyleColor(.text, .{ 0.95, 0.80, 0.30, 1.0 });
-        gui.text(state.text(.ai_chat_provider_not_configured));
-        var provider_status_reason_buffer: [192]u8 = undefined;
-        const provider_status_reason = std.fmt.bufPrint(
-            &provider_status_reason_buffer,
-            " ({s})",
-            .{validation_error_text},
-        ) catch "";
-        if (provider_status_reason.len > 0) {
-            gui.sameLine();
-            gui.text(provider_status_reason);
-        }
-        gui.popStyleColor(1);
-    } else {
-        gui.pushStyleColor(.text, .{ 0.48, 0.82, 0.60, 1.0 });
-        gui.text(state.text(.ai_chat_provider_status_configured));
-        gui.popStyleColor(1);
-    }
-    gui.dummy(0.0, 4.0);
-
-    const avail_w = gui.contentRegionAvail()[0];
-    const action_gap: f32 = 4.0;
-    const action_btn_span = provider_action_icon_size + ui_icons.compact_icon_button_padding[0] * 2.0;
-    const type_preview_w = @max(120.0, avail_w - action_btn_span * 3.0 - action_gap * 3.0);
-    const type_popup_id = "ai_provider_type_popup##jt";
-
-    gui.pushStyleColor(.text, .{ 0.65, 0.70, 0.78, 1.0 });
-    gui.text(state.text(.ai_chat_type));
+    drawStatusDot(if (mcp_ready) .{ 0.44, 0.86, 0.60, 1.0 } else .{ 0.90, 0.38, 0.35, 1.0 });
+    gui.pushStyleColor(.text, if (mcp_ready) .{ 0.72, 0.91, 0.80, 1.0 } else .{ 0.92, 0.56, 0.54, 1.0 });
+    gui.text(if (mcp_ready) state.text(.ai_chat_provider_status_ready_builtin) else state.text(.ai_chat_provider_status_not_ready));
     gui.popStyleColor(1);
 
-    const active_type = state.ai_provider_type;
-    var type_preview_label_buffer: [96]u8 = undefined;
-    const type_preview_label = std.fmt.bufPrint(
-        &type_preview_label_buffer,
-        "{s}##ai_provider_type_preview",
-        .{providerTypeText(state, active_type)},
-    ) catch "Type##ai_provider_type_preview";
-    gui.pushStyleColor(.button, .{ 0.10, 0.12, 0.17, 1.0 });
-    gui.pushStyleColor(.button_hovered, .{ 0.13, 0.16, 0.22, 1.0 });
-    gui.pushStyleColor(.button_active, .{ 0.15, 0.19, 0.26, 1.0 });
-    if (gui.buttonEx(type_preview_label, type_preview_w, 0.0)) {
-        gui.openPopup(type_popup_id);
-    }
-    gui.popStyleColor(3);
-
-    gui.sameLine();
-    if (try drawProviderActionIconButton(
-        state,
-        layer_context,
-        "ai_provider_type_open##jt",
-        ui_icons.paths.toolbar.chevron_down,
-        true,
-    )) {
-        gui.openPopup(type_popup_id);
-    }
-
-    gui.sameLine();
-    if (try drawProviderActionIconButton(
-        state,
-        layer_context,
-        "ai_provider_type_add##jt",
-        ui_icons.paths.toolbar.plus,
-        true,
-    )) {
-        if (state.ai_provider_count < state.ai_providers.len) {
-            const new_provider_index = state.ai_provider_count;
-            state.ai_providers[new_provider_index] = .{};
-            var allocated_default_name: ?[]u8 = null;
-            const default_name = blk: {
-                const resolved = i18n.allocPrintMessage(
-                    .ai_chat_provider_default_name_fmt,
-                    std.heap.page_allocator,
-                    state.language,
-                    .{new_provider_index + 1},
-                ) catch break :blk state.text(.ai_chat_provider_default_name);
-                allocated_default_name = resolved;
-                break :blk resolved;
-            };
-            defer if (allocated_default_name) |value| {
-                std.heap.page_allocator.free(value);
-            };
-            const name_buffer = state.ai_providers[new_provider_index].name[0..];
-            const copy_len = @min(name_buffer.len - 1, default_name.len);
-            @memcpy(name_buffer[0..copy_len], default_name[0..copy_len]);
-
-            state.ai_active_provider = new_provider_index;
-            state.ai_provider_count += 1;
-            applyProviderDefaults(state);
-            ai_chat_log.info("Added new provider, total: {d}", .{state.ai_provider_count});
-            provider_prefs_dirty = true;
-        }
-    }
-
-    gui.sameLine();
-    const can_delete = state.ai_provider_count > 1;
-    const did_delete = try drawProviderActionIconButton(
-        state,
-        layer_context,
-        "ai_provider_type_delete##jt",
-        ui_icons.paths.toolbar.x_mark,
-        can_delete,
-    );
-    if (did_delete and can_delete) {
-        var i = state.ai_active_provider;
-        while (i + 1 < state.ai_provider_count) : (i += 1) {
-            state.ai_providers[i] = state.ai_providers[i + 1];
-        }
-        state.ai_provider_count -= 1;
-        if (state.ai_active_provider >= state.ai_provider_count) {
-            state.ai_active_provider = state.ai_provider_count - 1;
-        }
-        ai_chat_log.info("Deleted provider, remaining: {d}", .{state.ai_provider_count});
-        provider_prefs_dirty = true;
-    }
-
-    if (gui.beginPopup(type_popup_id)) {
-        defer gui.endPopup();
-        for (provider_types, 0..) |provider_type, i| {
-            gui.pushIdU64(@intCast(i));
-            defer gui.popId();
-            const is_selected = provider_type == active_type;
-            if (gui.selectable(providerTypeText(state, provider_type), is_selected, false, 0.0, 0.0)) {
-                state.ai_provider_type = provider_type;
-                ai_chat_log.info("Provider type changed to: {s}", .{@tagName(provider_type)});
-                applyProviderDefaults(state);
-                provider_prefs_dirty = true;
-            }
-            if (is_selected) gui.setItemDefaultFocus();
-        }
-    }
-
-    gui.dummy(0.0, 6.0);
-    gui.pushStyleColor(.text, .{ 0.65, 0.70, 0.78, 1.0 });
-    gui.text(state.text(.ai_chat_provider_list));
+    drawStatusDot(if (provider_ready) .{ 0.44, 0.86, 0.60, 1.0 } else .{ 0.95, 0.80, 0.30, 1.0 });
+    gui.pushStyleColor(.text, if (provider_ready) .{ 0.72, 0.91, 0.80, 1.0 } else .{ 0.95, 0.84, 0.50, 1.0 });
+    gui.text(if (provider_ready) state.text(.ai_chat_provider_status_configured) else state.text(.ai_chat_provider_not_configured));
     gui.popStyleColor(1);
-
-    const active_provider = &state.ai_providers[state.ai_active_provider];
-    const provider_popup_id = "ai_provider_select_popup##jt";
-    const provider_preview_w = @max(120.0, avail_w - action_btn_span - action_gap);
-    var provider_preview_label_buffer: [160]u8 = undefined;
-    const provider_preview_label = std.fmt.bufPrint(
-        &provider_preview_label_buffer,
-        "{s}##ai_provider_select_preview",
-        .{providerDisplayNameForUi(state, active_provider)},
-    ) catch "Provider##ai_provider_select_preview";
-    gui.pushStyleColor(.button, .{ 0.10, 0.12, 0.17, 1.0 });
-    gui.pushStyleColor(.button_hovered, .{ 0.13, 0.16, 0.22, 1.0 });
-    gui.pushStyleColor(.button_active, .{ 0.15, 0.19, 0.26, 1.0 });
-    if (gui.buttonEx(provider_preview_label, provider_preview_w, 0.0)) {
-        gui.openPopup(provider_popup_id);
-    }
-    gui.popStyleColor(3);
-
-    gui.sameLine();
-    if (try drawProviderActionIconButton(
-        state,
-        layer_context,
-        "ai_provider_select_open##jt",
-        ui_icons.paths.toolbar.chevron_down,
-        true,
-    )) {
-        gui.openPopup(provider_popup_id);
+    if (provider_error) |validation_error| {
+        gui.sameLine();
+        gui.pushStyleColor(.text, .{ 0.55, 0.60, 0.68, 1.0 });
+        gui.text(providerValidationErrorText(state, validation_error));
+        gui.popStyleColor(1);
     }
 
-    if (gui.beginPopup(provider_popup_id)) {
-        defer gui.endPopup();
-        for (0..state.ai_provider_count) |provider_index| {
-            gui.pushIdU64(@intCast(provider_index));
-            defer gui.popId();
-            const is_selected = provider_index == state.ai_active_provider;
-            const provider_item = &state.ai_providers[provider_index];
-            if (gui.selectable(providerDisplayNameForUi(state, provider_item), is_selected, false, 0.0, 0.0)) {
-                state.ai_active_provider = provider_index;
-                provider_prefs_dirty = true;
-            }
-            if (is_selected) gui.setItemDefaultFocus();
-        }
-    }
-
-    gui.dummy(0.0, 8.0);
-    gui.separator();
-    gui.dummy(0.0, 8.0);
-
+    gui.dummy(0.0, 10.0);
     gui.pushIdU64(@intCast(state.ai_active_provider));
     defer gui.popId();
 
-    const p = &state.ai_providers[state.ai_active_provider];
+    const action_gap: f32 = 6.0;
+    const action_btn_span = provider_action_icon_size + ui_icons.compact_icon_button_padding[0] * 2.0;
+    const type_popup_id = "ai_provider_type_popup##jt";
+    const provider_popup_id = "ai_provider_select_popup##jt";
+    const active_type = provider_support.activeProviderType(state);
 
-    gui.pushStyleColor(.text, .{ 0.65, 0.70, 0.78, 1.0 });
-    gui.text(state.text(.ai_chat_display_name));
-    gui.popStyleColor(1);
-    gui.setNextItemWidth(-1.0);
-    if (inputTextWithHintStyled("##name", state.text(.ai_chat_hint_provider_name), p.name[0..])) {
-        provider_prefs_dirty = true;
-    }
-    _ = refocusAiTextFieldIfClicked(layer_context);
+    if (layout.beginInspectorPropertyTable("ai_provider_config_grid##jt", 0.28)) {
+        defer layout.endInspectorPropertyTable();
 
-    gui.dummy(0.0, 4.0);
+        layout.drawInspectorPropertyRow(state.text(.ai_chat_type), null);
+        {
+            const cell_width = gui.contentRegionAvail()[0];
+            const preview_width = @max(140.0, cell_width - action_btn_span - action_gap);
 
-    gui.pushStyleColor(.text, .{ 0.65, 0.70, 0.78, 1.0 });
-    gui.text(state.text(.ai_chat_api_endpoint));
-    gui.popStyleColor(1);
-    gui.setNextItemWidth(-1.0);
-    if (inputTextWithHintStyled("##endpoint", state.text(.ai_chat_hint_endpoint), p.endpoint[0..])) {
-        provider_prefs_dirty = true;
-    }
-    _ = refocusAiTextFieldIfClicked(layer_context);
-    gui.dummy(0.0, 4.0);
+            var type_preview_label_buffer: [96]u8 = undefined;
+            const type_preview_label = std.fmt.bufPrint(
+                &type_preview_label_buffer,
+                "{s}##ai_provider_type_preview",
+                .{providerTypeText(state, active_type)},
+            ) catch "##ai_provider_type_preview";
 
-    gui.pushStyleColor(.text, .{ 0.65, 0.70, 0.78, 1.0 });
-    gui.text(state.text(.ai_chat_model));
-    gui.popStyleColor(1);
-    gui.setNextItemWidth(-1.0);
-    if (inputTextWithHintStyled("##model", state.text(.ai_chat_hint_model), p.model[0..])) {
-        provider_prefs_dirty = true;
-    }
-    _ = refocusAiTextFieldIfClicked(layer_context);
+            gui.pushStyleColor(.button, .{ 0.12, 0.15, 0.19, 1.0 });
+            gui.pushStyleColor(.button_hovered, .{ 0.15, 0.19, 0.24, 1.0 });
+            gui.pushStyleColor(.button_active, .{ 0.18, 0.22, 0.29, 1.0 });
+            if (gui.buttonEx(type_preview_label, preview_width, 0.0)) {
+                gui.openPopup(type_popup_id);
+            }
+            gui.popStyleColor(3);
 
-    gui.dummy(0.0, 4.0);
+            gui.sameLine();
+            if (try drawProviderActionIconButton(
+                state,
+                layer_context,
+                "ai_provider_type_open##jt",
+                ui_icons.paths.toolbar.chevron_down,
+                true,
+            )) {
+                gui.openPopup(type_popup_id);
+            }
 
-    gui.pushStyleColor(.text, .{ 0.65, 0.70, 0.78, 1.0 });
-    gui.text(state.text(.ai_chat_api_key));
-    gui.popStyleColor(1);
-    const toggle_w: f32 = 50.0;
-    const key_gap: f32 = 6.0;
-    gui.setNextItemWidth(gui.contentRegionAvail()[0] - toggle_w - key_gap);
-    if (state.ai_provider_api_key_visible) {
-        if (inputTextWithHintStyled("##apikey", state.text(.ai_chat_hint_api_key), p.api_key[0..])) {
+            if (gui.beginPopup(type_popup_id)) {
+                defer gui.endPopup();
+                for (provider_support.provider_types, 0..) |provider_type, i| {
+                    gui.pushIdU64(@intCast(i));
+                    defer gui.popId();
+                    const is_selected = provider_type == active_type;
+                    if (gui.selectable(providerTypeText(state, provider_type), is_selected, false, 0.0, 0.0)) {
+                        provider_support.setActiveProviderType(state, provider_type);
+                        applyProviderDefaults(state);
+                        provider_prefs_dirty = true;
+                        g_provider_feedback.clear();
+                    }
+                    if (is_selected) gui.setItemDefaultFocus();
+                }
+            }
+        }
+
+        layout.drawInspectorPropertyRow(state.text(.ai_chat_provider_list), null);
+        {
+            const cell_width = gui.contentRegionAvail()[0];
+            const preview_width = @max(140.0, cell_width - action_btn_span * 3.0 - action_gap * 3.0);
+            const active_provider = provider_support.activeProvider(state);
+            var provider_preview_label_buffer: [160]u8 = undefined;
+            const provider_preview_label = std.fmt.bufPrint(
+                &provider_preview_label_buffer,
+                "{s}##ai_provider_select_preview",
+                .{providerDisplayNameForUi(state, active_provider)},
+            ) catch "##ai_provider_select_preview";
+
+            gui.pushStyleColor(.button, .{ 0.12, 0.15, 0.19, 1.0 });
+            gui.pushStyleColor(.button_hovered, .{ 0.15, 0.19, 0.24, 1.0 });
+            gui.pushStyleColor(.button_active, .{ 0.18, 0.22, 0.29, 1.0 });
+            if (gui.buttonEx(provider_preview_label, preview_width, 0.0)) {
+                gui.openPopup(provider_popup_id);
+            }
+            gui.popStyleColor(3);
+
+            gui.sameLine();
+            if (try drawProviderActionIconButton(
+                state,
+                layer_context,
+                "ai_provider_select_open##jt",
+                ui_icons.paths.toolbar.chevron_down,
+                true,
+            )) {
+                gui.openPopup(provider_popup_id);
+            }
+            gui.sameLine();
+            if (try drawProviderActionIconButton(
+                state,
+                layer_context,
+                "ai_provider_add##jt",
+                ui_icons.paths.toolbar.plus,
+                state.ai_provider_count < state.ai_providers.len,
+            )) {
+                if (state.ai_provider_count < state.ai_providers.len) {
+                    const new_provider_index = state.ai_provider_count;
+                    const current_type = provider_support.activeProviderType(state);
+                    state.ai_providers[new_provider_index] = .{};
+                    state.ai_providers[new_provider_index].provider_type = current_type;
+
+                    var allocated_default_name: ?[]u8 = null;
+                    const default_name = blk: {
+                        const resolved = i18n.allocPrintMessage(
+                            .ai_chat_provider_default_name_fmt,
+                            std.heap.page_allocator,
+                            state.language,
+                            .{new_provider_index + 1},
+                        ) catch break :blk state.text(.ai_chat_provider_default_name);
+                        allocated_default_name = resolved;
+                        break :blk resolved;
+                    };
+                    defer if (allocated_default_name) |value| std.heap.page_allocator.free(value);
+                    provider_support.writeFixedBuffer(state.ai_providers[new_provider_index].name[0..], default_name);
+
+                    state.ai_provider_count += 1;
+                    state.ai_active_provider = new_provider_index;
+                    provider_support.syncActiveProviderType(state);
+                    applyProviderDefaults(state);
+                    provider_prefs_dirty = true;
+                    g_provider_feedback.clear();
+                }
+            }
+            gui.sameLine();
+            const can_delete = state.ai_provider_count > 1;
+            if (try drawProviderActionIconButton(
+                state,
+                layer_context,
+                "ai_provider_delete##jt",
+                ui_icons.paths.toolbar.x_mark,
+                can_delete,
+            )) {
+                if (can_delete) {
+                    var i = state.ai_active_provider;
+                    while (i + 1 < state.ai_provider_count) : (i += 1) {
+                        state.ai_providers[i] = state.ai_providers[i + 1];
+                    }
+                    state.ai_provider_count -= 1;
+                    if (state.ai_active_provider >= state.ai_provider_count) {
+                        state.ai_active_provider = state.ai_provider_count - 1;
+                    }
+                    provider_support.syncActiveProviderType(state);
+                    provider_prefs_dirty = true;
+                    g_provider_feedback.clear();
+                }
+            }
+
+            if (gui.beginPopup(provider_popup_id)) {
+                defer gui.endPopup();
+                for (0..state.ai_provider_count) |provider_index| {
+                    gui.pushIdU64(@intCast(provider_index));
+                    defer gui.popId();
+                    const is_selected = provider_index == state.ai_active_provider;
+                    const provider_item = &state.ai_providers[provider_index];
+                    if (gui.selectable(providerDisplayNameForUi(state, provider_item), is_selected, false, 0.0, 0.0)) {
+                        state.ai_active_provider = provider_index;
+                        provider_support.syncActiveProviderType(state);
+                        applyProviderDefaults(state);
+                        provider_prefs_dirty = true;
+                        g_provider_feedback.clear();
+                    }
+                    if (is_selected) gui.setItemDefaultFocus();
+                }
+            }
+        }
+
+        const provider = provider_support.activeProviderMut(state);
+
+        layout.drawInspectorPropertyRow(state.text(.ai_chat_display_name), null);
+        if (inputTextWithHintStyled("##name", state.text(.ai_chat_hint_provider_name), provider.name[0..])) {
             provider_prefs_dirty = true;
         }
         _ = refocusAiTextFieldIfClicked(layer_context);
-    } else {
-        if (inputTextPasswordStyled("##apikey", p.api_key[0..])) {
+
+        layout.drawInspectorPropertyRow(state.text(.ai_chat_api_endpoint), null);
+        if (inputTextWithHintStyled("##endpoint", state.text(.ai_chat_hint_endpoint), provider.endpoint[0..])) {
             provider_prefs_dirty = true;
         }
         _ = refocusAiTextFieldIfClicked(layer_context);
-    }
-    gui.sameLine();
-    if (gui.buttonEx(if (state.ai_provider_api_key_visible) state.text(.ai_chat_hide) else state.text(.ai_chat_show), toggle_w, 0.0)) {
-        state.ai_provider_api_key_visible = !state.ai_provider_api_key_visible;
+
+        layout.drawInspectorPropertyRow(state.text(.ai_chat_model), null);
+        if (inputTextWithHintStyled("##model", state.text(.ai_chat_hint_model), provider.model[0..])) {
+            provider_prefs_dirty = true;
+        }
+        _ = refocusAiTextFieldIfClicked(layer_context);
+
+        layout.drawInspectorPropertyRow(state.text(.ai_chat_api_key), null);
+        {
+            const toggle_width: f32 = 54.0;
+            const key_gap: f32 = 6.0;
+            const field_width = @max(60.0, gui.contentRegionAvail()[0] - toggle_width - key_gap);
+            gui.setNextItemWidth(field_width);
+            if (state.ai_provider_api_key_visible) {
+                if (inputTextWithHintStyled("##apikey", state.text(.ai_chat_hint_api_key), provider.api_key[0..])) {
+                    provider_prefs_dirty = true;
+                }
+            } else {
+                if (inputTextPasswordStyled("##apikey", provider.api_key[0..])) {
+                    provider_prefs_dirty = true;
+                }
+            }
+            _ = refocusAiTextFieldIfClicked(layer_context);
+            gui.sameLine();
+            if (gui.buttonEx(
+                if (state.ai_provider_api_key_visible) state.text(.ai_chat_hide) else state.text(.ai_chat_show),
+                toggle_width,
+                0.0,
+            )) {
+                state.ai_provider_api_key_visible = !state.ai_provider_api_key_visible;
+            }
+        }
     }
 
     gui.dummy(0.0, 12.0);
     gui.separator();
     gui.dummy(0.0, 8.0);
 
-    const apply_btn_w: f32 = 100.0;
-    const test_btn_w: f32 = 70.0;
-    const btn_row_w = apply_btn_w + test_btn_w + 8.0;
-    const btn_row_x = (avail_w - btn_row_w) * 0.5;
-    gui.sameLineEx(btn_row_x, 0.0);
+    const button_width: f32 = 96.0;
+    const button_gap: f32 = 8.0;
+    const action_row_width = button_width * 2.0 + button_gap;
+    gui.sameLineEx(@max(0.0, form_width - action_row_width), 0.0);
 
     gui.pushStyleColor(.button, .{ 0.13, 0.50, 0.36, 0.88 });
     gui.pushStyleColor(.button_hovered, .{ 0.15, 0.62, 0.43, 1.0 });
     gui.pushStyleColor(.button_active, .{ 0.10, 0.40, 0.28, 1.0 });
-    if (gui.buttonEx(state.text(.ai_chat_apply_config), apply_btn_w, 0.0)) {
+    if (gui.buttonEx(state.text(.ai_chat_apply_config), button_width, 0.0)) {
         applyProviderDefaults(state);
         logProviderConfig(state);
-        preferences.saveAiProviderSettings(state) catch |err| {
-            ai_chat_log.warn("failed to persist AI provider settings: {s}", .{@errorName(err)});
-        };
         if (activeProviderValidationError(state)) |validation_error| {
             const validation_error_text = providerValidationErrorText(state, validation_error);
             g_connection_error = validation_error_text;
+            g_provider_feedback.set(.failure, validation_error_text);
             var message_buffer: [224]u8 = undefined;
             const message = std.fmt.bufPrint(
                 &message_buffer,
@@ -2808,11 +2773,13 @@ fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerCo
                 .{ state.text(.ai_chat_provider_apply_incomplete_fallback), validation_error_text },
             ) catch state.text(.ai_chat_provider_apply_incomplete_fallback);
             appendMessage(.system, message);
-            ai_chat_log.warn("Provider config invalid: {s}", .{validation_error_text});
         } else {
             g_connection_error = null;
+            preferences.saveAiProviderSettings(state) catch |err| {
+                ai_chat_log.warn("failed to persist AI provider settings: {s}", .{@errorName(err)});
+            };
+            g_provider_feedback.set(.success, state.text(.ai_chat_provider_apply_success));
             appendMessage(.system, state.text(.ai_chat_provider_apply_success));
-            ai_chat_log.info("Provider config applied: {s}", .{providerDisplayNameForUi(state, p)});
         }
     }
     gui.popStyleColor(3);
@@ -2821,27 +2788,27 @@ fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerCo
     gui.pushStyleColor(.button, .{ 0.22, 0.24, 0.27, 1.0 });
     gui.pushStyleColor(.button_hovered, .{ 0.30, 0.33, 0.37, 1.0 });
     gui.pushStyleColor(.button_active, .{ 0.18, 0.20, 0.24, 1.0 });
-    if (gui.buttonEx(state.text(.ai_chat_test_connection), test_btn_w, 0.0)) {
+    if (gui.buttonEx(state.text(.ai_chat_test_connection), button_width, 0.0)) {
+        const provider = provider_support.activeProvider(state);
+        const provider_type = provider_support.activeProviderType(state);
         logProviderConfig(state);
-        ai_chat_log.info("Test connection requested for provider: {s}", .{providerDisplayNameForUi(state, p)});
         appendMessage(.system, state.text(.ai_chat_testing_connection));
 
-        const endpoint_len = std.mem.indexOfScalar(u8, &p.endpoint, 0) orelse p.endpoint.len;
-        const model_len = std.mem.indexOfScalar(u8, &p.model, 0) orelse p.model.len;
-        const apikey_len = std.mem.indexOfScalar(u8, &p.api_key, 0) orelse p.api_key.len;
-        const needs_api_key = state.ai_provider_type != .ollama;
+        const endpoint = fixedBufferSlice(provider.endpoint[0..]);
+        const model = fixedBufferSlice(provider.model[0..]);
+        const api_key = fixedBufferSlice(provider.api_key[0..]);
 
-        if (endpoint_len == 0) {
+        if (endpoint.len == 0) {
+            g_provider_feedback.set(.failure, state.text(.ai_chat_error_input_endpoint));
             appendMessage(.system, state.text(.ai_chat_error_input_endpoint));
-        } else if (model_len == 0) {
+        } else if (model.len == 0) {
+            g_provider_feedback.set(.failure, state.text(.ai_chat_error_input_model));
             appendMessage(.system, state.text(.ai_chat_error_input_model));
-        } else if (needs_api_key and apikey_len == 0) {
+        } else if (provider_support.providerNeedsApiKey(provider_type) and api_key.len == 0) {
+            g_provider_feedback.set(.failure, state.text(.ai_chat_error_input_api_key));
             appendMessage(.system, state.text(.ai_chat_error_input_api_key));
         } else {
-            const endpoint = p.endpoint[0..endpoint_len];
-            const model = p.model[0..model_len];
-            const api_key = p.api_key[0..apikey_len];
-            const summary = testHttpConnectionAlloc(state.language, state.ai_provider_type, endpoint, api_key, model) catch |err| blk: {
+            const summary = testHttpConnectionAlloc(state.language, provider_type, endpoint, api_key, model) catch |err| blk: {
                 break :blk allocMessage(
                     "{s}: {s}",
                     .{ state.text(.ai_chat_connection_test_failed_fallback), @errorName(err) },
@@ -2850,22 +2817,32 @@ fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerCo
             };
             if (summary) |resolved_summary| {
                 defer std.heap.page_allocator.free(resolved_summary);
+                const is_failure = std.mem.startsWith(u8, resolved_summary, state.text(.ai_chat_provider_request_failed_fallback)) or
+                    std.mem.startsWith(u8, resolved_summary, state.text(.ai_chat_connection_test_failed_fallback));
+                g_provider_feedback.set(if (is_failure) .failure else .success, resolved_summary);
                 appendMessage(.system, resolved_summary);
             } else {
+                g_provider_feedback.set(.failure, state.text(.ai_chat_connection_test_failed_fallback));
                 appendMessage(.system, state.text(.ai_chat_connection_test_failed_fallback));
             }
         }
     }
     gui.popStyleColor(3);
 
-    if (g_connection_error) |err| {
-        gui.dummy(0.0, 4.0);
+    if (g_provider_feedback.kind != .none) {
+        gui.dummy(0.0, 8.0);
+        gui.pushStyleColor(.text, providerFeedbackColor(g_provider_feedback.kind));
+        gui.textWrapped(g_provider_feedback.slice());
+        gui.popStyleColor(1);
+    } else if (g_connection_error) |err| {
+        gui.dummy(0.0, 8.0);
         gui.pushStyleColor(.text, .{ 0.90, 0.30, 0.30, 1.0 });
         gui.textWrapped(err);
         gui.popStyleColor(1);
     }
 
     if (provider_prefs_dirty) {
+        g_connection_error = null;
         preferences.saveAiProviderSettings(state) catch |err| {
             ai_chat_log.warn("failed to auto-persist AI provider settings: {s}", .{@errorName(err)});
         };
@@ -2908,7 +2885,7 @@ pub fn drawAiChatPanel(state: *EditorState, layer_context: *engine.core.LayerCon
 
     if (!g_window_initialized) {
         gui.setNextWindowPos(.{ 50.0, 100.0 });
-        gui.setNextWindowSize(.{ 420.0, 500.0 });
+        gui.setNextWindowSize(.{ 540.0, 640.0 });
         g_window_initialized = true;
     }
     gui.setNextWindowBgAlpha(0.96);
@@ -2929,7 +2906,7 @@ pub fn drawAiChatPanel(state: *EditorState, layer_context: *engine.core.LayerCon
     gui.separator();
 
     const avail = gui.contentRegionAvail();
-    const input_row_height: f32 = 34.0;
+    const input_row_height: f32 = 104.0;
     const messages_height = avail[1] - input_row_height - 6.0;
 
     if (messages_height > 10.0) {
@@ -2946,25 +2923,22 @@ pub fn drawAiChatPanel(state: *EditorState, layer_context: *engine.core.LayerCon
 
     gui.separator();
     const total_width = gui.contentRegionAvail()[0];
-    const send_btn_width: f32 = 52.0;
+    const send_btn_width: f32 = 70.0;
     const input_width = total_width - send_btn_width - 6.0;
     const busy = asyncIsRunning();
+    const input_height: f32 = 72.0;
 
     if (input_width > 30.0) {
         if (g_focus_ai_input_next_frame and !busy) {
             gui.setKeyboardFocusHere(0);
             g_focus_ai_input_next_frame = false;
         }
-        gui.setNextItemWidth(input_width);
-        const enter_pressed = inputTextWithHintStyledFlags(
-            "##ai_input",
-            if (busy) state.text(.ai_chat_background_processing) else state.text(.ai_chat_input_hint),
-            g_input_buffer[0..],
-            if (busy) gui.InputTextFlags.none else gui.InputTextFlags.enter_returns_true,
-        );
+        gui.pushStyleColor(.text, .{ 0.52, 0.57, 0.66, 1.0 });
+        gui.text(if (busy) state.text(.ai_chat_background_processing) else state.text(.ai_chat_input_hint));
+        gui.popStyleColor(1);
+
+        _ = inputTextMultilineStyled("##ai_input", g_input_buffer[0..], input_width, input_height);
         if (!busy and refocusAiTextFieldIfClicked(layer_context)) {
-            // Some frames miss the first activation click on the floating AI panel.
-            // Re-request focus so the caret appears reliably on the next frame.
             g_focus_ai_input_next_frame = true;
         }
 
@@ -2972,10 +2946,10 @@ pub fn drawAiChatPanel(state: *EditorState, layer_context: *engine.core.LayerCon
         gui.pushStyleColor(.button, .{ 0.13, 0.50, 0.36, 0.88 });
         gui.pushStyleColor(.button_hovered, .{ 0.15, 0.62, 0.43, 1.0 });
         gui.pushStyleColor(.button_active, .{ 0.10, 0.40, 0.28, 1.0 });
-        const send_pressed = gui.buttonEx(if (busy) state.text(.ai_chat_wait) else state.text(.ai_chat_send), send_btn_width, 0.0);
+        const send_pressed = gui.buttonEx(if (busy) state.text(.ai_chat_wait) else state.text(.ai_chat_send), send_btn_width, 32.0);
         gui.popStyleColor(3);
 
-        if (enter_pressed or send_pressed) {
+        if (send_pressed) {
             submitInput(state, layer_context);
             g_focus_ai_input_next_frame = true;
         }

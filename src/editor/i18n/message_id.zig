@@ -410,6 +410,8 @@ pub const MessageId = enum {
     ai_chat_error_input_api_key,
     ai_chat_connection_test_failed_fmt,
     ai_chat_connection_test_failed_fallback,
+    ai_chat_connection_test_succeeded_fmt,
+    ai_chat_connection_test_succeeded_fallback,
     ai_chat_provider_request_failed_http_fmt,
     ai_chat_provider_request_failed_fallback,
     ai_chat_provider_request_failed_error_fmt,
@@ -442,4 +444,5 @@ pub const MessageId = enum {
     ai_chat_failed_allocate_api_key,
     ai_chat_previous_request_running,
     ai_chat_mcp_local_bridge_not_ready,
+    ai_chat_timeline_tool_label_fmt,
 };

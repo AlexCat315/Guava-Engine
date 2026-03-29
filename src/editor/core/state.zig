@@ -308,6 +308,7 @@ pub const AiProviderType = enum {
 
 /// Per-provider configuration stored in EditorState.
 pub const AiProviderConfig = struct {
+    provider_type: AiProviderType = .openai,
     name: [64]u8 = [_]u8{0} ** 64,
     endpoint: [256]u8 = [_]u8{0} ** 256,
     model: [128]u8 = [_]u8{0} ** 128,
