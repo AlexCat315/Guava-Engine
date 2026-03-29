@@ -1028,7 +1028,8 @@ fn canBeginViewportSelection(state: *const EditorState, input: *const engine.cor
         state.viewport_hovered and
         !state.viewport_overlay_hovered and
         !input.modifiers.alt and
-        state.manipulation_mode == .none;
+        !state.manipulation_drag_active and
+        !state.manipulation_keyboard_mode;
 }
 
 fn selectionUpdateModeForInput(input: *const engine.core.InputState) engine.render.SelectionUpdateMode {

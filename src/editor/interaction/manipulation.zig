@@ -56,19 +56,19 @@ pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.L
             cancelManipulation(state, layer_context);
         }
         if (input.wasKeyPressed(.g)) {
-            try beginManipulation(state, layer_context, .translate);
+            try beginDirectManipulation(state, layer_context, .translate);
         }
         if (input.wasKeyPressed(.w) and !input.isMouseDown(.right)) {
             try beginManipulation(state, layer_context, .translate);
         }
-        if (input.wasKeyPressed(.r)) {
-            try beginManipulation(state, layer_context, .scale);
-        }
         if (input.wasKeyPressed(.e)) {
             try beginManipulation(state, layer_context, .rotate);
         }
-        if (input.wasKeyPressed(.s) and !input.isMouseDown(.right)) {
+        if (input.wasKeyPressed(.r)) {
             try beginManipulation(state, layer_context, .scale);
+        }
+        if (input.wasKeyPressed(.s) and !input.isMouseDown(.right)) {
+            try beginDirectManipulation(state, layer_context, .scale);
         }
         return;
     }
@@ -119,7 +119,7 @@ pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.L
         }
     }
     if (input.wasKeyPressed(.g)) {
-        try beginManipulation(state, layer_context, .translate);
+        try beginDirectManipulation(state, layer_context, .translate);
     }
     if (input.wasKeyPressed(.q)) {
         try selectTool(state, layer_context);
@@ -134,7 +134,7 @@ pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.L
         try beginManipulation(state, layer_context, .scale);
     }
     if (input.wasKeyPressed(.s) and !input.modifiers.ctrl and !input.isMouseDown(.right)) {
-        try beginManipulation(state, layer_context, .scale);
+        try beginDirectManipulation(state, layer_context, .scale);
     }
     if (input.wasKeyPressed(.one)) {
         try history.spawnPrimitive(state, layer_context, .cube);
@@ -160,19 +160,27 @@ pub fn beginManipulation(
     state.manipulation_entity = null;
     state.manipulation_target = .main_world;
     state.manipulation_drag_active = false;
-    state.manipulation_keyboard_mode = true;
+    state.manipulation_keyboard_mode = false;
     state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
-    state.manipulation_accumulated_delta = .{ 0.0, 0.0 }; // 重置累计偏移量
+    state.manipulation_accumulated_delta = .{ 0.0, 0.0 };
+    state.manipulation_started_from_ui = false;
     clearManipulationSnapshot(state);
     try syncManipulationTarget(state, layer_context);
-    // Blender-style: start drag immediately when entering mode via keyboard,
-    // so mouse movement transforms the object without needing a click-hold.
-    if (state.manipulation_entity != null) {
-        state.manipulation_drag_active = true;
-    }
     syncGizmoState(state, layer_context);
     try history.refreshWindowTitle(state, layer_context);
-    ai_collaboration.noteManipulationBegin(state);
+}
+
+pub fn beginDirectManipulation(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    mode: ManipulationMode,
+) !void {
+    try beginManipulation(state, layer_context, mode);
+    state.manipulation_keyboard_mode = true;
+    if (state.manipulation_entity != null) {
+        state.manipulation_drag_active = true;
+        ai_collaboration.noteManipulationBegin(state);
+    }
 }
 
 pub fn selectTool(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -346,26 +354,12 @@ pub fn applyManipulation(state: *EditorState, layer_context: *engine.core.LayerC
     }
 
     const entity_id = state.manipulation_entity orelse return;
-    const current_transform = currentManipulationTransform(state, layer_context, entity_id) orelse {
+    _ = currentManipulationTransform(state, layer_context, entity_id) orelse {
         endManipulation(state);
         return;
     };
 
-    // 3. Prevent starting a drag if outside viewport or using alt (camera),
-    //    but allow continuing a drag even if mouse leaves viewport
-    if (!state.manipulation_drag_active) {
-        if (!state.viewport_has_image or !state.viewport_hovered or !state.viewport_focused or state.viewport_overlay_hovered or input.modifiers.alt) {
-            return;
-        }
-    }
-
-    // 4. Start or continue drag
-    if (input.wasMousePressed(.left) or !state.manipulation_drag_active) {
-        state.manipulation_origin = current_transform;
-        state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
-        state.manipulation_accumulated_delta = .{ 0.0, 0.0 };
-        state.manipulation_drag_active = true;
-    }
+    if (!state.manipulation_drag_active) return;
 
     if (@abs(input.mouse_delta[0]) < 0.0001 and @abs(input.mouse_delta[1]) < 0.0001) {
         return;
@@ -842,6 +836,9 @@ pub fn beginManipulationFromGizmoClick(
     state.manipulation_accumulated_delta = .{ 0.0, 0.0 };
     clearManipulationSnapshot(state);
     try syncManipulationTarget(state, layer_context);
+    if (state.manipulation_entity != null) {
+        state.manipulation_drag_active = true;
+    }
     syncGizmoState(state, layer_context);
     try history.refreshWindowTitle(state, layer_context);
     ai_collaboration.noteManipulationBegin(state);
