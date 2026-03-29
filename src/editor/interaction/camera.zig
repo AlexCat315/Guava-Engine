@@ -155,26 +155,39 @@ pub fn handleCameraControls(state: *EditorState, layer_context: *engine.core.Lay
     // Always process wheel zoom/pan on hovered+focused viewport.
     if (can_capture_viewport) {
         if (@abs(input.mouse_wheel[1]) > 0.001) {
-            viewport_log.info("viewport wheel zoom delta_y={d:.3} orbit_distance={d:.3}", .{ input.mouse_wheel[1], state.orbit_distance });
             const forward = vec3.forwardFromAngles(state.yaw, state.pitch);
-            const zoom_step = input.mouse_wheel[1] * state.wheel_speed * 0.08 * zoomSpeed(state.orbit_distance);
-            camera.local_transform.translation = vec3.add(camera.local_transform.translation, vec3.scale(forward, zoom_step));
-            state.orbit_distance = utils.clampDistance(vec3.length(vec3.sub(state.focus_pivot, camera.local_transform.translation)));
-            camera_transform_changed = true;
+            const zoom_ratio = wheelZoomRatio(input.mouse_wheel[1], state.wheel_speed);
 
             if (camera.camera) |camera_component| {
-                if (camera_component.projection == .orthographic) {
-                    var next_camera = camera_component;
-                    next_camera.projection.orthographic.size = @max(state.orbit_distance * 1.1, 2.0);
-                    camera.camera = next_camera;
+                switch (camera_component.projection) {
+                    .perspective => {
+                        const next_distance = utils.clampDistance(state.orbit_distance * zoom_ratio);
+                        state.orbit_distance = next_distance;
+                        camera.local_transform.translation = vec3.sub(state.focus_pivot, vec3.scale(forward, next_distance));
+                    },
+                    .orthographic => |projection| {
+                        const next_size = clampOrthographicSize(projection.size * zoom_ratio);
+                        const size_ratio = next_size / @max(projection.size, 0.0001);
+                        const next_distance = utils.clampDistance(state.orbit_distance * size_ratio);
+                        state.orbit_distance = next_distance;
+                        camera.local_transform.translation = vec3.sub(state.focus_pivot, vec3.scale(forward, next_distance));
+
+                        var next_camera = camera_component;
+                        next_camera.projection.orthographic.size = next_size;
+                        camera.camera = next_camera;
+                    },
                 }
+            } else {
+                const next_distance = utils.clampDistance(state.orbit_distance * zoom_ratio);
+                state.orbit_distance = next_distance;
+                camera.local_transform.translation = vec3.sub(state.focus_pivot, vec3.scale(forward, next_distance));
             }
+            camera_transform_changed = true;
         }
 
         if (@abs(input.mouse_wheel[0]) > 0.001) {
-            viewport_log.info("viewport wheel pan delta_x={d:.3}", .{input.mouse_wheel[0]});
             const right = vec3.rightFromYaw(state.yaw);
-            const pan_step = input.mouse_wheel[0] * state.wheel_speed * zoomSpeed(state.orbit_distance) * 0.05;
+            const pan_step = input.mouse_wheel[0] * state.wheel_speed * wheelPanDistance(camera.camera, state.viewport_extent, state.orbit_distance);
             const pan = vec3.scale(right, pan_step);
             camera.local_transform.translation = vec3.add(camera.local_transform.translation, pan);
             state.focus_pivot = vec3.add(state.focus_pivot, pan);
@@ -671,6 +684,32 @@ fn zoomSpeed(distance: f32) f32 {
     return @min(scaled * scaled, 100.0);
 }
 
+fn wheelZoomRatio(wheel_delta: f32, wheel_speed: f32) f32 {
+    const scaled_delta = std.math.clamp(wheel_delta * wheel_speed, -4.0, 4.0);
+    return @exp(-scaled_delta * 0.16);
+}
+
+fn clampOrthographicSize(size: f32) f32 {
+    return std.math.clamp(size, 0.25, 500.0);
+}
+
+fn wheelPanDistance(camera_component: ?engine.scene.Camera, viewport_extent: [2]f32, orbit_distance: f32) f32 {
+    const aspect = viewportAspect(viewport_extent);
+    const visible_width = if (camera_component) |camera|
+        switch (camera.projection) {
+            .perspective => |projection| 2.0 * @tan(projection.fov_y_radians * 0.5) * @max(orbit_distance, 0.01) * aspect,
+            .orthographic => |projection| @max(projection.size * aspect, 0.01),
+        }
+    else
+        2.0 * @tan(1.0471976 * 0.5) * @max(orbit_distance, 0.01) * aspect;
+
+    return std.math.clamp(visible_width * 0.08, 0.02, 8.0);
+}
+
+fn viewportAspect(viewport_extent: [2]f32) f32 {
+    return @max(viewport_extent[0], 1.0) / @max(viewport_extent[1], 1.0);
+}
+
 test "focus distance grows with bounding radius" {
     const small = focusDistanceForPerspective(1.0, 1.0471976, 16.0 / 9.0, 0.1);
     const large = focusDistanceForPerspective(4.0, 1.0471976, 16.0 / 9.0, 0.1);
@@ -681,4 +720,19 @@ test "focus distance grows with bounding radius" {
 test "orthographic focus size keeps a sensible minimum" {
     try std.testing.expectApproxEqAbs(@as(f32, 2.0), focusOrthoSize(0.1), 0.0001);
     try std.testing.expect(focusOrthoSize(2.0) > 2.0);
+}
+
+test "wheel zoom ratio shrinks when scrolling in and grows when scrolling out" {
+    const zoom_in_ratio = wheelZoomRatio(1.0, 1.2);
+    const zoom_out_ratio = wheelZoomRatio(-1.0, 1.2);
+
+    try std.testing.expect(zoom_in_ratio < 1.0);
+    try std.testing.expect(zoom_out_ratio > 1.0);
+}
+
+test "wheel pan distance grows with visible width" {
+    const near_distance = wheelPanDistance(.{ .projection = .{ .perspective = .{} } }, .{ 1600.0, 900.0 }, 3.0);
+    const far_distance = wheelPanDistance(.{ .projection = .{ .perspective = .{} } }, .{ 1600.0, 900.0 }, 12.0);
+
+    try std.testing.expect(far_distance > near_distance);
 }
