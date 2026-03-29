@@ -1406,6 +1406,9 @@ fn drawHeaderBar(state: *EditorState) void {
         gui.sameLine();
         if (gui.buttonEx(state.text(.ai_chat_configure), config_w, 0.0)) {
             state.ai_provider_settings_open = !state.ai_provider_settings_open;
+            if (!state.ai_provider_settings_open) {
+                g_focus_ai_input_next_frame = true;
+            }
             ai_chat_log.info("Provider settings panel toggled: {s}", .{if (state.ai_provider_settings_open) "open" else "closed"});
         }
         gui.popStyleColor(3);
@@ -1794,6 +1797,7 @@ fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerCo
     if (inputTextWithHintStyled("##name", state.text(.ai_chat_hint_provider_name), p.name[0..])) {
         provider_prefs_dirty = true;
     }
+    _ = refocusAiTextFieldIfClicked(layer_context);
 
     gui.dummy(0.0, 4.0);
 
@@ -1804,6 +1808,7 @@ fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerCo
     if (inputTextWithHintStyled("##endpoint", state.text(.ai_chat_hint_endpoint), p.endpoint[0..])) {
         provider_prefs_dirty = true;
     }
+    _ = refocusAiTextFieldIfClicked(layer_context);
     gui.dummy(0.0, 4.0);
 
     gui.pushStyleColor(.text, .{ 0.65, 0.70, 0.78, 1.0 });
@@ -1813,6 +1818,7 @@ fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerCo
     if (inputTextWithHintStyled("##model", state.text(.ai_chat_hint_model), p.model[0..])) {
         provider_prefs_dirty = true;
     }
+    _ = refocusAiTextFieldIfClicked(layer_context);
 
     gui.dummy(0.0, 4.0);
 
@@ -1826,10 +1832,12 @@ fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerCo
         if (inputTextWithHintStyled("##apikey", state.text(.ai_chat_hint_api_key), p.api_key[0..])) {
             provider_prefs_dirty = true;
         }
+        _ = refocusAiTextFieldIfClicked(layer_context);
     } else {
         if (inputTextPasswordStyled("##apikey", p.api_key[0..])) {
             provider_prefs_dirty = true;
         }
+        _ = refocusAiTextFieldIfClicked(layer_context);
     }
     gui.sameLine();
     if (gui.buttonEx(if (state.ai_provider_api_key_visible) state.text(.ai_chat_hide) else state.text(.ai_chat_show), toggle_w, 0.0)) {
@@ -1933,6 +1941,21 @@ var g_window_initialized = false;
 var g_prev_ai_chat_open = false;
 var g_focus_ai_input_next_frame = true;
 
+fn pointInRect(point: [2]f32, min: [2]f32, max: [2]f32) bool {
+    return point[0] >= min[0] and point[0] <= max[0] and
+        point[1] >= min[1] and point[1] <= max[1];
+}
+
+fn refocusAiTextFieldIfClicked(layer_context: *engine.core.LayerContext) bool {
+    const clicked = layer_context.input.wasMousePressed(.left) and
+        pointInRect(gui.mousePos(), gui.getItemRectMin(), gui.getItemRectMax());
+    if (clicked and !gui.isItemActive()) {
+        gui.setKeyboardFocusHere(-1);
+        return true;
+    }
+    return false;
+}
+
 pub fn drawAiChatPanel(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     pumpAsyncResults(state, layer_context);
     if (!state.ai_chat_open) {
@@ -1964,6 +1987,7 @@ pub fn drawAiChatPanel(state: *EditorState, layer_context: *engine.core.LayerCon
 
     drawHeaderBar(state);
     try drawProviderSettings(state, layer_context);
+    if (state.ai_provider_settings_open) return;
     drawStagedTransactionBanner(state);
     drawStageDetail(state);
 
@@ -2003,6 +2027,11 @@ pub fn drawAiChatPanel(state: *EditorState, layer_context: *engine.core.LayerCon
             g_input_buffer[0..],
             if (busy) gui.InputTextFlags.none else gui.InputTextFlags.enter_returns_true,
         );
+        if (!busy and refocusAiTextFieldIfClicked(layer_context)) {
+            // Some frames miss the first activation click on the floating AI panel.
+            // Re-request focus so the caret appears reliably on the next frame.
+            g_focus_ai_input_next_frame = true;
+        }
 
         gui.sameLine();
         gui.pushStyleColor(.button, .{ 0.13, 0.50, 0.36, 0.88 });
