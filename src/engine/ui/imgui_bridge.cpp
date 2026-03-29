@@ -102,6 +102,20 @@ ImGuiCol to_imgui_style_color(uint32_t slot) {
     return ImGuiCol_ButtonHovered;
   case GUAVA_IMGUI_STYLE_COLOR_BUTTON_ACTIVE:
     return ImGuiCol_ButtonActive;
+  case GUAVA_IMGUI_STYLE_COLOR_FRAME_BG:
+    return ImGuiCol_FrameBg;
+  case GUAVA_IMGUI_STYLE_COLOR_FRAME_BG_HOVERED:
+    return ImGuiCol_FrameBgHovered;
+  case GUAVA_IMGUI_STYLE_COLOR_FRAME_BG_ACTIVE:
+    return ImGuiCol_FrameBgActive;
+  case GUAVA_IMGUI_STYLE_COLOR_BORDER:
+    return ImGuiCol_Border;
+  case GUAVA_IMGUI_STYLE_COLOR_TEXT_SELECTED_BG:
+    return ImGuiCol_TextSelectedBg;
+  case GUAVA_IMGUI_STYLE_COLOR_NAV_CURSOR:
+    return ImGuiCol_NavCursor;
+  case GUAVA_IMGUI_STYLE_COLOR_INPUT_TEXT_CURSOR:
+    return ImGuiCol_InputTextCursor;
   default:
     return ImGuiCol_Text;
   }
@@ -476,6 +490,7 @@ void apply_guava_editor_style(float content_scale) {
   colors[ImGuiCol_ResizeGrip] = make_color(85, 95, 110, 60);
   colors[ImGuiCol_ResizeGripHovered] = accent_green_hover;
   colors[ImGuiCol_ResizeGripActive] = accent_green;
+  colors[ImGuiCol_InputTextCursor] = make_color(226, 236, 248);
   colors[ImGuiCol_Tab] = make_color(36, 39, 44);
   colors[ImGuiCol_TabUnfocused] = make_color(30, 33, 37);
   colors[ImGuiCol_DockingPreview] = accent_green_dim;
@@ -612,6 +627,7 @@ extern "C" bool guava_imgui_init(SDL_Window *window, void *metal_bridge_ctx,
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
   io.ConfigDockingAlwaysTabBar = true;
+  io.ConfigInputTextCursorBlink = false;
 
   if (char *pref_path = SDL_GetPrefPath("Guava", "Editor")) {
     g_ini_path = std::string(pref_path) + "imgui.ini";
@@ -656,6 +672,7 @@ extern "C" bool guava_imgui_init_vulkan(SDL_Window *window,
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
   io.ConfigDockingAlwaysTabBar = true;
+  io.ConfigInputTextCursorBlink = false;
 
   if (char *pref_path = SDL_GetPrefPath("Guava", "Editor")) {
     g_ini_path = std::string(pref_path) + "imgui.ini";

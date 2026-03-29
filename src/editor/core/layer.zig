@@ -23,6 +23,7 @@ const post_process_editor = @import("../ui/panels/rendering/post_process_editor.
 const prefab_editor = @import("../ui/panels/assets/prefab_editor.zig");
 const camera_bookmarks = @import("../ui/panels/viewport/camera_bookmarks.zig");
 const rhi_stats = @import("../ui/panels/debug/rhi_stats.zig");
+const preferences = @import("preferences.zig");
 
 fn initEditorStyle() void {
     // Phase 2 shell redesign:
@@ -161,6 +162,9 @@ pub const EditorLayer = struct {
         try gui.init(layer_context.window, layer_context.rhi());
 
         initEditorStyle();
+        preferences.loadAiProviderSettings(&self.state) catch |err| {
+            std.log.warn("Editor: failed to load AI provider settings: {s}", .{@errorName(err)});
+        };
 
         // Force textured startup viewport so imported model textures are visible immediately.
         self.state.viewport_render_mode = .textured;
@@ -188,6 +192,9 @@ pub const EditorLayer = struct {
 
     fn onDetach(context: *anyopaque) void {
         const self: *EditorLayer = @ptrCast(@alignCast(context));
+        preferences.saveAiProviderSettings(&self.state) catch |err| {
+            std.log.warn("Editor: failed to save AI provider settings: {s}", .{@errorName(err)});
+        };
         icon_cache.clearIconCache(&self.state);
         asset_preview.clearPreviewTexture(&self.state);
         self.state.preview_device = null;

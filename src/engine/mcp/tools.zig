@@ -19,10 +19,12 @@ pub const Error = error{
 const CommandRequest = struct {
     tool_name: []u8,
     command: command_mod.Command,
+    meta: command_mod.CommandMeta = .{},
 
     fn deinit(self: *CommandRequest, allocator: std.mem.Allocator) void {
         allocator.free(self.tool_name);
         self.command.deinit(allocator);
+        self.meta.deinit(allocator);
         self.* = undefined;
     }
 };
@@ -236,7 +238,16 @@ pub const Bridge = struct {
     }
 
     pub fn submitJson(self: *Bridge, tool_name: []const u8, arguments: ?std.json.Value) !CallResponse {
-        var request = try parseToolCallAlloc(self.allocator, tool_name, arguments);
+        return self.submitJsonWithMeta(tool_name, arguments, null);
+    }
+
+    pub fn submitJsonWithMeta(
+        self: *Bridge,
+        tool_name: []const u8,
+        arguments: ?std.json.Value,
+        meta: ?*const command_mod.CommandMeta,
+    ) !CallResponse {
+        var request = try parseToolCallWithMetaAlloc(self.allocator, tool_name, arguments, meta);
         errdefer request.deinit(self.allocator);
 
         self.mutex.lock();
@@ -271,7 +282,17 @@ pub const Bridge = struct {
         tool_name: []const u8,
         arguments: ?std.json.Value,
     ) !ExecuteOutcome {
-        var request = try parseToolCallAlloc(self.allocator, tool_name, arguments);
+        return self.executeJsonImmediateWithMeta(layer_context, tool_name, arguments, null);
+    }
+
+    pub fn executeJsonImmediateWithMeta(
+        self: *Bridge,
+        layer_context: *core.LayerContext,
+        tool_name: []const u8,
+        arguments: ?std.json.Value,
+        meta: ?*const command_mod.CommandMeta,
+    ) !ExecuteOutcome {
+        var request = try parseToolCallWithMetaAlloc(self.allocator, tool_name, arguments, meta);
         return try self.executeOwnedRequest(layer_context, &request);
     }
 
@@ -312,7 +333,12 @@ pub const Bridge = struct {
 
         const result = switch (request.*) {
             .command => |command_request| blk: {
-                const execution = command_queue_mod.executeOne(layer_context.world, command_request.command) catch |err| {
+                const execution = command_queue_mod.executeOneWithMeta(
+                    layer_context.world,
+                    command_request.command,
+                    .ai,
+                    &command_request.meta,
+                ) catch |err| {
                     request.deinit(self.allocator);
                     return err;
                 };
@@ -375,6 +401,15 @@ pub fn parseToolCallAlloc(
     tool_name: []const u8,
     arguments: ?std.json.Value,
 ) !PendingRequest {
+    return parseToolCallWithMetaAlloc(allocator, tool_name, arguments, null);
+}
+
+fn parseToolCallWithMetaAlloc(
+    allocator: std.mem.Allocator,
+    tool_name: []const u8,
+    arguments: ?std.json.Value,
+    meta_override: ?*const command_mod.CommandMeta,
+) !PendingRequest {
     const owned_tool_name = try allocator.dupe(u8, tool_name);
     errdefer allocator.free(owned_tool_name);
 
@@ -424,6 +459,7 @@ pub fn parseToolCallAlloc(
         return .{
             .command = .{
                 .tool_name = owned_tool_name,
+                .meta = try parseEffectiveCommandMetaAlloc(allocator, arguments, meta_override),
                 .command = .{
                     .create_entity = try parseCreateEntityAlloc(allocator, arguments),
                 },
@@ -434,6 +470,7 @@ pub fn parseToolCallAlloc(
         return .{
             .command = .{
                 .tool_name = owned_tool_name,
+                .meta = try parseEffectiveCommandMetaAlloc(allocator, arguments, meta_override),
                 .command = .{
                     .delete_entity = .{
                         .entity_id = try parseRequiredEntityId(arguments, "entity_id"),
@@ -446,6 +483,7 @@ pub fn parseToolCallAlloc(
         return .{
             .command = .{
                 .tool_name = owned_tool_name,
+                .meta = try parseEffectiveCommandMetaAlloc(allocator, arguments, meta_override),
                 .command = .{
                     .rename_entity = .{
                         .entity_id = try parseRequiredEntityId(arguments, "entity_id"),
@@ -459,6 +497,7 @@ pub fn parseToolCallAlloc(
         return .{
             .command = .{
                 .tool_name = owned_tool_name,
+                .meta = try parseEffectiveCommandMetaAlloc(allocator, arguments, meta_override),
                 .command = .{
                     .set_parent = .{
                         .entity_id = try parseRequiredEntityId(arguments, "entity_id"),
@@ -472,6 +511,7 @@ pub fn parseToolCallAlloc(
         return .{
             .command = .{
                 .tool_name = owned_tool_name,
+                .meta = try parseEffectiveCommandMetaAlloc(allocator, arguments, meta_override),
                 .command = .{
                     .set_local_transform = .{
                         .entity_id = try parseRequiredEntityId(arguments, "entity_id"),
@@ -485,6 +525,7 @@ pub fn parseToolCallAlloc(
         return .{
             .command = .{
                 .tool_name = owned_tool_name,
+                .meta = try parseEffectiveCommandMetaAlloc(allocator, arguments, meta_override),
                 .command = .{
                     .set_world_transform = .{
                         .entity_id = try parseRequiredEntityId(arguments, "entity_id"),
@@ -498,6 +539,7 @@ pub fn parseToolCallAlloc(
         return .{
             .command = .{
                 .tool_name = owned_tool_name,
+                .meta = try parseEffectiveCommandMetaAlloc(allocator, arguments, meta_override),
                 .command = .{
                     .set_visible = .{
                         .entity_id = try parseRequiredEntityId(arguments, "entity_id"),
@@ -1093,6 +1135,95 @@ fn parseOptionalStringAlloc(
     return parseOptionalStringAllocFromObject(allocator, try requireObject(arguments), field_name);
 }
 
+fn optionalStringField(object: std.json.ObjectMap, field_name: []const u8) ?[]const u8 {
+    const value = object.get(field_name) orelse return null;
+    return switch (value) {
+        .null => null,
+        .string => |text| text,
+        else => null,
+    };
+}
+
+fn parseApprovalState(value: []const u8) ?command_mod.ApprovalState {
+    if (std.mem.eql(u8, value, "auto")) return .auto;
+    if (std.mem.eql(u8, value, "previewed")) return .previewed;
+    if (std.mem.eql(u8, value, "user_approved")) return .user_approved;
+    if (std.mem.eql(u8, value, "rejected")) return .rejected;
+    return null;
+}
+
+fn replaceMetaFieldAlloc(allocator: std.mem.Allocator, field: *?[]u8, value: []const u8) !void {
+    if (field.*) |existing| {
+        allocator.free(existing);
+    }
+    field.* = try allocator.dupe(u8, value);
+}
+
+fn applyCommandMetaFieldsAlloc(
+    allocator: std.mem.Allocator,
+    object: std.json.ObjectMap,
+    meta: *command_mod.CommandMeta,
+) !void {
+    if (optionalStringField(object, "actor")) |value| {
+        try replaceMetaFieldAlloc(allocator, &meta.actor, value);
+    }
+    if (optionalStringField(object, "client")) |value| {
+        try replaceMetaFieldAlloc(allocator, &meta.client, value);
+    }
+    if (optionalStringField(object, "session")) |value| {
+        try replaceMetaFieldAlloc(allocator, &meta.session, value);
+    }
+    if (optionalStringField(object, "request")) |value| {
+        try replaceMetaFieldAlloc(allocator, &meta.request, value);
+    }
+    if (optionalStringField(object, "trace")) |value| {
+        try replaceMetaFieldAlloc(allocator, &meta.trace, value);
+    }
+    if (optionalStringField(object, "approval")) |value| {
+        meta.approval = parseApprovalState(value) orelse return error.InvalidArguments;
+    }
+    if (object.get("base_revision")) |value| {
+        switch (value) {
+            .integer => |revision| {
+                if (revision < 0) return error.InvalidArguments;
+                meta.base_revision = @intCast(revision);
+            },
+            .null => meta.base_revision = null,
+            else => return error.InvalidArguments,
+        }
+    }
+}
+
+fn parseCommandMetaAlloc(allocator: std.mem.Allocator, arguments: ?std.json.Value) !command_mod.CommandMeta {
+    var meta: command_mod.CommandMeta = .{};
+    errdefer meta.deinit(allocator);
+
+    const object = try requireObject(arguments);
+    if (object.get("meta")) |meta_value| {
+        switch (meta_value) {
+            .object => |meta_object| try applyCommandMetaFieldsAlloc(allocator, meta_object, &meta),
+            .null => {},
+            else => return error.InvalidArguments,
+        }
+    }
+    try applyCommandMetaFieldsAlloc(allocator, object, &meta);
+    return meta;
+}
+
+fn parseEffectiveCommandMetaAlloc(
+    allocator: std.mem.Allocator,
+    arguments: ?std.json.Value,
+    meta_override: ?*const command_mod.CommandMeta,
+) !command_mod.CommandMeta {
+    var meta = try parseCommandMetaAlloc(allocator, arguments);
+    errdefer meta.deinit(allocator);
+    if (meta_override) |override_meta| {
+        meta.deinit(allocator);
+        meta = try override_meta.cloneAlloc(allocator);
+    }
+    return meta;
+}
+
 fn parseRequiredStringAllocFromObject(
     allocator: std.mem.Allocator,
     object: std.json.ObjectMap,
@@ -1573,4 +1704,50 @@ test "parseToolCallAlloc rejects query_entities with incomplete AABB" {
             parsed.value.object.get("arguments").?,
         ),
     );
+}
+
+test "parseToolCallWithMetaAlloc applies override metadata to command tools" {
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator,
+        \\{
+        \\  "name": "set_visible",
+        \\  "arguments": {
+        \\    "entity_id": 99,
+        \\    "visible": true
+        \\  }
+        \\}
+    , .{
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+
+    var override_meta: command_mod.CommandMeta = .{};
+    defer override_meta.deinit(std.testing.allocator);
+    override_meta.actor = try std.testing.allocator.dupe(u8, "ai_chat");
+    override_meta.client = try std.testing.allocator.dupe(u8, "editor");
+    override_meta.session = try std.testing.allocator.dupe(u8, "session-1");
+    override_meta.request = try std.testing.allocator.dupe(u8, "req-1");
+    override_meta.trace = try std.testing.allocator.dupe(u8, "trace-1");
+    override_meta.approval = .user_approved;
+    override_meta.base_revision = 42;
+
+    var request = try parseToolCallWithMetaAlloc(
+        std.testing.allocator,
+        parsed.value.object.get("name").?.string,
+        parsed.value.object.get("arguments").?,
+        &override_meta,
+    );
+    defer request.deinit(std.testing.allocator);
+
+    switch (request) {
+        .command => |command_request| {
+            try std.testing.expectEqualStrings("ai_chat", command_request.meta.actor.?);
+            try std.testing.expectEqualStrings("editor", command_request.meta.client.?);
+            try std.testing.expectEqualStrings("session-1", command_request.meta.session.?);
+            try std.testing.expectEqualStrings("req-1", command_request.meta.request.?);
+            try std.testing.expectEqualStrings("trace-1", command_request.meta.trace.?);
+            try std.testing.expectEqual(command_mod.ApprovalState.user_approved, command_request.meta.approval);
+            try std.testing.expectEqual(@as(?u64, 42), command_request.meta.base_revision);
+        },
+        else => return error.UnexpectedCommandTag,
+    }
 }

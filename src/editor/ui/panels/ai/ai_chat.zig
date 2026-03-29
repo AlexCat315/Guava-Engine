@@ -1,7 +1,9 @@
 const std = @import("std");
 const engine = @import("guava");
 const gui = @import("../../gui.zig");
+const ui_icons = @import("../../icons.zig");
 const state_mod = @import("../../../core/state.zig");
+const preferences = @import("../../../core/preferences.zig");
 const EditorState = state_mod.EditorState;
 const AiProviderType = state_mod.AiProviderType;
 
@@ -32,7 +34,10 @@ var g_messages: [max_messages]Message = undefined;
 var g_message_count: usize = 0;
 var g_input_buffer: [max_input_len]u8 = [_]u8{0} ** max_input_len;
 var g_scroll_to_bottom: bool = false;
-var g_connection_error: ?[:0]const u8 = null;
+var g_connection_error: ?[]const u8 = null;
+var g_meta_request_counter: u64 = 0;
+var g_meta_session_id_len: usize = 0;
+var g_meta_session_id_buffer: [64]u8 = [_]u8{0} ** 64;
 
 const provider_type_names = [_][]const u8{
     "OpenAI",
@@ -86,6 +91,7 @@ const AsyncTaskContext = struct {
     tool_bridge: ?*engine.mcp.tools.Bridge = null,
     collaboration_bridge: ?*engine.mcp.collaboration.Bridge = null,
     snapshot_store: ?*engine.mcp.resources.SnapshotStore = null,
+    command_meta: engine.core.CommandMeta = .{},
 
     fn deinit(self: *AsyncTaskContext, allocator: std.mem.Allocator) void {
         if (self.tool_name) |value| allocator.free(value);
@@ -94,6 +100,7 @@ const AsyncTaskContext = struct {
         if (self.provider_endpoint) |value| allocator.free(value);
         if (self.provider_model) |value| allocator.free(value);
         if (self.provider_api_key) |value| allocator.free(value);
+        self.command_meta.deinit(allocator);
         self.* = undefined;
     }
 };
@@ -137,6 +144,73 @@ pub fn clearHistory() void {
 
 pub fn clearConnectionError() void {
     g_connection_error = null;
+}
+
+fn commandApprovalForTool(tool_name: []const u8) engine.core.CommandApprovalState {
+    if (std.mem.eql(u8, tool_name, "stage_transaction")) return .previewed;
+    if (std.mem.eql(u8, tool_name, "apply_staged_transaction")) return .user_approved;
+    if (std.mem.eql(u8, tool_name, "discard_staged_transaction")) return .rejected;
+    return .auto;
+}
+
+fn ensureMetaSessionId() []const u8 {
+    if (g_meta_session_id_len != 0) {
+        return g_meta_session_id_buffer[0..g_meta_session_id_len];
+    }
+
+    const timestamp = std.time.milliTimestamp();
+    const generated = std.fmt.bufPrint(&g_meta_session_id_buffer, "ai-chat-{d}", .{timestamp}) catch {
+        const fallback = "ai-chat";
+        @memcpy(g_meta_session_id_buffer[0..fallback.len], fallback);
+        g_meta_session_id_len = fallback.len;
+        return g_meta_session_id_buffer[0..g_meta_session_id_len];
+    };
+    g_meta_session_id_len = generated.len;
+    return g_meta_session_id_buffer[0..g_meta_session_id_len];
+}
+
+fn buildAiCommandMetaAlloc(
+    allocator: std.mem.Allocator,
+    tool_name: ?[]const u8,
+    base_revision: ?u64,
+) !engine.core.CommandMeta {
+    g_meta_request_counter += 1;
+    const request_id = g_meta_request_counter;
+    const session_id = ensureMetaSessionId();
+
+    var meta: engine.core.CommandMeta = .{};
+    errdefer meta.deinit(allocator);
+
+    meta.actor = try allocator.dupe(u8, "ai_chat");
+    meta.client = try allocator.dupe(u8, "editor");
+    meta.session = try allocator.dupe(u8, session_id);
+    meta.request = try std.fmt.allocPrint(allocator, "req-{d}", .{request_id});
+    meta.trace = if (tool_name) |resolved_tool_name|
+        try std.fmt.allocPrint(allocator, "trace-{d}:{s}", .{ request_id, resolved_tool_name })
+    else
+        try std.fmt.allocPrint(allocator, "trace-{d}:intent", .{request_id});
+    meta.approval = if (tool_name) |resolved_tool_name| commandApprovalForTool(resolved_tool_name) else .auto;
+    meta.base_revision = base_revision;
+    return meta;
+}
+
+fn deriveToolCommandMetaAlloc(
+    allocator: std.mem.Allocator,
+    base_meta: ?*const engine.core.CommandMeta,
+    tool_name: []const u8,
+) !engine.core.CommandMeta {
+    if (base_meta) |resolved_base| {
+        var meta = try resolved_base.cloneAlloc(allocator);
+        errdefer meta.deinit(allocator);
+        meta.approval = commandApprovalForTool(tool_name);
+        if (meta.trace) |existing_trace| {
+            allocator.free(existing_trace);
+        }
+        const request_text = meta.request orelse "req-0";
+        meta.trace = try std.fmt.allocPrint(allocator, "{s}:{s}", .{ request_text, tool_name });
+        return meta;
+    }
+    return buildAiCommandMetaAlloc(allocator, tool_name, null);
 }
 
 fn applyProviderDefaults(state: *EditorState) void {
@@ -226,13 +300,13 @@ fn testHttpConnectionAlloc(
     defer std.heap.page_allocator.free(completion);
 
     const trimmed = std.mem.trim(u8, completion, " \t\r\n");
-    if (std.mem.startsWith(u8, trimmed, "Provider 请求失败")) {
+    if (std.mem.startsWith(u8, trimmed, "Provider request failed")) {
         return std.heap.page_allocator.dupe(u8, trimmed);
     }
     return allocMessage(
-        "连接测试成功。Provider 回复: {s}",
+        "Connection test succeeded. Provider replied: {s}",
         .{clipped(trimmed, 220)},
-        "连接测试成功。",
+        "Connection test succeeded.",
     );
 }
 
@@ -309,16 +383,30 @@ fn isMcpBridgeReady(state: *const EditorState) bool {
     return state.ai_collaboration != null and state.ai_tool_bridge != null and state.ai_collaboration_bridge != null;
 }
 
-fn activeProviderValidationError(state: *const EditorState) ?[:0]const u8 {
+const ProviderValidationError = enum {
+    endpoint_empty,
+    model_empty,
+    api_key_empty,
+};
+
+fn activeProviderValidationError(state: *const EditorState) ?ProviderValidationError {
     const provider = &state.ai_providers[state.ai_active_provider];
     const endpoint = fixedBufferSlice(provider.endpoint[0..]);
     const model = fixedBufferSlice(provider.model[0..]);
     const api_key = fixedBufferSlice(provider.api_key[0..]);
 
-    if (endpoint.len == 0) return "Provider Endpoint 为空";
-    if (model.len == 0) return "Provider 模型名为空";
-    if (state.ai_provider_type != .ollama and api_key.len == 0) return "Provider API Key 为空";
+    if (endpoint.len == 0) return .endpoint_empty;
+    if (model.len == 0) return .model_empty;
+    if (state.ai_provider_type != .ollama and api_key.len == 0) return .api_key_empty;
     return null;
+}
+
+fn providerValidationErrorText(state: *const EditorState, validation_error: ProviderValidationError) []const u8 {
+    return switch (validation_error) {
+        .endpoint_empty => state.text(.ai_chat_validation_endpoint_empty),
+        .model_empty => state.text(.ai_chat_validation_model_empty),
+        .api_key_empty => state.text(.ai_chat_validation_api_key_empty),
+    };
 }
 
 fn clipped(slice: []const u8, max_len: usize) []const u8 {
@@ -620,9 +708,9 @@ fn requestProviderCompletionAlloc(task: *const AsyncTaskContext, prompt: []const
     if (response.status.class() != .success) {
         const phrase = response.status.phrase() orelse "HTTP Error";
         return allocMessage(
-            "Provider 请求失败: HTTP {d} ({s})\n{s}",
+            "Provider request failed: HTTP {d} ({s})\n{s}",
             .{ @intFromEnum(response.status), phrase, clipped(response.body, 512) },
-            "Provider 请求失败。",
+            "Provider request failed.",
         );
     }
 
@@ -730,6 +818,7 @@ fn executeToolCallAsync(
     collaboration_bridge: ?*engine.mcp.collaboration.Bridge,
     tool_name: []const u8,
     raw_arguments: []const u8,
+    command_meta: ?*const engine.core.CommandMeta,
 ) !AsyncResult {
     var parsed_args: ?std.json.Parsed(std.json.Value) = null;
     defer if (parsed_args) |*parsed| parsed.deinit();
@@ -744,23 +833,26 @@ fn executeToolCallAsync(
         }) catch {
             return .{
                 .role = .system,
-                .text = try std.heap.page_allocator.dupe(u8, "JSON 参数解析失败。示例: /mcp query_entities {\"limit\":8}"),
+                .text = try std.heap.page_allocator.dupe(u8, "JSON parse failed. Example: /mcp query_entities {\"limit\":8}"),
             };
         };
         break :blk parsed_args.?.value;
     };
 
+    var tool_meta = try deriveToolCommandMetaAlloc(std.heap.page_allocator, command_meta, tool_name);
+    defer tool_meta.deinit(std.heap.page_allocator);
+
     if (engine.mcp.collaboration.isToolName(tool_name)) {
         const bridge = collaboration_bridge orelse {
             return .{
                 .role = .system,
-                .text = try std.heap.page_allocator.dupe(u8, "MCP collaboration bridge 未连接。"),
+                .text = try std.heap.page_allocator.dupe(u8, "MCP collaboration bridge is not connected."),
             };
         };
-        var response = bridge.submitJson(tool_name, arguments_value) catch |err| {
+        var response = bridge.submitJsonWithMeta(tool_name, arguments_value, &tool_meta) catch |err| {
             return .{
                 .role = .system,
-                .text = try allocMessage("MCP collaboration tool 调用失败: {s}", .{@errorName(err)}, "MCP collaboration tool 调用失败"),
+                .text = try allocMessage("MCP collaboration tool call failed: {s}", .{@errorName(err)}, "MCP collaboration tool call failed."),
             };
         };
         defer response.deinit(bridge.allocator);
@@ -780,13 +872,13 @@ fn executeToolCallAsync(
     const bridge = tool_bridge orelse {
         return .{
             .role = .system,
-            .text = try std.heap.page_allocator.dupe(u8, "MCP tool bridge 未连接。"),
+            .text = try std.heap.page_allocator.dupe(u8, "MCP tool bridge is not connected."),
         };
     };
-    var response = bridge.submitJson(tool_name, arguments_value) catch |err| {
+    var response = bridge.submitJsonWithMeta(tool_name, arguments_value, &tool_meta) catch |err| {
         return .{
             .role = .system,
-            .text = try allocMessage("MCP tool 调用失败: {s}", .{@errorName(err)}, "MCP tool 调用失败"),
+            .text = try allocMessage("MCP tool call failed: {s}", .{@errorName(err)}, "MCP tool call failed."),
         };
     };
     defer response.deinit(bridge.allocator);
@@ -811,7 +903,7 @@ fn executePromptIntentAsync(task: *const AsyncTaskContext) !AsyncResult {
     const completion = requestProviderCompletionAlloc(task, prompt) catch |err| {
         return .{
             .role = .system,
-            .text = try allocMessage("Provider 请求失败: {s}", .{@errorName(err)}, "Provider 请求失败。"),
+            .text = try allocMessage("Provider request failed: {s}", .{@errorName(err)}, "Provider request failed."),
         };
     };
     defer std.heap.page_allocator.free(completion);
@@ -825,9 +917,10 @@ fn executePromptIntentAsync(task: *const AsyncTaskContext) !AsyncResult {
             task.collaboration_bridge,
             tool_call.tool_name,
             if (tool_call.arguments_json) |arguments_json| arguments_json else "",
+            &task.command_meta,
         ),
         .message => |message| .{
-            .role = if (std.mem.startsWith(u8, std.mem.trim(u8, message, " \t\r\n"), "Provider 请求失败"))
+            .role = if (std.mem.startsWith(u8, std.mem.trim(u8, message, " \t\r\n"), "Provider request failed"))
                 .system
             else
                 .assistant,
@@ -853,15 +946,16 @@ fn runAsyncTaskMain(context: ?*anyopaque) void {
             task.collaboration_bridge,
             task.tool_name orelse "",
             task.raw_arguments orelse "",
+            &task.command_meta,
         ) catch |err| blk: {
-            const text = allocMessage("AI 后台任务失败: {s}", .{@errorName(err)}, "AI 后台任务失败。") catch {
+            const text = allocMessage("AI background task failed: {s}", .{@errorName(err)}, "AI background task failed.") catch {
                 asyncFinishWithoutResult();
                 return;
             };
             break :blk AsyncResult{ .role = .system, .text = text };
         },
         .prompt_intent => executePromptIntentAsync(task) catch |err| blk: {
-            const text = allocMessage("AI 意图解析失败: {s}", .{@errorName(err)}, "AI 意图解析失败。") catch {
+            const text = allocMessage("AI intent parse failed: {s}", .{@errorName(err)}, "AI intent parse failed.") catch {
                 asyncFinishWithoutResult();
                 return;
             };
@@ -950,7 +1044,7 @@ fn refreshMcpSnapshot(state: *EditorState, layer_context: *engine.core.LayerCont
 
 fn handleMcpToolCommandImmediate(state: *EditorState, layer_context: *engine.core.LayerContext, command: ToolCommand) bool {
     if (command.name.len == 0) {
-        appendMessage(.system, "缺少 tool 名称。示例: /mcp query_entities {\"limit\":8}");
+        appendMessage(.system, state.text(.ai_chat_missing_tool_name_example));
         return true;
     }
 
@@ -965,20 +1059,34 @@ fn handleMcpToolCommandImmediate(state: *EditorState, layer_context: *engine.cor
             .allocate = .alloc_always,
             .ignore_unknown_fields = true,
         }) catch {
-            appendMessage(.system, "JSON 参数解析失败。示例: /mcp query_entities {\"limit\":8}");
+            appendMessage(.system, state.text(.ai_chat_json_parse_failed_example));
             return true;
         };
         break :blk parsed_args.?.value;
     };
+
+    var command_meta = buildAiCommandMetaAlloc(
+        std.heap.page_allocator,
+        command.name,
+        layer_context.world.sceneRevision(),
+    ) catch {
+        appendMessage(.system, state.text(.ai_chat_meta_alloc_failed));
+        return true;
+    };
+    defer command_meta.deinit(std.heap.page_allocator);
 
     if (engine.mcp.collaboration.isToolName(command.name)) {
         const bridge = state.ai_collaboration_bridge orelse {
             appendMessage(.system, state.text(.ai_chat_disconnected));
             return true;
         };
-        var outcome = bridge.executeJsonImmediate(layer_context, command.name, args_value) catch |err| {
+        var outcome = bridge.executeJsonImmediateWithMeta(layer_context, command.name, args_value, &command_meta) catch |err| {
             var message_buffer: [160]u8 = undefined;
-            const message = std.fmt.bufPrint(&message_buffer, "MCP collaboration tool 调用失败: {s}", .{@errorName(err)}) catch "MCP collaboration tool 调用失败";
+            const message = std.fmt.bufPrint(
+                &message_buffer,
+                "{s}: {s}",
+                .{ state.text(.ai_chat_collaboration_tool_call_failed_fallback), @errorName(err) },
+            ) catch state.text(.ai_chat_collaboration_tool_call_failed_fallback);
             appendMessage(.system, message);
             return true;
         };
@@ -989,7 +1097,7 @@ fn handleMcpToolCommandImmediate(state: *EditorState, layer_context: *engine.cor
             defer std.heap.page_allocator.free(resolved_summary);
             appendMessage(.assistant, resolved_summary);
         } else {
-            appendMessage(.assistant, "collaboration tool ok");
+            appendMessage(.assistant, state.text(.ai_chat_collaboration_tool_ok));
         }
 
         if (outcome.world_changed) {
@@ -1002,9 +1110,13 @@ fn handleMcpToolCommandImmediate(state: *EditorState, layer_context: *engine.cor
         appendMessage(.system, state.text(.ai_chat_disconnected));
         return true;
     };
-    var outcome = bridge.executeJsonImmediate(layer_context, command.name, args_value) catch |err| {
+    var outcome = bridge.executeJsonImmediateWithMeta(layer_context, command.name, args_value, &command_meta) catch |err| {
         var message_buffer: [160]u8 = undefined;
-        const message = std.fmt.bufPrint(&message_buffer, "MCP tool 调用失败: {s}", .{@errorName(err)}) catch "MCP tool 调用失败";
+        const message = std.fmt.bufPrint(
+            &message_buffer,
+            "{s}: {s}",
+            .{ state.text(.ai_chat_tool_call_failed_fallback), @errorName(err) },
+        ) catch state.text(.ai_chat_tool_call_failed_fallback);
         appendMessage(.system, message);
         return true;
     };
@@ -1015,7 +1127,7 @@ fn handleMcpToolCommandImmediate(state: *EditorState, layer_context: *engine.cor
         defer std.heap.page_allocator.free(resolved_summary);
         appendMessage(.assistant, resolved_summary);
     } else {
-        appendMessage(.assistant, "tool ok");
+        appendMessage(.assistant, state.text(.ai_chat_tool_ok));
     }
 
     if (outcome.snapshot_dirty) {
@@ -1026,12 +1138,12 @@ fn handleMcpToolCommandImmediate(state: *EditorState, layer_context: *engine.cor
 
 fn enqueueToolCommand(state: *EditorState, layer_context: *engine.core.LayerContext, command: ToolCommand) bool {
     if (command.name.len == 0) {
-        appendMessage(.system, "缺少 tool 名称。示例: /mcp query_entities {\"limit\":8}");
+        appendMessage(.system, state.text(.ai_chat_missing_tool_name_example));
         return true;
     }
 
     const task = std.heap.page_allocator.create(AsyncTaskContext) catch {
-        appendMessage(.system, "无法创建 AI 后台任务。");
+        appendMessage(.system, state.text(.ai_chat_failed_create_background_task));
         return false;
     };
     task.* = .{
@@ -1042,13 +1154,23 @@ fn enqueueToolCommand(state: *EditorState, layer_context: *engine.core.LayerCont
     };
     task.tool_name = std.heap.page_allocator.dupe(u8, command.name) catch {
         std.heap.page_allocator.destroy(task);
-        appendMessage(.system, "无法分配 tool 名称缓存。");
+        appendMessage(.system, state.text(.ai_chat_failed_allocate_tool_name));
         return false;
     };
     task.raw_arguments = std.heap.page_allocator.dupe(u8, command.raw_arguments) catch {
         task.deinit(std.heap.page_allocator);
         std.heap.page_allocator.destroy(task);
-        appendMessage(.system, "无法分配参数缓存。");
+        appendMessage(.system, state.text(.ai_chat_failed_allocate_arguments));
+        return false;
+    };
+    task.command_meta = buildAiCommandMetaAlloc(
+        std.heap.page_allocator,
+        command.name,
+        layer_context.world.sceneRevision(),
+    ) catch {
+        task.deinit(std.heap.page_allocator);
+        std.heap.page_allocator.destroy(task);
+        appendMessage(.system, state.text(.ai_chat_meta_alloc_failed));
         return false;
     };
 
@@ -1063,12 +1185,17 @@ fn enqueueToolCommand(state: *EditorState, layer_context: *engine.core.LayerCont
 fn enqueuePromptIntent(state: *EditorState, layer_context: *engine.core.LayerContext, input_text: []const u8) bool {
     applyProviderDefaults(state);
     if (activeProviderValidationError(state)) |validation_error| {
-        var message_buffer: [224]u8 = undefined;
+        const validation_error_text = providerValidationErrorText(state, validation_error);
+        var message_buffer: [384]u8 = undefined;
         const message = std.fmt.bufPrint(
             &message_buffer,
-            "MCP 通道已就绪，但 {s}。请点击“配置”补全 Provider。",
-            .{validation_error},
-        ) catch "MCP 通道已就绪，但 Provider 配置不完整。请点击“配置”补全。";
+            "{s} {s} ({s})",
+            .{
+                state.text(.ai_chat_provider_setup_incomplete_prefix),
+                state.text(.ai_chat_provider_setup_open_config_hint),
+                validation_error_text,
+            },
+        ) catch state.text(.ai_chat_provider_setup_incomplete_prefix);
         appendMessage(.system, message);
         state.ai_provider_settings_open = true;
         return false;
@@ -1079,7 +1206,7 @@ fn enqueuePromptIntent(state: *EditorState, layer_context: *engine.core.LayerCon
     const api_key = fixedBufferSlice(provider.api_key[0..]);
 
     const task = std.heap.page_allocator.create(AsyncTaskContext) catch {
-        appendMessage(.system, "无法创建 AI 后台任务。");
+        appendMessage(.system, state.text(.ai_chat_failed_create_background_task));
         return false;
     };
     task.* = .{
@@ -1092,25 +1219,35 @@ fn enqueuePromptIntent(state: *EditorState, layer_context: *engine.core.LayerCon
 
     task.prompt = std.heap.page_allocator.dupe(u8, input_text) catch {
         std.heap.page_allocator.destroy(task);
-        appendMessage(.system, "无法分配输入缓存。");
+        appendMessage(.system, state.text(.ai_chat_failed_allocate_input));
         return false;
     };
     task.provider_endpoint = std.heap.page_allocator.dupe(u8, endpoint) catch {
         task.deinit(std.heap.page_allocator);
         std.heap.page_allocator.destroy(task);
-        appendMessage(.system, "无法分配 endpoint 缓存。");
+        appendMessage(.system, state.text(.ai_chat_failed_allocate_endpoint));
         return false;
     };
     task.provider_model = std.heap.page_allocator.dupe(u8, model) catch {
         task.deinit(std.heap.page_allocator);
         std.heap.page_allocator.destroy(task);
-        appendMessage(.system, "无法分配 model 缓存。");
+        appendMessage(.system, state.text(.ai_chat_failed_allocate_model));
         return false;
     };
     task.provider_api_key = std.heap.page_allocator.dupe(u8, api_key) catch {
         task.deinit(std.heap.page_allocator);
         std.heap.page_allocator.destroy(task);
-        appendMessage(.system, "无法分配 API Key 缓存。");
+        appendMessage(.system, state.text(.ai_chat_failed_allocate_api_key));
+        return false;
+    };
+    task.command_meta = buildAiCommandMetaAlloc(
+        std.heap.page_allocator,
+        null,
+        layer_context.world.sceneRevision(),
+    ) catch {
+        task.deinit(std.heap.page_allocator);
+        std.heap.page_allocator.destroy(task);
+        appendMessage(.system, state.text(.ai_chat_meta_alloc_failed));
         return false;
     };
 
@@ -1126,7 +1263,7 @@ fn submitInput(state: *EditorState, layer_context: *engine.core.LayerContext) vo
     pumpAsyncResults(state, layer_context);
 
     if (asyncIsRunning()) {
-        appendMessage(.system, "上一条请求仍在执行，请稍候。");
+        appendMessage(.system, state.text(.ai_chat_previous_request_running));
         @memset(&g_input_buffer, 0);
         return;
     }
@@ -1153,7 +1290,7 @@ fn submitInput(state: *EditorState, layer_context: *engine.core.LayerContext) vo
         refreshMcpSnapshot(state, layer_context);
         _ = enqueuePromptIntent(state, layer_context, input_text);
     } else {
-        appendMessage(.system, "MCP 本地桥接未就绪，暂时无法处理请求。");
+        appendMessage(.system, state.text(.ai_chat_mcp_local_bridge_not_ready));
     }
 
     @memset(&g_input_buffer, 0);
@@ -1178,11 +1315,11 @@ fn drawHeaderBar(state: *EditorState) void {
 
     if (!mcp_ready) {
         gui.pushStyleColor(.text, .{ 0.85, 0.35, 0.35, 1.0 });
-        gui.text("MCP 未就绪");
+        gui.text(state.text(.ai_chat_mcp_not_ready));
         gui.popStyleColor(1);
     } else {
         gui.pushStyleColor(.text, .{ 0.60, 0.68, 0.80, 1.0 });
-        gui.text("MCP 已就绪(内置)");
+        gui.text(state.text(.ai_chat_mcp_ready_builtin));
         gui.popStyleColor(1);
 
         gui.sameLine();
@@ -1193,16 +1330,16 @@ fn drawHeaderBar(state: *EditorState) void {
 
         if (provider_ready) {
             gui.pushStyleColor(.text, .{ 0.48, 0.82, 0.60, 1.0 });
-            gui.text("Provider 已配置");
+            gui.text(state.text(.ai_chat_provider_configured));
             gui.popStyleColor(1);
         } else {
             gui.pushStyleColor(.text, .{ 0.95, 0.80, 0.30, 1.0 });
-            gui.text("Provider 未配置");
+            gui.text(state.text(.ai_chat_provider_not_configured));
             gui.popStyleColor(1);
             if (provider_error) |validation_error| {
                 gui.sameLine();
                 gui.pushStyleColor(.text, .{ 0.58, 0.62, 0.70, 1.0 });
-                gui.text(validation_error);
+                gui.text(providerValidationErrorText(state, validation_error));
                 gui.popStyleColor(1);
             }
         }
@@ -1217,15 +1354,15 @@ fn drawHeaderBar(state: *EditorState) void {
 
                 if (asyncIsRunning()) {
                     gui.pushStyleColor(.text, .{ 0.95, 0.80, 0.30, 1.0 });
-                    gui.text("执行中...");
+                    gui.text(state.text(.ai_chat_running));
                     gui.popStyleColor(1);
                 } else {
                     const ai_status = store.aiStatusSnapshot();
                     const stage_label = switch (ai_status.stage) {
-                        .ready => "就绪",
-                        .analyzing_screenshot => "分析截图...",
-                        .compiling_shader => "编译 Shader...",
-                        .waiting_approval => "等待审批",
+                        .ready => state.text(.ai_chat_stage_ready),
+                        .analyzing_screenshot => state.text(.ai_chat_stage_analyzing_screenshot),
+                        .compiling_shader => state.text(.ai_chat_stage_compiling_shader),
+                        .waiting_approval => state.text(.ai_chat_stage_waiting_approval),
                     };
                     const stage_color: [4]f32 = switch (ai_status.stage) {
                         .ready => .{ 0.55, 0.62, 0.70, 1.0 },
@@ -1249,11 +1386,11 @@ fn drawHeaderBar(state: *EditorState) void {
         gui.pushStyleColor(.button, .{ 0.18, 0.20, 0.24, 0.0 });
         gui.pushStyleColor(.button_hovered, .{ 0.26, 0.29, 0.34, 0.90 });
         gui.pushStyleColor(.button_active, .{ 0.20, 0.22, 0.27, 1.0 });
-        if (gui.buttonEx("清空", clear_w, 0.0)) {
+        if (gui.buttonEx(state.text(.ai_chat_clear), clear_w, 0.0)) {
             clearHistory();
         }
         gui.sameLine();
-        if (gui.buttonEx("配置", config_w, 0.0)) {
+        if (gui.buttonEx(state.text(.ai_chat_configure), config_w, 0.0)) {
             state.ai_provider_settings_open = !state.ai_provider_settings_open;
             ai_chat_log.info("Provider settings panel toggled: {s}", .{if (state.ai_provider_settings_open) "open" else "closed"});
         }
@@ -1268,10 +1405,10 @@ fn drawStagedTransactionBanner(state: *EditorState) void {
 
     gui.dummy(0.0, 2.0);
     gui.pushStyleColor(.text, .{ 0.98, 0.85, 0.40, 1.0 });
-    gui.text("  ⏳ AI 已暂存修改，等待审批");
+    gui.text(state.text(.ai_chat_staged_banner));
     gui.popStyleColor(1);
     gui.pushStyleColor(.text, .{ 0.68, 0.72, 0.80, 1.0 });
-    gui.text("  → 在视口叠加层使用 Apply / Discard");
+    gui.text(state.text(.ai_chat_staged_hint));
     gui.popStyleColor(1);
     gui.dummy(0.0, 2.0);
 }
@@ -1279,7 +1416,7 @@ fn drawStagedTransactionBanner(state: *EditorState) void {
 fn drawStageDetail(state: *EditorState) void {
     if (asyncIsRunning()) {
         gui.pushStyleColor(.text, .{ 0.58, 0.65, 0.75, 1.0 });
-        gui.textWrapped("后台 Job 正在解析并执行 MCP 请求...");
+        gui.textWrapped(state.text(.ai_chat_background_job_running));
         gui.popStyleColor(1);
         return;
     }
@@ -1316,7 +1453,7 @@ fn drawMessages(state: *EditorState) void {
         switch (msg.role) {
             .user => {
                 gui.pushStyleColor(.text, .{ 0.60, 0.68, 0.80, 0.72 });
-                gui.text("你");
+                gui.text(state.text(.ai_chat_role_you));
                 gui.popStyleColor(1);
                 gui.pushStyleColor(.text, .{ 0.88, 0.92, 0.98, 1.0 });
                 gui.textWrapped(content_text);
@@ -1345,104 +1482,195 @@ fn drawMessages(state: *EditorState) void {
     }
 }
 
-fn drawProviderSettings(state: *EditorState) void {
+const provider_action_icon_size: f32 = 16.0;
+
+fn providerActionPalette(enabled: bool) ui_icons.ButtonPalette {
+    if (!enabled) {
+        return .{
+            .button = .{ 0.16, 0.18, 0.21, 0.38 },
+            .hovered = .{ 0.16, 0.18, 0.21, 0.38 },
+            .active = .{ 0.16, 0.18, 0.21, 0.38 },
+        };
+    }
+    return .{
+        .button = .{ 0.22, 0.24, 0.27, 1.0 },
+        .hovered = .{ 0.30, 0.33, 0.37, 1.0 },
+        .active = .{ 0.30, 0.33, 0.37, 1.0 },
+    };
+}
+
+fn providerActionTint(enabled: bool) [4]u8 {
+    if (!enabled) return .{ 110, 115, 124, 255 };
+    return .{ 220, 228, 236, 255 };
+}
+
+fn drawProviderActionIconButton(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    id: []const u8,
+    path: []const u8,
+    enabled: bool,
+) !bool {
+    const clicked = try ui_icons.drawIconButton(
+        state,
+        layer_context,
+        id,
+        path,
+        provider_action_icon_size,
+        providerActionTint(enabled),
+        providerActionPalette(enabled),
+    );
+    return clicked and enabled;
+}
+
+fn pushAiInputWidgetStyle() void {
+    gui.pushStyleColor(.frame_bg, .{ 0.07, 0.09, 0.13, 1.0 });
+    gui.pushStyleColor(.frame_bg_hovered, .{ 0.10, 0.13, 0.18, 1.0 });
+    gui.pushStyleColor(.frame_bg_active, .{ 0.13, 0.17, 0.24, 1.0 });
+    gui.pushStyleColor(.border, .{ 0.22, 0.44, 0.38, 0.90 });
+    gui.pushStyleColor(.text, .{ 0.94, 0.96, 0.99, 1.0 });
+    gui.pushStyleColor(.input_text_cursor, .{ 0.90, 0.96, 0.96, 1.0 });
+    gui.pushStyleColor(.nav_cursor, .{ 0.30, 0.88, 0.67, 1.0 });
+    gui.pushStyleColor(.text_selected_bg, .{ 0.22, 0.72, 0.56, 0.45 });
+    gui.pushStyleVarFloat(.frame_rounding, 7.0);
+}
+
+fn popAiInputWidgetStyle() void {
+    gui.popStyleVar(1);
+    gui.popStyleColor(8);
+}
+
+fn inputTextWithHintStyled(label: []const u8, hint: []const u8, buffer: []u8) bool {
+    pushAiInputWidgetStyle();
+    defer popAiInputWidgetStyle();
+    return gui.inputTextWithHint(label, hint, buffer);
+}
+
+fn inputTextPasswordStyled(label: []const u8, buffer: []u8) bool {
+    pushAiInputWidgetStyle();
+    defer popAiInputWidgetStyle();
+    return gui.inputTextPassword(label, buffer);
+}
+
+fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     if (!state.ai_provider_settings_open) return;
+    var provider_prefs_dirty = false;
 
     gui.separator();
     _ = gui.beginChild("ai_provider_settings##jt", 0.0, 320.0, true);
     defer gui.endChild();
 
     gui.pushStyleColor(.text, .{ 0.78, 0.83, 0.92, 1.0 });
-    gui.text("Provider 配置");
+    gui.text(state.text(.ai_chat_provider_settings_title));
     gui.popStyleColor(1);
     gui.pushStyleColor(.text, .{ 0.52, 0.57, 0.66, 1.0 });
-    gui.textWrapped("说明: MCP 为编辑器内置本地桥接，此处仅配置 AI Provider。");
+    gui.textWrapped(state.text(.ai_chat_provider_settings_desc));
     gui.popStyleColor(1);
     gui.dummy(0.0, 2.0);
 
     const mcp_ready = isMcpBridgeReady(state);
     if (mcp_ready) {
         gui.pushStyleColor(.text, .{ 0.48, 0.82, 0.60, 1.0 });
-        gui.text("MCP 状态: 已就绪(内置)");
+        gui.text(state.text(.ai_chat_provider_status_ready_builtin));
         gui.popStyleColor(1);
     } else {
         gui.pushStyleColor(.text, .{ 0.85, 0.35, 0.35, 1.0 });
-        gui.text("MCP 状态: 未就绪");
+        gui.text(state.text(.ai_chat_provider_status_not_ready));
         gui.popStyleColor(1);
     }
 
     if (activeProviderValidationError(state)) |validation_error| {
-        var provider_status_buffer: [192]u8 = undefined;
-        const provider_status = std.fmt.bufPrint(
-            &provider_status_buffer,
-            "Provider 状态: 未配置 ({s})",
-            .{validation_error},
-        ) catch "Provider 状态: 未配置";
+        const validation_error_text = providerValidationErrorText(state, validation_error);
         gui.pushStyleColor(.text, .{ 0.95, 0.80, 0.30, 1.0 });
-        gui.textWrapped(provider_status);
+        gui.text(state.text(.ai_chat_provider_not_configured));
+        var provider_status_reason_buffer: [192]u8 = undefined;
+        const provider_status_reason = std.fmt.bufPrint(
+            &provider_status_reason_buffer,
+            " ({s})",
+            .{validation_error_text},
+        ) catch "";
+        if (provider_status_reason.len > 0) {
+            gui.sameLine();
+            gui.text(provider_status_reason);
+        }
         gui.popStyleColor(1);
     } else {
         gui.pushStyleColor(.text, .{ 0.48, 0.82, 0.60, 1.0 });
-        gui.text("Provider 状态: 已配置");
+        gui.text(state.text(.ai_chat_provider_status_configured));
         gui.popStyleColor(1);
     }
     gui.dummy(0.0, 4.0);
 
     const avail_w = gui.contentRegionAvail()[0];
-    const btn_w: f32 = 26.0;
-    const btn_gap: f32 = 4.0;
-    const combo_w = avail_w - (btn_w + btn_gap) * 2.0;
+    const action_gap: f32 = 4.0;
+    const action_btn_span = provider_action_icon_size + ui_icons.compact_icon_button_padding[0] * 2.0;
+    const type_preview_w = @max(120.0, avail_w - action_btn_span * 3.0 - action_gap * 3.0);
+    const type_popup_id = "ai_provider_type_popup##jt";
 
     gui.pushStyleColor(.text, .{ 0.65, 0.70, 0.78, 1.0 });
-    gui.text("类型");
+    gui.text(state.text(.ai_chat_type));
     gui.popStyleColor(1);
 
     const active_idx: usize = @intFromEnum(state.ai_provider_type);
-    gui.setNextItemWidth(combo_w);
-    if (gui.beginCombo("##ai_type_select", provider_type_names[active_idx])) {
-        defer gui.endCombo();
-        for (0..provider_type_names.len) |i| {
-            gui.pushIdU64(@intCast(i));
-            defer gui.popId();
-            if (gui.selectable(provider_type_names[i], i == active_idx, false, 0.0, 0.0)) {
-                state.ai_provider_type = @enumFromInt(i);
-                ai_chat_log.info("Provider type changed to: {s}", .{provider_type_names[i]});
-                applyProviderDefaults(state);
-            }
-            if (i == active_idx) gui.setItemDefaultFocus();
-        }
+    var type_preview_label_buffer: [96]u8 = undefined;
+    const type_preview_label = std.fmt.bufPrint(
+        &type_preview_label_buffer,
+        "{s}##ai_provider_type_preview",
+        .{provider_type_names[active_idx]},
+    ) catch "Type##ai_provider_type_preview";
+    gui.pushStyleColor(.button, .{ 0.10, 0.12, 0.17, 1.0 });
+    gui.pushStyleColor(.button_hovered, .{ 0.13, 0.16, 0.22, 1.0 });
+    gui.pushStyleColor(.button_active, .{ 0.15, 0.19, 0.26, 1.0 });
+    if (gui.buttonEx(type_preview_label, type_preview_w, 0.0)) {
+        gui.openPopup(type_popup_id);
     }
-
-    gui.pushStyleColor(.button, .{ 0.22, 0.24, 0.27, 1.0 });
-    gui.pushStyleColor(.button_hovered, .{ 0.30, 0.33, 0.37, 1.0 });
-    gui.pushStyleColor(.button_active, .{ 0.13, 0.80, 0.39, 1.0 });
-
-    gui.sameLine();
-    if (gui.buttonEx("+", btn_w, 0.0)) {
-        if (state.ai_provider_count < state.ai_providers.len) {
-            state.ai_providers[state.ai_provider_count] = .{};
-            state.ai_active_provider = state.ai_provider_count;
-            state.ai_provider_count += 1;
-            ai_chat_log.info("Added new provider, total: {d}", .{state.ai_provider_count});
-        }
-    }
-
     gui.popStyleColor(3);
 
     gui.sameLine();
-    const can_delete = state.ai_provider_count > 1;
-    if (can_delete) {
-        gui.pushStyleColor(.button, .{ 0.22, 0.24, 0.27, 1.0 });
-        gui.pushStyleColor(.button_hovered, .{ 0.50, 0.22, 0.22, 1.0 });
-        gui.pushStyleColor(.button_active, .{ 0.70, 0.20, 0.20, 1.0 });
-    } else {
-        gui.pushStyleColor(.button, .{ 0.20, 0.21, 0.23, 0.50 });
-        gui.pushStyleColor(.button_hovered, .{ 0.20, 0.21, 0.23, 0.50 });
-        gui.pushStyleColor(.button_active, .{ 0.20, 0.21, 0.23, 0.50 });
-        gui.pushStyleColor(.text, .{ 0.38, 0.38, 0.40, 1.0 });
+    if (try drawProviderActionIconButton(
+        state,
+        layer_context,
+        "ai_provider_type_open##jt",
+        ui_icons.paths.toolbar.chevron_down,
+        true,
+    )) {
+        gui.openPopup(type_popup_id);
     }
-    const did_delete = gui.buttonEx("\xc3\x97", btn_w, 0.0);
-    if (can_delete) gui.popStyleColor(3) else gui.popStyleColor(4);
+
+    gui.sameLine();
+    if (try drawProviderActionIconButton(
+        state,
+        layer_context,
+        "ai_provider_type_add##jt",
+        ui_icons.paths.toolbar.plus,
+        true,
+    )) {
+        if (state.ai_provider_count < state.ai_providers.len) {
+            const new_provider_index = state.ai_provider_count;
+            state.ai_providers[new_provider_index] = .{};
+            var default_name_buffer: [48]u8 = undefined;
+            const default_name = std.fmt.bufPrint(&default_name_buffer, "Provider {d}", .{new_provider_index + 1}) catch "Provider";
+            const name_buffer = state.ai_providers[new_provider_index].name[0..];
+            const copy_len = @min(name_buffer.len - 1, default_name.len);
+            @memcpy(name_buffer[0..copy_len], default_name[0..copy_len]);
+
+            state.ai_active_provider = new_provider_index;
+            state.ai_provider_count += 1;
+            applyProviderDefaults(state);
+            ai_chat_log.info("Added new provider, total: {d}", .{state.ai_provider_count});
+            provider_prefs_dirty = true;
+        }
+    }
+
+    gui.sameLine();
+    const can_delete = state.ai_provider_count > 1;
+    const did_delete = try drawProviderActionIconButton(
+        state,
+        layer_context,
+        "ai_provider_type_delete##jt",
+        ui_icons.paths.toolbar.x_mark,
+        can_delete,
+    );
     if (did_delete and can_delete) {
         var i = state.ai_active_provider;
         while (i + 1 < state.ai_provider_count) : (i += 1) {
@@ -1453,6 +1681,70 @@ fn drawProviderSettings(state: *EditorState) void {
             state.ai_active_provider = state.ai_provider_count - 1;
         }
         ai_chat_log.info("Deleted provider, remaining: {d}", .{state.ai_provider_count});
+        provider_prefs_dirty = true;
+    }
+
+    if (gui.beginPopup(type_popup_id)) {
+        defer gui.endPopup();
+        for (0..provider_type_names.len) |i| {
+            gui.pushIdU64(@intCast(i));
+            defer gui.popId();
+            if (gui.selectable(provider_type_names[i], i == active_idx, false, 0.0, 0.0)) {
+                state.ai_provider_type = @enumFromInt(i);
+                ai_chat_log.info("Provider type changed to: {s}", .{provider_type_names[i]});
+                applyProviderDefaults(state);
+                provider_prefs_dirty = true;
+            }
+            if (i == active_idx) gui.setItemDefaultFocus();
+        }
+    }
+
+    gui.dummy(0.0, 6.0);
+    gui.pushStyleColor(.text, .{ 0.65, 0.70, 0.78, 1.0 });
+    gui.text(state.text(.ai_chat_provider_list));
+    gui.popStyleColor(1);
+
+    const active_provider = &state.ai_providers[state.ai_active_provider];
+    const provider_popup_id = "ai_provider_select_popup##jt";
+    const provider_preview_w = @max(120.0, avail_w - action_btn_span - action_gap);
+    var provider_preview_label_buffer: [160]u8 = undefined;
+    const provider_preview_label = std.fmt.bufPrint(
+        &provider_preview_label_buffer,
+        "{s}##ai_provider_select_preview",
+        .{active_provider.displayName()},
+    ) catch "Provider##ai_provider_select_preview";
+    gui.pushStyleColor(.button, .{ 0.10, 0.12, 0.17, 1.0 });
+    gui.pushStyleColor(.button_hovered, .{ 0.13, 0.16, 0.22, 1.0 });
+    gui.pushStyleColor(.button_active, .{ 0.15, 0.19, 0.26, 1.0 });
+    if (gui.buttonEx(provider_preview_label, provider_preview_w, 0.0)) {
+        gui.openPopup(provider_popup_id);
+    }
+    gui.popStyleColor(3);
+
+    gui.sameLine();
+    if (try drawProviderActionIconButton(
+        state,
+        layer_context,
+        "ai_provider_select_open##jt",
+        ui_icons.paths.toolbar.chevron_down,
+        true,
+    )) {
+        gui.openPopup(provider_popup_id);
+    }
+
+    if (gui.beginPopup(provider_popup_id)) {
+        defer gui.endPopup();
+        for (0..state.ai_provider_count) |provider_index| {
+            gui.pushIdU64(@intCast(provider_index));
+            defer gui.popId();
+            const is_selected = provider_index == state.ai_active_provider;
+            const provider_item = &state.ai_providers[provider_index];
+            if (gui.selectable(provider_item.displayName(), is_selected, false, 0.0, 0.0)) {
+                state.ai_active_provider = provider_index;
+                provider_prefs_dirty = true;
+            }
+            if (is_selected) gui.setItemDefaultFocus();
+        }
     }
 
     gui.dummy(0.0, 8.0);
@@ -1465,41 +1757,51 @@ fn drawProviderSettings(state: *EditorState) void {
     const p = &state.ai_providers[state.ai_active_provider];
 
     gui.pushStyleColor(.text, .{ 0.65, 0.70, 0.78, 1.0 });
-    gui.text("显示名称");
+    gui.text(state.text(.ai_chat_display_name));
     gui.popStyleColor(1);
     gui.setNextItemWidth(-1.0);
-    _ = gui.inputTextWithHint("##name", "我的 OpenAI", p.name[0..]);
+    if (inputTextWithHintStyled("##name", state.text(.ai_chat_hint_provider_name), p.name[0..])) {
+        provider_prefs_dirty = true;
+    }
 
     gui.dummy(0.0, 4.0);
 
     gui.pushStyleColor(.text, .{ 0.65, 0.70, 0.78, 1.0 });
-    gui.text("API Endpoint");
+    gui.text(state.text(.ai_chat_api_endpoint));
     gui.popStyleColor(1);
     gui.setNextItemWidth(-1.0);
-    _ = gui.inputTextWithHint("##endpoint", "https://api.openai.com/v1/...", p.endpoint[0..]);
+    if (inputTextWithHintStyled("##endpoint", state.text(.ai_chat_hint_endpoint), p.endpoint[0..])) {
+        provider_prefs_dirty = true;
+    }
     gui.dummy(0.0, 4.0);
 
     gui.pushStyleColor(.text, .{ 0.65, 0.70, 0.78, 1.0 });
-    gui.text("模型");
+    gui.text(state.text(.ai_chat_model));
     gui.popStyleColor(1);
     gui.setNextItemWidth(-1.0);
-    _ = gui.inputTextWithHint("##model", "gpt-4o / claude-sonnet-4", p.model[0..]);
+    if (inputTextWithHintStyled("##model", state.text(.ai_chat_hint_model), p.model[0..])) {
+        provider_prefs_dirty = true;
+    }
 
     gui.dummy(0.0, 4.0);
 
     gui.pushStyleColor(.text, .{ 0.65, 0.70, 0.78, 1.0 });
-    gui.text("API Key");
+    gui.text(state.text(.ai_chat_api_key));
     gui.popStyleColor(1);
     const toggle_w: f32 = 50.0;
     const key_gap: f32 = 6.0;
     gui.setNextItemWidth(gui.contentRegionAvail()[0] - toggle_w - key_gap);
     if (state.ai_provider_api_key_visible) {
-        _ = gui.inputTextWithHint("##apikey", "sk-...", p.api_key[0..]);
+        if (inputTextWithHintStyled("##apikey", state.text(.ai_chat_hint_api_key), p.api_key[0..])) {
+            provider_prefs_dirty = true;
+        }
     } else {
-        _ = gui.inputTextPassword("##apikey", p.api_key[0..]);
+        if (inputTextPasswordStyled("##apikey", p.api_key[0..])) {
+            provider_prefs_dirty = true;
+        }
     }
     gui.sameLine();
-    if (gui.buttonEx(if (state.ai_provider_api_key_visible) "隐藏" else "显示", toggle_w, 0.0)) {
+    if (gui.buttonEx(if (state.ai_provider_api_key_visible) state.text(.ai_chat_hide) else state.text(.ai_chat_show), toggle_w, 0.0)) {
         state.ai_provider_api_key_visible = !state.ai_provider_api_key_visible;
     }
 
@@ -1516,22 +1818,26 @@ fn drawProviderSettings(state: *EditorState) void {
     gui.pushStyleColor(.button, .{ 0.13, 0.50, 0.36, 0.88 });
     gui.pushStyleColor(.button_hovered, .{ 0.15, 0.62, 0.43, 1.0 });
     gui.pushStyleColor(.button_active, .{ 0.10, 0.40, 0.28, 1.0 });
-    if (gui.buttonEx("应用配置", apply_btn_w, 0.0)) {
+    if (gui.buttonEx(state.text(.ai_chat_apply_config), apply_btn_w, 0.0)) {
         applyProviderDefaults(state);
         logProviderConfig(state);
+        preferences.saveAiProviderSettings(state) catch |err| {
+            ai_chat_log.warn("failed to persist AI provider settings: {s}", .{@errorName(err)});
+        };
         if (activeProviderValidationError(state)) |validation_error| {
-            g_connection_error = validation_error;
+            const validation_error_text = providerValidationErrorText(state, validation_error);
+            g_connection_error = validation_error_text;
             var message_buffer: [224]u8 = undefined;
             const message = std.fmt.bufPrint(
                 &message_buffer,
-                "Provider 配置不完整: {s}。MCP 为内置通道，请先补全 Provider。",
-                .{validation_error},
-            ) catch "Provider 配置不完整，请先补全。";
+                "{s}: {s}",
+                .{ state.text(.ai_chat_provider_apply_incomplete_fallback), validation_error_text },
+            ) catch state.text(.ai_chat_provider_apply_incomplete_fallback);
             appendMessage(.system, message);
-            ai_chat_log.warn("Provider config invalid: {s}", .{validation_error});
+            ai_chat_log.warn("Provider config invalid: {s}", .{validation_error_text});
         } else {
             g_connection_error = null;
-            appendMessage(.system, "Provider 配置已应用。MCP 为内置通道，可直接发送请求。");
+            appendMessage(.system, state.text(.ai_chat_provider_apply_success));
             ai_chat_log.info("Provider config applied: {s}", .{p.displayName()});
         }
     }
@@ -1541,10 +1847,10 @@ fn drawProviderSettings(state: *EditorState) void {
     gui.pushStyleColor(.button, .{ 0.22, 0.24, 0.27, 1.0 });
     gui.pushStyleColor(.button_hovered, .{ 0.30, 0.33, 0.37, 1.0 });
     gui.pushStyleColor(.button_active, .{ 0.18, 0.20, 0.24, 1.0 });
-    if (gui.buttonEx("测试", test_btn_w, 0.0)) {
+    if (gui.buttonEx(state.text(.ai_chat_test_connection), test_btn_w, 0.0)) {
         logProviderConfig(state);
         ai_chat_log.info("Test connection requested for provider: {s}", .{p.displayName()});
-        appendMessage(.system, "正在测试连接...");
+        appendMessage(.system, state.text(.ai_chat_testing_connection));
 
         const endpoint_len = std.mem.indexOfScalar(u8, &p.endpoint, 0) orelse p.endpoint.len;
         const model_len = std.mem.indexOfScalar(u8, &p.model, 0) orelse p.model.len;
@@ -1552,27 +1858,27 @@ fn drawProviderSettings(state: *EditorState) void {
         const needs_api_key = state.ai_provider_type != .ollama;
 
         if (endpoint_len == 0) {
-            appendMessage(.system, "错误: 请先输入 Endpoint");
+            appendMessage(.system, state.text(.ai_chat_error_input_endpoint));
         } else if (model_len == 0) {
-            appendMessage(.system, "错误: 请先输入模型名称");
+            appendMessage(.system, state.text(.ai_chat_error_input_model));
         } else if (needs_api_key and apikey_len == 0) {
-            appendMessage(.system, "错误: 请先输入 API Key");
+            appendMessage(.system, state.text(.ai_chat_error_input_api_key));
         } else {
             const endpoint = p.endpoint[0..endpoint_len];
             const model = p.model[0..model_len];
             const api_key = p.api_key[0..apikey_len];
             const summary = testHttpConnectionAlloc(state.ai_provider_type, endpoint, api_key, model) catch |err| blk: {
                 break :blk allocMessage(
-                    "连接测试失败: {s}",
-                    .{@errorName(err)},
-                    "连接测试失败。",
+                    "{s}: {s}",
+                    .{ state.text(.ai_chat_connection_test_failed_fallback), @errorName(err) },
+                    state.text(.ai_chat_connection_test_failed_fallback),
                 ) catch null;
             };
             if (summary) |resolved_summary| {
                 defer std.heap.page_allocator.free(resolved_summary);
                 appendMessage(.system, resolved_summary);
             } else {
-                appendMessage(.system, "连接测试失败。");
+                appendMessage(.system, state.text(.ai_chat_connection_test_failed_fallback));
             }
         }
     }
@@ -1583,6 +1889,12 @@ fn drawProviderSettings(state: *EditorState) void {
         gui.pushStyleColor(.text, .{ 0.90, 0.30, 0.30, 1.0 });
         gui.textWrapped(err);
         gui.popStyleColor(1);
+    }
+
+    if (provider_prefs_dirty) {
+        preferences.saveAiProviderSettings(state) catch |err| {
+            ai_chat_log.warn("failed to auto-persist AI provider settings: {s}", .{@errorName(err)});
+        };
     }
 }
 
@@ -1609,7 +1921,7 @@ pub fn drawAiChatPanel(state: *EditorState, layer_context: *engine.core.LayerCon
     if (!open) return;
 
     drawHeaderBar(state);
-    drawProviderSettings(state);
+    try drawProviderSettings(state, layer_context);
     drawStagedTransactionBanner(state);
     drawStageDetail(state);
 
@@ -1639,9 +1951,9 @@ pub fn drawAiChatPanel(state: *EditorState, layer_context: *engine.core.LayerCon
 
     if (input_width > 30.0) {
         gui.setNextItemWidth(input_width);
-        _ = gui.inputTextWithHint(
+        _ = inputTextWithHintStyled(
             "##ai_input",
-            if (busy) "后台处理中..." else state.text(.ai_chat_input_hint),
+            if (busy) state.text(.ai_chat_background_processing) else state.text(.ai_chat_input_hint),
             g_input_buffer[0..],
         );
         const enter_pressed = gui.isItemDeactivatedAfterEdit();
@@ -1650,7 +1962,7 @@ pub fn drawAiChatPanel(state: *EditorState, layer_context: *engine.core.LayerCon
         gui.pushStyleColor(.button, .{ 0.13, 0.50, 0.36, 0.88 });
         gui.pushStyleColor(.button_hovered, .{ 0.15, 0.62, 0.43, 1.0 });
         gui.pushStyleColor(.button_active, .{ 0.10, 0.40, 0.28, 1.0 });
-        const send_pressed = gui.buttonEx(if (busy) "等待" else state.text(.ai_chat_send), send_btn_width, 0.0);
+        const send_pressed = gui.buttonEx(if (busy) state.text(.ai_chat_wait) else state.text(.ai_chat_send), send_btn_width, 0.0);
         gui.popStyleColor(3);
 
         if (enter_pressed or send_pressed) {

@@ -28,6 +28,13 @@ pub const StyleColor = enum(c_uint) {
     button = c.GUAVA_IMGUI_STYLE_COLOR_BUTTON,
     button_hovered = c.GUAVA_IMGUI_STYLE_COLOR_BUTTON_HOVERED,
     button_active = c.GUAVA_IMGUI_STYLE_COLOR_BUTTON_ACTIVE,
+    frame_bg = c.GUAVA_IMGUI_STYLE_COLOR_FRAME_BG,
+    frame_bg_hovered = c.GUAVA_IMGUI_STYLE_COLOR_FRAME_BG_HOVERED,
+    frame_bg_active = c.GUAVA_IMGUI_STYLE_COLOR_FRAME_BG_ACTIVE,
+    border = c.GUAVA_IMGUI_STYLE_COLOR_BORDER,
+    text_selected_bg = c.GUAVA_IMGUI_STYLE_COLOR_TEXT_SELECTED_BG,
+    nav_cursor = c.GUAVA_IMGUI_STYLE_COLOR_NAV_CURSOR,
+    input_text_cursor = c.GUAVA_IMGUI_STYLE_COLOR_INPUT_TEXT_CURSOR,
 };
 
 pub const Col = enum(u32) {

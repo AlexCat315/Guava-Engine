@@ -1195,9 +1195,26 @@ fn buildToolsSchemaJsonAlloc(allocator: std.mem.Allocator) ![]u8 {
     const stage_transaction_properties = [_]PropertySchema{
         .{ .name = "commands", .type = "Command[]", .description = "Ordered staged commands to preview before apply.", .required = true },
         .{ .name = "label", .type = "string", .description = "Human-readable preview label." },
+        .{ .name = "meta", .type = "object", .description = "Command metadata object (actor/client/session/request/trace/approval/base_revision)." },
+        .{ .name = "actor", .type = "string", .description = "Actor id (legacy top-level shorthand)." },
+        .{ .name = "client", .type = "string", .description = "Client id (legacy top-level shorthand)." },
+        .{ .name = "session", .type = "string", .description = "Session id (legacy top-level shorthand)." },
+        .{ .name = "request", .type = "string", .description = "Request id (legacy top-level shorthand)." },
+        .{ .name = "trace", .type = "string", .description = "Trace id (legacy top-level shorthand)." },
+        .{ .name = "approval", .type = "string", .description = "Approval state: auto/previewed/user_approved/rejected." },
+        .{ .name = "base_revision", .type = "u64", .description = "Expected scene revision before applying queued command." },
     };
-    const apply_preview_properties = [_]PropertySchema{};
-    const discard_preview_properties = [_]PropertySchema{};
+    const apply_preview_properties = [_]PropertySchema{
+        .{ .name = "meta", .type = "object", .description = "Command metadata object (actor/client/session/request/trace/approval/base_revision)." },
+        .{ .name = "actor", .type = "string", .description = "Actor id (legacy top-level shorthand)." },
+        .{ .name = "client", .type = "string", .description = "Client id (legacy top-level shorthand)." },
+        .{ .name = "session", .type = "string", .description = "Session id (legacy top-level shorthand)." },
+        .{ .name = "request", .type = "string", .description = "Request id (legacy top-level shorthand)." },
+        .{ .name = "trace", .type = "string", .description = "Trace id (legacy top-level shorthand)." },
+        .{ .name = "approval", .type = "string", .description = "Approval state: auto/previewed/user_approved/rejected." },
+        .{ .name = "base_revision", .type = "u64", .description = "Expected scene revision before applying queued command." },
+    };
+    const discard_preview_properties = apply_preview_properties;
 
     return stringifyAlloc(allocator, ToolsDocument{
         .version = "1",

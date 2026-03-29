@@ -103,6 +103,37 @@ fn InlineText(comptime max_len: usize) type {
 const ShortText = InlineText(48);
 const MediumText = InlineText(96);
 const LongText = InlineText(224);
+const MetaText = InlineText(96);
+
+const StoredCommandMeta = struct {
+    present: bool = false,
+    actor: MetaText = .{},
+    client: MetaText = .{},
+    session: MetaText = .{},
+    request: MetaText = .{},
+    trace: MetaText = .{},
+    approval: command_mod.ApprovalState = .auto,
+    base_revision: ?u64 = null,
+
+    fn assign(self: *StoredCommandMeta, meta: ?*const command_mod.CommandMeta) void {
+        self.* = .{};
+        const resolved = meta orelse return;
+        if (resolved.actor) |value| self.actor.set(value);
+        if (resolved.client) |value| self.client.set(value);
+        if (resolved.session) |value| self.session.set(value);
+        if (resolved.request) |value| self.request.set(value);
+        if (resolved.trace) |value| self.trace.set(value);
+        self.approval = resolved.approval;
+        self.base_revision = resolved.base_revision;
+        self.present = resolved.actor != null or
+            resolved.client != null or
+            resolved.session != null or
+            resolved.request != null or
+            resolved.trace != null or
+            resolved.approval != .auto or
+            resolved.base_revision != null;
+    }
+};
 
 pub const CameraProjection = struct {
     kind: CameraProjectionKind = .perspective,
@@ -161,6 +192,7 @@ const IntentEntry = struct {
     source: IntentSource = .human,
     action: ShortText = .{},
     detail: LongText = .{},
+    meta: StoredCommandMeta = .{},
 };
 
 const CommandTimelineEntry = struct {
@@ -169,15 +201,18 @@ const CommandTimelineEntry = struct {
     label: MediumText = .{},
     detail: LongText = .{},
     command_kind: ShortText = .{},
+    meta: StoredCommandMeta = .{},
 };
 
 pub const CommandEntry = struct {
     tool_name: []u8,
     command: command_mod.Command,
+    meta: command_mod.CommandMeta = .{},
 
     pub fn deinit(self: *CommandEntry, allocator: std.mem.Allocator) void {
         allocator.free(self.tool_name);
         self.command.deinit(allocator);
+        self.meta.deinit(allocator);
         self.* = undefined;
     }
 };
@@ -235,6 +270,7 @@ const StagedTransaction = struct {
     source: IntentSource = .ai,
     label: MediumText = .{},
     note: LongText = .{},
+    meta: command_mod.CommandMeta = .{},
     commands: std.ArrayList(CommandEntry) = .empty,
     results: std.ArrayList(StageCommandResult) = .empty,
     preview_entries: std.ArrayList(PreviewEntity) = .empty,
@@ -257,6 +293,7 @@ const StagedTransaction = struct {
         self.source = .ai;
         self.label.clear();
         self.note.clear();
+        self.meta.deinit(allocator);
         self.error_count = 0;
     }
 
@@ -273,6 +310,7 @@ pub const StageRequest = struct {
     source: IntentSource = .ai,
     label: ?[]u8 = null,
     note: ?[]u8 = null,
+    meta: command_mod.CommandMeta = .{},
     commands: std.ArrayList(CommandEntry) = .empty,
 
     pub fn deinit(self: *StageRequest, allocator: std.mem.Allocator) void {
@@ -282,6 +320,7 @@ pub const StageRequest = struct {
         if (self.note) |note| {
             allocator.free(note);
         }
+        self.meta.deinit(allocator);
         for (self.commands.items) |*entry| {
             entry.deinit(allocator);
         }
@@ -295,6 +334,7 @@ pub const StageResult = struct {
     command_count: usize = 0,
     preview_count: usize = 0,
     error_count: usize = 0,
+    base_revision_conflict_count: usize = 0,
 };
 
 pub const ApplyResult = struct {
@@ -303,6 +343,8 @@ pub const ApplyResult = struct {
     command_count: usize = 0,
     changed_count: usize = 0,
     error_count: usize = 0,
+    base_revision_conflict_count: usize = 0,
+    kept_staged: bool = false,
 };
 
 pub const DiscardResult = struct {
@@ -401,12 +443,36 @@ pub const Store = struct {
     }
 
     pub fn recordCommandTimeline(self: *Store, source: IntentSource, label: []const u8, detail: []const u8, command_kind: []const u8) !void {
+        return self.recordCommandTimelineWithMeta(source, label, detail, command_kind, null);
+    }
+
+    pub fn recordCommandTimelineWithMeta(
+        self: *Store,
+        source: IntentSource,
+        label: []const u8,
+        detail: []const u8,
+        command_kind: []const u8,
+        meta: ?*const command_mod.CommandMeta,
+    ) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
+        try self.appendCommandTimelineLocked(source, label, detail, command_kind, meta);
+    }
 
+    fn appendCommandTimelineLocked(
+        self: *Store,
+        source: IntentSource,
+        label: []const u8,
+        detail: []const u8,
+        command_kind: []const u8,
+        meta: ?*const command_mod.CommandMeta,
+    ) !void {
         if (self.command_timeline.items.len >= 256) {
             _ = self.command_timeline.orderedRemove(0);
         }
+
+        var stored_meta: StoredCommandMeta = .{};
+        stored_meta.assign(meta);
 
         try self.command_timeline.append(self.allocator, .{
             .sequence = self.next_command_timeline_sequence,
@@ -414,6 +480,7 @@ pub const Store = struct {
             .label = textFromSlice(MediumText, label),
             .detail = textFromSlice(LongText, detail),
             .command_kind = textFromSlice(ShortText, command_kind),
+            .meta = stored_meta,
         });
         self.next_command_timeline_sequence += 1;
     }
@@ -450,7 +517,7 @@ pub const Store = struct {
                 "primary={any} count={d}",
                 .{ args.primary_selection, args.selected_entities.len },
             ) catch "selection changed";
-            try self.pushIntentLocked(.human, "selection_changed", detail);
+            try self.pushIntentLocked(.human, "selection_changed", detail, null);
         }
 
         if (drag_changed) {
@@ -461,14 +528,24 @@ pub const Store = struct {
                 formatDragEndedDetail(&drag_detail_buffer, previous_drag)
             else
                 "drag clear";
-            try self.pushIntentLocked(.human, "drag_context", detail);
+            try self.pushIntentLocked(.human, "drag_context", detail, null);
         }
     }
 
     pub fn recordIntent(self: *Store, source: IntentSource, action: []const u8, detail: []const u8) !void {
+        return self.recordIntentWithMeta(source, action, detail, null);
+    }
+
+    pub fn recordIntentWithMeta(
+        self: *Store,
+        source: IntentSource,
+        action: []const u8,
+        detail: []const u8,
+        meta: ?*const command_mod.CommandMeta,
+    ) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
-        try self.pushIntentLocked(source, action, detail);
+        try self.pushIntentLocked(source, action, detail, meta);
     }
 
     pub fn stageOwnedTransaction(self: *Store, world: *const scene_mod.World, request: *StageRequest) !StageResult {
@@ -490,22 +567,37 @@ pub const Store = struct {
         errdefer preview_entries.deinit(self.allocator);
 
         var error_count: usize = 0;
-        for (request.commands.items) |entry| {
-            const result = try command_queue_mod.executeOneWithSource(
-                &preview_world,
-                entry.command,
-                commandSourceFromIntent(request.source),
-            );
-            try preview_results.append(self.allocator, .{
-                .tool_name = textFromSlice(ShortText, entry.tool_name),
-                .changed = result.changed,
-                .entity_id = result.entity_id,
-                .err = result.err,
-            });
-            if (result.err != null) {
-                error_count += 1;
+        var base_revision_conflict_count: usize = 0;
+        const should_execute_preview = if (request.meta.base_revision) |base_revision|
+            base_revision == world.sceneRevision()
+        else
+            true;
+
+        if (!should_execute_preview) {
+            error_count = request.commands.items.len;
+            base_revision_conflict_count = request.commands.items.len;
+        } else {
+            for (request.commands.items) |entry| {
+                const result = try command_queue_mod.executeOneWithMeta(
+                    &preview_world,
+                    entry.command,
+                    commandSourceFromIntent(request.source),
+                    &entry.meta,
+                );
+                try preview_results.append(self.allocator, .{
+                    .tool_name = textFromSlice(ShortText, entry.tool_name),
+                    .changed = result.changed,
+                    .entity_id = result.entity_id,
+                    .err = result.err,
+                });
+                if (result.err != null) {
+                    error_count += 1;
+                    if (result.err.? == .base_revision_conflict) {
+                        base_revision_conflict_count += 1;
+                    }
+                }
+                try updatePreviewEntries(&preview_entries, world, &preview_world, entry.command, result);
             }
-            try updatePreviewEntries(&preview_entries, world, &preview_world, entry.command, result);
         }
 
         const preview_world_snapshot = try scene_mod.serializeWorldAlloc(self.allocator, &preview_world);
@@ -520,6 +612,8 @@ pub const Store = struct {
         self.staged.id = self.next_transaction_id;
         self.next_transaction_id += 1;
         self.staged.source = request.source;
+        self.staged.meta = request.meta;
+        request.meta = .{};
         if (request.label) |label| {
             self.staged.label.set(label);
             self.allocator.free(label);
@@ -544,22 +638,42 @@ pub const Store = struct {
             .command_count = self.staged.commands.items.len,
             .preview_count = self.staged.preview_entries.items.len,
             .error_count = self.staged.error_count,
+            .base_revision_conflict_count = base_revision_conflict_count,
         };
 
         var detail_buffer: [160]u8 = undefined;
         const detail = std.fmt.bufPrint(
             &detail_buffer,
-            "id={d} commands={d} preview={d} errors={d}",
-            .{ stage_result.transaction_id, stage_result.command_count, stage_result.preview_count, stage_result.error_count },
+            "id={d} commands={d} preview={d} errors={d} conflicts={d}",
+            .{ stage_result.transaction_id, stage_result.command_count, stage_result.preview_count, stage_result.error_count, stage_result.base_revision_conflict_count },
         ) catch "staged transaction";
-        self.pushIntentLocked(request.source, "staged_transaction", detail) catch {};
+        self.pushIntentLocked(request.source, "staged_transaction", detail, &self.staged.meta) catch {};
+
+        self.appendCommandTimelineLocked(
+            request.source,
+            "Stage Transaction",
+            detail,
+            "stage_transaction",
+            &self.staged.meta,
+        ) catch {};
 
         return stage_result;
     }
 
     pub fn applyStagedTransaction(self: *Store, world: *scene_mod.World, source: IntentSource) !ApplyResult {
+        return self.applyStagedTransactionWithMeta(world, source, null);
+    }
+
+    pub fn applyStagedTransactionWithMeta(
+        self: *Store,
+        world: *scene_mod.World,
+        source: IntentSource,
+        meta_override: ?*const command_mod.CommandMeta,
+    ) !ApplyResult {
         var staged_id: ?u64 = null;
         var local_commands = std.ArrayList(CommandEntry).empty;
+        var staged_meta: command_mod.CommandMeta = .{};
+        defer staged_meta.deinit(self.allocator);
         defer {
             for (local_commands.items) |*entry| {
                 entry.deinit(self.allocator);
@@ -576,38 +690,96 @@ pub const Store = struct {
         staged_id = self.staged.id;
         try cloneCommandEntriesInto(&local_commands, self.allocator, self.staged.commands.items);
         const command_count = self.staged.commands.items.len;
+        staged_meta = try self.staged.meta.cloneAlloc(self.allocator);
+        if (meta_override) |meta| {
+            if (meta.actor) |value| try replaceMetaFieldAlloc(self.allocator, &staged_meta.actor, value);
+            if (meta.client) |value| try replaceMetaFieldAlloc(self.allocator, &staged_meta.client, value);
+            if (meta.session) |value| try replaceMetaFieldAlloc(self.allocator, &staged_meta.session, value);
+            if (meta.request) |value| try replaceMetaFieldAlloc(self.allocator, &staged_meta.request, value);
+            if (meta.trace) |value| try replaceMetaFieldAlloc(self.allocator, &staged_meta.trace, value);
+            if (meta.approval != .auto) {
+                staged_meta.approval = meta.approval;
+            }
+            if (staged_meta.base_revision == null and meta.base_revision != null) {
+                staged_meta.base_revision = meta.base_revision;
+            }
+        }
         self.mutex.unlock();
 
         var changed_count: usize = 0;
         var error_count: usize = 0;
-        for (local_commands.items) |entry| {
-            const result = try command_queue_mod.executeOneWithSource(
-                world,
-                entry.command,
-                commandSourceFromIntent(source),
-            );
-            if (result.changed) {
-                changed_count += 1;
+        var base_revision_conflict_count: usize = 0;
+        const should_execute_apply = if (staged_meta.base_revision) |base_revision|
+            base_revision == world.sceneRevision()
+        else
+            true;
+
+        if (!should_execute_apply) {
+            error_count = local_commands.items.len;
+            base_revision_conflict_count = local_commands.items.len;
+        } else {
+            for (local_commands.items) |entry| {
+                var execution_meta = entry.meta;
+                if (execution_meta.actor == null) execution_meta.actor = staged_meta.actor;
+                if (execution_meta.client == null) execution_meta.client = staged_meta.client;
+                if (execution_meta.session == null) execution_meta.session = staged_meta.session;
+                if (execution_meta.request == null) execution_meta.request = staged_meta.request;
+                if (execution_meta.trace == null) execution_meta.trace = staged_meta.trace;
+                if (execution_meta.approval == .auto) execution_meta.approval = staged_meta.approval;
+                const result = try command_queue_mod.executeOneWithMeta(
+                    world,
+                    entry.command,
+                    commandSourceFromIntent(source),
+                    &execution_meta,
+                );
+                if (result.changed) {
+                    changed_count += 1;
+                }
+                if (result.err != null) {
+                    error_count += 1;
+                    if (result.err.? == .base_revision_conflict) {
+                        base_revision_conflict_count += 1;
+                    }
+                }
             }
-            if (result.err != null) {
-                error_count += 1;
-            }
+            world.updateHierarchy();
         }
-        world.updateHierarchy();
+
+        const kept_staged = base_revision_conflict_count > 0;
 
         self.mutex.lock();
         defer self.mutex.unlock();
-        if (self.staged.active and self.staged.id == staged_id.?) {
+        if (!kept_staged and self.staged.active and self.staged.id == staged_id.?) {
             self.staged.clear(self.allocator);
         }
 
-        var detail_buffer: [160]u8 = undefined;
+        var detail_buffer: [192]u8 = undefined;
         const detail = std.fmt.bufPrint(
             &detail_buffer,
-            "id={d} commands={d} changed={d} errors={d}",
-            .{ staged_id.?, command_count, changed_count, error_count },
+            "id={d} commands={d} changed={d} errors={d} conflicts={d} kept={s}",
+            .{
+                staged_id.?,
+                command_count,
+                changed_count,
+                error_count,
+                base_revision_conflict_count,
+                if (kept_staged) "yes" else "no",
+            },
         ) catch "applied staged transaction";
-        self.pushIntentLocked(source, "applied_transaction", detail) catch {};
+        self.pushIntentLocked(
+            source,
+            if (kept_staged) "apply_transaction_conflict" else "applied_transaction",
+            detail,
+            &staged_meta,
+        ) catch {};
+
+        self.appendCommandTimelineLocked(
+            source,
+            if (kept_staged) "Apply Transaction Conflict" else "Apply Transaction",
+            detail,
+            if (kept_staged) "apply_conflict" else "apply_staged_transaction",
+            &staged_meta,
+        ) catch {};
 
         return .{
             .had_transaction = true,
@@ -615,16 +787,34 @@ pub const Store = struct {
             .command_count = command_count,
             .changed_count = changed_count,
             .error_count = error_count,
+            .base_revision_conflict_count = base_revision_conflict_count,
+            .kept_staged = kept_staged,
         };
     }
 
     pub fn discardStagedTransaction(self: *Store, source: IntentSource) DiscardResult {
+        return self.discardStagedTransactionWithMeta(source, null);
+    }
+
+    pub fn discardStagedTransactionWithMeta(
+        self: *Store,
+        source: IntentSource,
+        meta_override: ?*const command_mod.CommandMeta,
+    ) DiscardResult {
+        var staged_meta: command_mod.CommandMeta = .{};
+        defer staged_meta.deinit(self.allocator);
+
         self.mutex.lock();
         defer self.mutex.unlock();
 
         if (!self.staged.active) {
             return .{};
         }
+
+        staged_meta = if (meta_override) |meta|
+            meta.cloneAlloc(self.allocator) catch .{}
+        else
+            self.staged.meta.cloneAlloc(self.allocator) catch .{};
 
         const result = DiscardResult{
             .had_transaction = true,
@@ -639,7 +829,15 @@ pub const Store = struct {
             "id={any} commands={d}",
             .{ result.transaction_id, result.command_count },
         ) catch "discarded staged transaction";
-        self.pushIntentLocked(source, "discarded_transaction", detail) catch {};
+        self.pushIntentLocked(source, "discarded_transaction", detail, &staged_meta) catch {};
+
+        self.appendCommandTimelineLocked(
+            source,
+            "Discard Transaction",
+            detail,
+            "discard_staged_transaction",
+            &staged_meta,
+        ) catch {};
 
         return result;
     }
@@ -831,7 +1029,7 @@ pub const Store = struct {
             "id={d} entity={d} world_transform=({d:.2},{d:.2},{d:.2})",
             .{ staged_id, entity_id, world_transform.translation[0], world_transform.translation[1], world_transform.translation[2] },
         ) catch "staged preview transform";
-        self.pushIntentLocked(source, "staged_preview_transform", detail) catch {};
+        self.pushIntentLocked(source, "staged_preview_transform", detail, &self.staged.meta) catch {};
         return true;
     }
 
@@ -1035,11 +1233,21 @@ pub const Store = struct {
         mutable.mutex.lock();
         defer mutable.mutex.unlock();
 
+        const MetaView = struct {
+            actor: ?[]const u8 = null,
+            client: ?[]const u8 = null,
+            session: ?[]const u8 = null,
+            request: ?[]const u8 = null,
+            trace: ?[]const u8 = null,
+            approval: ?[]const u8 = null,
+            base_revision: ?u64 = null,
+        };
         const IntentView = struct {
             sequence: u64,
             source: []const u8,
             action: []const u8,
             detail: []const u8,
+            meta: MetaView,
         };
         const Payload = struct {
             count: usize,
@@ -1050,11 +1258,21 @@ pub const Store = struct {
         defer allocator.free(items);
 
         for (mutable.intent_log.items, 0..) |entry, index| {
+            const meta_view = if (entry.meta.present) MetaView{
+                .actor = if (entry.meta.actor.len > 0) entry.meta.actor.slice() else null,
+                .client = if (entry.meta.client.len > 0) entry.meta.client.slice() else null,
+                .session = if (entry.meta.session.len > 0) entry.meta.session.slice() else null,
+                .request = if (entry.meta.request.len > 0) entry.meta.request.slice() else null,
+                .trace = if (entry.meta.trace.len > 0) entry.meta.trace.slice() else null,
+                .approval = @tagName(entry.meta.approval),
+                .base_revision = entry.meta.base_revision,
+            } else MetaView{};
             items[index] = .{
                 .sequence = entry.sequence,
                 .source = @tagName(entry.source),
                 .action = entry.action.slice(),
                 .detail = entry.detail.slice(),
+                .meta = meta_view,
             };
         }
 
@@ -1069,6 +1287,15 @@ pub const Store = struct {
         mutable.mutex.lock();
         defer mutable.mutex.unlock();
 
+        const MetaView = struct {
+            actor: ?[]const u8 = null,
+            client: ?[]const u8 = null,
+            session: ?[]const u8 = null,
+            request: ?[]const u8 = null,
+            trace: ?[]const u8 = null,
+            approval: ?[]const u8 = null,
+            base_revision: ?u64 = null,
+        };
         const TimelineItemView = struct {
             sequence: u64,
             source: []const u8,
@@ -1077,6 +1304,7 @@ pub const Store = struct {
             label: []const u8,
             detail: []const u8,
             command_kind: []const u8,
+            meta: MetaView,
         };
         const Payload = struct {
             count: usize,
@@ -1087,6 +1315,15 @@ pub const Store = struct {
         defer allocator.free(items);
 
         for (mutable.command_timeline.items, 0..) |entry, index| {
+            const meta_view = if (entry.meta.present) MetaView{
+                .actor = if (entry.meta.actor.len > 0) entry.meta.actor.slice() else null,
+                .client = if (entry.meta.client.len > 0) entry.meta.client.slice() else null,
+                .session = if (entry.meta.session.len > 0) entry.meta.session.slice() else null,
+                .request = if (entry.meta.request.len > 0) entry.meta.request.slice() else null,
+                .trace = if (entry.meta.trace.len > 0) entry.meta.trace.slice() else null,
+                .approval = @tagName(entry.meta.approval),
+                .base_revision = entry.meta.base_revision,
+            } else MetaView{};
             items[index] = .{
                 .sequence = entry.sequence,
                 .source = @tagName(entry.source),
@@ -1095,6 +1332,7 @@ pub const Store = struct {
                 .label = entry.label.slice(),
                 .detail = entry.detail.slice(),
                 .command_kind = entry.command_kind.slice(),
+                .meta = meta_view,
             };
         }
 
@@ -1137,6 +1375,13 @@ pub const Store = struct {
             active: bool,
             transaction_id: ?u64 = null,
             source: ?[]const u8 = null,
+            actor: ?[]const u8 = null,
+            client: ?[]const u8 = null,
+            session: ?[]const u8 = null,
+            request: ?[]const u8 = null,
+            trace: ?[]const u8 = null,
+            approval: ?[]const u8 = null,
+            base_revision: ?u64 = null,
             label: ?[]const u8 = null,
             note: ?[]const u8 = null,
             command_count: usize = 0,
@@ -1186,6 +1431,13 @@ pub const Store = struct {
             .active = true,
             .transaction_id = mutable.staged.id,
             .source = @tagName(mutable.staged.source),
+            .actor = mutable.staged.meta.actor,
+            .client = mutable.staged.meta.client,
+            .session = mutable.staged.meta.session,
+            .request = mutable.staged.meta.request,
+            .trace = mutable.staged.meta.trace,
+            .approval = @tagName(mutable.staged.meta.approval),
+            .base_revision = mutable.staged.meta.base_revision,
             .label = if (mutable.staged.label.len > 0) mutable.staged.label.slice() else null,
             .note = if (mutable.staged.note.len > 0) mutable.staged.note.slice() else null,
             .command_count = mutable.staged.commands.items.len,
@@ -1195,15 +1447,24 @@ pub const Store = struct {
         });
     }
 
-    fn pushIntentLocked(self: *Store, source: IntentSource, action: []const u8, detail: []const u8) !void {
+    fn pushIntentLocked(
+        self: *Store,
+        source: IntentSource,
+        action: []const u8,
+        detail: []const u8,
+        meta: ?*const command_mod.CommandMeta,
+    ) !void {
         if (self.intent_log.items.len >= 64) {
             _ = self.intent_log.orderedRemove(0);
         }
+        var stored_meta: StoredCommandMeta = .{};
+        stored_meta.assign(meta);
         try self.intent_log.append(self.allocator, .{
             .sequence = self.next_intent_sequence,
             .source = source,
             .action = textFromSlice(ShortText, action),
             .detail = textFromSlice(LongText, detail),
+            .meta = stored_meta,
         });
         self.next_intent_sequence += 1;
     }
@@ -1231,15 +1492,26 @@ pub const Bridge = struct {
 
     const PendingRequest = union(enum) {
         stage: StagePending,
-        apply: []u8,
-        discard: []u8,
+        apply: SimplePending,
+        discard: SimplePending,
 
         fn deinit(self: *PendingRequest, allocator: std.mem.Allocator) void {
             switch (self.*) {
                 .stage => |*stage| stage.deinit(allocator),
-                .apply => |tool_name| allocator.free(tool_name),
-                .discard => |tool_name| allocator.free(tool_name),
+                .apply => |*pending| pending.deinit(allocator),
+                .discard => |*pending| pending.deinit(allocator),
             }
+            self.* = undefined;
+        }
+    };
+
+    const SimplePending = struct {
+        tool_name: []u8,
+        meta: command_mod.CommandMeta = .{},
+
+        fn deinit(self: *SimplePending, allocator: std.mem.Allocator) void {
+            allocator.free(self.tool_name);
+            self.meta.deinit(allocator);
             self.* = undefined;
         }
     };
@@ -1285,7 +1557,16 @@ pub const Bridge = struct {
     }
 
     pub fn submitJson(self: *Bridge, tool_name: []const u8, arguments: ?std.json.Value) !CallResponse {
-        var request = try parsePendingRequestAlloc(self.allocator, tool_name, arguments);
+        return self.submitJsonWithMeta(tool_name, arguments, null);
+    }
+
+    pub fn submitJsonWithMeta(
+        self: *Bridge,
+        tool_name: []const u8,
+        arguments: ?std.json.Value,
+        meta: ?*const command_mod.CommandMeta,
+    ) !CallResponse {
+        var request = try parsePendingRequestAlloc(self.allocator, tool_name, arguments, meta);
         errdefer request.deinit(self.allocator);
 
         self.mutex.lock();
@@ -1320,7 +1601,17 @@ pub const Bridge = struct {
         tool_name: []const u8,
         arguments: ?std.json.Value,
     ) !ExecuteOutcome {
-        var request = try parsePendingRequestAlloc(self.allocator, tool_name, arguments);
+        return self.executeJsonImmediateWithMeta(layer_context, tool_name, arguments, null);
+    }
+
+    pub fn executeJsonImmediateWithMeta(
+        self: *Bridge,
+        layer_context: *core.LayerContext,
+        tool_name: []const u8,
+        arguments: ?std.json.Value,
+        meta: ?*const command_mod.CommandMeta,
+    ) !ExecuteOutcome {
+        var request = try parsePendingRequestAlloc(self.allocator, tool_name, arguments, meta);
         return try self.executeOwnedRequest(layer_context, &request);
     }
 
@@ -1358,18 +1649,18 @@ pub const Bridge = struct {
                 };
                 stage_pending.request = .{};
             },
-            .apply => |tool_name| {
-                const result = try self.store.applyStagedTransaction(layer_context.world, .ai);
+            .apply => |apply_pending| {
+                const result = try self.store.applyStagedTransactionWithMeta(layer_context.world, .ai, &apply_pending.meta);
                 response = .{
-                    .tool_name = tool_name,
+                    .tool_name = apply_pending.tool_name,
                     .outcome = .{ .applied = result },
                 };
-                world_changed = result.had_transaction;
+                world_changed = result.had_transaction and !result.kept_staged;
             },
-            .discard => |tool_name| {
-                const result = self.store.discardStagedTransaction(.ai);
+            .discard => |discard_pending| {
+                const result = self.store.discardStagedTransactionWithMeta(.ai, &discard_pending.meta);
                 response = .{
-                    .tool_name = tool_name,
+                    .tool_name = discard_pending.tool_name,
                     .outcome = .{ .discarded = result },
                 };
             },
@@ -1400,16 +1691,23 @@ pub fn buildSummaryAlloc(allocator: std.mem.Allocator, response: CallResponse) !
     return switch (response.outcome) {
         .staged => |result| std.fmt.allocPrint(
             allocator,
-            "stage_transaction ok: id={d}, commands={d}, preview={d}, errors={d}",
-            .{ result.transaction_id, result.command_count, result.preview_count, result.error_count },
+            "stage_transaction ok: id={d}, commands={d}, preview={d}, errors={d}, conflicts={d}",
+            .{ result.transaction_id, result.command_count, result.preview_count, result.error_count, result.base_revision_conflict_count },
         ),
         .applied => |result| if (!result.had_transaction)
             allocator.dupe(u8, "apply_staged_transaction ok: no staged transaction")
         else
             std.fmt.allocPrint(
                 allocator,
-                "apply_staged_transaction ok: id={d}, commands={d}, changed={d}, errors={d}",
-                .{ result.transaction_id.?, result.command_count, result.changed_count, result.error_count },
+                "apply_staged_transaction ok: id={d}, commands={d}, changed={d}, errors={d}, conflicts={d}, kept={s}",
+                .{
+                    result.transaction_id.?,
+                    result.command_count,
+                    result.changed_count,
+                    result.error_count,
+                    result.base_revision_conflict_count,
+                    if (result.kept_staged) "yes" else "no",
+                },
             ),
         .discarded => |result| if (!result.had_transaction)
             allocator.dupe(u8, "discard_staged_transaction ok: no staged transaction")
@@ -1588,6 +1886,7 @@ fn cloneCommandEntryAlloc(allocator: std.mem.Allocator, entry: CommandEntry) !Co
     return .{
         .tool_name = try allocator.dupe(u8, entry.tool_name),
         .command = try cloneCommandAlloc(allocator, entry.command),
+        .meta = try entry.meta.cloneAlloc(allocator),
     };
 }
 
@@ -1778,6 +2077,7 @@ fn parsePendingRequestAlloc(
     allocator: std.mem.Allocator,
     tool_name: []const u8,
     arguments: ?std.json.Value,
+    meta_override: ?*const command_mod.CommandMeta,
 ) !Bridge.PendingRequest {
     if (std.mem.eql(u8, tool_name, "stage_transaction")) {
         var stage_request = StageRequest{};
@@ -1793,6 +2093,11 @@ fn parsePendingRequestAlloc(
         }
         if (optionalStringField(args, "source")) |source_text| {
             stage_request.source = parseIntentSource(source_text) orelse return error.InvalidArguments;
+        }
+        stage_request.meta = try parseCommandMetaAlloc(allocator, args);
+        if (meta_override) |override_meta| {
+            stage_request.meta.deinit(allocator);
+            stage_request.meta = try override_meta.cloneAlloc(allocator);
         }
 
         const commands_value = args.get("commands") orelse args.get("operations") orelse return error.InvalidArguments;
@@ -1813,11 +2118,16 @@ fn parsePendingRequestAlloc(
             const command_name = optionalStringField(command_object, "name") orelse return error.InvalidArguments;
             const command_arguments = if (command_object.get("arguments")) |value| value else null;
             const parsed = try tools_mod.parseToolCallAlloc(allocator, command_name, command_arguments);
+            var command_meta = try stage_request.meta.cloneAlloc(allocator);
+            errdefer command_meta.deinit(allocator);
+            command_meta.base_revision = null;
+            try applyCommandMetaFieldsAlloc(allocator, command_object, &command_meta);
             switch (parsed) {
                 .command => |command_request| {
                     try stage_request.commands.append(allocator, .{
                         .tool_name = command_request.tool_name,
                         .command = command_request.command,
+                        .meta = command_meta,
                     });
                 },
                 else => {
@@ -1836,10 +2146,40 @@ fn parsePendingRequestAlloc(
         };
     }
     if (std.mem.eql(u8, tool_name, "apply_staged_transaction")) {
-        return .{ .apply = try allocator.dupe(u8, tool_name) };
+        var meta = command_mod.CommandMeta{};
+        errdefer meta.deinit(allocator);
+        const args = optionalObject(arguments);
+        if (args) |object| {
+            meta = try parseCommandMetaAlloc(allocator, object);
+        }
+        if (meta_override) |override_meta| {
+            meta.deinit(allocator);
+            meta = try override_meta.cloneAlloc(allocator);
+        }
+        return .{
+            .apply = .{
+                .tool_name = try allocator.dupe(u8, tool_name),
+                .meta = meta,
+            },
+        };
     }
     if (std.mem.eql(u8, tool_name, "discard_staged_transaction")) {
-        return .{ .discard = try allocator.dupe(u8, tool_name) };
+        var meta = command_mod.CommandMeta{};
+        errdefer meta.deinit(allocator);
+        const args = optionalObject(arguments);
+        if (args) |object| {
+            meta = try parseCommandMetaAlloc(allocator, object);
+        }
+        if (meta_override) |override_meta| {
+            meta.deinit(allocator);
+            meta = try override_meta.cloneAlloc(allocator);
+        }
+        return .{
+            .discard = .{
+                .tool_name = try allocator.dupe(u8, tool_name),
+                .meta = meta,
+            },
+        };
     }
     return error.ToolNotFound;
 }
@@ -1852,6 +2192,14 @@ fn requireObject(arguments: ?std.json.Value) Error!std.json.ObjectMap {
     };
 }
 
+fn optionalObject(arguments: ?std.json.Value) ?std.json.ObjectMap {
+    const value = arguments orelse return null;
+    return switch (value) {
+        .object => |object| object,
+        else => null,
+    };
+}
+
 fn optionalStringField(object: std.json.ObjectMap, field_name: []const u8) ?[]const u8 {
     const value = object.get(field_name) orelse return null;
     return switch (value) {
@@ -1859,6 +2207,74 @@ fn optionalStringField(object: std.json.ObjectMap, field_name: []const u8) ?[]co
         .null => null,
         else => null,
     };
+}
+
+fn parseApprovalState(value: []const u8) ?command_mod.ApprovalState {
+    if (std.mem.eql(u8, value, "auto")) return .auto;
+    if (std.mem.eql(u8, value, "previewed")) return .previewed;
+    if (std.mem.eql(u8, value, "user_approved")) return .user_approved;
+    if (std.mem.eql(u8, value, "rejected")) return .rejected;
+    return null;
+}
+
+fn replaceMetaFieldAlloc(allocator: std.mem.Allocator, field: *?[]u8, value: []const u8) !void {
+    if (field.*) |existing| {
+        allocator.free(existing);
+    }
+    field.* = try allocator.dupe(u8, value);
+}
+
+fn applyCommandMetaFieldsAlloc(
+    allocator: std.mem.Allocator,
+    object: std.json.ObjectMap,
+    meta: *command_mod.CommandMeta,
+) !void {
+    if (optionalStringField(object, "actor")) |value| {
+        try replaceMetaFieldAlloc(allocator, &meta.actor, value);
+    }
+    if (optionalStringField(object, "client")) |value| {
+        try replaceMetaFieldAlloc(allocator, &meta.client, value);
+    }
+    if (optionalStringField(object, "session")) |value| {
+        try replaceMetaFieldAlloc(allocator, &meta.session, value);
+    }
+    if (optionalStringField(object, "request")) |value| {
+        try replaceMetaFieldAlloc(allocator, &meta.request, value);
+    }
+    if (optionalStringField(object, "trace")) |value| {
+        try replaceMetaFieldAlloc(allocator, &meta.trace, value);
+    }
+    if (optionalStringField(object, "approval")) |value| {
+        meta.approval = parseApprovalState(value) orelse return error.InvalidArguments;
+    }
+    if (object.get("base_revision")) |value| {
+        switch (value) {
+            .integer => |revision| {
+                if (revision < 0) return error.InvalidArguments;
+                meta.base_revision = @intCast(revision);
+            },
+            .null => meta.base_revision = null,
+            else => return error.InvalidArguments,
+        }
+    }
+}
+
+fn parseCommandMetaAlloc(
+    allocator: std.mem.Allocator,
+    object: std.json.ObjectMap,
+) !command_mod.CommandMeta {
+    var meta: command_mod.CommandMeta = .{};
+    errdefer meta.deinit(allocator);
+
+    if (object.get("meta")) |meta_value| {
+        switch (meta_value) {
+            .object => |meta_object| try applyCommandMetaFieldsAlloc(allocator, meta_object, &meta),
+            .null => {},
+            else => return error.InvalidArguments,
+        }
+    }
+    try applyCommandMetaFieldsAlloc(allocator, object, &meta);
+    return meta;
 }
 
 fn parseIntentSource(source_text: []const u8) ?IntentSource {
@@ -1999,6 +2415,52 @@ test "Store updates staged preview transforms and replays them on apply" {
     try std.testing.expectApproxEqAbs(@as(f32, -3.0), transformed.translation[2], 0.0001);
 }
 
+test "Store keeps staged transaction when apply base revision is stale" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    var world = scene_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+
+    const entity = try world.createEntity(.{ .name = "Actor" });
+    world.updateHierarchy();
+    const base_revision = world.sceneRevision();
+
+    var request = StageRequest{
+        .source = .ai,
+        .commands = .empty,
+        .meta = .{
+            .base_revision = base_revision,
+        },
+    };
+    defer request.deinit(std.testing.allocator);
+
+    try request.commands.append(std.testing.allocator, .{
+        .tool_name = try std.testing.allocator.dupe(u8, "rename_entity"),
+        .command = .{
+            .rename_entity = .{
+                .entity_id = entity,
+                .name = try std.testing.allocator.dupe(u8, "FromStage"),
+            },
+        },
+    });
+
+    _ = try store.stageOwnedTransaction(&world, &request);
+    _ = world.renameEntity(entity, "ExternalChange") catch return error.UnexpectedValue;
+    world.updateHierarchy();
+
+    const applied = try store.applyStagedTransaction(&world, .human);
+    try std.testing.expect(applied.had_transaction);
+    try std.testing.expect(applied.kept_staged);
+    try std.testing.expectEqual(@as(usize, 0), applied.changed_count);
+    try std.testing.expectEqual(@as(usize, 1), applied.base_revision_conflict_count);
+    try std.testing.expectEqualStrings("ExternalChange", world.getEntityConst(entity).?.name);
+
+    const overlay = store.overlaySnapshot();
+    try std.testing.expect(overlay.active);
+    try std.testing.expectEqual(applied.transaction_id.?, overlay.transaction_id);
+}
+
 test "Bridge parses staged transaction batches" {
     var store = Store.init(std.testing.allocator);
     defer store.deinit();
@@ -2008,6 +2470,7 @@ test "Bridge parses staged transaction batches" {
     var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator,
         \\{
         \\  "label": "Batch",
+        \\  "base_revision": 17,
         \\  "commands": [
         \\    {
         \\      "name": "rename_entity",
@@ -2018,7 +2481,7 @@ test "Bridge parses staged transaction batches" {
     , .{ .allocate = .alloc_always });
     defer parsed.deinit();
 
-    var request = try parsePendingRequestAlloc(std.testing.allocator, "stage_transaction", parsed.value);
+    var request = try parsePendingRequestAlloc(std.testing.allocator, "stage_transaction", parsed.value, null);
     defer request.deinit(std.testing.allocator);
 
     switch (request) {
@@ -2026,6 +2489,8 @@ test "Bridge parses staged transaction batches" {
             try std.testing.expectEqual(@as(usize, 1), stage.request.commands.items.len);
             try std.testing.expectEqualStrings("stage_transaction", stage.tool_name);
             try std.testing.expectEqualStrings("rename_entity", stage.request.commands.items[0].tool_name);
+            try std.testing.expectEqual(@as(?u64, 17), stage.request.meta.base_revision);
+            try std.testing.expectEqual(@as(?u64, null), stage.request.commands.items[0].meta.base_revision);
         },
         else => return error.UnexpectedValue,
     }

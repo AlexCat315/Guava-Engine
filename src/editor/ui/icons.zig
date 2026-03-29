@@ -27,6 +27,9 @@ pub const paths = struct {
         pub const transform_global = "assets/ui/icons/filled/globe.svg";
         pub const transform_local = "assets/ui/icons/heroicons/24/solid/cube.svg";
         pub const ai_chat = "assets/ui/icons/filled/sparkle.svg";
+        pub const chevron_down = "assets/ui/icons/filled/chevron-down.svg";
+        pub const plus = "assets/ui/icons/filled/plus.svg";
+        pub const x_mark = "assets/ui/icons/filled/x-mark.svg";
     };
 
     pub const viewport = struct {

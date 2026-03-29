@@ -5,10 +5,12 @@ const components_mod = @import("../scene/components.zig");
 
 const QueuedCommand = struct {
     source: command_mod.CommandSource = .human,
+    meta: command_mod.CommandMeta = .{},
     command: command_mod.Command,
 
     fn deinit(self: *QueuedCommand, allocator: std.mem.Allocator) void {
         self.command.deinit(allocator);
+        self.meta.deinit(allocator);
         self.* = undefined;
     }
 };
@@ -44,6 +46,47 @@ pub const CommandQueue = struct {
         return self.commands.items.len >= self.max_pending;
     }
 
+    fn cloneMetaOrDefault(
+        self: *CommandQueue,
+        meta: ?*const command_mod.CommandMeta,
+    ) !command_mod.CommandMeta {
+        if (meta) |resolved| {
+            return resolved.cloneAlloc(self.allocator);
+        }
+        return .{};
+    }
+
+    pub fn appendOwnedCommandWithSourceAndMeta(
+        self: *CommandQueue,
+        command: command_mod.Command,
+        source: command_mod.CommandSource,
+        meta: ?*const command_mod.CommandMeta,
+    ) !void {
+        if (self.isFull()) {
+            return error.QueueFull;
+        }
+        var owned_meta = try self.cloneMetaOrDefault(meta);
+        errdefer owned_meta.deinit(self.allocator);
+        try self.commands.append(self.allocator, .{
+            .source = source,
+            .meta = owned_meta,
+            .command = command,
+        });
+    }
+
+    fn updateQueuedCommandMeta(
+        self: *CommandQueue,
+        queued: *QueuedCommand,
+        source: command_mod.CommandSource,
+        meta: ?*const command_mod.CommandMeta,
+    ) !void {
+        var owned_meta = try self.cloneMetaOrDefault(meta);
+        errdefer owned_meta.deinit(self.allocator);
+        queued.meta.deinit(self.allocator);
+        queued.source = source;
+        queued.meta = owned_meta;
+    }
+
     pub fn enqueueCreateEntity(self: *CommandQueue, spec: command_mod.CreateEntitySpec) !void {
         return self.enqueueCreateEntityWithSource(spec, .human);
     }
@@ -53,27 +96,23 @@ pub const CommandQueue = struct {
         spec: command_mod.CreateEntitySpec,
         source: command_mod.CommandSource,
     ) !void {
-        if (self.isFull()) {
-            return error.QueueFull;
-        }
-        try self.commands.append(self.allocator, .{
-            .source = source,
-            .command = .{
-                .create_entity = .{
-                    .name = try self.allocator.dupe(u8, spec.name),
-                    .parent = spec.parent,
-                    .local_transform = spec.local_transform,
-                    .camera = spec.camera,
-                    .mesh = spec.mesh,
-                    .material = spec.material,
-                    .light = spec.light,
-                    .vfx = spec.vfx,
-                    .visible = spec.visible,
-                    .editor_only = spec.editor_only,
-                    .is_folder = spec.is_folder,
-                },
+        var command: command_mod.Command = .{
+            .create_entity = .{
+                .name = try self.allocator.dupe(u8, spec.name),
+                .parent = spec.parent,
+                .local_transform = spec.local_transform,
+                .camera = spec.camera,
+                .mesh = spec.mesh,
+                .material = spec.material,
+                .light = spec.light,
+                .vfx = spec.vfx,
+                .visible = spec.visible,
+                .editor_only = spec.editor_only,
+                .is_folder = spec.is_folder,
             },
-        });
+        };
+        errdefer command.deinit(self.allocator);
+        try self.appendOwnedCommandWithSourceAndMeta(command, source, null);
     }
 
     pub fn enqueueDeleteEntity(self: *CommandQueue, entity_id: scene_mod.EntityId) !void {
@@ -85,15 +124,11 @@ pub const CommandQueue = struct {
         entity_id: scene_mod.EntityId,
         source: command_mod.CommandSource,
     ) !void {
-        if (self.isFull()) {
-            return error.QueueFull;
-        }
-        try self.commands.append(self.allocator, .{
-            .source = source,
-            .command = .{
-                .delete_entity = .{ .entity_id = entity_id },
-            },
-        });
+        var command: command_mod.Command = .{
+            .delete_entity = .{ .entity_id = entity_id },
+        };
+        errdefer command.deinit(self.allocator);
+        try self.appendOwnedCommandWithSourceAndMeta(command, source, null);
     }
 
     pub fn enqueueRenameEntity(self: *CommandQueue, entity_id: scene_mod.EntityId, name: []const u8) !void {
@@ -106,18 +141,14 @@ pub const CommandQueue = struct {
         name: []const u8,
         source: command_mod.CommandSource,
     ) !void {
-        if (self.isFull()) {
-            return error.QueueFull;
-        }
-        try self.commands.append(self.allocator, .{
-            .source = source,
-            .command = .{
-                .rename_entity = .{
-                    .entity_id = entity_id,
-                    .name = try self.allocator.dupe(u8, name),
-                },
+        var command: command_mod.Command = .{
+            .rename_entity = .{
+                .entity_id = entity_id,
+                .name = try self.allocator.dupe(u8, name),
             },
-        });
+        };
+        errdefer command.deinit(self.allocator);
+        try self.appendOwnedCommandWithSourceAndMeta(command, source, null);
     }
 
     pub fn enqueueSetParent(self: *CommandQueue, entity_id: scene_mod.EntityId, parent_id: ?scene_mod.EntityId) !void {
@@ -130,18 +161,14 @@ pub const CommandQueue = struct {
         parent_id: ?scene_mod.EntityId,
         source: command_mod.CommandSource,
     ) !void {
-        if (self.isFull()) {
-            return error.QueueFull;
-        }
-        try self.commands.append(self.allocator, .{
-            .source = source,
-            .command = .{
-                .set_parent = .{
-                    .entity_id = entity_id,
-                    .parent_id = parent_id,
-                },
+        var command: command_mod.Command = .{
+            .set_parent = .{
+                .entity_id = entity_id,
+                .parent_id = parent_id,
             },
-        });
+        };
+        errdefer command.deinit(self.allocator);
+        try self.appendOwnedCommandWithSourceAndMeta(command, source, null);
     }
 
     pub fn enqueueSetLocalTransform(self: *CommandQueue, entity_id: scene_mod.EntityId, transform: components_mod.Transform) !void {
@@ -154,21 +181,17 @@ pub const CommandQueue = struct {
         transform: components_mod.Transform,
         source: command_mod.CommandSource,
     ) !void {
-        if (self.isFull()) {
-            return error.QueueFull;
-        }
-        if (self.tryCoalesceTransform(.set_local_transform, entity_id, transform, source)) {
+        if (try self.tryCoalesceTransform(.set_local_transform, entity_id, transform, source, null)) {
             return;
         }
-        try self.commands.append(self.allocator, .{
-            .source = source,
-            .command = .{
-                .set_local_transform = .{
-                    .entity_id = entity_id,
-                    .transform = transform,
-                },
+        var command: command_mod.Command = .{
+            .set_local_transform = .{
+                .entity_id = entity_id,
+                .transform = transform,
             },
-        });
+        };
+        errdefer command.deinit(self.allocator);
+        try self.appendOwnedCommandWithSourceAndMeta(command, source, null);
     }
 
     pub fn enqueueSetWorldTransform(self: *CommandQueue, entity_id: scene_mod.EntityId, transform: components_mod.Transform) !void {
@@ -181,21 +204,17 @@ pub const CommandQueue = struct {
         transform: components_mod.Transform,
         source: command_mod.CommandSource,
     ) !void {
-        if (self.isFull()) {
-            return error.QueueFull;
-        }
-        if (self.tryCoalesceTransform(.set_world_transform, entity_id, transform, source)) {
+        if (try self.tryCoalesceTransform(.set_world_transform, entity_id, transform, source, null)) {
             return;
         }
-        try self.commands.append(self.allocator, .{
-            .source = source,
-            .command = .{
-                .set_world_transform = .{
-                    .entity_id = entity_id,
-                    .transform = transform,
-                },
+        var command: command_mod.Command = .{
+            .set_world_transform = .{
+                .entity_id = entity_id,
+                .transform = transform,
             },
-        });
+        };
+        errdefer command.deinit(self.allocator);
+        try self.appendOwnedCommandWithSourceAndMeta(command, source, null);
     }
 
     pub fn enqueueSetVisible(self: *CommandQueue, entity_id: scene_mod.EntityId, visible: bool) !void {
@@ -208,18 +227,14 @@ pub const CommandQueue = struct {
         visible: bool,
         source: command_mod.CommandSource,
     ) !void {
-        if (self.isFull()) {
-            return error.QueueFull;
-        }
-        try self.commands.append(self.allocator, .{
-            .source = source,
-            .command = .{
-                .set_visible = .{
-                    .entity_id = entity_id,
-                    .visible = visible,
-                },
+        var command: command_mod.Command = .{
+            .set_visible = .{
+                .entity_id = entity_id,
+                .visible = visible,
             },
-        });
+        };
+        errdefer command.deinit(self.allocator);
+        try self.appendOwnedCommandWithSourceAndMeta(command, source, null);
     }
 
     pub fn latestPendingLocalTransform(self: *const CommandQueue, entity_id: scene_mod.EntityId) ?components_mod.Transform {
@@ -248,9 +263,7 @@ pub const CommandQueue = struct {
         errdefer self.allocator.free(results);
 
         for (self.commands.items, 0..) |*queued, index| {
-            var result = try executeCommand(world, queued.command);
-            result.source = queued.source;
-            results[index] = result;
+            results[index] = try executeCommandWithMeta(world, queued.command, queued.source, &queued.meta);
             queued.deinit(self.allocator);
         }
         self.commands.clearRetainingCapacity();
@@ -264,7 +277,8 @@ pub const CommandQueue = struct {
         entity_id: scene_mod.EntityId,
         transform: components_mod.Transform,
         source: command_mod.CommandSource,
-    ) bool {
+        meta: ?*const command_mod.CommandMeta,
+    ) !bool {
         if (self.commands.items.len == 0) {
             return false;
         }
@@ -277,7 +291,6 @@ pub const CommandQueue = struct {
                 }
                 if (tag == .set_local_transform) {
                     pending.transform = transform;
-                    last.source = source;
                 } else {
                     last.command = .{
                         .set_world_transform = .{
@@ -285,8 +298,8 @@ pub const CommandQueue = struct {
                             .transform = transform,
                         },
                     };
-                    last.source = source;
                 }
+                try self.updateQueuedCommandMeta(last, source, meta);
                 return true;
             },
             .set_world_transform => |*pending| {
@@ -295,7 +308,6 @@ pub const CommandQueue = struct {
                 }
                 if (tag == .set_world_transform) {
                     pending.transform = transform;
-                    last.source = source;
                 } else {
                     last.command = .{
                         .set_local_transform = .{
@@ -303,8 +315,8 @@ pub const CommandQueue = struct {
                             .transform = transform,
                         },
                     };
-                    last.source = source;
                 }
+                try self.updateQueuedCommandMeta(last, source, meta);
                 return true;
             },
             else => return false,
@@ -398,8 +410,45 @@ fn executeCommand(world: *scene_mod.World, command: command_mod.Command) !comman
     };
 }
 
+fn commandPrimaryEntityId(command: command_mod.Command) ?scene_mod.EntityId {
+    return switch (command) {
+        .create_entity => null,
+        .delete_entity => |value| value.entity_id,
+        .rename_entity => |value| value.entity_id,
+        .set_parent => |value| value.entity_id,
+        .set_local_transform => |value| value.entity_id,
+        .set_world_transform => |value| value.entity_id,
+        .set_visible => |value| value.entity_id,
+    };
+}
+
+fn executeCommandWithMeta(
+    world: *scene_mod.World,
+    command: command_mod.Command,
+    source: command_mod.CommandSource,
+    meta: ?*const command_mod.CommandMeta,
+) !command_mod.ExecutionResult {
+    if (meta) |resolved_meta| {
+        if (resolved_meta.base_revision) |base_revision| {
+            const current_revision = world.sceneRevision();
+            if (base_revision != current_revision) {
+                return .{
+                    .changed = false,
+                    .entity_id = commandPrimaryEntityId(command),
+                    .err = .base_revision_conflict,
+                    .source = source,
+                };
+            }
+        }
+    }
+
+    var result = try executeCommand(world, command);
+    result.source = source;
+    return result;
+}
+
 pub fn executeOne(world: *scene_mod.World, command: command_mod.Command) !command_mod.ExecutionResult {
-    return try executeOneWithSource(world, command, .human);
+    return try executeOneWithMeta(world, command, .human, null);
 }
 
 pub fn executeOneWithSource(
@@ -407,9 +456,16 @@ pub fn executeOneWithSource(
     command: command_mod.Command,
     source: command_mod.CommandSource,
 ) !command_mod.ExecutionResult {
-    var result = try executeCommand(world, command);
-    result.source = source;
-    return result;
+    return try executeOneWithMeta(world, command, source, null);
+}
+
+pub fn executeOneWithMeta(
+    world: *scene_mod.World,
+    command: command_mod.Command,
+    source: command_mod.CommandSource,
+    meta: ?*const command_mod.CommandMeta,
+) !command_mod.ExecutionResult {
+    return try executeCommandWithMeta(world, command, source, meta);
 }
 
 fn mapWorldError(err: anyerror) command_mod.CommandError {
@@ -510,6 +566,33 @@ test "CommandQueue reports parent errors without aborting the batch" {
     try std.testing.expectEqual(command_mod.CommandError.parent_not_found, results[0].err.?);
     try std.testing.expect(results[1].ok());
     try std.testing.expectEqualStrings("StillRuns", world.getEntityConst(entity_id).?.name);
+}
+
+test "CommandQueue rejects stale base revision metadata" {
+    var world = scene_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+
+    var meta = command_mod.CommandMeta{
+        .approval = .auto,
+        .base_revision = 1,
+    };
+    defer meta.deinit(std.testing.allocator);
+
+    _ = try world.createEntity(.{ .name = "RevisionA" });
+    world.updateHierarchy();
+    try std.testing.expect(world.sceneRevision() != meta.base_revision.?);
+
+    var command: command_mod.Command = .{
+        .create_entity = .{
+            .name = try std.testing.allocator.dupe(u8, "BlockedCreate"),
+        },
+    };
+    defer command.deinit(std.testing.allocator);
+
+    const result = try executeOneWithMeta(&world, command, .ai, &meta);
+
+    try std.testing.expectEqual(command_mod.CommandError.base_revision_conflict, result.err.?);
+    try std.testing.expect(!result.changed);
 }
 
 test "CommandQueue create_entity preserves attached components" {

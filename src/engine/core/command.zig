@@ -7,11 +7,50 @@ pub const CommandError = enum {
     parent_not_found,
     parent_cycle_detected,
     entity_id_conflict,
+    base_revision_conflict,
 };
 
 pub const CommandSource = enum {
     human,
     ai,
+};
+
+pub const ApprovalState = enum {
+    auto,
+    previewed,
+    user_approved,
+    rejected,
+};
+
+pub const CommandMeta = struct {
+    actor: ?[]u8 = null,
+    client: ?[]u8 = null,
+    session: ?[]u8 = null,
+    request: ?[]u8 = null,
+    trace: ?[]u8 = null,
+    approval: ApprovalState = .auto,
+    base_revision: ?u64 = null,
+
+    pub fn deinit(self: *CommandMeta, allocator: std.mem.Allocator) void {
+        if (self.actor) |value| allocator.free(value);
+        if (self.client) |value| allocator.free(value);
+        if (self.session) |value| allocator.free(value);
+        if (self.request) |value| allocator.free(value);
+        if (self.trace) |value| allocator.free(value);
+        self.* = .{};
+    }
+
+    pub fn cloneAlloc(self: CommandMeta, allocator: std.mem.Allocator) !CommandMeta {
+        return .{
+            .actor = if (self.actor) |value| try allocator.dupe(u8, value) else null,
+            .client = if (self.client) |value| try allocator.dupe(u8, value) else null,
+            .session = if (self.session) |value| try allocator.dupe(u8, value) else null,
+            .request = if (self.request) |value| try allocator.dupe(u8, value) else null,
+            .trace = if (self.trace) |value| try allocator.dupe(u8, value) else null,
+            .approval = self.approval,
+            .base_revision = self.base_revision,
+        };
+    }
 };
 
 pub const CreateEntitySpec = struct {
