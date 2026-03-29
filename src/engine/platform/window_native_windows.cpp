@@ -1,3 +1,4 @@
+#include "window_native_handles.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_properties.h>
 #include <SDL3/SDL_video.h>
@@ -138,6 +139,10 @@ float guava_fallback_caption_button_width() {
 }
 
 } // namespace
+
+extern "C" void* guava_window_get_native_win32_hwnd(void* window_handle) {
+    return guava_hwnd_from_sdl(static_cast<SDL_Window*>(window_handle));
+}
 
 extern "C" bool guava_window_apply_windows_native_titlebar_style(SDL_Window* window) {
     HWND hwnd = guava_hwnd_from_sdl(window);

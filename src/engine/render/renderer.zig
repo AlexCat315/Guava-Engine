@@ -80,7 +80,6 @@ const rhi_types = @import("../rhi/types.zig");
 const rhi_api = @import("../rhi/rhi.zig");
 const rhi_mock_backend_mod = @import("../rhi/metal/metal_backend.zig");
 const metal_device_mod = @import("../rhi/metal/metal_device.zig");
-const sdl = @import("../platform/sdl.zig").c;
 const components = @import("../scene/components.zig");
 const scene_mod = @import("../scene/scene.zig");
 const types = @import("types.zig");
@@ -338,8 +337,8 @@ pub const Renderer = struct {
     rhi_mock_backend: ?*rhi_mock_backend_mod.MetalBackend = null,
     /// Real Metal backend device（生产环境使用）
     rhi_metal_device: ?*metal_device_mod.MetalDevice = null,
-    /// SDL Metal view handle（需要在 deinit 时销毁）
-    sdl_metal_view: sdl.SDL_MetalView = null,
+    /// Platform metal layer binding（需要在 deinit 时销毁）
+    metal_layer_binding: ?window_mod.MetalLayerBinding = null,
     /// IBL Compute 通道（GPU Compute 加速 BRDF LUT + Irradiance）
     ibl_compute_pass: ?ibl_compute_pass_mod.IBLComputePass = null,
     /// GPU 生成的 BRDF LUT 纹理（256x256 RGBA16F）
@@ -563,11 +562,10 @@ pub const Renderer = struct {
                 };
                 md_ptr.* = md;
 
-                // Create SDL Metal view & obtain CAMetalLayer
-                const metal_view = sdl.SDL_Metal_CreateView(window.handle);
-                if (metal_view) |view| {
-                    renderer.sdl_metal_view = view;
-                    if (sdl.SDL_Metal_GetLayer(view)) |layer| {
+                const metal_layer_binding = window.createMetalLayerBinding();
+                if (metal_layer_binding) |binding| {
+                    renderer.metal_layer_binding = binding;
+                    if (binding.layer) |layer| {
                         md_ptr.setLayer(layer);
                     }
                 }
@@ -643,8 +641,8 @@ pub const Renderer = struct {
             md.deinit();
             self.allocator.destroy(md);
         }
-        if (self.sdl_metal_view != null) {
-            sdl.SDL_Metal_DestroyView(self.sdl_metal_view);
+        if (self.metal_layer_binding) |binding| {
+            window_mod.destroyMetalLayerBinding(binding);
         }
         if (self.rhi_mock_backend) |bp| {
             bp.deinit();

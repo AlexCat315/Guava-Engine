@@ -490,35 +490,35 @@ pub const BasePass = struct {
             },
         };
 
-        self.fill_pipeline_hdr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .rgba16_float, .fill, false, true);
+        self.fill_pipeline_hdr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .rgba16_float, .fill, false, true, true);
         errdefer if (self.fill_pipeline_hdr) |*pipeline| {
             device.releaseGraphicsPipeline(pipeline);
         };
-        self.fill_pipeline_ldr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .bgra8_unorm_srgb, .fill, false, true);
+        self.fill_pipeline_ldr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .bgra8_unorm_srgb, .fill, false, true, true);
         errdefer if (self.fill_pipeline_ldr) |*pipeline| {
             device.releaseGraphicsPipeline(pipeline);
         };
-        self.ghost_fill_pipeline_hdr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .rgba16_float, .ghost_fill, true, false);
+        self.ghost_fill_pipeline_hdr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .rgba16_float, .ghost_fill, true, false, false);
         errdefer if (self.ghost_fill_pipeline_hdr) |*pipeline| {
             device.releaseGraphicsPipeline(pipeline);
         };
-        self.ghost_fill_pipeline_ldr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .bgra8_unorm_srgb, .ghost_fill, true, false);
+        self.ghost_fill_pipeline_ldr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .bgra8_unorm_srgb, .ghost_fill, true, false, false);
         errdefer if (self.ghost_fill_pipeline_ldr) |*pipeline| {
             device.releaseGraphicsPipeline(pipeline);
         };
-        self.transparent_fill_pipeline_hdr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .rgba16_float, .fill, true, false);
+        self.transparent_fill_pipeline_hdr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .rgba16_float, .fill, true, true, false);
         errdefer if (self.transparent_fill_pipeline_hdr) |*pipeline| {
             device.releaseGraphicsPipeline(pipeline);
         };
-        self.transparent_fill_pipeline_ldr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .bgra8_unorm_srgb, .fill, true, false);
+        self.transparent_fill_pipeline_ldr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .bgra8_unorm_srgb, .fill, true, true, false);
         errdefer if (self.transparent_fill_pipeline_ldr) |*pipeline| {
             device.releaseGraphicsPipeline(pipeline);
         };
-        self.wireframe_pipeline_hdr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .rgba16_float, .wireframe, true, true);
+        self.wireframe_pipeline_hdr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .rgba16_float, .wireframe, true, true, true);
         errdefer if (self.wireframe_pipeline_hdr) |*pipeline| {
             device.releaseGraphicsPipeline(pipeline);
         };
-        self.wireframe_pipeline_ldr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .bgra8_unorm_srgb, .wireframe, true, true);
+        self.wireframe_pipeline_ldr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .bgra8_unorm_srgb, .wireframe, true, true, true);
     }
 
     const PipelineMode = enum {
@@ -552,6 +552,7 @@ pub const BasePass = struct {
         color_format: rhi_types.TextureFormat,
         mode: PipelineMode,
         enable_blend: bool,
+        depth_test: bool,
         depth_write: bool,
     ) !rhi_mod.GraphicsPipeline {
         const shader_stages = if (mode == .wireframe) self.wireframe_stages.? else self.stages.?;
@@ -572,8 +573,8 @@ pub const BasePass = struct {
             .fill_mode = .fill,
             .cull_mode = if (mode == .wireframe) .none else .back,
             .front_face = .counter_clockwise,
-            .depth_compare = .less_or_equal,
-            .depth_test = true,
+            .depth_compare = if (depth_test) .less_or_equal else .always,
+            .depth_test = depth_test,
             .depth_write = depth_write,
         });
     }

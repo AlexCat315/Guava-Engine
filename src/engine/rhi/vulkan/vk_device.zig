@@ -22,7 +22,7 @@ pub const VulkanDevice = struct {
         extern fn guava_vk_rhi_init(enable_validation: bool) ?*anyopaque;
         extern fn guava_vk_rhi_destroy(ctx: *anyopaque) void;
         // Surface / swapchain
-        extern fn guava_vk_rhi_create_surface_sdl(ctx: *anyopaque, sdl_window: *anyopaque) bool;
+        extern fn guava_vk_rhi_create_surface(ctx: *anyopaque, native_window: *anyopaque) bool;
         extern fn guava_vk_rhi_create_swapchain(ctx: *anyopaque, width: u32, height: u32) bool;
         // Resource creation
         extern fn guava_vk_rhi_create_buffer(ctx: *anyopaque, size: u64, usage_bits: u32, label: ?[*:0]const u8) u32;
@@ -128,8 +128,8 @@ pub const VulkanDevice = struct {
         self.* = undefined;
     }
 
-    pub fn createSurface(self: *VulkanDevice, sdl_window: *anyopaque) bool {
-        return bridge.guava_vk_rhi_create_surface_sdl(self.bridge_ctx, sdl_window);
+    pub fn createSurface(self: *VulkanDevice, native_window: *anyopaque) bool {
+        return bridge.guava_vk_rhi_create_surface(self.bridge_ctx, native_window);
     }
 
     pub fn createSwapchain(self: *VulkanDevice, width: u32, height: u32) bool {

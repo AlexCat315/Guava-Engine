@@ -80,7 +80,7 @@ void* guava_vk_rhi_init(bool enable_validation);
 void  guava_vk_rhi_destroy(void* ctx);
 
 // ── Surface / swapchain ───────────────────────────────────────────────────
-bool guava_vk_rhi_create_surface_sdl(void* ctx, void* sdl_window);
+bool guava_vk_rhi_create_surface(void* ctx, void* native_window);
 bool guava_vk_rhi_create_swapchain(void* ctx, uint32_t width, uint32_t height);
 
 // ── Resource creation (returns ID > 0 on success, 0 on failure) ──────────

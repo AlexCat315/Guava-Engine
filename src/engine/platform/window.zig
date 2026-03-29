@@ -8,12 +8,21 @@ extern fn guava_window_macos_titlebar_leading_inset(window: *sdl.SDL_Window) f32
 extern fn guava_window_activate_macos_app() void;
 extern fn guava_window_apply_windows_native_titlebar_style(window: *sdl.SDL_Window) bool;
 extern fn guava_window_windows_titlebar_trailing_inset(window: *sdl.SDL_Window) f32;
+extern fn guava_window_create_metal_layer_binding(window_handle: *anyopaque, out_binding: *MetalLayerBinding) bool;
+extern fn guava_window_destroy_metal_layer_binding(binding: MetalLayerBinding) void;
+extern fn guava_window_get_native_win32_hwnd(window_handle: *anyopaque) ?*anyopaque;
+extern fn guava_window_get_native_cocoa_window(window_handle: *anyopaque) ?*anyopaque;
 
 pub const Rect = struct {
     x: i32,
     y: i32,
     w: i32,
     h: i32,
+};
+
+pub const MetalLayerBinding = extern struct {
+    metal_view: ?*anyopaque,
+    layer: ?*anyopaque,
 };
 
 pub const WindowConfig = struct {
@@ -383,6 +392,36 @@ pub const Window = struct {
         }
     }
 
+    pub fn createMetalLayerBinding(self: *Window) ?MetalLayerBinding {
+        return switch (builtin.os.tag) {
+            .macos => blk: {
+                var binding = MetalLayerBinding{
+                    .metal_view = null,
+                    .layer = null,
+                };
+                if (!guava_window_create_metal_layer_binding(@ptrCast(self.handle), &binding)) {
+                    break :blk null;
+                }
+                break :blk binding;
+            },
+            else => null,
+        };
+    }
+
+    pub fn nativeWin32Hwnd(self: *Window) ?*anyopaque {
+        return switch (builtin.os.tag) {
+            .windows => guava_window_get_native_win32_hwnd(@ptrCast(self.handle)),
+            else => null,
+        };
+    }
+
+    pub fn nativeCocoaWindow(self: *Window) ?*anyopaque {
+        return switch (builtin.os.tag) {
+            .macos => guava_window_get_native_cocoa_window(@ptrCast(self.handle)),
+            else => null,
+        };
+    }
+
     pub fn isMaximized(self: *const Window) bool {
         return (sdl.SDL_GetWindowFlags(self.handle) & sdl.SDL_WINDOW_MAXIMIZED) != 0;
     }
@@ -465,6 +504,12 @@ fn primaryDisplayUsableBounds() !Rect {
 
 pub fn lastError() []const u8 {
     return std.mem.sliceTo(sdl.SDL_GetError(), 0);
+}
+
+pub fn destroyMetalLayerBinding(binding: MetalLayerBinding) void {
+    if (builtin.os.tag == .macos and binding.metal_view != null) {
+        guava_window_destroy_metal_layer_binding(binding);
+    }
 }
 
 fn currentModifiers() input_mod.Modifiers {

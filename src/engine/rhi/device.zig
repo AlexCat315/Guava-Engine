@@ -4,7 +4,6 @@ const std = @import("std");
 const builtin = @import("builtin");
 const platform_mod = @import("../core/platform.zig");
 const window_mod = @import("../platform/window.zig");
-const sdl = @import("../platform/sdl.zig").c;
 const types = @import("types.zig");
 const rhi = @import("rhi.zig");
 const command_buffer = @import("command_buffer.zig");
@@ -100,7 +99,7 @@ pub const VertexAttributeDesc = struct {
     offset: u32,
 };
 
-// NEW: Resource types now hold u32 IDs instead of SDL pointers
+// NEW: Resource types now hold u32 IDs instead of backend-native pointers
 pub const Buffer = struct {
     id: u32,
     desc: types.BufferDesc,
@@ -196,7 +195,7 @@ pub const BindGroup = struct {
     set: ?rhi.BindingSet = null,
 };
 
-// NEW: Frame now holds swapchain_image ID instead of SDL command buffer
+// NEW: Frame now holds swapchain_image ID instead of backend command buffers
 pub const Frame = struct {
     swapchain_image: rhi.SwapchainImage,
     command_buffer: command_buffer.CommandBuffer,
@@ -281,7 +280,7 @@ pub const BindGroupState = struct {
         self.bound_index_buffer = null;
     }
 };
-// NEW: Main device struct - now wraps rhi.Device instead of SDL
+// NEW: Main device struct - now wraps rhi.Device directly
 pub const RhiDevice = struct {
     allocator: std.mem.Allocator,
     device: *rhi.Device,
@@ -304,7 +303,7 @@ pub const RhiDevice = struct {
     owned_vulkan_device: ?*vulkan_device_mod.VulkanDevice = null,
     owned_mock_backend: ?*metal_backend_mod.MetalBackend = null,
     rt_device: ?rt_device_mod.RtDevice = null,
-    sdl_metal_view: sdl.SDL_MetalView = null,
+    metal_layer_binding: ?window_mod.MetalLayerBinding = null,
     pending_pixel_downloads: std.ArrayList(PendingPixelDownload) = .empty,
     pending_texture_blits: std.ArrayList(PendingTextureBlit) = .empty,
     next_fence_id: u64 = 1,
@@ -324,10 +323,9 @@ pub const RhiDevice = struct {
             md_ptr.* = md;
             errdefer md_ptr.deinit();
 
-            var metal_view: sdl.SDL_MetalView = null;
-            metal_view = sdl.SDL_Metal_CreateView(window.handle);
-            if (metal_view) |view| {
-                if (sdl.SDL_Metal_GetLayer(view)) |layer| {
+            const metal_layer_binding = window.createMetalLayerBinding();
+            if (metal_layer_binding) |binding| {
+                if (binding.layer) |layer| {
                     md_ptr.setLayer(layer);
                 }
             }
@@ -350,7 +348,7 @@ pub const RhiDevice = struct {
                 },
                 .owned_device = true,
                 .owned_metal_device = md_ptr,
-                .sdl_metal_view = metal_view,
+                .metal_layer_binding = metal_layer_binding,
             };
             out.setFramesInFlight(config.frames_in_flight);
             copyCStringSlice(out.runtime_info.device_name[0..], md_ptr.getDeviceName());
@@ -366,7 +364,7 @@ pub const RhiDevice = struct {
             vk_ptr.* = vk;
             errdefer vk_ptr.deinit();
 
-            // Create SDL Vulkan surface
+            // Create the Vulkan surface through the platform window bridge.
             _ = vk_ptr.createSurface(@ptrCast(window.handle));
             _ = vk_ptr.createSwapchain(window.drawable_width, window.drawable_height);
 
@@ -456,8 +454,8 @@ pub const RhiDevice = struct {
                 vd.deinit();
                 self.allocator.destroy(vd);
             }
-            if (self.sdl_metal_view != null) {
-                sdl.SDL_Metal_DestroyView(self.sdl_metal_view);
+            if (self.metal_layer_binding) |binding| {
+                window_mod.destroyMetalLayerBinding(binding);
             }
             if (self.owned_mock_backend) |mb| {
                 mb.deinit();

@@ -1,6 +1,9 @@
 #import <AppKit/AppKit.h>
+#import <QuartzCore/CAMetalLayer.h>
 
+#include "window_native_handles.h"
 #include <SDL3/SDL.h>
+#include <SDL3/SDL_metal.h>
 #include <SDL3/SDL_properties.h>
 #include <SDL3/SDL_video.h>
 
@@ -25,6 +28,42 @@ NSWindow* guava_ns_window_from_sdl(SDL_Window* window) {
 }
 
 } // namespace
+
+extern "C" bool guava_window_create_metal_layer_binding(void* window_handle, GuavaMetalLayerBinding* out_binding) {
+    if (window_handle == nullptr || out_binding == nullptr) {
+        return false;
+    }
+
+    SDL_MetalView metal_view = SDL_Metal_CreateView(static_cast<SDL_Window*>(window_handle));
+    if (metal_view == nullptr) {
+        return false;
+    }
+
+    void* raw_layer = SDL_Metal_GetLayer(metal_view);
+    if (raw_layer == nullptr) {
+        SDL_Metal_DestroyView(metal_view);
+        return false;
+    }
+
+    out_binding->metal_view = metal_view;
+    out_binding->layer = raw_layer;
+    return true;
+}
+
+extern "C" void guava_window_destroy_metal_layer_binding(GuavaMetalLayerBinding binding) {
+    if (binding.metal_view != nullptr) {
+        SDL_Metal_DestroyView((SDL_MetalView)binding.metal_view);
+    }
+}
+
+extern "C" void* guava_window_get_native_cocoa_window(void* window_handle) {
+    NSWindow* native_window = guava_ns_window_from_sdl(static_cast<SDL_Window*>(window_handle));
+    if (native_window == nil) {
+        return nullptr;
+    }
+
+    return (__bridge void*)native_window;
+}
 
 extern "C" bool guava_window_apply_macos_native_titlebar_style(SDL_Window* window) {
     @autoreleasepool {

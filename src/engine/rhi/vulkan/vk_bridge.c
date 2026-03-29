@@ -8,6 +8,7 @@
 // ---------------------------------------------------------------------------
 
 #include "vk_bridge.h"
+#include "../../platform/window_vulkan_sdl.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,10 +17,6 @@
 
 // Vulkan headers — SDK must be installed; build.zig links libvulkan
 #include <vulkan/vulkan.h>
-
-// SDL3 for surface creation
-#include <SDL3/SDL.h>
-#include <SDL3/SDL_vulkan.h>
 
 // ImGui Vulkan backend render (implemented in imgui_vulkan_backend.cpp)
 extern bool guava_imgui_vulkan_backend_render(void* vk_command_buffer);
@@ -595,14 +592,14 @@ void* guava_vk_rhi_init(bool enable_validation) {
         .apiVersion = VK_API_VERSION_1_3,
     };
 
-    // Gather required extensions from SDL
-    uint32_t sdl_ext_count = 0;
-    const char* const* sdl_extensions = SDL_Vulkan_GetInstanceExtensions(&sdl_ext_count);
+    // Gather required window-system extensions from the platform layer.
+    uint32_t platform_ext_count = 0;
+    const char* const* platform_extensions = guava_window_vulkan_instance_extensions(&platform_ext_count);
 
-    uint32_t ext_count = sdl_ext_count;
+    uint32_t ext_count = platform_ext_count;
     const char* extensions[64];
-    for (uint32_t i = 0; i < sdl_ext_count && i < 60; i++)
-        extensions[i] = sdl_extensions[i];
+    for (uint32_t i = 0; i < platform_ext_count && i < 60; i++)
+        extensions[i] = platform_extensions[i];
 
     if (enable_validation)
         extensions[ext_count++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
@@ -886,10 +883,10 @@ void guava_vk_rhi_destroy(void* raw) {
 // Surface / Swapchain
 // ===========================================================================
 
-bool guava_vk_rhi_create_surface_sdl(void* raw, void* sdl_window) {
+bool guava_vk_rhi_create_surface(void* raw, void* native_window) {
     GuavaVkContext* ctx = (GuavaVkContext*)raw;
-    if (!SDL_Vulkan_CreateSurface((SDL_Window*)sdl_window, ctx->instance, NULL, &ctx->surface)) {
-        fprintf(stderr, "[Guava VK] SDL_Vulkan_CreateSurface failed: %s\n", SDL_GetError());
+    if (!guava_window_create_vulkan_surface(native_window, ctx->instance, &ctx->surface)) {
+        fprintf(stderr, "[Guava VK] create surface failed: %s\n", guava_window_vulkan_last_error());
         return false;
     }
     return true;
