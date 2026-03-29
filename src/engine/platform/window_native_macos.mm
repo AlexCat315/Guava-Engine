@@ -36,6 +36,7 @@ extern "C" bool guava_window_apply_macos_native_titlebar_style(SDL_Window* windo
         native_window.styleMask |= NSWindowStyleMaskFullSizeContentView;
         native_window.titleVisibility = NSWindowTitleHidden;
         native_window.titlebarAppearsTransparent = YES;
+        native_window.movable = NO;
         native_window.movableByWindowBackground = NO;
 
         NSWindowCollectionBehavior behavior = native_window.collectionBehavior;
