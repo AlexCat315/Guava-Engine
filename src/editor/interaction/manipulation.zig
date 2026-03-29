@@ -606,6 +606,16 @@ fn startGizmoDragSession(
                 state.gizmo_drag_session = projection;
                 return;
             };
+            if (picked_handle.axis == .free) {
+                const start_offset = vec3.sub(projection.drag_start_point, projection.plane_origin);
+                const fallback_distance = @max(projection.draw_scale * 0.18, 0.05);
+                const start_distance = vec3.length(start_offset);
+                projection.drag_start_distance = @max(start_distance, fallback_distance);
+                projection.drag_start_vector = if (start_distance > 0.0001)
+                    vec3.normalize(start_offset)
+                else
+                    camera_basis.right;
+            }
         },
         .none => projection.mode = .none,
     }
@@ -682,24 +692,39 @@ fn applyGizmoDragScale(
     const current_point = rayPlaneHitPoint(ray, projection.plane_origin, projection.plane_normal) orelse return;
     const amount = vec3.dot(vec3.sub(current_point, projection.drag_start_point), projection.handle_axis_world) /
         @max(projection.draw_scale, 0.05);
-    const scalar = @max(0.05, 1.0 + amount);
+    const uniform_scalar = blk: {
+        const current_offset = vec3.sub(current_point, projection.plane_origin);
+        const current_distance = vec3.length(current_offset);
+        if (current_distance <= 0.0001) break :blk @as(f32, 0.05);
+
+        const current_direction = vec3.normalize(current_offset);
+        const same_side = vec3.dot(current_direction, projection.drag_start_vector);
+        if (same_side < -0.1) break :blk @as(f32, 0.05);
+
+        break :blk std.math.clamp(
+            current_distance / @max(projection.drag_start_distance, 0.05),
+            0.05,
+            20.0,
+        );
+    };
+    const axis_scalar = @max(0.05, 1.0 + amount);
 
     var raw_scale = state.manipulation_origin.scale;
     switch (projection.mode) {
         .uniform_scale => {
-            raw_scale[0] *= scalar;
-            raw_scale[1] *= scalar;
-            raw_scale[2] *= scalar;
+            raw_scale[0] *= uniform_scalar;
+            raw_scale[1] *= uniform_scalar;
+            raw_scale[2] *= uniform_scalar;
         },
         .axis_scale => switch (state.manipulation_axis) {
             .free => {
-                raw_scale[0] *= scalar;
-                raw_scale[1] *= scalar;
-                raw_scale[2] *= scalar;
+                raw_scale[0] *= axis_scalar;
+                raw_scale[1] *= axis_scalar;
+                raw_scale[2] *= axis_scalar;
             },
-            .x => raw_scale[0] *= scalar,
-            .y => raw_scale[1] *= scalar,
-            .z => raw_scale[2] *= scalar,
+            .x => raw_scale[0] *= axis_scalar,
+            .y => raw_scale[1] *= axis_scalar,
+            .z => raw_scale[2] *= axis_scalar,
         },
         else => return,
     }

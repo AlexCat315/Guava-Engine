@@ -131,39 +131,50 @@ pub fn rotateVec3(q: Quat, v: components.Vec3) components.Vec3 {
 }
 
 pub fn toMat4(q: Quat) [16]f32 {
+    // 将四元数 `q = { x, y, z, w }` 转换成一个 4x4 旋转矩阵（无平移）。
+    // 返回值为长度为 16 的数组，按列优先（column-major）存储：索引 = col * 4 + row
+    //  result[0..3]   = 第一列 (m00, m10, m20, m30)
+    //  result[4..7]   = 第二列 (m01, m11, m21, m31)
+    //  result[8..11]  = 第三列 (m02, m12, m22, m32)
+    //  result[12..15] = 第四列 (m03, m13, m23, m33)
     var result: [16]f32 = [_]f32{0} ** 16;
-    const x2 = q[0] + q[0];
-    const y2 = q[1] + q[1];
-    const z2 = q[2] + q[2];
-    const xx = q[0] * x2;
-    const xy = q[0] * y2;
-    const xz = q[0] * z2;
-    const yy = q[1] * y2;
-    const yz = q[1] * z2;
-    const zz = q[2] * z2;
-    const wx = q[3] * x2;
-    const wy = q[3] * y2;
-    const wz = q[3] * z2;
 
-    result[0] = 1.0 - (yy + zz);
-    result[1] = xy + wz;
-    result[2] = xz - wy;
-    result[3] = 0.0;
+    // 预先计算 2*x, 2*y, 2*z，以及常用的乘积项，避免重复乘法：
+    const x2 = q[0] + q[0]; // 2*x
+    const y2 = q[1] + q[1]; // 2*y
+    const z2 = q[2] + q[2]; // 2*z
+    const xx = q[0] * x2; // 2*x*x
+    const xy = q[0] * y2; // 2*x*y
+    const xz = q[0] * z2; // 2*x*z
+    const yy = q[1] * y2; // 2*y*y
+    const yz = q[1] * z2; // 2*y*z
+    const zz = q[2] * z2; // 2*z*z
+    const wx = q[3] * x2; // 2*w*x
+    const wy = q[3] * y2; // 2*w*y
+    const wz = q[3] * z2; // 2*w*z
 
-    result[4] = xy - wz;
-    result[5] = 1.0 - (xx + zz);
-    result[6] = yz + wx;
-    result[7] = 0.0;
+    // 填充 3x3 旋转子矩阵（上三行、前三列）
+    // 对角项为 1 - 2*(other_two_squares)：
+    result[0] = 1.0 - (yy + zz); // m00
+    result[1] = xy + wz; // m01
+    result[2] = xz - wy; // m02
+    result[3] = 0.0; // m03 (齐次坐标，无平移)
 
-    result[8] = xz + wy;
-    result[9] = yz - wx;
-    result[10] = 1.0 - (xx + yy);
-    result[11] = 0.0;
+    result[4] = xy - wz; // m10
+    result[5] = 1.0 - (xx + zz); // m11
+    result[6] = yz + wx; // m12
+    result[7] = 0.0; // m13
 
-    result[12] = 0.0;
-    result[13] = 0.0;
-    result[14] = 0.0;
-    result[15] = 1.0;
+    result[8] = xz + wy; // m20
+    result[9] = yz - wx; // m21
+    result[10] = 1.0 - (xx + yy); // m22
+    result[11] = 0.0; // m23
+
+    // 第四行表示齐次变换中的平移与齐次成分，这里为单位齐次（无平移）
+    result[12] = 0.0; // m30
+    result[13] = 0.0; // m31
+    result[14] = 0.0; // m32
+    result[15] = 1.0; // m33
 
     return result;
 }

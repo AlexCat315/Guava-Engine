@@ -3,6 +3,7 @@ const engine = @import("guava");
 const gui = @import("gui.zig");
 const sdl = engine.platform.sdl.c;
 const vec3 = engine.math.vec3;
+const quat = engine.math.quat;
 const EditorState = @import("../core/state.zig").EditorState;
 const state_mod = @import("../core/state.zig");
 const utils = @import("../common/utils.zig");
@@ -238,7 +239,7 @@ fn setRenderOutputStatusFmt(
 }
 
 fn projectWorldPointToViewport(
-    state: *EditorState,
+    state: *const EditorState,
     layer_context: *engine.core.LayerContext,
     world_position: [3]f32,
 ) ?[2]f32 {
@@ -346,6 +347,196 @@ fn resolveViewportPrimarySceneCamera(state: *EditorState, layer_context: *engine
         return entity.id;
     }
     return null;
+}
+
+fn resolveViewportViewedCamera(state: *EditorState, layer_context: *engine.core.LayerContext) ?engine.scene.EntityId {
+    if (state.editor_camera_active) {
+        return state.editor_camera;
+    }
+    return layer_context.world.primaryCameraEntity();
+}
+
+fn viewportSceneAspectRatio(state: *const EditorState, layer_context: *engine.core.LayerContext) f32 {
+    const viewport_size = layer_context.renderer.sceneViewportSize();
+    if (viewport_size[0] > 0 and viewport_size[1] > 0) {
+        return @as(f32, @floatFromInt(viewport_size[0])) / @as(f32, @floatFromInt(viewport_size[1]));
+    }
+    if (state.viewport_extent[0] > 1.0 and state.viewport_extent[1] > 1.0) {
+        return state.viewport_extent[0] / state.viewport_extent[1];
+    }
+    return 16.0 / 9.0;
+}
+
+fn viewportCameraHelperScale(view_camera_position: [3]f32, helper_position: [3]f32) f32 {
+    const distance = vec3.length(vec3.sub(view_camera_position, helper_position));
+    return std.math.clamp(distance * 0.16, 0.55, 3.0);
+}
+
+fn drawProjectedWorldSegment(
+    draw_list: gui.DrawList,
+    state: *const EditorState,
+    layer_context: *engine.core.LayerContext,
+    a: [3]f32,
+    b: [3]f32,
+    color: u32,
+    thickness: f32,
+) void {
+    const a_screen = projectWorldPointToViewport(state, layer_context, a) orelse return;
+    const b_screen = projectWorldPointToViewport(state, layer_context, b) orelse return;
+    draw_list.addLine(a_screen, b_screen, color, thickness);
+}
+
+fn drawViewportPerspectiveCameraFrustum(
+    draw_list: gui.DrawList,
+    state: *const EditorState,
+    layer_context: *engine.core.LayerContext,
+    world_transform: engine.scene.Transform,
+    projection: anytype,
+    aspect: f32,
+    color: u32,
+    thickness: f32,
+    helper_scale: f32,
+) void {
+    const origin = world_transform.translation;
+    const forward = quat.rotateVec3(world_transform.rotation, .{ 0.0, 0.0, -1.0 });
+    const right = quat.rotateVec3(world_transform.rotation, .{ 1.0, 0.0, 0.0 });
+    const up = quat.rotateVec3(world_transform.rotation, .{ 0.0, 1.0, 0.0 });
+
+    const plane_depth = std.math.clamp(helper_scale * 1.25, projection.near_clip + 0.05, projection.far_clip);
+    const half_height = @tan(projection.fov_y_radians * 0.5) * plane_depth;
+    const half_width = half_height * aspect;
+    const plane_center = vec3.add(origin, vec3.scale(forward, plane_depth));
+    const top_left = vec3.add(vec3.add(plane_center, vec3.scale(up, half_height)), vec3.scale(right, -half_width));
+    const top_right = vec3.add(vec3.add(plane_center, vec3.scale(up, half_height)), vec3.scale(right, half_width));
+    const bottom_right = vec3.add(vec3.add(plane_center, vec3.scale(up, -half_height)), vec3.scale(right, half_width));
+    const bottom_left = vec3.add(vec3.add(plane_center, vec3.scale(up, -half_height)), vec3.scale(right, -half_width));
+
+    drawProjectedWorldSegment(draw_list, state, layer_context, origin, top_left, color, thickness);
+    drawProjectedWorldSegment(draw_list, state, layer_context, origin, top_right, color, thickness);
+    drawProjectedWorldSegment(draw_list, state, layer_context, origin, bottom_right, color, thickness);
+    drawProjectedWorldSegment(draw_list, state, layer_context, origin, bottom_left, color, thickness);
+
+    drawProjectedWorldSegment(draw_list, state, layer_context, top_left, top_right, color, thickness);
+    drawProjectedWorldSegment(draw_list, state, layer_context, top_right, bottom_right, color, thickness);
+    drawProjectedWorldSegment(draw_list, state, layer_context, bottom_right, bottom_left, color, thickness);
+    drawProjectedWorldSegment(draw_list, state, layer_context, bottom_left, top_left, color, thickness);
+
+    const plane_mid_top = vec3.add(plane_center, vec3.scale(up, half_height * 1.16));
+    drawProjectedWorldSegment(draw_list, state, layer_context, top_left, plane_mid_top, color, thickness);
+    drawProjectedWorldSegment(draw_list, state, layer_context, plane_mid_top, top_right, color, thickness);
+}
+
+fn drawViewportOrthographicCameraFrustum(
+    draw_list: gui.DrawList,
+    state: *const EditorState,
+    layer_context: *engine.core.LayerContext,
+    world_transform: engine.scene.Transform,
+    projection: anytype,
+    aspect: f32,
+    color: u32,
+    thickness: f32,
+    helper_scale: f32,
+) void {
+    const origin = world_transform.translation;
+    const forward = quat.rotateVec3(world_transform.rotation, .{ 0.0, 0.0, -1.0 });
+    const right = quat.rotateVec3(world_transform.rotation, .{ 1.0, 0.0, 0.0 });
+    const up = quat.rotateVec3(world_transform.rotation, .{ 0.0, 1.0, 0.0 });
+
+    const half_height = std.math.clamp(projection.size * 0.12, helper_scale * 0.34, helper_scale * 0.82);
+    const half_width = half_height * aspect;
+    const back_depth = helper_scale * 0.22;
+    const front_depth = helper_scale * 1.08;
+    const back_center = vec3.add(origin, vec3.scale(forward, back_depth));
+    const front_center = vec3.add(origin, vec3.scale(forward, front_depth));
+
+    const back_top_left = vec3.add(vec3.add(back_center, vec3.scale(up, half_height)), vec3.scale(right, -half_width));
+    const back_top_right = vec3.add(vec3.add(back_center, vec3.scale(up, half_height)), vec3.scale(right, half_width));
+    const back_bottom_right = vec3.add(vec3.add(back_center, vec3.scale(up, -half_height)), vec3.scale(right, half_width));
+    const back_bottom_left = vec3.add(vec3.add(back_center, vec3.scale(up, -half_height)), vec3.scale(right, -half_width));
+
+    const front_top_left = vec3.add(vec3.add(front_center, vec3.scale(up, half_height)), vec3.scale(right, -half_width));
+    const front_top_right = vec3.add(vec3.add(front_center, vec3.scale(up, half_height)), vec3.scale(right, half_width));
+    const front_bottom_right = vec3.add(vec3.add(front_center, vec3.scale(up, -half_height)), vec3.scale(right, half_width));
+    const front_bottom_left = vec3.add(vec3.add(front_center, vec3.scale(up, -half_height)), vec3.scale(right, -half_width));
+
+    drawProjectedWorldSegment(draw_list, state, layer_context, back_top_left, back_top_right, color, thickness);
+    drawProjectedWorldSegment(draw_list, state, layer_context, back_top_right, back_bottom_right, color, thickness);
+    drawProjectedWorldSegment(draw_list, state, layer_context, back_bottom_right, back_bottom_left, color, thickness);
+    drawProjectedWorldSegment(draw_list, state, layer_context, back_bottom_left, back_top_left, color, thickness);
+
+    drawProjectedWorldSegment(draw_list, state, layer_context, front_top_left, front_top_right, color, thickness);
+    drawProjectedWorldSegment(draw_list, state, layer_context, front_top_right, front_bottom_right, color, thickness);
+    drawProjectedWorldSegment(draw_list, state, layer_context, front_bottom_right, front_bottom_left, color, thickness);
+    drawProjectedWorldSegment(draw_list, state, layer_context, front_bottom_left, front_top_left, color, thickness);
+
+    drawProjectedWorldSegment(draw_list, state, layer_context, back_top_left, front_top_left, color, thickness);
+    drawProjectedWorldSegment(draw_list, state, layer_context, back_top_right, front_top_right, color, thickness);
+    drawProjectedWorldSegment(draw_list, state, layer_context, back_bottom_right, front_bottom_right, color, thickness);
+    drawProjectedWorldSegment(draw_list, state, layer_context, back_bottom_left, front_bottom_left, color, thickness);
+}
+
+fn drawViewportCameraFrustums(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+    if (!state.viewport_has_image) return;
+
+    const draw_list = gui.getWindowDrawList();
+    const selected_entities = layer_context.renderer.selectedEntities();
+    const primary_scene_camera = resolveViewportPrimarySceneCamera(state, layer_context);
+    const viewed_camera = resolveViewportViewedCamera(state, layer_context);
+    const aspect = viewportSceneAspectRatio(state, layer_context);
+    const view_camera_transform = camera.activeCameraTransform(state, layer_context);
+
+    for (layer_context.scene.entities.items) |entity| {
+        const camera_component = entity.camera orelse continue;
+        if (!entity.visible or entity.editor_only) continue;
+        if (state.editor_camera != null and entity.id == state.editor_camera.?) continue;
+        if (viewed_camera != null and entity.id == viewed_camera.?) continue;
+
+        const world_transform = layer_context.scene.worldTransformConst(entity.id) orelse entity.local_transform;
+
+        var is_selected = false;
+        for (selected_entities) |selected_id| {
+            if (selected_id == entity.id) {
+                is_selected = true;
+                break;
+            }
+        }
+
+        const is_primary_scene_camera = primary_scene_camera != null and primary_scene_camera.? == entity.id;
+        const color_rgba: [4]f32 = if (is_selected)
+            .{ 0.62, 0.88, 1.0, 0.96 }
+        else if (is_primary_scene_camera)
+            .{ 0.28, 0.92, 0.60, 0.92 }
+        else
+            .{ 0.47, 0.78, 1.0, 0.66 };
+        const thickness: f32 = if (is_selected) 2.0 else if (is_primary_scene_camera) 1.8 else 1.35;
+        const helper_scale = viewportCameraHelperScale(view_camera_transform.translation, world_transform.translation);
+        const color = gui.getColorU32(color_rgba);
+
+        switch (camera_component.projection) {
+            .perspective => |projection| drawViewportPerspectiveCameraFrustum(
+                draw_list,
+                state,
+                layer_context,
+                world_transform,
+                projection,
+                aspect,
+                color,
+                thickness,
+                helper_scale,
+            ),
+            .orthographic => |projection| drawViewportOrthographicCameraFrustum(
+                draw_list,
+                state,
+                layer_context,
+                world_transform,
+                projection,
+                aspect,
+                color,
+                thickness,
+                helper_scale,
+            ),
+        }
+    }
 }
 
 fn drawViewportSceneEntityIcons(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -774,6 +965,7 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
         try drawViewportFpsOverlayWindow(state, layer_context);
         try drawViewportDebugOverlayWindow(state, layer_context);
         try ai_collaboration.drawViewportCollaborationOverlay(state, layer_context);
+        drawViewportCameraFrustums(state, layer_context);
         try drawViewportSceneEntityIcons(state, layer_context);
         drawViewportViewCube(state, layer_context);
         logViewportStateChange(state, layer_context);

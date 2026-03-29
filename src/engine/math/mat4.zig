@@ -14,6 +14,10 @@ pub fn identity() Mat4 {
 }
 
 pub fn mul(a: Mat4, b: Mat4) Mat4 {
+    // 矩阵乘法：result = a * b
+    // 说明：本模块使用“列主序（column-major）”存储（见下方 `get`/`set`），
+    // 并采用列向量约定（向量作为 4x1 列向量，变换为 M * v）。
+    // 因此在构造模型矩阵时按常见图形学约定使用 M = T * R * S，表示先缩放再旋转再平移。
     var result: Mat4 = [_]f32{0.0} ** 16;
 
     var col: usize = 0;
@@ -23,6 +27,7 @@ pub fn mul(a: Mat4, b: Mat4) Mat4 {
             var value: f32 = 0.0;
             var i: usize = 0;
             while (i < 4) : (i += 1) {
+                // 标准矩阵乘法（行*列）：a[row,i] * b[i,col]
                 value += get(a, row, i) * get(b, i, col);
             }
             set(&result, row, col, value);
@@ -151,6 +156,9 @@ pub fn rotationZ(radians: f32) Mat4 {
 }
 
 pub fn transformMatrix(transform: components.Transform) Mat4 {
+    // 构造模型矩阵：M = T * R * S
+    // 解释：采用列向量约定（v' = M * v），因此表达式写成 T * R * S
+    // 表示对顶点先应用 S（缩放），再应用 R（旋转），最后应用 T（平移）。
     const rotate = quat.toMat4(transform.rotation);
     return mul(mul(translation(transform.translation), rotate), scale(transform.scale));
 }
@@ -256,10 +264,13 @@ pub fn projectionForCamera(camera: components.Camera, aspect_ratio: f32) Mat4 {
 }
 
 fn get(matrix: Mat4, row: usize, col: usize) f32 {
+    // 存储映射（列主序）：索引 = col * 4 + row。
+    // 例如，矩阵的第 4 列（索引 col=3）第 1 行（row=0）位于 array index = 3*4 + 0 = 12。
     return matrix[col * 4 + row];
 }
 
 fn set(matrix: *Mat4, row: usize, col: usize, value: f32) void {
+    // 对应的写操作（列主序索引）。
     matrix[col * 4 + row] = value;
 }
 
