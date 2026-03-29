@@ -952,9 +952,9 @@ pub fn handleViewportSelection(state: *EditorState, layer_context: *engine.core.
             if (viewportPixelUnderMouse(state, layer_context)) |pixel| {
                 const viewport_size = layer_context.renderer.sceneViewportSize();
                 if (camera.activeCameraRayFromViewportPixel(state, layer_context, pixel, viewport_size)) |ray| {
-                    if (manipulation.hitTestGizmo(state, layer_context, ray)) |hit| {
-                        viewport_log.info("gizmo axis click axis={s} mode={s}", .{ @tagName(hit.axis), @tagName(hit.mode) });
-                        try manipulation.beginManipulationFromGizmoClick(state, layer_context, hit);
+                    if (manipulation.pickGizmoHandle(state, layer_context, ray)) |picked_handle| {
+                        viewport_log.info("picked gizmo handle axis={s} mode={s}", .{ @tagName(picked_handle.axis), @tagName(picked_handle.mode) });
+                        try manipulation.beginManipulationFromPickedGizmoHandle(state, layer_context, picked_handle, ray);
                         return;
                     }
                 }

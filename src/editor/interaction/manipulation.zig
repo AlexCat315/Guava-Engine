@@ -14,6 +14,8 @@ const scene_hierarchy = @import("../ui/panels/scene/scene_hierarchy.zig");
 const ManipulationMode = state_mod.ManipulationMode;
 const TransformSpace = state_mod.TransformSpace;
 const AxisConstraint = state_mod.AxisConstraint;
+const ManipulationDragProjection = state_mod.ManipulationDragProjection;
+const ManipulationDragSolver = state_mod.ManipulationDragSolver;
 
 pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const input = layer_context.input;
@@ -163,6 +165,7 @@ pub fn beginManipulation(
     state.manipulation_keyboard_mode = false;
     state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
     state.manipulation_accumulated_delta = .{ 0.0, 0.0 };
+    state.manipulation_projection = .{};
     state.manipulation_started_from_ui = false;
     clearManipulationSnapshot(state);
     try syncManipulationTarget(state, layer_context);
@@ -177,6 +180,7 @@ pub fn beginDirectManipulation(
 ) !void {
     try beginManipulation(state, layer_context, mode);
     state.manipulation_keyboard_mode = true;
+    state.manipulation_projection = .{ .solver = .pixel_delta };
     if (state.manipulation_entity != null) {
         state.manipulation_drag_active = true;
         ai_collaboration.noteManipulationBegin(state);
@@ -199,6 +203,7 @@ pub fn endManipulation(state: *EditorState) void {
     state.manipulation_keyboard_mode = false;
     state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
     state.manipulation_accumulated_delta = .{ 0.0, 0.0 };
+    state.manipulation_projection = .{};
     state.manipulation_started_from_ui = false;
 }
 
@@ -248,6 +253,7 @@ fn commitManipulation(state: *EditorState, layer_context: *engine.core.LayerCont
     state.manipulation_drag_active = false;
     state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
     state.manipulation_accumulated_delta = .{ 0.0, 0.0 };
+    state.manipulation_projection = .{};
     state.manipulation_started_from_ui = false;
     try history.recordEntityMutation(state, layer_context, before, &.{entity_id});
     syncGizmoState(state, layer_context);
@@ -344,6 +350,7 @@ pub fn applyManipulation(state: *EditorState, layer_context: *engine.core.LayerC
             state.manipulation_drag_active = false;
             state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
             state.manipulation_accumulated_delta = .{ 0.0, 0.0 };
+            state.manipulation_projection = .{};
         }
         return;
     }
@@ -360,6 +367,29 @@ pub fn applyManipulation(state: *EditorState, layer_context: *engine.core.LayerC
     };
 
     if (!state.manipulation_drag_active) return;
+
+    if (state.manipulation_projection.solver != .none and state.manipulation_projection.solver != .pixel_delta) {
+        const ray = currentViewportRay(state, layer_context, true) orelse return;
+        var entity_transform = state.manipulation_origin;
+
+        switch (state.manipulation_mode) {
+            .none => {},
+            .translate => applyProjectedTranslate(state, layer_context, ray, &entity_transform),
+            .rotate => applyProjectedRotate(state, ray, &entity_transform),
+            .scale => applyProjectedScale(state, ray, &entity_transform),
+        }
+
+        switch (state.manipulation_target) {
+            .main_world => _ = layer_context.world.setEntityWorldTransform(entity_id, entity_transform),
+            .staged_preview => {
+                if (state.ai_preview_runtime) |*runtime| {
+                    _ = runtime.world.setEntityWorldTransform(entity_id, entity_transform);
+                    runtime.world.updateHierarchy();
+                }
+            },
+        }
+        return;
+    }
 
     if (@abs(input.mouse_delta[0]) < 0.0001 and @abs(input.mouse_delta[1]) < 0.0001) {
         return;
@@ -388,6 +418,302 @@ pub fn applyManipulation(state: *EditorState, layer_context: *engine.core.LayerC
             }
         },
     }
+}
+
+const ManipulationCameraBasis = struct {
+    right: [3]f32,
+    up: [3]f32,
+    forward: [3]f32,
+};
+
+fn effectiveViewportMousePos(layer_context: *const engine.core.LayerContext) [2]f32 {
+    const imgui_mouse_pos = gui.mousePos();
+    const invalid_imgui_mouse = !std.math.isFinite(imgui_mouse_pos[0]) or
+        !std.math.isFinite(imgui_mouse_pos[1]) or
+        imgui_mouse_pos[0] <= -std.math.floatMax(f32) * 0.5 or
+        imgui_mouse_pos[1] <= -std.math.floatMax(f32) * 0.5;
+    return if (invalid_imgui_mouse) layer_context.input.mouse_position else imgui_mouse_pos;
+}
+
+fn viewportPixelFromMouse(
+    state: *const EditorState,
+    layer_context: *const engine.core.LayerContext,
+    clamp_to_viewport: bool,
+) ?[2]u32 {
+    if (state.viewport_extent[0] <= 1.0 or state.viewport_extent[1] <= 1.0) return null;
+
+    const mouse_pos = effectiveViewportMousePos(layer_context);
+    var local_x = mouse_pos[0] - state.viewport_origin[0];
+    var local_y = mouse_pos[1] - state.viewport_origin[1];
+    if (clamp_to_viewport) {
+        local_x = std.math.clamp(local_x, 0.0, state.viewport_extent[0]);
+        local_y = std.math.clamp(local_y, 0.0, state.viewport_extent[1]);
+    } else if (local_x < 0.0 or local_y < 0.0 or local_x > state.viewport_extent[0] or local_y > state.viewport_extent[1]) {
+        return null;
+    }
+
+    const viewport_size = layer_context.renderer.sceneViewportSize();
+    if (viewport_size[0] == 0 or viewport_size[1] == 0) return null;
+
+    const normalized_x = std.math.clamp(local_x / state.viewport_extent[0], 0.0, 1.0);
+    const normalized_y = std.math.clamp(local_y / state.viewport_extent[1], 0.0, 1.0);
+    return .{
+        @as(u32, @intFromFloat(std.math.clamp(
+            normalized_x * @as(f32, @floatFromInt(viewport_size[0])),
+            0.0,
+            @as(f32, @floatFromInt(viewport_size[0] - 1)),
+        ))),
+        @as(u32, @intFromFloat(std.math.clamp(
+            normalized_y * @as(f32, @floatFromInt(viewport_size[1])),
+            0.0,
+            @as(f32, @floatFromInt(viewport_size[1] - 1)),
+        ))),
+    };
+}
+
+fn currentViewportRay(
+    state: *const EditorState,
+    layer_context: *engine.core.LayerContext,
+    clamp_to_viewport: bool,
+) ?engine.scene.Ray {
+    const pixel = viewportPixelFromMouse(state, layer_context, clamp_to_viewport) orelse return null;
+    const viewport_size = layer_context.renderer.sceneViewportSize();
+    return camera.activeCameraRayFromViewportPixel(state, layer_context, pixel, viewport_size);
+}
+
+fn safeNormalizeOr(vector: [3]f32, fallback: [3]f32) [3]f32 {
+    if (vec3.length(vector) <= 0.0001) return vec3.normalize(fallback);
+    return vec3.normalize(vector);
+}
+
+fn manipulationCameraBasis(state: *const EditorState, layer_context: *engine.core.LayerContext) ManipulationCameraBasis {
+    const camera_transform = camera.activeCameraTransform(state, layer_context);
+    return .{
+        .right = vec3.normalize(quat.rotateVec3(camera_transform.rotation, .{ 1.0, 0.0, 0.0 })),
+        .up = vec3.normalize(quat.rotateVec3(camera_transform.rotation, .{ 0.0, 1.0, 0.0 })),
+        .forward = vec3.normalize(quat.rotateVec3(camera_transform.rotation, .{ 0.0, 0.0, -1.0 })),
+    };
+}
+
+fn rayPlaneIntersection(ray: engine.scene.Ray, plane_origin: [3]f32, plane_normal: [3]f32) ?[3]f32 {
+    const normal = safeNormalizeOr(plane_normal, .{ 0.0, 0.0, -1.0 });
+    const denom = vec3.dot(ray.direction, normal);
+    if (@abs(denom) < 1e-5) return null;
+
+    const t = vec3.dot(vec3.sub(plane_origin, ray.origin), normal) / denom;
+    if (t < 0.0) return null;
+    return vec3.add(ray.origin, vec3.scale(ray.direction, t));
+}
+
+fn axisDragPlaneNormal(axis_world: [3]f32, camera_forward: [3]f32, camera_up: [3]f32) [3]f32 {
+    const view_cross_axis = vec3.cross(camera_forward, axis_world);
+    var normal = vec3.cross(axis_world, view_cross_axis);
+    if (vec3.length(normal) <= 0.0001) {
+        normal = vec3.cross(axis_world, camera_up);
+    }
+    if (vec3.length(normal) <= 0.0001) {
+        normal = vec3.cross(axis_world, .{ 1.0, 0.0, 0.0 });
+    }
+    return safeNormalizeOr(normal, camera_forward);
+}
+
+fn scalePlaneDirection(camera_right: [3]f32, camera_up: [3]f32) [3]f32 {
+    return safeNormalizeOr(vec3.add(camera_right, camera_up), camera_right);
+}
+
+fn signedAngleAroundAxis(from_vector: [3]f32, to_vector: [3]f32, axis: [3]f32) f32 {
+    const from_norm = safeNormalizeOr(from_vector, .{ 1.0, 0.0, 0.0 });
+    const to_norm = safeNormalizeOr(to_vector, .{ 1.0, 0.0, 0.0 });
+    const axis_norm = safeNormalizeOr(axis, .{ 0.0, 1.0, 0.0 });
+    const cross_value = vec3.cross(from_norm, to_norm);
+    const sin_angle = vec3.dot(axis_norm, cross_value);
+    const cos_angle = std.math.clamp(vec3.dot(from_norm, to_norm), -1.0, 1.0);
+    return std.math.atan2(sin_angle, cos_angle);
+}
+
+fn initializeProjectedManipulationDrag(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    picked_handle: PickedGizmoHandle,
+    ray: engine.scene.Ray,
+) void {
+    const entity_id = state.manipulation_entity orelse {
+        state.manipulation_projection = .{ .solver = .pixel_delta };
+        return;
+    };
+    const entity_transform = currentManipulationTransform(state, layer_context, entity_id) orelse {
+        state.manipulation_projection = .{ .solver = .pixel_delta };
+        return;
+    };
+    const camera_basis = manipulationCameraBasis(state, layer_context);
+    const camera_transform = camera.activeCameraTransform(state, layer_context);
+    const axis_world = if (picked_handle.axis == .free)
+        [3]f32{ 0.0, 0.0, 0.0 }
+    else
+        manipulationAxisVector(state.transform_space, picked_handle.axis, entity_transform.rotation);
+    const gizmo_scale_value = gizmoScale(camera_transform.translation, entity_transform.translation);
+
+    var projection = ManipulationDragProjection{
+        .solver = .pixel_delta,
+        .plane_origin = entity_transform.translation,
+        .plane_normal = camera_basis.forward,
+        .axis_world = if (picked_handle.axis == .free) scalePlaneDirection(camera_basis.right, camera_basis.up) else axis_world,
+        .gizmo_scale = gizmo_scale_value,
+    };
+
+    switch (picked_handle.mode) {
+        .translate => {
+            if (picked_handle.axis == .free) {
+                projection.solver = .translate_plane;
+                projection.plane_normal = camera_basis.forward;
+            } else {
+                projection.solver = .translate_axis;
+                projection.plane_normal = axisDragPlaneNormal(axis_world, camera_basis.forward, camera_basis.up);
+            }
+            projection.start_point = rayPlaneIntersection(ray, projection.plane_origin, projection.plane_normal) orelse {
+                projection.solver = .pixel_delta;
+                state.manipulation_projection = projection;
+                return;
+            };
+        },
+        .rotate => {
+            projection.solver = .rotate_ring;
+            projection.axis_world = axis_world;
+            projection.plane_normal = safeNormalizeOr(axis_world, camera_basis.up);
+            const start_point = rayPlaneIntersection(ray, projection.plane_origin, projection.plane_normal) orelse {
+                projection.solver = .pixel_delta;
+                state.manipulation_projection = projection;
+                return;
+            };
+            projection.start_vector = vec3.sub(start_point, projection.plane_origin);
+            if (vec3.length(projection.start_vector) <= 0.0001) {
+                projection.solver = .pixel_delta;
+                state.manipulation_projection = projection;
+                return;
+            }
+            projection.start_vector = vec3.normalize(projection.start_vector);
+        },
+        .scale => {
+            if (picked_handle.axis == .free) {
+                projection.solver = .scale_plane;
+                projection.plane_normal = camera_basis.forward;
+                projection.axis_world = scalePlaneDirection(camera_basis.right, camera_basis.up);
+            } else {
+                projection.solver = .scale_axis;
+                projection.plane_normal = axisDragPlaneNormal(axis_world, camera_basis.forward, camera_basis.up);
+            }
+            projection.start_point = rayPlaneIntersection(ray, projection.plane_origin, projection.plane_normal) orelse {
+                projection.solver = .pixel_delta;
+                state.manipulation_projection = projection;
+                return;
+            };
+        },
+        .none => projection.solver = .none,
+    }
+
+    state.manipulation_projection = projection;
+}
+
+fn applyProjectedTranslate(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    ray: engine.scene.Ray,
+    entity_transform: *engine.scene.Transform,
+) void {
+    _ = layer_context;
+    const projection = state.manipulation_projection;
+    const current_point = rayPlaneIntersection(ray, projection.plane_origin, projection.plane_normal) orelse return;
+
+    var target = switch (projection.solver) {
+        .translate_plane => vec3.add(
+            state.manipulation_origin.translation,
+            vec3.sub(current_point, projection.start_point),
+        ),
+        .translate_axis => vec3.add(
+            state.manipulation_origin.translation,
+            vec3.scale(
+                projection.axis_world,
+                vec3.dot(vec3.sub(current_point, projection.start_point), projection.axis_world),
+            ),
+        ),
+        else => return,
+    };
+
+    if (state.translation_snap_enabled) {
+        target = snapVec3FromOrigin(state.manipulation_origin.translation, target, state.translation_snap_step);
+    }
+
+    entity_transform.translation = target;
+}
+
+fn applyProjectedRotate(
+    state: *EditorState,
+    ray: engine.scene.Ray,
+    entity_transform: *engine.scene.Transform,
+) void {
+    const projection = state.manipulation_projection;
+    const current_point = rayPlaneIntersection(ray, projection.plane_origin, projection.plane_normal) orelse return;
+    const current_vector = vec3.sub(current_point, projection.plane_origin);
+    if (vec3.length(current_vector) <= 0.0001) return;
+
+    var angle = signedAngleAroundAxis(projection.start_vector, current_vector, projection.axis_world);
+    if (state.rotation_snap_enabled) {
+        const snap_radians = state.rotation_snap_step_degrees * std.math.pi / 180.0;
+        angle = @round(angle / snap_radians) * snap_radians;
+    }
+
+    entity_transform.rotation = switch (state.transform_space) {
+        .local => quat.normalize(quat.mul(
+            state.manipulation_origin.rotation,
+            quat.fromAxisAngle(engine.math.axis.vector(state.manipulation_axis), angle),
+        )),
+        .world => quat.normalize(quat.mul(
+            quat.fromAxisAngle(projection.axis_world, angle),
+            state.manipulation_origin.rotation,
+        )),
+    };
+}
+
+fn applyProjectedScale(
+    state: *EditorState,
+    ray: engine.scene.Ray,
+    entity_transform: *engine.scene.Transform,
+) void {
+    const projection = state.manipulation_projection;
+    const current_point = rayPlaneIntersection(ray, projection.plane_origin, projection.plane_normal) orelse return;
+    const amount = vec3.dot(vec3.sub(current_point, projection.start_point), projection.axis_world) /
+        @max(projection.gizmo_scale, 0.05);
+    const scalar = @max(0.05, 1.0 + amount);
+
+    var raw_scale = state.manipulation_origin.scale;
+    switch (projection.solver) {
+        .scale_plane => {
+            raw_scale[0] *= scalar;
+            raw_scale[1] *= scalar;
+            raw_scale[2] *= scalar;
+        },
+        .scale_axis => switch (state.manipulation_axis) {
+            .free => {
+                raw_scale[0] *= scalar;
+                raw_scale[1] *= scalar;
+                raw_scale[2] *= scalar;
+            },
+            .x => raw_scale[0] *= scalar,
+            .y => raw_scale[1] *= scalar,
+            .z => raw_scale[2] *= scalar,
+        },
+        else => return,
+    }
+
+    if (state.scale_snap_enabled) {
+        raw_scale = snapScaleFromOrigin(state.manipulation_origin.scale, raw_scale, state.scale_snap_step);
+    }
+
+    entity_transform.scale = .{
+        utils.clampScale(raw_scale[0]),
+        utils.clampScale(raw_scale[1]),
+        utils.clampScale(raw_scale[2]),
+    };
 }
 
 pub fn applyTranslate(
@@ -669,8 +995,8 @@ fn rotateZ(radians: f32, vector: [3]f32) [3]f32 {
 
 // ── Gizmo axis click interaction ─────────────────────────────────────────────
 
-/// Result of a gizmo ray hit test.
-pub const GizmoHitResult = struct {
+/// Result of picking a gizmo handle under the cursor.
+pub const PickedGizmoHandle = struct {
     axis: AxisConstraint,
     mode: ManipulationMode,
     distance: f32,
@@ -727,13 +1053,160 @@ fn rayAxisDistance(
     return vec3.length(vec3.sub(closest_on_ray, closest_on_seg));
 }
 
-/// Test a world-space ray against the gizmo geometry for the selected entity.
-/// Returns the best axis hit, or null if nothing was clicked.
-pub fn hitTestGizmo(
+fn mulPoint4(matrix_value: engine.math.mat4.Mat4, point: [4]f32) [4]f32 {
+    return .{
+        matrix_value[0] * point[0] + matrix_value[4] * point[1] + matrix_value[8] * point[2] + matrix_value[12] * point[3],
+        matrix_value[1] * point[0] + matrix_value[5] * point[1] + matrix_value[9] * point[2] + matrix_value[13] * point[3],
+        matrix_value[2] * point[0] + matrix_value[6] * point[1] + matrix_value[10] * point[2] + matrix_value[14] * point[3],
+        matrix_value[3] * point[0] + matrix_value[7] * point[1] + matrix_value[11] * point[2] + matrix_value[15] * point[3],
+    };
+}
+
+fn worldPointToViewportScreen(
+    state: *const EditorState,
+    layer_context: *engine.core.LayerContext,
+    world_position: [3]f32,
+) ?[2]f32 {
+    const viewport_size = layer_context.renderer.sceneViewportSize();
+    if (viewport_size[0] == 0 or viewport_size[1] == 0 or state.viewport_extent[0] <= 1.0 or state.viewport_extent[1] <= 1.0) {
+        return null;
+    }
+
+    const view = camera.activeCameraViewMatrix(state, layer_context);
+    const aspect = @as(f32, @floatFromInt(viewport_size[0])) / @as(f32, @floatFromInt(viewport_size[1]));
+    const projection = engine.math.mat4.projectionForCamera(camera.activeCameraComponent(state, layer_context), aspect);
+    const view_projection = engine.math.mat4.mul(projection, view);
+    const clip = mulPoint4(view_projection, .{ world_position[0], world_position[1], world_position[2], 1.0 });
+    if (@abs(clip[3]) <= 0.00001 or clip[3] <= 0.0) return null;
+
+    const ndc_x = clip[0] / clip[3];
+    const ndc_y = clip[1] / clip[3];
+    if (ndc_x < -1.2 or ndc_x > 1.2 or ndc_y < -1.2 or ndc_y > 1.2) return null;
+
+    return .{
+        state.viewport_origin[0] + (ndc_x * 0.5 + 0.5) * state.viewport_extent[0],
+        state.viewport_origin[1] + (1.0 - (ndc_y * 0.5 + 0.5)) * state.viewport_extent[1],
+    };
+}
+
+fn length2d(vector: [2]f32) f32 {
+    return std.math.sqrt(vector[0] * vector[0] + vector[1] * vector[1]);
+}
+
+fn distancePointToSegment2d(point: [2]f32, a: [2]f32, b: [2]f32) f32 {
+    const ab = .{ b[0] - a[0], b[1] - a[1] };
+    const ab_len_sq = ab[0] * ab[0] + ab[1] * ab[1];
+    if (ab_len_sq <= 0.0001) return length2d(.{ point[0] - a[0], point[1] - a[1] });
+
+    const ap = .{ point[0] - a[0], point[1] - a[1] };
+    const t = std.math.clamp((ap[0] * ab[0] + ap[1] * ab[1]) / ab_len_sq, 0.0, 1.0);
+    const closest = .{ a[0] + ab[0] * t, a[1] + ab[1] * t };
+    return length2d(.{ point[0] - closest[0], point[1] - closest[1] });
+}
+
+fn perpendicularBasis(normal: [3]f32) [2][3]f32 {
+    const n = safeNormalizeOr(normal, .{ 0.0, 1.0, 0.0 });
+    const reference = if (@abs(n[1]) < 0.9)
+        [3]f32{ 0.0, 1.0, 0.0 }
+    else
+        [3]f32{ 1.0, 0.0, 0.0 };
+    const tangent = safeNormalizeOr(vec3.cross(n, reference), .{ 1.0, 0.0, 0.0 });
+    const bitangent = safeNormalizeOr(vec3.cross(n, tangent), .{ 0.0, 0.0, 1.0 });
+    return .{ tangent, bitangent };
+}
+
+fn pickTranslateOrScaleHandleScreenSpace(
+    state: *const EditorState,
+    layer_context: *engine.core.LayerContext,
+    origin: [3]f32,
+    axes: [3][3]f32,
+    axis_ids: [3]AxisConstraint,
+    mode: ManipulationMode,
+    scale: f32,
+) ?PickedGizmoHandle {
+    const mouse = effectiveViewportMousePos(layer_context);
+    const origin_screen = worldPointToViewportScreen(state, layer_context, origin) orelse return null;
+
+    const axis_pick_radius_px: f32 = 12.0;
+    const center_pick_radius_px: f32 = if (mode == .translate) 14.0 else 16.0;
+    const min_axis_projected_len_px: f32 = 16.0;
+    var best: ?PickedGizmoHandle = null;
+
+    for (axes, axis_ids) |axis_dir, axis_id| {
+        const axis_end = vec3.add(origin, vec3.scale(axis_dir, scale));
+        const axis_end_screen = worldPointToViewportScreen(state, layer_context, axis_end) orelse continue;
+        if (length2d(.{ axis_end_screen[0] - origin_screen[0], axis_end_screen[1] - origin_screen[1] }) < min_axis_projected_len_px) {
+            continue;
+        }
+        const dist = distancePointToSegment2d(mouse, origin_screen, axis_end_screen);
+        if (dist <= axis_pick_radius_px and (best == null or dist < best.?.distance)) {
+            best = .{ .axis = axis_id, .mode = mode, .distance = dist };
+        }
+    }
+
+    const center_dist = length2d(.{ mouse[0] - origin_screen[0], mouse[1] - origin_screen[1] });
+    if (center_dist <= center_pick_radius_px and (best == null or center_dist <= best.?.distance * 0.8)) {
+        best = .{ .axis = .free, .mode = mode, .distance = center_dist };
+    }
+    return best;
+}
+
+fn pickRotateHandleScreenSpace(
+    state: *const EditorState,
+    layer_context: *engine.core.LayerContext,
+    origin: [3]f32,
+    axes: [3][3]f32,
+    axis_ids: [3]AxisConstraint,
+    scale: f32,
+) ?PickedGizmoHandle {
+    const mouse = effectiveViewportMousePos(layer_context);
+    const ring_radius = 0.9 * scale;
+    const ring_pick_radius_px: f32 = 12.0;
+    const samples: usize = 40;
+    var best: ?PickedGizmoHandle = null;
+
+    for (axes, axis_ids) |axis_normal, axis_id| {
+        const basis = perpendicularBasis(axis_normal);
+        var previous_screen: ?[2]f32 = null;
+        var min_dist = std.math.inf(f32);
+        var visible_segments: usize = 0;
+
+        var sample_index: usize = 0;
+        while (sample_index <= samples) : (sample_index += 1) {
+            const t = (@as(f32, @floatFromInt(sample_index)) / @as(f32, @floatFromInt(samples))) * std.math.tau;
+            const ring_point = vec3.add(
+                origin,
+                vec3.add(
+                    vec3.scale(basis[0], std.math.cos(t) * ring_radius),
+                    vec3.scale(basis[1], std.math.sin(t) * ring_radius),
+                ),
+            );
+            const screen_point = worldPointToViewportScreen(state, layer_context, ring_point);
+            if (previous_screen) |previous| {
+                if (screen_point) |current| {
+                    visible_segments += 1;
+                    min_dist = @min(min_dist, distancePointToSegment2d(mouse, previous, current));
+                }
+            }
+            previous_screen = screen_point;
+        }
+
+        if (visible_segments == 0) continue;
+        if (min_dist <= ring_pick_radius_px and (best == null or min_dist < best.?.distance)) {
+            best = .{ .axis = axis_id, .mode = .rotate, .distance = min_dist };
+        }
+    }
+
+    return best;
+}
+
+/// Pick the gizmo handle under the current ray for the selected entity.
+/// Returns the best handle, or null if nothing was clicked.
+pub fn pickGizmoHandle(
     state: *const EditorState,
     layer_context: *engine.core.LayerContext,
     ray: engine.scene.Ray,
-) ?GizmoHitResult {
+) ?PickedGizmoHandle {
     // Only test when a manipulation tool is active AND an entity is selected
     if (state.manipulation_mode == .none) return null;
     const entity_id = layer_context.renderer.selectedEntity() orelse return null;
@@ -767,11 +1240,14 @@ pub fn hitTestGizmo(
     };
     const axis_ids = [3]AxisConstraint{ .x, .y, .z };
 
-    var best: ?GizmoHitResult = null;
+    var best: ?PickedGizmoHandle = null;
     const ray_dir = vec3.normalize(ray.direction);
 
     switch (mode) {
         .translate, .scale => {
+            if (pickTranslateOrScaleHandleScreenSpace(state, layer_context, origin, axes, axis_ids, mode, scale)) |picked_handle| {
+                return picked_handle;
+            }
             // Test ray against each axis line segment (length = scale in world)
             for (axes, axis_ids) |axis_dir, axis_id| {
                 const axis_end = vec3.add(origin, vec3.scale(axis_dir, scale));
@@ -794,6 +1270,9 @@ pub fn hitTestGizmo(
             }
         },
         .rotate => {
+            if (pickRotateHandleScreenSpace(state, layer_context, origin, axes, axis_ids, scale)) |picked_handle| {
+                return picked_handle;
+            }
             // Test ray against each rotation ring (radius = 0.9 * scale)
             const ring_radius = 0.9 * scale;
             const ring_threshold = scale * 0.19;
@@ -819,14 +1298,15 @@ pub fn hitTestGizmo(
     return best;
 }
 
-/// Begin manipulation from a gizmo click (mouse-hold drag mode, not keyboard mode).
-pub fn beginManipulationFromGizmoClick(
+/// Begin manipulation from a picked gizmo handle (mouse-hold drag mode, not keyboard mode).
+pub fn beginManipulationFromPickedGizmoHandle(
     state: *EditorState,
     layer_context: *engine.core.LayerContext,
-    hit: GizmoHitResult,
+    picked_handle: PickedGizmoHandle,
+    ray: engine.scene.Ray,
 ) !void {
-    state.manipulation_mode = hit.mode;
-    state.manipulation_axis = hit.axis;
+    state.manipulation_mode = picked_handle.mode;
+    state.manipulation_axis = picked_handle.axis;
     state.manipulation_entity = null;
     state.manipulation_target = .main_world;
     state.manipulation_drag_active = false;
@@ -837,6 +1317,7 @@ pub fn beginManipulationFromGizmoClick(
     clearManipulationSnapshot(state);
     try syncManipulationTarget(state, layer_context);
     if (state.manipulation_entity != null) {
+        initializeProjectedManipulationDrag(state, layer_context, picked_handle, ray);
         state.manipulation_drag_active = true;
     }
     syncGizmoState(state, layer_context);
