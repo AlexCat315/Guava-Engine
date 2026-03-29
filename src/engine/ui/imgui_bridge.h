@@ -88,6 +88,11 @@ enum {
   GUAVA_IMGUI_VIEW_CUBE_DRAGGING = 1 << 10,
 };
 
+enum {
+  GUAVA_IMGUI_INPUT_TEXT_FLAG_NONE = 0,
+  GUAVA_IMGUI_INPUT_TEXT_FLAG_ENTER_RETURNS_TRUE = 1 << 6,
+};
+
 bool guava_imgui_init(SDL_Window *window, void *metal_bridge_ctx,
                       uint32_t color_target_format);
 bool guava_imgui_init_vulkan(SDL_Window *window, void *vk_bridge_ctx);
@@ -158,17 +163,25 @@ bool guava_imgui_button_ex(const char *label, size_t label_len, float width,
                            float height);
 bool guava_imgui_image_button(const char *id, size_t id_len,
                               void *texture, float width,
-                              float height, float bg_r, float bg_g, float bg_b,
+                              float height, float uv0_x, float uv0_y,
+                              float uv1_x, float uv1_y,
+                              float bg_r, float bg_g, float bg_b,
                               float bg_a, float tint_r, float tint_g,
                               float tint_b, float tint_a);
 bool guava_imgui_invisible_button(const char *id, size_t id_len, float width,
                                   float height);
 bool guava_imgui_window_control_button(uint32_t kind, bool toggled);
 void guava_imgui_dummy(float width, float height);
+void guava_imgui_spacing(void);
+void guava_imgui_new_line(void);
+void guava_imgui_bullet(void);
+void guava_imgui_bullet_text(const char *text, size_t text_len);
 void guava_imgui_same_line(void);
 void guava_imgui_same_line_ex(float offset_from_start_x, float spacing);
 void guava_imgui_separator(void);
+void guava_imgui_separator_text(const char *text, size_t text_len);
 void guava_imgui_set_next_item_width(float width);
+void guava_imgui_set_next_item_open(bool is_open, int32_t cond);
 void guava_imgui_set_next_window_pos(float x, float y);
 void guava_imgui_set_next_window_size(float width, float height);
 void guava_imgui_set_next_window_size_constraints(float min_w, float min_h,
@@ -188,6 +201,8 @@ bool guava_imgui_begin_child(const char *id, size_t id_len, float width,
 void guava_imgui_end_child(void);
 bool guava_imgui_begin_table(const char *id, size_t id_len, int32_t columns);
 void guava_imgui_end_table(void);
+void guava_imgui_columns(int32_t count, const char *id, size_t id_len, bool border);
+void guava_imgui_next_column(void);
 void guava_imgui_table_setup_column(const char *label, size_t label_len,
                                     bool stretch, float init_width_or_weight);
 void guava_imgui_table_headers_row(void);
@@ -208,6 +223,9 @@ uint32_t guava_imgui_tree_node_entity(uint64_t id, const char *label,
                                       bool default_open, char *rename_buffer,
                                       size_t rename_buffer_size,
                                       bool request_rename_focus);
+bool guava_imgui_tree_node(const char *label, size_t label_len);
+bool guava_imgui_tree_node_ex(const char *label, size_t label_len,
+                              uint32_t flags);
 void guava_imgui_tree_pop(void);
 bool guava_imgui_is_item_clicked(void);
 bool guava_imgui_is_item_active(void);
@@ -215,9 +233,16 @@ bool guava_imgui_is_item_hovered(void);
 bool guava_imgui_is_item_deactivated_after_edit(void);
 bool guava_imgui_input_text(const char *label, size_t label_len, char *buffer,
                             size_t buffer_size);
+bool guava_imgui_input_text_multiline(const char *label, size_t label_len,
+                                      char *buffer, size_t buffer_size,
+                                      float width, float height);
 bool guava_imgui_input_text_with_hint(const char *label, size_t label_len,
                                       const char *hint, size_t hint_len,
                                       char *buffer, size_t buffer_size);
+bool guava_imgui_input_text_with_hint_flags(const char *label, size_t label_len,
+                                            const char *hint, size_t hint_len,
+                                            char *buffer, size_t buffer_size,
+                                            uint32_t flags);
 bool guava_imgui_input_text_password(const char *label, size_t label_len,
                                      char *buffer, size_t buffer_size);
 bool guava_imgui_drag_float(const char *label, size_t label_len, float *value,
@@ -225,7 +250,20 @@ bool guava_imgui_drag_float(const char *label, size_t label_len, float *value,
 bool guava_imgui_drag_float3(const char *label, size_t label_len,
                              float value[3], float speed, float min_value,
                              float max_value);
+bool guava_imgui_slider_float(const char *label, size_t label_len, float *value,
+                              float min_value, float max_value);
+bool guava_imgui_slider_angle(const char *label, size_t label_len, float *value_radians,
+                              float min_degrees, float max_degrees);
+bool guava_imgui_slider_int(const char *label, size_t label_len, int *value,
+                            int min_value, int max_value);
+bool guava_imgui_input_float(const char *label, size_t label_len, float *value,
+                             float step, float step_fast);
+bool guava_imgui_input_int(const char *label, size_t label_len, int *value,
+                           int step, int step_fast);
 bool guava_imgui_checkbox(const char *label, size_t label_len, bool *value);
+bool guava_imgui_radio_button(const char *label, size_t label_len, bool active);
+void guava_imgui_progress_bar(float fraction, float width, float height,
+                              const char *overlay, size_t overlay_len);
 bool guava_imgui_collapsing_header(const char *label, size_t label_len,
                                    bool default_open);
 bool guava_imgui_begin_drag_drop_source_u64(const char *payload_type,
@@ -241,6 +279,12 @@ bool guava_imgui_accept_drag_drop_payload_u64(const char *payload_type,
                                               uint64_t *out_value);
 bool guava_imgui_is_window_hovered(void);
 bool guava_imgui_is_window_focused(void);
+bool guava_imgui_is_key_pressed(int32_t key, bool repeat);
+bool guava_imgui_is_key_down(int32_t key);
+bool guava_imgui_is_key_released(int32_t key);
+bool guava_imgui_get_key_ctrl(void);
+bool guava_imgui_get_key_shift(void);
+bool guava_imgui_get_key_alt(void);
 void guava_imgui_get_content_region_avail(float out_value[2]);
 void guava_imgui_get_cursor_screen_pos(float out_value[2]);
 void guava_imgui_set_cursor_pos(float x, float y);
@@ -249,13 +293,28 @@ void guava_imgui_align_text_to_frame_padding(void);
 void guava_imgui_indent(float width);
 void guava_imgui_unindent(float width);
 void guava_imgui_get_window_size(float out_value[2]);
+float guava_imgui_get_font_size(void);
+float guava_imgui_get_text_line_height(void);
+void guava_imgui_calc_text_size(const char *text, size_t text_len,
+                                bool hide_text_after_double_hash,
+                                float wrap_width, float out_value[2]);
 float guava_imgui_get_frame_height(void);
 float guava_imgui_get_time(void);
 void guava_imgui_set_scroll_here_y(float center_y_ratio);
+void guava_imgui_set_keyboard_focus_here(int32_t offset);
 void guava_imgui_set_tooltip(const char *text, size_t text_len);
-void guava_imgui_image(void *texture, float width, float height);
+void guava_imgui_image(void *texture, float width, float height,
+                       float uv0_x, float uv0_y, float uv1_x, float uv1_y);
 uint32_t guava_imgui_draw_view_cube(const float view[16], float x, float y,
                                     float size, float out_drag_delta[2]);
+bool guava_imgui_begin_tab_bar(const char *id, size_t id_len);
+void guava_imgui_end_tab_bar(void);
+bool guava_imgui_begin_tab_item(const char *label, size_t label_len,
+                                uint32_t flags);
+void guava_imgui_end_tab_item(void);
+void guava_imgui_push_clip_rect(float min_x, float min_y, float max_x,
+                                float max_y, bool intersect_with_current);
+void guava_imgui_pop_clip_rect(void);
 
 // ── Extended widget API ──
 bool guava_imgui_drag_float4(const char *label, size_t label_len,
@@ -267,6 +326,8 @@ bool guava_imgui_color_edit3(const char *label, size_t label_len,
                              float color[3]);
 bool guava_imgui_color_edit4(const char *label, size_t label_len,
                              float color[4]);
+bool guava_imgui_color_picker4(const char *label, size_t label_len,
+                               float color[4]);
 void guava_imgui_text_colored(float r, float g, float b, float a,
                               const char *text, size_t text_len);
 void guava_imgui_begin_group(void);

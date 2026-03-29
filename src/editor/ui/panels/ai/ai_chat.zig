@@ -4,6 +4,7 @@ const gui = @import("../../gui.zig");
 const ui_icons = @import("../../icons.zig");
 const state_mod = @import("../../../core/state.zig");
 const preferences = @import("../../../core/preferences.zig");
+const i18n = @import("../../../i18n/mod.zig");
 const EditorState = state_mod.EditorState;
 const AiProviderType = state_mod.AiProviderType;
 
@@ -39,13 +40,6 @@ var g_meta_request_counter: u64 = 0;
 var g_meta_session_id_len: usize = 0;
 var g_meta_session_id_buffer: [64]u8 = [_]u8{0} ** 64;
 
-const provider_type_names = [_][]const u8{
-    "OpenAI",
-    "Anthropic",
-    "Ollama",
-    "Custom",
-};
-
 const ProviderDefaults = struct {
     endpoint: []const u8,
     model: []const u8,
@@ -56,6 +50,13 @@ const provider_defaults: [4]ProviderDefaults = .{
     .{ .endpoint = "https://api.anthropic.com/v1/messages", .model = "claude-sonnet-4-20250514" },
     .{ .endpoint = "http://localhost:11434/api/chat", .model = "llama3.2" },
     .{ .endpoint = "", .model = "" },
+};
+
+const provider_types = [_]AiProviderType{
+    .openai,
+    .anthropic,
+    .ollama,
+    .custom,
 };
 
 const AsyncMessageRole = enum {
@@ -213,17 +214,32 @@ fn deriveToolCommandMetaAlloc(
     return buildAiCommandMetaAlloc(allocator, tool_name, null);
 }
 
+fn providerTypeText(state: *const EditorState, provider_type: AiProviderType) []const u8 {
+    return switch (provider_type) {
+        .openai => state.text(.ai_chat_provider_type_openai),
+        .anthropic => state.text(.ai_chat_provider_type_anthropic),
+        .ollama => state.text(.ai_chat_provider_type_ollama),
+        .custom => state.text(.ai_chat_provider_type_custom),
+    };
+}
+
+fn providerDisplayNameForUi(state: *const EditorState, provider: *const state_mod.AiProviderConfig) []const u8 {
+    const name = fixedBufferSlice(provider.name[0..]);
+    if (name.len > 0) return name;
+    return state.text(.ai_chat_provider_default_name);
+}
+
 fn applyProviderDefaults(state: *EditorState) void {
     const p = &state.ai_providers[state.ai_active_provider];
     const defaults = provider_defaults[@intFromEnum(state.ai_provider_type)];
 
     if (p.endpoint[0] == 0 and defaults.endpoint.len > 0) {
         @memcpy(p.endpoint[0..defaults.endpoint.len], defaults.endpoint);
-        ai_chat_log.info("Applied default endpoint for {s}: {s}", .{ provider_type_names[@intFromEnum(state.ai_provider_type)], defaults.endpoint });
+        ai_chat_log.info("Applied default endpoint for {s}: {s}", .{ @tagName(state.ai_provider_type), defaults.endpoint });
     }
     if (p.model[0] == 0 and defaults.model.len > 0) {
         @memcpy(p.model[0..defaults.model.len], defaults.model);
-        ai_chat_log.info("Applied default model for {s}: {s}", .{ provider_type_names[@intFromEnum(state.ai_provider_type)], defaults.model });
+        ai_chat_log.info("Applied default model for {s}: {s}", .{ @tagName(state.ai_provider_type), defaults.model });
     }
 }
 
@@ -312,10 +328,9 @@ fn testHttpConnectionAlloc(
 
 fn logProviderConfig(state: *EditorState) void {
     const p = &state.ai_providers[state.ai_active_provider];
-    const ptype = state.ai_provider_type;
     ai_chat_log.info("=== Provider Configuration ===", .{});
-    ai_chat_log.info("Type: {s}", .{provider_type_names[@intFromEnum(ptype)]});
-    ai_chat_log.info("Name: {s}", .{p.displayName()});
+    ai_chat_log.info("Type: {s}", .{@tagName(state.ai_provider_type)});
+    ai_chat_log.info("Name: {s}", .{providerDisplayNameForUi(state, p)});
 
     const endpoint_len = std.mem.indexOfScalar(u8, &p.endpoint, 0) orelse p.endpoint.len;
     const endpoint_slice = p.endpoint[0..endpoint_len];
@@ -1264,7 +1279,6 @@ fn submitInput(state: *EditorState, layer_context: *engine.core.LayerContext) vo
 
     if (asyncIsRunning()) {
         appendMessage(.system, state.text(.ai_chat_previous_request_running));
-        @memset(&g_input_buffer, 0);
         return;
     }
 
@@ -1461,7 +1475,7 @@ fn drawMessages(state: *EditorState) void {
             },
             .assistant => {
                 gui.pushStyleColor(.text, .{ 0.22, 0.82, 0.52, 0.80 });
-                gui.text("Jarvis");
+                gui.text(state.text(.ai_chat_role_assistant));
                 gui.popStyleColor(1);
                 gui.pushStyleColor(.text, .{ 0.78, 0.94, 0.82, 1.0 });
                 gui.textWrapped(content_text);
@@ -1529,7 +1543,7 @@ fn pushAiInputWidgetStyle() void {
     gui.pushStyleColor(.frame_bg_active, .{ 0.13, 0.17, 0.24, 1.0 });
     gui.pushStyleColor(.border, .{ 0.22, 0.44, 0.38, 0.90 });
     gui.pushStyleColor(.text, .{ 0.94, 0.96, 0.99, 1.0 });
-    gui.pushStyleColor(.input_text_cursor, .{ 0.90, 0.96, 0.96, 1.0 });
+    gui.pushStyleColor(.input_text_cursor, .{ 0.24, 0.92, 0.56, 1.0 });
     gui.pushStyleColor(.nav_cursor, .{ 0.30, 0.88, 0.67, 1.0 });
     gui.pushStyleColor(.text_selected_bg, .{ 0.22, 0.72, 0.56, 0.45 });
     gui.pushStyleVarFloat(.frame_rounding, 7.0);
@@ -1540,10 +1554,14 @@ fn popAiInputWidgetStyle() void {
     gui.popStyleColor(8);
 }
 
-fn inputTextWithHintStyled(label: []const u8, hint: []const u8, buffer: []u8) bool {
+fn inputTextWithHintStyledFlags(label: []const u8, hint: []const u8, buffer: []u8, flags: u32) bool {
     pushAiInputWidgetStyle();
     defer popAiInputWidgetStyle();
-    return gui.inputTextWithHint(label, hint, buffer);
+    return gui.inputTextWithHintFlags(label, hint, buffer, flags);
+}
+
+fn inputTextWithHintStyled(label: []const u8, hint: []const u8, buffer: []u8) bool {
+    return inputTextWithHintStyledFlags(label, hint, buffer, gui.InputTextFlags.none);
 }
 
 fn inputTextPasswordStyled(label: []const u8, buffer: []u8) bool {
@@ -1611,12 +1629,12 @@ fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerCo
     gui.text(state.text(.ai_chat_type));
     gui.popStyleColor(1);
 
-    const active_idx: usize = @intFromEnum(state.ai_provider_type);
+    const active_type = state.ai_provider_type;
     var type_preview_label_buffer: [96]u8 = undefined;
     const type_preview_label = std.fmt.bufPrint(
         &type_preview_label_buffer,
         "{s}##ai_provider_type_preview",
-        .{provider_type_names[active_idx]},
+        .{providerTypeText(state, active_type)},
     ) catch "Type##ai_provider_type_preview";
     gui.pushStyleColor(.button, .{ 0.10, 0.12, 0.17, 1.0 });
     gui.pushStyleColor(.button_hovered, .{ 0.13, 0.16, 0.22, 1.0 });
@@ -1648,8 +1666,20 @@ fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerCo
         if (state.ai_provider_count < state.ai_providers.len) {
             const new_provider_index = state.ai_provider_count;
             state.ai_providers[new_provider_index] = .{};
-            var default_name_buffer: [48]u8 = undefined;
-            const default_name = std.fmt.bufPrint(&default_name_buffer, "Provider {d}", .{new_provider_index + 1}) catch "Provider";
+            var allocated_default_name: ?[]u8 = null;
+            const default_name = blk: {
+                const resolved = i18n.allocPrintMessage(
+                    .ai_chat_provider_default_name_fmt,
+                    std.heap.page_allocator,
+                    state.language,
+                    .{new_provider_index + 1},
+                ) catch break :blk state.text(.ai_chat_provider_default_name);
+                allocated_default_name = resolved;
+                break :blk resolved;
+            };
+            defer if (allocated_default_name) |value| {
+                std.heap.page_allocator.free(value);
+            };
             const name_buffer = state.ai_providers[new_provider_index].name[0..];
             const copy_len = @min(name_buffer.len - 1, default_name.len);
             @memcpy(name_buffer[0..copy_len], default_name[0..copy_len]);
@@ -1686,16 +1716,17 @@ fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerCo
 
     if (gui.beginPopup(type_popup_id)) {
         defer gui.endPopup();
-        for (0..provider_type_names.len) |i| {
+        for (provider_types, 0..) |provider_type, i| {
             gui.pushIdU64(@intCast(i));
             defer gui.popId();
-            if (gui.selectable(provider_type_names[i], i == active_idx, false, 0.0, 0.0)) {
-                state.ai_provider_type = @enumFromInt(i);
-                ai_chat_log.info("Provider type changed to: {s}", .{provider_type_names[i]});
+            const is_selected = provider_type == active_type;
+            if (gui.selectable(providerTypeText(state, provider_type), is_selected, false, 0.0, 0.0)) {
+                state.ai_provider_type = provider_type;
+                ai_chat_log.info("Provider type changed to: {s}", .{@tagName(provider_type)});
                 applyProviderDefaults(state);
                 provider_prefs_dirty = true;
             }
-            if (i == active_idx) gui.setItemDefaultFocus();
+            if (is_selected) gui.setItemDefaultFocus();
         }
     }
 
@@ -1711,7 +1742,7 @@ fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerCo
     const provider_preview_label = std.fmt.bufPrint(
         &provider_preview_label_buffer,
         "{s}##ai_provider_select_preview",
-        .{active_provider.displayName()},
+        .{providerDisplayNameForUi(state, active_provider)},
     ) catch "Provider##ai_provider_select_preview";
     gui.pushStyleColor(.button, .{ 0.10, 0.12, 0.17, 1.0 });
     gui.pushStyleColor(.button_hovered, .{ 0.13, 0.16, 0.22, 1.0 });
@@ -1739,7 +1770,7 @@ fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerCo
             defer gui.popId();
             const is_selected = provider_index == state.ai_active_provider;
             const provider_item = &state.ai_providers[provider_index];
-            if (gui.selectable(provider_item.displayName(), is_selected, false, 0.0, 0.0)) {
+            if (gui.selectable(providerDisplayNameForUi(state, provider_item), is_selected, false, 0.0, 0.0)) {
                 state.ai_active_provider = provider_index;
                 provider_prefs_dirty = true;
             }
@@ -1838,7 +1869,7 @@ fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerCo
         } else {
             g_connection_error = null;
             appendMessage(.system, state.text(.ai_chat_provider_apply_success));
-            ai_chat_log.info("Provider config applied: {s}", .{p.displayName()});
+            ai_chat_log.info("Provider config applied: {s}", .{providerDisplayNameForUi(state, p)});
         }
     }
     gui.popStyleColor(3);
@@ -1849,7 +1880,7 @@ fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerCo
     gui.pushStyleColor(.button_active, .{ 0.18, 0.20, 0.24, 1.0 });
     if (gui.buttonEx(state.text(.ai_chat_test_connection), test_btn_w, 0.0)) {
         logProviderConfig(state);
-        ai_chat_log.info("Test connection requested for provider: {s}", .{p.displayName()});
+        ai_chat_log.info("Test connection requested for provider: {s}", .{providerDisplayNameForUi(state, p)});
         appendMessage(.system, state.text(.ai_chat_testing_connection));
 
         const endpoint_len = std.mem.indexOfScalar(u8, &p.endpoint, 0) orelse p.endpoint.len;
@@ -1899,12 +1930,23 @@ fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerCo
 }
 
 var g_window_initialized = false;
+var g_prev_ai_chat_open = false;
+var g_focus_ai_input_next_frame = true;
 
 pub fn drawAiChatPanel(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     pumpAsyncResults(state, layer_context);
-    if (!state.ai_chat_open) return;
+    if (!state.ai_chat_open) {
+        g_prev_ai_chat_open = false;
+        return;
+    }
 
-    const window_title = "Jarvis AI##ai_chat_floating";
+    if (!g_prev_ai_chat_open) {
+        g_focus_ai_input_next_frame = true;
+    }
+    g_prev_ai_chat_open = true;
+
+    var window_title_buffer: [96]u8 = undefined;
+    const window_title = state.windowLabel(&window_title_buffer, .ai_chat, "ai_chat_floating") catch "AI Assistant###ai_chat_floating";
 
     if (!g_window_initialized) {
         gui.setNextWindowPos(.{ 50.0, 100.0 });
@@ -1950,13 +1992,17 @@ pub fn drawAiChatPanel(state: *EditorState, layer_context: *engine.core.LayerCon
     const busy = asyncIsRunning();
 
     if (input_width > 30.0) {
+        if (g_focus_ai_input_next_frame and !busy) {
+            gui.setKeyboardFocusHere(0);
+            g_focus_ai_input_next_frame = false;
+        }
         gui.setNextItemWidth(input_width);
-        _ = inputTextWithHintStyled(
+        const enter_pressed = inputTextWithHintStyledFlags(
             "##ai_input",
             if (busy) state.text(.ai_chat_background_processing) else state.text(.ai_chat_input_hint),
             g_input_buffer[0..],
+            if (busy) gui.InputTextFlags.none else gui.InputTextFlags.enter_returns_true,
         );
-        const enter_pressed = gui.isItemDeactivatedAfterEdit();
 
         gui.sameLine();
         gui.pushStyleColor(.button, .{ 0.13, 0.50, 0.36, 0.88 });
@@ -1967,6 +2013,7 @@ pub fn drawAiChatPanel(state: *EditorState, layer_context: *engine.core.LayerCon
 
         if (enter_pressed or send_pressed) {
             submitInput(state, layer_context);
+            g_focus_ai_input_next_frame = true;
         }
     }
 }

@@ -20,6 +20,9 @@ pub const WindowControlButton = backend.WindowControlButton;
 pub const StyleColor = backend.StyleColor;
 pub const Col = backend.Col;
 pub const StyleVar = backend.StyleVar;
+pub const Cond = backend.Cond;
+pub const InputTextFlags = backend.InputTextFlags;
+pub const TreeNodeFlags = backend.TreeNodeFlags;
 pub const TreeNodeEntityResult = backend.TreeNodeEntityResult;
 pub const ViewCubeFace = backend.ViewCubeFace;
 pub const ViewCubeResult = backend.ViewCubeResult;
@@ -91,15 +94,22 @@ pub const endCombo = backend.endCombo;
 pub const button = backend.button;
 pub const buttonEx = backend.buttonEx;
 pub const imageButton = backend.imageButton;
+pub const imageButtonUv = backend.imageButtonUv;
 pub const invisibleButton = backend.invisibleButton;
 pub const windowControlButton = backend.windowControlButton;
 
 // Layout primitives
 pub const dummy = backend.dummy;
+pub const spacing = backend.spacing;
+pub const newLine = backend.newLine;
+pub const bullet = backend.bullet;
+pub const bulletText = backend.bulletText;
 pub const sameLine = backend.sameLine;
 pub const sameLineEx = backend.sameLineEx;
 pub const separator = backend.separator;
+pub const separatorText = backend.separatorText;
 pub const setNextItemWidth = backend.setNextItemWidth;
+pub const setNextItemOpen = backend.setNextItemOpen;
 pub const setNextWindowPos = backend.setNextWindowPos;
 pub const setNextWindowSize = backend.setNextWindowSize;
 pub const setNextWindowSizeConstraints = backend.setNextWindowSizeConstraints;
@@ -124,6 +134,8 @@ pub const endChild = backend.endChild;
 // Tables
 pub const beginTable = backend.beginTable;
 pub const endTable = backend.endTable;
+pub const columns = backend.columns;
+pub const nextColumn = backend.nextColumn;
 pub const tableSetupColumn = backend.tableSetupColumn;
 pub const tableHeadersRow = backend.tableHeadersRow;
 pub const tableNextRow = backend.tableNextRow;
@@ -132,6 +144,9 @@ pub const tableNextColumn = backend.tableNextColumn;
 // Selectable / tree
 pub const selectable = backend.selectable;
 pub const treeNodeEntity = backend.treeNodeEntity;
+pub const treeNode = backend.treeNode;
+pub const treeNodeEx = backend.treeNodeEx;
+pub const treeNodeExFlags = backend.treeNodeExFlags;
 pub const treePop = backend.treePop;
 
 // Text
@@ -152,11 +167,22 @@ pub const isItemDeactivatedAfterEdit = backend.isItemDeactivatedAfterEdit;
 
 // Input widgets
 pub const inputText = backend.inputText;
+pub const inputTextMultiline = backend.inputTextMultiline;
 pub const inputTextWithHint = backend.inputTextWithHint;
+pub const inputTextWithHintFlags = backend.inputTextWithHintFlags;
 pub const inputTextPassword = backend.inputTextPassword;
 pub const dragFloat = backend.dragFloat;
 pub const dragFloat3 = backend.dragFloat3;
+pub const sliderFloat = backend.sliderFloat;
+pub const sliderAngle = backend.sliderAngle;
+pub const sliderInt = backend.sliderInt;
+pub const inputFloat = backend.inputFloat;
+pub const inputFloatEx = backend.inputFloatEx;
+pub const inputInt = backend.inputInt;
+pub const inputIntEx = backend.inputIntEx;
 pub const checkbox = backend.checkbox;
+pub const radioButton = backend.radioButton;
+pub const progressBar = backend.progressBar;
 pub const collapsingHeader = backend.collapsingHeader;
 
 // Drag & drop
@@ -168,18 +194,36 @@ pub const acceptDragDropPayloadU64 = backend.acceptDragDropPayloadU64;
 // Window state
 pub const isWindowHovered = backend.isWindowHovered;
 pub const isWindowFocused = backend.isWindowFocused;
+pub const isKeyPressed = backend.isKeyPressed;
+pub const isKeyDown = backend.isKeyDown;
+pub const isKeyReleased = backend.isKeyReleased;
+pub const keyCtrl = backend.keyCtrl;
+pub const keyShift = backend.keyShift;
+pub const keyAlt = backend.keyAlt;
 pub const contentRegionAvail = backend.contentRegionAvail;
 pub const cursorScreenPos = backend.cursorScreenPos;
 pub const setCursorPos = backend.setCursorPos;
 pub const setCursorPosY = backend.setCursorPosY;
 pub const windowSize = backend.windowSize;
+pub const fontSize = backend.fontSize;
+pub const textLineHeight = backend.textLineHeight;
+pub const calcTextSize = backend.calcTextSize;
 pub const frameHeight = backend.frameHeight;
 pub const time = backend.time;
 pub const setScrollHereY = backend.setScrollHereY;
+pub const setKeyboardFocusHere = backend.setKeyboardFocusHere;
 
 // Images & rendering
 pub const image = backend.image;
+pub const imageUv = backend.imageUv;
 pub const drawViewCube = backend.drawViewCube;
+pub const beginTabBar = backend.beginTabBar;
+pub const endTabBar = backend.endTabBar;
+pub const beginTabItem = backend.beginTabItem;
+pub const beginTabItemFlags = backend.beginTabItemFlags;
+pub const endTabItem = backend.endTabItem;
+pub const pushClipRect = backend.pushClipRect;
+pub const popClipRect = backend.popClipRect;
 
 // Extended widgets
 pub const MouseButton = backend.MouseButton;
@@ -188,6 +232,7 @@ pub const dragFloat4 = backend.dragFloat4;
 pub const dragInt = backend.dragInt;
 pub const colorEdit3 = backend.colorEdit3;
 pub const colorEdit4 = backend.colorEdit4;
+pub const colorPicker4 = backend.colorPicker4;
 pub const textColored = backend.textColored;
 pub const beginGroup = backend.beginGroup;
 pub const endGroup = backend.endGroup;

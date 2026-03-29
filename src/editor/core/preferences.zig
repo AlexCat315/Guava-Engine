@@ -61,7 +61,30 @@ fn trimSpace(slice: []const u8) []const u8 {
 fn looksLikeGeneratedProviderName(name: []const u8) bool {
     if (name.len == 0) return true;
     if (std.ascii.eqlIgnoreCase(name, "new provider")) return true;
-    return std.mem.startsWith(u8, name, "Provider ");
+    if (std.ascii.eqlIgnoreCase(name, "openai")) return true;
+    if (std.ascii.eqlIgnoreCase(name, "anthropic")) return true;
+    if (std.ascii.eqlIgnoreCase(name, "ollama")) return true;
+    if (std.ascii.eqlIgnoreCase(name, "custom")) return true;
+    if (name.len >= 9 and std.ascii.eqlIgnoreCase(name[0..9], "provider ")) return true;
+    return false;
+}
+
+fn endpointLooksLikeAnyDefault(endpoint: []const u8) bool {
+    if (endpoint.len == 0) return true;
+    for (provider_defaults) |defaults| {
+        if (defaults.endpoint.len == 0) continue;
+        if (std.mem.eql(u8, endpoint, defaults.endpoint)) return true;
+    }
+    return false;
+}
+
+fn modelLooksLikeAnyDefault(model: []const u8) bool {
+    if (model.len == 0) return true;
+    for (provider_defaults) |defaults| {
+        if (defaults.model.len == 0) continue;
+        if (std.mem.eql(u8, model, defaults.model)) return true;
+    }
+    return false;
 }
 
 fn providerLooksLikePlaceholder(provider: PersistedProvider, provider_type: AiProviderType) bool {
@@ -73,8 +96,10 @@ fn providerLooksLikePlaceholder(provider: PersistedProvider, provider_type: AiPr
     const api_key = trimSpace(provider.api_key);
     const defaults = provider_defaults[@intFromEnum(provider_type)];
 
-    const endpoint_is_default_or_empty = endpoint.len == 0 or std.mem.eql(u8, endpoint, defaults.endpoint);
-    const model_is_default_or_empty = model.len == 0 or std.mem.eql(u8, model, defaults.model);
+    const endpoint_is_default_or_empty = endpointLooksLikeAnyDefault(endpoint) or
+        std.mem.eql(u8, endpoint, defaults.endpoint);
+    const model_is_default_or_empty = modelLooksLikeAnyDefault(model) or
+        std.mem.eql(u8, model, defaults.model);
 
     return looksLikeGeneratedProviderName(name) and
         endpoint_is_default_or_empty and

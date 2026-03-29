@@ -104,6 +104,25 @@ pub const StyleVar = enum(c_uint) {
     window_padding = c.GUAVA_IMGUI_STYLE_VAR_WINDOW_PADDING,
 };
 
+pub const Cond = enum(c_int) {
+    none = 0,
+    always = 1,
+    once = 2,
+    first_use_ever = 4,
+    appearing = 8,
+};
+
+pub const InputTextFlags = struct {
+    pub const none: u32 = c.GUAVA_IMGUI_INPUT_TEXT_FLAG_NONE;
+    pub const enter_returns_true: u32 = c.GUAVA_IMGUI_INPUT_TEXT_FLAG_ENTER_RETURNS_TRUE;
+};
+
+pub const TreeNodeFlags = struct {
+    pub const selected: u32 = 1 << 0;
+    pub const default_open: u32 = 1 << 5;
+    pub const leaf: u32 = 1 << 8;
+};
+
 pub const TreeNodeEntityResult = struct {
     open: bool = false,
     clicked: bool = false,
@@ -385,6 +404,19 @@ pub fn buttonEx(label: []const u8, width: f32, height: f32) bool {
 }
 
 pub fn imageButton(id: []const u8, texture: *const rhi_mod.Texture, width: f32, height: f32, bg_tint: [4]f32, icon_tint: [4]f32) bool {
+    return imageButtonUv(id, texture, width, height, .{ 0.0, 0.0 }, .{ 1.0, 1.0 }, bg_tint, icon_tint);
+}
+
+pub fn imageButtonUv(
+    id: []const u8,
+    texture: *const rhi_mod.Texture,
+    width: f32,
+    height: f32,
+    uv0: [2]f32,
+    uv1: [2]f32,
+    bg_tint: [4]f32,
+    icon_tint: [4]f32,
+) bool {
     const native_texture = resolveNativeTextureHandle(texture) orelse return false;
     return c.guava_imgui_image_button(
         id.ptr,
@@ -392,6 +424,10 @@ pub fn imageButton(id: []const u8, texture: *const rhi_mod.Texture, width: f32, 
         native_texture,
         width,
         height,
+        uv0[0],
+        uv0[1],
+        uv1[0],
+        uv1[1],
         bg_tint[0],
         bg_tint[1],
         bg_tint[2],
@@ -415,20 +451,44 @@ pub fn dummy(width: f32, height: f32) void {
     c.guava_imgui_dummy(width, height);
 }
 
+pub fn spacing() void {
+    c.guava_imgui_spacing();
+}
+
+pub fn newLine() void {
+    c.guava_imgui_new_line();
+}
+
+pub fn bullet() void {
+    c.guava_imgui_bullet();
+}
+
+pub fn bulletText(value: []const u8) void {
+    c.guava_imgui_bullet_text(value.ptr, value.len);
+}
+
 pub fn sameLine() void {
     c.guava_imgui_same_line();
 }
 
-pub fn sameLineEx(offset_from_start_x: f32, spacing: f32) void {
-    c.guava_imgui_same_line_ex(offset_from_start_x, spacing);
+pub fn sameLineEx(offset_from_start_x: f32, spacing_value: f32) void {
+    c.guava_imgui_same_line_ex(offset_from_start_x, spacing_value);
 }
 
 pub fn separator() void {
     c.guava_imgui_separator();
 }
 
+pub fn separatorText(value: []const u8) void {
+    c.guava_imgui_separator_text(value.ptr, value.len);
+}
+
 pub fn setNextItemWidth(width: f32) void {
     c.guava_imgui_set_next_item_width(width);
+}
+
+pub fn setNextItemOpen(is_open: bool, cond: Cond) void {
+    c.guava_imgui_set_next_item_open(is_open, @intFromEnum(cond));
 }
 
 pub fn setNextWindowPos(position: [2]f32) void {
@@ -484,12 +544,25 @@ pub fn endChild() void {
     c.guava_imgui_end_child();
 }
 
-pub fn beginTable(id: []const u8, columns: i32) bool {
-    return c.guava_imgui_begin_table(id.ptr, id.len, columns);
+pub fn beginTable(id: []const u8, column_count: i32) bool {
+    return c.guava_imgui_begin_table(id.ptr, id.len, column_count);
 }
 
 pub fn endTable() void {
     c.guava_imgui_end_table();
+}
+
+pub fn columns(count: i32, id: ?[]const u8, border: bool) void {
+    c.guava_imgui_columns(
+        count,
+        if (id) |value| value.ptr else null,
+        if (id) |value| value.len else 0,
+        border,
+    );
+}
+
+pub fn nextColumn() void {
+    c.guava_imgui_next_column();
 }
 
 pub fn tableSetupColumn(label: []const u8, stretch: bool, init_width_or_weight: f32) void {
@@ -569,6 +642,22 @@ pub fn treeNodeEntity(
     };
 }
 
+pub fn treeNode(label: []const u8) bool {
+    return c.guava_imgui_tree_node(label.ptr, label.len);
+}
+
+pub fn treeNodeEx(label: []const u8, selected: bool, leaf: bool, default_open: bool) bool {
+    var flags: u32 = 0;
+    if (selected) flags |= TreeNodeFlags.selected;
+    if (leaf) flags |= TreeNodeFlags.leaf;
+    if (default_open) flags |= TreeNodeFlags.default_open;
+    return treeNodeExFlags(label, flags);
+}
+
+pub fn treeNodeExFlags(label: []const u8, flags: u32) bool {
+    return c.guava_imgui_tree_node_ex(label.ptr, label.len, flags);
+}
+
 pub fn treePop() void {
     c.guava_imgui_tree_pop();
 }
@@ -593,8 +682,16 @@ pub fn inputText(label: []const u8, buffer: []u8) bool {
     return c.guava_imgui_input_text(label.ptr, label.len, buffer.ptr, buffer.len);
 }
 
+pub fn inputTextMultiline(label: []const u8, buffer: []u8, width: f32, height: f32) bool {
+    return c.guava_imgui_input_text_multiline(label.ptr, label.len, buffer.ptr, buffer.len, width, height);
+}
+
 pub fn inputTextWithHint(label: []const u8, hint: []const u8, buffer: []u8) bool {
     return c.guava_imgui_input_text_with_hint(label.ptr, label.len, hint.ptr, hint.len, buffer.ptr, buffer.len);
+}
+
+pub fn inputTextWithHintFlags(label: []const u8, hint: []const u8, buffer: []u8, flags: u32) bool {
+    return c.guava_imgui_input_text_with_hint_flags(label.ptr, label.len, hint.ptr, hint.len, buffer.ptr, buffer.len, flags);
 }
 
 pub fn inputTextPassword(label: []const u8, buffer: []u8) bool {
@@ -609,8 +706,50 @@ pub fn dragFloat3(label: []const u8, value: *[3]f32, speed: f32, min_value: f32,
     return c.guava_imgui_drag_float3(label.ptr, label.len, value, speed, min_value, max_value);
 }
 
+pub fn sliderFloat(label: []const u8, value: *f32, min_value: f32, max_value: f32) bool {
+    return c.guava_imgui_slider_float(label.ptr, label.len, value, min_value, max_value);
+}
+
+pub fn sliderAngle(label: []const u8, value_radians: *f32, min_degrees: f32, max_degrees: f32) bool {
+    return c.guava_imgui_slider_angle(label.ptr, label.len, value_radians, min_degrees, max_degrees);
+}
+
+pub fn sliderInt(label: []const u8, value: *i32, min_value: i32, max_value: i32) bool {
+    return c.guava_imgui_slider_int(label.ptr, label.len, value, min_value, max_value);
+}
+
+pub fn inputFloat(label: []const u8, value: *f32) bool {
+    return inputFloatEx(label, value, 0.0, 0.0);
+}
+
+pub fn inputFloatEx(label: []const u8, value: *f32, step: f32, step_fast: f32) bool {
+    return c.guava_imgui_input_float(label.ptr, label.len, value, step, step_fast);
+}
+
+pub fn inputInt(label: []const u8, value: *i32) bool {
+    return inputIntEx(label, value, 1, 100);
+}
+
+pub fn inputIntEx(label: []const u8, value: *i32, step: i32, step_fast: i32) bool {
+    return c.guava_imgui_input_int(label.ptr, label.len, value, step, step_fast);
+}
+
 pub fn checkbox(label: []const u8, value: *bool) bool {
     return c.guava_imgui_checkbox(label.ptr, label.len, value);
+}
+
+pub fn radioButton(label: []const u8, active: bool) bool {
+    return c.guava_imgui_radio_button(label.ptr, label.len, active);
+}
+
+pub fn progressBar(fraction: f32, width: f32, height: f32, overlay: ?[]const u8) void {
+    c.guava_imgui_progress_bar(
+        fraction,
+        width,
+        height,
+        if (overlay) |value| value.ptr else null,
+        if (overlay) |value| value.len else 0,
+    );
 }
 
 pub fn collapsingHeader(label: []const u8, default_open: bool) bool {
@@ -646,6 +785,30 @@ pub fn isWindowHovered() bool {
 
 pub fn isWindowFocused() bool {
     return c.guava_imgui_is_window_focused();
+}
+
+pub fn isKeyPressed(key: i32, repeat: bool) bool {
+    return c.guava_imgui_is_key_pressed(key, repeat);
+}
+
+pub fn isKeyDown(key: i32) bool {
+    return c.guava_imgui_is_key_down(key);
+}
+
+pub fn isKeyReleased(key: i32) bool {
+    return c.guava_imgui_is_key_released(key);
+}
+
+pub fn keyCtrl() bool {
+    return c.guava_imgui_get_key_ctrl();
+}
+
+pub fn keyShift() bool {
+    return c.guava_imgui_get_key_shift();
+}
+
+pub fn keyAlt() bool {
+    return c.guava_imgui_get_key_alt();
 }
 
 pub fn contentRegionAvail() [2]f32 {
@@ -686,6 +849,20 @@ pub fn windowSize() [2]f32 {
     return value;
 }
 
+pub fn fontSize() f32 {
+    return c.guava_imgui_get_font_size();
+}
+
+pub fn textLineHeight() f32 {
+    return c.guava_imgui_get_text_line_height();
+}
+
+pub fn calcTextSize(value: []const u8, hide_text_after_double_hash: bool, wrap_width: f32) [2]f32 {
+    var out = [2]f32{ 0.0, 0.0 };
+    c.guava_imgui_calc_text_size(value.ptr, value.len, hide_text_after_double_hash, wrap_width, &out[0]);
+    return out;
+}
+
 pub fn frameHeight() f32 {
     return c.guava_imgui_get_frame_height();
 }
@@ -698,9 +875,45 @@ pub fn setScrollHereY(center_y_ratio: f32) void {
     c.guava_imgui_set_scroll_here_y(center_y_ratio);
 }
 
+pub fn setKeyboardFocusHere(offset: i32) void {
+    c.guava_imgui_set_keyboard_focus_here(offset);
+}
+
 pub fn image(texture: *const rhi_mod.Texture, width: f32, height: f32) void {
+    imageUv(texture, width, height, .{ 0.0, 0.0 }, .{ 1.0, 1.0 });
+}
+
+pub fn imageUv(texture: *const rhi_mod.Texture, width: f32, height: f32, uv0: [2]f32, uv1: [2]f32) void {
     const native_texture = resolveNativeTextureHandle(texture) orelse return;
-    c.guava_imgui_image(native_texture, width, height);
+    c.guava_imgui_image(native_texture, width, height, uv0[0], uv0[1], uv1[0], uv1[1]);
+}
+
+pub fn beginTabBar(id: []const u8) bool {
+    return c.guava_imgui_begin_tab_bar(id.ptr, id.len);
+}
+
+pub fn endTabBar() void {
+    c.guava_imgui_end_tab_bar();
+}
+
+pub fn beginTabItem(label: []const u8) bool {
+    return beginTabItemFlags(label, 0);
+}
+
+pub fn beginTabItemFlags(label: []const u8, flags: u32) bool {
+    return c.guava_imgui_begin_tab_item(label.ptr, label.len, flags);
+}
+
+pub fn endTabItem() void {
+    c.guava_imgui_end_tab_item();
+}
+
+pub fn pushClipRect(min: [2]f32, max: [2]f32, intersect_with_current: bool) void {
+    c.guava_imgui_push_clip_rect(min[0], min[1], max[0], max[1], intersect_with_current);
+}
+
+pub fn popClipRect() void {
+    c.guava_imgui_pop_clip_rect();
 }
 
 pub fn drawViewCube(view: *const [16]f32, position: [2]f32, size: f32) ViewCubeResult {
@@ -743,6 +956,10 @@ pub fn colorEdit3(label: []const u8, color: *[3]f32, _flags: ColorEditFlags) boo
 pub fn colorEdit4(label: []const u8, color: *[4]f32, _flags: ColorEditFlags) bool {
     _ = _flags;
     return c.guava_imgui_color_edit4(label.ptr, label.len, color);
+}
+
+pub fn colorPicker4(label: []const u8, color: *[4]f32) bool {
+    return c.guava_imgui_color_picker4(label.ptr, label.len, color);
 }
 
 pub fn textColored(color: [4]f32, value: []const u8) void {

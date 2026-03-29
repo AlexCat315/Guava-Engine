@@ -490,7 +490,7 @@ void apply_guava_editor_style(float content_scale) {
   colors[ImGuiCol_ResizeGrip] = make_color(85, 95, 110, 60);
   colors[ImGuiCol_ResizeGripHovered] = accent_green_hover;
   colors[ImGuiCol_ResizeGripActive] = accent_green;
-  colors[ImGuiCol_InputTextCursor] = make_color(226, 236, 248);
+  colors[ImGuiCol_InputTextCursor] = make_color(42, 236, 136);
   colors[ImGuiCol_Tab] = make_color(36, 39, 44);
   colors[ImGuiCol_TabUnfocused] = make_color(30, 33, 37);
   colors[ImGuiCol_DockingPreview] = accent_green_dim;
@@ -1158,17 +1158,18 @@ extern "C" bool guava_imgui_button_ex(const char *label, size_t label_len,
 
 extern "C" bool guava_imgui_image_button(const char *id, size_t id_len,
                                          void *texture, float width,
-                                         float height, float bg_r, float bg_g,
-                                         float bg_b, float bg_a, float tint_r,
-                                         float tint_g, float tint_b,
-                                         float tint_a) {
+                                         float height, float uv0_x, float uv0_y,
+                                         float uv1_x, float uv1_y, float bg_r,
+                                         float bg_g, float bg_b, float bg_a,
+                                         float tint_r, float tint_g,
+                                         float tint_b, float tint_a) {
   if (!g_imgui_initialized || texture == nullptr) {
     return false;
   }
   const std::string owned_id = make_string(id, id_len);
   return ImGui::ImageButton(
       owned_id.c_str(), reinterpret_cast<ImTextureID>(texture),
-      ImVec2(width, height), ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f),
+      ImVec2(width, height), ImVec2(uv0_x, uv0_y), ImVec2(uv1_x, uv1_y),
       ImVec4(bg_r, bg_g, bg_b, bg_a), ImVec4(tint_r, tint_g, tint_b, tint_a));
 }
 
@@ -1241,6 +1242,35 @@ extern "C" void guava_imgui_dummy(float width, float height) {
   ImGui::Dummy(ImVec2(width, height));
 }
 
+extern "C" void guava_imgui_spacing(void) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::Spacing();
+}
+
+extern "C" void guava_imgui_new_line(void) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::NewLine();
+}
+
+extern "C" void guava_imgui_bullet(void) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::Bullet();
+}
+
+extern "C" void guava_imgui_bullet_text(const char *text, size_t text_len) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  const std::string owned_text = make_string(text, text_len);
+  ImGui::BulletText("%s", owned_text.c_str());
+}
+
 extern "C" void guava_imgui_same_line(void) {
   if (!g_imgui_initialized) {
     return;
@@ -1263,11 +1293,26 @@ extern "C" void guava_imgui_separator(void) {
   ImGui::Separator();
 }
 
+extern "C" void guava_imgui_separator_text(const char *text, size_t text_len) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  const std::string owned_text = make_string(text, text_len);
+  ImGui::SeparatorText(owned_text.c_str());
+}
+
 extern "C" void guava_imgui_set_next_item_width(float width) {
   if (!g_imgui_initialized) {
     return;
   }
   ImGui::SetNextItemWidth(width);
+}
+
+extern "C" void guava_imgui_set_next_item_open(bool is_open, int32_t cond) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::SetNextItemOpen(is_open, static_cast<ImGuiCond>(cond));
 }
 
 extern "C" void guava_imgui_set_next_window_pos(float x, float y) {
@@ -1402,6 +1447,22 @@ extern "C" void guava_imgui_end_table(void) {
     return;
   }
   ImGui::EndTable();
+}
+
+extern "C" void guava_imgui_columns(int32_t count, const char *id,
+                                    size_t id_len, bool border) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  const std::string owned_id = id != nullptr ? make_string(id, id_len) : std::string();
+  ImGui::Columns(count, id != nullptr ? owned_id.c_str() : nullptr, border);
+}
+
+extern "C" void guava_imgui_next_column(void) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::NextColumn();
 }
 
 extern "C" void guava_imgui_table_setup_column(const char *label,
@@ -1622,6 +1683,24 @@ guava_imgui_tree_node_entity(uint64_t id, const char *label, size_t label_len,
   return result;
 }
 
+extern "C" bool guava_imgui_tree_node(const char *label, size_t label_len) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string owned_label = make_string(label, label_len);
+  return ImGui::TreeNode(owned_label.c_str());
+}
+
+extern "C" bool guava_imgui_tree_node_ex(const char *label, size_t label_len,
+                                         uint32_t flags) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string owned_label = make_string(label, label_len);
+  return ImGui::TreeNodeEx(owned_label.c_str(),
+                           static_cast<ImGuiTreeNodeFlags>(flags));
+}
+
 extern "C" void guava_imgui_tree_pop(void) {
   if (!g_imgui_initialized) {
     return;
@@ -1666,6 +1745,18 @@ extern "C" bool guava_imgui_input_text(const char *label, size_t label_len,
   return ImGui::InputText(owned_label.c_str(), buffer, buffer_size);
 }
 
+extern "C" bool guava_imgui_input_text_multiline(const char *label,
+                                                 size_t label_len, char *buffer,
+                                                 size_t buffer_size,
+                                                 float width, float height) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string owned_label = make_string(label, label_len);
+  return ImGui::InputTextMultiline(owned_label.c_str(), buffer, buffer_size,
+                                   ImVec2(width, height));
+}
+
 extern "C" bool guava_imgui_input_text_with_hint(const char *label,
                                                  size_t label_len,
                                                  const char *hint,
@@ -1678,6 +1769,19 @@ extern "C" bool guava_imgui_input_text_with_hint(const char *label,
   const std::string owned_hint = make_string(hint, hint_len);
   return ImGui::InputTextWithHint(owned_label.c_str(), owned_hint.c_str(),
                                   buffer, buffer_size);
+}
+
+extern "C" bool guava_imgui_input_text_with_hint_flags(
+    const char *label, size_t label_len, const char *hint, size_t hint_len,
+    char *buffer, size_t buffer_size, uint32_t flags) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string owned_label = make_string(label, label_len);
+  const std::string owned_hint = make_string(hint, hint_len);
+  return ImGui::InputTextWithHint(
+      owned_label.c_str(), owned_hint.c_str(), buffer, buffer_size,
+      static_cast<ImGuiInputTextFlags>(flags));
 }
 
 extern "C" bool guava_imgui_input_text_password(const char *label,
@@ -1714,6 +1818,57 @@ extern "C" bool guava_imgui_drag_float3(const char *label, size_t label_len,
                            max_value);
 }
 
+extern "C" bool guava_imgui_slider_float(const char *label, size_t label_len,
+                                         float *value, float min_value,
+                                         float max_value) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string owned_label = make_string(label, label_len);
+  return ImGui::SliderFloat(owned_label.c_str(), value, min_value, max_value);
+}
+
+extern "C" bool guava_imgui_slider_angle(const char *label, size_t label_len,
+                                         float *value_radians,
+                                         float min_degrees,
+                                         float max_degrees) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string owned_label = make_string(label, label_len);
+  return ImGui::SliderAngle(owned_label.c_str(), value_radians, min_degrees,
+                            max_degrees);
+}
+
+extern "C" bool guava_imgui_slider_int(const char *label, size_t label_len,
+                                       int *value, int min_value,
+                                       int max_value) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string owned_label = make_string(label, label_len);
+  return ImGui::SliderInt(owned_label.c_str(), value, min_value, max_value);
+}
+
+extern "C" bool guava_imgui_input_float(const char *label, size_t label_len,
+                                        float *value, float step,
+                                        float step_fast) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string owned_label = make_string(label, label_len);
+  return ImGui::InputFloat(owned_label.c_str(), value, step, step_fast);
+}
+
+extern "C" bool guava_imgui_input_int(const char *label, size_t label_len,
+                                      int *value, int step, int step_fast) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string owned_label = make_string(label, label_len);
+  return ImGui::InputInt(owned_label.c_str(), value, step, step_fast);
+}
+
 extern "C" bool guava_imgui_checkbox(const char *label, size_t label_len,
                                      bool *value) {
   if (!g_imgui_initialized) {
@@ -1721,6 +1876,30 @@ extern "C" bool guava_imgui_checkbox(const char *label, size_t label_len,
   }
   const std::string owned_label = make_string(label, label_len);
   return ImGui::Checkbox(owned_label.c_str(), value);
+}
+
+extern "C" bool guava_imgui_radio_button(const char *label, size_t label_len,
+                                         bool active) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string owned_label = make_string(label, label_len);
+  return ImGui::RadioButton(owned_label.c_str(), active);
+}
+
+extern "C" void guava_imgui_progress_bar(float fraction, float width,
+                                         float height, const char *overlay,
+                                         size_t overlay_len) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  const char *overlay_ptr = nullptr;
+  std::string owned_overlay;
+  if (overlay != nullptr) {
+    owned_overlay = make_string(overlay, overlay_len);
+    overlay_ptr = owned_overlay.c_str();
+  }
+  ImGui::ProgressBar(fraction, ImVec2(width, height), overlay_ptr);
 }
 
 extern "C" bool guava_imgui_collapsing_header(const char *label,
@@ -1811,6 +1990,48 @@ extern "C" bool guava_imgui_is_window_focused(void) {
   return ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
 }
 
+extern "C" bool guava_imgui_is_key_pressed(int32_t key, bool repeat) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  return ImGui::IsKeyPressed(static_cast<ImGuiKey>(key), repeat);
+}
+
+extern "C" bool guava_imgui_is_key_down(int32_t key) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  return ImGui::IsKeyDown(static_cast<ImGuiKey>(key));
+}
+
+extern "C" bool guava_imgui_is_key_released(int32_t key) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  return ImGui::IsKeyReleased(static_cast<ImGuiKey>(key));
+}
+
+extern "C" bool guava_imgui_get_key_ctrl(void) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  return ImGui::GetIO().KeyCtrl;
+}
+
+extern "C" bool guava_imgui_get_key_shift(void) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  return ImGui::GetIO().KeyShift;
+}
+
+extern "C" bool guava_imgui_get_key_alt(void) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  return ImGui::GetIO().KeyAlt;
+}
+
 extern "C" void guava_imgui_get_content_region_avail(float out_value[2]) {
   if (!g_imgui_initialized || out_value == nullptr) {
     return;
@@ -1889,6 +2110,39 @@ extern "C" float guava_imgui_get_frame_height(void) {
   return ImGui::GetFrameHeight();
 }
 
+extern "C" float guava_imgui_get_font_size(void) {
+  if (!g_imgui_initialized) {
+    return 0.0f;
+  }
+  return ImGui::GetFontSize();
+}
+
+extern "C" float guava_imgui_get_text_line_height(void) {
+  if (!g_imgui_initialized) {
+    return 0.0f;
+  }
+  return ImGui::GetTextLineHeight();
+}
+
+extern "C" void guava_imgui_calc_text_size(const char *text, size_t text_len,
+                                           bool hide_text_after_double_hash,
+                                           float wrap_width,
+                                           float out_value[2]) {
+  if (out_value == nullptr) {
+    return;
+  }
+  if (!g_imgui_initialized) {
+    out_value[0] = 0.0f;
+    out_value[1] = 0.0f;
+    return;
+  }
+  const std::string owned_text = make_string(text, text_len);
+  const ImVec2 size = ImGui::CalcTextSize(
+      owned_text.c_str(), nullptr, hide_text_after_double_hash, wrap_width);
+  out_value[0] = size.x;
+  out_value[1] = size.y;
+}
+
 extern "C" float guava_imgui_get_time(void) {
   if (!g_imgui_initialized) {
     return 0.0f;
@@ -1903,12 +2157,70 @@ extern "C" void guava_imgui_set_scroll_here_y(float center_y_ratio) {
   ImGui::SetScrollHereY(center_y_ratio);
 }
 
+extern "C" void guava_imgui_set_keyboard_focus_here(int32_t offset) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::SetKeyboardFocusHere(offset);
+}
+
 extern "C" void guava_imgui_image(void *texture, float width,
-                                  float height) {
+                                  float height, float uv0_x, float uv0_y,
+                                  float uv1_x, float uv1_y) {
   if (!g_imgui_initialized || texture == nullptr) {
     return;
   }
-  ImGui::Image((ImTextureID)(intptr_t)texture, ImVec2(width, height));
+  ImGui::Image((ImTextureID)(intptr_t)texture, ImVec2(width, height),
+               ImVec2(uv0_x, uv0_y), ImVec2(uv1_x, uv1_y));
+}
+
+extern "C" bool guava_imgui_begin_tab_bar(const char *id, size_t id_len) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string owned_id = make_string(id, id_len);
+  return ImGui::BeginTabBar(owned_id.c_str());
+}
+
+extern "C" void guava_imgui_end_tab_bar(void) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::EndTabBar();
+}
+
+extern "C" bool guava_imgui_begin_tab_item(const char *label, size_t label_len,
+                                           uint32_t flags) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  const std::string owned_label = make_string(label, label_len);
+  return ImGui::BeginTabItem(owned_label.c_str(), nullptr,
+                             static_cast<ImGuiTabItemFlags>(flags));
+}
+
+extern "C" void guava_imgui_end_tab_item(void) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::EndTabItem();
+}
+
+extern "C" void guava_imgui_push_clip_rect(float min_x, float min_y, float max_x,
+                                           float max_y,
+                                           bool intersect_with_current) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::PushClipRect(ImVec2(min_x, min_y), ImVec2(max_x, max_y),
+                      intersect_with_current);
+}
+
+extern "C" void guava_imgui_pop_clip_rect(void) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::PopClipRect();
 }
 
 extern "C" uint32_t guava_imgui_draw_view_cube(const float view[16], float x,
@@ -2174,9 +2486,12 @@ extern "C" uint32_t guava_imgui_draw_view_cube(const float view[16], float x,
 
 // ── Extended widget API ──
 
-bool guava_imgui_drag_float4(const char *label, size_t label_len,
-                             float value[4], float speed, float min_value,
-                             float max_value) {
+extern "C" bool guava_imgui_drag_float4(const char *label, size_t label_len,
+                                        float value[4], float speed,
+                                        float min_value, float max_value) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
   char buf[256];
   size_t n = label_len < sizeof(buf) - 1 ? label_len : sizeof(buf) - 1;
   memcpy(buf, label, n);
@@ -2184,8 +2499,12 @@ bool guava_imgui_drag_float4(const char *label, size_t label_len,
   return ImGui::DragFloat4(buf, value, speed, min_value, max_value);
 }
 
-bool guava_imgui_drag_int(const char *label, size_t label_len, int *value,
-                          float speed, int min_value, int max_value) {
+extern "C" bool guava_imgui_drag_int(const char *label, size_t label_len,
+                                     int *value, float speed, int min_value,
+                                     int max_value) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
   char buf[256];
   size_t n = label_len < sizeof(buf) - 1 ? label_len : sizeof(buf) - 1;
   memcpy(buf, label, n);
@@ -2193,8 +2512,11 @@ bool guava_imgui_drag_int(const char *label, size_t label_len, int *value,
   return ImGui::DragInt(buf, value, speed, min_value, max_value);
 }
 
-bool guava_imgui_color_edit3(const char *label, size_t label_len,
-                             float color[3]) {
+extern "C" bool guava_imgui_color_edit3(const char *label, size_t label_len,
+                                        float color[3]) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
   char buf[256];
   size_t n = label_len < sizeof(buf) - 1 ? label_len : sizeof(buf) - 1;
   memcpy(buf, label, n);
@@ -2202,8 +2524,11 @@ bool guava_imgui_color_edit3(const char *label, size_t label_len,
   return ImGui::ColorEdit3(buf, color);
 }
 
-bool guava_imgui_color_edit4(const char *label, size_t label_len,
-                             float color[4]) {
+extern "C" bool guava_imgui_color_edit4(const char *label, size_t label_len,
+                                        float color[4]) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
   char buf[256];
   size_t n = label_len < sizeof(buf) - 1 ? label_len : sizeof(buf) - 1;
   memcpy(buf, label, n);
@@ -2211,37 +2536,83 @@ bool guava_imgui_color_edit4(const char *label, size_t label_len,
   return ImGui::ColorEdit4(buf, color);
 }
 
-void guava_imgui_text_colored(float r, float g, float b, float a,
-                              const char *text, size_t text_len) {
+extern "C" bool guava_imgui_color_picker4(const char *label, size_t label_len,
+                                          float color[4]) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
+  char buf[256];
+  size_t n = label_len < sizeof(buf) - 1 ? label_len : sizeof(buf) - 1;
+  memcpy(buf, label, n);
+  buf[n] = '\0';
+  return ImGui::ColorPicker4(buf, color);
+}
+
+extern "C" void guava_imgui_text_colored(float r, float g, float b, float a,
+                                         const char *text, size_t text_len) {
+  if (!g_imgui_initialized) {
+    return;
+  }
   ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(r, g, b, a));
   ImGui::TextUnformatted(text, text + text_len);
   ImGui::PopStyleColor();
 }
 
-void guava_imgui_begin_group(void) { ImGui::BeginGroup(); }
+extern "C" void guava_imgui_begin_group(void) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::BeginGroup();
+}
 
-void guava_imgui_end_group(void) { ImGui::EndGroup(); }
+extern "C" void guava_imgui_end_group(void) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::EndGroup();
+}
 
-void guava_imgui_set_item_default_focus(void) { ImGui::SetItemDefaultFocus(); }
+extern "C" void guava_imgui_set_item_default_focus(void) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::SetItemDefaultFocus();
+}
 
-void guava_imgui_set_cursor_screen_pos(float x, float y) {
+extern "C" void guava_imgui_set_cursor_screen_pos(float x, float y) {
+  if (!g_imgui_initialized) {
+    return;
+  }
   ImGui::SetCursorScreenPos(ImVec2(x, y));
 }
 
-bool guava_imgui_is_mouse_double_clicked(int button) {
+extern "C" bool guava_imgui_is_mouse_double_clicked(int button) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
   return ImGui::IsMouseDoubleClicked(static_cast<ImGuiMouseButton>(button));
 }
 
-bool guava_imgui_is_mouse_dragging(int button) {
+extern "C" bool guava_imgui_is_mouse_dragging(int button) {
+  if (!g_imgui_initialized) {
+    return false;
+  }
   return ImGui::IsMouseDragging(static_cast<ImGuiMouseButton>(button));
 }
 
-void guava_imgui_get_mouse_drag_delta(int button, float out_value[2]) {
+extern "C" void guava_imgui_get_mouse_drag_delta(int button,
+                                                 float out_value[2]) {
+  if (!g_imgui_initialized || out_value == nullptr) {
+    return;
+  }
   ImVec2 d = ImGui::GetMouseDragDelta(static_cast<ImGuiMouseButton>(button));
   out_value[0] = d.x;
   out_value[1] = d.y;
 }
 
-void guava_imgui_reset_mouse_drag_delta(int button) {
+extern "C" void guava_imgui_reset_mouse_drag_delta(int button) {
+  if (!g_imgui_initialized) {
+    return;
+  }
   ImGui::ResetMouseDragDelta(static_cast<ImGuiMouseButton>(button));
 }
