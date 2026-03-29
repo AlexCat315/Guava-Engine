@@ -1,6 +1,7 @@
 const std = @import("std");
 const engine = @import("guava");
 const gui = @import("../../gui.zig");
+const floating_window_blocker = @import("../../floating_window_blocker.zig");
 const EditorState = @import("../../../core/state.zig").EditorState;
 
 pub const CameraBookmark = struct {
@@ -102,6 +103,7 @@ pub fn drawCameraBookmarkWindow(state: *EditorState, layer_context: *engine.core
     const title = try state.windowLabel(&title_buffer, .camera_bookmarks, "camera_bookmarks_panel");
     _ = gui.beginWindow(title);
     defer gui.endWindow();
+    floating_window_blocker.registerCurrentWindow("camera_bookmarks_panel");
 
     // Derive current camera state from EditorState for saving bookmarks.
     const vec3 = engine.math.vec3;

@@ -1,6 +1,7 @@
 const std = @import("std");
 const engine = @import("guava");
 const gui = @import("../../gui.zig");
+const floating_window_blocker = @import("../../floating_window_blocker.zig");
 const EditorState = @import("../../../core/state.zig").EditorState;
 const FpsDisplayMode = @import("../../../core/state.zig").FpsDisplayMode;
 const i18n = @import("../../../i18n/mod.zig");
@@ -26,6 +27,7 @@ pub fn drawSettingsWindow(state: *EditorState, layer_context: *engine.core.Layer
     _ = gui.beginWindowFlagsOpen(title, &open, gui.WindowFlags.no_docking);
     state.settings_open = open;
     defer gui.endWindow();
+    floating_window_blocker.registerCurrentWindow("settings_popup");
     layout.beginSectionBody();
     defer layout.endSectionBody();
 

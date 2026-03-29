@@ -286,6 +286,7 @@ bool guava_imgui_get_key_ctrl(void);
 bool guava_imgui_get_key_shift(void);
 bool guava_imgui_get_key_alt(void);
 void guava_imgui_get_content_region_avail(float out_value[2]);
+void guava_imgui_get_window_pos(float out_value[2]);
 void guava_imgui_get_cursor_screen_pos(float out_value[2]);
 void guava_imgui_set_cursor_pos(float x, float y);
 void guava_imgui_set_cursor_pos_y(float y);

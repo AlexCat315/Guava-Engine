@@ -2041,6 +2041,15 @@ extern "C" void guava_imgui_get_content_region_avail(float out_value[2]) {
   out_value[1] = value.y;
 }
 
+extern "C" void guava_imgui_get_window_pos(float out_value[2]) {
+  if (!g_imgui_initialized || out_value == nullptr) {
+    return;
+  }
+  const ImVec2 value = ImGui::GetWindowPos();
+  out_value[0] = value.x;
+  out_value[1] = value.y;
+}
+
 extern "C" void guava_imgui_get_cursor_screen_pos(float out_value[2]) {
   if (!g_imgui_initialized || out_value == nullptr) {
     return;

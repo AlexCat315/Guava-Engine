@@ -1,6 +1,7 @@
 const std = @import("std");
 const engine = @import("guava");
 const gui = @import("../../gui.zig");
+const floating_window_blocker = @import("../../floating_window_blocker.zig");
 const EditorState = @import("../../../core/state.zig").EditorState;
 const state_mod = @import("../../../core/state.zig");
 const utils = @import("../../../common/utils.zig");
@@ -17,6 +18,7 @@ pub fn drawMaterialEditorWindow(state: *EditorState, layer_context: *engine.core
     _ = gui.beginWindowFlagsOpen(title, &open, gui.WindowFlags.no_docking);
     state.material_editor_open = open;
     defer gui.endWindow();
+    floating_window_blocker.registerCurrentWindow("material_editor_popup");
 
     if (!open) {
         return;

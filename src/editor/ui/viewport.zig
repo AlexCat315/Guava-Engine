@@ -15,6 +15,7 @@ const inspector = @import("panels/scene/inspector.zig");
 const place_actors = @import("panels/scene/place_actors.zig");
 const content_browser = @import("../assets/browser.zig");
 const menu_bar = @import("menu_bar.zig");
+const floating_window_blocker = @import("floating_window_blocker.zig");
 const render_settings = @import("panels/rendering/render_settings.zig");
 const settings = @import("panels/rendering/settings.zig");
 const material_editor = @import("panels/assets/material_editor.zig");
@@ -1103,6 +1104,7 @@ pub fn drawEditorUi(
     try applyPendingViewportAssetDrop(state, layer_context);
 
     // Shell Layer 1: Top Bar
+    floating_window_blocker.beginFrame();
     try menu_bar.drawMenuBar(state, layer_context);
 
     // Shell Layer 2: Main Workspace (center + left + right panels)
@@ -1115,6 +1117,7 @@ pub fn drawEditorUi(
 
     // Shell Layer 4: Auxiliary / Floating Windows
     try drawAuxiliaryWindows(state, layer_context);
+    try menu_bar.resolvePendingTopBarDrag(state, layer_context);
 
     // Shell Layer 5: Status Bar (pinned bottom)
     try drawStatusBarWindow(state, layer_context);

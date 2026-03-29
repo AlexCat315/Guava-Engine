@@ -942,21 +942,33 @@ pub const Renderer = struct {
     /// Thread-safety: NOT thread-safe. Must be called from render thread (typically main thread).
     /// Scene pointer must remain valid until GPU work completes (typically 1-2 frames later).
     pub fn drawFrame(self: *Renderer, scene: *scene_mod.Scene, physics_state_opt: ?*physics_mod.PhysicsState) !FrameReport {
+        // 每帧主流程概览：
+        // 1) 处理前一帧的 selection readbacks（用于编辑器对象拾取）
+        // 2) 释放上一帧临时 GPU 资源（例如 Gizmo 的 world-line buffers）
+        // 3) 分配 per-pass 统计并构建场景快照
+        // 4) beginFrame -> 执行各个 render pass 并提交帧
+        // 注意：此函数必须在渲染线程（主线程）调用，场景指针需保证在 GPU 完成使用前有效（延迟 1-2 帧）。
         try self.resolveSelectionReadbacks();
 
         // Release temporary world-line buffers from the previous frame now
         // that the GPU has finished using them.
         self.gizmo_pass.releaseWorldLineBuffers(&self.rhi);
 
+        // 为本帧分配 RenderGraph 的统计结构，用于记录每个 pass 的耗时与绘制统计
         const pass_stats = try self.graph.allocatePassStats(self.allocator);
         defer self.allocator.free(pass_stats);
 
+        // 构建场景快照：捕获可见实体、资源引用与当前相机/灯光状态，供后续场景提取与渲染准备使用。
         const snapshot = buildSceneSnapshot(scene);
         const result = blk: {
+            // 开始 GPU 帧：从 RHI 获取命令帧并尝试获取 swapchain 图像（若存在）
             const frame = try self.rhi.beginFrame();
+            // 计算清屏参数（颜色/深度），基于当前场景与渲染图的需要
             const clear = clearAndDepthForScene(snapshot, self.passCount());
             const has_swapchain = frame.swapchain_image.id != 0;
 
+            // 如果关键的 pass 尚未准备好（例如 shader/pipeline 还在编译），则提交空白/清屏帧并提前返回。
+            // 这样可以避免后续对未就绪资源的引用，并让系统在后台完成缺失资源的准备。
             if (!self.depth_prepass.isReady() or !self.base_pass.isReady()) {
                 if (has_swapchain) {
                     try self.rhi.clearAndPresent(frame, clear);
@@ -1016,6 +1028,7 @@ pub const Renderer = struct {
                     g_logged_scene_extraction_culling = true;
                 }
 
+                // 场景准备（prepareScene）：执行视锥剔除、构建 DrawItem 列表，并确保所需的 GPU 资源（纹理/mesh）已就绪或已上传。
                 var prepared_scene = try self.scene_cache.prepareScene(
                     &self.rhi,
                     scene,
@@ -1025,6 +1038,7 @@ pub const Renderer = struct {
                 );
                 defer prepared_scene.deinit();
 
+                // 确保选择系统有一个初始选中项（用于编辑器交互）
                 if (!self.selection_seeded) {
                     _ = try self.selection_history.applyPick(
                         self.scene_cache.defaultSelectionEntity(scene),
@@ -1033,8 +1047,10 @@ pub const Renderer = struct {
                     self.selection_seeded = true;
                 }
 
+                // ID pass：渲染物体 ID 到独立纹理，用于编辑器的物体拾取（selection）。先确保目标纹理尺寸正确。
                 try self.id_pass.ensureTargetSize(&self.rhi, render_width, render_height);
 
+                // 计算级联阴影贴图 (CSM) 的 light-space 矩阵：为每个 cascade 生成光照空间投影矩阵并写入 shadow_map
                 const light_space_matrix = blk_lsm: {
                     const main_light = if (prepared_scene.lights.directional_lights.len > 0)
                         prepared_scene.lights.directional_lights[0]
@@ -1373,6 +1389,7 @@ pub const Renderer = struct {
                         draw_stats.add(depth_stats);
                     }
 
+                    // 渲染主几何（Opaque）：调用 BasePass.draw 来绘制不透明物体（会遍历 DrawItem 列表并发出 draw 调用）
                     const opaque_start = std.time.nanoTimestamp();
                     const opaque_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene, .{
                         .render_mode = active_render_mode,
@@ -1409,6 +1426,7 @@ pub const Renderer = struct {
                         draw_stats.add(preview_opaque_stats);
                     }
 
+                    // 渲染透明物体：切换到透明通道（可能使用不同的 pipeline / 混合设置）
                     const transparent_start = std.time.nanoTimestamp();
                     const transparent_stats = try self.base_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene, .{
                         .render_mode = active_render_mode,
@@ -1431,8 +1449,10 @@ pub const Renderer = struct {
                         draw_stats.add(preview_transparent_stats);
                     }
 
+                    // 结束主 scene render pass
                     self.rhi.endRenderPass(scene_pass);
 
+                    // 如果正在渲染到 viewport（编辑器视口），执行后处理与 overlay 流程
                     if (viewport_active) {
 
                         // Volumetric fog: composite onto HDR color before bloom/tonemap

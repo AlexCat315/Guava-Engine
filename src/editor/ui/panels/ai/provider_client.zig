@@ -161,9 +161,22 @@ fn modelSupportsAnthropicThinking(model: []const u8) bool {
         asciiContainsIgnoreCase(model, "claude-4");
 }
 
+fn endpointSupportsOpenAiResponses(provider_type: AiProviderType, endpoint_raw: []const u8, model: []const u8) bool {
+    const endpoint = std.mem.trim(u8, endpoint_raw, " \t\r\n");
+    const path = endpointPathSlice(endpoint);
+    const host = endpointHostSlice(endpoint);
+
+    if (asciiContainsIgnoreCase(path, "/chat/completions")) return false;
+    if (asciiContainsIgnoreCase(path, "/responses")) return true;
+    if (asciiContainsIgnoreCase(host, "deepseek.com") or asciiStartsWithIgnoreCase(model, "deepseek")) {
+        return false;
+    }
+    if (asciiContainsIgnoreCase(host, "openai.com")) return true;
+    return provider_type == .openai and endpoint.len == 0;
+}
+
 fn shouldRequestOpenAiReasoningSummary(provider_type: AiProviderType, endpoint: []const u8) bool {
-    if (provider_type == .openai) return true;
-    return asciiContainsIgnoreCase(endpointHostSlice(endpoint), "openai.com");
+    return endpointSupportsOpenAiResponses(provider_type, endpoint, "");
 }
 
 fn requestFlavorForProvider(provider_type: AiProviderType, endpoint_raw: []const u8, model: []const u8) ProviderRequestFlavor {
@@ -172,7 +185,10 @@ fn requestFlavorForProvider(provider_type: AiProviderType, endpoint_raw: []const
     const host = endpointHostSlice(endpoint);
 
     return switch (provider_type) {
-        .openai => .openai_responses,
+        .openai => if (endpointSupportsOpenAiResponses(provider_type, endpoint_raw, model))
+            .openai_responses
+        else
+            .openai_chat_completions,
         .anthropic => .anthropic_messages,
         .ollama => .ollama_chat,
         .custom => if (asciiContainsIgnoreCase(path, "/api/chat"))

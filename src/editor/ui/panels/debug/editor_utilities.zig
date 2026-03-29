@@ -1,11 +1,14 @@
 const engine = @import("guava");
 const gui = @import("../../gui.zig");
+const floating_window_blocker = @import("../../floating_window_blocker.zig");
 const EditorState = @import("../../../core/state.zig").EditorState;
 const layout = @import("../../layout.zig");
 
 pub fn drawEditorUtilitiesWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     var open = state.editor_utilities_open;
-    if (!gui.beginWindowOpen("AI Utilities###editor_utilities_panel", &open)) {
+    const open_window = gui.beginWindowOpen("AI Utilities###editor_utilities_panel", &open);
+    floating_window_blocker.registerCurrentWindow("editor_utilities_panel");
+    if (!open_window) {
         gui.endWindow();
         state.editor_utilities_open = open;
         return;

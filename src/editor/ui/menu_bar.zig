@@ -6,8 +6,12 @@ const history = @import("../actions/history.zig");
 const camera = @import("../interaction/camera.zig");
 const content_browser = @import("../assets/browser.zig");
 const scene_hierarchy = @import("panels/scene/scene_hierarchy.zig");
+const floating_window_blocker = @import("floating_window_blocker.zig");
 const layout = @import("layout.zig");
 const i18n = @import("../i18n/mod.zig");
+
+var g_pending_top_bar_drag = false;
+var g_pending_top_bar_drag_mouse = [2]f32{ 0.0, 0.0 };
 
 pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     if (!gui.beginMainMenuBar()) {
@@ -200,11 +204,15 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
     gui.sameLine();
     _ = gui.invisibleButton("top_bar_drag_region", drag_width, 22.0);
     if (gui.isItemActive() and layer_context.input.wasMousePressed(.left)) {
-        try beginTopBarDrag(state, layer_context);
+        g_pending_top_bar_drag = true;
+        g_pending_top_bar_drag_mouse = gui.mousePos();
     }
 
+    const mouse_over_floating_window = floating_window_blocker.anyContainsPoint(gui.mousePos());
     if (state.top_bar_drag_active) {
-        if (layer_context.input.isMouseDown(.left)) {
+        if (mouse_over_floating_window and layer_context.input.isMouseDown(.left)) {
+            state.top_bar_drag_active = false;
+        } else if (layer_context.input.isMouseDown(.left)) {
             const mouse = layer_context.window.globalMousePosition();
             try layer_context.window.setPosition(
                 @as(i32, @intFromFloat(mouse[0] - state.top_bar_drag_offset[0])),
@@ -238,6 +246,15 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
             layer_context.window.requestClose();
         }
     }
+}
+
+pub fn resolvePendingTopBarDrag(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    if (!g_pending_top_bar_drag) return;
+    defer g_pending_top_bar_drag = false;
+
+    if (!layer_context.input.isMouseDown(.left)) return;
+    if (floating_window_blocker.anyContainsPoint(g_pending_top_bar_drag_mouse)) return;
+    try beginTopBarDrag(state, layer_context);
 }
 
 fn beginTopBarDrag(state: *EditorState, layer_context: *engine.core.LayerContext) !void {

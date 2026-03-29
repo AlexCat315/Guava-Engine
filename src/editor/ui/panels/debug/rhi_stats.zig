@@ -1,12 +1,15 @@
 const std = @import("std");
 const engine = @import("guava");
 const gui = @import("../../gui.zig");
+const floating_window_blocker = @import("../../floating_window_blocker.zig");
 const EditorState = @import("../../../core/state.zig").EditorState;
 
 /// Draw the RHI debug stats overlay panel.
 pub fn drawRhiStatsWindow(state: *EditorState, layer_context: *engine.core.LayerContext) void {
     var open = state.rhi_stats_open;
-    if (!gui.beginWindowOpen("RHI Stats###rhi_stats_panel", &open)) {
+    const open_window = gui.beginWindowOpen("RHI Stats###rhi_stats_panel", &open);
+    floating_window_blocker.registerCurrentWindow("rhi_stats_panel");
+    if (!open_window) {
         gui.endWindow();
         state.rhi_stats_open = open;
         return;

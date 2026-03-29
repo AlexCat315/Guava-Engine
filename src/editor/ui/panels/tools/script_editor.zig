@@ -1,6 +1,7 @@
 const std = @import("std");
 const engine = @import("guava");
 const gui = @import("../../gui.zig");
+const floating_window_blocker = @import("../../floating_window_blocker.zig");
 const layout = @import("../../layout.zig");
 const EditorState = @import("../../../core/state.zig").EditorState;
 
@@ -114,6 +115,7 @@ pub fn drawScriptEditorWindow(
     const title = try state.windowLabel(&title_buffer, .script_editor, "script_editor_panel");
     _ = gui.beginWindow(title);
     defer gui.endWindow();
+    floating_window_blocker.registerCurrentWindow("script_editor_panel");
 
     drawScriptToolbar(editor_state);
 

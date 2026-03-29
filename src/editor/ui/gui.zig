@@ -201,6 +201,7 @@ pub const keyCtrl = backend.keyCtrl;
 pub const keyShift = backend.keyShift;
 pub const keyAlt = backend.keyAlt;
 pub const contentRegionAvail = backend.contentRegionAvail;
+pub const windowPos = backend.windowPos;
 pub const cursorScreenPos = backend.cursorScreenPos;
 pub const setCursorPos = backend.setCursorPos;
 pub const setCursorPosY = backend.setCursorPosY;

@@ -1,6 +1,7 @@
 const std = @import("std");
 const engine = @import("guava");
 const gui = @import("../../gui.zig");
+const floating_window_blocker = @import("../../floating_window_blocker.zig");
 const layout = @import("../../layout.zig");
 const EditorState = @import("../../../core/state.zig").EditorState;
 
@@ -44,6 +45,7 @@ pub fn drawParticleEditorWindow(
     const title = try state.windowLabel(&title_buffer, .particle_editor, "particle_editor_panel");
     _ = gui.beginWindow(title);
     defer gui.endWindow();
+    floating_window_blocker.registerCurrentWindow("particle_editor_panel");
 
     drawParticleToolbar(editor_state);
 

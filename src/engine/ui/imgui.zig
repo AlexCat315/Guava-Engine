@@ -817,6 +817,12 @@ pub fn contentRegionAvail() [2]f32 {
     return value;
 }
 
+pub fn windowPos() [2]f32 {
+    var value = [2]f32{ 0.0, 0.0 };
+    c.guava_imgui_get_window_pos(@ptrCast(&value[0]));
+    return value;
+}
+
 pub fn cursorScreenPos() [2]f32 {
     var value = [2]f32{ 0.0, 0.0 };
     c.guava_imgui_get_cursor_screen_pos(@ptrCast(&value[0]));

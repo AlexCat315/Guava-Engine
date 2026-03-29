@@ -1,6 +1,7 @@
 const std = @import("std");
 const engine = @import("guava");
 const gui = @import("../../gui.zig");
+const floating_window_blocker = @import("../../floating_window_blocker.zig");
 const EditorState = @import("../../../core/state.zig").EditorState;
 const utils = @import("../../../common/utils.zig");
 const history = @import("../../../actions/history.zig");
@@ -141,6 +142,7 @@ pub fn drawAnimationEditorWindow(state: *EditorState, layer_context: *engine.cor
     _ = gui.beginWindowFlagsOpen(title, &open, gui.WindowFlags.no_docking);
     state.animation_editor_open = open;
     defer gui.endWindow();
+    floating_window_blocker.registerCurrentWindow("animation_editor_popup");
 
     if (!open) {
         return;

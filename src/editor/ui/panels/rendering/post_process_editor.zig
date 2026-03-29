@@ -1,6 +1,7 @@
 const std = @import("std");
 const engine = @import("guava");
 const gui = @import("../../gui.zig");
+const floating_window_blocker = @import("../../floating_window_blocker.zig");
 const layout = @import("../../layout.zig");
 const props = @import("../../properties.zig");
 const EditorState = @import("../../../core/state.zig").EditorState;
@@ -168,7 +169,9 @@ pub fn drawPostProcessPipelineEditorWindow(
 
     var title_buffer: [80]u8 = undefined;
     const title = try editor_state_.windowLabel(&title_buffer, .post_process_pipeline, "post_process_panel");
-    if (!gui.beginWindowOpen(title, &editor_state_.post_process_editor_open)) {
+    const open_window = gui.beginWindowOpen(title, &editor_state_.post_process_editor_open);
+    floating_window_blocker.registerCurrentWindow("post_process_panel");
+    if (!open_window) {
         gui.endWindow();
         return;
     }

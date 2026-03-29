@@ -1,6 +1,7 @@
 const std = @import("std");
 const engine = @import("guava");
 const gui = @import("../../gui.zig");
+const floating_window_blocker = @import("../../floating_window_blocker.zig");
 const EditorState = @import("../../../core/state.zig").EditorState;
 const layout = @import("../../layout.zig");
 const prefab_mod = engine.scene.prefab;
@@ -25,6 +26,7 @@ pub fn drawPrefabBrowserWindow(state: *EditorState, layer_context: *engine.core.
     _ = gui.beginWindowFlagsOpen(title, &open, gui.WindowFlags.no_docking);
     state.prefab_browser_open = open;
     defer gui.endWindow();
+    floating_window_blocker.registerCurrentWindow("prefab_browser_popup");
 
     if (!open) {
         return;

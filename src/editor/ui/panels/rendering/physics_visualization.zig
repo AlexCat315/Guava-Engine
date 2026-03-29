@@ -1,6 +1,7 @@
 const std = @import("std");
 const engine = @import("guava");
 const gui = @import("../../gui.zig");
+const floating_window_blocker = @import("../../floating_window_blocker.zig");
 const layout = @import("../../layout.zig");
 const props = @import("../../properties.zig");
 const EditorState = @import("../../../core/state.zig").EditorState;
@@ -35,6 +36,7 @@ pub fn drawPhysicsVisualizationWindow(state: *EditorState, settings: *PhysicsVis
     const title = try state.windowLabel(&title_buffer, .physics_visualization, "physics_viz_panel");
     _ = gui.beginWindow(title);
     defer gui.endWindow();
+    floating_window_blocker.registerCurrentWindow("physics_viz_panel");
 
     if (props.beginPropertyGrid("physics_viz_settings")) {
         defer props.endPropertyGrid();

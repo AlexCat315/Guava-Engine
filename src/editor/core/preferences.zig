@@ -61,15 +61,35 @@ fn trimSpace(slice: []const u8) []const u8 {
     return std.mem.trim(u8, slice, " \t\r\n");
 }
 
+fn isFilteredControlByte(ch: u8) bool {
+    return (ch < 0x20 and ch != '\t' and ch != '\n' and ch != '\r') or ch == 0x7f;
+}
+
+fn sanitizedTextAlloc(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
+    var output = std.ArrayList(u8).empty;
+    defer output.deinit(allocator);
+
+    for (value) |ch| {
+        if (ch == 0) break;
+        if (isFilteredControlByte(ch)) continue;
+        try output.append(allocator, ch);
+    }
+
+    const trimmed = trimSpace(output.items);
+    return allocator.dupe(u8, trimmed);
+}
+
 fn looksLikeGeneratedProviderName(name: []const u8) bool {
     if (name.len == 0) return true;
     if (std.ascii.eqlIgnoreCase(name, "new provider")) return true;
+    if (name.len >= 13 and std.ascii.eqlIgnoreCase(name[0..13], "new provider ")) return true;
     if (std.ascii.eqlIgnoreCase(name, "openai")) return true;
     if (std.ascii.eqlIgnoreCase(name, "anthropic")) return true;
     if (std.ascii.eqlIgnoreCase(name, "ollama")) return true;
     if (std.ascii.eqlIgnoreCase(name, "custom")) return true;
     if (name.len >= 9 and std.ascii.eqlIgnoreCase(name[0..9], "provider ")) return true;
     if (std.mem.eql(u8, name, "新代理")) return true;
+    if (std.mem.startsWith(u8, name, "新代理 ")) return true;
     if (std.mem.startsWith(u8, name, "代理 ")) return true;
     return false;
 }
@@ -137,16 +157,33 @@ fn saveAiProviderSettingsToPath(state: *const EditorState, path: []const u8) !vo
     const provider_count = @max(@as(usize, 1), @min(state.ai_provider_count, max_ai_providers));
     const persisted_providers = try allocator.alloc(PersistedProvider, provider_count);
     defer allocator.free(persisted_providers);
+    var owned_fields = std.ArrayList([]u8).empty;
+    defer {
+        for (owned_fields.items) |field| allocator.free(field);
+        owned_fields.deinit(allocator);
+    }
 
     var has_meaningful_provider = false;
     for (persisted_providers, 0..) |*provider, index| {
         const source = state.ai_providers[index];
+        const sanitized_name = try sanitizedTextAlloc(allocator, fixedBufferSlice(source.name[0..]));
+        errdefer allocator.free(sanitized_name);
+        try owned_fields.append(allocator, sanitized_name);
+        const sanitized_endpoint = try sanitizedTextAlloc(allocator, fixedBufferSlice(source.endpoint[0..]));
+        errdefer allocator.free(sanitized_endpoint);
+        try owned_fields.append(allocator, sanitized_endpoint);
+        const sanitized_model = try sanitizedTextAlloc(allocator, fixedBufferSlice(source.model[0..]));
+        errdefer allocator.free(sanitized_model);
+        try owned_fields.append(allocator, sanitized_model);
+        const sanitized_api_key = try sanitizedTextAlloc(allocator, fixedBufferSlice(source.api_key[0..]));
+        errdefer allocator.free(sanitized_api_key);
+        try owned_fields.append(allocator, sanitized_api_key);
         provider.* = .{
             .provider_type = @tagName(source.provider_type),
-            .name = fixedBufferSlice(source.name[0..]),
-            .endpoint = fixedBufferSlice(source.endpoint[0..]),
-            .model = fixedBufferSlice(source.model[0..]),
-            .api_key = fixedBufferSlice(source.api_key[0..]),
+            .name = sanitized_name,
+            .endpoint = sanitized_endpoint,
+            .model = sanitized_model,
+            .api_key = sanitized_api_key,
         };
         if (!providerLooksLikePlaceholder(provider.*, source.provider_type)) {
             has_meaningful_provider = true;
@@ -154,6 +191,10 @@ fn saveAiProviderSettingsToPath(state: *const EditorState, path: []const u8) !vo
     }
 
     if (!has_meaningful_provider) {
+        std.fs.deleteFileAbsolute(path) catch |err| switch (err) {
+            error.FileNotFound => {},
+            else => return err,
+        };
         return;
     }
 
@@ -236,10 +277,18 @@ fn loadAiProviderSettingsFromPath(state: *EditorState, path: []const u8) !void {
         if (state.ai_provider_count >= max_ai_providers) break;
         const index = state.ai_provider_count;
         state.ai_providers[index].provider_type = provider_type;
-        writeFixedBuffer(state.ai_providers[index].name[0..], persistedFieldSlice(provider.name));
-        writeFixedBuffer(state.ai_providers[index].endpoint[0..], persistedFieldSlice(provider.endpoint));
-        writeFixedBuffer(state.ai_providers[index].model[0..], persistedFieldSlice(provider.model));
-        writeFixedBuffer(state.ai_providers[index].api_key[0..], persistedFieldSlice(provider.api_key));
+        const sanitized_name = try sanitizedTextAlloc(allocator, persistedFieldSlice(provider.name));
+        defer allocator.free(sanitized_name);
+        const sanitized_endpoint = try sanitizedTextAlloc(allocator, persistedFieldSlice(provider.endpoint));
+        defer allocator.free(sanitized_endpoint);
+        const sanitized_model = try sanitizedTextAlloc(allocator, persistedFieldSlice(provider.model));
+        defer allocator.free(sanitized_model);
+        const sanitized_api_key = try sanitizedTextAlloc(allocator, persistedFieldSlice(provider.api_key));
+        defer allocator.free(sanitized_api_key);
+        writeFixedBuffer(state.ai_providers[index].name[0..], sanitized_name);
+        writeFixedBuffer(state.ai_providers[index].endpoint[0..], sanitized_endpoint);
+        writeFixedBuffer(state.ai_providers[index].model[0..], sanitized_model);
+        writeFixedBuffer(state.ai_providers[index].api_key[0..], sanitized_api_key);
         if (source_index == doc.active_provider) {
             resolved_active_provider = index;
             resolved_active_found = true;
@@ -250,6 +299,11 @@ fn loadAiProviderSettingsFromPath(state: *EditorState, path: []const u8) !void {
     if (state.ai_provider_count == 0) {
         state.ai_provider_count = 1;
         state.ai_providers[0].provider_type = parsed_type;
+    } else if (meaningful_count == 0) {
+        @memset(&state.ai_providers, .{});
+        state.ai_provider_count = 1;
+        state.ai_providers[0].provider_type = parsed_type;
+        resolved_active_found = false;
     }
     if (resolved_active_found) {
         state.ai_active_provider = resolved_active_provider;
