@@ -29,7 +29,7 @@ const ProviderDefaults = struct {
 };
 
 const provider_defaults = [_]ProviderDefaults{
-    .{ .endpoint = "https://api.openai.com/v1/chat/completions", .model = "gpt-4o" },
+    .{ .endpoint = "https://api.openai.com/v1/responses", .model = "gpt-4o" },
     .{ .endpoint = "https://api.anthropic.com/v1/messages", .model = "claude-sonnet-4-20250514" },
     .{ .endpoint = "http://localhost:11434/api/chat", .model = "llama3.2" },
     .{ .endpoint = "", .model = "" },
@@ -40,6 +40,11 @@ fn fixedBufferSlice(buffer: []const u8) []const u8 {
     return buffer[0..len];
 }
 
+fn persistedFieldSlice(value: []const u8) []const u8 {
+    const len = std.mem.indexOfScalar(u8, value, 0) orelse value.len;
+    return value[0..len];
+}
+
 fn writeFixedBuffer(buffer: []u8, value: []const u8) void {
     @memset(buffer, 0);
     if (buffer.len == 0) return;
@@ -48,10 +53,10 @@ fn writeFixedBuffer(buffer: []u8, value: []const u8) void {
 }
 
 fn providerIsEmpty(provider: PersistedProvider) bool {
-    return provider.name.len == 0 and
-        provider.endpoint.len == 0 and
-        provider.model.len == 0 and
-        provider.api_key.len == 0;
+    return trimSpace(persistedFieldSlice(provider.name)).len == 0 and
+        trimSpace(persistedFieldSlice(provider.endpoint)).len == 0 and
+        trimSpace(persistedFieldSlice(provider.model)).len == 0 and
+        trimSpace(persistedFieldSlice(provider.api_key)).len == 0;
 }
 
 fn trimSpace(slice: []const u8) []const u8 {
@@ -66,6 +71,8 @@ fn looksLikeGeneratedProviderName(name: []const u8) bool {
     if (std.ascii.eqlIgnoreCase(name, "ollama")) return true;
     if (std.ascii.eqlIgnoreCase(name, "custom")) return true;
     if (name.len >= 9 and std.ascii.eqlIgnoreCase(name[0..9], "provider ")) return true;
+    if (std.mem.eql(u8, name, "新代理")) return true;
+    if (std.mem.startsWith(u8, name, "代理 ")) return true;
     return false;
 }
 
@@ -90,10 +97,10 @@ fn modelLooksLikeAnyDefault(model: []const u8) bool {
 fn providerLooksLikePlaceholder(provider: PersistedProvider, provider_type: AiProviderType) bool {
     if (providerIsEmpty(provider)) return true;
 
-    const name = trimSpace(provider.name);
-    const endpoint = trimSpace(provider.endpoint);
-    const model = trimSpace(provider.model);
-    const api_key = trimSpace(provider.api_key);
+    const name = trimSpace(persistedFieldSlice(provider.name));
+    const endpoint = trimSpace(persistedFieldSlice(provider.endpoint));
+    const model = trimSpace(persistedFieldSlice(provider.model));
+    const api_key = trimSpace(persistedFieldSlice(provider.api_key));
     const defaults = provider_defaults[@intFromEnum(provider_type)];
 
     const endpoint_is_default_or_empty = endpointLooksLikeAnyDefault(endpoint) or
@@ -105,6 +112,16 @@ fn providerLooksLikePlaceholder(provider: PersistedProvider, provider_type: AiPr
         endpoint_is_default_or_empty and
         model_is_default_or_empty and
         api_key.len == 0;
+}
+
+fn providerHasCompleteConfig(provider: *const state_mod.AiProviderConfig, provider_type: AiProviderType) bool {
+    const endpoint = trimSpace(fixedBufferSlice(provider.endpoint[0..]));
+    const model = trimSpace(fixedBufferSlice(provider.model[0..]));
+    const api_key = trimSpace(fixedBufferSlice(provider.api_key[0..]));
+
+    if (endpoint.len == 0 or model.len == 0) return false;
+    if (provider_type != .ollama and api_key.len == 0) return false;
+    return true;
 }
 
 fn prefsPathAlloc(allocator: std.mem.Allocator) ![]u8 {
@@ -191,10 +208,10 @@ fn loadAiProviderSettingsFromPath(state: *EditorState, path: []const u8) !void {
         }
         if (state.ai_provider_count >= max_ai_providers) break;
         const index = state.ai_provider_count;
-        writeFixedBuffer(state.ai_providers[index].name[0..], provider.name);
-        writeFixedBuffer(state.ai_providers[index].endpoint[0..], provider.endpoint);
-        writeFixedBuffer(state.ai_providers[index].model[0..], provider.model);
-        writeFixedBuffer(state.ai_providers[index].api_key[0..], provider.api_key);
+        writeFixedBuffer(state.ai_providers[index].name[0..], persistedFieldSlice(provider.name));
+        writeFixedBuffer(state.ai_providers[index].endpoint[0..], persistedFieldSlice(provider.endpoint));
+        writeFixedBuffer(state.ai_providers[index].model[0..], persistedFieldSlice(provider.model));
+        writeFixedBuffer(state.ai_providers[index].api_key[0..], persistedFieldSlice(provider.api_key));
         if (source_index == doc.active_provider) {
             resolved_active_provider = index;
             resolved_active_found = true;
@@ -209,6 +226,15 @@ fn loadAiProviderSettingsFromPath(state: *EditorState, path: []const u8) !void {
         state.ai_active_provider = resolved_active_provider;
     } else {
         state.ai_active_provider = @min(doc.active_provider, state.ai_provider_count - 1);
+    }
+
+    if (!providerHasCompleteConfig(&state.ai_providers[state.ai_active_provider], parsed_type)) {
+        for (0..state.ai_provider_count) |index| {
+            if (providerHasCompleteConfig(&state.ai_providers[index], parsed_type)) {
+                state.ai_active_provider = index;
+                break;
+            }
+        }
     }
 }
 

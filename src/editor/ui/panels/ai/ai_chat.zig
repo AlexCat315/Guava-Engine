@@ -17,6 +17,7 @@ const max_input_len = 1024;
 pub const Role = enum {
     user,
     assistant,
+    reasoning,
     system,
 };
 
@@ -46,7 +47,7 @@ const ProviderDefaults = struct {
 };
 
 const provider_defaults: [4]ProviderDefaults = .{
-    .{ .endpoint = "https://api.openai.com/v1/chat/completions", .model = "gpt-4o" },
+    .{ .endpoint = "https://api.openai.com/v1/responses", .model = "gpt-4o" },
     .{ .endpoint = "https://api.anthropic.com/v1/messages", .model = "claude-sonnet-4-20250514" },
     .{ .endpoint = "http://localhost:11434/api/chat", .model = "llama3.2" },
     .{ .endpoint = "", .model = "" },
@@ -67,10 +68,12 @@ const AsyncMessageRole = enum {
 const AsyncResult = struct {
     role: AsyncMessageRole = .assistant,
     text: []u8,
+    reasoning: ?[]u8 = null,
     snapshot_dirty: bool = false,
 
     fn deinit(self: *AsyncResult, allocator: std.mem.Allocator) void {
         allocator.free(self.text);
+        if (self.reasoning) |value| allocator.free(value);
         self.* = undefined;
     }
 };
@@ -82,6 +85,7 @@ const AsyncTaskKind = enum {
 
 const AsyncTaskContext = struct {
     kind: AsyncTaskKind,
+    language: i18n.Language = .en_us,
     tool_name: ?[]u8 = null,
     raw_arguments: ?[]u8 = null,
     prompt: ?[]u8 = null,
@@ -114,6 +118,22 @@ const AsyncState = struct {
 
 var g_async_state: AsyncState = .{};
 
+const ProviderRequestFlavor = enum {
+    openai_chat_completions,
+    openai_responses,
+    anthropic_messages,
+    ollama_chat,
+};
+
+fn roleLogText(role: Role) []const u8 {
+    return switch (role) {
+        .user => "user",
+        .assistant => "assistant",
+        .reasoning => "reasoning",
+        .system => "system",
+    };
+}
+
 pub fn appendMessage(role: Role, text: []const u8) void {
     if (g_message_count >= max_messages) {
         for (0..max_messages - 1) |i| {
@@ -130,6 +150,13 @@ pub fn appendMessage(role: Role, text: []const u8) void {
     msg.timestamp = std.time.timestamp();
     g_message_count += 1;
     g_scroll_to_bottom = true;
+
+    const preview_len = @min(text.len, @as(usize, 320));
+    ai_chat_log.info("Message[{s}]: {s}{s}", .{
+        roleLogText(role),
+        text[0..preview_len],
+        if (text.len > preview_len) "..." else "",
+    });
 }
 
 pub fn clearHistory() void {
@@ -257,41 +284,147 @@ fn endpointPathSlice(endpoint: []const u8) []const u8 {
     return "";
 }
 
-fn normalizeProviderEndpointAlloc(provider_type: AiProviderType, endpoint_raw: []const u8) ![]u8 {
+fn endpointHostSlice(endpoint: []const u8) []const u8 {
+    if (std.mem.indexOf(u8, endpoint, "://")) |scheme_index| {
+        const host_start = scheme_index + 3;
+        const path_start = std.mem.indexOfScalarPos(u8, endpoint, host_start, '/') orelse endpoint.len;
+        return endpoint[host_start..path_start];
+    }
+    const path_start = std.mem.indexOfScalar(u8, endpoint, '/') orelse endpoint.len;
+    return endpoint[0..path_start];
+}
+
+fn asciiContainsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (needle.len > haystack.len) return false;
+    var start: usize = 0;
+    while (start + needle.len <= haystack.len) : (start += 1) {
+        var matches = true;
+        for (needle, 0..) |needle_char, offset| {
+            if (std.ascii.toLower(haystack[start + offset]) != std.ascii.toLower(needle_char)) {
+                matches = false;
+                break;
+            }
+        }
+        if (matches) return true;
+    }
+    return false;
+}
+
+fn asciiStartsWithIgnoreCase(haystack: []const u8, prefix: []const u8) bool {
+    if (prefix.len > haystack.len) return false;
+    for (prefix, 0..) |needle_char, index| {
+        if (std.ascii.toLower(haystack[index]) != std.ascii.toLower(needle_char)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn modelSupportsAnthropicThinking(model: []const u8) bool {
+    return asciiContainsIgnoreCase(model, "claude-3-7") or
+        asciiContainsIgnoreCase(model, "claude-sonnet-4") or
+        asciiContainsIgnoreCase(model, "claude-opus-4") or
+        asciiContainsIgnoreCase(model, "claude-4");
+}
+
+fn shouldRequestOpenAiReasoningSummary(provider_type: AiProviderType, endpoint: []const u8) bool {
+    if (provider_type == .openai) return true;
+    return asciiContainsIgnoreCase(endpointHostSlice(endpoint), "openai.com");
+}
+
+fn requestFlavorForProvider(provider_type: AiProviderType, endpoint_raw: []const u8, model: []const u8) ProviderRequestFlavor {
+    const endpoint = std.mem.trim(u8, endpoint_raw, " \t\r\n");
+    const path = endpointPathSlice(endpoint);
+    const host = endpointHostSlice(endpoint);
+
+    return switch (provider_type) {
+        .openai => .openai_responses,
+        .anthropic => .anthropic_messages,
+        .ollama => .ollama_chat,
+        .custom => if (asciiContainsIgnoreCase(path, "/api/chat"))
+            .ollama_chat
+        else if (asciiContainsIgnoreCase(path, "/messages") or
+            asciiContainsIgnoreCase(host, "anthropic.com") or
+            asciiStartsWithIgnoreCase(model, "claude"))
+            .anthropic_messages
+        else if (asciiContainsIgnoreCase(path, "/responses") or
+            asciiContainsIgnoreCase(host, "openai.com"))
+            .openai_responses
+        else
+            .openai_chat_completions,
+    };
+}
+
+fn replaceEndpointSuffixAlloc(endpoint: []const u8, old_suffix: []const u8, new_suffix: []const u8) ![]u8 {
+    if (!std.mem.endsWith(u8, endpoint, old_suffix)) {
+        return std.heap.page_allocator.dupe(u8, endpoint);
+    }
+    const base = endpoint[0 .. endpoint.len - old_suffix.len];
+    return std.fmt.allocPrint(std.heap.page_allocator, "{s}{s}", .{ base, new_suffix });
+}
+
+fn normalizeProviderEndpointAlloc(flavor: ProviderRequestFlavor, endpoint_raw: []const u8) ![]u8 {
     const endpoint = std.mem.trim(u8, endpoint_raw, " \t\r\n");
     if (endpoint.len == 0) {
         return std.heap.page_allocator.dupe(u8, endpoint);
     }
 
     const path = endpointPathSlice(endpoint);
-    const already_targeted = switch (provider_type) {
-        .openai, .custom => std.mem.indexOf(u8, path, "/chat/completions") != null,
-        .anthropic => std.mem.indexOf(u8, path, "/messages") != null,
-        .ollama => std.mem.indexOf(u8, path, "/api/chat") != null,
+    const already_targeted = switch (flavor) {
+        .openai_chat_completions => std.mem.indexOf(u8, path, "/chat/completions") != null,
+        .openai_responses => std.mem.indexOf(u8, path, "/responses") != null,
+        .anthropic_messages => std.mem.indexOf(u8, path, "/messages") != null,
+        .ollama_chat => std.mem.indexOf(u8, path, "/api/chat") != null,
     };
     if (already_targeted) {
         return std.heap.page_allocator.dupe(u8, endpoint);
     }
 
-    const should_append = switch (provider_type) {
-        .openai, .custom => path.len == 0 or std.mem.eql(u8, path, "/") or std.mem.eql(u8, path, "/v1") or std.mem.eql(u8, path, "/v1/"),
-        .anthropic => path.len == 0 or std.mem.eql(u8, path, "/"),
-        .ollama => path.len == 0 or std.mem.eql(u8, path, "/"),
+    const should_append = switch (flavor) {
+        .openai_chat_completions, .openai_responses => path.len == 0 or
+            std.mem.eql(u8, path, "/") or
+            std.mem.eql(u8, path, "/v1") or
+            std.mem.eql(u8, path, "/v1/"),
+        .anthropic_messages => path.len == 0 or
+            std.mem.eql(u8, path, "/") or
+            std.mem.eql(u8, path, "/v1") or
+            std.mem.eql(u8, path, "/v1/"),
+        .ollama_chat => path.len == 0 or std.mem.eql(u8, path, "/"),
     };
-    if (!should_append) {
-        return std.heap.page_allocator.dupe(u8, endpoint);
-    }
 
     const base = std.mem.trimRight(u8, endpoint, "/");
-    const suffix = switch (provider_type) {
-        .openai, .custom => if (std.mem.endsWith(u8, base, "/v1")) "/chat/completions" else "/v1/chat/completions",
-        .anthropic => "/v1/messages",
-        .ollama => "/api/chat",
+    if (should_append) {
+        const suffix = switch (flavor) {
+            .openai_chat_completions => if (std.mem.endsWith(u8, base, "/v1")) "/chat/completions" else "/v1/chat/completions",
+            .openai_responses => if (std.mem.endsWith(u8, base, "/v1")) "/responses" else "/v1/responses",
+            .anthropic_messages => "/v1/messages",
+            .ollama_chat => "/api/chat",
+        };
+        return std.fmt.allocPrint(std.heap.page_allocator, "{s}{s}", .{ base, suffix });
+    }
+
+    return switch (flavor) {
+        .openai_responses => if (std.mem.endsWith(u8, base, "/chat/completions"))
+            replaceEndpointSuffixAlloc(base, "/chat/completions", "/responses")
+        else
+            std.heap.page_allocator.dupe(u8, endpoint),
+        .openai_chat_completions => if (std.mem.endsWith(u8, base, "/responses"))
+            replaceEndpointSuffixAlloc(base, "/responses", "/chat/completions")
+        else
+            std.heap.page_allocator.dupe(u8, endpoint),
+        .anthropic_messages => if (std.mem.endsWith(u8, base, "/chat/completions"))
+            replaceEndpointSuffixAlloc(base, "/chat/completions", "/messages")
+        else if (std.mem.endsWith(u8, base, "/responses"))
+            replaceEndpointSuffixAlloc(base, "/responses", "/messages")
+        else
+            std.heap.page_allocator.dupe(u8, endpoint),
+        .ollama_chat => std.heap.page_allocator.dupe(u8, endpoint),
     };
-    return std.fmt.allocPrint(std.heap.page_allocator, "{s}{s}", .{ base, suffix });
 }
 
 fn testHttpConnectionAlloc(
+    language: i18n.Language,
     provider_type: AiProviderType,
     endpoint: []const u8,
     api_key: []const u8,
@@ -306,16 +439,17 @@ fn testHttpConnectionAlloc(
 
     var task: AsyncTaskContext = .{
         .kind = .prompt_intent,
+        .language = language,
         .provider_type = provider_type,
         .provider_endpoint = endpoint_copy,
         .provider_model = model_copy,
         .provider_api_key = api_key_copy,
     };
     const probe = "Connection probe. Return {\"type\":\"message\",\"message\":\"pong\"}.";
-    const completion = try requestProviderCompletionAlloc(&task, probe);
-    defer std.heap.page_allocator.free(completion);
+    var completion = try requestProviderCompletionAlloc(&task, probe);
+    defer completion.deinit(std.heap.page_allocator);
 
-    const trimmed = std.mem.trim(u8, completion, " \t\r\n");
+    const trimmed = std.mem.trim(u8, completion.content, " \t\r\n");
     if (std.mem.startsWith(u8, trimmed, "Provider request failed")) {
         return std.heap.page_allocator.dupe(u8, trimmed);
     }
@@ -438,6 +572,17 @@ const HttpJsonResponse = struct {
     }
 };
 
+const ProviderCompletion = struct {
+    content: []u8,
+    reasoning: ?[]u8 = null,
+
+    fn deinit(self: *ProviderCompletion, allocator: std.mem.Allocator) void {
+        allocator.free(self.content);
+        if (self.reasoning) |value| allocator.free(value);
+        self.* = undefined;
+    }
+};
+
 const LlmDecision = union(enum) {
     tool_call: struct {
         tool_name: []u8,
@@ -466,6 +611,9 @@ const llm_tool_system_prompt =
     \\{"type":"mcp_tool_call","tool":"<tool_name>","arguments":{...}}
     \\{"type":"message","message":"<plain text reply>"}
     \\Prefer tool calls for actionable requests.
+    \\Use the schema://tools context below to satisfy required arguments exactly.
+    \\For create_entity, always include at least {"name":"<short name>"}.
+    \\If the user wants a new entity but does not specify a name, invent a concise descriptive name.
     \\Available tools:
     \\create_entity, delete_entity, rename_entity, set_parent, set_local_transform, set_world_transform, set_visible,
     \\query_entities, compile_script, compile_editor_utility, screenshot_png,
@@ -495,11 +643,13 @@ fn buildImplicitContextAlloc(store: ?*engine.mcp.resources.SnapshotStore) ![]u8 
     defer std.heap.page_allocator.free(selection);
     const context = try readResourceTextAlloc(store, "editor://context", 6 * 1024);
     defer std.heap.page_allocator.free(context);
+    const tool_schema = try readResourceTextAlloc(store, "schema://tools", 8 * 1024);
+    defer std.heap.page_allocator.free(tool_schema);
 
     return std.fmt.allocPrint(
         std.heap.page_allocator,
-        "selection://current\n{s}\n\neditor://context\n{s}",
-        .{ selection, context },
+        "selection://current\n{s}\n\neditor://context\n{s}\n\nschema://tools\n{s}",
+        .{ selection, context, tool_schema },
     );
 }
 
@@ -532,26 +682,9 @@ fn httpPostJsonAlloc(
     };
 }
 
-fn parseOpenAiContentAlloc(body: []const u8) ![]u8 {
-    var parsed = try std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, body, .{
-        .allocate = .alloc_always,
-        .ignore_unknown_fields = true,
-    });
-    defer parsed.deinit();
-
-    if (parsed.value != .object) return error.InvalidProviderResponse;
-    const choices_value = parsed.value.object.get("choices") orelse return error.InvalidProviderResponse;
-    if (choices_value != .array or choices_value.array.items.len == 0) return error.InvalidProviderResponse;
-
-    const choice = choices_value.array.items[0];
-    if (choice != .object) return error.InvalidProviderResponse;
-
-    const message_value = choice.object.get("message") orelse return error.InvalidProviderResponse;
-    if (message_value != .object) return error.InvalidProviderResponse;
-
-    const content_value = message_value.object.get("content") orelse return error.InvalidProviderResponse;
-    switch (content_value) {
-        .string => |content| return std.heap.page_allocator.dupe(u8, content),
+fn parseMessageTextValueAlloc(value: std.json.Value) !?[]u8 {
+    switch (value) {
+        .string => |content| return try std.heap.page_allocator.dupe(u8, content),
         .array => |parts| {
             var out: std.io.Writer.Allocating = .init(std.heap.page_allocator);
             defer out.deinit();
@@ -568,14 +701,144 @@ fn parseOpenAiContentAlloc(body: []const u8) ![]u8 {
                     else => {},
                 }
             }
-            if (out.written().len == 0) return error.InvalidProviderResponse;
-            return std.heap.page_allocator.dupe(u8, out.written());
+            if (out.written().len == 0) return null;
+            return try std.heap.page_allocator.dupe(u8, out.written());
         },
+        .null => return null,
         else => return error.InvalidProviderResponse,
     }
 }
 
-fn parseAnthropicContentAlloc(body: []const u8) ![]u8 {
+fn appendJoinedText(buffer: *std.ArrayList(u8), allocator: std.mem.Allocator, text: []const u8) !void {
+    const trimmed = std.mem.trim(u8, text, " \t\r\n");
+    if (trimmed.len == 0) return;
+    if (buffer.items.len > 0) {
+        try buffer.appendSlice(allocator, "\n\n");
+    }
+    try buffer.appendSlice(allocator, trimmed);
+}
+
+fn parseOpenAiCompletionAlloc(body: []const u8) !ProviderCompletion {
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, body, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    if (parsed.value != .object) return error.InvalidProviderResponse;
+    const choices_value = parsed.value.object.get("choices") orelse return error.InvalidProviderResponse;
+    if (choices_value != .array or choices_value.array.items.len == 0) return error.InvalidProviderResponse;
+
+    const choice = choices_value.array.items[0];
+    if (choice != .object) return error.InvalidProviderResponse;
+
+    const message_value = choice.object.get("message") orelse return error.InvalidProviderResponse;
+    if (message_value != .object) return error.InvalidProviderResponse;
+
+    const content = if (message_value.object.get("content")) |content_value|
+        if (try parseMessageTextValueAlloc(content_value)) |resolved|
+            resolved
+        else
+            try std.heap.page_allocator.dupe(u8, "")
+    else
+        try std.heap.page_allocator.dupe(u8, "");
+    errdefer std.heap.page_allocator.free(content);
+
+    const reasoning = if (message_value.object.get("reasoning_content")) |value|
+        try parseMessageTextValueAlloc(value)
+    else if (message_value.object.get("reasoning")) |value|
+        try parseMessageTextValueAlloc(value)
+    else
+        null;
+
+    return .{
+        .content = content,
+        .reasoning = reasoning,
+    };
+}
+
+fn parseOpenAiResponsesCompletionAlloc(body: []const u8) !ProviderCompletion {
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, body, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    if (parsed.value != .object) return error.InvalidProviderResponse;
+
+    var content_parts = std.ArrayList(u8).empty;
+    defer content_parts.deinit(std.heap.page_allocator);
+    var reasoning_parts = std.ArrayList(u8).empty;
+    defer reasoning_parts.deinit(std.heap.page_allocator);
+
+    if (parsed.value.object.get("output")) |output_value| {
+        if (output_value != .array) return error.InvalidProviderResponse;
+        for (output_value.array.items) |item| {
+            if (item != .object) continue;
+            const type_value = item.object.get("type") orelse continue;
+            if (type_value != .string) continue;
+
+            if (std.mem.eql(u8, type_value.string, "message")) {
+                if (item.object.get("content")) |content_value| {
+                    if (try parseMessageTextValueAlloc(content_value)) |text| {
+                        defer std.heap.page_allocator.free(text);
+                        try appendJoinedText(&content_parts, std.heap.page_allocator, text);
+                    }
+                }
+            } else if (std.mem.eql(u8, type_value.string, "reasoning")) {
+                if (item.object.get("content")) |reasoning_value| {
+                    if (try parseMessageTextValueAlloc(reasoning_value)) |text| {
+                        defer std.heap.page_allocator.free(text);
+                        try appendJoinedText(&reasoning_parts, std.heap.page_allocator, text);
+                    }
+                }
+                if (item.object.get("summary")) |summary_value| {
+                    if (try parseMessageTextValueAlloc(summary_value)) |text| {
+                        defer std.heap.page_allocator.free(text);
+                        try appendJoinedText(&reasoning_parts, std.heap.page_allocator, text);
+                    }
+                }
+            }
+        }
+    }
+
+    if (reasoning_parts.items.len == 0) {
+        if (parsed.value.object.get("reasoning")) |reasoning_value| {
+            if (reasoning_value == .object) {
+                if (reasoning_value.object.get("content")) |content_value| {
+                    if (try parseMessageTextValueAlloc(content_value)) |text| {
+                        defer std.heap.page_allocator.free(text);
+                        try appendJoinedText(&reasoning_parts, std.heap.page_allocator, text);
+                    }
+                }
+                if (reasoning_value.object.get("summary")) |summary_value| {
+                    if (try parseMessageTextValueAlloc(summary_value)) |text| {
+                        defer std.heap.page_allocator.free(text);
+                        try appendJoinedText(&reasoning_parts, std.heap.page_allocator, text);
+                    }
+                }
+            }
+        }
+    }
+
+    if (content_parts.items.len == 0) {
+        if (parsed.value.object.get("output_text")) |output_text| {
+            if (output_text == .string) {
+                try appendJoinedText(&content_parts, std.heap.page_allocator, output_text.string);
+            }
+        }
+    }
+
+    return .{
+        .content = try std.heap.page_allocator.dupe(u8, content_parts.items),
+        .reasoning = if (reasoning_parts.items.len > 0)
+            try std.heap.page_allocator.dupe(u8, reasoning_parts.items)
+        else
+            null,
+    };
+}
+
+fn parseAnthropicCompletionAlloc(body: []const u8) !ProviderCompletion {
     var parsed = try std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, body, .{
         .allocate = .alloc_always,
         .ignore_unknown_fields = true,
@@ -586,22 +849,34 @@ fn parseAnthropicContentAlloc(body: []const u8) ![]u8 {
     const content_value = parsed.value.object.get("content") orelse return error.InvalidProviderResponse;
     if (content_value != .array) return error.InvalidProviderResponse;
 
-    var out: std.io.Writer.Allocating = .init(std.heap.page_allocator);
-    defer out.deinit();
+    var final_text = std.ArrayList(u8).empty;
+    defer final_text.deinit(std.heap.page_allocator);
+    var reasoning_text = std.ArrayList(u8).empty;
+    defer reasoning_text.deinit(std.heap.page_allocator);
     for (content_value.array.items) |item| {
         if (item != .object) continue;
         const type_value = item.object.get("type") orelse continue;
         if (type_value != .string) continue;
-        if (!std.mem.eql(u8, type_value.string, "text")) continue;
-        const text_value = item.object.get("text") orelse continue;
-        if (text_value != .string) continue;
-        try out.writer.writeAll(text_value.string);
+        if (std.mem.eql(u8, type_value.string, "text")) {
+            const text_value = item.object.get("text") orelse continue;
+            if (text_value != .string) continue;
+            try appendJoinedText(&final_text, std.heap.page_allocator, text_value.string);
+        } else if (std.mem.eql(u8, type_value.string, "thinking")) {
+            const text_value = item.object.get("thinking") orelse item.object.get("text") orelse continue;
+            if (text_value != .string) continue;
+            try appendJoinedText(&reasoning_text, std.heap.page_allocator, text_value.string);
+        }
     }
-    if (out.written().len == 0) return error.InvalidProviderResponse;
-    return std.heap.page_allocator.dupe(u8, out.written());
+    return .{
+        .content = try std.heap.page_allocator.dupe(u8, final_text.items),
+        .reasoning = if (reasoning_text.items.len > 0)
+            try std.heap.page_allocator.dupe(u8, reasoning_text.items)
+        else
+            null,
+    };
 }
 
-fn parseOllamaContentAlloc(body: []const u8) ![]u8 {
+fn parseOllamaCompletionAlloc(body: []const u8) !ProviderCompletion {
     var parsed = try std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, body, .{
         .allocate = .alloc_always,
         .ignore_unknown_fields = true,
@@ -613,22 +888,34 @@ fn parseOllamaContentAlloc(body: []const u8) ![]u8 {
     if (message_value != .object) return error.InvalidProviderResponse;
     const content_value = message_value.object.get("content") orelse return error.InvalidProviderResponse;
     if (content_value != .string) return error.InvalidProviderResponse;
-    return std.heap.page_allocator.dupe(u8, content_value.string);
-}
-
-fn parseProviderCompletionTextAlloc(provider_type: AiProviderType, body: []const u8) ![]u8 {
-    return switch (provider_type) {
-        .openai, .custom => parseOpenAiContentAlloc(body),
-        .anthropic => parseAnthropicContentAlloc(body),
-        .ollama => parseOllamaContentAlloc(body),
+    return .{
+        .content = try std.heap.page_allocator.dupe(u8, content_value.string),
     };
 }
 
-fn requestProviderCompletionAlloc(task: *const AsyncTaskContext, prompt: []const u8) ![]u8 {
+fn parseProviderCompletionAlloc(provider_type: AiProviderType, body: []const u8) !ProviderCompletion {
+    _ = provider_type;
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, body, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    if (parsed.value != .object) return error.InvalidProviderResponse;
+    if (parsed.value.object.get("output") != null) return parseOpenAiResponsesCompletionAlloc(body);
+    if (parsed.value.object.get("choices") != null) return parseOpenAiCompletionAlloc(body);
+    if (parsed.value.object.get("message") != null) return parseOllamaCompletionAlloc(body);
+    if (parsed.value.object.get("content") != null) return parseAnthropicCompletionAlloc(body);
+    return error.InvalidProviderResponse;
+}
+
+fn requestProviderCompletionAlloc(task: *const AsyncTaskContext, prompt: []const u8) !ProviderCompletion {
     const endpoint_raw = task.provider_endpoint orelse return error.MissingProviderEndpoint;
     const model = task.provider_model orelse return error.MissingProviderModel;
     const api_key = task.provider_api_key orelse "";
-    const endpoint = try normalizeProviderEndpointAlloc(task.provider_type, endpoint_raw);
+    const request_flavor = requestFlavorForProvider(task.provider_type, endpoint_raw, model);
+    const endpoint = try normalizeProviderEndpointAlloc(request_flavor, endpoint_raw);
     defer std.heap.page_allocator.free(endpoint);
 
     const implicit_context = try buildImplicitContextAlloc(task.snapshot_store);
@@ -640,13 +927,21 @@ fn requestProviderCompletionAlloc(task: *const AsyncTaskContext, prompt: []const
     );
     defer std.heap.page_allocator.free(user_prompt);
 
+    ai_chat_log.info("Submitting provider request: type={s} flavor={s} model={s} endpoint={s} prompt_len={d}", .{
+        @tagName(task.provider_type),
+        @tagName(request_flavor),
+        model,
+        endpoint,
+        prompt.len,
+    });
+
     const OpenAiMessage = struct {
         role: []const u8,
         content: []const u8,
     };
 
-    var response: HttpJsonResponse = switch (task.provider_type) {
-        .openai, .custom => blk: {
+    var response: HttpJsonResponse = switch (request_flavor) {
+        .openai_chat_completions => blk: {
             const RequestBody = struct {
                 model: []const u8,
                 temperature: f32 = 0.0,
@@ -672,17 +967,53 @@ fn requestProviderCompletionAlloc(task: *const AsyncTaskContext, prompt: []const
             }
             break :blk try httpPostJsonAlloc(endpoint, payload, &.{});
         },
-        .anthropic => blk: {
+        .openai_responses => blk: {
+            const ResponseReasoning = struct {
+                summary: []const u8 = "detailed",
+            };
+            const RequestBody = struct {
+                model: []const u8,
+                instructions: []const u8,
+                input: []const u8,
+                store: bool = false,
+                reasoning: ?ResponseReasoning = null,
+            };
+            const payload = try stringifyJsonValueAlloc(RequestBody{
+                .model = model,
+                .instructions = llm_tool_system_prompt,
+                .input = user_prompt,
+                .reasoning = if (shouldRequestOpenAiReasoningSummary(task.provider_type, endpoint))
+                    .{}
+                else
+                    null,
+            });
+            defer std.heap.page_allocator.free(payload);
+
+            if (api_key.len > 0) {
+                const auth_value = try std.fmt.allocPrint(std.heap.page_allocator, "Bearer {s}", .{api_key});
+                defer std.heap.page_allocator.free(auth_value);
+                const headers = [_]std.http.Header{
+                    .{ .name = "Authorization", .value = auth_value },
+                };
+                break :blk try httpPostJsonAlloc(endpoint, payload, &headers);
+            }
+            break :blk try httpPostJsonAlloc(endpoint, payload, &.{});
+        },
+        .anthropic_messages => blk: {
             const AnthropicMessage = struct {
                 role: []const u8,
                 content: []const u8,
             };
+            const AnthropicThinking = struct {
+                type: []const u8 = "enabled",
+                budget_tokens: u32 = 2048,
+            };
             const RequestBody = struct {
                 model: []const u8,
-                max_tokens: u32 = 800,
-                temperature: f32 = 0.0,
+                max_tokens: u32 = 4096,
                 system: []const u8,
                 messages: []const AnthropicMessage,
+                thinking: ?AnthropicThinking = null,
             };
             const messages = [_]AnthropicMessage{
                 .{ .role = "user", .content = user_prompt },
@@ -691,6 +1022,7 @@ fn requestProviderCompletionAlloc(task: *const AsyncTaskContext, prompt: []const
                 .model = model,
                 .system = llm_tool_system_prompt,
                 .messages = &messages,
+                .thinking = if (modelSupportsAnthropicThinking(model)) .{} else null,
             });
             defer std.heap.page_allocator.free(payload);
 
@@ -700,7 +1032,7 @@ fn requestProviderCompletionAlloc(task: *const AsyncTaskContext, prompt: []const
             };
             break :blk try httpPostJsonAlloc(endpoint, payload, &headers);
         },
-        .ollama => blk: {
+        .ollama_chat => blk: {
             const RequestBody = struct {
                 model: []const u8,
                 stream: bool = false,
@@ -722,14 +1054,46 @@ fn requestProviderCompletionAlloc(task: *const AsyncTaskContext, prompt: []const
 
     if (response.status.class() != .success) {
         const phrase = response.status.phrase() orelse "HTTP Error";
-        return allocMessage(
-            "Provider request failed: HTTP {d} ({s})\n{s}",
-            .{ @intFromEnum(response.status), phrase, clipped(response.body, 512) },
-            "Provider request failed.",
-        );
+        ai_chat_log.warn("Provider HTTP failure: status={d} phrase={s} body={s}", .{
+            @intFromEnum(response.status),
+            phrase,
+            clipped(response.body, 512),
+        });
+        return .{
+            .content = i18n.allocPrintMessage(
+                .ai_chat_provider_request_failed_http_fmt,
+                std.heap.page_allocator,
+                task.language,
+                .{ @intFromEnum(response.status), phrase, clipped(response.body, 512) },
+            ) catch try std.heap.page_allocator.dupe(
+                u8,
+                i18n.text(task.language, .ai_chat_provider_request_failed_fallback),
+            ),
+        };
     }
 
-    return parseProviderCompletionTextAlloc(task.provider_type, response.body);
+    ai_chat_log.info("Provider HTTP success: status={d} body={s}", .{
+        @intFromEnum(response.status),
+        clipped(response.body, 512),
+    });
+
+    return parseProviderCompletionAlloc(task.provider_type, response.body) catch |err| {
+        ai_chat_log.warn("Provider response parse failed: {s}; body={s}", .{
+            @errorName(err),
+            clipped(response.body, 512),
+        });
+        return .{
+            .content = i18n.allocPrintMessage(
+                .ai_chat_provider_response_parse_failed_fmt,
+                std.heap.page_allocator,
+                task.language,
+                .{ @errorName(err), clipped(response.body, 512) },
+            ) catch try std.heap.page_allocator.dupe(
+                u8,
+                i18n.text(task.language, .ai_chat_provider_response_parse_failed_fallback),
+            ),
+        };
+    };
 }
 
 fn stripCodeFence(text: []const u8) []const u8 {
@@ -915,26 +1279,59 @@ fn executePromptIntentAsync(task: *const AsyncTaskContext) !AsyncResult {
     const prompt = task.prompt orelse "";
     touchImplicitContext(task.snapshot_store);
 
-    const completion = requestProviderCompletionAlloc(task, prompt) catch |err| {
+    var completion = requestProviderCompletionAlloc(task, prompt) catch |err| {
         return .{
             .role = .system,
-            .text = try allocMessage("Provider request failed: {s}", .{@errorName(err)}, "Provider request failed."),
+            .text = i18n.allocPrintMessage(
+                .ai_chat_provider_request_failed_error_fmt,
+                std.heap.page_allocator,
+                task.language,
+                .{@errorName(err)},
+            ) catch try std.heap.page_allocator.dupe(
+                u8,
+                i18n.text(task.language, .ai_chat_provider_request_failed_fallback),
+            ),
         };
     };
-    defer std.heap.page_allocator.free(completion);
+    defer completion.deinit(std.heap.page_allocator);
 
-    var decision = try parseLlmDecisionAlloc(completion);
+    const reasoning_copy = if (completion.reasoning) |value|
+        try std.heap.page_allocator.dupe(u8, value)
+    else
+        null;
+    errdefer if (reasoning_copy) |value| std.heap.page_allocator.free(value);
+
+    const trimmed_completion = std.mem.trim(u8, completion.content, " \t\r\n");
+    if (trimmed_completion.len == 0) {
+        ai_chat_log.warn("Provider returned empty final content for prompt intent", .{});
+        return .{
+            .role = .system,
+            .text = try std.heap.page_allocator.dupe(u8, i18n.text(task.language, .ai_chat_provider_no_final_content)),
+            .reasoning = reasoning_copy,
+        };
+    }
+
+    var decision = try parseLlmDecisionAlloc(completion.content);
     defer decision.deinit(std.heap.page_allocator);
 
     return switch (decision) {
-        .tool_call => |tool_call| executeToolCallAsync(
-            task.tool_bridge,
-            task.collaboration_bridge,
-            tool_call.tool_name,
-            if (tool_call.arguments_json) |arguments_json| arguments_json else "",
-            &task.command_meta,
-        ),
+        .tool_call => |tool_call| blk: {
+            ai_chat_log.info("Parsed AI tool call: tool={s} args={s}", .{
+                tool_call.tool_name,
+                if (tool_call.arguments_json) |arguments_json| clipped(arguments_json, 320) else "{}",
+            });
+            var result = try executeToolCallAsync(
+                task.tool_bridge,
+                task.collaboration_bridge,
+                tool_call.tool_name,
+                if (tool_call.arguments_json) |arguments_json| arguments_json else "",
+                &task.command_meta,
+            );
+            result.reasoning = reasoning_copy;
+            break :blk result;
+        },
         .message => |message| .{
+            .reasoning = reasoning_copy,
             .role = if (std.mem.startsWith(u8, std.mem.trim(u8, message, " \t\r\n"), "Provider request failed"))
                 .system
             else
@@ -990,8 +1387,12 @@ fn runAsyncTaskCleanup(context: ?*anyopaque) void {
 }
 
 fn startAsyncTask(layer_context: *engine.core.LayerContext, task: *AsyncTaskContext) bool {
-    const job_system = layer_context.world.job_system orelse return false;
+    const job_system = layer_context.world.job_system orelse {
+        ai_chat_log.warn("failed to start async task: no job system", .{});
+        return false;
+    };
     if (!asyncTryBegin()) {
+        ai_chat_log.warn("failed to start async task: another task is already running", .{});
         return false;
     }
 
@@ -1001,9 +1402,11 @@ fn startAsyncTask(layer_context: *engine.core.LayerContext, task: *AsyncTaskCont
         runAsyncTaskCleanup,
         .normal,
     ) catch {
+        ai_chat_log.warn("failed to enqueue async task", .{});
         asyncFinishWithoutResult();
         return false;
     };
+    ai_chat_log.info("Async task started: kind={s}", .{@tagName(task.kind)});
     handle.deinit();
     return true;
 }
@@ -1012,6 +1415,9 @@ fn pumpAsyncResults(state: *EditorState, layer_context: *engine.core.LayerContex
     var maybe_result = asyncTakeResult();
     if (maybe_result) |*result| {
         defer result.deinit(std.heap.page_allocator);
+        if (result.reasoning) |reasoning| {
+            appendMessage(.reasoning, reasoning);
+        }
         switch (result.role) {
             .assistant => appendMessage(.assistant, result.text),
             .system => appendMessage(.system, result.text),
@@ -1163,6 +1569,7 @@ fn enqueueToolCommand(state: *EditorState, layer_context: *engine.core.LayerCont
     };
     task.* = .{
         .kind = .tool_command,
+        .language = state.language,
         .tool_bridge = state.ai_tool_bridge,
         .collaboration_bridge = state.ai_collaboration_bridge,
         .snapshot_store = state.ai_snapshot_store,
@@ -1192,6 +1599,7 @@ fn enqueueToolCommand(state: *EditorState, layer_context: *engine.core.LayerCont
     if (!startAsyncTask(layer_context, task)) {
         task.deinit(std.heap.page_allocator);
         std.heap.page_allocator.destroy(task);
+        appendMessage(.system, state.text(.ai_chat_failed_create_background_task));
         return false;
     }
     return true;
@@ -1226,6 +1634,7 @@ fn enqueuePromptIntent(state: *EditorState, layer_context: *engine.core.LayerCon
     };
     task.* = .{
         .kind = .prompt_intent,
+        .language = state.language,
         .provider_type = state.ai_provider_type,
         .tool_bridge = state.ai_tool_bridge,
         .collaboration_bridge = state.ai_collaboration_bridge,
@@ -1269,6 +1678,7 @@ fn enqueuePromptIntent(state: *EditorState, layer_context: *engine.core.LayerCon
     if (!startAsyncTask(layer_context, task)) {
         task.deinit(std.heap.page_allocator);
         std.heap.page_allocator.destroy(task);
+        appendMessage(.system, state.text(.ai_chat_failed_create_background_task));
         return false;
     }
     return true;
@@ -1481,6 +1891,14 @@ fn drawMessages(state: *EditorState) void {
                 gui.text(state.text(.ai_chat_role_assistant));
                 gui.popStyleColor(1);
                 gui.pushStyleColor(.text, .{ 0.78, 0.94, 0.82, 1.0 });
+                gui.textWrapped(content_text);
+                gui.popStyleColor(1);
+            },
+            .reasoning => {
+                gui.pushStyleColor(.text, .{ 0.92, 0.74, 0.34, 0.88 });
+                gui.text(state.text(.ai_chat_role_reasoning));
+                gui.popStyleColor(1);
+                gui.pushStyleColor(.text, .{ 0.88, 0.84, 0.72, 1.0 });
                 gui.textWrapped(content_text);
                 gui.popStyleColor(1);
             },
@@ -1906,7 +2324,7 @@ fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerCo
             const endpoint = p.endpoint[0..endpoint_len];
             const model = p.model[0..model_len];
             const api_key = p.api_key[0..apikey_len];
-            const summary = testHttpConnectionAlloc(state.ai_provider_type, endpoint, api_key, model) catch |err| blk: {
+            const summary = testHttpConnectionAlloc(state.language, state.ai_provider_type, endpoint, api_key, model) catch |err| blk: {
                 break :blk allocMessage(
                     "{s}: {s}",
                     .{ state.text(.ai_chat_connection_test_failed_fallback), @errorName(err) },
