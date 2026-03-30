@@ -18,6 +18,7 @@ pub const scene_filter_buffer_size = 128;
 pub const hierarchy_filter_buffer_size = 128;
 pub const place_actor_filter_buffer_size = 128;
 pub const asset_filter_buffer_size = 128;
+pub const settings_filter_buffer_size = 128;
 pub const asset_directory_buffer_size = 256;
 pub const layout_template_name_buffer_size = 128;
 pub const render_output_path_buffer_size = 256;
@@ -170,6 +171,16 @@ pub const FpsDisplayMode = enum {
     viewport,
     status_bar,
     none,
+};
+
+pub const SettingsCategory = enum {
+    general,
+    interface,
+    editor,
+    viewport,
+    shortcuts,
+    ai,
+    advanced,
 };
 
 pub const BrowserViewMode = enum {
@@ -545,6 +556,9 @@ pub const EditorState = struct {
     language: i18n.Language = .zh_cn,
     dock_layout_initialized: bool = false,
     settings_open: bool = false,
+    settings_category: SettingsCategory = .general,
+    settings_filter_buffer: [settings_filter_buffer_size]u8 = [_]u8{0} ** settings_filter_buffer_size,
+    settings_advanced_mode: bool = false,
     render_settings_open: bool = false,
     material_editor_open: bool = false,
     editor_utilities_open: bool = false,

@@ -1592,19 +1592,20 @@ guava_imgui_tree_node_entity(uint64_t id, const char *label, size_t label_len,
   const float window_top = ImGui::GetWindowPos().y + style.WindowPadding.y;
   const int row_index = static_cast<int>((cursor.y - window_top) /
                                          (row_pitch > 0.0f ? row_pitch : 1.0f));
-  const ImVec2 row_min(
+const ImVec2 row_min(
       ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMin().x, cursor.y);
   const ImVec2 row_max(ImGui::GetWindowPos().x +
-                           ImGui::GetWindowContentRegionMax().x,
-                       cursor.y + row_height);
+                            ImGui::GetWindowContentRegionMax().x,
+                        cursor.y + row_height);
   if ((row_index & 1) != 0) {
     ImGui::GetWindowDrawList()->AddRectFilled(row_min, row_max,
-                                              IM_COL32(255, 255, 255, 8), 4.0f);
+                                               IM_COL32(255, 255, 255, 18), 0.0f);
   }
 
   ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow |
                              ImGuiTreeNodeFlags_SpanFullWidth |
-                             ImGuiTreeNodeFlags_FramePadding;
+                             ImGuiTreeNodeFlags_FramePadding |
+                             ImGuiTreeNodeFlags_DrawLinesFull;
   if (selected) {
     flags |= ImGuiTreeNodeFlags_Selected;
   }
@@ -1626,11 +1627,11 @@ guava_imgui_tree_node_entity(uint64_t id, const char *label, size_t label_len,
     result |= GUAVA_IMGUI_TREE_NODE_CLICKED;
   }
   const ImRect rect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
-  const float label_x = rect.Min.x + ImGui::GetTreeNodeToLabelSpacing();
-  float text_x = label_x;
+  const float label_x = rect.Min.x;
+  float text_x = label_x + ImGui::GetTreeNodeToLabelSpacing();
   if (icon_texture != nullptr && icon_size > 0.0f) {
-    const float draw_size = (std::min)(icon_size, rect.GetHeight() - 4.0f);
-    const float icon_slot_width = icon_size + 8.0f;
+    const float draw_size = (std::min)(icon_size, rect.GetHeight() - 6.0f);
+    const float icon_slot_width = icon_size + 12.0f;
     const ImVec2 icon_min(label_x + (icon_slot_width - draw_size) * 0.5f,
                           rect.Min.y + (rect.GetHeight() - draw_size) * 0.5f);
     const ImVec2 icon_max(icon_min.x + draw_size, icon_min.y + draw_size);
@@ -1663,22 +1664,15 @@ guava_imgui_tree_node_entity(uint64_t id, const char *label, size_t label_len,
     ImGui::PopID();
   } else {
     const float text_y =
-        rect.Min.y +
-        std::floor((rect.GetHeight() - ImGui::GetFontSize()) * 0.5f);
+        rect.Min.y + (rect.GetHeight() - ImGui::GetFontSize()) * 0.5f;
     ImGui::GetWindowDrawList()->AddText(ImVec2(text_x, text_y),
                                         ImGui::GetColorU32(ImGuiCol_Text),
                                         owned_label.c_str());
   }
   if (selected) {
-    const float pulse = 0.5f + 0.5f * std::sin(ImGui::GetTime() * 3.8f);
-    const int glow_alpha = 68 + static_cast<int>(pulse * 72.0f);
-    // 使用全行宽度（row_min/row_max），避免高亮被表格列截断
-    ImGui::GetWindowDrawList()->AddRect(
-        row_min, row_max, IM_COL32(34, 205, 100, glow_alpha), 4.0f, 0, 1.6f);
-    ImGui::GetWindowDrawList()->AddRect(
-        ImVec2(row_min.x - 1.0f, row_min.y - 1.0f),
-        ImVec2(row_max.x + 1.0f, row_max.y + 1.0f),
-        IM_COL32(34, 180, 90, glow_alpha / 2), 5.0f, 0, 2.2f);
+    ImGui::GetWindowDrawList()->AddRectFilled(
+        ImVec2(row_min.x, row_min.y), ImVec2(row_min.x + 3.0f, row_max.y),
+        IM_COL32(34, 205, 100, 255), 2.0f);
   }
   return result;
 }
