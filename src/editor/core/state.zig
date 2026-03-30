@@ -64,6 +64,9 @@ pub const TransformSpace = enum {
 pub const TransformPivotMode = enum {
     origin,
     bounds_center,
+    median_point,
+    active_element,
+    cursor,
 };
 
 pub const TranslationSnapTarget = enum {
@@ -428,8 +431,10 @@ pub const EditorState = struct {
     rotation_drag_sensitivity: f32 = 0.01,
     scale_drag_sensitivity: f32 = 0.01,
     transform_pivot_mode: TransformPivotMode = .origin,
+    transform_cursor_world_position: [3]f32 = .{ 0.0, 0.0, 0.0 },
     translation_snap_enabled: bool = false,
     translation_snap_target: TranslationSnapTarget = .grid,
+    surface_snap_align_rotation_to_normal: bool = false,
     translation_snap_step: f32 = 10.0,
     rotation_snap_enabled: bool = false,
     rotation_snap_step_degrees: f32 = 15.0,
@@ -938,7 +943,9 @@ test "viewport drop defaults and payload constants stay stable" {
     try std.testing.expectEqual(@as(f32, 0.01), state.rotation_drag_sensitivity);
     try std.testing.expectEqual(@as(f32, 0.01), state.scale_drag_sensitivity);
     try std.testing.expectEqual(TransformPivotMode.origin, state.transform_pivot_mode);
+    try std.testing.expectEqual([3]f32{ 0.0, 0.0, 0.0 }, state.transform_cursor_world_position);
     try std.testing.expectEqual(TranslationSnapTarget.grid, state.translation_snap_target);
+    try std.testing.expect(!state.surface_snap_align_rotation_to_normal);
     try std.testing.expect(!state.manipulation_drag_active);
     try std.testing.expectEqual([3]f32{ 0.0, 0.0, 0.0 }, state.manipulation_pivot_local_offset);
     try std.testing.expectEqual([2]f32{ 0.0, 0.0 }, state.manipulation_drag_accumulator);

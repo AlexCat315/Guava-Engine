@@ -655,10 +655,17 @@ fn applyGizmoDragTranslate(
         else => return,
     };
 
+    var snap_result = ResolvedPivotSnap{ .position = target };
     if (state.translation_snap_enabled) {
-        target = snapPivotTargetPosition(state, layer_context, ray, target);
+        snap_result = snapPivotTargetPosition(state, layer_context, ray, target);
+        target = snap_result.position;
     }
 
+    if (snap_result.normal) |surface_normal| {
+        if (state.surface_snap_align_rotation_to_normal) {
+            entity_transform.rotation = alignedRotationToSurfaceNormal(state.manipulation_origin.rotation, surface_normal);
+        }
+    }
     setTransformPivotPosition(entity_transform, state.manipulation_pivot_local_offset, target);
 }
 
@@ -792,12 +799,19 @@ pub fn applyQuickTranslate(
         },
     }
 
+    var snap_result = ResolvedPivotSnap{ .position = pivot_target };
     if (state.translation_snap_enabled) {
         const ray = viewportRayUnderCursor(state, layer_context, true) orelse {
             setTransformPivotPosition(entity_transform, state.manipulation_pivot_local_offset, pivot_target);
             return;
         };
-        pivot_target = snapPivotTargetPosition(state, layer_context, ray, pivot_target);
+        snap_result = snapPivotTargetPosition(state, layer_context, ray, pivot_target);
+        pivot_target = snap_result.position;
+    }
+    if (snap_result.normal) |surface_normal| {
+        if (state.surface_snap_align_rotation_to_normal) {
+            entity_transform.rotation = alignedRotationToSurfaceNormal(state.manipulation_origin.rotation, surface_normal);
+        }
     }
     setTransformPivotPosition(entity_transform, state.manipulation_pivot_local_offset, pivot_target);
 }
@@ -888,7 +902,7 @@ pub fn refreshGizmoState(state: *EditorState, layer_context: *engine.core.LayerC
     if (!state.manipulation_drag_active) {
         if (state.manipulation_entity) |entity_id| {
             if (currentManipulationWorld(state, layer_context)) |world| {
-                state.manipulation_pivot_local_offset = computePivotLocalOffsetForEntity(state, world, entity_id);
+                state.manipulation_pivot_local_offset = computePivotLocalOffsetForEntity(state, layer_context, world, entity_id);
             }
         } else {
             state.manipulation_pivot_local_offset = .{ 0.0, 0.0, 0.0 };
@@ -937,7 +951,7 @@ fn refreshTransformToolTarget(state: *EditorState, layer_context: *engine.core.L
     if (next.entity_id) |entity_id| {
         state.manipulation_origin = currentToolTargetTransform(state, layer_context, entity_id) orelse return;
         if (currentManipulationWorld(state, layer_context)) |world| {
-            state.manipulation_pivot_local_offset = computePivotLocalOffsetForEntity(state, world, entity_id);
+            state.manipulation_pivot_local_offset = computePivotLocalOffsetForEntity(state, layer_context, world, entity_id);
         }
         if (next.target == .main_world) {
             state.manipulation_snapshot = try history.captureEntitySnapshot(state, layer_context.world, entity_id);
@@ -1028,7 +1042,7 @@ fn syncEditorGizmoTransformOverride(state: *EditorState, layer_context: *engine.
         return;
     };
 
-    const pivot_local_offset = computePivotLocalOffsetForEntity(state, world, entity_id);
+    const pivot_local_offset = computePivotLocalOffsetForEntity(state, layer_context, world, entity_id);
     if (vec3.length(pivot_local_offset) <= 0.0001) {
         layer_context.renderer.setEditorGizmoTransformOverride(null);
         return;
@@ -1041,34 +1055,112 @@ fn syncEditorGizmoTransformOverride(state: *EditorState, layer_context: *engine.
 
 fn computePivotLocalOffsetForEntity(
     state: *const EditorState,
+    layer_context: *engine.core.LayerContext,
     world: *const engine.scene.World,
     entity_id: engine.scene.EntityId,
 ) [3]f32 {
+    if (state.transform_pivot_mode == .origin) {
+        return .{ 0.0, 0.0, 0.0 };
+    }
+
+    const entity = world.getEntityConst(entity_id) orelse return .{ 0.0, 0.0, 0.0 };
+    const transform = world.worldTransformConst(entity_id) orelse entity.local_transform;
+    const pivot_world = computePivotWorldPositionForEntity(state, layer_context, world, entity_id, entity, transform);
+    return worldPointToLocal(transform, pivot_world);
+}
+
+fn computePivotWorldPositionForEntity(
+    state: *const EditorState,
+    layer_context: *engine.core.LayerContext,
+    world: *const engine.scene.World,
+    entity_id: engine.scene.EntityId,
+    entity: anytype,
+    transform: engine.scene.Transform,
+) [3]f32 {
     return switch (state.transform_pivot_mode) {
-        .origin => .{ 0.0, 0.0, 0.0 },
-        .bounds_center => blk: {
-            const entity = world.getEntityConst(entity_id) orelse break :blk .{ 0.0, 0.0, 0.0 };
-            if (entity.mesh) |mesh_component| {
-                if (mesh_component.handle) |mesh_handle| {
-                    if (world.resources.mesh(mesh_handle)) |mesh| {
-                        break :blk mesh.local_bounds.centroid();
-                    }
-                }
-            }
-            if (entity.skinned_mesh) |skinned_mesh_component| {
-                if (skinned_mesh_component.mesh_handle) |mesh_handle| {
-                    if (world.resources.mesh(mesh_handle)) |mesh| {
-                        break :blk mesh.local_bounds.centroid();
-                    }
-                }
-            }
-            const transform = world.worldTransformConst(entity_id) orelse entity.local_transform;
-            if (world.worldBoundsConst(entity_id)) |bounds| {
-                break :blk worldPointToLocal(transform, bounds.centroid());
-            }
-            break :blk .{ 0.0, 0.0, 0.0 };
-        },
+        .origin => transform.translation,
+        .bounds_center => boundsCenterPivotWorldPosition(world, entity_id, entity, transform),
+        .median_point => selectionMedianPivotWorldPosition(state, layer_context, world, transform),
+        .active_element => activeElementPivotWorldPosition(state, layer_context, world, transform),
+        .cursor => state.transform_cursor_world_position,
     };
+}
+
+fn boundsCenterPivotWorldPosition(
+    world: *const engine.scene.World,
+    entity_id: engine.scene.EntityId,
+    entity: anytype,
+    transform: engine.scene.Transform,
+) [3]f32 {
+    if (entity.mesh) |mesh_component| {
+        if (mesh_component.handle) |mesh_handle| {
+            if (world.resources.mesh(mesh_handle)) |mesh| {
+                return localPointToWorld(transform, mesh.local_bounds.centroid());
+            }
+        }
+    }
+    if (entity.skinned_mesh) |skinned_mesh_component| {
+        if (skinned_mesh_component.mesh_handle) |mesh_handle| {
+            if (world.resources.mesh(mesh_handle)) |mesh| {
+                return localPointToWorld(transform, mesh.local_bounds.centroid());
+            }
+        }
+    }
+    if (world.worldBoundsConst(entity_id)) |bounds| {
+        return bounds.centroid();
+    }
+    return transform.translation;
+}
+
+fn selectionMedianPivotWorldPosition(
+    state: *const EditorState,
+    layer_context: *engine.core.LayerContext,
+    world: *const engine.scene.World,
+    fallback_transform: engine.scene.Transform,
+) [3]f32 {
+    var sum = [3]f32{ 0.0, 0.0, 0.0 };
+    var count: usize = 0;
+
+    switch (state.manipulation_target) {
+        .main_world => {
+            for (layer_context.renderer.selectedEntities()) |selected_entity_id| {
+                if (world.worldTransformConst(selected_entity_id)) |selected_transform| {
+                    sum = vec3.add(sum, selected_transform.translation);
+                    count += 1;
+                }
+            }
+        },
+        .staged_preview => {
+            if (state.ai_preview_selected_entity) |selected_entity_id| {
+                if (world.worldTransformConst(selected_entity_id)) |selected_transform| {
+                    sum = vec3.add(sum, selected_transform.translation);
+                    count += 1;
+                }
+            }
+        },
+    }
+
+    if (count == 0) {
+        return fallback_transform.translation;
+    }
+    return vec3.scale(sum, 1.0 / @as(f32, @floatFromInt(count)));
+}
+
+fn activeElementPivotWorldPosition(
+    state: *const EditorState,
+    layer_context: *engine.core.LayerContext,
+    world: *const engine.scene.World,
+    fallback_transform: engine.scene.Transform,
+) [3]f32 {
+    const active_entity_id = switch (state.manipulation_target) {
+        .main_world => layer_context.renderer.selectedEntity(),
+        .staged_preview => state.ai_preview_selected_entity,
+    } orelse return fallback_transform.translation;
+
+    return if (world.worldTransformConst(active_entity_id)) |active_transform|
+        active_transform.translation
+    else
+        fallback_transform.translation;
 }
 
 fn gizmoAxisDirection(space: TransformSpace, axis: state_mod.AxisConstraint, rotation: [4]f32) [3]f32 {
@@ -1139,21 +1231,31 @@ fn snapPositionFromOrigin(origin: [3]f32, target: [3]f32, step: f32) [3]f32 {
     };
 }
 
+const ResolvedPivotSnap = struct {
+    position: [3]f32,
+    normal: ?[3]f32 = null,
+};
+
 fn snapPivotTargetPosition(
     state: *EditorState,
     layer_context: *engine.core.LayerContext,
     ray: engine.scene.Ray,
     raw_target: [3]f32,
-) [3]f32 {
+) ResolvedPivotSnap {
     return switch (state.translation_snap_target) {
-        .grid => snapPositionFromOrigin(
-            currentManipulationPivotWorldPosition(state),
-            raw_target,
-            state.translation_snap_step,
-        ),
+        .grid => .{
+            .position = snapPositionFromOrigin(
+                currentManipulationPivotWorldPosition(state),
+                raw_target,
+                state.translation_snap_step,
+            ),
+        },
         .surface, .vertex => blk: {
-            const snap_point = resolveSurfaceOrVertexSnapPoint(state, layer_context, ray) orelse break :blk raw_target;
-            break :blk constrainSnapPointToActiveAxis(state, snap_point);
+            const snap = resolveSurfaceOrVertexSnapPoint(state, layer_context, ray) orelse break :blk .{ .position = raw_target };
+            break :blk .{
+                .position = constrainSnapPointToActiveAxis(state, snap.position),
+                .normal = snap.normal,
+            };
         },
     };
 }
@@ -1170,13 +1272,19 @@ fn resolveSurfaceOrVertexSnapPoint(
     state: *EditorState,
     layer_context: *engine.core.LayerContext,
     ray: engine.scene.Ray,
-) ?[3]f32 {
+) ?ResolvedPivotSnap {
     const world = currentManipulationWorld(state, layer_context) orelse return null;
     const surface_hit = raycastSurfaceIgnoringEntity(world, ray, state.manipulation_entity) orelse return null;
     return switch (state.translation_snap_target) {
         .grid => null,
-        .surface => surface_hit.position,
-        .vertex => nearestVertexWorldPosition(world, surface_hit.entity_id, surface_hit.position) orelse surface_hit.position,
+        .surface => .{
+            .position = surface_hit.position,
+            .normal = surface_hit.normal,
+        },
+        .vertex => .{
+            .position = nearestVertexWorldPosition(world, surface_hit.entity_id, surface_hit.position) orelse surface_hit.position,
+            .normal = surface_hit.normal,
+        },
     };
 }
 
@@ -1184,6 +1292,7 @@ const SnapSurfaceHit = struct {
     entity_id: engine.scene.EntityId,
     distance: f32,
     position: [3]f32,
+    normal: [3]f32,
 };
 
 const SnapTriangleHit = struct {
@@ -1236,10 +1345,15 @@ fn raycastSurfaceIgnoringEntity(
             const v2 = localPointToWorld(world_transform, mesh.vertices[mesh.indices[triangle_index + 2]].position);
             const hit = rayTriangleIntersection(ray.origin, direction, v0, v1, v2) orelse continue;
             if (best_hit == null or hit.distance < best_hit.?.distance) {
+                var normal = safeNormalizeOr(vec3.cross(vec3.sub(v1, v0), vec3.sub(v2, v0)), .{ 0.0, 1.0, 0.0 });
+                if (vec3.dot(normal, direction) > 0.0) {
+                    normal = vec3.scale(normal, -1.0);
+                }
                 best_hit = .{
                     .entity_id = entity.id,
                     .distance = hit.distance,
                     .position = hit.position,
+                    .normal = normal,
                 };
             }
         }
@@ -1311,6 +1425,33 @@ fn rayTriangleIntersection(
         .distance = distance,
         .position = vec3.add(ray_origin, vec3.scale(ray_direction, distance)),
     };
+}
+
+fn alignedRotationToSurfaceNormal(base_rotation: [4]f32, surface_normal: [3]f32) [4]f32 {
+    const from = safeNormalizeOr(engine.math.quat.rotateVec3(base_rotation, .{ 0.0, 1.0, 0.0 }), .{ 0.0, 1.0, 0.0 });
+    const to = safeNormalizeOr(surface_normal, from);
+    const alignment = quaternionBetweenVectors(from, to);
+    return quat.normalize(quat.mul(alignment, base_rotation));
+}
+
+fn quaternionBetweenVectors(from: [3]f32, to: [3]f32) [4]f32 {
+    const from_normalized = safeNormalizeOr(from, .{ 0.0, 1.0, 0.0 });
+    const to_normalized = safeNormalizeOr(to, from_normalized);
+    const dot_value = std.math.clamp(vec3.dot(from_normalized, to_normalized), -1.0, 1.0);
+
+    if (dot_value >= 0.9999) {
+        return quat.identity();
+    }
+    if (dot_value <= -0.9999) {
+        var axis = vec3.cross(from_normalized, .{ 1.0, 0.0, 0.0 });
+        if (vec3.length(axis) <= 0.0001) {
+            axis = vec3.cross(from_normalized, .{ 0.0, 0.0, 1.0 });
+        }
+        return quat.fromAxisAngle(axis, std.math.pi);
+    }
+
+    const axis = vec3.cross(from_normalized, to_normalized);
+    return quat.normalize(.{ axis[0], axis[1], axis[2], 1.0 + dot_value });
 }
 
 fn snapScaleFromOrigin(origin: [3]f32, target: [3]f32, step: f32) [3]f32 {
@@ -1590,7 +1731,7 @@ pub fn pickGizmoHandle(
     const pivot_local_offset = if (state.manipulation_entity != null and state.manipulation_entity.? == entity_id)
         state.manipulation_pivot_local_offset
     else
-        computePivotLocalOffsetForEntity(state, world, entity_id);
+        computePivotLocalOffsetForEntity(state, layer_context, world, entity_id);
 
     const cam_transform = camera.activeCameraTransform(state, layer_context);
     const origin = pivotWorldPosition(entity_transform, pivot_local_offset);

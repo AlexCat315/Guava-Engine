@@ -847,6 +847,7 @@ fn drawConstraintChipButton(id: []const u8, label: []const u8, active: bool) boo
 fn transformConstraintsActive(state: *const EditorState) bool {
     return state.transform_pivot_mode != .origin or
         state.translation_snap_target != .grid or
+        state.surface_snap_align_rotation_to_normal or
         state.manipulation_axis != .free or
         state.translation_snap_enabled or
         state.rotation_snap_enabled or
@@ -877,6 +878,28 @@ fn drawTransformConstraintsPopup(state: *EditorState, layer_context: *engine.cor
     if (drawConstraintPopupButton(state.text(.pivot_bounds_center), 120.0, state.transform_pivot_mode == .bounds_center)) {
         state.transform_pivot_mode = .bounds_center;
         changed = true;
+    }
+    gui.sameLine();
+    if (drawConstraintPopupButton(state.text(.pivot_median_point), 108.0, state.transform_pivot_mode == .median_point)) {
+        state.transform_pivot_mode = .median_point;
+        changed = true;
+    }
+    if (drawConstraintPopupButton(state.text(.pivot_active_element), 120.0, state.transform_pivot_mode == .active_element)) {
+        state.transform_pivot_mode = .active_element;
+        changed = true;
+    }
+    gui.sameLine();
+    if (drawConstraintPopupButton(state.text(.pivot_cursor), 96.0, state.transform_pivot_mode == .cursor)) {
+        state.transform_pivot_mode = .cursor;
+        changed = true;
+    }
+    if (state.transform_pivot_mode == .cursor) {
+        gui.text(state.text(.cursor_position));
+        var cursor_position = state.transform_cursor_world_position;
+        if (gui.dragFloat3("##transform_cursor_world_position", &cursor_position, 0.1, -100000.0, 100000.0)) {
+            state.transform_cursor_world_position = cursor_position;
+            changed = true;
+        }
     }
 
     gui.separator();
@@ -916,6 +939,16 @@ fn drawTransformConstraintsPopup(state: *EditorState, layer_context: *engine.cor
     if (drawConstraintPopupButton(state.text(.vertex_snap), 76.0, state.translation_snap_target == .vertex)) {
         state.translation_snap_target = .vertex;
         changed = true;
+    }
+    if (state.translation_snap_target != .grid) {
+        if (drawConstraintPopupButton(
+            state.text(.align_rotation_to_surface_normal),
+            220.0,
+            state.surface_snap_align_rotation_to_normal,
+        )) {
+            state.surface_snap_align_rotation_to_normal = !state.surface_snap_align_rotation_to_normal;
+            changed = true;
+        }
     }
 
     gui.separator();
