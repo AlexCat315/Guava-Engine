@@ -626,15 +626,22 @@ pub const Application = struct {
     /// 脚本资源句柄
     pub fn loadScript(self: *Application, path: []const u8) !handles.ScriptHandle {
         self.bindRuntimeContext();
-        const source = try std.fs.cwd().readFileAlloc(self.allocator, path, 1024 * 1024);
-        defer self.allocator.free(source);
+        const language = inferScriptLanguageFromPath(path);
+        const is_binary_artifact = script_system.csharp_toolchain_mod.isSharedLibraryPath(path) or language == .wasm;
+        const source_or_bytecode = if (is_binary_artifact)
+            try std.fs.cwd().readFileAlloc(self.allocator, path, 16 * 1024 * 1024)
+        else
+            try std.fs.cwd().readFileAlloc(self.allocator, path, 1024 * 1024);
+        defer self.allocator.free(source_or_bytecode);
 
         const desc = .{
-            .source = source,
-            .language = .zig,
+            .source = if (is_binary_artifact) "" else source_or_bytecode,
+            .language = language,
             .entry_fn = "main",
             .description = path,
             .source_path = path,
+            .artifact_path = if (script_system.csharp_toolchain_mod.isSharedLibraryPath(path)) path else "",
+            .bytecode = if (language == .wasm) source_or_bytecode else &.{},
         };
 
         const handle = try self.world.resources.createScript(desc);
@@ -642,6 +649,19 @@ pub const Application = struct {
             try hr.registerScript(path, handle);
         }
         return handle;
+    }
+
+    fn inferScriptLanguageFromPath(path: []const u8) script_system.ScriptLanguage {
+        if (script_system.csharp_toolchain_mod.isDotnetProjectPath(path) or
+            script_system.csharp_toolchain_mod.isCSharpSourcePath(path) or
+            script_system.csharp_toolchain_mod.isSharedLibraryPath(path))
+        {
+            return .csharp;
+        }
+        if (std.mem.endsWith(u8, path, ".wasm")) {
+            return .wasm;
+        }
+        return .zig;
     }
 
     fn applyPendingCommands(self: *Application) !void {

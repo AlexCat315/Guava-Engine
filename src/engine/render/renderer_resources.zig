@@ -9,7 +9,9 @@ pub const SceneViewportState = struct {
     height: u32 = 0,
     hdr_color_texture: ?rhi_mod.Texture = null,
     taa_texture: ?rhi_mod.Texture = null,
+    velocity_texture: ?rhi_mod.Texture = null,
     ssao_texture: ?rhi_mod.Texture = null,
+    ssr_texture: ?rhi_mod.Texture = null,
     ssgi_texture: ?rhi_mod.Texture = null,
     contact_shadow_texture: ?rhi_mod.Texture = null,
     rt_shadow_denoised_texture: ?rhi_mod.Texture = null,
@@ -25,7 +27,13 @@ pub const SceneViewportState = struct {
         if (self.taa_texture) |*texture| {
             device.releaseTexture(texture);
         }
+        if (self.velocity_texture) |*texture| {
+            device.releaseTexture(texture);
+        }
         if (self.ssao_texture) |*texture| {
+            device.releaseTexture(texture);
+        }
+        if (self.ssr_texture) |*texture| {
             device.releaseTexture(texture);
         }
         if (self.ssgi_texture) |*texture| {
@@ -59,7 +67,7 @@ pub const SceneViewportState = struct {
         }
 
         if (self.color_texture) |color_texture| {
-            if (self.depth_texture != null and self.hdr_color_texture != null and self.taa_texture != null and self.ssao_texture != null and self.ssgi_texture != null and self.contact_shadow_texture != null and self.rt_shadow_denoised_texture != null and self.bloom_texture != null and self.fxaa_texture != null and color_texture.desc.width == width and color_texture.desc.height == height) {
+            if (self.depth_texture != null and self.hdr_color_texture != null and self.taa_texture != null and self.velocity_texture != null and self.ssao_texture != null and self.ssr_texture != null and self.ssgi_texture != null and self.contact_shadow_texture != null and self.rt_shadow_denoised_texture != null and self.bloom_texture != null and self.fxaa_texture != null and color_texture.desc.width == width and color_texture.desc.height == height) {
                 self.width = width;
                 self.height = height;
                 return;
@@ -90,6 +98,17 @@ pub const SceneViewportState = struct {
             self.taa_texture = null;
         };
 
+        self.velocity_texture = try device.createTexture(.{
+            .width = width,
+            .height = height,
+            .format = .rgba16_float,
+            .usage = rhi_types.TextureUsage.color_target | rhi_types.TextureUsage.sampler,
+        });
+        errdefer if (self.velocity_texture) |*texture| {
+            device.releaseTexture(texture);
+            self.velocity_texture = null;
+        };
+
         self.ssao_texture = try device.createTexture(.{
             .width = width,
             .height = height,
@@ -99,6 +118,17 @@ pub const SceneViewportState = struct {
         errdefer if (self.ssao_texture) |*texture| {
             device.releaseTexture(texture);
             self.ssao_texture = null;
+        };
+
+        self.ssr_texture = try device.createTexture(.{
+            .width = width,
+            .height = height,
+            .format = .rgba16_float,
+            .usage = rhi_types.TextureUsage.color_target | rhi_types.TextureUsage.sampler,
+        });
+        errdefer if (self.ssr_texture) |*texture| {
+            device.releaseTexture(texture);
+            self.ssr_texture = null;
         };
 
         self.ssgi_texture = try device.createTexture(.{
@@ -224,8 +254,22 @@ pub const SceneViewportState = struct {
         return null;
     }
 
+    pub fn velocity(self: *SceneViewportState) ?*const rhi_mod.Texture {
+        if (self.velocity_texture) |*texture| {
+            return texture;
+        }
+        return null;
+    }
+
     pub fn ssao(self: *SceneViewportState) ?*const rhi_mod.Texture {
         if (self.ssao_texture) |*texture| {
+            return texture;
+        }
+        return null;
+    }
+
+    pub fn ssr(self: *SceneViewportState) ?*const rhi_mod.Texture {
+        if (self.ssr_texture) |*texture| {
             return texture;
         }
         return null;

@@ -50,6 +50,7 @@ const skybox_pass_mod = @import("passes/skybox_pass.zig");
 const bloom_pass_mod = @import("passes/bloom_pass.zig");
 const tonemap_pass_mod = @import("passes/tonemap_pass.zig");
 const depth_prepass_mod = @import("passes/depth_prepass.zig");
+const velocity_pass_mod = @import("passes/velocity_pass.zig");
 const id_pass_mod = @import("passes/id_pass.zig");
 const gizmo_pass_mod = @import("passes/gizmo_pass.zig");
 const outline_pass_mod = @import("passes/outline_pass.zig");
@@ -314,6 +315,8 @@ pub const Renderer = struct {
     id_pass: id_pass_mod.IdPass,
     /// 深度预通道（优化后续渲染）
     depth_prepass: depth_prepass_mod.DepthPrepass,
+    /// Velocity 通道（TAA motion vectors）
+    velocity_pass: velocity_pass_mod.VelocityPass,
     /// 阴影通道（阴影贴图渲染）
     shadow_pass: shadow_pass_mod.ShadowPass,
     /// 基础通道（主渲染）
@@ -346,6 +349,8 @@ pub const Renderer = struct {
     gpu_brdf_lut_generated: bool = false,
     /// TAA 抗锯齿通道
     taa_pass: taa_pass_mod.TAAPass,
+    /// SSR 屏幕空间反射通道
+    ssr_pass: ssr_pass_mod.SSRPass,
     /// Bloom 后处理通道
     bloom_pass: bloom_pass_mod.BloomPass,
     /// Tonemap 后处理通道
@@ -381,6 +386,12 @@ pub const Renderer = struct {
     editor_viewport_state: EditorViewportState = .{},
     /// 前一帧视图矩阵（TAA 重投影用）
     prev_view_matrix: [16]f32 = mat4_mod.identity(),
+    /// 前一帧未抖动的 view-projection（velocity / TAA history reproject）
+    prev_view_projection: [16]f32 = mat4_mod.identity(),
+    /// 前一帧归一化 jitter 偏移
+    prev_taa_jitter: [2]f32 = .{ 0.0, 0.0 },
+    /// 前一帧实体 model matrix 缓存（rigid motion vectors）
+    prev_mesh_models: std.AutoHashMap(scene_mod.EntityId, [16]f32),
     /// 缓存的环境贴图纹理指针（避免每帧重新加载 IBL 数据）
     cached_env_textures: CachedEnvironmentTextures = .{},
     /// 待处理的选择回读请求
@@ -450,6 +461,7 @@ pub const Renderer = struct {
             .thumbnail_render_world = scene_extraction.RenderWorld.init(allocator),
             .id_pass = undefined,
             .depth_prepass = undefined,
+            .velocity_pass = undefined,
             .shadow_pass = undefined,
             .base_pass = undefined,
             .skybox_pass = undefined,
@@ -461,16 +473,19 @@ pub const Renderer = struct {
             .ssgi_composite_pass = undefined,
             .ibl_compute_pass = null,
             .taa_pass = undefined,
+            .ssr_pass = undefined,
             .bloom_pass = undefined,
             .tonemap_pass = undefined,
             .rt_shadow_composite_pass = undefined,
             .rt_shadow_denoise_pass = undefined,
             .ssao_composite_pass = undefined,
             .contact_shadow_composite_pass = undefined,
+            .prev_mesh_models = std.AutoHashMap(scene_mod.EntityId, [16]f32).init(allocator),
             .selection_history = SelectionHistory.init(allocator, 64),
             .material_thumbnail_cache = std.StringHashMap(MaterialThumbnailCacheEntry).init(allocator),
             .material_thumbnail_preview = undefined,
         };
+        errdefer renderer.prev_mesh_models.deinit();
         errdefer renderer.material_thumbnail_cache.deinit();
         errdefer renderer.in_flight_selection_batches.deinit(allocator);
         errdefer renderer.pending_selection_readbacks.deinit(allocator);
@@ -495,6 +510,9 @@ pub const Renderer = struct {
 
         renderer.depth_prepass = try depth_prepass_mod.DepthPrepass.init(&renderer.rhi);
         errdefer renderer.depth_prepass.deinit(&renderer.rhi);
+
+        renderer.velocity_pass = try velocity_pass_mod.VelocityPass.init(&renderer.rhi);
+        errdefer renderer.velocity_pass.deinit(&renderer.rhi);
 
         renderer.shadow_pass = try shadow_pass_mod.ShadowPass.init(&renderer.rhi);
         errdefer renderer.shadow_pass.deinit(&renderer.rhi);
@@ -529,6 +547,9 @@ pub const Renderer = struct {
 
         renderer.taa_pass = try taa_pass_mod.TAAPass.init(&renderer.rhi);
         errdefer renderer.taa_pass.deinit(&renderer.rhi);
+
+        renderer.ssr_pass = try ssr_pass_mod.SSRPass.init(&renderer.rhi);
+        errdefer renderer.ssr_pass.deinit(&renderer.rhi);
 
         renderer.bloom_pass = try bloom_pass_mod.BloomPass.init(&renderer.rhi);
         errdefer renderer.bloom_pass.deinit(&renderer.rhi);
@@ -616,6 +637,7 @@ pub const Renderer = struct {
         self.releaseInFlightSelectionBatches();
         self.pending_selection_readbacks.deinit(self.allocator);
         self.selection_history.deinit();
+        self.prev_mesh_models.deinit();
         self.preview_entity_filter.deinit(self.allocator);
         self.scene_viewport.deinit(&self.rhi);
         self.releaseMaterialThumbnailRequests();
@@ -631,6 +653,7 @@ pub const Renderer = struct {
         if (self.gpu_brdf_lut) |*t| self.rhi.releaseTexture(t);
         if (self.ibl_compute_pass) |*p| p.deinit(&self.rhi);
         self.taa_pass.deinit(&self.rhi);
+        self.ssr_pass.deinit(&self.rhi);
         self.bloom_pass.deinit(&self.rhi);
         self.tonemap_pass.deinit(&self.rhi);
         self.rt_shadow_composite_pass.deinit(&self.rhi);
@@ -661,6 +684,7 @@ pub const Renderer = struct {
         self.base_pass.deinit(&self.rhi);
         self.shadow_map.deinit(&self.rhi);
         self.shadow_pass.deinit(&self.rhi);
+        self.velocity_pass.deinit(&self.rhi);
         self.depth_prepass.deinit(&self.rhi);
         self.id_pass.deinit(&self.rhi);
         self.scene_cache.deinit(&self.rhi);
@@ -673,6 +697,17 @@ pub const Renderer = struct {
 
     pub fn backendApi(self: *const Renderer) rhi_types.GraphicsAPI {
         return self.rhi.api;
+    }
+
+    fn cachePreviousMeshModels(self: *Renderer, prepared_scene: *const mesh_pass_mod.PreparedScene) !void {
+        self.prev_mesh_models.clearRetainingCapacity();
+
+        for (prepared_scene.opaque_meshes) |item| {
+            try self.prev_mesh_models.put(item.entity_id, item.model);
+        }
+        for (prepared_scene.transparent_meshes) |item| {
+            try self.prev_mesh_models.put(item.entity_id, item.model);
+        }
     }
 
     pub fn runtimeInfo(self: *const Renderer) types.RuntimeInfo {
@@ -1201,6 +1236,9 @@ pub const Renderer = struct {
                     self.rhi.endRenderPass(id_render_pass);
                 }
 
+                var current_unjittered_view_projection = prepared_scene.view_projection;
+                var current_taa_jitter_uv = [2]f32{ 0.0, 0.0 };
+
                 if (path_trace_viewport) {
                     const path_trace_start = std.time.nanoTimestamp();
                     try self.renderPathTraceViewport(&prepared_scene, scene);
@@ -1336,10 +1374,12 @@ pub const Renderer = struct {
                     // TAA jitter: apply subpixel offset to projection matrix before rendering
                     const taa_enabled = viewport_active and self.editor_viewport_state.taa_enabled and self.taa_pass.isReady() and self.scene_viewport.taa() != null;
                     const unjittered_projection = prepared_scene.projection_matrix;
+                    current_unjittered_view_projection = prepared_scene.view_projection;
                     if (taa_enabled) {
                         const jitter = self.taa_pass.getJitter();
                         const jx = jitter[0] / @as(f32, @floatFromInt(self.scene_viewport.width));
                         const jy = jitter[1] / @as(f32, @floatFromInt(self.scene_viewport.height));
+                        current_taa_jitter_uv = .{ jx, jy };
                         // Offset the projection matrix translation column (indices 12,13 in row-major = [3][0],[3][1] in col-major)
                         prepared_scene.projection_matrix[8] += jx * 2.0;
                         prepared_scene.projection_matrix[9] += jy * 2.0;
@@ -1347,6 +1387,11 @@ pub const Renderer = struct {
                     }
 
                     const active_render_mode = effectiveViewportRenderMode(self.editor_viewport_state);
+                    const velocity_enabled = taa_enabled and
+                        scene_depth_target != null and
+                        self.scene_viewport.velocity() != null and
+                        active_render_mode != .wireframe and
+                        self.velocity_pass.isReady();
                     var scene_pass: rhi_mod.RenderPass = undefined;
                     if (run_rt_shadow_denoise) {
                         const depth_prepass_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.depthOnly(scene_depth_target.?));
@@ -1358,6 +1403,39 @@ pub const Renderer = struct {
                         self.graph.recordPassStat(pass_stats, .depth_prepass, durationNs(depth_start, std.time.nanoTimestamp()), depth_stats.draw_calls, depth_stats.triangles_drawn);
                         draw_stats.add(depth_stats);
                         self.rhi.endRenderPass(depth_prepass_pass);
+
+                        if (velocity_enabled) {
+                            const velocity_render_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
+                                .color = .{
+                                    .target = .{ .texture = self.scene_viewport.velocity().? },
+                                    .clear_color = .{ 0.0, 0.0, 0.0, 1.0 },
+                                    .load_op = .clear,
+                                    .store_op = .store,
+                                },
+                                .depth = .{
+                                    .texture = scene_depth_target.?.texture,
+                                    .clear_depth = scene_depth_target.?.clear_depth,
+                                    .clear_stencil = scene_depth_target.?.clear_stencil,
+                                    .load_op = .load,
+                                    .store_op = .store,
+                                    .stencil_load_op = scene_depth_target.?.stencil_load_op,
+                                    .stencil_store_op = scene_depth_target.?.stencil_store_op,
+                                },
+                            });
+                            const velocity_start = std.time.nanoTimestamp();
+                            const velocity_stats = self.velocity_pass.draw(
+                                &self.rhi,
+                                frame,
+                                velocity_render_pass,
+                                &prepared_scene,
+                                current_unjittered_view_projection,
+                                self.prev_view_projection,
+                                &self.prev_mesh_models,
+                            );
+                            self.graph.recordPassStat(pass_stats, .post_process, durationNs(velocity_start, std.time.nanoTimestamp()), velocity_stats.draw_calls, velocity_stats.triangles_drawn);
+                            draw_stats.add(velocity_stats);
+                            self.rhi.endRenderPass(velocity_render_pass);
+                        }
 
                         try self.rt_shadow_denoise_pass.syncTextures(&self.rhi, &self.rt_shadow_mask_texture.?, self.scene_viewport.depth().?);
                         const denoise_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.rtShadowDenoised().? }));
@@ -1402,6 +1480,39 @@ pub const Renderer = struct {
                             self.graph.recordPassStat(pass_stats, .depth_prepass, durationNs(depth_start, std.time.nanoTimestamp()), depth_stats.draw_calls, depth_stats.triangles_drawn);
                             draw_stats.add(depth_stats);
                             self.rhi.endRenderPass(depth_prepass_pass);
+
+                            if (velocity_enabled) {
+                                const velocity_render_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
+                                    .color = .{
+                                        .target = .{ .texture = self.scene_viewport.velocity().? },
+                                        .clear_color = .{ 0.0, 0.0, 0.0, 1.0 },
+                                        .load_op = .clear,
+                                        .store_op = .store,
+                                    },
+                                    .depth = .{
+                                        .texture = scene_depth_target.?.texture,
+                                        .clear_depth = scene_depth_target.?.clear_depth,
+                                        .clear_stencil = scene_depth_target.?.clear_stencil,
+                                        .load_op = .load,
+                                        .store_op = .store,
+                                        .stencil_load_op = scene_depth_target.?.stencil_load_op,
+                                        .stencil_store_op = scene_depth_target.?.stencil_store_op,
+                                    },
+                                });
+                                const velocity_start = std.time.nanoTimestamp();
+                                const velocity_stats = self.velocity_pass.draw(
+                                    &self.rhi,
+                                    frame,
+                                    velocity_render_pass,
+                                    &prepared_scene,
+                                    current_unjittered_view_projection,
+                                    self.prev_view_projection,
+                                    &self.prev_mesh_models,
+                                );
+                                self.graph.recordPassStat(pass_stats, .post_process, durationNs(velocity_start, std.time.nanoTimestamp()), velocity_stats.draw_calls, velocity_stats.triangles_drawn);
+                                draw_stats.add(velocity_stats);
+                                self.rhi.endRenderPass(velocity_render_pass);
+                            }
 
                             const loaded_depth_target: rhi_mod.DepthAttachmentDesc = .{
                                 .texture = scene_depth_target.?.texture,
@@ -1674,46 +1785,61 @@ pub const Renderer = struct {
                         }
 
                         // SSR dispatch
-                        if (self.editor_viewport_state.ssr_enabled) {
-                            if (self.rhi_device) |dev| {
-                                const mat4_ssr = @import("../math/mat4.zig");
-                                const inv_proj_ssr = mat4_ssr.inverse(prepared_scene.projection_matrix) orelse mat4_ssr.identity();
-                                const inv_view_ssr = mat4_ssr.inverse(prepared_scene.view_matrix) orelse mat4_ssr.identity();
-                                const ssr_start = std.time.nanoTimestamp();
-                                ssr_pass_mod.SSRPass.execute(
-                                    self.allocator,
-                                    dev,
-                                    null,
-                                    0,
-                                    0,
-                                    .{
-                                        .projection = prepared_scene.projection_matrix,
-                                        .inv_projection = inv_proj_ssr,
-                                        .view = prepared_scene.view_matrix,
-                                        .inv_view = inv_view_ssr,
-                                        .resolution = .{ @floatFromInt(self.scene_viewport.width), @floatFromInt(self.scene_viewport.height) },
-                                        .ray_step = self.editor_viewport_state.ssr_ray_step,
-                                        .ray_max_distance = self.editor_viewport_state.ssr_ray_max_distance,
-                                        .ray_thickness = self.editor_viewport_state.ssr_ray_thickness,
-                                        .intensity = self.editor_viewport_state.ssr_intensity,
-                                        .fade_distance = self.editor_viewport_state.ssr_fade_distance,
-                                        .edge_fade = self.editor_viewport_state.ssr_edge_fade,
-                                    },
-                                ) catch {};
-                                self.graph.recordPassStat(pass_stats, .post_process, durationNs(ssr_start, std.time.nanoTimestamp()), 1, 1);
+                        if (self.editor_viewport_state.ssr_enabled and
+                            self.scene_viewport.ssr() != null and
+                            self.scene_viewport.depth() != null and
+                            self.scene_viewport.hdrColor() != null and
+                            self.ssr_pass.isReady())
+                        {
+                            const mat4_ssr = @import("../math/mat4.zig");
+                            const inv_proj_ssr = mat4_ssr.inverse(prepared_scene.projection_matrix) orelse mat4_ssr.identity();
+                            const inv_view_ssr = mat4_ssr.inverse(prepared_scene.view_matrix) orelse mat4_ssr.identity();
+                            const ssr_start = std.time.nanoTimestamp();
+
+                            try self.ssr_pass.syncTextures(&self.rhi, self.scene_viewport.hdrColor().?, self.scene_viewport.depth().?);
+                            const ssr_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.ssr().? }));
+                            const ssr_stats = self.ssr_pass.draw(&self.rhi, frame, ssr_render_pass, .{
+                                .projection = prepared_scene.projection_matrix,
+                                .inv_projection = inv_proj_ssr,
+                                .view = prepared_scene.view_matrix,
+                                .inv_view = inv_view_ssr,
+                                .resolution = .{ @floatFromInt(self.scene_viewport.width), @floatFromInt(self.scene_viewport.height) },
+                                .ray_step = self.editor_viewport_state.ssr_ray_step,
+                                .ray_max_distance = self.editor_viewport_state.ssr_ray_max_distance,
+                                .ray_thickness = self.editor_viewport_state.ssr_ray_thickness,
+                                .intensity = self.editor_viewport_state.ssr_intensity,
+                                .fade_distance = self.editor_viewport_state.ssr_fade_distance,
+                                .edge_fade = self.editor_viewport_state.ssr_edge_fade,
+                            });
+                            draw_stats.add(ssr_stats);
+                            self.rhi.endRenderPass(ssr_render_pass);
+
+                            var ssr_composite_draw_calls: usize = 0;
+                            var ssr_composite_triangles: usize = 0;
+                            if (self.ssgi_composite_pass.isReady()) {
+                                try self.ssgi_composite_pass.syncTexture(&self.rhi, self.scene_viewport.ssr().?);
+                                const ssr_composite_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(.{ .texture = self.scene_viewport.hdrColor().? }));
+                                const ssr_composite_stats = self.ssgi_composite_pass.draw(&self.rhi, frame, ssr_composite_pass, 1.0);
+                                draw_stats.add(ssr_composite_stats);
+                                ssr_composite_draw_calls = ssr_composite_stats.draw_calls;
+                                ssr_composite_triangles = ssr_composite_stats.triangles_drawn;
+                                self.rhi.endRenderPass(ssr_composite_pass);
                             }
+
+                            self.graph.recordPassStat(
+                                pass_stats,
+                                .post_process,
+                                durationNs(ssr_start, std.time.nanoTimestamp()),
+                                ssr_stats.draw_calls + ssr_composite_draw_calls,
+                                ssr_stats.triangles_drawn + ssr_composite_triangles,
+                            );
                         }
 
                         // TAA resolve: blend current frame with history
                         var taa_resolved = false;
                         if (taa_enabled) {
                             try self.taa_pass.ensureHistoryTexture(&self.rhi, self.scene_viewport.width, self.scene_viewport.height);
-                            const taa_camera_moved = !std.mem.eql(
-                                u8,
-                                std.mem.asBytes(&prepared_scene.view_matrix),
-                                std.mem.asBytes(&self.prev_view_matrix),
-                            );
-                            const taa_requires_seed = !self.taa_pass.hasValidHistory() or taa_camera_moved;
+                            const taa_requires_seed = !self.taa_pass.hasValidHistory();
 
                             if (taa_requires_seed) {
                                 self.rhi.blitTexture(frame, self.scene_viewport.hdrColor().?, &self.scene_viewport.taa_texture.?);
@@ -1721,11 +1847,14 @@ pub const Renderer = struct {
                                 self.taa_pass.markHistoryValid();
                                 taa_resolved = true;
                             } else {
-                                try self.taa_pass.syncTextures(&self.rhi, self.scene_viewport.hdrColor().?, null, self.scene_viewport.depth());
+                                try self.taa_pass.syncTextures(&self.rhi, self.scene_viewport.hdrColor().?, self.scene_viewport.velocity(), self.scene_viewport.depth());
                                 const taa_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.taa().? }));
 
                                 const inv_proj_taa = mat4_mod.inverse(unjittered_projection) orelse mat4_mod.identity();
-                                const jitter_val = self.taa_pass.getJitter();
+                                const jitter_history_delta = [2]f32{
+                                    self.prev_taa_jitter[0] - current_taa_jitter_uv[0],
+                                    self.prev_taa_jitter[1] - current_taa_jitter_uv[1],
+                                };
 
                                 const taa_uniforms = taa_pass_mod.TAAUniforms{
                                     .projection = unjittered_projection,
@@ -1733,12 +1862,9 @@ pub const Renderer = struct {
                                     .view = prepared_scene.view_matrix,
                                     .prev_view = self.prev_view_matrix,
                                     .resolution = .{ @floatFromInt(self.scene_viewport.width), @floatFromInt(self.scene_viewport.height) },
-                                    .jitter = .{
-                                        jitter_val[0] / @as(f32, @floatFromInt(self.scene_viewport.width)),
-                                        jitter_val[1] / @as(f32, @floatFromInt(self.scene_viewport.height)),
-                                    },
+                                    .jitter = jitter_history_delta,
                                     .blend_factor = self.editor_viewport_state.taa_blend_factor,
-                                    .motion_blur_scale = 0.0, // No velocity buffer in MVP — disable velocity lookup
+                                    .motion_blur_scale = self.editor_viewport_state.taa_motion_blur_scale,
                                     .feedback_min = self.editor_viewport_state.taa_feedback_min,
                                     .feedback_max = self.editor_viewport_state.taa_feedback_max,
                                 };
@@ -1912,8 +2038,11 @@ pub const Renderer = struct {
                     self.rhi.endRenderPass(gizmo_pass);
                 }
 
-                // Store view matrix for TAA reprojection next frame
+                // Store previous-frame camera/object state for TAA reprojection and velocity.
                 self.prev_view_matrix = prepared_scene.view_matrix;
+                self.prev_view_projection = current_unjittered_view_projection;
+                self.prev_taa_jitter = current_taa_jitter_uv;
+                try self.cachePreviousMeshModels(&prepared_scene);
             }
 
             const thumbnail_stats = try self.processMaterialThumbnailRequests(frame, scene);

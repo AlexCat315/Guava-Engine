@@ -6,9 +6,11 @@ const vm_mod = @import("./vm.zig");
 const hot_reload_mod = @import("./hot_reload.zig");
 const wasm_compiler = @import("./wasm_compiler.zig");
 const wasm_vm_mod = @import("./wasm_vm.zig");
+const csharp_toolchain = @import("./csharp_toolchain.zig");
 const handles = @import("../assets/handles.zig");
 const components = @import("../scene/components.zig");
 const world_mod = @import("../scene/world.zig");
+const script_resource_mod = @import("../assets/script_resource.zig");
 
 const log = std.log.scoped(.script_runtime);
 
@@ -307,6 +309,8 @@ pub const ScriptRuntime = struct {
         const resource = world.resources.scriptMutable(handle) orelse return types.ScriptError.NotFound;
         const vm = self.getVM(resource.language) orelse return types.ScriptError.InvalidLanguage;
 
+        try prepareResourceForLoad(self, handle, resource, true);
+
         const csharp_artifact_path = csharpArtifactPath(resource);
         const reloads_from_artifact = resource.language == .csharp and csharp_artifact_path != null;
 
@@ -558,12 +562,17 @@ pub const ScriptRuntime = struct {
         }
 
         const script_language: types.ScriptLanguage = @enumFromInt(@intFromEnum(script.language));
-        const script_resource = world.resources.script(script_handle) orelse {
+        const script_resource = world.resources.scriptMutable(script_handle) orelse {
             log.err("Script handle {} not found for entity {}", .{ script_handle, entity.id });
             return;
         };
         const vm = self.getVM(script_language) orelse {
             log.err("No VM available for script language {} on entity {}", .{ script_language, entity.id });
+            return;
+        };
+
+        prepareResourceForLoad(self, script_handle, script_resource, false) catch |err| {
+            log.err("Failed to prepare script resource for entity {}: {}", .{ entity.id, err });
             return;
         };
 
@@ -648,23 +657,135 @@ pub const ScriptRuntime = struct {
     }
 };
 
-fn csharpArtifactPath(resource: *const @import("../assets/script_resource.zig").ScriptResource) ?[]const u8 {
+fn prepareResourceForLoad(
+    self: *ScriptRuntime,
+    handle: handles.ScriptHandle,
+    resource: *script_resource_mod.ScriptResource,
+    force_refresh: bool,
+) !void {
+    switch (resource.language) {
+        .csharp => try prepareCSharpResourceForLoad(self, handle, resource, force_refresh),
+        else => {},
+    }
+}
+
+fn prepareCSharpResourceForLoad(
+    self: *ScriptRuntime,
+    handle: handles.ScriptHandle,
+    resource: *script_resource_mod.ScriptResource,
+    force_refresh: bool,
+) !void {
+    if (resource.source_path.len == 0) {
+        if (csharpArtifactPath(resource)) |artifact_path| {
+            resource.last_modified = readFileMtime(artifact_path) catch resource.last_modified;
+        }
+        return;
+    }
+
+    if (csharp_toolchain.isDotnetProjectPath(resource.source_path)) {
+        try registerCSharpProjectHotReload(self, handle, resource.source_path);
+
+        const existing_artifact = csharpArtifactPath(resource);
+        const should_publish = force_refresh or existing_artifact == null or try csharp_toolchain.projectNeedsPublish(
+            resource.source_path,
+            existing_artifact.?,
+        );
+
+        if (should_publish) {
+            self.recordEvent(.{
+                .script_handle = handle,
+                .phase = .compile,
+                .severity = .info,
+                .message = "publishing csharp nativeaot project",
+            });
+
+            const published_artifact = csharp_toolchain.ensurePublishedNativeAotLibraryAlloc(
+                self.allocator,
+                resource.source_path,
+                existing_artifact,
+            ) catch |err| {
+                self.recordEvent(.{
+                    .script_handle = handle,
+                    .phase = .compile,
+                    .severity = .@"error",
+                    .message = csharpToolchainErrorMessage(err),
+                });
+                return mapCSharpToolchainError(err);
+            };
+            defer self.allocator.free(published_artifact);
+
+            try replaceOwnedSlice(self.allocator, &resource.artifact_path, published_artifact);
+            self.recordEvent(.{
+                .script_handle = handle,
+                .phase = .compile,
+                .severity = .info,
+                .message = "published csharp nativeaot library",
+            });
+        }
+
+        if (resource.artifact_path.len != 0) {
+            resource.last_modified = readFileMtime(resource.artifact_path) catch resource.last_modified;
+        } else {
+            resource.last_modified = readFileMtime(resource.source_path) catch resource.last_modified;
+        }
+        return;
+    }
+
+    if (csharpArtifactPath(resource)) |artifact_path| {
+        resource.last_modified = readFileMtime(artifact_path) catch resource.last_modified;
+    } else {
+        resource.last_modified = readFileMtime(resource.source_path) catch resource.last_modified;
+    }
+}
+
+fn registerCSharpProjectHotReload(
+    self: *ScriptRuntime,
+    handle: handles.ScriptHandle,
+    project_path: []const u8,
+) !void {
+    if (self.hot_reload) |*hr| {
+        const watch_paths = try csharp_toolchain.collectProjectWatchPathsAlloc(self.allocator, project_path);
+        defer {
+            for (watch_paths) |path| {
+                self.allocator.free(path);
+            }
+            self.allocator.free(watch_paths);
+        }
+
+        for (watch_paths) |path| {
+            try hr.registerScript(path, handle);
+        }
+    }
+}
+
+fn mapCSharpToolchainError(err: anyerror) types.ScriptError {
+    return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => types.ScriptError.CompileError,
+    };
+}
+
+fn csharpToolchainErrorMessage(err: anyerror) []const u8 {
+    return switch (err) {
+        error.DotnetNotFound => "dotnet sdk not found for csharp nativeaot publish",
+        error.UnsupportedPlatform => "current platform does not support csharp nativeaot publish",
+        error.PublishFailed => "dotnet publish failed for csharp nativeaot project",
+        error.ArtifactNotFound => "nativeaot publish completed but no shared library was found",
+        else => @errorName(err),
+    };
+}
+
+fn csharpArtifactPath(resource: *const script_resource_mod.ScriptResource) ?[]const u8 {
     if (resource.language != .csharp) {
         return null;
     }
     if (resource.artifact_path.len != 0) {
         return resource.artifact_path;
     }
-    if (isSharedLibraryPath(resource.source_path)) {
+    if (csharp_toolchain.isSharedLibraryPath(resource.source_path)) {
         return resource.source_path;
     }
     return null;
-}
-
-fn isSharedLibraryPath(path: []const u8) bool {
-    return std.mem.endsWith(u8, path, ".dll") or
-        std.mem.endsWith(u8, path, ".so") or
-        std.mem.endsWith(u8, path, ".dylib");
 }
 
 fn readFileMtime(path: []const u8) !i128 {
@@ -673,6 +794,12 @@ fn readFileMtime(path: []const u8) !i128 {
 
     const stat = try file.stat();
     return stat.mtime;
+}
+
+fn replaceOwnedSlice(allocator: std.mem.Allocator, target: *[]const u8, next: []const u8) !void {
+    const owned = try allocator.dupe(u8, next);
+    allocator.free(target.*);
+    target.* = owned;
 }
 
 test "script runtime reconciles instance lifecycle against world state" {
@@ -728,4 +855,67 @@ test "script runtime reconciles instance lifecycle against world state" {
     try std.testing.expect(world.destroyEntity(entity_id));
     runtime.reconcileWorld(&world);
     try std.testing.expectEqual(@as(usize, 0), runtime.instances.count());
+}
+
+test "script runtime publishes csharp project and loads nativeaot gameplay vm" {
+    if (!shouldRunNativeAotIntegrationTests()) return error.SkipZigTest;
+
+    var runtime = ScriptRuntime.init(std.testing.allocator, .{
+        .enable_hot_reload = true,
+    });
+    defer runtime.deinit();
+    try runtime.initVMs();
+
+    var world = world_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+    runtime.bindWorld(&world);
+
+    const script_handle = try world.resources.createScript(.{
+        .source = "",
+        .language = .csharp,
+        .description = "NativeAOT Runtime Test",
+        .source_path = "examples/csharp/nativeaot_mover/GuavaNativeAotMover.csproj",
+    });
+
+    const entity_id = try world.createEntity(.{
+        .name = "RuntimeNativeAotMover",
+        .script = .{
+            .script_handle = script_handle,
+            .language = .csharp,
+        },
+    });
+
+    runtime.reconcileWorld(&world);
+
+    const entity = world.getEntityConst(entity_id).?;
+    const instance_id = entity.script.?.instance_id orelse return error.ScriptInstanceNotCreated;
+    const instance = runtime.instances.get(instance_id) orelse return error.ScriptInstanceNotFound;
+    const vm = runtime.getVM(.csharp) orelse return error.ScriptVmMissing;
+    const resource = world.resources.script(script_handle).?;
+
+    try std.testing.expect(resource.artifact_path.len != 0);
+    try std.testing.expect(csharp_toolchain.isSharedLibraryPath(resource.artifact_path));
+
+    var ctx = context.ScriptContext{
+        .entity = entity_id,
+        .world = &world,
+        .instance = instance,
+        .allocator = std.testing.allocator,
+        .delta_time = 1.0,
+    };
+
+    try vm.callUpdate(instance, &ctx, 1.0);
+
+    const moved = world.getEntity(entity_id).?.local_transform.translation;
+    try std.testing.expectApproxEqAbs(@as(f32, 2.0), moved[0], 0.0001);
+
+    const hr = runtime.hot_reload orelse return error.HotReloadMissing;
+    try std.testing.expect(hr.watched_scripts.contains("examples/csharp/nativeaot_mover/GuavaNativeAotMover.csproj"));
+    try std.testing.expect(hr.watched_scripts.contains("examples/csharp/nativeaot_mover/ScriptExports.cs"));
+}
+
+fn shouldRunNativeAotIntegrationTests() bool {
+    const flag = std.process.getEnvVarOwned(std.testing.allocator, "GUAVA_RUN_NATIVEAOT_TESTS") catch return false;
+    defer std.testing.allocator.free(flag);
+    return std.mem.eql(u8, flag, "1");
 }
