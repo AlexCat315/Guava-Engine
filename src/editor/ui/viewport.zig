@@ -10,6 +10,7 @@ const utils = @import("../common/utils.zig");
 const ai_collaboration = @import("../ai_native/collaboration.zig");
 const history = @import("../actions/history.zig");
 const camera = @import("../interaction/camera.zig");
+const mesh_edit = @import("../interaction/mesh_edit.zig");
 const manipulation = @import("../interaction/manipulation.zig");
 const scene_hierarchy = @import("panels/scene/scene_hierarchy.zig");
 const inspector = @import("panels/scene/inspector.zig");
@@ -20,7 +21,6 @@ const floating_window_blocker = @import("floating_window_blocker.zig");
 const render_settings = @import("panels/rendering/render_settings.zig");
 const settings = @import("panels/rendering/settings.zig");
 const material_editor = @import("panels/assets/material_editor.zig");
-const timeline_mod = @import("../actions/command.zig");
 const viewport_status = @import("panels/viewport/viewport_status.zig");
 const ai_chat = @import("panels/ai/ai_chat.zig");
 const ui_icons = @import("icons.zig");
@@ -67,24 +67,26 @@ fn drawToolbarIconButton(
     return clicked;
 }
 
-fn drawOverlayIconButton(
+fn drawOverlayMenuButton(
     state: *EditorState,
     layer_context: *engine.core.LayerContext,
     id: []const u8,
-    path: []const u8,
+    label: []const u8,
     active: bool,
 ) !bool {
-    const active_tint = [4]u8{ 34, 197, 94, 255 };
-    const idle_tint = [4]u8{ 153, 153, 163, 255 };
-    const clicked = try ui_icons.drawIconButton(
-        state,
-        layer_context,
-        id,
-        path,
-        16.0,
-        if (active) active_tint else idle_tint,
-        if (active) ui_icons.palettes.toolbar_accent else ui_icons.palettes.toolbar_idle,
-    );
+    const palette = if (active)
+        ui_icons.palettes.toolbar_active
+    else
+        ui_icons.palettes.toolbar_idle;
+    const text_width = gui.calcTextSize(label, false, 0.0)[0];
+    const button_width = @max(58.0, text_width + 22.0);
+    gui.pushStyleColor(.button, palette.button);
+    gui.pushStyleColor(.button_hovered, palette.hovered);
+    gui.pushStyleColor(.button_active, palette.active);
+    defer gui.popStyleColor(3);
+    gui.pushIdU64(std.hash.Wyhash.hash(0, id));
+    defer gui.popId();
+    const clicked = gui.buttonEx(label, button_width, 0.0);
     if (gui.isItemHovered()) {
         state.viewport_overlay_hovered = true;
         if (layer_context.input.wasMousePressed(.left)) {
@@ -442,6 +444,99 @@ fn drawViewport3DCursor(state: *EditorState, layer_context: *engine.core.LayerCo
     }
 }
 
+fn drawMeshEditOverlay(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const context = mesh_edit.activeContext(state, layer_context) orelse return;
+    if (!state.viewport_has_image) {
+        return;
+    }
+
+    const draw_list = gui.getWindowDrawList();
+    const allocator = state.allocator orelse layer_context.world.allocator;
+    const selected_color = gui.getColorU32(.{ 0.98, 0.84, 0.32, 0.96 });
+    const accent_color = gui.getColorU32(.{ 0.42, 0.86, 0.78, 0.92 });
+    const muted_color = gui.getColorU32(.{ 0.54, 0.62, 0.72, 0.34 });
+
+    switch (state.mesh_edit_selection_mode) {
+        .vertex => {
+            const edges = try mesh_edit.buildEdgeList(allocator, context.mesh);
+            defer allocator.free(edges);
+            for (edges) |edge| {
+                const a = meshEditTransformPoint(context.world_transform, context.mesh.vertices[edge.a].position);
+                const b = meshEditTransformPoint(context.world_transform, context.mesh.vertices[edge.b].position);
+                drawProjectedWorldSegment(draw_list, state, layer_context, a, b, muted_color, 1.0);
+            }
+
+            for (context.mesh.vertices, 0..) |vertex, index| {
+                const world_position = meshEditTransformPoint(context.world_transform, vertex.position);
+                const screen = projectWorldPointToViewport(state, layer_context, world_position) orelse continue;
+                const is_selected = meshEditSelectionContains(state, @intCast(index));
+                draw_list.addCircleFilled(screen, if (is_selected) 5.2 else 3.4, if (is_selected) selected_color else accent_color, 18);
+            }
+        },
+        .edge => {
+            const edges = try mesh_edit.buildEdgeList(allocator, context.mesh);
+            defer allocator.free(edges);
+            for (edges, 0..) |edge, index| {
+                const a = meshEditTransformPoint(context.world_transform, context.mesh.vertices[edge.a].position);
+                const b = meshEditTransformPoint(context.world_transform, context.mesh.vertices[edge.b].position);
+                drawProjectedWorldSegment(
+                    draw_list,
+                    state,
+                    layer_context,
+                    a,
+                    b,
+                    if (meshEditSelectionContains(state, @intCast(index))) selected_color else accent_color,
+                    if (meshEditSelectionContains(state, @intCast(index))) 3.0 else 1.2,
+                );
+            }
+        },
+        .face => {
+            var face_index: usize = 0;
+            while (face_index * 3 + 2 < context.mesh.indices.len) : (face_index += 1) {
+                const triangle_offset = face_index * 3;
+                const a = meshEditTransformPoint(context.world_transform, context.mesh.vertices[context.mesh.indices[triangle_offset]].position);
+                const b = meshEditTransformPoint(context.world_transform, context.mesh.vertices[context.mesh.indices[triangle_offset + 1]].position);
+                const c = meshEditTransformPoint(context.world_transform, context.mesh.vertices[context.mesh.indices[triangle_offset + 2]].position);
+                const is_selected = meshEditSelectionContains(state, @intCast(face_index));
+                drawProjectedWorldSegment(draw_list, state, layer_context, a, b, if (is_selected) selected_color else accent_color, if (is_selected) 2.6 else 1.0);
+                drawProjectedWorldSegment(draw_list, state, layer_context, b, c, if (is_selected) selected_color else accent_color, if (is_selected) 2.6 else 1.0);
+                drawProjectedWorldSegment(draw_list, state, layer_context, c, a, if (is_selected) selected_color else accent_color, if (is_selected) 2.6 else 1.0);
+
+                if (is_selected) {
+                    const centroid = .{
+                        (a[0] + b[0] + c[0]) / 3.0,
+                        (a[1] + b[1] + c[1]) / 3.0,
+                        (a[2] + b[2] + c[2]) / 3.0,
+                    };
+                    if (projectWorldPointToViewport(state, layer_context, centroid)) |screen| {
+                        draw_list.addCircleFilled(screen, 4.0, selected_color, 14);
+                    }
+                }
+            }
+        },
+    }
+}
+
+fn meshEditSelectionContains(state: *const EditorState, element_index: u32) bool {
+    for (mesh_edit.selectedElements(state)) |selected| {
+        if (selected == element_index) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn meshEditTransformPoint(transform: engine.scene.Transform, point: [3]f32) [3]f32 {
+    return vec3.add(
+        transform.translation,
+        quat.rotateVec3(transform.rotation, .{
+            transform.scale[0] * point[0],
+            transform.scale[1] * point[1],
+            transform.scale[2] * point[2],
+        }),
+    );
+}
+
 fn rayPlaneIntersection(ray: engine.scene.Ray, plane_origin: [3]f32, plane_normal: [3]f32) ?[3]f32 {
     const normalized_normal = vec3.normalize(plane_normal);
     const denominator = vec3.dot(normalized_normal, ray.direction);
@@ -726,8 +821,6 @@ fn drawViewportSceneEntityIcons(state: *EditorState, layer_context: *engine.core
 }
 
 fn drawViewportToolbarStrip(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
-    const width = gui.contentRegionAvail()[0];
-    const transform_constraints_popup_id = "viewport_transform_constraints_popup";
     gui.pushStyleVarVec2(.item_spacing, .{ 6.0, 6.0 });
     defer gui.popStyleVar(1);
 
@@ -759,159 +852,58 @@ fn drawViewportToolbarStrip(state: *EditorState, layer_context: *engine.core.Lay
         gui.setTooltip(state.text(.scale_tool));
     }
 
+    if (mesh_edit.isEditModeActive(state) or mesh_edit.canEnterEditMode(state, layer_context)) {
+        gui.sameLine();
+        gui.pushStyleVarVec2(.item_spacing, .{ 0.0, 6.0 });
+        defer gui.popStyleVar(1);
+        if (drawSegmentedModeButton(state.text(.object_mode), !mesh_edit.isEditModeActive(state), 66.0, .first)) {
+            mesh_edit.exitEditMode(state, layer_context);
+        }
+        if (gui.isItemHovered()) gui.setTooltip(state.text(.object_mode));
+        gui.sameLine();
+        if (drawSegmentedModeButton(
+            state.text(.edit_mode),
+            mesh_edit.isEditModeActive(state),
+            58.0,
+            if (mesh_edit.isEditModeActive(state)) .middle else .last,
+        )) {
+            _ = try mesh_edit.enterEditMode(state, layer_context);
+        }
+        if (gui.isItemHovered()) gui.setTooltip(state.text(.edit_mode));
+
+        if (mesh_edit.isEditModeActive(state)) {
+            gui.sameLine();
+            if (drawSegmentedModeButton(state.text(.vertex_mode), state.mesh_edit_selection_mode == .vertex, 54.0, .middle)) {
+                mesh_edit.setSelectionMode(state, .vertex);
+            }
+            if (gui.isItemHovered()) gui.setTooltip("1");
+            gui.sameLine();
+            if (drawSegmentedModeButton(state.text(.edge_mode), state.mesh_edit_selection_mode == .edge, 46.0, .middle)) {
+                mesh_edit.setSelectionMode(state, .edge);
+            }
+            if (gui.isItemHovered()) gui.setTooltip("2");
+            gui.sameLine();
+            if (drawSegmentedModeButton(state.text(.face_mode), state.mesh_edit_selection_mode == .face, 46.0, .last)) {
+                mesh_edit.setSelectionMode(state, .face);
+            }
+            if (gui.isItemHovered()) gui.setTooltip("3");
+        }
+    }
+
+    const utility_width: f32 = 64.0;
+    const remaining_width = gui.contentRegionAvail()[0];
     gui.sameLine();
-    if (state.manipulation_mode != .none) {
-        if (drawConstraintChipButton("toolbar_axis_constraint", currentAxisConstraintShortLabel(state), state.manipulation_axis != .free)) {
-            gui.openPopup(transform_constraints_popup_id);
-        }
-        if (gui.isItemHovered()) {
-            gui.setTooltip(state.text(.axis_constraint));
-        }
-        gui.sameLine();
-    }
-    if (try drawToolbarIconButton(
-        state,
-        layer_context,
-        "toolbar_transform_constraints",
-        ui_icons.paths.toolbar.snap,
-        transformConstraintsActive(state),
-    )) {
-        gui.openPopup(transform_constraints_popup_id);
-    }
-    if (gui.isItemHovered()) {
-        gui.setTooltip(state.text(.transform_constraints));
-    }
-
+    gui.dummy(@max(remaining_width - utility_width, 8.0), 1.0);
     gui.sameLine();
-    const cursor_tool_active = state.transform_pivot_mode == .cursor or state.transform_cursor_place_mode;
-    if (try drawToolbarIconButton(
-        state,
-        layer_context,
-        "toolbar_cursor_3d",
-        ui_icons.paths.toolbar.cursor_3d,
-        cursor_tool_active,
-    )) {
-        manipulation.toggleCursorPlacementMode(state, layer_context);
+    if (try drawToolbarIconButton(state, layer_context, "toolbar_ai_chat", ui_icons.paths.toolbar.ai_chat, state.ai_chat_open)) {
+        state.ai_chat_open = !state.ai_chat_open;
     }
-    if (gui.isItemHovered()) {
-        gui.setTooltip(if (state.transform_cursor_place_mode)
-            state.text(.place_cursor)
-        else
-            state.text(.pivot_cursor));
-    }
-
-    if (gui.beginPopup(transform_constraints_popup_id)) {
-        defer gui.endPopup();
-        state.viewport_overlay_hovered = true;
-        drawTransformConstraintsPopup(state, layer_context);
-    }
-
-    // 模式切换始终显示（不受宽度限制）
+    if (gui.isItemHovered()) gui.setTooltip(state.text(.ai_chat));
     gui.sameLine();
-    try drawViewportModeZone(state, layer_context);
-
-    // 右侧工具组：Undo Source + AI Status + AI Chat + Settings + Transform Space
-    // 宽度经过压缩以允许工具栏在 ≥680px 时显示完整布局
-    const undo_source_width: f32 = 96.0;
-    const ai_status_width: f32 = 160.0;
-    const settings_icon: f32 = 28.0;
-    const transform_icon: f32 = 28.0;
-    const ai_chat_icon: f32 = 28.0;
-
-    if (width >= 680.0) {
-        // 宽布局：完整显示所有元素
-        const right_width = undo_source_width + 8.0 + ai_status_width + 8.0 + ai_chat_icon + 8.0 + settings_icon + 8.0 + transform_icon;
-        gui.sameLine();
-        gui.dummy(@max(gui.contentRegionAvail()[0] - right_width, 10.0), 1.0);
-        gui.sameLine();
-        drawToolbarUndoSourceChip(state);
-        gui.sameLine();
-        drawToolbarAiStatusCapsule(state);
-        gui.sameLine();
-        if (try drawToolbarIconButton(state, layer_context, "toolbar_ai_chat", ui_icons.paths.toolbar.ai_chat, state.ai_chat_open)) {
-            state.ai_chat_open = !state.ai_chat_open;
-        }
-        if (gui.isItemHovered()) gui.setTooltip(state.text(.ai_chat));
-        gui.sameLine();
-        if (try drawToolbarIconButton(state, layer_context, "toolbar_settings", ui_icons.paths.toolbar.settings, state.render_settings_open)) {
-            state.render_settings_open = !state.render_settings_open;
-        }
-        if (gui.isItemHovered()) gui.setTooltip(state.text(.render_settings));
-        gui.sameLine();
-        try drawTransformSpaceButton(state, layer_context, "toolbar_transform_space");
-    } else if (width >= 460.0) {
-        // 中等布局：省略 AI Status
-        const right_width = undo_source_width + 8.0 + ai_chat_icon + 8.0 + settings_icon + 8.0 + transform_icon;
-        gui.sameLine();
-        gui.dummy(@max(gui.contentRegionAvail()[0] - right_width, 10.0), 1.0);
-        gui.sameLine();
-        drawToolbarUndoSourceChip(state);
-        gui.sameLine();
-        if (try drawToolbarIconButton(state, layer_context, "toolbar_ai_chat_m", ui_icons.paths.toolbar.ai_chat, state.ai_chat_open)) {
-            state.ai_chat_open = !state.ai_chat_open;
-        }
-        if (gui.isItemHovered()) gui.setTooltip(state.text(.ai_chat));
-        gui.sameLine();
-        if (try drawToolbarIconButton(state, layer_context, "toolbar_settings_m", ui_icons.paths.toolbar.settings, state.render_settings_open)) {
-            state.render_settings_open = !state.render_settings_open;
-        }
-        if (gui.isItemHovered()) gui.setTooltip(state.text(.render_settings));
-        gui.sameLine();
-        try drawTransformSpaceButton(state, layer_context, "toolbar_transform_space_m");
-    } else {
-        // 窄布局：只保留图标按钮
-        const right_width = ai_chat_icon + 8.0 + settings_icon + 8.0 + transform_icon;
-        gui.sameLine();
-        gui.dummy(@max(gui.contentRegionAvail()[0] - right_width, 4.0), 1.0);
-        gui.sameLine();
-        if (try drawToolbarIconButton(state, layer_context, "toolbar_ai_chat_s", ui_icons.paths.toolbar.ai_chat, state.ai_chat_open)) {
-            state.ai_chat_open = !state.ai_chat_open;
-        }
-        if (gui.isItemHovered()) gui.setTooltip(state.text(.ai_chat));
-        gui.sameLine();
-        if (try drawToolbarIconButton(state, layer_context, "toolbar_settings_s", ui_icons.paths.toolbar.settings, state.render_settings_open)) {
-            state.render_settings_open = !state.render_settings_open;
-        }
-        if (gui.isItemHovered()) gui.setTooltip(state.text(.render_settings));
-        gui.sameLine();
-        try drawTransformSpaceButton(state, layer_context, "toolbar_transform_space_s");
+    if (try drawToolbarIconButton(state, layer_context, "toolbar_settings", ui_icons.paths.toolbar.settings, state.render_settings_open)) {
+        state.render_settings_open = !state.render_settings_open;
     }
-}
-
-fn drawTransformSpaceButton(state: *EditorState, layer_context: *engine.core.LayerContext, id: []const u8) !void {
-    const transform_icon_path = switch (state.transform_space) {
-        .local => ui_icons.paths.toolbar.transform_local,
-        .world => ui_icons.paths.toolbar.transform_global,
-    };
-    const is_world = state.transform_space == .world;
-    if (try drawToolbarIconButton(state, layer_context, id, transform_icon_path, is_world)) {
-        state.transform_space = switch (state.transform_space) {
-            .local => .world,
-            .world => .local,
-        };
-    }
-    if (gui.isItemHovered()) {
-        gui.setTooltip(if (is_world) state.text(.world_space) else state.text(.local_space));
-    }
-}
-
-fn drawViewportModeZone(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
-    gui.pushStyleVarVec2(.item_spacing, .{ 4.0, 4.0 });
-    defer gui.popStyleVar(1);
-
-    const shading_mode = state_mod.viewportShadingMode(state);
-
-    if (drawModeButton(state.text(.solid_view), shading_mode == .solid, 64.0)) {
-        applyViewportShadingMode(state, layer_context, .solid);
-    }
-    gui.sameLine();
-    if (drawModeButton(state.text(.material_view), shading_mode == .material, 72.0)) {
-        applyViewportShadingMode(state, layer_context, .material);
-    }
-    gui.sameLine();
-    if (drawModeButton(state.text(.rendered_view), shading_mode == .rendered, 76.0)) {
-        applyViewportShadingMode(state, layer_context, .rendered);
-    }
+    if (gui.isItemHovered()) gui.setTooltip(state.text(.render_settings));
 }
 
 fn applyViewportShadingMode(
@@ -926,15 +918,30 @@ fn applyViewportShadingMode(
     }
 }
 
-fn drawModeButton(label: []const u8, active: bool, width: f32) bool {
+const SegmentedButtonPosition = enum {
+    single,
+    first,
+    middle,
+    last,
+};
+
+fn drawSegmentedModeButton(label: []const u8, active: bool, width: f32, position: SegmentedButtonPosition) bool {
     const palette = if (active)
         ui_icons.palettes.toolbar_active
     else
         ui_icons.palettes.toolbar_idle;
+    const rounding: f32 = switch (position) {
+        .single, .first, .last => 8.0,
+        .middle => 0.0,
+    };
     gui.pushStyleColor(.button, palette.button);
     gui.pushStyleColor(.button_hovered, palette.hovered);
     gui.pushStyleColor(.button_active, palette.active);
-    defer gui.popStyleColor(3);
+    gui.pushStyleVarFloat(.frame_rounding, rounding);
+    defer {
+        gui.popStyleVar(1);
+        gui.popStyleColor(3);
+    }
     return gui.buttonEx(label, width, 0.0);
 }
 
@@ -1115,96 +1122,6 @@ fn toggleAxisConstraint(state: *EditorState, axis: state_mod.AxisConstraint) voi
     state.manipulation_axis = if (state.manipulation_axis == axis) .free else axis;
 }
 
-fn currentAxisConstraintShortLabel(state: *const EditorState) []const u8 {
-    return switch (state.manipulation_axis) {
-        .free => state.text(.free_axis),
-        .x => "X",
-        .y => "Y",
-        .z => "Z",
-    };
-}
-
-fn drawToolbarUndoSourceChip(state: *EditorState) void {
-    const total_history_commands = state.undo_stack.items.len + state.redo_stack.items.len;
-    const available_entries = @min(total_history_commands, state.timeline_entries.items.len);
-    const timeline_start_index = state.timeline_entries.items.len -| available_entries;
-    const cursor = state.undo_stack.items.len;
-    const has_entry = cursor > 0 and available_entries > 0;
-    const source = if (has_entry)
-        state.timeline_entries.items[timeline_start_index + cursor - 1].source
-    else
-        timeline_mod.TimelineSource.human;
-    const label = if (!has_entry)
-        "Undo: —"
-    else if (source == .ai)
-        "Undo: AI"
-    else
-        "Undo: Human";
-
-    gui.pushStyleColor(.button, .{ 0.16, 0.17, 0.19, 0.92 });
-    gui.pushStyleColor(.button_hovered, .{ 0.16, 0.17, 0.19, 0.92 });
-    gui.pushStyleColor(.button_active, .{ 0.16, 0.17, 0.19, 0.92 });
-    gui.pushStyleColor(.text, source.colorRgba());
-    defer gui.popStyleColor(4);
-    _ = gui.buttonEx(label, 96.0, 0.0);
-}
-
-fn drawToolbarAiStatusCapsule(state: *EditorState) void {
-    const store = state.ai_collaboration;
-    const status = if (store) |value| value.aiStatusSnapshot() else null;
-    const stage_label = if (status) |value|
-        switch (value.stage) {
-            .ready => "Ready",
-            .analyzing_screenshot => "Analyzing Screenshot",
-            .compiling_shader => "Compiling Shader",
-            .waiting_approval => "Waiting Approval",
-        }
-    else
-        "Offline";
-
-    const detail = if (status) |value|
-        if (value.detail.len > 0) value.detail.slice() else "idle"
-    else
-        "Bridge unavailable";
-
-    var detail_short_buffer: [112]u8 = undefined;
-    const detail_short: []const u8 = if (detail.len <= 16)
-        detail
-    else blk: {
-        const prefix_len: usize = @min(13, detail.len);
-        @memcpy(detail_short_buffer[0..prefix_len], detail[0..prefix_len]);
-        detail_short_buffer[prefix_len] = '.';
-        detail_short_buffer[prefix_len + 1] = '.';
-        detail_short_buffer[prefix_len + 2] = '.';
-        break :blk detail_short_buffer[0 .. prefix_len + 3];
-    };
-
-    var label_buffer: [192]u8 = undefined;
-    const label = std.fmt.bufPrint(&label_buffer, "AI: {s}", .{detail_short}) catch "AI";
-
-    const bg: [4]f32 = if (store == null)
-        .{ 0.32, 0.20, 0.20, 0.92 }
-    else if (status != null and status.?.stage == .waiting_approval)
-        .{ 0.30, 0.24, 0.45, 0.92 }
-    else if (status != null and status.?.stage == .compiling_shader)
-        .{ 0.30, 0.28, 0.18, 0.92 }
-    else if (status != null and status.?.stage == .analyzing_screenshot)
-        .{ 0.19, 0.30, 0.40, 0.92 }
-    else
-        .{ 0.18, 0.33, 0.25, 0.92 };
-
-    gui.pushStyleColor(.button, bg);
-    gui.pushStyleColor(.button_hovered, bg);
-    gui.pushStyleColor(.button_active, bg);
-    defer gui.popStyleColor(3);
-    _ = gui.buttonEx(label, 160.0, 0.0);
-    if (gui.isItemHovered()) {
-        var tip_buffer: [448]u8 = undefined;
-        const tip = std.fmt.bufPrint(&tip_buffer, "Stage: {s}\nDetail: {s}", .{ stage_label, detail }) catch detail;
-        gui.setTooltip(tip);
-    }
-}
-
 pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     var title_buffer: [80]u8 = undefined;
     const title = try state.windowLabel(&title_buffer, .viewport, "viewport_panel");
@@ -1303,6 +1220,7 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
         try drawViewportDebugOverlayWindow(state, layer_context);
         try ai_collaboration.drawViewportCollaborationOverlay(state, layer_context);
         drawViewport3DCursor(state, layer_context);
+        try drawMeshEditOverlay(state, layer_context);
         drawViewportCameraFrustums(state, layer_context);
         try drawViewportSceneEntityIcons(state, layer_context);
         drawViewportViewCube(state, layer_context);
@@ -1537,6 +1455,9 @@ pub fn handleViewportSelection(state: *EditorState, layer_context: *engine.core.
         const viewport_size = layer_context.renderer.sceneViewportSize();
         if (camera.activeCameraRayFromViewportPixel(state, layer_context, pixel, viewport_size)) |ray| {
             const mode = selectionUpdateModeForInput(input);
+            if (try mesh_edit.handleViewportSelection(state, layer_context, ray, mode)) {
+                return;
+            }
             if (try ai_collaboration.trySelectPreviewEntity(state, layer_context, ray, mode)) {
                 viewport_log.info("preview selection hit mode={s}", .{@tagName(mode)});
                 return;
@@ -1618,6 +1539,15 @@ fn drawViewportContextMenu(state: *EditorState, layer_context: *engine.core.Laye
         }
         if (gui.menuItem(state.text(.scale_tool), "R", state.manipulation_mode == .scale, true)) {
             try manipulation.activateTransformTool(state, layer_context, .scale);
+        }
+        if (mesh_edit.isEditModeActive(state) or mesh_edit.canEnterEditMode(state, layer_context)) {
+            gui.separator();
+            if (gui.menuItem(state.text(.object_mode), "Tab", !mesh_edit.isEditModeActive(state), true)) {
+                mesh_edit.exitEditMode(state, layer_context);
+            }
+            if (gui.menuItem(state.text(.edit_mode), "Tab", mesh_edit.isEditModeActive(state), true)) {
+                _ = try mesh_edit.enterEditMode(state, layer_context);
+            }
         }
         gui.separator();
         if (gui.menuItem(state.text(.delete), null, false, has_selection)) {
@@ -2076,11 +2006,11 @@ fn handleViewportAssetDropTargets(state: *EditorState, layer_context: *engine.co
 
 fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const view_popup_id = "viewport_view_popup";
-    const render_popup_id = "viewport_render_popup";
-    const overlay_popup_id = "viewport_overlay_popup";
+    const display_popup_id = "viewport_display_popup";
+    const snap_popup_id = "viewport_snap_popup";
     const view_popup_open = gui.isPopupOpen(view_popup_id);
-    const render_popup_open = gui.isPopupOpen(render_popup_id);
-    const overlay_popup_open = gui.isPopupOpen(overlay_popup_id);
+    const display_popup_open = gui.isPopupOpen(display_popup_id);
+    const snap_popup_open = gui.isPopupOpen(snap_popup_id);
 
     const overlay_pos = .{
         state.viewport_origin[0] + 14.0,
@@ -2102,7 +2032,13 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
     gui.pushStyleVarVec2(.item_spacing, .{ 6.0, 4.0 });
     defer gui.popStyleVar(1);
 
-    if (try drawOverlayIconButton(state, layer_context, "viewport_overlay_view", currentViewPresetIcon(state), view_popup_open)) {
+    if (try drawOverlayMenuButton(
+        state,
+        layer_context,
+        "viewport_overlay_view",
+        state.text(.view_menu),
+        view_popup_open or state.viewport_view_preset != .perspective or state_mod.viewportShadingMode(state) != .material,
+    )) {
         gui.openPopup(view_popup_id);
     }
     if (gui.isItemHovered()) {
@@ -2110,6 +2046,7 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
     }
     if (gui.beginPopup(view_popup_id)) {
         defer gui.endPopup();
+        gui.text(state.text(.view_presets));
         if (gui.menuItem(state.text(.perspective_view), null, state.viewport_view_preset == .perspective, true)) {
             camera.setViewPreset(state, layer_context, .perspective);
         }
@@ -2119,17 +2056,8 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
         if (gui.menuItem(state.text(.side_view), null, state.viewport_view_preset == .side, true)) {
             camera.setViewPreset(state, layer_context, .side);
         }
-    }
-    gui.sameLine();
-
-    if (try drawOverlayIconButton(state, layer_context, "viewport_overlay_render", currentRenderModeIcon(state), render_popup_open)) {
-        gui.openPopup(render_popup_id);
-    }
-    if (gui.isItemHovered()) {
-        gui.setTooltip(state.text(.viewport_shading_mode_tooltip));
-    }
-    if (gui.beginPopup(render_popup_id)) {
-        defer gui.endPopup();
+        gui.separator();
+        gui.text(state.text(.render_modes));
         const shading_mode = state_mod.viewportShadingMode(state);
         if (gui.menuItem(state.text(.solid_view), null, shading_mode == .solid, true)) {
             applyViewportShadingMode(state, layer_context, .solid);
@@ -2146,13 +2074,19 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
     }
     gui.sameLine();
 
-    if (try drawOverlayIconButton(state, layer_context, "viewport_overlay_options", ui_icons.paths.toolbar.overlay, overlay_popup_open)) {
-        gui.openPopup(overlay_popup_id);
+    if (try drawOverlayMenuButton(
+        state,
+        layer_context,
+        "viewport_overlay_display",
+        state.text(.display_menu),
+        display_popup_open or !state.viewport_show_grid or state.viewport_show_bones or state.viewport_show_collision,
+    )) {
+        gui.openPopup(display_popup_id);
     }
     if (gui.isItemHovered()) {
         gui.setTooltip(state.text(.overlay_options));
     }
-    if (gui.beginPopup(overlay_popup_id)) {
+    if (gui.beginPopup(display_popup_id)) {
         defer gui.endPopup();
         if (gui.menuItem(state.text(.show_grid), null, state.viewport_show_grid, true)) {
             state.viewport_show_grid = !state.viewport_show_grid;
@@ -2166,41 +2100,22 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
     }
     gui.sameLine();
 
-    const overlay_constraints_popup_id = "viewport_overlay_transform_constraints_popup";
-    if (try drawOverlayIconButton(
+    if (try drawOverlayMenuButton(
         state,
         layer_context,
-        "viewport_overlay_transform_constraints",
-        ui_icons.paths.toolbar.snap,
-        transformConstraintsActive(state),
+        "viewport_overlay_snap",
+        state.text(.snap_menu),
+        snap_popup_open or transformConstraintsActive(state),
     )) {
-        gui.openPopup(overlay_constraints_popup_id);
+        gui.openPopup(snap_popup_id);
     }
     if (gui.isItemHovered()) {
         gui.setTooltip(state.text(.transform_constraints));
     }
-    if (gui.beginPopup(overlay_constraints_popup_id)) {
+    if (gui.beginPopup(snap_popup_id)) {
         defer gui.endPopup();
         state.viewport_overlay_hovered = true;
         drawTransformConstraintsPopup(state, layer_context);
-    }
-    gui.sameLine();
-
-    const overlay_cursor_tool_active = state.transform_pivot_mode == .cursor or state.transform_cursor_place_mode;
-    if (try drawOverlayIconButton(
-        state,
-        layer_context,
-        "viewport_overlay_cursor_3d",
-        ui_icons.paths.toolbar.cursor_3d,
-        overlay_cursor_tool_active,
-    )) {
-        manipulation.toggleCursorPlacementMode(state, layer_context);
-    }
-    if (gui.isItemHovered()) {
-        gui.setTooltip(if (state.transform_cursor_place_mode)
-            state.text(.place_cursor)
-        else
-            state.text(.pivot_cursor));
     }
 
     // Show camera speed indicator when shift is held
@@ -2209,7 +2124,7 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
         gui.text("3x");
     }
 
-    if (view_popup_open or render_popup_open or overlay_popup_open) {
+    if (view_popup_open or display_popup_open or snap_popup_open) {
         state.viewport_overlay_hovered = true;
     }
 }
@@ -2668,30 +2583,4 @@ fn drawViewportViewCube(state: *EditorState, layer_context: *engine.core.LayerCo
         .bottom => camera.lookAlongWorldAxis(state, layer_context, .{ 0.0, 1.0, 0.0 }),
         .none => {},
     }
-}
-
-fn currentRenderModeLabel(state: *const EditorState) []const u8 {
-    return switch (state_mod.viewportShadingMode(state)) {
-        .solid => state.text(.solid_view),
-        .material => state.text(.material_view),
-        .rendered => state.text(.rendered_view),
-        .wireframe => state.text(.wireframe),
-    };
-}
-
-fn currentViewPresetIcon(state: *const EditorState) []const u8 {
-    return switch (state.viewport_view_preset) {
-        .perspective, .custom => ui_icons.paths.viewport.perspective,
-        .top => ui_icons.paths.viewport.top,
-        .side => ui_icons.paths.viewport.side,
-    };
-}
-
-fn currentRenderModeIcon(state: *const EditorState) []const u8 {
-    return switch (state_mod.viewportShadingMode(state)) {
-        .solid => ui_icons.paths.viewport.solid,
-        .material => ui_icons.paths.viewport.material,
-        .rendered => ui_icons.paths.viewport.rendered,
-        .wireframe => ui_icons.paths.viewport.wireframe,
-    };
 }

@@ -43,17 +43,20 @@ pub const MeshResourceDesc = struct {
     primitive_type: rhi_types.PrimitiveType = .triangle_list,
 };
 
-pub fn clone(allocator: std.mem.Allocator, desc: MeshResourceDesc) !MeshResource {
+pub fn computeLocalBounds(vertices: []const Vertex) AABB {
     var local_bounds = AABB.empty();
-    for (desc.vertices) |vertex| {
+    for (vertices) |vertex| {
         local_bounds.expand(vertex.position);
     }
+    return local_bounds;
+}
 
+pub fn clone(allocator: std.mem.Allocator, desc: MeshResourceDesc) !MeshResource {
     return .{
         .name = try allocator.dupe(u8, desc.name),
         .vertices = try allocator.dupe(Vertex, desc.vertices),
         .indices = try allocator.dupe(u32, desc.indices),
         .primitive_type = desc.primitive_type,
-        .local_bounds = local_bounds,
+        .local_bounds = computeLocalBounds(desc.vertices),
     };
 }

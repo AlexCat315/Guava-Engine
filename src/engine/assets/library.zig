@@ -211,6 +211,17 @@ pub const ResourceLibrary = struct {
         return &self.meshes.items[index];
     }
 
+    pub fn meshMutable(self: *ResourceLibrary, handle: handles.MeshHandle) ?*mesh_mod.MeshResource {
+        if (!handles.isValid(handle)) {
+            return null;
+        }
+        const index = handles.indexOf(handle);
+        if (index >= self.meshes.items.len) {
+            return null;
+        }
+        return &self.meshes.items[index];
+    }
+
     pub fn material(self: *const ResourceLibrary, handle: handles.MaterialHandle) ?*const material_mod.MaterialResource {
         if (!handles.isValid(handle)) {
             return null;

@@ -82,6 +82,17 @@ pub const TranslationSnapTarget = enum {
     vertex,
 };
 
+pub const MeshEditMode = enum {
+    object,
+    edit,
+};
+
+pub const MeshElementSelectionMode = enum {
+    vertex,
+    edge,
+    face,
+};
+
 pub const ManipulationTarget = enum {
     main_world,
     staged_preview,
@@ -441,6 +452,10 @@ pub const EditorState = struct {
     translation_drag_sensitivity: f32 = 0.0025,
     rotation_drag_sensitivity: f32 = 0.01,
     scale_drag_sensitivity: f32 = 0.01,
+    mesh_edit_mode: MeshEditMode = .object,
+    mesh_edit_entity: ?engine.scene.EntityId = null,
+    mesh_edit_selection_mode: MeshElementSelectionMode = .face,
+    mesh_edit_selected_elements: std.ArrayList(u32) = .empty,
     transform_pivot_mode: TransformPivotMode = .origin,
     transform_cursor_world_position: [3]f32 = .{ 0.0, 0.0, 0.0 },
     transform_cursor_place_mode: bool = false,
@@ -823,6 +838,9 @@ pub const EditorState = struct {
         self.ai_preview_entities = .empty;
         self.ai_preview_selected_entity = null;
         self.clearOwnedClipboards();
+        self.mesh_edit_selected_elements.deinit(allocator);
+        self.mesh_edit_selected_elements = .empty;
+        self.mesh_edit_entity = null;
         if (self.manipulation_snapshot) |*snapshot| {
             snapshot.deinit(allocator);
             self.manipulation_snapshot = null;
@@ -964,6 +982,10 @@ test "viewport drop defaults and payload constants stay stable" {
     try std.testing.expectEqual(@as(f32, 0.0025), state.translation_drag_sensitivity);
     try std.testing.expectEqual(@as(f32, 0.01), state.rotation_drag_sensitivity);
     try std.testing.expectEqual(@as(f32, 0.01), state.scale_drag_sensitivity);
+    try std.testing.expectEqual(MeshEditMode.object, state.mesh_edit_mode);
+    try std.testing.expectEqual(@as(?engine.scene.EntityId, null), state.mesh_edit_entity);
+    try std.testing.expectEqual(MeshElementSelectionMode.face, state.mesh_edit_selection_mode);
+    try std.testing.expectEqual(@as(usize, 0), state.mesh_edit_selected_elements.items.len);
     try std.testing.expectEqual(TransformPivotMode.origin, state.transform_pivot_mode);
     try std.testing.expectEqual([3]f32{ 0.0, 0.0, 0.0 }, state.transform_cursor_world_position);
     try std.testing.expect(!state.transform_cursor_place_mode);

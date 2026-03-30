@@ -791,6 +791,11 @@ pub const Renderer = struct {
         self.editor_gizmo_transform_override = transform;
     }
 
+    pub fn invalidateMainWorldMeshResource(self: *Renderer, handle: handles.MeshHandle) void {
+        self.scene_cache.invalidateMeshResource(&self.rhi, handle);
+        self.resetPathTraceState();
+    }
+
     pub fn setPreviewGizmoTransform(self: *Renderer, transform: ?components.Transform) void {
         self.preview_gizmo_transform = transform;
     }

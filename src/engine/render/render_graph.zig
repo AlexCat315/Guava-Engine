@@ -103,12 +103,28 @@ pub const ResourceNode = struct {
     transient: bool = true,
 };
 
+pub const BarrierState = enum {
+    unknown,
+    shader_read,
+    shader_write,
+    shader_read_write,
+    render_target,
+    depth_write,
+    depth_read,
+    copy_source,
+    copy_dest,
+    present,
+};
+
 /// Resource usage descriptor: which resource and how a pass accesses it.
 pub const PassResourceUse = struct {
     /// Index into RenderGraph.resources array.
     resource: u16,
     /// Read, write, or read-write access.
     access: ResourceAccess,
+    /// Optional explicit state override for platforms that need more precise
+    /// synchronization semantics than read/write alone can express.
+    state: BarrierState = .unknown,
 };
 
 /// Declarative rendering pass descriptor. User populates this; compile() generates execution order.
@@ -149,6 +165,10 @@ pub const DependencyEdge = struct {
     previous_access: ResourceAccess,
     /// How the consumer accesses the resource (usually read).
     next_access: ResourceAccess,
+    /// Explicit state used by the producer after inference/override.
+    previous_state: BarrierState,
+    /// Explicit state used by the consumer after inference/override.
+    next_state: BarrierState,
     /// true if passes execute on different queues; requires queue synchronization primitive.
     cross_queue: bool,
 };
@@ -183,14 +203,6 @@ pub const CompiledPass = struct {
     dependency_count: usize,
 };
 
-pub const BarrierState = enum {
-    unknown,
-    shader_read,
-    shader_write,
-    shader_read_write,
-    present,
-};
-
 pub const BarrierPlan = struct {
     from_pass: u16,
     to_pass: u16,
@@ -218,6 +230,7 @@ const AccessState = struct {
     pass: u16,
     access: ResourceAccess,
     queue: QueueClass,
+    state: BarrierState,
 };
 
 const GraphJson = struct {
@@ -476,11 +489,31 @@ pub const RenderGraph = struct {
 
             // Process input resources (reads)
             for (pass.inputs) |input| {
-                try registerResourceUse(self.allocator, &dependencies, &dependency_counts, resource_lifetimes, last_access, pass_index, pass.queue, input);
+                try registerResourceUse(
+                    self.allocator,
+                    self.resources.items,
+                    &dependencies,
+                    &dependency_counts,
+                    resource_lifetimes,
+                    last_access,
+                    pass_index,
+                    pass.queue,
+                    input,
+                );
             }
             // Process output resources (writes)
             for (pass.outputs) |output| {
-                try registerResourceUse(self.allocator, &dependencies, &dependency_counts, resource_lifetimes, last_access, pass_index, pass.queue, output);
+                try registerResourceUse(
+                    self.allocator,
+                    self.resources.items,
+                    &dependencies,
+                    &dependency_counts,
+                    resource_lifetimes,
+                    last_access,
+                    pass_index,
+                    pass.queue,
+                    output,
+                );
             }
 
             // Append compiled pass with final dependency count
@@ -536,15 +569,14 @@ pub const RenderGraph = struct {
         defer plans.deinit(allocator);
 
         for (compiled.dependencies) |edge| {
-            const resource_node = self.resources.items[edge.resource];
             try plans.append(allocator, .{
                 .from_pass = edge.from_pass,
                 .to_pass = edge.to_pass,
                 .resource = edge.resource,
                 .src_queue = compiled.execution[edge.from_pass].queue,
                 .dst_queue = compiled.execution[edge.to_pass].queue,
-                .src_state = accessToBarrierState(edge.previous_access, resource_node.kind),
-                .dst_state = accessToBarrierState(edge.next_access, resource_node.kind),
+                .src_state = edge.previous_state,
+                .dst_state = edge.next_state,
                 .cross_queue = edge.cross_queue,
             });
         }
@@ -578,14 +610,25 @@ pub const RenderGraph = struct {
         const plans = try self.buildBarrierPlanAlloc(allocator);
         defer allocator.free(plans);
         for (plans) |plan| {
-            try cmd.encodePipelineBarrier(.{
-                .resource_id = plan.resource,
-                .src_state_bits = barrierStateToBits(plan.src_state),
-                .dst_state_bits = barrierStateToBits(plan.dst_state),
-                .src_queue = @intCast(@intFromEnum(plan.src_queue)),
-                .dst_queue = @intCast(@intFromEnum(plan.dst_queue)),
-            });
+            try encodeBarrierTransition(cmd, plan.resource, plan.src_state, plan.dst_state, plan.src_queue, plan.dst_queue);
         }
+    }
+
+    pub fn encodeBarrierTransition(
+        cmd: *rhi.CommandBuffer,
+        resource_id: u32,
+        src_state: BarrierState,
+        dst_state: BarrierState,
+        src_queue: QueueClass,
+        dst_queue: QueueClass,
+    ) !void {
+        try cmd.encodePipelineBarrier(.{
+            .resource_id = resource_id,
+            .src_state_bits = barrierStateToBits(src_state),
+            .dst_state_bits = barrierStateToBits(dst_state),
+            .src_queue = @intCast(@intFromEnum(src_queue)),
+            .dst_queue = @intCast(@intFromEnum(dst_queue)),
+        });
     }
 
     /// Slot-layout consistency validation error returned by validateSlotLayoutConstraints.
@@ -748,6 +791,7 @@ pub const RenderGraph = struct {
 
 fn registerResourceUse(
     allocator: std.mem.Allocator,
+    resources: []const ResourceNode,
     dependencies: *std.ArrayList(DependencyEdge),
     dependency_counts: *std.ArrayList(usize),
     lifetimes: []ResourceLifetime,
@@ -760,6 +804,9 @@ fn registerResourceUse(
         return error.ResourceIndexOutOfBounds;
     }
 
+    const resource_node = resources[use_ref.resource];
+    const resolved_state = resolveBarrierState(use_ref, resource_node.kind);
+
     var lifetime = &lifetimes[use_ref.resource];
     if (lifetime.first_use_pass == null) {
         lifetime.first_use_pass = pass_index;
@@ -767,21 +814,26 @@ fn registerResourceUse(
     lifetime.last_use_pass = pass_index;
 
     if (last_access[use_ref.resource]) |previous| {
-        try appendDependencyIfMissing(allocator, dependencies, .{
-            .from_pass = previous.pass,
-            .to_pass = pass_index,
-            .resource = use_ref.resource,
-            .previous_access = previous.access,
-            .next_access = use_ref.access,
-            .cross_queue = previous.queue != queue,
-        });
-        dependency_counts.items[pass_index] = dependencyCountsForPass(dependencies.items, pass_index);
+        if (dependencyRequired(previous.access, use_ref.access) or previous.queue != queue or previous.state != resolved_state) {
+            try appendDependencyIfMissing(allocator, dependencies, .{
+                .from_pass = previous.pass,
+                .to_pass = pass_index,
+                .resource = use_ref.resource,
+                .previous_access = previous.access,
+                .next_access = use_ref.access,
+                .previous_state = previous.state,
+                .next_state = resolved_state,
+                .cross_queue = previous.queue != queue,
+            });
+            dependency_counts.items[pass_index] = dependencyCountsForPass(dependencies.items, pass_index);
+        }
     }
 
     last_access[use_ref.resource] = .{
         .pass = pass_index,
         .access = use_ref.access,
         .queue = queue,
+        .state = resolved_state,
     };
 }
 
@@ -804,12 +856,35 @@ fn dependencyCountsForPass(edges: []const DependencyEdge, pass_index: u16) usize
     return count;
 }
 
-fn accessToBarrierState(access: ResourceAccess, kind: ResourceKind) BarrierState {
-    if (kind == .swapchain and access == .write) return .present;
-    return switch (access) {
-        .read => .shader_read,
-        .write => .shader_write,
-        .read_write => .shader_read_write,
+fn dependencyRequired(previous: ResourceAccess, next: ResourceAccess) bool {
+    if (previous == .read and next == .read) return false;
+    return true;
+}
+
+fn resolveBarrierState(use_ref: PassResourceUse, kind: ResourceKind) BarrierState {
+    if (use_ref.state != .unknown) return use_ref.state;
+
+    return switch (kind) {
+        .shadow_map => switch (use_ref.access) {
+            .read => .shader_read,
+            .write => .depth_write,
+            .read_write => .depth_write,
+        },
+        .depth => switch (use_ref.access) {
+            .read => .depth_read,
+            .write => .depth_write,
+            .read_write => .depth_write,
+        },
+        .scene_color, .lit_color, .post_color, .id_buffer => switch (use_ref.access) {
+            .read => .shader_read,
+            .write => .render_target,
+            .read_write => .render_target,
+        },
+        .swapchain => switch (use_ref.access) {
+            .read => .shader_read,
+            .write => .render_target,
+            .read_write => .render_target,
+        },
     };
 }
 
@@ -819,6 +894,11 @@ fn barrierStateToBits(state: BarrierState) u32 {
         .shader_read => (rhi.ResourceStates{ .shader_resource = true }).asBits(),
         .shader_write => (rhi.ResourceStates{ .unordered_access = true }).asBits(),
         .shader_read_write => (rhi.ResourceStates{ .shader_resource = true, .unordered_access = true }).asBits(),
+        .render_target => (rhi.ResourceStates{ .render_target = true }).asBits(),
+        .depth_write => (rhi.ResourceStates{ .depth_write = true }).asBits(),
+        .depth_read => (rhi.ResourceStates{ .depth_read = true }).asBits(),
+        .copy_source => (rhi.ResourceStates{ .copy_source = true }).asBits(),
+        .copy_dest => (rhi.ResourceStates{ .copy_dest = true }).asBits(),
         .present => (rhi.ResourceStates{ .present = true }).asBits(),
     };
 }
@@ -881,4 +961,48 @@ test "render graph builds barrier plans" {
 
     try std.testing.expect(plans.len > 0);
     try std.testing.expect(plans[0].to_pass >= plans[0].from_pass);
+}
+
+test "render graph infers depth and render target barrier states" {
+    var graph = try RenderGraph.initDefault3D(std.testing.allocator);
+    defer graph.deinit();
+
+    const plans = try graph.buildBarrierPlanAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(plans);
+
+    var saw_depth_transition = false;
+    var saw_render_target_transition = false;
+    for (plans) |plan| {
+        if (plan.src_state == .depth_write and plan.dst_state == .depth_read) {
+            saw_depth_transition = true;
+        }
+        if (plan.src_state == .render_target and plan.dst_state == .shader_read) {
+            saw_render_target_transition = true;
+        }
+    }
+
+    try std.testing.expect(saw_depth_transition);
+    try std.testing.expect(saw_render_target_transition);
+}
+
+test "render graph skips same-queue read after read dependency" {
+    var graph = RenderGraph.init(std.testing.allocator);
+    defer graph.deinit();
+
+    const scene_color = try graph.addResource(.{ .name = "SceneColor", .kind = .scene_color });
+    try graph.addPass(.{
+        .name = "ReadA",
+        .kind = .post_process,
+        .inputs = &.{.{ .resource = scene_color, .access = .read }},
+    });
+    try graph.addPass(.{
+        .name = "ReadB",
+        .kind = .post_process,
+        .inputs = &.{.{ .resource = scene_color, .access = .read }},
+    });
+    try graph.compile();
+
+    const plans = try graph.buildBarrierPlanAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(plans);
+    try std.testing.expectEqual(@as(usize, 0), plans.len);
 }

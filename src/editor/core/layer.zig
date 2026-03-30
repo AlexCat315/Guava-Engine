@@ -5,6 +5,7 @@ const EditorState = @import("state.zig").EditorState;
 const utils = @import("../common/utils.zig");
 const ai_collaboration = @import("../ai_native/collaboration.zig");
 const camera = @import("../interaction/camera.zig");
+const mesh_edit = @import("../interaction/mesh_edit.zig");
 const manipulation = @import("../interaction/manipulation.zig");
 const viewport = @import("../ui/viewport.zig");
 const icon_cache = @import("../ui/icon_cache.zig");
@@ -253,6 +254,7 @@ pub const EditorLayer = struct {
 
         ai_collaboration.beginFrame(&self.state);
         history.tickDeferredSnapshot(&self.state, layer_context.world);
+        try mesh_edit.syncSession(&self.state, layer_context);
         try vfx_runtime.update(layer_context);
         try history.pruneMissingSelection(&self.state, layer_context);
         utils.pruneFrozenEntities(&self.state, layer_context.world);
@@ -269,10 +271,14 @@ pub const EditorLayer = struct {
         }
         try viewport.drawEditorUi(&self.state, &self.post_process_viewport_state, layer_context);
         try content_browser.flushMaterialThumbnailRequests(&self.state, layer_context);
-        try manipulation.handleEditingShortcuts(&self.state, layer_context);
+        const mesh_edit_consumed = try mesh_edit.handleEditingShortcuts(&self.state, layer_context);
+        if (!mesh_edit_consumed and !mesh_edit.isEditModeActive(&self.state)) {
+            try manipulation.handleEditingShortcuts(&self.state, layer_context);
+        }
         manipulation.updateActiveTransform(&self.state, layer_context);
         camera.handleCameraControls(&self.state, layer_context);
         try viewport.handleViewportSelection(&self.state, layer_context);
+        try mesh_edit.syncSession(&self.state, layer_context);
         manipulation.refreshGizmoState(&self.state, layer_context);
         ai_collaboration.syncContext(&self.state, layer_context) catch |err| {
             std.log.warn("failed to sync AI collaboration context: {s}", .{@errorName(err)});

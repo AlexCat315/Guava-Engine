@@ -164,13 +164,14 @@ pub const SSRPass = struct {
             try g.encodeBarrierPlansToCommandBuffer(allocator, device, &cmd);
         }
 
-        try cmd.encodePipelineBarrier(.{
-            .resource_id = input_resource_id,
-            .src_state_bits = (rhi.ResourceStates{ .render_target = true }).asBits(),
-            .dst_state_bits = (rhi.ResourceStates{ .shader_resource = true }).asBits(),
-            .src_queue = @intCast(@intFromEnum(rhi.QueueClass.graphics)),
-            .dst_queue = @intCast(@intFromEnum(rhi.QueueClass.graphics)),
-        });
+        try render_graph.RenderGraph.encodeBarrierTransition(
+            &cmd,
+            input_resource_id,
+            .render_target,
+            .shader_read,
+            .graphics,
+            .graphics,
+        );
 
         try cmd.encodeBeginRenderPass(.{
             .color_target_id = output_resource_id,

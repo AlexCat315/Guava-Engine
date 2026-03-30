@@ -30,6 +30,7 @@
 //! ```
 
 const std = @import("std");
+const assets_handles = @import("../assets/handles.zig");
 const animation_graph_mod = @import("../animation/animation_graph.zig");
 const assets_lib = @import("../assets/library.zig");
 const gltf_import = @import("../assets/gltf_import.zig");
@@ -917,6 +918,43 @@ pub const World = struct {
         self.markDirty(id);
         self.bumpSceneRevision();
         return true;
+    }
+
+    pub fn noteEntityRenderableChanged(self: *World, id: EntityId) void {
+        if (!self.hasEntity(id)) {
+            return;
+        }
+        self.markDirty(id);
+        self.bumpSceneRevision();
+    }
+
+    pub fn noteMeshResourceChanged(self: *World, handle: assets_handles.MeshHandle) void {
+        if (!assets_handles.isValid(handle)) {
+            return;
+        }
+
+        var changed = false;
+        for (self.entities.items) |entity| {
+            const uses_mesh = if (entity.mesh) |mesh_component|
+                if (mesh_component.handle) |mesh_handle| mesh_handle == handle else false
+            else
+                false;
+            const uses_skinned_mesh = if (entity.skinned_mesh) |skinned_mesh_component|
+                if (skinned_mesh_component.mesh_handle) |mesh_handle| mesh_handle == handle else false
+            else
+                false;
+
+            if (!uses_mesh and !uses_skinned_mesh) {
+                continue;
+            }
+
+            self.markDirty(entity.id);
+            changed = true;
+        }
+
+        if (changed) {
+            self.bumpSceneRevision();
+        }
     }
 
     pub fn getRigidbody(self: *const World, id: EntityId) ?components.Rigidbody {

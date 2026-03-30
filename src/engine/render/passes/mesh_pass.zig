@@ -350,6 +350,25 @@ pub const MeshSceneCache = struct {
         self.textures = .empty;
     }
 
+    pub fn invalidateMeshResource(
+        self: *MeshSceneCache,
+        device: *rhi_mod.RhiDevice,
+        handle: handles.MeshHandle,
+    ) void {
+        var index: usize = 0;
+        while (index < self.meshes.items.len) {
+            if (self.meshes.items[index].handle != handle) {
+                index += 1;
+                continue;
+            }
+
+            var cached = self.meshes.swapRemove(index);
+            device.releaseBuffer(&cached.wireframe_index_buffer);
+            device.releaseBuffer(&cached.index_buffer);
+            device.releaseBuffer(&cached.vertex_buffer);
+        }
+    }
+
     pub fn resolvePrimaryCamera(self: *MeshSceneCache, render_world: *const scene_extraction.RenderWorld) ?CameraBlock {
         _ = self;
         for (render_world.cameras.items) |camera| {
