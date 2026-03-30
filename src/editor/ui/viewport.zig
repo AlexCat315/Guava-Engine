@@ -49,15 +49,27 @@ fn drawToolbarIconButton(
 ) !bool {
     const accent_tint = [4]u8{ 34, 197, 94, 255 };
     const idle_tint = [4]u8{ 153, 153, 163, 255 };
-    const clicked = try ui_icons.drawIconButton(
+    const texture = try ui_icons.ensureTintedIconTexture(
         state,
         layer_context,
-        id,
         path,
-        20.0,
+        16.0,
         if (active) accent_tint else idle_tint,
-        if (active) ui_icons.palettes.toolbar_accent else ui_icons.palettes.toolbar_idle,
     );
+    const palette = if (active)
+        ui_icons.palettes.toolbar_active
+    else
+        ui_icons.palettes.toolbar_idle;
+    gui.pushStyleColor(.button, palette.button);
+    gui.pushStyleColor(.button_hovered, palette.hovered);
+    gui.pushStyleColor(.button_active, palette.active);
+    gui.pushStyleVarVec2(.frame_padding, .{ 11.0, 7.0 });
+    gui.pushStyleVarFloat(.frame_rounding, 999.0);
+    defer {
+        gui.popStyleVar(2);
+        gui.popStyleColor(3);
+    }
+    const clicked = gui.imageButton(id, texture, 16.0, 16.0, .{ 0.0, 0.0, 0.0, 0.0 }, .{ 1.0, 1.0, 1.0, 1.0 });
     if (gui.isItemHovered()) {
         state.viewport_overlay_hovered = true;
         if (layer_context.input.wasMousePressed(.left)) {
@@ -920,7 +932,7 @@ fn drawViewportToolbarStrip(state: *EditorState, layer_context: *engine.core.Lay
         }
     }
 
-    const utility_width: f32 = 78.0;
+    const utility_width: f32 = 90.0;
     gui.sameLineEx(@max(0.0, content_width - utility_width), 0.0);
     if (try drawToolbarIconButton(state, layer_context, "toolbar_ai_chat", ui_icons.paths.toolbar.ai_chat, state.ai_chat_open)) {
         state.ai_chat_open = !state.ai_chat_open;

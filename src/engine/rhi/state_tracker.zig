@@ -76,6 +76,19 @@ pub const StateTracker = struct {
         try self.current_states.put(resource, state.asBits());
     }
 
+    pub fn setCurrentState(self: *StateTracker, resource: ResourceRef, state: ResourceStates) !void {
+        try self.current_states.put(resource, state.asBits());
+    }
+
+    pub fn currentState(self: *const StateTracker, resource: ResourceRef) ResourceStates {
+        const bits = self.current_states.get(resource) orelse 0;
+        return ResourceStates.fromBits(bits);
+    }
+
+    pub fn removeResource(self: *StateTracker, resource: ResourceRef) void {
+        _ = self.current_states.remove(resource);
+    }
+
     pub fn requireState(self: *StateTracker, resource: ResourceRef, desired: ResourceStates) !void {
         const desired_bits = desired.asBits();
         const current_bits = self.current_states.get(resource) orelse 0;

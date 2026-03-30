@@ -98,9 +98,10 @@ pub const PipelineBarrierCmd = extern struct {
     resource_id: u32,
     src_state_bits: u32,
     dst_state_bits: u32,
+    resource_kind: u8,
     src_queue: u8,
     dst_queue: u8,
-    _padding: u16 = 0,
+    _padding: u8 = 0,
 };
 
 pub const DrawCmd = extern struct {
@@ -116,6 +117,11 @@ pub const PushUniformCmd = extern struct {
     _pad: u16 = 0,
     data_len: u32,
     // followed by data_len bytes of inline payload
+};
+
+pub const PushUniformData = struct {
+    header: PushUniformCmd,
+    data: []const u8,
 };
 
 pub const SetViewportCmd = extern struct {
@@ -151,7 +157,7 @@ pub const DecodedCommand = union(OpCode) {
     dispatch_indirect: DispatchIndirectCmd,
     pipeline_barrier: PipelineBarrierCmd,
     draw: DrawCmd,
-    push_uniform: PushUniformCmd,
+    push_uniform: PushUniformData,
     set_viewport: SetViewportCmd,
     set_scissor: SetScissorCmd,
     imgui_draw: void,
@@ -275,6 +281,31 @@ pub const CommandBuffer = struct {
         try self.writeOp(.imgui_draw);
     }
 
+    pub fn encodeDecoded(self: *CommandBuffer, decoded: DecodedCommand) Error!void {
+        switch (decoded) {
+            .begin_render_pass => |cmd| try self.encodeBeginRenderPass(cmd),
+            .end_render_pass => try self.encodeEndRenderPass(),
+            .begin_compute_pass => |cmd| try self.encodeBeginComputePass(cmd),
+            .end_compute_pass => try self.encodeEndComputePass(),
+            .begin_copy_pass => |cmd| try self.encodeBeginCopyPass(cmd),
+            .end_copy_pass => try self.encodeEndCopyPass(),
+            .set_binding_set => |cmd| try self.encodeSetBindingSet(cmd),
+            .set_vertex_buffer => |cmd| try self.encodeSetVertexBuffer(cmd),
+            .set_index_buffer => |cmd| try self.encodeSetIndexBuffer(cmd),
+            .set_pipeline => |cmd| try self.encodeSetPipeline(cmd),
+            .draw_indexed => |cmd| try self.encodeDrawIndexed(cmd),
+            .draw_indirect => |cmd| try self.encodeDrawIndirect(cmd),
+            .dispatch => |cmd| try self.encodeDispatch(cmd),
+            .dispatch_indirect => |cmd| try self.encodeDispatchIndirect(cmd),
+            .pipeline_barrier => |cmd| try self.encodePipelineBarrier(cmd),
+            .draw => |cmd| try self.encodeDraw(cmd),
+            .push_uniform => |cmd| try self.encodePushUniform(cmd.header.stage, cmd.header.slot, cmd.data),
+            .set_viewport => |cmd| try self.encodeSetViewport(cmd),
+            .set_scissor => |cmd| try self.encodeSetScissor(cmd),
+            .imgui_draw => try self.encodeImguiDraw(),
+        }
+    }
+
     pub fn decoder(self: *const CommandBuffer) Decoder {
         return Decoder.init(self.opcodes.items);
     }
@@ -328,11 +359,14 @@ pub const Decoder = struct {
             .draw => .{ .draw = try self.readStruct(DrawCmd) },
             .push_uniform => blk: {
                 const hdr = try self.readStruct(PushUniformCmd);
-                // Skip inline data bytes
                 const end = self.cursor + hdr.data_len;
                 if (end > self.bytes.len) return error.TruncatedStream;
+                const payload = self.bytes[self.cursor..end];
                 self.cursor = end;
-                break :blk .{ .push_uniform = hdr };
+                break :blk .{ .push_uniform = .{
+                    .header = hdr,
+                    .data = payload,
+                } };
             },
             .set_viewport => .{ .set_viewport = try self.readStruct(SetViewportCmd) },
             .set_scissor => .{ .set_scissor = try self.readStruct(SetScissorCmd) },

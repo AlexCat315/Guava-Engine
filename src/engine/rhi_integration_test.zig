@@ -237,7 +237,14 @@ test "command buffer encode-decode round-trip" {
     try cb.encodeSetBindingSet(.{ .slot = 0, .set_id = 100 });
     try cb.encodeDrawIndexed(.{ .index_count = 36, .instance_count = 1, .first_index = 0, .vertex_offset = 0, .first_instance = 0 });
     try cb.encodeEndRenderPass();
-    try cb.encodePipelineBarrier(.{ .resource_id = 10, .src_state_bits = 0x04, .dst_state_bits = 0x10, .src_queue = 0, .dst_queue = 0 });
+    try cb.encodePipelineBarrier(.{
+        .resource_id = 10,
+        .src_state_bits = 0x04,
+        .dst_state_bits = 0x10,
+        .resource_kind = @intCast(@intFromEnum(rhi.ResourceKind.texture)),
+        .src_queue = 0,
+        .dst_queue = 0,
+    });
     try cb.encodeBeginComputePass(.{});
     try cb.encodeSetBindingSet(.{ .slot = 1, .set_id = 200 });
     try cb.encodeDispatch(.{ .x = 8, .y = 8, .z = 1 });
@@ -269,6 +276,7 @@ test "command buffer encode-decode round-trip" {
         const cmd = (try dec.next()).?;
         try std.testing.expectEqual(command_buffer.OpCode.pipeline_barrier, std.meta.activeTag(cmd));
         try std.testing.expectEqual(@as(u32, 10), cmd.pipeline_barrier.resource_id);
+        try std.testing.expectEqual(@as(u8, @intCast(@intFromEnum(rhi.ResourceKind.texture))), cmd.pipeline_barrier.resource_kind);
     }
     {
         const cmd = (try dec.next()).?;

@@ -109,6 +109,7 @@ pub const ContactShadowPass = struct {
         try render_graph.RenderGraph.encodeBarrierTransition(
             &cmd,
             input_resource_id,
+            .texture,
             .depth_write,
             .shader_read,
             .graphics,

@@ -179,6 +179,7 @@ pub const VolumetricFogPass = struct {
         try render_graph.RenderGraph.encodeBarrierTransition(
             &cmd,
             input_resource_id,
+            .texture,
             .render_target,
             .shader_read,
             .graphics,

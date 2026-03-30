@@ -12,15 +12,15 @@ pub const MetalBackend = struct {
     next_graphics_pipeline_id: u32 = 1,
     next_compute_pipeline_id: u32 = 1,
     next_sampler_id: u32 = 1,
-    resource_state_bits: std.AutoHashMap(u32, u32),
-    resource_owner_queue: std.AutoHashMap(u32, rhi.QueueClass),
+    resource_state_bits: std.AutoHashMap(rhi.ResourceRef, u32),
+    resource_owner_queue: std.AutoHashMap(rhi.ResourceRef, rhi.QueueClass),
     last_submit_queue: ?rhi.QueueClass = null,
 
     pub fn init(allocator: std.mem.Allocator) MetalBackend {
         return .{
             .allocator = allocator,
-            .resource_state_bits = std.AutoHashMap(u32, u32).init(allocator),
-            .resource_owner_queue = std.AutoHashMap(u32, rhi.QueueClass).init(allocator),
+            .resource_state_bits = std.AutoHashMap(rhi.ResourceRef, u32).init(allocator),
+            .resource_owner_queue = std.AutoHashMap(rhi.ResourceRef, rhi.QueueClass).init(allocator),
         };
     }
 
@@ -73,17 +73,18 @@ pub const MetalBackend = struct {
                 .set_scissor => |_| {},
                 .imgui_draw => {},
                 .pipeline_barrier => |b| {
-                    const prev_state = self.resource_state_bits.get(b.resource_id) orelse 0;
+                    const resource = resourceRefFromBarrier(b) catch return error.SubmitFailed;
+                    const prev_state = self.resource_state_bits.get(resource) orelse 0;
                     if (prev_state != 0 and prev_state != b.src_state_bits) {
                         return error.SubmitFailed;
                     }
-                    try self.resource_state_bits.put(b.resource_id, b.dst_state_bits);
+                    try self.resource_state_bits.put(resource, b.dst_state_bits);
 
                     const src_q: rhi.QueueClass = @enumFromInt(@as(u8, b.src_queue));
                     const dst_q: rhi.QueueClass = @enumFromInt(@as(u8, b.dst_queue));
-                    const owner = self.resource_owner_queue.get(b.resource_id) orelse src_q;
+                    const owner = self.resource_owner_queue.get(resource) orelse src_q;
                     if (owner != src_q) return error.SubmitFailed;
-                    try self.resource_owner_queue.put(b.resource_id, dst_q);
+                    try self.resource_owner_queue.put(resource, dst_q);
                 },
             }
         }
@@ -108,14 +109,14 @@ fn createTexture(ctx: *anyopaque, desc: rhi.TextureDesc) rhi.Error!rhi.Texture {
 
 fn destroyBuffer(ctx: *anyopaque, buffer: rhi.Buffer) void {
     var backend: *MetalBackend = @ptrCast(@alignCast(ctx));
-    _ = backend.resource_state_bits.remove(buffer.id);
-    _ = backend.resource_owner_queue.remove(buffer.id);
+    _ = backend.resource_state_bits.remove(.{ .kind = .buffer, .id = buffer.id });
+    _ = backend.resource_owner_queue.remove(.{ .kind = .buffer, .id = buffer.id });
 }
 
 fn destroyTexture(ctx: *anyopaque, texture: rhi.Texture) void {
     var backend: *MetalBackend = @ptrCast(@alignCast(ctx));
-    _ = backend.resource_state_bits.remove(texture.id);
-    _ = backend.resource_owner_queue.remove(texture.id);
+    _ = backend.resource_state_bits.remove(.{ .kind = .texture, .id = texture.id });
+    _ = backend.resource_owner_queue.remove(.{ .kind = .texture, .id = texture.id });
 }
 
 fn submitGraphicsQueue(ctx: *anyopaque, cmd: *const command_buffer.CommandBuffer, desc: queue_mod.SubmitDesc) !void {
@@ -227,6 +228,11 @@ fn uploadBufferData(ctx: *anyopaque, buffer: rhi.Buffer, offset: u64, data: []co
     _ = data;
 }
 
+fn resourceRefFromBarrier(barrier: command_buffer.PipelineBarrierCmd) !rhi.ResourceRef {
+    const kind = std.meta.intToEnum(rhi.ResourceKind, barrier.resource_kind) catch return error.InvalidArgument;
+    return .{ .kind = kind, .id = barrier.resource_id };
+}
+
 const device_vtable = rhi.DeviceVTable{
     .create_buffer = createBuffer,
     .create_texture = createTexture,
@@ -260,6 +266,7 @@ test "metal backend handles compute queue barrier ownership transfer" {
         .resource_id = 99,
         .src_state_bits = 0,
         .dst_state_bits = 1,
+        .resource_kind = @intCast(@intFromEnum(rhi.ResourceKind.texture)),
         .src_queue = @intCast(@intFromEnum(rhi.QueueClass.compute)),
         .dst_queue = @intCast(@intFromEnum(rhi.QueueClass.graphics)),
     });

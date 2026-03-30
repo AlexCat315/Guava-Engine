@@ -72,6 +72,11 @@ pub const ResourceKind = enum {
     lit_color,
     /// Post-process working buffer (bloom downsample, SSAO, SSR output).
     post_color,
+    /// Generic GPU buffer tracked by the render graph. Concrete usage should
+    /// be refined with PassResourceUse.state when precision matters.
+    buffer,
+    /// Acceleration structure or future scene-structure resource.
+    accel_structure,
     /// Final backbuffer/swapchain image presented to screen.
     swapchain,
 };
@@ -108,11 +113,17 @@ pub const BarrierState = enum {
     shader_read,
     shader_write,
     shader_read_write,
+    constant_buffer,
+    vertex_buffer,
+    index_buffer,
+    indirect_argument,
     render_target,
     depth_write,
     depth_read,
     copy_source,
     copy_dest,
+    accel_struct_read,
+    accel_struct_write,
     present,
 };
 
@@ -610,13 +621,15 @@ pub const RenderGraph = struct {
         const plans = try self.buildBarrierPlanAlloc(allocator);
         defer allocator.free(plans);
         for (plans) |plan| {
-            try encodeBarrierTransition(cmd, plan.resource, plan.src_state, plan.dst_state, plan.src_queue, plan.dst_queue);
+            const resource_kind = trackedResourceKindForNode(self.resources.items[plan.resource].kind);
+            try encodeBarrierTransition(cmd, plan.resource, resource_kind, plan.src_state, plan.dst_state, plan.src_queue, plan.dst_queue);
         }
     }
 
     pub fn encodeBarrierTransition(
         cmd: *rhi.CommandBuffer,
         resource_id: u32,
+        resource_kind: rhi.ResourceKind,
         src_state: BarrierState,
         dst_state: BarrierState,
         src_queue: QueueClass,
@@ -626,6 +639,7 @@ pub const RenderGraph = struct {
             .resource_id = resource_id,
             .src_state_bits = barrierStateToBits(src_state),
             .dst_state_bits = barrierStateToBits(dst_state),
+            .resource_kind = @intCast(@intFromEnum(resource_kind)),
             .src_queue = @intCast(@intFromEnum(src_queue)),
             .dst_queue = @intCast(@intFromEnum(dst_queue)),
         });
@@ -880,11 +894,29 @@ fn resolveBarrierState(use_ref: PassResourceUse, kind: ResourceKind) BarrierStat
             .write => .render_target,
             .read_write => .render_target,
         },
+        .buffer => switch (use_ref.access) {
+            .read => .shader_read,
+            .write => .shader_write,
+            .read_write => .shader_read_write,
+        },
+        .accel_structure => switch (use_ref.access) {
+            .read => .accel_struct_read,
+            .write => .accel_struct_write,
+            .read_write => .accel_struct_write,
+        },
         .swapchain => switch (use_ref.access) {
             .read => .shader_read,
             .write => .render_target,
             .read_write => .render_target,
         },
+    };
+}
+
+fn trackedResourceKindForNode(kind: ResourceKind) rhi.ResourceKind {
+    return switch (kind) {
+        .buffer => .buffer,
+        .accel_structure => .accel_structure,
+        else => .texture,
     };
 }
 
@@ -894,11 +926,17 @@ fn barrierStateToBits(state: BarrierState) u32 {
         .shader_read => (rhi.ResourceStates{ .shader_resource = true }).asBits(),
         .shader_write => (rhi.ResourceStates{ .unordered_access = true }).asBits(),
         .shader_read_write => (rhi.ResourceStates{ .shader_resource = true, .unordered_access = true }).asBits(),
+        .constant_buffer => (rhi.ResourceStates{ .constant_buffer = true }).asBits(),
+        .vertex_buffer => (rhi.ResourceStates{ .vertex_buffer = true }).asBits(),
+        .index_buffer => (rhi.ResourceStates{ .index_buffer = true }).asBits(),
+        .indirect_argument => (rhi.ResourceStates{ .indirect_argument = true }).asBits(),
         .render_target => (rhi.ResourceStates{ .render_target = true }).asBits(),
         .depth_write => (rhi.ResourceStates{ .depth_write = true }).asBits(),
         .depth_read => (rhi.ResourceStates{ .depth_read = true }).asBits(),
         .copy_source => (rhi.ResourceStates{ .copy_source = true }).asBits(),
         .copy_dest => (rhi.ResourceStates{ .copy_dest = true }).asBits(),
+        .accel_struct_read => (rhi.ResourceStates{ .accel_struct_read = true }).asBits(),
+        .accel_struct_write => (rhi.ResourceStates{ .accel_struct_write = true }).asBits(),
         .present => (rhi.ResourceStates{ .present = true }).asBits(),
     };
 }
@@ -1005,4 +1043,32 @@ test "render graph skips same-queue read after read dependency" {
     const plans = try graph.buildBarrierPlanAlloc(std.testing.allocator);
     defer std.testing.allocator.free(plans);
     try std.testing.expectEqual(@as(usize, 0), plans.len);
+}
+
+test "render graph tracks buffer resource transitions" {
+    var graph = RenderGraph.init(std.testing.allocator);
+    defer graph.deinit();
+
+    const light_buffer = try graph.addResource(.{ .name = "LightBuffer", .kind = .buffer });
+    try graph.addPass(.{
+        .name = "CullLights",
+        .kind = .post_process,
+        .queue = .compute,
+        .outputs = &.{.{ .resource = light_buffer, .access = .write, .state = .shader_write }},
+    });
+    try graph.addPass(.{
+        .name = "BasePass",
+        .kind = .base_pass,
+        .queue = .graphics,
+        .inputs = &.{.{ .resource = light_buffer, .access = .read, .state = .shader_read }},
+    });
+    try graph.compile();
+
+    const plans = try graph.buildBarrierPlanAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(plans);
+
+    try std.testing.expectEqual(@as(usize, 1), plans.len);
+    try std.testing.expectEqual(BarrierState.shader_write, plans[0].src_state);
+    try std.testing.expectEqual(BarrierState.shader_read, plans[0].dst_state);
+    try std.testing.expect(plans[0].cross_queue);
 }

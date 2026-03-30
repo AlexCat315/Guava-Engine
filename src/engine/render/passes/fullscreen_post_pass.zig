@@ -50,6 +50,7 @@ pub const FullscreenPostPass = struct {
         try render_graph.RenderGraph.encodeBarrierTransition(
             &cmd,
             input_resource_id,
+            .texture,
             .shader_write,
             .shader_read,
             .graphics,

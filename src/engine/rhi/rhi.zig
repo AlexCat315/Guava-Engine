@@ -23,6 +23,7 @@ pub const TimelineSemaphore = queue_mod.TimelineSemaphore;
 
 pub const ResourceStates = state_tracker.ResourceStates;
 pub const Barrier = state_tracker.Barrier;
+pub const ResourceKind = state_tracker.ResourceKind;
 pub const ResourceRef = state_tracker.ResourceRef;
 
 pub const Buffer = struct { id: u32 };
@@ -256,6 +257,33 @@ pub const DeviceVTable = struct {
     register_binding_set: ?*const fn (ctx: *anyopaque, set_id: u32, layout_entries: []const BindingLayoutEntry, set_entries: []const BindingSetEntry) void = null,
 };
 
+const SubmissionTracking = struct {
+    allocator: std.mem.Allocator,
+    state_tracker: state_tracker.StateTracker,
+    resource_queues: std.AutoHashMap(ResourceRef, QueueClass),
+    binding_set_entries: std.AutoHashMap(u32, []BindingSetEntry),
+
+    fn init(allocator: std.mem.Allocator) SubmissionTracking {
+        return .{
+            .allocator = allocator,
+            .state_tracker = state_tracker.StateTracker.init(allocator),
+            .resource_queues = std.AutoHashMap(ResourceRef, QueueClass).init(allocator),
+            .binding_set_entries = std.AutoHashMap(u32, []BindingSetEntry).init(allocator),
+        };
+    }
+
+    fn deinit(self: *SubmissionTracking) void {
+        var binding_set_it = self.binding_set_entries.iterator();
+        while (binding_set_it.next()) |entry| {
+            self.allocator.free(entry.value_ptr.*);
+        }
+        self.binding_set_entries.deinit();
+        self.resource_queues.deinit();
+        self.state_tracker.deinit();
+        self.* = undefined;
+    }
+};
+
 pub const Device = struct {
     ctx: *anyopaque,
     vtable: *const DeviceVTable,
@@ -265,10 +293,13 @@ pub const Device = struct {
     binding_layout_descs: std.AutoHashMap(u32, []BindingLayoutEntry),
     pipeline_layout_sets: std.AutoHashMap(u32, []u32),
     binding_set_layouts: std.AutoHashMap(u32, u32),
+    submission_tracking: *SubmissionTracking,
     next_binding_layout_id: u32 = 1,
     prev_frame_stats: binding_cache.BindingSetCacheStats = .{},
 
     pub fn initWithCache(ctx: *anyopaque, vtable: *const DeviceVTable, capabilities: Capabilities, allocator: std.mem.Allocator) Device {
+        const tracking = allocator.create(SubmissionTracking) catch @panic("failed to allocate submission tracking");
+        tracking.* = SubmissionTracking.init(allocator);
         return .{
             .ctx = ctx,
             .vtable = vtable,
@@ -278,18 +309,20 @@ pub const Device = struct {
             .binding_layout_descs = std.AutoHashMap(u32, []BindingLayoutEntry).init(allocator),
             .pipeline_layout_sets = std.AutoHashMap(u32, []u32).init(allocator),
             .binding_set_layouts = std.AutoHashMap(u32, u32).init(allocator),
+            .submission_tracking = tracking,
         };
     }
 
     pub fn deinit(self: *Device) void {
+        const allocator = self.pipeline_layout_cache.allocator;
         var layout_it = self.binding_layout_descs.iterator();
         while (layout_it.next()) |entry| {
-            self.pipeline_layout_cache.allocator.free(entry.value_ptr.*);
+            allocator.free(entry.value_ptr.*);
         }
 
         var pl_it = self.pipeline_layout_sets.iterator();
         while (pl_it.next()) |entry| {
-            self.pipeline_layout_cache.allocator.free(entry.value_ptr.*);
+            allocator.free(entry.value_ptr.*);
         }
 
         self.binding_set_layouts.deinit();
@@ -297,6 +330,8 @@ pub const Device = struct {
         self.binding_layout_descs.deinit();
         self.binding_set_cache.deinit();
         self.pipeline_layout_cache.deinit();
+        self.submission_tracking.deinit();
+        allocator.destroy(self.submission_tracking);
     }
 
     pub fn createBindingLayout(self: *Device, desc: BindingLayoutDesc) Error!BindingLayout {
@@ -328,6 +363,12 @@ pub const Device = struct {
         if (self.vtable.register_binding_set) |reg_fn| {
             reg_fn(self.ctx, id, layout_entries, desc.entries);
         }
+
+        const copied_entries = self.pipeline_layout_cache.allocator.dupe(BindingSetEntry, desc.entries) catch return error.OutOfMemory;
+        self.submission_tracking.binding_set_entries.put(id, copied_entries) catch {
+            self.pipeline_layout_cache.allocator.free(copied_entries);
+            return error.OutOfMemory;
+        };
 
         return .{ .id = id };
     }
@@ -371,10 +412,16 @@ pub const Device = struct {
     }
 
     pub fn destroyBuffer(self: *const Device, buffer: Buffer) void {
+        const resource = ResourceRef{ .kind = .buffer, .id = buffer.id };
+        self.submission_tracking.state_tracker.removeResource(resource);
+        _ = self.submission_tracking.resource_queues.remove(resource);
         self.vtable.destroy_buffer(self.ctx, buffer);
     }
 
     pub fn destroyTexture(self: *const Device, texture: Texture) void {
+        const resource = ResourceRef{ .kind = .texture, .id = texture.id };
+        self.submission_tracking.state_tracker.removeResource(resource);
+        _ = self.submission_tracking.resource_queues.remove(resource);
         self.vtable.destroy_texture(self.ctx, texture);
     }
 
@@ -387,7 +434,9 @@ pub const Device = struct {
     }
 
     pub fn submitCommandBuffer(self: *const Device, queue_class: QueueClass, cmd: *const command_buffer.CommandBuffer, desc: SubmitDesc) Error!void {
-        return self.vtable.submit_command_buffer(self.ctx, queue_class, cmd, desc);
+        var prepared = try self.prepareCommandBufferForSubmit(queue_class, cmd);
+        defer prepared.deinit();
+        return self.vtable.submit_command_buffer(self.ctx, queue_class, &prepared, desc);
     }
 
     pub fn present(self: *const Device, image: SwapchainImage) Error!void {
@@ -464,6 +513,139 @@ pub const Device = struct {
         return .{ .id = id };
     }
 
+    fn prepareCommandBufferForSubmit(
+        self: *const Device,
+        queue_class: QueueClass,
+        original: *const command_buffer.CommandBuffer,
+    ) Error!command_buffer.CommandBuffer {
+        var prepared = command_buffer.CommandBuffer.init(self.pipeline_layout_cache.allocator);
+        errdefer prepared.deinit();
+
+        var decoder = original.decoder();
+        while (true) {
+            const maybe_decoded = decoder.next() catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.InvalidOpcode,
+                error.TruncatedStream,
+                => return error.SubmitFailed,
+            };
+            const decoded = maybe_decoded orelse break;
+            switch (decoded) {
+                .pipeline_barrier => |barrier| {
+                    prepared.encodeDecoded(decoded) catch |err| return mapCommandBufferError(err);
+                    try self.applyExplicitBarrier(barrier);
+                },
+                else => {
+                    try self.injectAutomaticBarriers(&prepared, queue_class, decoded);
+                    prepared.encodeDecoded(decoded) catch |err| return mapCommandBufferError(err);
+                },
+            }
+        }
+
+        return prepared;
+    }
+
+    fn injectAutomaticBarriers(
+        self: *const Device,
+        prepared: *command_buffer.CommandBuffer,
+        queue_class: QueueClass,
+        decoded: command_buffer.DecodedCommand,
+    ) Error!void {
+        switch (decoded) {
+            .begin_render_pass => |cmd| {
+                if (cmd.color_target_id != 0) {
+                    try self.requireTrackedState(
+                        prepared,
+                        queue_class,
+                        .{ .kind = .texture, .id = cmd.color_target_id },
+                        ResourceStates{ .render_target = true },
+                    );
+                }
+                if (cmd.depth_target_id != 0) {
+                    try self.requireTrackedState(
+                        prepared,
+                        queue_class,
+                        .{ .kind = .texture, .id = cmd.depth_target_id },
+                        ResourceStates{ .depth_write = true },
+                    );
+                }
+            },
+            .set_binding_set => |cmd| {
+                const entries = self.submission_tracking.binding_set_entries.get(cmd.set_id) orelse return;
+                for (entries) |entry| {
+                    const tracked = trackedResourceForBinding(entry) orelse continue;
+                    try self.requireTrackedState(prepared, queue_class, tracked.resource, tracked.state);
+                }
+            },
+            .set_vertex_buffer => |cmd| {
+                try self.requireTrackedState(
+                    prepared,
+                    queue_class,
+                    .{ .kind = .buffer, .id = cmd.buffer_id },
+                    ResourceStates{ .vertex_buffer = true },
+                );
+            },
+            .set_index_buffer => |cmd| {
+                try self.requireTrackedState(
+                    prepared,
+                    queue_class,
+                    .{ .kind = .buffer, .id = cmd.buffer_id },
+                    ResourceStates{ .index_buffer = true },
+                );
+            },
+            .draw_indirect => |cmd| {
+                try self.requireTrackedState(
+                    prepared,
+                    queue_class,
+                    .{ .kind = .buffer, .id = cmd.buffer_id },
+                    ResourceStates{ .indirect_argument = true },
+                );
+            },
+            .dispatch_indirect => |cmd| {
+                try self.requireTrackedState(
+                    prepared,
+                    queue_class,
+                    .{ .kind = .buffer, .id = cmd.buffer_id },
+                    ResourceStates{ .indirect_argument = true },
+                );
+            },
+            else => {},
+        }
+    }
+
+    fn requireTrackedState(
+        self: *const Device,
+        prepared: *command_buffer.CommandBuffer,
+        queue_class: QueueClass,
+        resource: ResourceRef,
+        desired: ResourceStates,
+    ) Error!void {
+        try self.submission_tracking.state_tracker.requireState(resource, desired);
+        const barriers = try self.submission_tracking.state_tracker.commitBarriers(self.pipeline_layout_cache.allocator);
+        defer self.pipeline_layout_cache.allocator.free(barriers);
+
+        for (barriers) |barrier| {
+            const src_queue = self.submission_tracking.resource_queues.get(barrier.resource) orelse queue_class;
+            prepared.encodePipelineBarrier(.{
+                .resource_id = barrier.resource.id,
+                .src_state_bits = barrier.before.asBits(),
+                .dst_state_bits = barrier.after.asBits(),
+                .resource_kind = @intCast(@intFromEnum(barrier.resource.kind)),
+                .src_queue = @intCast(@intFromEnum(src_queue)),
+                .dst_queue = @intCast(@intFromEnum(queue_class)),
+            }) catch |err| return mapCommandBufferError(err);
+            try self.submission_tracking.resource_queues.put(barrier.resource, queue_class);
+        }
+    }
+
+    fn applyExplicitBarrier(self: *const Device, barrier: command_buffer.PipelineBarrierCmd) Error!void {
+        const resource_kind = std.meta.intToEnum(state_tracker.ResourceKind, barrier.resource_kind) catch return error.SubmitFailed;
+        const resource = ResourceRef{ .kind = resource_kind, .id = barrier.resource_id };
+        try self.submission_tracking.state_tracker.setCurrentState(resource, ResourceStates.fromBits(barrier.dst_state_bits));
+        const dst_queue: QueueClass = @enumFromInt(@as(u8, barrier.dst_queue));
+        try self.submission_tracking.resource_queues.put(resource, dst_queue);
+    }
+
     fn validateBindingSetDesc(self: *const Device, layout_entries: []const BindingLayoutEntry, desc: BindingSetDesc) Error!void {
         _ = self;
         if (desc.entries.len != layout_entries.len) return error.LayoutMismatch;
@@ -492,6 +674,46 @@ fn resourceMatchesBindingType(resource: BindingResource, binding_type: BindingTy
         .uniform_buffer => binding_type == .uniform_buffer,
         .storage_buffer => binding_type == .storage_buffer,
         .accel_structure => binding_type == .accel_structure,
+    };
+}
+
+fn mapCommandBufferError(err: command_buffer.Error) Error {
+    return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        error.InvalidOpcode,
+        error.TruncatedStream,
+        => error.SubmitFailed,
+    };
+}
+
+const TrackedBindingResource = struct {
+    resource: ResourceRef,
+    state: ResourceStates,
+};
+
+fn trackedResourceForBinding(entry: BindingSetEntry) ?TrackedBindingResource {
+    return switch (entry.resource) {
+        .sampler => null,
+        .texture => |texture| .{
+            .resource = .{ .kind = .texture, .id = texture.id },
+            .state = .{ .shader_resource = true },
+        },
+        .storage_texture => |texture| .{
+            .resource = .{ .kind = .texture, .id = texture.id },
+            .state = .{ .shader_resource = true, .unordered_access = true },
+        },
+        .uniform_buffer => |buffer| .{
+            .resource = .{ .kind = .buffer, .id = buffer.id },
+            .state = .{ .constant_buffer = true },
+        },
+        .storage_buffer => |buffer| .{
+            .resource = .{ .kind = .buffer, .id = buffer.id },
+            .state = .{ .shader_resource = true, .unordered_access = true },
+        },
+        .accel_structure => |accel| .{
+            .resource = .{ .kind = .accel_structure, .id = accel.id },
+            .state = .{ .accel_struct_read = true },
+        },
     };
 }
 
@@ -589,4 +811,130 @@ test "pipeline layout binding slot validation catches mismatched layout" {
     });
 
     try std.testing.expectError(error.LayoutMismatch, device.validateBindingSetForPipelineSlot(pipeline_layout, 0, bad_set));
+}
+
+test "submit command buffer injects render target barrier before render pass" {
+    const metal_backend = @import("metal/metal_backend.zig");
+
+    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
+    defer backend.deinit();
+    var device = backend.createDevice();
+    defer device.deinit();
+
+    const color = try device.createTexture(.{
+        .width = 1,
+        .height = 1,
+        .format = .rgba8_unorm,
+        .usage = .{ .color_target = true },
+    });
+    defer device.destroyTexture(color);
+
+    var cmd = try device.createCommandBuffer(std.testing.allocator);
+    defer cmd.deinit();
+    try cmd.encodeBeginRenderPass(.{
+        .color_target_id = color.id,
+        .depth_target_id = 0,
+        .clear_mask = 0,
+    });
+    try cmd.encodeEndRenderPass();
+
+    try device.submitCommandBuffer(.graphics, &cmd, .{});
+
+    const tracked_bits = backend.resource_state_bits.get(.{ .kind = .texture, .id = color.id }) orelse 0;
+    try std.testing.expectEqual((ResourceStates{ .render_target = true }).asBits(), tracked_bits);
+}
+
+test "submit command buffer injects shader resource state for bound sampled texture" {
+    const metal_backend = @import("metal/metal_backend.zig");
+
+    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
+    defer backend.deinit();
+    var device = backend.createDevice();
+    defer device.deinit();
+
+    const layout = try device.createBindingLayout(.{
+        .entries = &.{.{
+            .slot = 0,
+            .binding_type = .texture,
+            .stage = .fragment,
+        }},
+    });
+    const tex = try device.createTexture(.{
+        .width = 1,
+        .height = 1,
+        .format = .rgba8_unorm,
+        .usage = .{ .sampled = true },
+    });
+    defer device.destroyTexture(tex);
+
+    const set = try device.createBindingSetCached(layout, .{
+        .entries = &.{.{ .slot = 0, .resource = .{ .texture = tex } }},
+    });
+
+    var cmd = try device.createCommandBuffer(std.testing.allocator);
+    defer cmd.deinit();
+    try cmd.encodeSetBindingSet(.{ .slot = 0, .set_id = set.id });
+
+    try device.submitCommandBuffer(.graphics, &cmd, .{});
+
+    const tracked_bits = backend.resource_state_bits.get(.{ .kind = .texture, .id = tex.id }) orelse 0;
+    try std.testing.expectEqual((ResourceStates{ .shader_resource = true }).asBits(), tracked_bits);
+}
+
+test "submit command buffer keeps buffer and texture states separate when ids overlap" {
+    const metal_backend = @import("metal/metal_backend.zig");
+
+    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
+    defer backend.deinit();
+    var device = backend.createDevice();
+    defer device.deinit();
+
+    const layout = try device.createBindingLayout(.{
+        .entries = &.{
+            .{
+                .slot = 0,
+                .binding_type = .texture,
+                .stage = .fragment,
+            },
+            .{
+                .slot = 1,
+                .binding_type = .uniform_buffer,
+                .stage = .fragment,
+            },
+        },
+    });
+
+    const uniform_buffer = try device.createBuffer(.{
+        .size = 64,
+        .usage = .{ .uniform = true },
+    });
+    defer device.destroyBuffer(uniform_buffer);
+
+    const sampled_texture = try device.createTexture(.{
+        .width = 1,
+        .height = 1,
+        .format = .rgba8_unorm,
+        .usage = .{ .sampled = true },
+    });
+    defer device.destroyTexture(sampled_texture);
+
+    try std.testing.expectEqual(uniform_buffer.id, sampled_texture.id);
+
+    const set = try device.createBindingSetCached(layout, .{
+        .entries = &.{
+            .{ .slot = 0, .resource = .{ .texture = sampled_texture } },
+            .{ .slot = 1, .resource = .{ .uniform_buffer = uniform_buffer } },
+        },
+    });
+
+    var cmd = try device.createCommandBuffer(std.testing.allocator);
+    defer cmd.deinit();
+    try cmd.encodeSetBindingSet(.{ .slot = 0, .set_id = set.id });
+
+    try device.submitCommandBuffer(.graphics, &cmd, .{});
+
+    const texture_bits = backend.resource_state_bits.get(.{ .kind = .texture, .id = sampled_texture.id }) orelse 0;
+    const buffer_bits = backend.resource_state_bits.get(.{ .kind = .buffer, .id = uniform_buffer.id }) orelse 0;
+    try std.testing.expectEqual((ResourceStates{ .shader_resource = true }).asBits(), texture_bits);
+    try std.testing.expectEqual((ResourceStates{ .constant_buffer = true }).asBits(), buffer_bits);
 }
