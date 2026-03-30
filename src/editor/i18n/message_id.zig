@@ -423,6 +423,7 @@ pub const MessageId = enum {
     ai_chat_stage_analyzing_screenshot,
     ai_chat_stage_compiling_shader,
     ai_chat_stage_waiting_approval,
+    ghost_highlight_active,
     ai_chat_clear,
     ai_chat_configure,
     ai_chat_staged_banner,

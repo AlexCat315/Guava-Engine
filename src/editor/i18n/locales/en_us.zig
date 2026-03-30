@@ -432,6 +432,7 @@ pub const locale = blk: {
             .ai_chat_stage_analyzing_screenshot = "Analyzing Screenshot...",
             .ai_chat_stage_compiling_shader = "Compiling Shader...",
             .ai_chat_stage_waiting_approval = "Waiting Approval",
+            .ghost_highlight_active = "Ghost Highlight Active",
             .ai_chat_clear = "Clear",
             .ai_chat_configure = "Config",
             .ai_chat_staged_banner = "  AI staged changes and is waiting for approval",

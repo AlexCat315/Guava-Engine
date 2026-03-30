@@ -432,6 +432,7 @@ pub const locale = blk: {
             .ai_chat_stage_analyzing_screenshot = "分析截图...",
             .ai_chat_stage_compiling_shader = "编译 Shader...",
             .ai_chat_stage_waiting_approval = "等待审批",
+            .ghost_highlight_active = "Ghost 高亮已启用",
             .ai_chat_clear = "清空",
             .ai_chat_configure = "配置",
             .ai_chat_staged_banner = "  AI 已暂存修改，等待审批",

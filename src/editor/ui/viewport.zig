@@ -128,6 +128,21 @@ fn drawOverlayStatusChip(label: []const u8) void {
     _ = gui.buttonEx(label, button_width, 0.0);
 }
 
+fn drawOverlayTitleChip(label: []const u8) void {
+    const button_width = @max(44.0, gui.calcTextSize(label, false, 0.0)[0] + 24.0);
+    gui.pushStyleColor(.button, .{ 0.12, 0.15, 0.18, 0.94 });
+    gui.pushStyleColor(.button_hovered, .{ 0.12, 0.15, 0.18, 0.94 });
+    gui.pushStyleColor(.button_active, .{ 0.12, 0.15, 0.18, 0.94 });
+    gui.pushStyleColor(.text, .{ 0.96, 0.98, 1.0, 1.0 });
+    gui.pushStyleVarVec2(.frame_padding, .{ 11.0, 7.0 });
+    gui.pushStyleVarFloat(.frame_rounding, 999.0);
+    defer {
+        gui.popStyleVar(2);
+        gui.popStyleColor(4);
+    }
+    _ = gui.buttonEx(label, button_width, 0.0);
+}
+
 fn syncPlaybackState(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     try playback_session.sync(state, layer_context);
 }
@@ -2077,6 +2092,9 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
     gui.pushStyleVarVec2(.item_spacing, .{ 6.0, 4.0 });
     defer gui.popStyleVar(1);
 
+    drawOverlayTitleChip(state.text(.viewport));
+    gui.sameLine();
+
     if (try drawOverlayMenuButton(
         state,
         layer_context,
@@ -2278,9 +2296,9 @@ fn drawViewportAiStateOverlayWindow(state: *EditorState) void {
 
     const stage_label: []const u8 = switch (ai_status.stage) {
         .ready => return,
-        .analyzing_screenshot => "👀  Analyzing Screenshot...",
-        .compiling_shader => "⚙  Compiling Shader...",
-        .waiting_approval => "◆  Waiting Approval",
+        .analyzing_screenshot => state.text(.ai_chat_stage_analyzing_screenshot),
+        .compiling_shader => state.text(.ai_chat_stage_compiling_shader),
+        .waiting_approval => state.text(.ai_chat_stage_waiting_approval),
     };
 
     // Background colour: green→blue→amber→purple by stage
@@ -2294,12 +2312,14 @@ fn drawViewportAiStateOverlayWindow(state: *EditorState) void {
     // Pulse speed: faster when waiting approval to draw attention
     const pulse_speed: f32 = if (ai_status.stage == .waiting_approval) 2.6 else 3.2;
     const pulse = 0.06 * (std.math.sin(gui.time() * pulse_speed) + 1.0);
-    const bg_alpha = std.math.clamp(base_color[3] + pulse, 0.0, 1.0);
+    const bg_alpha = std.math.clamp(@max(0.76, base_color[3] + pulse), 0.0, 1.0);
 
     const overlay_width: f32 = if (ai_status.stage == .waiting_approval) 320.0 else 280.0;
+    gui.pushStyleVarVec2(.window_padding, .{ 8.0, 8.0 });
+    defer gui.popStyleVar(1);
     gui.setNextWindowPos(.{
         state.viewport_origin[0] + @max((state.viewport_extent[0] - overlay_width) * 0.5, 12.0),
-        state.viewport_origin[1] + 10.0,
+        state.viewport_origin[1] + viewportOverlayTopInset() + 48.0,
     });
     gui.setNextWindowBgAlpha(bg_alpha);
     _ = gui.beginWindowFlags(
@@ -2318,7 +2338,8 @@ fn drawViewportAiStateOverlayWindow(state: *EditorState) void {
         state.viewport_overlay_hovered = true;
     }
 
-    // Stage label
+    drawOverlayTitleChip(state.text(.ai_chat));
+    gui.sameLine();
     gui.pushStyleColor(.text, .{ 0.96, 0.97, 1.0, 1.0 });
     gui.text(stage_label);
     gui.popStyleColor(1);
@@ -2344,7 +2365,7 @@ fn drawViewportAiStateOverlayWindow(state: *EditorState) void {
     if (ai_status.stage == .waiting_approval and state.ghost_highlight_enabled) {
         const ghost_pulse = 0.45 + 0.55 * @abs(std.math.sin(gui.time() * state.ghost_highlight_pulse_speed));
         gui.pushStyleColor(.text, .{ 0.75 * ghost_pulse, 0.38 * ghost_pulse, 1.0 * ghost_pulse, 1.0 });
-        gui.text("◆ Ghost Highlight active");
+        gui.text(state.text(.ghost_highlight_active));
         gui.popStyleColor(1);
     }
 }
@@ -2400,21 +2421,21 @@ fn drawViewportFpsOverlayWindow(state: *EditorState, layer_context: *engine.core
     }
 
     const fps = if (layer_context.delta_seconds > 0.0001) 1.0 / layer_context.delta_seconds else 0.0;
-    var fps_buffer: [64]u8 = undefined;
-    const fps_text = try std.fmt.bufPrint(&fps_buffer, "{s}: {d:.1}", .{ state.text(.fps), fps });
+    var fps_buffer: [32]u8 = undefined;
+    const fps_text = try std.fmt.bufPrint(&fps_buffer, "{d:.1}", .{fps});
     const overlay_margin = 14.0;
     const overlay_y = state.viewport_origin[1] + @max(
         state.viewport_extent[1] - gui.frameHeight() - 22.0,
         viewportOverlayTopInset() + 56.0,
     );
 
-    gui.pushStyleVarVec2(.window_padding, .{ 10.0, 6.0 });
+    gui.pushStyleVarVec2(.window_padding, .{ 8.0, 8.0 });
     defer gui.popStyleVar(1);
     gui.setNextWindowPos(.{
         state.viewport_origin[0] + overlay_margin,
         overlay_y,
     });
-    gui.setNextWindowBgAlpha(0.72);
+    gui.setNextWindowBgAlpha(0.76);
     _ = gui.beginWindowFlags(
         "##viewport_fps_overlay",
         gui.WindowFlags.no_title_bar |
@@ -2426,7 +2447,15 @@ fn drawViewportFpsOverlayWindow(state: *EditorState, layer_context: *engine.core
     );
     defer gui.endWindow();
 
+    if (gui.isWindowHovered()) {
+        state.viewport_overlay_hovered = true;
+    }
+
+    drawOverlayTitleChip(state.text(.fps));
+    gui.sameLine();
+    gui.pushStyleColor(.text, .{ 0.96, 0.98, 1.0, 1.0 });
     gui.text(fps_text);
+    gui.popStyleColor(1);
 }
 
 fn drawViewportDebugOverlayWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -2446,7 +2475,7 @@ fn drawViewportDebugOverlayWindow(state: *EditorState, layer_context: *engine.co
         state.viewport_origin[1] + @max(state.viewport_extent[1] - overlay_size[1] - 16.0, viewportOverlayTopInset() + 56.0),
     });
     gui.setNextWindowSize(overlay_size);
-    gui.setNextWindowBgAlpha(0.80);
+    gui.setNextWindowBgAlpha(0.76);
     _ = gui.beginWindowFlags(
         "##viewport_debug_overlay",
         gui.WindowFlags.no_title_bar |
@@ -2461,9 +2490,9 @@ fn drawViewportDebugOverlayWindow(state: *EditorState, layer_context: *engine.co
         state.viewport_overlay_hovered = true;
     }
 
-    gui.text(state.text(.viewport_debug_overlay));
-    gui.sameLineEx(220.0, 10.0);
-    if (gui.buttonEx(state.text(.copy), 92.0, 0.0)) {
+    drawOverlayTitleChip(state.text(.viewport_debug_overlay));
+    gui.sameLineEx(248.0, 8.0);
+    if (try drawOverlayMenuButton(state, layer_context, "viewport_debug_copy", state.text(.copy), false)) {
         copyDebugTextToClipboard(allocator, debug_text) catch {
             std.log.err("failed to copy viewport debug text to clipboard", .{});
         };
