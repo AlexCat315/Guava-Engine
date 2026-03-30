@@ -99,9 +99,13 @@ pub const GizmoDragMode = enum {
 
 pub const GizmoDragSession = struct {
     mode: GizmoDragMode = .none,
+    picked_mode: ManipulationMode = .none,
+    picked_axis: engine.math.axis.Axis3 = .free,
     plane_origin: [3]f32 = .{ 0.0, 0.0, 0.0 },
     plane_normal: [3]f32 = .{ 0.0, 0.0, -1.0 },
     handle_axis_world: [3]f32 = .{ 1.0, 0.0, 0.0 },
+    drag_start_ray_origin: [3]f32 = .{ 0.0, 0.0, 0.0 },
+    drag_start_ray_direction: [3]f32 = .{ 0.0, 0.0, -1.0 },
     drag_start_point: [3]f32 = .{ 0.0, 0.0, 0.0 },
     drag_start_vector: [3]f32 = .{ 1.0, 0.0, 0.0 },
     drag_start_distance: f32 = 1.0,

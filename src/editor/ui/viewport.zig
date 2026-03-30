@@ -398,14 +398,47 @@ fn drawViewport3DCursor(state: *EditorState, layer_context: *engine.core.LayerCo
     const y_color = gui.getColorU32(.{ 0.48, 0.92, 0.54, 0.95 });
     const z_color = gui.getColorU32(.{ 0.44, 0.68, 0.98, 0.95 });
     const center_color = gui.getColorU32(.{ 0.98, 0.92, 0.42, 0.98 });
+    const halo_color = gui.getColorU32(.{ 0.96, 0.86, 0.34, 0.24 });
+    const label_bg = gui.getColorU32(.{ 0.07, 0.08, 0.10, 0.88 });
+    const label_border = gui.getColorU32(.{ 0.93, 0.84, 0.34, 0.30 });
+    const label_text = gui.getColorU32(.{ 0.96, 0.95, 0.88, 0.98 });
 
     drawProjectedWorldSegment(draw_list, state, layer_context, vec3.add(origin, .{ -scale, 0.0, 0.0 }), vec3.add(origin, .{ scale, 0.0, 0.0 }), x_color, 2.0);
     drawProjectedWorldSegment(draw_list, state, layer_context, vec3.add(origin, .{ 0.0, -scale, 0.0 }), vec3.add(origin, .{ 0.0, scale, 0.0 }), y_color, 2.0);
     drawProjectedWorldSegment(draw_list, state, layer_context, vec3.add(origin, .{ 0.0, 0.0, -scale }), vec3.add(origin, .{ 0.0, 0.0, scale }), z_color, 2.0);
 
     if (projectWorldPointToViewport(state, layer_context, origin)) |screen_pos| {
-        draw_list.addCircleFilled(screen_pos, 7.5, gui.getColorU32(.{ 0.12, 0.12, 0.12, 0.92 }), 24);
+        const pulse = if (state.transform_cursor_place_mode)
+            0.75 + 0.55 * @abs(std.math.sin(gui.time() * 4.6))
+        else
+            0.0;
+        const ring_radius = 7.5 + pulse * 2.5;
+        draw_list.addCircleFilled(screen_pos, ring_radius + 4.5, halo_color, 28);
+        draw_list.addCircleFilled(screen_pos, ring_radius, gui.getColorU32(.{ 0.12, 0.12, 0.12, 0.92 }), 28);
         draw_list.addCircleFilled(screen_pos, 4.5, center_color, 20);
+        draw_list.addLine(.{ screen_pos[0] - 12.0, screen_pos[1] }, .{ screen_pos[0] - 6.0, screen_pos[1] }, center_color, 1.8);
+        draw_list.addLine(.{ screen_pos[0] + 6.0, screen_pos[1] }, .{ screen_pos[0] + 12.0, screen_pos[1] }, center_color, 1.8);
+        draw_list.addLine(.{ screen_pos[0], screen_pos[1] - 12.0 }, .{ screen_pos[0], screen_pos[1] - 6.0 }, center_color, 1.8);
+        draw_list.addLine(.{ screen_pos[0], screen_pos[1] + 6.0 }, .{ screen_pos[0], screen_pos[1] + 12.0 }, center_color, 1.8);
+
+        if (state.transform_pivot_mode == .cursor or state.transform_cursor_place_mode) {
+            const label = if (state.transform_cursor_place_mode)
+                state.text(.place_cursor)
+            else
+                state.text(.pivot_cursor);
+            const label_size = gui.calcTextSize(label, false, 0.0);
+            const label_min = [2]f32{ screen_pos[0] + 13.0, screen_pos[1] - label_size[1] - 8.0 };
+            const label_max = [2]f32{ label_min[0] + label_size[0] + 14.0, label_min[1] + label_size[1] + 8.0 };
+            draw_list.addRectFilled(label_min, label_max, label_bg, 7.0, 0);
+            draw_list.addRectFilled(
+                .{ label_min[0] + 1.0, label_min[1] + 1.0 },
+                .{ label_max[0] - 1.0, label_min[1] + 2.0 },
+                label_border,
+                6.0,
+                0,
+            );
+            draw_list.addText(.{ label_min[0] + 7.0, label_min[1] + 4.0 }, label_text, label);
+        }
     }
 }
 
@@ -748,6 +781,25 @@ fn drawViewportToolbarStrip(state: *EditorState, layer_context: *engine.core.Lay
     if (gui.isItemHovered()) {
         gui.setTooltip(state.text(.transform_constraints));
     }
+
+    gui.sameLine();
+    const cursor_tool_active = state.transform_pivot_mode == .cursor or state.transform_cursor_place_mode;
+    if (try drawToolbarIconButton(
+        state,
+        layer_context,
+        "toolbar_cursor_3d",
+        ui_icons.paths.toolbar.cursor_3d,
+        cursor_tool_active,
+    )) {
+        manipulation.toggleCursorPlacementMode(state, layer_context);
+    }
+    if (gui.isItemHovered()) {
+        gui.setTooltip(if (state.transform_cursor_place_mode)
+            state.text(.place_cursor)
+        else
+            state.text(.pivot_cursor));
+    }
+
     if (gui.beginPopup(transform_constraints_popup_id)) {
         defer gui.endPopup();
         state.viewport_overlay_hovered = true;
@@ -2131,6 +2183,24 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
         defer gui.endPopup();
         state.viewport_overlay_hovered = true;
         drawTransformConstraintsPopup(state, layer_context);
+    }
+    gui.sameLine();
+
+    const overlay_cursor_tool_active = state.transform_pivot_mode == .cursor or state.transform_cursor_place_mode;
+    if (try drawOverlayIconButton(
+        state,
+        layer_context,
+        "viewport_overlay_cursor_3d",
+        ui_icons.paths.toolbar.cursor_3d,
+        overlay_cursor_tool_active,
+    )) {
+        manipulation.toggleCursorPlacementMode(state, layer_context);
+    }
+    if (gui.isItemHovered()) {
+        gui.setTooltip(if (state.transform_cursor_place_mode)
+            state.text(.place_cursor)
+        else
+            state.text(.pivot_cursor));
     }
 
     // Show camera speed indicator when shift is held

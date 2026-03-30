@@ -26,6 +26,7 @@ pub const paths = struct {
         pub const settings = "assets/ui/icons/svg/cog-6-tooth.svg";
         pub const transform_global = "assets/ui/icons/svg/globe.svg";
         pub const transform_local = "assets/ui/icons/svg/cube.svg";
+        pub const cursor_3d = "assets/ui/icons/svg/crosshair.svg";
         pub const ai_chat = "assets/ui/icons/svg/sparkle.svg";
         pub const chevron_down = "assets/ui/icons/svg/chevron-down.svg";
         pub const plus = "assets/ui/icons/svg/plus.svg";

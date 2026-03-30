@@ -36,6 +36,11 @@ pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.L
         return;
     }
 
+    if (input.modifiers.shift and !input.modifiers.ctrl and input.wasKeyPressed(.t)) {
+        toggleCursorPlacementMode(state, layer_context);
+        return;
+    }
+
     if (state.manipulation_mode != .none) {
         if (input.wasKeyPressed(.q)) {
             try activateSelectTool(state, layer_context);
@@ -153,6 +158,16 @@ pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.L
 
 fn toggleManipulationAxis(state: *EditorState, axis: AxisConstraint) void {
     state.manipulation_axis = if (state.manipulation_axis == axis) .free else axis;
+}
+
+pub fn toggleCursorPlacementMode(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+    if (state.transform_pivot_mode != .cursor or !state.transform_cursor_place_mode) {
+        state.transform_pivot_mode = .cursor;
+        state.transform_cursor_place_mode = true;
+    } else {
+        state.transform_cursor_place_mode = false;
+    }
+    refreshGizmoState(state, layer_context);
 }
 
 pub fn activateTransformTool(
@@ -346,18 +361,51 @@ fn applyCurrentManipulationToTargets(
 
     const saved_origin = state.manipulation_origin;
     const saved_pivot = state.manipulation_pivot_local_offset;
+    const saved_session = state.gizmo_drag_session;
     defer {
         state.manipulation_origin = saved_origin;
         state.manipulation_pivot_local_offset = saved_pivot;
+        state.gizmo_drag_session = saved_session;
     }
 
     for (state.manipulation_group_origins.items) |origin| {
         state.manipulation_origin = origin.world_transform;
         state.manipulation_pivot_local_offset = origin.pivot_local_offset;
+        if (!quick_mode and ray != null and shouldUseIndividualOriginsLocalSession(state)) {
+            state.gizmo_drag_session = buildGizmoDragSessionForTransform(
+                state,
+                layer_context,
+                .{
+                    .axis = saved_session.picked_axis,
+                    .mode = saved_session.picked_mode,
+                    .distance = saved_session.draw_scale,
+                },
+                .{
+                    .origin = saved_session.drag_start_ray_origin,
+                    .direction = saved_session.drag_start_ray_direction,
+                },
+                origin.world_transform,
+                origin.pivot_local_offset,
+            );
+        }
         var entity_transform = origin.world_transform;
         applyManipulationToTransform(state, layer_context, ray, quick_mode, &entity_transform);
         _ = layer_context.world.setEntityWorldTransform(origin.entity_id, entity_transform);
     }
+}
+
+fn shouldUseIndividualOriginsLocalSession(state: *const EditorState) bool {
+    if (state.manipulation_target != .main_world or
+        state.transform_pivot_mode != .individual_origins or
+        state.transform_space != .local or
+        state.manipulation_group_origins.items.len <= 1)
+    {
+        return false;
+    }
+    return switch (state.gizmo_drag_session.picked_mode) {
+        .rotate, .scale => true,
+        else => false,
+    };
 }
 
 fn applyManipulationToTransform(
@@ -605,34 +653,32 @@ fn signedRotationAroundAxis(from_vector: [3]f32, to_vector: [3]f32, axis: [3]f32
     return std.math.atan2(sin_angle, cos_angle);
 }
 
-fn startGizmoDragSession(
+fn buildGizmoDragSessionForTransform(
     state: *EditorState,
     layer_context: *engine.core.LayerContext,
     picked_handle: PickedGizmoHandle,
     ray: engine.scene.Ray,
-) void {
-    const entity_id = state.manipulation_entity orelse {
-        state.gizmo_drag_session = .{ .mode = .mouse_delta };
-        return;
-    };
-    const entity_transform = currentToolTargetTransform(state, layer_context, entity_id) orelse {
-        state.gizmo_drag_session = .{ .mode = .mouse_delta };
-        return;
-    };
+    entity_transform: engine.scene.Transform,
+    pivot_local_offset: [3]f32,
+) GizmoDragSession {
     const camera_basis = currentGizmoViewBasis(state, layer_context);
     const camera_transform = camera.activeCameraTransform(state, layer_context);
     const axis_world = if (picked_handle.axis == .free)
         [3]f32{ 0.0, 0.0, 0.0 }
     else
         gizmoAxisDirection(state.transform_space, picked_handle.axis, entity_transform.rotation);
-    const gizmo_origin = pivotWorldPosition(entity_transform, state.manipulation_pivot_local_offset);
+    const gizmo_origin = pivotWorldPosition(entity_transform, pivot_local_offset);
     const gizmo_scale_value = gizmoDrawScale(camera_transform.translation, gizmo_origin);
 
     var projection = GizmoDragSession{
         .mode = .mouse_delta,
+        .picked_mode = picked_handle.mode,
+        .picked_axis = picked_handle.axis,
         .plane_origin = gizmo_origin,
         .plane_normal = camera_basis.forward,
         .handle_axis_world = if (picked_handle.axis == .free) uniformScaleDragDirection(camera_basis.right, camera_basis.up) else axis_world,
+        .drag_start_ray_origin = ray.origin,
+        .drag_start_ray_direction = ray.direction,
         .draw_scale = gizmo_scale_value,
     };
 
@@ -647,8 +693,7 @@ fn startGizmoDragSession(
             }
             projection.drag_start_point = rayPlaneHitPoint(ray, projection.plane_origin, projection.plane_normal) orelse {
                 projection.mode = .mouse_delta;
-                state.gizmo_drag_session = projection;
-                return;
+                return projection;
             };
         },
         .rotate => {
@@ -657,14 +702,12 @@ fn startGizmoDragSession(
             projection.plane_normal = safeNormalizeOr(axis_world, camera_basis.up);
             const start_point = rayPlaneHitPoint(ray, projection.plane_origin, projection.plane_normal) orelse {
                 projection.mode = .mouse_delta;
-                state.gizmo_drag_session = projection;
-                return;
+                return projection;
             };
             projection.drag_start_vector = vec3.sub(start_point, projection.plane_origin);
             if (vec3.length(projection.drag_start_vector) <= 0.0001) {
                 projection.mode = .mouse_delta;
-                state.gizmo_drag_session = projection;
-                return;
+                return projection;
             }
             projection.drag_start_vector = vec3.normalize(projection.drag_start_vector);
         },
@@ -679,8 +722,7 @@ fn startGizmoDragSession(
             }
             projection.drag_start_point = rayPlaneHitPoint(ray, projection.plane_origin, projection.plane_normal) orelse {
                 projection.mode = .mouse_delta;
-                state.gizmo_drag_session = projection;
-                return;
+                return projection;
             };
             if (picked_handle.axis == .free) {
                 const start_offset = vec3.sub(projection.drag_start_point, projection.plane_origin);
@@ -696,7 +738,31 @@ fn startGizmoDragSession(
         .none => projection.mode = .none,
     }
 
-    state.gizmo_drag_session = projection;
+    return projection;
+}
+
+fn startGizmoDragSession(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    picked_handle: PickedGizmoHandle,
+    ray: engine.scene.Ray,
+) void {
+    const entity_id = state.manipulation_entity orelse {
+        state.gizmo_drag_session = .{ .mode = .mouse_delta };
+        return;
+    };
+    const entity_transform = currentToolTargetTransform(state, layer_context, entity_id) orelse {
+        state.gizmo_drag_session = .{ .mode = .mouse_delta };
+        return;
+    };
+    state.gizmo_drag_session = buildGizmoDragSessionForTransform(
+        state,
+        layer_context,
+        picked_handle,
+        ray,
+        entity_transform,
+        state.manipulation_pivot_local_offset,
+    );
 }
 
 fn applyGizmoDragTranslate(
