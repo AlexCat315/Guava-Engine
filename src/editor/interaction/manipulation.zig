@@ -204,12 +204,14 @@ pub fn clearTransformTool(state: *EditorState) void {
     state.manipulation_entity = null;
     state.manipulation_target = .main_world;
     state.manipulation_pivot_local_offset = .{ 0.0, 0.0, 0.0 };
+    state.manipulation_selection_signature = 0;
     state.manipulation_drag_active = false;
     state.manipulation_keyboard_mode = false;
     state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
     state.manipulation_accumulated_delta = .{ 0.0, 0.0 };
     state.gizmo_drag_session = .{};
     state.manipulation_started_from_ui = false;
+    clearManipulationBatchState(state);
 }
 
 pub fn cancelActiveTransform(state: *EditorState, layer_context: *engine.core.LayerContext) void {
@@ -219,7 +221,13 @@ pub fn cancelActiveTransform(state: *EditorState, layer_context: *engine.core.La
     };
     ai_collaboration.noteManipulationCancel(state, entity_id);
     switch (state.manipulation_target) {
-        .main_world => _ = layer_context.world.setEntityWorldTransform(entity_id, state.manipulation_origin),
+        .main_world => {
+            if (state.manipulation_group_origins.items.len > 0) {
+                restoreManipulationOrigins(state, layer_context);
+            } else {
+                _ = layer_context.world.setEntityWorldTransform(entity_id, state.manipulation_origin);
+            }
+        },
         .staged_preview => ai_collaboration.cancelPreviewEntityTransform(state, layer_context, entity_id, state.manipulation_origin),
     }
     clearTransformTool(state);
@@ -243,6 +251,24 @@ fn commitActiveTransform(state: *EditorState, layer_context: *engine.core.LayerC
         };
         _ = try ai_collaboration.commitPreviewEntityTransform(state, layer_context, entity_id, transform);
         clearTransformTool(state);
+        refreshGizmoState(state, layer_context);
+        return;
+    }
+    if (state.manipulation_batch_snapshot.items.len > 0) {
+        const selection_before = layer_context.renderer.selectedEntities();
+        state.manipulation_mode = .none;
+        state.manipulation_axis = .free;
+        state.manipulation_entity = null;
+        state.manipulation_target = .main_world;
+        state.manipulation_selection_signature = 0;
+        state.manipulation_drag_active = false;
+        state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
+        state.manipulation_accumulated_delta = .{ 0.0, 0.0 };
+        state.gizmo_drag_session = .{};
+        state.manipulation_started_from_ui = false;
+        try history.recordEntityBatchMutation(state, layer_context, &state.manipulation_batch_snapshot, selection_before);
+        state.manipulation_batch_snapshot = .empty;
+        state.manipulation_group_origins.clearRetainingCapacity();
         refreshGizmoState(state, layer_context);
         return;
     }
@@ -275,6 +301,91 @@ fn clearTransformSnapshot(state: *EditorState) void {
     }
 }
 
+fn clearManipulationBatchState(state: *EditorState) void {
+    const allocator = state.allocator orelse {
+        state.manipulation_batch_snapshot = .empty;
+        state.manipulation_group_origins = .empty;
+        return;
+    };
+    for (state.manipulation_batch_snapshot.items) |*snapshot| {
+        snapshot.deinit(allocator);
+    }
+    state.manipulation_batch_snapshot.deinit(allocator);
+    state.manipulation_batch_snapshot = .empty;
+    state.manipulation_group_origins.deinit(allocator);
+    state.manipulation_group_origins = .empty;
+}
+
+fn restoreManipulationOrigins(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+    for (state.manipulation_group_origins.items) |origin| {
+        _ = layer_context.world.setEntityWorldTransform(origin.entity_id, origin.world_transform);
+    }
+}
+
+fn applyCurrentManipulationToTargets(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    ray: ?engine.scene.Ray,
+    quick_mode: bool,
+) void {
+    if (state.manipulation_target != .main_world or state.manipulation_group_origins.items.len == 0) {
+        const entity_id = state.manipulation_entity orelse return;
+        var entity_transform = state.manipulation_origin;
+        applyManipulationToTransform(state, layer_context, ray, quick_mode, &entity_transform);
+        switch (state.manipulation_target) {
+            .main_world => _ = layer_context.world.setEntityWorldTransform(entity_id, entity_transform),
+            .staged_preview => {
+                if (state.ai_preview_runtime) |*runtime| {
+                    _ = runtime.world.setEntityWorldTransform(entity_id, entity_transform);
+                    runtime.world.updateHierarchy();
+                }
+            },
+        }
+        return;
+    }
+
+    const saved_origin = state.manipulation_origin;
+    const saved_pivot = state.manipulation_pivot_local_offset;
+    defer {
+        state.manipulation_origin = saved_origin;
+        state.manipulation_pivot_local_offset = saved_pivot;
+    }
+
+    for (state.manipulation_group_origins.items) |origin| {
+        state.manipulation_origin = origin.world_transform;
+        state.manipulation_pivot_local_offset = origin.pivot_local_offset;
+        var entity_transform = origin.world_transform;
+        applyManipulationToTransform(state, layer_context, ray, quick_mode, &entity_transform);
+        _ = layer_context.world.setEntityWorldTransform(origin.entity_id, entity_transform);
+    }
+}
+
+fn applyManipulationToTransform(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    ray: ?engine.scene.Ray,
+    quick_mode: bool,
+    entity_transform: *engine.scene.Transform,
+) void {
+    if (quick_mode) {
+        switch (state.manipulation_mode) {
+            .none => {},
+            .translate => applyQuickTranslate(state, layer_context, entity_transform),
+            .rotate => applyQuickRotate(state, entity_transform),
+            .scale => applyQuickScale(state, entity_transform),
+        }
+        return;
+    }
+
+    const resolved_ray = ray orelse return;
+    switch (state.manipulation_mode) {
+        .none => {},
+        .translate => applyGizmoDragTranslate(state, layer_context, resolved_ray, entity_transform),
+        .rotate => applyGizmoDragRotate(state, resolved_ray, entity_transform),
+        .scale => applyGizmoDragScale(state, resolved_ray, entity_transform),
+    }
+}
+
 pub fn updateActiveTransform(state: *EditorState, layer_context: *engine.core.LayerContext) void {
     const input = layer_context.input;
 
@@ -294,29 +405,12 @@ pub fn updateActiveTransform(state: *EditorState, layer_context: *engine.core.La
             return;
         }
 
-        const entity_id = state.manipulation_entity orelse return;
         // Accumulate mouse delta and apply transform
         state.manipulation_drag_accumulator[0] += input.mouse_delta[0];
         state.manipulation_drag_accumulator[1] += input.mouse_delta[1];
         state.manipulation_accumulated_delta[0] += input.mouse_delta[0];
         state.manipulation_accumulated_delta[1] += input.mouse_delta[1];
-
-        var entity_transform = state.manipulation_origin;
-        switch (state.manipulation_mode) {
-            .none => {},
-            .translate => applyQuickTranslate(state, layer_context, &entity_transform),
-            .rotate => applyQuickRotate(state, &entity_transform),
-            .scale => applyQuickScale(state, &entity_transform),
-        }
-        switch (state.manipulation_target) {
-            .main_world => _ = layer_context.world.setEntityWorldTransform(entity_id, entity_transform),
-            .staged_preview => {
-                if (state.ai_preview_runtime) |*runtime| {
-                    _ = runtime.world.setEntityWorldTransform(entity_id, entity_transform);
-                    runtime.world.updateHierarchy();
-                }
-            },
-        }
+        applyCurrentManipulationToTargets(state, layer_context, null, true);
         return;
     }
 
@@ -334,6 +428,15 @@ pub fn updateActiveTransform(state: *EditorState, layer_context: *engine.core.La
                             };
                         }
                     }
+                } else if (state.manipulation_batch_snapshot.items.len > 0) {
+                    const selection_before = layer_context.renderer.selectedEntities();
+                    history.recordEntityBatchMutation(state, layer_context, &state.manipulation_batch_snapshot, selection_before) catch |err| {
+                        std.log.err("Failed to commit batch manipulation history: {}", .{err});
+                    };
+                    state.manipulation_batch_snapshot = .empty;
+                    captureManipulationTargets(state, layer_context, entity_id) catch |err| {
+                        std.log.err("Failed to refresh manipulation targets: {}", .{err});
+                    };
                 } else if (state.manipulation_snapshot) |before| {
                     state.manipulation_snapshot = null; // Prevent double free
                     history.recordEntityMutation(state, layer_context, before, &.{entity_id}) catch |err| {
@@ -375,24 +478,7 @@ pub fn updateActiveTransform(state: *EditorState, layer_context: *engine.core.La
 
     if (state.gizmo_drag_session.mode != .none and state.gizmo_drag_session.mode != .mouse_delta) {
         const ray = viewportRayUnderCursor(state, layer_context, true) orelse return;
-        var entity_transform = state.manipulation_origin;
-
-        switch (state.manipulation_mode) {
-            .none => {},
-            .translate => applyGizmoDragTranslate(state, layer_context, ray, &entity_transform),
-            .rotate => applyGizmoDragRotate(state, ray, &entity_transform),
-            .scale => applyGizmoDragScale(state, ray, &entity_transform),
-        }
-
-        switch (state.manipulation_target) {
-            .main_world => _ = layer_context.world.setEntityWorldTransform(entity_id, entity_transform),
-            .staged_preview => {
-                if (state.ai_preview_runtime) |*runtime| {
-                    _ = runtime.world.setEntityWorldTransform(entity_id, entity_transform);
-                    runtime.world.updateHierarchy();
-                }
-            },
-        }
+        applyCurrentManipulationToTargets(state, layer_context, ray, false);
         return;
     }
 
@@ -405,24 +491,7 @@ pub fn updateActiveTransform(state: *EditorState, layer_context: *engine.core.La
     state.manipulation_accumulated_delta[0] += input.mouse_delta[0];
     state.manipulation_accumulated_delta[1] += input.mouse_delta[1];
 
-    var entity_transform = state.manipulation_origin;
-
-    switch (state.manipulation_mode) {
-        .none => {},
-        .translate => applyQuickTranslate(state, layer_context, &entity_transform),
-        .rotate => applyQuickRotate(state, &entity_transform),
-        .scale => applyQuickScale(state, &entity_transform),
-    }
-
-    switch (state.manipulation_target) {
-        .main_world => _ = layer_context.world.setEntityWorldTransform(entity_id, entity_transform),
-        .staged_preview => {
-            if (state.ai_preview_runtime) |*runtime| {
-                _ = runtime.world.setEntityWorldTransform(entity_id, entity_transform);
-                runtime.world.updateHierarchy();
-            }
-        },
-    }
+    applyCurrentManipulationToTargets(state, layer_context, null, true);
 }
 
 const GizmoViewBasis = struct {
@@ -930,32 +999,34 @@ fn refreshTransformToolTarget(state: *EditorState, layer_context: *engine.core.L
             clearTransformSnapshot(state);
             state.manipulation_entity = null;
             state.manipulation_pivot_local_offset = .{ 0.0, 0.0, 0.0 };
+            state.manipulation_selection_signature = 0;
+            clearManipulationBatchState(state);
         }
         return;
     }
 
     const next = nextTransformToolTarget(state, layer_context);
+    const selection_signature = currentManipulationSelectionSignature(state, layer_context, next.target);
 
-    if (next.entity_id == state.manipulation_entity and next.target == state.manipulation_target) {
+    if (next.entity_id == state.manipulation_entity and
+        next.target == state.manipulation_target and
+        selection_signature == state.manipulation_selection_signature)
+    {
         return;
     }
 
     clearTransformSnapshot(state);
+    clearManipulationBatchState(state);
     state.manipulation_entity = next.entity_id;
     state.manipulation_target = next.target;
+    state.manipulation_selection_signature = selection_signature;
     state.manipulation_pivot_local_offset = .{ 0.0, 0.0, 0.0 };
     state.manipulation_drag_active = false;
     state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
     state.manipulation_accumulated_delta = .{ 0.0, 0.0 };
 
     if (next.entity_id) |entity_id| {
-        state.manipulation_origin = currentToolTargetTransform(state, layer_context, entity_id) orelse return;
-        if (currentManipulationWorld(state, layer_context)) |world| {
-            state.manipulation_pivot_local_offset = computePivotLocalOffsetForEntity(state, layer_context, world, entity_id);
-        }
-        if (next.target == .main_world) {
-            state.manipulation_snapshot = try history.captureEntitySnapshot(state, layer_context.world, entity_id);
-        }
+        try captureManipulationTargets(state, layer_context, entity_id);
     }
 }
 
@@ -991,6 +1062,82 @@ fn nextTransformToolTarget(state: *EditorState, layer_context: *engine.core.Laye
         .entity_id = next_entity,
         .target = .main_world,
     };
+}
+
+fn currentManipulationSelectionSignature(
+    state: *const EditorState,
+    layer_context: *engine.core.LayerContext,
+    target: state_mod.ManipulationTarget,
+) u64 {
+    var hash: u64 = 1469598103934665603;
+    switch (target) {
+        .main_world => {
+            for (layer_context.renderer.selectedEntities()) |entity_id| {
+                hash ^= @as(u64, entity_id);
+                hash *%= 1099511628211;
+            }
+        },
+        .staged_preview => {
+            if (state.ai_preview_selected_entity) |entity_id| {
+                hash ^= @as(u64, entity_id);
+                hash *%= 1099511628211;
+            }
+        },
+    }
+    return hash;
+}
+
+fn captureManipulationTargets(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity_id: engine.scene.EntityId,
+) !void {
+    state.manipulation_origin = currentToolTargetTransform(state, layer_context, entity_id) orelse return;
+    const world = currentManipulationWorld(state, layer_context) orelse return;
+    state.manipulation_pivot_local_offset = computePivotLocalOffsetForEntity(state, layer_context, world, entity_id);
+
+    if (state.manipulation_target != .main_world) {
+        return;
+    }
+
+    const selection = layer_context.renderer.selectedEntities();
+    if (selection.len <= 1) {
+        state.manipulation_snapshot = try history.captureEntitySnapshot(state, layer_context.world, entity_id);
+        return;
+    }
+
+    state.manipulation_batch_snapshot = try history.captureEntitySnapshots(state, layer_context.world, selection);
+    const allocator = state.allocator orelse layer_context.world.allocator;
+    try state.manipulation_group_origins.ensureTotalCapacity(allocator, selection.len);
+    for (selection) |selected_entity_id| {
+        if (selectionContainsAncestor(layer_context.world, selection, selected_entity_id)) continue;
+        const selected_transform = layer_context.world.worldTransformConst(selected_entity_id) orelse continue;
+        try state.manipulation_group_origins.append(allocator, .{
+            .entity_id = selected_entity_id,
+            .world_transform = selected_transform,
+            .pivot_local_offset = computePivotLocalOffsetForEntity(state, layer_context, layer_context.world, selected_entity_id),
+        });
+    }
+}
+
+fn selectionContainsAncestor(
+    world: *const engine.scene.World,
+    selection: []const engine.scene.EntityId,
+    entity_id: engine.scene.EntityId,
+) bool {
+    var current = (world.getEntityConst(entity_id) orelse return false).parent;
+    while (current) |parent_id| {
+        for (selection) |selected_id| {
+            if (selected_id == parent_id) {
+                return true;
+            }
+        }
+        current = if (world.getEntityConst(parent_id)) |parent_entity|
+            parent_entity.parent
+        else
+            null;
+    }
+    return false;
 }
 
 fn currentToolTargetTransform(
@@ -1083,6 +1230,7 @@ fn computePivotWorldPositionForEntity(
         .median_point => selectionMedianPivotWorldPosition(state, layer_context, world, transform),
         .active_element => activeElementPivotWorldPosition(state, layer_context, world, transform),
         .cursor => state.transform_cursor_world_position,
+        .individual_origins => transform.translation,
     };
 }
 

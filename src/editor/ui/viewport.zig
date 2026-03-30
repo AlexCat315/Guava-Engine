@@ -387,6 +387,64 @@ fn drawProjectedWorldSegment(
     draw_list.addLine(a_screen, b_screen, color, thickness);
 }
 
+fn drawViewport3DCursor(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+    if (!state.viewport_has_image) return;
+
+    const draw_list = gui.getWindowDrawList();
+    const camera_transform = camera.activeCameraTransform(state, layer_context);
+    const origin = state.transform_cursor_world_position;
+    const scale = viewportCameraHelperScale(camera_transform.translation, origin) * 0.28;
+    const x_color = gui.getColorU32(.{ 0.96, 0.42, 0.42, 0.95 });
+    const y_color = gui.getColorU32(.{ 0.48, 0.92, 0.54, 0.95 });
+    const z_color = gui.getColorU32(.{ 0.44, 0.68, 0.98, 0.95 });
+    const center_color = gui.getColorU32(.{ 0.98, 0.92, 0.42, 0.98 });
+
+    drawProjectedWorldSegment(draw_list, state, layer_context, vec3.add(origin, .{ -scale, 0.0, 0.0 }), vec3.add(origin, .{ scale, 0.0, 0.0 }), x_color, 2.0);
+    drawProjectedWorldSegment(draw_list, state, layer_context, vec3.add(origin, .{ 0.0, -scale, 0.0 }), vec3.add(origin, .{ 0.0, scale, 0.0 }), y_color, 2.0);
+    drawProjectedWorldSegment(draw_list, state, layer_context, vec3.add(origin, .{ 0.0, 0.0, -scale }), vec3.add(origin, .{ 0.0, 0.0, scale }), z_color, 2.0);
+
+    if (projectWorldPointToViewport(state, layer_context, origin)) |screen_pos| {
+        draw_list.addCircleFilled(screen_pos, 7.5, gui.getColorU32(.{ 0.12, 0.12, 0.12, 0.92 }), 24);
+        draw_list.addCircleFilled(screen_pos, 4.5, center_color, 20);
+    }
+}
+
+fn rayPlaneIntersection(ray: engine.scene.Ray, plane_origin: [3]f32, plane_normal: [3]f32) ?[3]f32 {
+    const normalized_normal = vec3.normalize(plane_normal);
+    const denominator = vec3.dot(normalized_normal, ray.direction);
+    if (@abs(denominator) <= 0.00001) return null;
+    const distance = vec3.dot(vec3.sub(plane_origin, ray.origin), normalized_normal) / denominator;
+    if (distance < 0.0) return null;
+    return vec3.add(ray.origin, vec3.scale(ray.direction, distance));
+}
+
+fn tryPlace3DCursorFromViewportClick(state: *EditorState, layer_context: *engine.core.LayerContext) bool {
+    if (!state.transform_cursor_place_mode or
+        !state.viewport_has_image or
+        !state.viewport_hovered or
+        state.viewport_overlay_hovered or
+        layer_context.input.modifiers.alt)
+    {
+        return false;
+    }
+
+    const pixel = viewportPixelUnderMouse(state, layer_context) orelse return false;
+    const viewport_size = layer_context.renderer.sceneViewportSize();
+    const ray = camera.activeCameraRayFromViewportPixel(state, layer_context, pixel, viewport_size) orelse return false;
+
+    if (layer_context.world.raycastSurface(ray)) |hit| {
+        state.transform_cursor_world_position = hit.position;
+    } else if (rayPlaneIntersection(ray, .{ 0.0, state.transform_cursor_world_position[1], 0.0 }, .{ 0.0, 1.0, 0.0 })) |plane_hit| {
+        state.transform_cursor_world_position = plane_hit;
+    } else {
+        return false;
+    }
+
+    state.transform_cursor_place_mode = false;
+    manipulation.refreshGizmoState(state, layer_context);
+    return true;
+}
+
 fn drawViewportPerspectiveCameraFrustum(
     draw_list: gui.DrawList,
     state: *const EditorState,
@@ -847,6 +905,7 @@ fn drawConstraintChipButton(id: []const u8, label: []const u8, active: bool) boo
 fn transformConstraintsActive(state: *const EditorState) bool {
     return state.transform_pivot_mode != .origin or
         state.translation_snap_target != .grid or
+        state.transform_cursor_place_mode or
         state.surface_snap_align_rotation_to_normal or
         state.manipulation_axis != .free or
         state.translation_snap_enabled or
@@ -893,12 +952,20 @@ fn drawTransformConstraintsPopup(state: *EditorState, layer_context: *engine.cor
         state.transform_pivot_mode = .cursor;
         changed = true;
     }
+    gui.sameLine();
+    if (drawConstraintPopupButton(state.text(.pivot_individual_origins), 126.0, state.transform_pivot_mode == .individual_origins)) {
+        state.transform_pivot_mode = .individual_origins;
+        changed = true;
+    }
     if (state.transform_pivot_mode == .cursor) {
         gui.text(state.text(.cursor_position));
         var cursor_position = state.transform_cursor_world_position;
         if (gui.dragFloat3("##transform_cursor_world_position", &cursor_position, 0.1, -100000.0, 100000.0)) {
             state.transform_cursor_world_position = cursor_position;
             changed = true;
+        }
+        if (drawConstraintPopupButton(state.text(.place_cursor), 164.0, state.transform_cursor_place_mode)) {
+            state.transform_cursor_place_mode = !state.transform_cursor_place_mode;
         }
     }
 
@@ -1183,6 +1250,7 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
         try drawViewportFpsOverlayWindow(state, layer_context);
         try drawViewportDebugOverlayWindow(state, layer_context);
         try ai_collaboration.drawViewportCollaborationOverlay(state, layer_context);
+        drawViewport3DCursor(state, layer_context);
         drawViewportCameraFrustums(state, layer_context);
         try drawViewportSceneEntityIcons(state, layer_context);
         drawViewportViewCube(state, layer_context);
@@ -1353,6 +1421,11 @@ pub fn drawStatusBarWindow(state: *EditorState, layer_context: *engine.core.Laye
 pub fn handleViewportSelection(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const input = layer_context.input;
     if (input.wasMousePressed(.left)) {
+        if (tryPlace3DCursorFromViewportClick(state, layer_context)) {
+            state.viewport_selection_press_active = false;
+            return;
+        }
+
         // Gizmo axis click: test on press so drag can begin immediately
         if (state.manipulation_mode != .none and
             state.viewport_has_image and state.viewport_hovered and

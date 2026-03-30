@@ -67,6 +67,13 @@ pub const TransformPivotMode = enum {
     median_point,
     active_element,
     cursor,
+    individual_origins,
+};
+
+pub const ManipulationEntityOrigin = struct {
+    entity_id: engine.scene.EntityId,
+    world_transform: engine.scene.Transform,
+    pivot_local_offset: [3]f32 = .{ 0.0, 0.0, 0.0 },
 };
 
 pub const TranslationSnapTarget = enum {
@@ -432,6 +439,7 @@ pub const EditorState = struct {
     scale_drag_sensitivity: f32 = 0.01,
     transform_pivot_mode: TransformPivotMode = .origin,
     transform_cursor_world_position: [3]f32 = .{ 0.0, 0.0, 0.0 },
+    transform_cursor_place_mode: bool = false,
     translation_snap_enabled: bool = false,
     translation_snap_target: TranslationSnapTarget = .grid,
     surface_snap_align_rotation_to_normal: bool = false,
@@ -445,6 +453,9 @@ pub const EditorState = struct {
     manipulation_entity: ?engine.scene.EntityId = null,
     manipulation_origin: engine.scene.Transform = .{},
     manipulation_pivot_local_offset: [3]f32 = .{ 0.0, 0.0, 0.0 },
+    manipulation_selection_signature: u64 = 0,
+    manipulation_group_origins: std.ArrayList(ManipulationEntityOrigin) = .empty,
+    manipulation_batch_snapshot: std.ArrayList(command_mod.EntitySnapshot) = .empty,
     manipulation_drag_active: bool = false,
     manipulation_keyboard_mode: bool = false, // Blender-style: keyboard activates, mouse moves freely, click confirms
     manipulation_started_from_ui: bool = false, // 记录拖拽是否从UI元素开始，防止事件穿透
@@ -812,6 +823,13 @@ pub const EditorState = struct {
             snapshot.deinit(allocator);
             self.manipulation_snapshot = null;
         }
+        for (self.manipulation_batch_snapshot.items) |*snapshot| {
+            snapshot.deinit(allocator);
+        }
+        self.manipulation_batch_snapshot.deinit(allocator);
+        self.manipulation_batch_snapshot = .empty;
+        self.manipulation_group_origins.deinit(allocator);
+        self.manipulation_group_origins = .empty;
 
         for (self.undo_stack.items) |*command| {
             command.deinit(allocator);
@@ -944,10 +962,14 @@ test "viewport drop defaults and payload constants stay stable" {
     try std.testing.expectEqual(@as(f32, 0.01), state.scale_drag_sensitivity);
     try std.testing.expectEqual(TransformPivotMode.origin, state.transform_pivot_mode);
     try std.testing.expectEqual([3]f32{ 0.0, 0.0, 0.0 }, state.transform_cursor_world_position);
+    try std.testing.expect(!state.transform_cursor_place_mode);
     try std.testing.expectEqual(TranslationSnapTarget.grid, state.translation_snap_target);
     try std.testing.expect(!state.surface_snap_align_rotation_to_normal);
     try std.testing.expect(!state.manipulation_drag_active);
     try std.testing.expectEqual([3]f32{ 0.0, 0.0, 0.0 }, state.manipulation_pivot_local_offset);
+    try std.testing.expectEqual(@as(u64, 0), state.manipulation_selection_signature);
+    try std.testing.expectEqual(@as(usize, 0), state.manipulation_group_origins.items.len);
+    try std.testing.expectEqual(@as(usize, 0), state.manipulation_batch_snapshot.items.len);
     try std.testing.expectEqual([2]f32{ 0.0, 0.0 }, state.manipulation_drag_accumulator);
     try std.testing.expectEqual(GizmoDragMode.none, state.gizmo_drag_session.mode);
     try std.testing.expect(state.pending_viewport_drop == null);
