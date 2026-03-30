@@ -114,6 +114,11 @@ typedef struct {
 
 typedef struct {
     uint32_t id;
+    VkSemaphore semaphore;
+} TimelineSemaphoreEntry;
+
+typedef struct {
+    uint32_t id;
     VkShaderModule module;
     uint32_t stage; // ShaderStage ordinal
     char entry_point[64];
@@ -178,6 +183,7 @@ typedef struct {
     // Command pools
     VkCommandPool graphics_cmd_pool;
     VkCommandPool compute_cmd_pool;
+    VkCommandPool transfer_cmd_pool;
 
     // Swapchain
     VkSurfaceKHR     surface;
@@ -192,6 +198,7 @@ typedef struct {
     VkSemaphore       image_available_semaphore;
     VkSemaphore       render_finished_semaphore;
     VkFence           in_flight_fence;
+    bool              timeline_semaphores_supported;
 
     // Validation layers
     VkDebugUtilsMessengerEXT debug_messenger;
@@ -212,6 +219,8 @@ typedef struct {
     uint32_t             texture_count;
     SamplerEntry         samplers[MAX_RESOURCES];
     uint32_t             sampler_count;
+    TimelineSemaphoreEntry timeline_semaphores[MAX_RESOURCES];
+    uint32_t               timeline_semaphore_count;
     ShaderEntry          shaders[MAX_RESOURCES];
     uint32_t             shader_count;
     GfxPipelineEntry     gfx_pipelines[MAX_RESOURCES];
@@ -252,6 +261,38 @@ static SamplerEntry* find_sampler(GuavaVkContext* ctx, uint32_t id) {
     for (uint32_t i = 0; i < ctx->sampler_count; i++)
         if (ctx->samplers[i].id == id) return &ctx->samplers[i];
     return NULL;
+}
+
+static TimelineSemaphoreEntry* find_timeline_semaphore(GuavaVkContext* ctx, uint32_t id) {
+    for (uint32_t i = 0; i < ctx->timeline_semaphore_count; i++)
+        if (ctx->timeline_semaphores[i].id == id) return &ctx->timeline_semaphores[i];
+    return NULL;
+}
+
+static VkSemaphore get_or_create_timeline_semaphore(GuavaVkContext* ctx, uint32_t id) {
+    TimelineSemaphoreEntry* existing = find_timeline_semaphore(ctx, id);
+    if (existing) return existing->semaphore;
+    if (!ctx->timeline_semaphores_supported) return VK_NULL_HANDLE;
+    if (ctx->timeline_semaphore_count >= MAX_RESOURCES) return VK_NULL_HANDLE;
+
+    VkSemaphoreTypeCreateInfo type_info = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+        .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
+        .initialValue = 0,
+    };
+    VkSemaphoreCreateInfo create_info = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+        .pNext = &type_info,
+    };
+
+    TimelineSemaphoreEntry* entry = &ctx->timeline_semaphores[ctx->timeline_semaphore_count];
+    if (vkCreateSemaphore(ctx->device, &create_info, NULL, &entry->semaphore) != VK_SUCCESS) {
+        return VK_NULL_HANDLE;
+    }
+
+    entry->id = id;
+    ctx->timeline_semaphore_count += 1;
+    return entry->semaphore;
 }
 
 static ShaderEntry* find_shader(GuavaVkContext* ctx, uint32_t id) {
@@ -745,8 +786,24 @@ void* guava_vk_rhi_init(bool enable_validation) {
     features.samplerAnisotropy = VK_TRUE;
     features.fillModeNonSolid = VK_TRUE;
 
+    VkPhysicalDeviceVulkan12Features supported_vulkan12 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+    };
+    VkPhysicalDeviceFeatures2 features2 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+        .pNext = &supported_vulkan12,
+    };
+    vkGetPhysicalDeviceFeatures2(ctx->physical_device, &features2);
+    ctx->timeline_semaphores_supported = supported_vulkan12.timelineSemaphore == VK_TRUE;
+
+    VkPhysicalDeviceVulkan12Features enabled_vulkan12 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+        .timelineSemaphore = ctx->timeline_semaphores_supported ? VK_TRUE : VK_FALSE,
+    };
+
     VkDeviceCreateInfo dev_info = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+        .pNext = &enabled_vulkan12,
         .queueCreateInfoCount = unique_count,
         .pQueueCreateInfos = queue_infos,
         .enabledExtensionCount = device_ext_count,
@@ -776,6 +833,9 @@ void* guava_vk_rhi_init(bool enable_validation) {
 
     pool_info.queueFamilyIndex = ctx->compute_family;
     vkCreateCommandPool(ctx->device, &pool_info, NULL, &ctx->compute_cmd_pool);
+
+    pool_info.queueFamilyIndex = ctx->transfer_family;
+    vkCreateCommandPool(ctx->device, &pool_info, NULL, &ctx->transfer_cmd_pool);
 
     // ── Sync objects ──────────────────────────────────────────────────
     VkSemaphoreCreateInfo sem_info = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
@@ -829,6 +889,8 @@ void guava_vk_rhi_destroy(void* raw) {
     }
     for (uint32_t i = 0; i < ctx->sampler_count; i++)
         vkDestroySampler(ctx->device, ctx->samplers[i].sampler, NULL);
+    for (uint32_t i = 0; i < ctx->timeline_semaphore_count; i++)
+        vkDestroySemaphore(ctx->device, ctx->timeline_semaphores[i].semaphore, NULL);
     for (uint32_t i = 0; i < ctx->shader_count; i++)
         vkDestroyShaderModule(ctx->device, ctx->shaders[i].module, NULL);
     for (uint32_t i = 0; i < ctx->gfx_pipeline_count; i++) {
@@ -877,6 +939,7 @@ void guava_vk_rhi_destroy(void* raw) {
     // Pools
     vkDestroyCommandPool(ctx->device, ctx->graphics_cmd_pool, NULL);
     vkDestroyCommandPool(ctx->device, ctx->compute_cmd_pool, NULL);
+    vkDestroyCommandPool(ctx->device, ctx->transfer_cmd_pool, NULL);
 
     // Debug messenger
     if (ctx->debug_messenger) {
@@ -1998,15 +2061,25 @@ void guava_vk_rhi_register_binding_set(void* raw, uint32_t set_id,
 // ===========================================================================
 
 bool guava_vk_rhi_submit(void* raw, uint32_t queue_class,
-                          const uint8_t* cmd_bytes, uint32_t cmd_len) {
+                          const uint8_t* cmd_bytes, uint32_t cmd_len,
+                          const GuavaVkSubmitDesc* submit_desc) {
     GuavaVkContext* ctx = (GuavaVkContext*)raw;
-    (void)queue_class; // TODO: use appropriate queue based on class
+    const GuavaVkSubmitDesc empty_desc = {0};
+    if (!submit_desc) submit_desc = &empty_desc;
 
     VkCommandPool pool = ctx->graphics_cmd_pool;
     VkQueue queue = ctx->graphics_queue;
     if (queue_class == 1) {
         pool = ctx->compute_cmd_pool;
         queue = ctx->compute_queue;
+    } else if (queue_class == 2) {
+        pool = ctx->transfer_cmd_pool;
+        queue = ctx->transfer_queue;
+    }
+
+    if ((submit_desc->wait_count > 0 || submit_desc->signal_count > 0) && !ctx->timeline_semaphores_supported) {
+        fprintf(stderr, "[Guava VK] Timeline semaphore submit requested but the device does not support timeline semaphores\n");
+        return false;
     }
 
     VkCommandBufferAllocateInfo alloc_info = {
@@ -2024,7 +2097,56 @@ bool guava_vk_rhi_submit(void* raw, uint32_t queue_class,
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     };
-    vkBeginCommandBuffer(cmd, &begin);
+    if (vkBeginCommandBuffer(cmd, &begin) != VK_SUCCESS) {
+        vkFreeCommandBuffers(ctx->device, pool, 1, &cmd);
+        return false;
+    }
+
+    bool success = true;
+    VkSemaphore* wait_semaphores = NULL;
+    uint64_t* wait_values = NULL;
+    VkPipelineStageFlags* wait_stage_masks = NULL;
+    VkSemaphore* signal_semaphores = NULL;
+    uint64_t* signal_values = NULL;
+    VkResult submit_result = VK_SUCCESS;
+
+    if (submit_desc->wait_count > 0) {
+        wait_semaphores = (VkSemaphore*)malloc(sizeof(VkSemaphore) * submit_desc->wait_count);
+        wait_values = (uint64_t*)malloc(sizeof(uint64_t) * submit_desc->wait_count);
+        wait_stage_masks = (VkPipelineStageFlags*)malloc(sizeof(VkPipelineStageFlags) * submit_desc->wait_count);
+        if (!wait_semaphores || !wait_values || !wait_stage_masks) {
+            success = false;
+            goto cleanup;
+        }
+        for (uint32_t i = 0; i < submit_desc->wait_count; ++i) {
+            VkSemaphore semaphore = get_or_create_timeline_semaphore(ctx, submit_desc->wait_semaphores[i].id);
+            if (semaphore == VK_NULL_HANDLE) {
+                success = false;
+                goto cleanup;
+            }
+            wait_semaphores[i] = semaphore;
+            wait_values[i] = submit_desc->wait_semaphores[i].value;
+            wait_stage_masks[i] = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+        }
+    }
+
+    if (submit_desc->signal_count > 0) {
+        signal_semaphores = (VkSemaphore*)malloc(sizeof(VkSemaphore) * submit_desc->signal_count);
+        signal_values = (uint64_t*)malloc(sizeof(uint64_t) * submit_desc->signal_count);
+        if (!signal_semaphores || !signal_values) {
+            success = false;
+            goto cleanup;
+        }
+        for (uint32_t i = 0; i < submit_desc->signal_count; ++i) {
+            VkSemaphore semaphore = get_or_create_timeline_semaphore(ctx, submit_desc->signal_semaphores[i].id);
+            if (semaphore == VK_NULL_HANDLE) {
+                success = false;
+                goto cleanup;
+            }
+            signal_semaphores[i] = semaphore;
+            signal_values[i] = submit_desc->signal_semaphores[i].value;
+        }
+    }
 
     // Decode the byte stream
     uint32_t offset = 0;
@@ -2039,7 +2161,7 @@ bool guava_vk_rhi_submit(void* raw, uint32_t queue_class,
 
         switch (opcode) {
             case OP_BEGIN_RENDER_PASS: {
-                if (offset + sizeof(CmdBeginRenderPass) > cmd_len) goto done;
+                if (offset + sizeof(CmdBeginRenderPass) > cmd_len) goto end_recording;
                 const CmdBeginRenderPass* rp = (const CmdBeginRenderPass*)(cmd_bytes + offset);
                 offset += sizeof(CmdBeginRenderPass);
 
@@ -2049,11 +2171,9 @@ bool guava_vk_rhi_submit(void* raw, uint32_t queue_class,
                 VkFormat color_fmt = color_tex ? color_tex->format : VK_FORMAT_UNDEFINED;
                 VkFormat depth_fmt = depth_tex ? depth_tex->format : VK_FORMAT_UNDEFINED;
 
-                // Find or create compatible render pass
                 active_render_pass = find_or_create_render_pass(ctx, color_fmt, depth_fmt, rp->clear_mask);
                 if (!active_render_pass) { in_render_pass = true; break; }
 
-                // Transition images to attachment layouts
                 if (color_tex && color_tex->current_layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
                     transition_image_layout(ctx, cmd, color_tex->image,
                         color_tex->current_layout, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -2067,7 +2187,6 @@ bool guava_vk_rhi_submit(void* raw, uint32_t queue_class,
                     depth_tex->current_layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
                 }
 
-                // Find or create framebuffer
                 VkImageView depth_view = depth_tex ? depth_tex->view : VK_NULL_HANDLE;
                 VkImageView color_view = color_tex ? color_tex->view : VK_NULL_HANDLE;
                 uint32_t target_width = color_tex ? color_tex->width : depth_tex->width;
@@ -2076,7 +2195,6 @@ bool guava_vk_rhi_submit(void* raw, uint32_t queue_class,
                     color_view, depth_view, target_width, target_height);
                 if (!active_framebuffer) { in_render_pass = true; break; }
 
-                // Begin render pass
                 VkClearValue clear_values[2];
                 uint32_t clear_count = 0;
                 if (color_tex) {
@@ -2106,16 +2224,13 @@ bool guava_vk_rhi_submit(void* raw, uint32_t queue_class,
                 if (in_render_pass && active_render_pass) {
                     vkCmdEndRenderPass(cmd);
                 }
-                if (active_framebuffer) {
-                    // Framebuffer will be destroyed after submit
-                }
                 in_render_pass = false;
                 active_render_pass = VK_NULL_HANDLE;
                 active_framebuffer = VK_NULL_HANDLE;
                 break;
             }
             case OP_BEGIN_COMPUTE_PASS: {
-                if (offset + sizeof(CmdBeginComputePass) > cmd_len) goto done;
+                if (offset + sizeof(CmdBeginComputePass) > cmd_len) goto end_recording;
                 offset += sizeof(CmdBeginComputePass);
                 in_compute_pass = true;
                 break;
@@ -2125,7 +2240,7 @@ bool guava_vk_rhi_submit(void* raw, uint32_t queue_class,
                 break;
             }
             case OP_BEGIN_COPY_PASS: {
-                if (offset + sizeof(CmdBeginCopyPass) > cmd_len) goto done;
+                if (offset + sizeof(CmdBeginCopyPass) > cmd_len) goto end_recording;
                 offset += sizeof(CmdBeginCopyPass);
                 break;
             }
@@ -2133,7 +2248,7 @@ bool guava_vk_rhi_submit(void* raw, uint32_t queue_class,
                 break;
             }
             case OP_SET_BINDING_SET: {
-                if (offset + sizeof(CmdSetBindingSet) > cmd_len) goto done;
+                if (offset + sizeof(CmdSetBindingSet) > cmd_len) goto end_recording;
                 const CmdSetBindingSet* bs = (const CmdSetBindingSet*)(cmd_bytes + offset);
                 offset += sizeof(CmdSetBindingSet);
 
@@ -2148,7 +2263,7 @@ bool guava_vk_rhi_submit(void* raw, uint32_t queue_class,
                 break;
             }
             case OP_SET_VERTEX_BUFFER: {
-                if (offset + sizeof(CmdSetVertexBuffer) > cmd_len) goto done;
+                if (offset + sizeof(CmdSetVertexBuffer) > cmd_len) goto end_recording;
                 const CmdSetVertexBuffer* vb = (const CmdSetVertexBuffer*)(cmd_bytes + offset);
                 offset += sizeof(CmdSetVertexBuffer);
 
@@ -2160,7 +2275,7 @@ bool guava_vk_rhi_submit(void* raw, uint32_t queue_class,
                 break;
             }
             case OP_SET_INDEX_BUFFER: {
-                if (offset + sizeof(CmdSetIndexBuffer) > cmd_len) goto done;
+                if (offset + sizeof(CmdSetIndexBuffer) > cmd_len) goto end_recording;
                 const CmdSetIndexBuffer* ib = (const CmdSetIndexBuffer*)(cmd_bytes + offset);
                 offset += sizeof(CmdSetIndexBuffer);
 
@@ -2172,7 +2287,7 @@ bool guava_vk_rhi_submit(void* raw, uint32_t queue_class,
                 break;
             }
             case OP_SET_PIPELINE: {
-                if (offset + sizeof(CmdSetPipeline) > cmd_len) goto done;
+                if (offset + sizeof(CmdSetPipeline) > cmd_len) goto end_recording;
                 const CmdSetPipeline* sp = (const CmdSetPipeline*)(cmd_bytes + offset);
                 offset += sizeof(CmdSetPipeline);
 
@@ -2192,7 +2307,7 @@ bool guava_vk_rhi_submit(void* raw, uint32_t queue_class,
                 break;
             }
             case OP_DRAW_INDEXED: {
-                if (offset + sizeof(CmdDrawIndexed) > cmd_len) goto done;
+                if (offset + sizeof(CmdDrawIndexed) > cmd_len) goto end_recording;
                 const CmdDrawIndexed* di = (const CmdDrawIndexed*)(cmd_bytes + offset);
                 offset += sizeof(CmdDrawIndexed);
                 vkCmdDrawIndexed(cmd, di->index_count, di->instance_count,
@@ -2200,7 +2315,7 @@ bool guava_vk_rhi_submit(void* raw, uint32_t queue_class,
                 break;
             }
             case OP_DRAW_INDIRECT: {
-                if (offset + sizeof(CmdDrawIndirect) > cmd_len) goto done;
+                if (offset + sizeof(CmdDrawIndirect) > cmd_len) goto end_recording;
                 const CmdDrawIndirect* ind = (const CmdDrawIndirect*)(cmd_bytes + offset);
                 offset += sizeof(CmdDrawIndirect);
                 BufferEntry* buf = find_buffer(ctx, ind->buffer_id);
@@ -2210,14 +2325,14 @@ bool guava_vk_rhi_submit(void* raw, uint32_t queue_class,
                 break;
             }
             case OP_DISPATCH: {
-                if (offset + sizeof(CmdDispatch) > cmd_len) goto done;
+                if (offset + sizeof(CmdDispatch) > cmd_len) goto end_recording;
                 const CmdDispatch* d = (const CmdDispatch*)(cmd_bytes + offset);
                 offset += sizeof(CmdDispatch);
                 vkCmdDispatch(cmd, d->x, d->y, d->z);
                 break;
             }
             case OP_DISPATCH_INDIRECT: {
-                if (offset + sizeof(CmdDispatchIndirect) > cmd_len) goto done;
+                if (offset + sizeof(CmdDispatchIndirect) > cmd_len) goto end_recording;
                 const CmdDispatchIndirect* di = (const CmdDispatchIndirect*)(cmd_bytes + offset);
                 offset += sizeof(CmdDispatchIndirect);
                 BufferEntry* buf = find_buffer(ctx, di->buffer_id);
@@ -2227,10 +2342,8 @@ bool guava_vk_rhi_submit(void* raw, uint32_t queue_class,
                 break;
             }
             case OP_PIPELINE_BARRIER: {
-                if (offset + sizeof(CmdPipelineBarrier) > cmd_len) goto done;
-                // const CmdPipelineBarrier* pb = (const CmdPipelineBarrier*)(cmd_bytes + offset);
+                if (offset + sizeof(CmdPipelineBarrier) > cmd_len) goto end_recording;
                 offset += sizeof(CmdPipelineBarrier);
-                // TODO: translate RHI barrier to VkMemoryBarrier/VkImageMemoryBarrier
                 VkMemoryBarrier barrier = {
                     .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
                     .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
@@ -2243,7 +2356,7 @@ bool guava_vk_rhi_submit(void* raw, uint32_t queue_class,
                 break;
             }
             case OP_DRAW: {
-                if (offset + sizeof(CmdDraw) > cmd_len) goto done;
+                if (offset + sizeof(CmdDraw) > cmd_len) goto end_recording;
                 const CmdDraw* d = (const CmdDraw*)(cmd_bytes + offset);
                 offset += sizeof(CmdDraw);
                 vkCmdDraw(cmd, d->vertex_count, d->instance_count,
@@ -2251,10 +2364,10 @@ bool guava_vk_rhi_submit(void* raw, uint32_t queue_class,
                 break;
             }
             case OP_PUSH_UNIFORM: {
-                if (offset + sizeof(CmdPushUniform) > cmd_len) goto done;
+                if (offset + sizeof(CmdPushUniform) > cmd_len) goto end_recording;
                 const CmdPushUniform* pu = (const CmdPushUniform*)(cmd_bytes + offset);
                 offset += sizeof(CmdPushUniform);
-                if (offset + pu->data_len > cmd_len) goto done;
+                if (offset + pu->data_len > cmd_len) goto end_recording;
 
                 if (active_layout) {
                     VkShaderStageFlags stage_flags = 0;
@@ -2269,7 +2382,7 @@ bool guava_vk_rhi_submit(void* raw, uint32_t queue_class,
                 break;
             }
             case OP_SET_VIEWPORT: {
-                if (offset + sizeof(CmdSetViewport) > cmd_len) goto done;
+                if (offset + sizeof(CmdSetViewport) > cmd_len) goto end_recording;
                 const CmdSetViewport* vp = (const CmdSetViewport*)(cmd_bytes + offset);
                 offset += sizeof(CmdSetViewport);
                 VkViewport viewport = {
@@ -2281,7 +2394,7 @@ bool guava_vk_rhi_submit(void* raw, uint32_t queue_class,
                 break;
             }
             case OP_SET_SCISSOR: {
-                if (offset + sizeof(CmdSetScissor) > cmd_len) goto done;
+                if (offset + sizeof(CmdSetScissor) > cmd_len) goto end_recording;
                 const CmdSetScissor* sc = (const CmdSetScissor*)(cmd_bytes + offset);
                 offset += sizeof(CmdSetScissor);
                 VkRect2D scissor = {
@@ -2299,23 +2412,50 @@ bool guava_vk_rhi_submit(void* raw, uint32_t queue_class,
             }
             default:
                 fprintf(stderr, "[Guava VK] Unknown opcode: %u at offset %u\n", opcode, offset - 1);
-                goto done;
+                goto end_recording;
         }
     }
 
-done:
-    vkEndCommandBuffer(cmd);
+end_recording:
+    if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
+        success = false;
+        goto cleanup;
+    }
+
+    VkTimelineSemaphoreSubmitInfo timeline_info = {
+        .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+        .waitSemaphoreValueCount = submit_desc->wait_count,
+        .pWaitSemaphoreValues = wait_values,
+        .signalSemaphoreValueCount = submit_desc->signal_count,
+        .pSignalSemaphoreValues = signal_values,
+    };
 
     VkSubmitInfo submit_info = {
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .pNext = (submit_desc->wait_count > 0 || submit_desc->signal_count > 0) ? &timeline_info : NULL,
+        .waitSemaphoreCount = submit_desc->wait_count,
+        .pWaitSemaphores = wait_semaphores,
+        .pWaitDstStageMask = wait_stage_masks,
         .commandBufferCount = 1,
         .pCommandBuffers = &cmd,
+        .signalSemaphoreCount = submit_desc->signal_count,
+        .pSignalSemaphores = signal_semaphores,
     };
-    VkResult result = vkQueueSubmit(queue, 1, &submit_info, VK_NULL_HANDLE);
-    vkQueueWaitIdle(queue);
 
+    submit_result = vkQueueSubmit(queue, 1, &submit_info, VK_NULL_HANDLE);
+    if (submit_result == VK_SUCCESS) {
+        submit_result = vkQueueWaitIdle(queue);
+    }
+    success = submit_result == VK_SUCCESS;
+
+cleanup:
+    free(wait_semaphores);
+    free(wait_values);
+    free(wait_stage_masks);
+    free(signal_semaphores);
+    free(signal_values);
     vkFreeCommandBuffers(ctx->device, pool, 1, &cmd);
-    return result == VK_SUCCESS;
+    return success;
 }
 
 // ===========================================================================

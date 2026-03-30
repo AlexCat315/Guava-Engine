@@ -15,8 +15,10 @@ pub const MetalBackend = struct {
     resource_state_bits: std.AutoHashMap(rhi.ResourceRef, u32),
     resource_owner_queue: std.AutoHashMap(rhi.ResourceRef, rhi.QueueClass),
     pending_transfers: std.AutoHashMap(rhi.ResourceRef, PendingTransfer),
+    semaphore_values: std.AutoHashMap(u32, u64),
     last_submit_queue: ?rhi.QueueClass = null,
     submit_queue_history: std.ArrayList(rhi.QueueClass),
+    submit_records: std.ArrayList(SubmitRecord),
 
     pub fn init(allocator: std.mem.Allocator) MetalBackend {
         return .{
@@ -24,12 +26,16 @@ pub const MetalBackend = struct {
             .resource_state_bits = std.AutoHashMap(rhi.ResourceRef, u32).init(allocator),
             .resource_owner_queue = std.AutoHashMap(rhi.ResourceRef, rhi.QueueClass).init(allocator),
             .pending_transfers = std.AutoHashMap(rhi.ResourceRef, PendingTransfer).init(allocator),
+            .semaphore_values = std.AutoHashMap(u32, u64).init(allocator),
             .submit_queue_history = .empty,
+            .submit_records = .empty,
         };
     }
 
     pub fn deinit(self: *MetalBackend) void {
+        self.submit_records.deinit(self.allocator);
         self.submit_queue_history.deinit(self.allocator);
+        self.semaphore_values.deinit();
         self.pending_transfers.deinit();
         self.resource_state_bits.deinit();
         self.resource_owner_queue.deinit();
@@ -53,9 +59,19 @@ pub const MetalBackend = struct {
         );
     }
 
-    pub fn translateAndSubmit(self: *MetalBackend, queue_class: rhi.QueueClass, soft_buf: *const command_buffer.CommandBuffer) !void {
+    pub fn translateAndSubmit(self: *MetalBackend, queue_class: rhi.QueueClass, soft_buf: *const command_buffer.CommandBuffer, desc: queue_mod.SubmitDesc) !void {
         self.last_submit_queue = queue_class;
         try self.submit_queue_history.append(self.allocator, queue_class);
+        try self.submit_records.append(self.allocator, .{
+            .queue_class = queue_class,
+            .wait_count = desc.wait_semaphores.len,
+            .signal_count = desc.signal_semaphores.len,
+        });
+
+        for (desc.wait_semaphores) |wait| {
+            const signaled = self.semaphore_values.get(wait.id) orelse 0;
+            if (signaled < wait.value) return error.SubmitFailed;
+        }
 
         var decoder = soft_buf.decoder();
         var inside_pass = false;
@@ -109,16 +125,22 @@ pub const MetalBackend = struct {
                             }
                             const owner = self.resource_owner_queue.get(resource) orelse src_q;
                             if (owner != src_q) return error.SubmitFailed;
+                            if (src_q != dst_q and desc.signal_semaphores.len == 0) return error.SubmitFailed;
+                            const semaphore = if (src_q != dst_q) desc.signal_semaphores[0] else rhi.TimelineSemaphore{ .id = 0, .value = 0 };
                             try self.pending_transfers.put(resource, .{
                                 .src_queue = src_q,
                                 .dst_queue = dst_q,
                                 .released_state_bits = b.src_state_bits,
+                                .semaphore = semaphore,
                             });
                             try self.resource_state_bits.put(resource, b.src_state_bits);
                         },
                         .acquire => {
                             const pending = self.pending_transfers.get(resource) orelse return error.SubmitFailed;
                             if (pending.src_queue != src_q or pending.dst_queue != dst_q or pending.released_state_bits != b.src_state_bits) {
+                                return error.SubmitFailed;
+                            }
+                            if (pending.semaphore.id != 0 and !submitHasWait(desc, pending.semaphore)) {
                                 return error.SubmitFailed;
                             }
                             _ = self.pending_transfers.remove(resource);
@@ -129,6 +151,12 @@ pub const MetalBackend = struct {
                 },
             }
         }
+
+        for (desc.signal_semaphores) |signal| {
+            const previous = self.semaphore_values.get(signal.id) orelse 0;
+            if (signal.value <= previous) return error.SubmitFailed;
+            try self.semaphore_values.put(signal.id, signal.value);
+        }
     }
 };
 
@@ -136,6 +164,13 @@ const PendingTransfer = struct {
     src_queue: rhi.QueueClass,
     dst_queue: rhi.QueueClass,
     released_state_bits: u32,
+    semaphore: rhi.TimelineSemaphore,
+};
+
+pub const SubmitRecord = struct {
+    queue_class: rhi.QueueClass,
+    wait_count: usize,
+    signal_count: usize,
 };
 
 fn createBuffer(ctx: *anyopaque, desc: rhi.BufferDesc) rhi.Error!rhi.Buffer {
@@ -169,21 +204,18 @@ fn destroyTexture(ctx: *anyopaque, texture: rhi.Texture) void {
 }
 
 fn submitGraphicsQueue(ctx: *anyopaque, cmd: *const command_buffer.CommandBuffer, desc: queue_mod.SubmitDesc) !void {
-    _ = desc;
     var backend: *MetalBackend = @ptrCast(@alignCast(ctx));
-    try backend.translateAndSubmit(.graphics, cmd);
+    try backend.translateAndSubmit(.graphics, cmd, desc);
 }
 
 fn submitComputeQueue(ctx: *anyopaque, cmd: *const command_buffer.CommandBuffer, desc: queue_mod.SubmitDesc) !void {
-    _ = desc;
     var backend: *MetalBackend = @ptrCast(@alignCast(ctx));
-    try backend.translateAndSubmit(.compute, cmd);
+    try backend.translateAndSubmit(.compute, cmd, desc);
 }
 
 fn submitTransferQueue(ctx: *anyopaque, cmd: *const command_buffer.CommandBuffer, desc: queue_mod.SubmitDesc) !void {
-    _ = desc;
     var backend: *MetalBackend = @ptrCast(@alignCast(ctx));
-    try backend.translateAndSubmit(.transfer, cmd);
+    try backend.translateAndSubmit(.transfer, cmd, desc);
 }
 
 fn createCommandBuffer(ctx: *anyopaque, allocator: std.mem.Allocator) rhi.Error!command_buffer.CommandBuffer {
@@ -204,9 +236,8 @@ fn submitCommandBuffer(
     cmd: *const command_buffer.CommandBuffer,
     desc: rhi.SubmitDesc,
 ) rhi.Error!void {
-    _ = desc;
     var backend: *MetalBackend = @ptrCast(@alignCast(ctx));
-    backend.translateAndSubmit(queue_class, cmd) catch return error.SubmitFailed;
+    backend.translateAndSubmit(queue_class, cmd, desc) catch return error.SubmitFailed;
 }
 
 fn present(ctx: *anyopaque, image: rhi.SwapchainImage) rhi.Error!void {
@@ -275,6 +306,13 @@ fn uploadBufferData(ctx: *anyopaque, buffer: rhi.Buffer, offset: u64, data: []co
     _ = buffer;
     _ = offset;
     _ = data;
+}
+
+fn submitHasWait(desc: queue_mod.SubmitDesc, expected: rhi.TimelineSemaphore) bool {
+    for (desc.wait_semaphores) |wait| {
+        if (wait.id == expected.id and wait.value >= expected.value) return true;
+    }
+    return false;
 }
 
 fn resourceRefFromBarrier(barrier: command_buffer.PipelineBarrierCmd) !rhi.ResourceRef {

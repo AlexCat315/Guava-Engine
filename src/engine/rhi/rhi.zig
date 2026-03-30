@@ -264,6 +264,8 @@ const SubmissionTracking = struct {
     state_tracker: state_tracker.StateTracker,
     resource_queues: std.AutoHashMap(ResourceRef, QueueClass),
     pending_transfers: std.AutoHashMap(ResourceRef, PendingTransfer),
+    queue_timelines: [3]QueueTimeline,
+    next_timeline_semaphore_id: u32,
     binding_set_entries: std.AutoHashMap(u32, []BindingSetEntry),
 
     fn init(allocator: std.mem.Allocator) SubmissionTracking {
@@ -272,6 +274,8 @@ const SubmissionTracking = struct {
             .state_tracker = state_tracker.StateTracker.init(allocator),
             .resource_queues = std.AutoHashMap(ResourceRef, QueueClass).init(allocator),
             .pending_transfers = std.AutoHashMap(ResourceRef, PendingTransfer).init(allocator),
+            .queue_timelines = .{ .{}, .{}, .{} },
+            .next_timeline_semaphore_id = 1,
             .binding_set_entries = std.AutoHashMap(u32, []BindingSetEntry).init(allocator),
         };
     }
@@ -293,6 +297,7 @@ const PendingTransfer = struct {
     src_queue: QueueClass,
     dst_queue: QueueClass,
     released_state: ResourceStates,
+    semaphore: TimelineSemaphore,
 };
 
 const SplitReleaseRequest = struct {
@@ -305,12 +310,51 @@ const SplitReleaseRequest = struct {
 const PreparedSubmission = struct {
     command_buffer: command_buffer.CommandBuffer,
     split_releases: std.ArrayList(SplitReleaseRequest),
+    wait_semaphores: std.ArrayList(TimelineSemaphore),
+    signal_semaphores: std.ArrayList(TimelineSemaphore),
 
     fn deinit(self: *PreparedSubmission, allocator: std.mem.Allocator) void {
         self.command_buffer.deinit();
         self.split_releases.deinit(allocator);
+        self.wait_semaphores.deinit(allocator);
+        self.signal_semaphores.deinit(allocator);
         self.* = undefined;
     }
+};
+
+const PlannedSubmit = struct {
+    queue_class: QueueClass,
+    command_buffer: command_buffer.CommandBuffer,
+    wait_semaphores: std.ArrayList(TimelineSemaphore),
+    signal_semaphores: std.ArrayList(TimelineSemaphore),
+
+    fn deinit(self: *PlannedSubmit, allocator: std.mem.Allocator) void {
+        self.command_buffer.deinit();
+        self.wait_semaphores.deinit(allocator);
+        self.signal_semaphores.deinit(allocator);
+        self.* = undefined;
+    }
+};
+
+const SubmitPlan = struct {
+    submits: std.ArrayList(PlannedSubmit),
+
+    fn init() SubmitPlan {
+        return .{ .submits = .empty };
+    }
+
+    fn deinit(self: *SubmitPlan, allocator: std.mem.Allocator) void {
+        for (self.submits.items) |*submit| {
+            submit.deinit(allocator);
+        }
+        self.submits.deinit(allocator);
+        self.* = undefined;
+    }
+};
+
+const QueueTimeline = struct {
+    id: u32 = 0,
+    next_value: u64 = 0,
 };
 
 const PassBlockKind = enum {
@@ -473,9 +517,9 @@ pub const Device = struct {
     pub fn submitCommandBuffer(self: *const Device, queue_class: QueueClass, cmd: *const command_buffer.CommandBuffer, desc: SubmitDesc) Error!void {
         var prepared_submission = try self.prepareSubmissionForSubmit(queue_class, cmd);
         defer prepared_submission.deinit(self.pipeline_layout_cache.allocator);
-
-        try self.submitSplitReleaseRequests(prepared_submission.split_releases.items);
-        return self.vtable.submit_command_buffer(self.ctx, queue_class, &prepared_submission.command_buffer, desc);
+        var submit_plan = try self.buildSubmitPlan(queue_class, &prepared_submission, desc);
+        defer submit_plan.deinit(self.pipeline_layout_cache.allocator);
+        return self.executeSubmitPlan(&submit_plan);
     }
 
     pub fn present(self: *const Device, image: SwapchainImage) Error!void {
@@ -558,7 +602,11 @@ pub const Device = struct {
         original: *const command_buffer.CommandBuffer,
     ) Error!command_buffer.CommandBuffer {
         var prepared_submission = try self.prepareSubmissionForSubmit(queue_class, original);
-        defer prepared_submission.split_releases.deinit(self.pipeline_layout_cache.allocator);
+        defer {
+            prepared_submission.split_releases.deinit(self.pipeline_layout_cache.allocator);
+            prepared_submission.wait_semaphores.deinit(self.pipeline_layout_cache.allocator);
+            prepared_submission.signal_semaphores.deinit(self.pipeline_layout_cache.allocator);
+        }
         return prepared_submission.command_buffer;
     }
 
@@ -572,17 +620,21 @@ pub const Device = struct {
 
         var split_releases = std.ArrayList(SplitReleaseRequest).empty;
         errdefer split_releases.deinit(self.pipeline_layout_cache.allocator);
+        var wait_semaphores = std.ArrayList(TimelineSemaphore).empty;
+        errdefer wait_semaphores.deinit(self.pipeline_layout_cache.allocator);
+        var signal_semaphores = std.ArrayList(TimelineSemaphore).empty;
+        errdefer signal_semaphores.deinit(self.pipeline_layout_cache.allocator);
 
         var decoder = original.decoder();
         while (true) {
             const maybe_decoded = try nextDecodedCommand(&decoder);
             const decoded = maybe_decoded orelse break;
             switch (decoded) {
-                .begin_render_pass => try self.preparePassBlockForSubmit(&prepared, &split_releases, &decoder, queue_class, decoded, .render),
-                .begin_compute_pass => try self.preparePassBlockForSubmit(&prepared, &split_releases, &decoder, queue_class, decoded, .compute),
-                .begin_copy_pass => try self.preparePassBlockForSubmit(&prepared, &split_releases, &decoder, queue_class, decoded, .copy),
+                .begin_render_pass => try self.preparePassBlockForSubmit(&prepared, &split_releases, &wait_semaphores, &signal_semaphores, &decoder, queue_class, decoded, .render),
+                .begin_compute_pass => try self.preparePassBlockForSubmit(&prepared, &split_releases, &wait_semaphores, &signal_semaphores, &decoder, queue_class, decoded, .compute),
+                .begin_copy_pass => try self.preparePassBlockForSubmit(&prepared, &split_releases, &wait_semaphores, &signal_semaphores, &decoder, queue_class, decoded, .copy),
                 .pipeline_barrier => |barrier| {
-                    if (try self.resolveExplicitBarrierForQueue(&split_releases, queue_class, barrier)) |resolved| {
+                    if (try self.resolveExplicitBarrierForQueue(&split_releases, &wait_semaphores, &signal_semaphores, queue_class, barrier)) |resolved| {
                         prepared.encodePipelineBarrier(resolved) catch |err| return mapCommandBufferError(err);
                         try self.applyExplicitBarrier(resolved);
                     }
@@ -594,6 +646,7 @@ pub const Device = struct {
                     try self.collectAutomaticBarriersForCommand(
                         &pending_barriers,
                         &split_releases,
+                        &wait_semaphores,
                         queue_class,
                         decoded,
                         .outside_pass,
@@ -607,6 +660,8 @@ pub const Device = struct {
         return .{
             .command_buffer = prepared,
             .split_releases = split_releases,
+            .wait_semaphores = wait_semaphores,
+            .signal_semaphores = signal_semaphores,
         };
     }
 
@@ -614,6 +669,8 @@ pub const Device = struct {
         self: *const Device,
         prepared: *command_buffer.CommandBuffer,
         split_releases: *std.ArrayList(SplitReleaseRequest),
+        wait_semaphores: *std.ArrayList(TimelineSemaphore),
+        signal_semaphores: *std.ArrayList(TimelineSemaphore),
         decoder: *command_buffer.Decoder,
         queue_class: QueueClass,
         begin_decoded: command_buffer.DecodedCommand,
@@ -631,6 +688,7 @@ pub const Device = struct {
         try self.collectAutomaticBarriersForCommand(
             &pre_barriers,
             split_releases,
+            wait_semaphores,
             queue_class,
             begin_decoded,
             .before_pass,
@@ -645,13 +703,13 @@ pub const Device = struct {
             switch (decoded) {
                 .pipeline_barrier => |barrier| switch (try decodeBarrierPassScope(barrier.pass_scope)) {
                     .before_pass => {
-                        if (try self.resolveExplicitBarrierForQueue(split_releases, queue_class, barrier)) |resolved| {
+                        if (try self.resolveExplicitBarrierForQueue(split_releases, wait_semaphores, signal_semaphores, queue_class, barrier)) |resolved| {
                             try pre_barriers.append(self.pipeline_layout_cache.allocator, resolved);
                             try self.applyExplicitBarrier(resolved);
                         }
                     },
                     .after_pass => {
-                        if (try self.resolveExplicitBarrierForQueue(split_releases, queue_class, barrier)) |resolved| {
+                        if (try self.resolveExplicitBarrierForQueue(split_releases, wait_semaphores, signal_semaphores, queue_class, barrier)) |resolved| {
                             try post_barriers.append(self.pipeline_layout_cache.allocator, resolved);
                         }
                     },
@@ -661,6 +719,7 @@ pub const Device = struct {
                     try self.collectAutomaticBarriersForCommand(
                         &pre_barriers,
                         split_releases,
+                        wait_semaphores,
                         queue_class,
                         decoded,
                         .before_pass,
@@ -693,6 +752,7 @@ pub const Device = struct {
         self: *const Device,
         pending_barriers: *std.ArrayList(command_buffer.PipelineBarrierCmd),
         split_releases: *std.ArrayList(SplitReleaseRequest),
+        wait_semaphores: *std.ArrayList(TimelineSemaphore),
         queue_class: QueueClass,
         decoded: command_buffer.DecodedCommand,
         pass_scope: BarrierPassScope,
@@ -703,6 +763,7 @@ pub const Device = struct {
                     try self.collectTrackedStateTransitions(
                         pending_barriers,
                         split_releases,
+                        wait_semaphores,
                         queue_class,
                         .{ .kind = .texture, .id = cmd.color_target_id },
                         ResourceStates{ .render_target = true },
@@ -713,6 +774,7 @@ pub const Device = struct {
                     try self.collectTrackedStateTransitions(
                         pending_barriers,
                         split_releases,
+                        wait_semaphores,
                         queue_class,
                         .{ .kind = .texture, .id = cmd.depth_target_id },
                         ResourceStates{ .depth_write = true },
@@ -727,6 +789,7 @@ pub const Device = struct {
                     try self.collectTrackedStateTransitions(
                         pending_barriers,
                         split_releases,
+                        wait_semaphores,
                         queue_class,
                         tracked.resource,
                         tracked.state,
@@ -738,6 +801,7 @@ pub const Device = struct {
                 try self.collectTrackedStateTransitions(
                     pending_barriers,
                     split_releases,
+                    wait_semaphores,
                     queue_class,
                     .{ .kind = .buffer, .id = cmd.buffer_id },
                     ResourceStates{ .vertex_buffer = true },
@@ -748,6 +812,7 @@ pub const Device = struct {
                 try self.collectTrackedStateTransitions(
                     pending_barriers,
                     split_releases,
+                    wait_semaphores,
                     queue_class,
                     .{ .kind = .buffer, .id = cmd.buffer_id },
                     ResourceStates{ .index_buffer = true },
@@ -758,6 +823,7 @@ pub const Device = struct {
                 try self.collectTrackedStateTransitions(
                     pending_barriers,
                     split_releases,
+                    wait_semaphores,
                     queue_class,
                     .{ .kind = .buffer, .id = cmd.buffer_id },
                     ResourceStates{ .indirect_argument = true },
@@ -768,6 +834,7 @@ pub const Device = struct {
                 try self.collectTrackedStateTransitions(
                     pending_barriers,
                     split_releases,
+                    wait_semaphores,
                     queue_class,
                     .{ .kind = .buffer, .id = cmd.buffer_id },
                     ResourceStates{ .indirect_argument = true },
@@ -782,6 +849,7 @@ pub const Device = struct {
         self: *const Device,
         pending_barriers: *std.ArrayList(command_buffer.PipelineBarrierCmd),
         split_releases: *std.ArrayList(SplitReleaseRequest),
+        wait_semaphores: *std.ArrayList(TimelineSemaphore),
         queue_class: QueueClass,
         resource: ResourceRef,
         desired: ResourceStates,
@@ -794,16 +862,20 @@ pub const Device = struct {
         for (barriers) |barrier| {
             const src_queue = self.submission_tracking.resource_queues.get(barrier.resource) orelse queue_class;
             const cross_queue = src_queue != queue_class;
-            if (cross_queue and !self.hasPendingTransfer(barrier.resource, src_queue, queue_class, barrier.before)) {
-                try self.appendSplitReleaseRequest(
-                    split_releases,
-                    .{
-                        .resource = barrier.resource,
-                        .src_state = barrier.before,
-                        .src_queue = src_queue,
-                        .dst_queue = queue_class,
-                    },
-                );
+            if (cross_queue) {
+                if (self.matchingPendingTransfer(barrier.resource, src_queue, queue_class, barrier.before)) |pending| {
+                    try appendUniqueSemaphore(self.pipeline_layout_cache.allocator, wait_semaphores, pending.semaphore);
+                } else {
+                    try self.appendSplitReleaseRequest(
+                        split_releases,
+                        .{
+                            .resource = barrier.resource,
+                            .src_state = barrier.before,
+                            .src_queue = src_queue,
+                            .dst_queue = queue_class,
+                        },
+                    );
+                }
             }
             try pending_barriers.append(self.pipeline_layout_cache.allocator, .{
                 .resource_id = barrier.resource.id,
@@ -858,10 +930,19 @@ pub const Device = struct {
                 const released_state = ResourceStates.fromBits(barrier.src_state_bits);
                 try self.submission_tracking.state_tracker.setCurrentState(resource, released_state);
                 try self.submission_tracking.resource_queues.put(resource, src_queue);
+                if (src_queue == dst_queue) {
+                    _ = self.submission_tracking.pending_transfers.remove(resource);
+                    return;
+                }
+                const existing_semaphore = if (self.submission_tracking.pending_transfers.get(resource)) |pending|
+                    pending.semaphore
+                else
+                    TimelineSemaphore{ .id = 0, .value = 0 };
                 try self.submission_tracking.pending_transfers.put(resource, .{
                     .src_queue = src_queue,
                     .dst_queue = dst_queue,
                     .released_state = released_state,
+                    .semaphore = existing_semaphore,
                 });
             },
         }
@@ -870,6 +951,8 @@ pub const Device = struct {
     fn resolveExplicitBarrierForQueue(
         self: *const Device,
         split_releases: *std.ArrayList(SplitReleaseRequest),
+        wait_semaphores: *std.ArrayList(TimelineSemaphore),
+        signal_semaphores: *std.ArrayList(TimelineSemaphore),
         queue_class: QueueClass,
         barrier: command_buffer.PipelineBarrierCmd,
     ) Error!?command_buffer.PipelineBarrierCmd {
@@ -891,7 +974,9 @@ pub const Device = struct {
         switch (sync_action) {
             .full => {
                 if (queue_class != dst_queue) return null;
-                if (!self.hasPendingTransfer(resource, src_queue, dst_queue, ResourceStates.fromBits(barrier.src_state_bits))) {
+                if (self.matchingPendingTransfer(resource, src_queue, dst_queue, ResourceStates.fromBits(barrier.src_state_bits))) |pending| {
+                    try appendUniqueSemaphore(self.pipeline_layout_cache.allocator, wait_semaphores, pending.semaphore);
+                } else {
                     try self.appendSplitReleaseRequest(split_releases, .{
                         .resource = resource,
                         .src_state = ResourceStates.fromBits(barrier.src_state_bits),
@@ -906,7 +991,9 @@ pub const Device = struct {
             },
             .acquire => {
                 if (queue_class != dst_queue) return null;
-                if (!self.hasPendingTransfer(resource, src_queue, dst_queue, ResourceStates.fromBits(barrier.src_state_bits))) {
+                if (self.matchingPendingTransfer(resource, src_queue, dst_queue, ResourceStates.fromBits(barrier.src_state_bits))) |pending| {
+                    try appendUniqueSemaphore(self.pipeline_layout_cache.allocator, wait_semaphores, pending.semaphore);
+                } else {
                     try self.appendSplitReleaseRequest(split_releases, .{
                         .resource = resource,
                         .src_state = ResourceStates.fromBits(barrier.src_state_bits),
@@ -918,6 +1005,15 @@ pub const Device = struct {
             },
             .release => {
                 if (queue_class != src_queue) return null;
+                if (src_queue != dst_queue) {
+                    const semaphore = try self.ensureSubmitSignalSemaphore(queue_class, signal_semaphores);
+                    try self.submission_tracking.pending_transfers.put(resource, .{
+                        .src_queue = src_queue,
+                        .dst_queue = dst_queue,
+                        .released_state = ResourceStates.fromBits(barrier.src_state_bits),
+                        .semaphore = semaphore,
+                    });
+                }
                 var release = barrier;
                 release.dst_state_bits = release.src_state_bits;
                 return release;
@@ -939,26 +1035,65 @@ pub const Device = struct {
         try split_releases.append(self.pipeline_layout_cache.allocator, request);
     }
 
-    fn hasPendingTransfer(
+    fn matchingPendingTransfer(
         self: *const Device,
         resource: ResourceRef,
         src_queue: QueueClass,
         dst_queue: QueueClass,
         released_state: ResourceStates,
-    ) bool {
-        const pending = self.submission_tracking.pending_transfers.get(resource) orelse return false;
-        return pending.src_queue == src_queue and pending.dst_queue == dst_queue and pending.released_state.asBits() == released_state.asBits();
+    ) ?PendingTransfer {
+        const pending = self.submission_tracking.pending_transfers.get(resource) orelse return null;
+        if (pending.src_queue != src_queue or pending.dst_queue != dst_queue or pending.released_state.asBits() != released_state.asBits()) {
+            return null;
+        }
+        return pending;
     }
 
-    fn submitSplitReleaseRequests(self: *const Device, split_releases: []const SplitReleaseRequest) Error!void {
-        var graphics_barriers = std.ArrayList(command_buffer.PipelineBarrierCmd).empty;
-        defer graphics_barriers.deinit(self.pipeline_layout_cache.allocator);
-        var compute_barriers = std.ArrayList(command_buffer.PipelineBarrierCmd).empty;
-        defer compute_barriers.deinit(self.pipeline_layout_cache.allocator);
-        var transfer_barriers = std.ArrayList(command_buffer.PipelineBarrierCmd).empty;
-        defer transfer_barriers.deinit(self.pipeline_layout_cache.allocator);
+    fn ensureSubmitSignalSemaphore(
+        self: *const Device,
+        queue_class: QueueClass,
+        signal_semaphores: *std.ArrayList(TimelineSemaphore),
+    ) Error!TimelineSemaphore {
+        if (signal_semaphores.items.len > 0) {
+            return signal_semaphores.items[0];
+        }
 
-        for (split_releases) |request| {
+        const semaphore = try self.nextQueueTimelineSemaphore(queue_class);
+        try signal_semaphores.append(self.pipeline_layout_cache.allocator, semaphore);
+        return semaphore;
+    }
+
+    fn nextQueueTimelineSemaphore(self: *const Device, queue_class: QueueClass) Error!TimelineSemaphore {
+        const index = queueClassIndex(queue_class);
+        var track = &self.submission_tracking.queue_timelines[index];
+        if (track.id == 0) {
+            track.id = self.submission_tracking.next_timeline_semaphore_id;
+            self.submission_tracking.next_timeline_semaphore_id += 1;
+        }
+        track.next_value += 1;
+        return .{
+            .id = track.id,
+            .value = track.next_value,
+        };
+    }
+
+    fn buildSubmitPlan(
+        self: *const Device,
+        queue_class: QueueClass,
+        prepared_submission: *PreparedSubmission,
+        desc: SubmitDesc,
+    ) Error!SubmitPlan {
+        var plan = SubmitPlan.init();
+        errdefer plan.deinit(self.pipeline_layout_cache.allocator);
+
+        var graphics_release = std.ArrayList(command_buffer.PipelineBarrierCmd).empty;
+        defer graphics_release.deinit(self.pipeline_layout_cache.allocator);
+        var compute_release = std.ArrayList(command_buffer.PipelineBarrierCmd).empty;
+        defer compute_release.deinit(self.pipeline_layout_cache.allocator);
+        var transfer_release = std.ArrayList(command_buffer.PipelineBarrierCmd).empty;
+        defer transfer_release.deinit(self.pipeline_layout_cache.allocator);
+
+        for (prepared_submission.split_releases.items) |request| {
             const release_barrier: command_buffer.PipelineBarrierCmd = .{
                 .resource_id = request.resource.id,
                 .src_state_bits = request.src_state.asBits(),
@@ -973,15 +1108,75 @@ pub const Device = struct {
             };
 
             switch (request.src_queue) {
-                .graphics => try graphics_barriers.append(self.pipeline_layout_cache.allocator, release_barrier),
-                .compute => try compute_barriers.append(self.pipeline_layout_cache.allocator, release_barrier),
-                .transfer => try transfer_barriers.append(self.pipeline_layout_cache.allocator, release_barrier),
+                .graphics => try graphics_release.append(self.pipeline_layout_cache.allocator, release_barrier),
+                .compute => try compute_release.append(self.pipeline_layout_cache.allocator, release_barrier),
+                .transfer => try transfer_release.append(self.pipeline_layout_cache.allocator, release_barrier),
             }
         }
 
-        try submitReleaseBarrierBatch(self, .graphics, graphics_barriers.items);
-        try submitReleaseBarrierBatch(self, .compute, compute_barriers.items);
-        try submitReleaseBarrierBatch(self, .transfer, transfer_barriers.items);
+        try self.appendReleaseSubmitToPlan(&plan, .graphics, graphics_release.items, &prepared_submission.wait_semaphores);
+        try self.appendReleaseSubmitToPlan(&plan, .compute, compute_release.items, &prepared_submission.wait_semaphores);
+        try self.appendReleaseSubmitToPlan(&plan, .transfer, transfer_release.items, &prepared_submission.wait_semaphores);
+
+        for (desc.wait_semaphores) |semaphore| {
+            try appendUniqueSemaphore(self.pipeline_layout_cache.allocator, &prepared_submission.wait_semaphores, semaphore);
+        }
+        for (desc.signal_semaphores) |semaphore| {
+            try appendUniqueSemaphore(self.pipeline_layout_cache.allocator, &prepared_submission.signal_semaphores, semaphore);
+        }
+
+        const final_waits = prepared_submission.wait_semaphores;
+        prepared_submission.wait_semaphores = .empty;
+        const final_signals = prepared_submission.signal_semaphores;
+        prepared_submission.signal_semaphores = .empty;
+        const final_command_buffer = prepared_submission.command_buffer;
+        prepared_submission.command_buffer = command_buffer.CommandBuffer.init(self.pipeline_layout_cache.allocator);
+
+        try plan.submits.append(self.pipeline_layout_cache.allocator, .{
+            .queue_class = queue_class,
+            .command_buffer = final_command_buffer,
+            .wait_semaphores = final_waits,
+            .signal_semaphores = final_signals,
+        });
+
+        return plan;
+    }
+
+    fn appendReleaseSubmitToPlan(
+        self: *const Device,
+        plan: *SubmitPlan,
+        queue_class: QueueClass,
+        barriers: []const command_buffer.PipelineBarrierCmd,
+        consumer_waits: *std.ArrayList(TimelineSemaphore),
+    ) Error!void {
+        if (barriers.len == 0) return;
+
+        const signal_semaphore = try self.nextQueueTimelineSemaphore(queue_class);
+        try appendUniqueSemaphore(self.pipeline_layout_cache.allocator, consumer_waits, signal_semaphore);
+
+        var release_cmd = command_buffer.CommandBuffer.init(self.pipeline_layout_cache.allocator);
+        errdefer release_cmd.deinit();
+        release_cmd.encodePipelineBarriers(barriers) catch |err| return mapCommandBufferError(err);
+
+        var signal_semaphores = std.ArrayList(TimelineSemaphore).empty;
+        errdefer signal_semaphores.deinit(self.pipeline_layout_cache.allocator);
+        try signal_semaphores.append(self.pipeline_layout_cache.allocator, signal_semaphore);
+
+        try plan.submits.append(self.pipeline_layout_cache.allocator, .{
+            .queue_class = queue_class,
+            .command_buffer = release_cmd,
+            .wait_semaphores = .empty,
+            .signal_semaphores = signal_semaphores,
+        });
+    }
+
+    fn executeSubmitPlan(self: *const Device, plan: *const SubmitPlan) Error!void {
+        for (plan.submits.items) |submit| {
+            try self.vtable.submit_command_buffer(self.ctx, submit.queue_class, &submit.command_buffer, .{
+                .wait_semaphores = submit.wait_semaphores.items,
+                .signal_semaphores = submit.signal_semaphores.items,
+            });
+        }
     }
 
     fn validateBindingSetDesc(self: *const Device, layout_entries: []const BindingLayoutEntry, desc: BindingSetDesc) Error!void {
@@ -1028,19 +1223,6 @@ fn nextDecodedCommand(decoder: *command_buffer.Decoder) Error!?command_buffer.De
     return decoder.next() catch |err| return mapCommandBufferError(err);
 }
 
-fn submitReleaseBarrierBatch(
-    self: *const Device,
-    queue_class: QueueClass,
-    barriers: []const command_buffer.PipelineBarrierCmd,
-) Error!void {
-    if (barriers.len == 0) return;
-
-    var release_cmd = command_buffer.CommandBuffer.init(self.pipeline_layout_cache.allocator);
-    defer release_cmd.deinit();
-    release_cmd.encodePipelineBarriers(barriers) catch |err| return mapCommandBufferError(err);
-    try self.vtable.submit_command_buffer(self.ctx, queue_class, &release_cmd, .{});
-}
-
 fn flushPendingBarriers(prepared: *command_buffer.CommandBuffer, pending_barriers: []const command_buffer.PipelineBarrierCmd) Error!void {
     if (pending_barriers.len == 0) return;
     prepared.encodePipelineBarriers(pending_barriers) catch |err| return mapCommandBufferError(err);
@@ -1067,6 +1249,26 @@ fn deriveBarrierSyncAction(src_queue: QueueClass, dst_queue: QueueClass) Barrier
 
 fn decodeBarrierSyncAction(raw_action: u8) Error!BarrierSyncAction {
     return std.meta.intToEnum(BarrierSyncAction, raw_action) catch error.SubmitFailed;
+}
+
+fn queueClassIndex(queue_class: QueueClass) usize {
+    return switch (queue_class) {
+        .graphics => 0,
+        .compute => 1,
+        .transfer => 2,
+    };
+}
+
+fn appendUniqueSemaphore(
+    allocator: std.mem.Allocator,
+    list: *std.ArrayList(TimelineSemaphore),
+    semaphore: TimelineSemaphore,
+) !void {
+    if (semaphore.id == 0) return;
+    for (list.items) |existing| {
+        if (existing.id == semaphore.id and existing.value == semaphore.value) return;
+    }
+    try list.append(allocator, semaphore);
 }
 
 const TrackedBindingResource = struct {
@@ -1510,6 +1712,12 @@ test "submit command buffer schedules producer-side release before cross-queue a
     try std.testing.expectEqual(QueueClass.compute, backend.submit_queue_history.items[0]);
     try std.testing.expectEqual(QueueClass.compute, backend.submit_queue_history.items[1]);
     try std.testing.expectEqual(QueueClass.graphics, backend.submit_queue_history.items[2]);
+    try std.testing.expectEqual(@as(usize, 3), backend.submit_records.items.len);
+    try std.testing.expectEqual(@as(usize, 0), backend.submit_records.items[0].wait_count);
+    try std.testing.expectEqual(@as(usize, 0), backend.submit_records.items[0].signal_count);
+    try std.testing.expectEqual(@as(usize, 0), backend.submit_records.items[1].wait_count);
+    try std.testing.expectEqual(@as(usize, 1), backend.submit_records.items[1].signal_count);
+    try std.testing.expectEqual(@as(usize, 1), backend.submit_records.items[2].wait_count);
 
     const tracked_bits = backend.resource_state_bits.get(.{ .kind = .texture, .id = shared_texture.id }) orelse 0;
     try std.testing.expectEqual((ResourceStates{ .shader_resource = true }).asBits(), tracked_bits);
@@ -1560,6 +1768,65 @@ test "consumer-side explicit full barrier triggers split release scheduling" {
     try std.testing.expectEqual(@as(usize, 3), backend.submit_queue_history.items.len);
     try std.testing.expectEqual(QueueClass.compute, backend.submit_queue_history.items[1]);
     try std.testing.expectEqual(QueueClass.graphics, backend.submit_queue_history.items[2]);
+    try std.testing.expectEqual(@as(usize, 1), backend.submit_records.items[1].signal_count);
+    try std.testing.expectEqual(@as(usize, 1), backend.submit_records.items[2].wait_count);
+    try std.testing.expectEqual(QueueClass.graphics, backend.resource_owner_queue.get(.{ .kind = .texture, .id = texture.id }).?);
+    try std.testing.expectEqual(@as(usize, 0), backend.pending_transfers.count());
+}
+
+test "explicit release stores semaphore and later acquire waits on it" {
+    const metal_backend = @import("metal/metal_backend.zig");
+
+    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
+    defer backend.deinit();
+    var device = backend.createDevice();
+    defer device.deinit();
+
+    const texture = try device.createTexture(.{
+        .width = 1,
+        .height = 1,
+        .format = .rgba8_unorm,
+        .usage = .{ .sampled = true, .storage_write = true },
+    });
+    defer device.destroyTexture(texture);
+
+    var producer_cmd = try device.createCommandBuffer(std.testing.allocator);
+    defer producer_cmd.deinit();
+    try producer_cmd.encodePipelineBarrier(.{
+        .resource_id = texture.id,
+        .src_state_bits = 0,
+        .dst_state_bits = (ResourceStates{ .shader_resource = true, .unordered_access = true }).asBits(),
+        .resource_kind = @intCast(@intFromEnum(ResourceKind.texture)),
+        .src_queue = @intCast(@intFromEnum(QueueClass.compute)),
+        .dst_queue = @intCast(@intFromEnum(QueueClass.compute)),
+    });
+    try producer_cmd.encodePipelineBarrier(.{
+        .resource_id = texture.id,
+        .src_state_bits = (ResourceStates{ .shader_resource = true, .unordered_access = true }).asBits(),
+        .dst_state_bits = (ResourceStates{ .shader_resource = true, .unordered_access = true }).asBits(),
+        .resource_kind = @intCast(@intFromEnum(ResourceKind.texture)),
+        .sync_action = @intCast(@intFromEnum(BarrierSyncAction.release)),
+        .src_queue = @intCast(@intFromEnum(QueueClass.compute)),
+        .dst_queue = @intCast(@intFromEnum(QueueClass.graphics)),
+    });
+    try device.submitCommandBuffer(.compute, &producer_cmd, .{});
+
+    var consumer_cmd = try device.createCommandBuffer(std.testing.allocator);
+    defer consumer_cmd.deinit();
+    try consumer_cmd.encodePipelineBarrier(.{
+        .resource_id = texture.id,
+        .src_state_bits = (ResourceStates{ .shader_resource = true, .unordered_access = true }).asBits(),
+        .dst_state_bits = (ResourceStates{ .shader_resource = true }).asBits(),
+        .resource_kind = @intCast(@intFromEnum(ResourceKind.texture)),
+        .sync_action = @intCast(@intFromEnum(BarrierSyncAction.acquire)),
+        .src_queue = @intCast(@intFromEnum(QueueClass.compute)),
+        .dst_queue = @intCast(@intFromEnum(QueueClass.graphics)),
+    });
+    try device.submitCommandBuffer(.graphics, &consumer_cmd, .{});
+
+    try std.testing.expectEqual(@as(usize, 2), backend.submit_records.items.len);
+    try std.testing.expectEqual(@as(usize, 1), backend.submit_records.items[0].signal_count);
+    try std.testing.expectEqual(@as(usize, 1), backend.submit_records.items[1].wait_count);
     try std.testing.expectEqual(QueueClass.graphics, backend.resource_owner_queue.get(.{ .kind = .texture, .id = texture.id }).?);
     try std.testing.expectEqual(@as(usize, 0), backend.pending_transfers.count());
 }

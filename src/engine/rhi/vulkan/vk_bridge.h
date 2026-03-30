@@ -75,6 +75,18 @@ typedef struct {
     uint32_t alpha_blend_op;        // BlendOp ordinal
 } GuavaVkGraphicsPipelineDesc;
 
+typedef struct {
+    uint32_t id;
+    uint64_t value;
+} GuavaVkTimelineSemaphore;
+
+typedef struct {
+    const GuavaVkTimelineSemaphore* wait_semaphores;
+    uint32_t wait_count;
+    const GuavaVkTimelineSemaphore* signal_semaphores;
+    uint32_t signal_count;
+} GuavaVkSubmitDesc;
+
 // ── Lifecycle ─────────────────────────────────────────────────────────────
 void* guava_vk_rhi_init(bool enable_validation);
 void  guava_vk_rhi_destroy(void* ctx);
@@ -135,7 +147,8 @@ void guava_vk_rhi_register_binding_set(void* ctx, uint32_t set_id,
 // Decodes the RHI v2 serialized command buffer and translates to Vulkan calls.
 // queue_class: 0=graphics, 1=compute, 2=transfer
 bool guava_vk_rhi_submit(void* ctx, uint32_t queue_class,
-                          const uint8_t* cmd_bytes, uint32_t cmd_len);
+                          const uint8_t* cmd_bytes, uint32_t cmd_len,
+                          const GuavaVkSubmitDesc* desc);
 
 // ── Swapchain ─────────────────────────────────────────────────────────────
 bool guava_vk_rhi_acquire_swapchain(void* ctx,

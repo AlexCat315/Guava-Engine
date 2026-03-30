@@ -47,29 +47,29 @@ fn drawToolbarIconButton(
     path: []const u8,
     active: bool,
 ) !bool {
-    const accent_tint = [4]u8{ 34, 197, 94, 255 };
-    const idle_tint = [4]u8{ 153, 153, 163, 255 };
+    const accent_tint = [4]u8{ 230, 236, 242, 255 };
+    const idle_tint = [4]u8{ 168, 174, 182, 255 };
     const texture = try ui_icons.ensureTintedIconTexture(
         state,
         layer_context,
         path,
-        16.0,
+        14.0,
         if (active) accent_tint else idle_tint,
     );
     const palette = if (active)
-        ui_icons.palettes.toolbar_active
+        hudActivePalette()
     else
-        ui_icons.palettes.toolbar_idle;
+        hudIdlePalette();
     gui.pushStyleColor(.button, palette.button);
     gui.pushStyleColor(.button_hovered, palette.hovered);
     gui.pushStyleColor(.button_active, palette.active);
-    gui.pushStyleVarVec2(.frame_padding, .{ 11.0, 7.0 });
-    gui.pushStyleVarFloat(.frame_rounding, 999.0);
+    gui.pushStyleVarVec2(.frame_padding, .{ 7.0, 4.0 });
+    gui.pushStyleVarFloat(.frame_rounding, 4.0);
     defer {
         gui.popStyleVar(2);
         gui.popStyleColor(3);
     }
-    const clicked = gui.imageButton(id, texture, 16.0, 16.0, .{ 0.0, 0.0, 0.0, 0.0 }, .{ 1.0, 1.0, 1.0, 1.0 });
+    const clicked = gui.imageButton(id, texture, 14.0, 14.0, .{ 0.0, 0.0, 0.0, 0.0 }, .{ 1.0, 1.0, 1.0, 1.0 });
     if (gui.isItemHovered()) {
         state.viewport_overlay_hovered = true;
         if (layer_context.input.wasMousePressed(.left)) {
@@ -77,6 +77,22 @@ fn drawToolbarIconButton(
         }
     }
     return clicked;
+}
+
+fn hudIdlePalette() ui_icons.ButtonPalette {
+    return .{
+        .button = .{ 0.20, 0.22, 0.25, 0.76 },
+        .hovered = .{ 0.24, 0.27, 0.31, 0.82 },
+        .active = .{ 0.18, 0.20, 0.24, 0.88 },
+    };
+}
+
+fn hudActivePalette() ui_icons.ButtonPalette {
+    return .{
+        .button = .{ 0.30, 0.35, 0.34, 0.80 },
+        .hovered = .{ 0.34, 0.40, 0.38, 0.86 },
+        .active = .{ 0.28, 0.32, 0.31, 0.92 },
+    };
 }
 
 fn drawOverlayMenuButton(
@@ -87,16 +103,16 @@ fn drawOverlayMenuButton(
     active: bool,
 ) !bool {
     const palette = if (active)
-        ui_icons.palettes.toolbar_active
+        hudActivePalette()
     else
-        ui_icons.palettes.toolbar_idle;
+        hudIdlePalette();
     const text_width = gui.calcTextSize(label, false, 0.0)[0];
-    const button_width = @max(64.0, text_width + 28.0);
+    const button_width = @max(58.0, text_width + 22.0);
     gui.pushStyleColor(.button, palette.button);
     gui.pushStyleColor(.button_hovered, palette.hovered);
     gui.pushStyleColor(.button_active, palette.active);
-    gui.pushStyleVarVec2(.frame_padding, .{ 12.0, 7.0 });
-    gui.pushStyleVarFloat(.frame_rounding, 999.0);
+    gui.pushStyleVarVec2(.frame_padding, .{ 9.0, 4.0 });
+    gui.pushStyleVarFloat(.frame_rounding, 4.0);
     defer {
         gui.popStyleVar(2);
         gui.popStyleColor(3);
@@ -114,33 +130,15 @@ fn drawOverlayMenuButton(
 }
 
 fn drawOverlayStatusChip(label: []const u8) void {
-    const button_width = @max(34.0, gui.calcTextSize(label, false, 0.0)[0] + 22.0);
-    gui.pushStyleColor(.button, .{ 0.24, 0.26, 0.30, 0.92 });
-    gui.pushStyleColor(.button_hovered, .{ 0.24, 0.26, 0.30, 0.92 });
-    gui.pushStyleColor(.button_active, .{ 0.24, 0.26, 0.30, 0.92 });
-    gui.pushStyleColor(.text, .{ 0.88, 0.90, 0.94, 1.0 });
-    gui.pushStyleVarVec2(.frame_padding, .{ 10.0, 7.0 });
-    gui.pushStyleVarFloat(.frame_rounding, 999.0);
-    defer {
-        gui.popStyleVar(2);
-        gui.popStyleColor(4);
-    }
-    _ = gui.buttonEx(label, button_width, 0.0);
+    gui.pushStyleColor(.text, .{ 0.74, 0.77, 0.82, 1.0 });
+    defer gui.popStyleColor(1);
+    gui.text(label);
 }
 
 fn drawOverlayTitleChip(label: []const u8) void {
-    const button_width = @max(44.0, gui.calcTextSize(label, false, 0.0)[0] + 24.0);
-    gui.pushStyleColor(.button, .{ 0.12, 0.15, 0.18, 0.94 });
-    gui.pushStyleColor(.button_hovered, .{ 0.12, 0.15, 0.18, 0.94 });
-    gui.pushStyleColor(.button_active, .{ 0.12, 0.15, 0.18, 0.94 });
-    gui.pushStyleColor(.text, .{ 0.96, 0.98, 1.0, 1.0 });
-    gui.pushStyleVarVec2(.frame_padding, .{ 11.0, 7.0 });
-    gui.pushStyleVarFloat(.frame_rounding, 999.0);
-    defer {
-        gui.popStyleVar(2);
-        gui.popStyleColor(4);
-    }
-    _ = gui.buttonEx(label, button_width, 0.0);
+    gui.pushStyleColor(.text, .{ 0.95, 0.97, 0.99, 1.0 });
+    defer gui.popStyleColor(1);
+    gui.text(label);
 }
 
 fn syncPlaybackState(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -981,11 +979,11 @@ const SegmentedButtonPosition = enum {
 
 fn drawSegmentedModeButton(label: []const u8, active: bool, width: f32, position: SegmentedButtonPosition) bool {
     const palette = if (active)
-        ui_icons.palettes.toolbar_active
+        hudActivePalette()
     else
-        ui_icons.palettes.toolbar_idle;
+        hudIdlePalette();
     const rounding: f32 = switch (position) {
-        .single, .first, .last => 8.0,
+        .single, .first, .last => 4.0,
         .middle => 0.0,
     };
     gui.pushStyleColor(.button, palette.button);
@@ -1817,44 +1815,44 @@ fn drawPlaybackToolbarIconButton(
     gui.pushStyleColor(.button, palette.button);
     gui.pushStyleColor(.button_hovered, palette.hovered);
     gui.pushStyleColor(.button_active, palette.active);
-    gui.pushStyleVarVec2(.frame_padding, .{ 11.0, 7.0 });
-    gui.pushStyleVarFloat(.frame_rounding, 999.0);
+    gui.pushStyleVarVec2(.frame_padding, .{ 7.0, 4.0 });
+    gui.pushStyleVarFloat(.frame_rounding, 4.0);
     defer {
         gui.popStyleVar(2);
         gui.popStyleColor(3);
     }
-    return gui.imageButton(id, texture, 14.0, 14.0, .{ 0.0, 0.0, 0.0, 0.0 }, .{ 1.0, 1.0, 1.0, 1.0 });
+    return gui.imageButton(id, texture, 12.0, 12.0, .{ 0.0, 0.0, 0.0, 0.0 }, .{ 1.0, 1.0, 1.0, 1.0 });
 }
 
 fn idlePlaybackPalette() ui_icons.ButtonPalette {
     return .{
-        .button = .{ 0.16, 0.18, 0.21, 0.84 },
-        .hovered = .{ 0.22, 0.25, 0.29, 0.94 },
-        .active = .{ 0.20, 0.23, 0.27, 0.98 },
+        .button = .{ 0.20, 0.22, 0.25, 0.76 },
+        .hovered = .{ 0.24, 0.27, 0.31, 0.82 },
+        .active = .{ 0.18, 0.20, 0.24, 0.88 },
     };
 }
 
 fn activePlayPalette() ui_icons.ButtonPalette {
     return .{
-        .button = .{ 0.18, 0.56, 0.33, 0.90 },
-        .hovered = .{ 0.22, 0.65, 0.38, 0.96 },
-        .active = .{ 0.15, 0.48, 0.28, 1.0 },
+        .button = .{ 0.30, 0.35, 0.34, 0.80 },
+        .hovered = .{ 0.34, 0.40, 0.38, 0.86 },
+        .active = .{ 0.28, 0.32, 0.31, 0.92 },
     };
 }
 
 fn activePausePalette() ui_icons.ButtonPalette {
     return .{
-        .button = .{ 0.78, 0.50, 0.18, 0.90 },
-        .hovered = .{ 0.87, 0.58, 0.22, 0.96 },
-        .active = .{ 0.66, 0.41, 0.14, 1.0 },
+        .button = .{ 0.32, 0.30, 0.25, 0.80 },
+        .hovered = .{ 0.36, 0.34, 0.29, 0.86 },
+        .active = .{ 0.29, 0.27, 0.23, 0.92 },
     };
 }
 
 fn stepPlaybackPalette() ui_icons.ButtonPalette {
     return .{
-        .button = .{ 0.28, 0.33, 0.40, 0.88 },
-        .hovered = .{ 0.34, 0.40, 0.48, 0.96 },
-        .active = .{ 0.24, 0.28, 0.34, 1.0 },
+        .button = .{ 0.24, 0.26, 0.30, 0.78 },
+        .hovered = .{ 0.28, 0.31, 0.36, 0.84 },
+        .active = .{ 0.22, 0.24, 0.28, 0.90 },
     };
 }
 
@@ -2070,10 +2068,10 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
         state.viewport_origin[0] + 14.0,
         state.viewport_origin[1] + viewportOverlayTopInset(),
     };
-    gui.pushStyleVarVec2(.window_padding, .{ 8.0, 8.0 });
+    gui.pushStyleVarVec2(.window_padding, .{ 6.0, 6.0 });
     defer gui.popStyleVar(1);
     gui.setNextWindowPos(overlay_pos);
-    gui.setNextWindowBgAlpha(0.76);
+    gui.setNextWindowBgAlpha(0.46);
     _ = gui.beginWindowFlags(
         "##viewport_overlay_controls",
         gui.WindowFlags.no_title_bar |
@@ -2197,13 +2195,13 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
 
 fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const window_width = 128.0;
-    gui.pushStyleVarVec2(.window_padding, .{ 8.0, 8.0 });
+    gui.pushStyleVarVec2(.window_padding, .{ 6.0, 6.0 });
     defer gui.popStyleVar(1);
     gui.setNextWindowPos(.{
         state.viewport_origin[0] + @max((state.viewport_extent[0] - window_width) * 0.5, 18.0),
         state.viewport_origin[1] + viewportOverlayTopInset(),
     });
-    gui.setNextWindowBgAlpha(0.76);
+    gui.setNextWindowBgAlpha(0.44);
     _ = gui.beginWindowFlags(
         "##viewport_playback_overlay",
         gui.WindowFlags.no_title_bar |
@@ -2312,10 +2310,10 @@ fn drawViewportAiStateOverlayWindow(state: *EditorState) void {
     // Pulse speed: faster when waiting approval to draw attention
     const pulse_speed: f32 = if (ai_status.stage == .waiting_approval) 2.6 else 3.2;
     const pulse = 0.06 * (std.math.sin(gui.time() * pulse_speed) + 1.0);
-    const bg_alpha = std.math.clamp(@max(0.76, base_color[3] + pulse), 0.0, 1.0);
+    const bg_alpha = std.math.clamp(@max(0.54, base_color[3] + pulse) * 0.72, 0.0, 0.68);
 
     const overlay_width: f32 = if (ai_status.stage == .waiting_approval) 320.0 else 280.0;
-    gui.pushStyleVarVec2(.window_padding, .{ 8.0, 8.0 });
+    gui.pushStyleVarVec2(.window_padding, .{ 6.0, 6.0 });
     defer gui.popStyleVar(1);
     gui.setNextWindowPos(.{
         state.viewport_origin[0] + @max((state.viewport_extent[0] - overlay_width) * 0.5, 12.0),
@@ -2429,13 +2427,13 @@ fn drawViewportFpsOverlayWindow(state: *EditorState, layer_context: *engine.core
         viewportOverlayTopInset() + 56.0,
     );
 
-    gui.pushStyleVarVec2(.window_padding, .{ 8.0, 8.0 });
+    gui.pushStyleVarVec2(.window_padding, .{ 6.0, 6.0 });
     defer gui.popStyleVar(1);
     gui.setNextWindowPos(.{
         state.viewport_origin[0] + overlay_margin,
         overlay_y,
     });
-    gui.setNextWindowBgAlpha(0.76);
+    gui.setNextWindowBgAlpha(0.42);
     _ = gui.beginWindowFlags(
         "##viewport_fps_overlay",
         gui.WindowFlags.no_title_bar |
@@ -2468,14 +2466,14 @@ fn drawViewportDebugOverlayWindow(state: *EditorState, layer_context: *engine.co
     var debug_text_buffer: [512]u8 = undefined;
     const debug_text = try buildViewportDebugText(&debug_text_buffer, state, layer_context);
 
-    gui.pushStyleVarVec2(.window_padding, .{ 10.0, 8.0 });
+    gui.pushStyleVarVec2(.window_padding, .{ 8.0, 7.0 });
     defer gui.popStyleVar(1);
     gui.setNextWindowPos(.{
         state.viewport_origin[0] + @max(state.viewport_extent[0] - overlay_size[0] - 16.0, 16.0),
         state.viewport_origin[1] + @max(state.viewport_extent[1] - overlay_size[1] - 16.0, viewportOverlayTopInset() + 56.0),
     });
     gui.setNextWindowSize(overlay_size);
-    gui.setNextWindowBgAlpha(0.76);
+    gui.setNextWindowBgAlpha(0.42);
     _ = gui.beginWindowFlags(
         "##viewport_debug_overlay",
         gui.WindowFlags.no_title_bar |

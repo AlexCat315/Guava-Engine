@@ -44,7 +44,7 @@ pub const VulkanDevice = struct {
         // Binding set
         extern fn guava_vk_rhi_register_binding_set(ctx: *anyopaque, set_id: u32, entries: [*]const BindingEntryC, count: u32) void;
         // Command submission
-        extern fn guava_vk_rhi_submit(ctx: *anyopaque, queue_class: u32, cmd_bytes: [*]const u8, cmd_len: u32) bool;
+        extern fn guava_vk_rhi_submit(ctx: *anyopaque, queue_class: u32, cmd_bytes: [*]const u8, cmd_len: u32, desc: *const SubmitDescC) bool;
         // Swapchain
         extern fn guava_vk_rhi_acquire_swapchain(ctx: *anyopaque, out_id: *u32, out_w: *u32, out_h: *u32) bool;
         extern fn guava_vk_rhi_present(ctx: *anyopaque, swapchain_id: u32) bool;
@@ -112,6 +112,30 @@ pub const VulkanDevice = struct {
         resource_type: u32, // 0=sampler,1=texture,2=storage_texture,3=uniform_buffer,4=storage_buffer
         stage: u32, // 0=vertex,1=fragment,2=compute
         resource_id: u32,
+    };
+
+    const TimelineSemaphoreC = extern struct {
+        id: u32,
+        value: u64,
+    };
+
+    const SubmitDescC = extern struct {
+        wait_semaphores: ?[*]const TimelineSemaphoreC,
+        wait_count: u32,
+        signal_semaphores: ?[*]const TimelineSemaphoreC,
+        signal_count: u32,
+    };
+
+    const MarshaledSubmitDesc = struct {
+        wait_semaphores: []TimelineSemaphoreC = &.{},
+        signal_semaphores: []TimelineSemaphoreC = &.{},
+        desc: SubmitDescC,
+
+        fn deinit(self: *MarshaledSubmitDesc, allocator: std.mem.Allocator) void {
+            if (self.wait_semaphores.len > 0) allocator.free(self.wait_semaphores);
+            if (self.signal_semaphores.len > 0) allocator.free(self.signal_semaphores);
+            self.* = undefined;
+        }
     };
 
     // ── Lifecycle ─────────────────────────────────────────────────────
@@ -277,18 +301,19 @@ fn vtSubmitCommandBuffer(
     cmd: *const command_buffer.CommandBuffer,
     desc: rhi.SubmitDesc,
 ) rhi.Error!void {
-    _ = desc;
     const self: *VulkanDevice = @ptrCast(@alignCast(ctx));
     self.last_submit_queue = queue_class;
 
     const bytes = cmd.rawBytes();
-    if (bytes.len == 0) return;
+    var marshaled_desc = try marshalSubmitDesc(self.allocator, desc);
+    defer marshaled_desc.deinit(self.allocator);
 
     if (!VulkanDevice.bridge.guava_vk_rhi_submit(
         self.bridge_ctx,
         @intFromEnum(queue_class),
         bytes.ptr,
         @intCast(bytes.len),
+        &marshaled_desc.desc,
     )) return error.SubmitFailed;
 }
 
@@ -307,33 +332,46 @@ fn vtGetQueue(ctx: *anyopaque, class: rhi.QueueClass) rhi.Error!queue_mod.Queue 
 }
 
 fn submitGraphics(ctx: *anyopaque, cmd: *const command_buffer.CommandBuffer, desc: queue_mod.SubmitDesc) !void {
-    _ = desc;
-    const self: *VulkanDevice = @ptrCast(@alignCast(ctx));
-    self.last_submit_queue = .graphics;
-    const bytes = cmd.rawBytes();
-    if (bytes.len == 0) return;
-    if (!VulkanDevice.bridge.guava_vk_rhi_submit(self.bridge_ctx, 0, bytes.ptr, @intCast(bytes.len)))
-        return error.SubmitFailed;
+    return vtSubmitCommandBuffer(ctx, .graphics, cmd, desc);
 }
 
 fn submitCompute(ctx: *anyopaque, cmd: *const command_buffer.CommandBuffer, desc: queue_mod.SubmitDesc) !void {
-    _ = desc;
-    const self: *VulkanDevice = @ptrCast(@alignCast(ctx));
-    self.last_submit_queue = .compute;
-    const bytes = cmd.rawBytes();
-    if (bytes.len == 0) return;
-    if (!VulkanDevice.bridge.guava_vk_rhi_submit(self.bridge_ctx, 1, bytes.ptr, @intCast(bytes.len)))
-        return error.SubmitFailed;
+    return vtSubmitCommandBuffer(ctx, .compute, cmd, desc);
 }
 
 fn submitTransfer(ctx: *anyopaque, cmd: *const command_buffer.CommandBuffer, desc: queue_mod.SubmitDesc) !void {
-    _ = desc;
-    const self: *VulkanDevice = @ptrCast(@alignCast(ctx));
-    self.last_submit_queue = .transfer;
-    const bytes = cmd.rawBytes();
-    if (bytes.len == 0) return;
-    if (!VulkanDevice.bridge.guava_vk_rhi_submit(self.bridge_ctx, 2, bytes.ptr, @intCast(bytes.len)))
-        return error.SubmitFailed;
+    return vtSubmitCommandBuffer(ctx, .transfer, cmd, desc);
+}
+
+fn marshalSubmitDesc(allocator: std.mem.Allocator, desc: queue_mod.SubmitDesc) !VulkanDevice.MarshaledSubmitDesc {
+    const wait_semaphores = try marshalTimelineSemaphores(allocator, desc.wait_semaphores);
+    errdefer if (wait_semaphores.len > 0) allocator.free(wait_semaphores);
+    const signal_semaphores = try marshalTimelineSemaphores(allocator, desc.signal_semaphores);
+    errdefer if (signal_semaphores.len > 0) allocator.free(signal_semaphores);
+
+    return .{
+        .wait_semaphores = wait_semaphores,
+        .signal_semaphores = signal_semaphores,
+        .desc = .{
+            .wait_semaphores = if (wait_semaphores.len > 0) wait_semaphores.ptr else null,
+            .wait_count = @intCast(wait_semaphores.len),
+            .signal_semaphores = if (signal_semaphores.len > 0) signal_semaphores.ptr else null,
+            .signal_count = @intCast(signal_semaphores.len),
+        },
+    };
+}
+
+fn marshalTimelineSemaphores(allocator: std.mem.Allocator, semaphores: []const queue_mod.TimelineSemaphore) ![]VulkanDevice.TimelineSemaphoreC {
+    if (semaphores.len == 0) return &.{};
+
+    const marshaled = try allocator.alloc(VulkanDevice.TimelineSemaphoreC, semaphores.len);
+    for (semaphores, marshaled) |src, *dst| {
+        dst.* = .{
+            .id = src.id,
+            .value = src.value,
+        };
+    }
+    return marshaled;
 }
 
 fn vtCreateShaderModule(ctx: *anyopaque, desc: rhi.ShaderModuleDesc) rhi.Error!rhi.ShaderModule {
@@ -523,3 +561,32 @@ const device_vtable = rhi.DeviceVTable{
     .read_texture_data = vtReadTextureData,
     .register_binding_set = vtRegisterBindingSet,
 };
+
+test "marshalSubmitDesc encodes timeline semaphores" {
+    const testing = std.testing;
+    var marshaled = try marshalSubmitDesc(testing.allocator, .{
+        .wait_semaphores = &.{.{ .id = 11, .value = 13 }},
+        .signal_semaphores = &.{.{ .id = 17, .value = 19 }},
+    });
+    defer marshaled.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(u32, 1), marshaled.desc.wait_count);
+    try testing.expectEqual(@as(u32, 1), marshaled.desc.signal_count);
+    try testing.expect(marshaled.desc.wait_semaphores != null);
+    try testing.expect(marshaled.desc.signal_semaphores != null);
+    try testing.expectEqual(@as(u32, 11), marshaled.wait_semaphores[0].id);
+    try testing.expectEqual(@as(u64, 13), marshaled.wait_semaphores[0].value);
+    try testing.expectEqual(@as(u32, 17), marshaled.signal_semaphores[0].id);
+    try testing.expectEqual(@as(u64, 19), marshaled.signal_semaphores[0].value);
+}
+
+test "marshalSubmitDesc leaves empty semaphore lists null" {
+    const testing = std.testing;
+    var marshaled = try marshalSubmitDesc(testing.allocator, .{});
+    defer marshaled.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(u32, 0), marshaled.desc.wait_count);
+    try testing.expectEqual(@as(u32, 0), marshaled.desc.signal_count);
+    try testing.expect(marshaled.desc.wait_semaphores == null);
+    try testing.expect(marshaled.desc.signal_semaphores == null);
+}

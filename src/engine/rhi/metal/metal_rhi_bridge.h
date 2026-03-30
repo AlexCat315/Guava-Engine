@@ -75,6 +75,18 @@ typedef struct {
     uint32_t alpha_blend_op;        // BlendOp ordinal
 } GuavaMetalGraphicsPipelineDesc;
 
+typedef struct {
+    uint32_t id;
+    uint64_t value;
+} GuavaMetalTimelineSemaphore;
+
+typedef struct {
+    const GuavaMetalTimelineSemaphore* wait_semaphores;
+    uint32_t wait_count;
+    const GuavaMetalTimelineSemaphore* signal_semaphores;
+    uint32_t signal_count;
+} GuavaMetalSubmitDesc;
+
 // ── Lifecycle ─────────────────────────────────────────────────────────────
 void* guava_metal_rhi_init(void);
 void  guava_metal_rhi_destroy(void* ctx);
@@ -141,7 +153,8 @@ void guava_metal_rhi_register_binding_set(void* ctx, uint32_t set_id,
 // Decodes the RHI v2 serialized command buffer and translates to Metal calls.
 // queue_class: 0=graphics, 1=compute, 2=transfer
 bool guava_metal_rhi_submit(void* ctx, uint32_t queue_class,
-                            const uint8_t* cmd_bytes, uint32_t cmd_len);
+                            const uint8_t* cmd_bytes, uint32_t cmd_len,
+                            const GuavaMetalSubmitDesc* desc);
 
 // ── Swapchain ─────────────────────────────────────────────────────────────
 // Acquires the next drawable from the configured CAMetalLayer.

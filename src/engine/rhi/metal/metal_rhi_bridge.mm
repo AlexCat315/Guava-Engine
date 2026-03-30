@@ -43,6 +43,7 @@ struct GuavaMetalRhiContext {
     std::unordered_map<uint32_t, BindingSetData>              binding_sets;
     std::unordered_map<uint32_t, id<MTLDepthStencilState>>    depth_stencil_states;
     std::unordered_map<uint32_t, MTLPrimitiveType>             pipeline_primitives;
+    std::unordered_map<uint32_t, id<MTLSharedEvent>>          shared_events;
 
     // Shader libraries cached per shader module (for Metal library compilation)
     std::unordered_map<uint32_t, id<MTLLibrary>>              shader_libraries;
@@ -112,6 +113,26 @@ static uint32_t bytesPerPixel(uint32_t fmt) {
         case 10: return 4;   // d32_float
         default: return 4;
     }
+}
+
+static id<MTLSharedEvent> findOrCreateSharedEvent(GuavaMetalRhiContext* ctx, uint32_t semaphore_id) {
+    auto it = ctx->shared_events.find(semaphore_id);
+    if (it != ctx->shared_events.end()) {
+        return it->second;
+    }
+
+    if (@available(macOS 10.14, iOS 12.0, *)) {
+        id<MTLSharedEvent> event = [ctx->device newSharedEvent];
+        if (!event) {
+            fprintf(stderr, "[GuavaMetal] Failed to allocate MTLSharedEvent for timeline semaphore %u\n", semaphore_id);
+            return nil;
+        }
+        ctx->shared_events[semaphore_id] = event;
+        return event;
+    }
+
+    fprintf(stderr, "[GuavaMetal] Timeline semaphore submit requested but MTLSharedEvent is unavailable\n");
+    return nil;
 }
 
 // ---------------------------------------------------------------------------
@@ -287,6 +308,7 @@ void guava_metal_rhi_destroy(void* raw) {
         ctx->cmp_pipelines.clear();
         ctx->binding_sets.clear();
         ctx->depth_stencil_states.clear();
+        ctx->shared_events.clear();
         ctx->current_drawable = nil;
         ctx->metal_layer = nil;
         delete ctx;
@@ -882,15 +904,27 @@ static void applyBindingSetCompute(GuavaMetalRhiContext* ctx,
 }
 
 bool guava_metal_rhi_submit(void* raw, uint32_t queue_class,
-                            const uint8_t* cmd_bytes, uint32_t cmd_len) {
+                            const uint8_t* cmd_bytes, uint32_t cmd_len,
+                            const GuavaMetalSubmitDesc* submit_desc) {
     @autoreleasepool {
         auto* ctx = static_cast<GuavaMetalRhiContext*>(raw);
+        const GuavaMetalSubmitDesc empty_desc = {};
+        if (!submit_desc) submit_desc = &empty_desc;
 
         id<MTLCommandQueue> queue = (queue_class == 1)
             ? ctx->compute_queue : ctx->graphics_queue;
 
         id<MTLCommandBuffer> mtlCmd = [queue commandBuffer];
         if (!mtlCmd) return false;
+
+        for (uint32_t i = 0; i < submit_desc->wait_count; ++i) {
+            const GuavaMetalTimelineSemaphore wait = submit_desc->wait_semaphores[i];
+            id<MTLSharedEvent> event = findOrCreateSharedEvent(ctx, wait.id);
+            if (!event) return false;
+            if (@available(macOS 10.14, iOS 12.0, *)) {
+                [mtlCmd encodeWaitForEvent:event value:wait.value];
+            }
+        }
 
         CmdDecoder dec{cmd_bytes, cmd_len, 0};
 
@@ -1172,6 +1206,15 @@ bool guava_metal_rhi_submit(void* raw, uint32_t queue_class,
         // End any still-open encoders
         if (renderEnc)  [renderEnc endEncoding];
         if (computeEnc) [computeEnc endEncoding];
+
+        for (uint32_t i = 0; i < submit_desc->signal_count; ++i) {
+            const GuavaMetalTimelineSemaphore signal = submit_desc->signal_semaphores[i];
+            id<MTLSharedEvent> event = findOrCreateSharedEvent(ctx, signal.id);
+            if (!event) return false;
+            if (@available(macOS 10.14, iOS 12.0, *)) {
+                [mtlCmd encodeSignalEvent:event value:signal.value];
+            }
+        }
 
         [mtlCmd commit];
         return true;
