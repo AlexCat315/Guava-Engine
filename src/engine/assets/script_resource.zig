@@ -13,6 +13,8 @@ pub const ScriptResource = struct {
     description: []const u8 = "",
     /// 源文件路径（用于热重载）
     source_path: []const u8 = "",
+    /// 编译产物路径（NativeAOT 共享库等）
+    artifact_path: []const u8 = "",
     /// 最后修改时间
     last_modified: i128 = 0,
     /// 编译后的字节码（可选）
@@ -28,6 +30,7 @@ pub const ScriptResourceDesc = struct {
     entry_fn: []const u8 = "main",
     description: []const u8 = "",
     source_path: []const u8 = "",
+    artifact_path: []const u8 = "",
     last_modified: i128 = 0,
     bytecode: []const u8 = &.{},
     user_data: []const u8 = &.{},
@@ -41,6 +44,7 @@ pub fn clone(allocator: std.mem.Allocator, desc: ScriptResourceDesc) !ScriptReso
         .entry_fn = try allocator.dupe(u8, desc.entry_fn),
         .description = try allocator.dupe(u8, desc.description),
         .source_path = try allocator.dupe(u8, desc.source_path),
+        .artifact_path = try allocator.dupe(u8, desc.artifact_path),
         .last_modified = desc.last_modified,
         .bytecode = try allocator.dupe(u8, desc.bytecode),
         .user_data = try allocator.dupe(u8, desc.user_data),
@@ -53,6 +57,7 @@ pub fn deinit(resource: *ScriptResource, allocator: std.mem.Allocator) void {
     allocator.free(resource.entry_fn);
     allocator.free(resource.description);
     allocator.free(resource.source_path);
+    allocator.free(resource.artifact_path);
     allocator.free(resource.bytecode);
     allocator.free(resource.user_data);
 }

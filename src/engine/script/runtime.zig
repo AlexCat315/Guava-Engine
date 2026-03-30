@@ -186,7 +186,10 @@ pub const ScriptRuntime = struct {
     /// 初始化 VM
     pub fn initVMs(self: *ScriptRuntime) !void {
         for (self.config.allowed_languages) |lang| {
-            const vm = try vm_mod.createVM(lang, self.allocator);
+            const vm = switch (types.vmRoleForLanguage(lang)) {
+                .gameplay => try vm_mod.createGameplayVM(lang, self.allocator),
+                .plugin => try vm_mod.createPluginVM(self.allocator, .plugin),
+            };
             try self.vms.put(lang, vm);
         }
 
@@ -304,12 +307,17 @@ pub const ScriptRuntime = struct {
         const resource = world.resources.scriptMutable(handle) orelse return types.ScriptError.NotFound;
         const vm = self.getVM(resource.language) orelse return types.ScriptError.InvalidLanguage;
 
+        const csharp_artifact_path = csharpArtifactPath(resource);
+        const reloads_from_artifact = resource.language == .csharp and csharp_artifact_path != null;
+
         var refreshed_source: ?[]u8 = null;
         var refreshed_mtime = resource.last_modified;
-        if (resource.source_path.len != 0) {
+        if (!reloads_from_artifact and resource.source_path.len != 0) {
             refreshed_source = try std.fs.cwd().readFileAlloc(self.allocator, resource.source_path, 8 * 1024 * 1024);
             errdefer if (refreshed_source) |bytes| self.allocator.free(bytes);
             refreshed_mtime = readFileMtime(resource.source_path) catch resource.last_modified;
+        } else if (csharp_artifact_path) |artifact_path| {
+            refreshed_mtime = readFileMtime(artifact_path) catch resource.last_modified;
         }
 
         if (resource.language == .wasm) {
@@ -349,6 +357,8 @@ pub const ScriptRuntime = struct {
             resource.source = bytes;
             resource.last_modified = refreshed_mtime;
             refreshed_source = null;
+        } else if (resource.language == .csharp and csharp_artifact_path != null) {
+            resource.last_modified = refreshed_mtime;
         }
 
         vm.load(resource) catch |err| {
@@ -364,7 +374,11 @@ pub const ScriptRuntime = struct {
             .script_handle = handle,
             .phase = if (resource.language == .wasm) .compile else .load,
             .severity = .info,
-            .message = if (resource.language == .wasm) "recompiled wasm script" else "reloaded script source",
+            .message = switch (resource.language) {
+                .wasm => "recompiled wasm plugin",
+                .csharp => if (csharp_artifact_path != null) "reloaded csharp nativeaot library" else "reloaded csharp gameplay source",
+                .zig => "reloaded zig gameplay source",
+            },
         });
 
         for (world.entities.items) |*entity| {
@@ -633,6 +647,25 @@ pub const ScriptRuntime = struct {
         });
     }
 };
+
+fn csharpArtifactPath(resource: *const @import("../assets/script_resource.zig").ScriptResource) ?[]const u8 {
+    if (resource.language != .csharp) {
+        return null;
+    }
+    if (resource.artifact_path.len != 0) {
+        return resource.artifact_path;
+    }
+    if (isSharedLibraryPath(resource.source_path)) {
+        return resource.source_path;
+    }
+    return null;
+}
+
+fn isSharedLibraryPath(path: []const u8) bool {
+    return std.mem.endsWith(u8, path, ".dll") or
+        std.mem.endsWith(u8, path, ".so") or
+        std.mem.endsWith(u8, path, ".dylib");
+}
 
 fn readFileMtime(path: []const u8) !i128 {
     const file = try std.fs.cwd().openFile(path, .{});

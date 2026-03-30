@@ -562,7 +562,7 @@ fn loadEntry(
     };
 
     // 步骤2: 创建虚拟机
-    const script_vm = vm_mod.createVM(.wasm, allocator) catch |err| {
+    const script_vm = vm_mod.createPluginVM(allocator, .editor_utility) catch |err| {
         entry.status = .load_error;
         try replaceOwnedSlice(allocator, &entry.last_error, @errorName(err));
         return;

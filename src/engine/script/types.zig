@@ -10,10 +10,23 @@ pub const EntityId = world_mod.EntityId;
 
 /// 脚本语言类型
 pub const ScriptLanguage = enum {
-    zig, // 原生 Zig 脚本（编译执行）
-    csharp, // C# 脚本（未来支持）
-    wasm, // WAMR 后端（AI/native runtime）
+    zig, // 过渡期 gameplay builtin 脚本
+    csharp, // gameplay 脚本前端
+    wasm, // plugins / mods / tools
 };
+
+/// VM 职责分层
+pub const VmRole = enum {
+    gameplay,
+    plugin,
+};
+
+pub fn vmRoleForLanguage(language: ScriptLanguage) VmRole {
+    return switch (language) {
+        .zig, .csharp => .gameplay,
+        .wasm => .plugin,
+    };
+}
 
 /// 脚本实例的唯一标识
 pub const ScriptInstanceId = u64;
@@ -117,7 +130,7 @@ pub const ScriptSystemConfig = struct {
     /// 脚本搜索路径
     script_paths: []const []const u8 = &.{},
     /// 允许的语言
-    allowed_languages: []const ScriptLanguage = &.{ .zig, .wasm },
+    allowed_languages: []const ScriptLanguage = &.{ .zig, .csharp, .wasm },
 };
 
 /// 脚本错误类型

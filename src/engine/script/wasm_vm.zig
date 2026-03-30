@@ -22,16 +22,23 @@ const runtime_state = struct {
     var initialized: bool = false;
 };
 
+pub const HostProfile = enum {
+    plugin,
+    editor_utility,
+};
+
 pub const WasmVM = struct {
     allocator: std.mem.Allocator,
+    host_profile: HostProfile,
     loaded_source: []u8 = &.{},
     loaded_bytecode: []u8 = &.{},
     error_msg: []u8 = &.{},
 
-    pub fn init(allocator: std.mem.Allocator) !WasmVM {
+    pub fn init(allocator: std.mem.Allocator, host_profile: HostProfile) !WasmVM {
         try acquireRuntime();
         return .{
             .allocator = allocator,
+            .host_profile = host_profile,
         };
     }
 
@@ -76,7 +83,7 @@ pub const WasmVM = struct {
 
         const state = try vm.allocator.create(WasmInstanceState);
         errdefer vm.allocator.destroy(state);
-        try state.init(vm.allocator, vm.loaded_source, vm.loaded_bytecode);
+        try state.init(vm.allocator, vm.host_profile, vm.loaded_source, vm.loaded_bytecode);
         errdefer state.deinit();
 
         var error_buffer = std.mem.zeroes([512]u8);
@@ -252,6 +259,7 @@ pub const WasmVM = struct {
 
 const WasmInstanceState = struct {
     allocator: std.mem.Allocator,
+    host_profile: HostProfile,
     module: c.wasm_module_t = null,
     module_inst: c.wasm_module_inst_t = null,
     exec_env: c.wasm_exec_env_t = null,
@@ -277,9 +285,10 @@ const WasmInstanceState = struct {
     last_panic_line: u32 = 0,
     last_panic_column: u32 = 0,
 
-    fn init(self: *WasmInstanceState, allocator: std.mem.Allocator, source: []const u8, bytecode: []const u8) !void {
+    fn init(self: *WasmInstanceState, allocator: std.mem.Allocator, host_profile: HostProfile, source: []const u8, bytecode: []const u8) !void {
         self.* = .{
             .allocator = allocator,
+            .host_profile = host_profile,
             .source = try allocator.dupe(u8, source),
             .bytecode = try allocator.dupe(u8, bytecode),
         };
@@ -309,7 +318,7 @@ const WasmInstanceState = struct {
 
 pub fn reflectParameterSchemaJsonAlloc(allocator: std.mem.Allocator, bytecode: []const u8) ![]u8 {
     var state: WasmInstanceState = undefined;
-    try state.init(allocator, "", bytecode);
+    try state.init(allocator, .plugin, "", bytecode);
     defer state.deinit();
 
     try instantiateReflectionState(&state);
@@ -597,12 +606,24 @@ fn getInstanceState(instance: *types.ScriptInstance) ?*WasmInstanceState {
     return @ptrCast(@alignCast(userdata));
 }
 
+fn activeState(userdata: ?*anyopaque) ?*WasmInstanceState {
+    return @ptrCast(@alignCast(userdata orelse return null));
+}
+
 fn activeContext(userdata: ?*anyopaque) ?*context.ScriptContext {
-    const state: *WasmInstanceState = @ptrCast(@alignCast(userdata orelse return null));
+    const state = activeState(userdata) orelse return null;
     return state.active_context;
 }
 
+fn supportsEditorUi(userdata: ?*anyopaque) bool {
+    const state = activeState(userdata) orelse return false;
+    return state.host_profile == .editor_utility;
+}
+
 fn setLastItemChanged(userdata: ?*anyopaque, changed: bool) void {
+    if (!supportsEditorUi(userdata)) {
+        return;
+    }
     const ctx = activeContext(userdata) orelse return;
     if (ctx.editor_ui_state) |ui_state| {
         ui_state.last_item_changed = changed;
@@ -755,17 +776,26 @@ pub export fn guava_wasm_host_report_panic_with_location(
 }
 
 pub export fn guava_wasm_host_get_selection_count(userdata: ?*anyopaque) u32 {
+    if (!supportsEditorUi(userdata)) {
+        return 0;
+    }
     const ctx = activeContext(userdata) orelse return 0;
     return @intCast(ctx.editor_selection.len);
 }
 
 pub export fn guava_wasm_host_get_selection_entity(userdata: ?*anyopaque, index: u32) u32 {
+    if (!supportsEditorUi(userdata)) {
+        return 0;
+    }
     const ctx = activeContext(userdata) orelse return 0;
     const entity_id = selectionEntity(ctx, index) orelse return 0;
     return @intCast(entity_id);
 }
 
 pub export fn guava_wasm_host_select_entity(userdata: ?*anyopaque, entity_id_raw: u32, additive_raw: u32) void {
+    if (!supportsEditorUi(userdata)) {
+        return;
+    }
     const ctx = activeContext(userdata) orelse return;
     if (ctx.editor_selection_api) |api| {
         api.select_entity(api.context, @intCast(entity_id_raw), additive_raw != 0);
@@ -773,6 +803,9 @@ pub export fn guava_wasm_host_select_entity(userdata: ?*anyopaque, entity_id_raw
 }
 
 pub export fn guava_wasm_host_clear_selection(userdata: ?*anyopaque) void {
+    if (!supportsEditorUi(userdata)) {
+        return;
+    }
     const ctx = activeContext(userdata) orelse return;
     if (ctx.editor_selection_api) |api| {
         api.clear_selection(api.context);
@@ -780,6 +813,9 @@ pub export fn guava_wasm_host_clear_selection(userdata: ?*anyopaque) void {
 }
 
 pub export fn guava_wasm_host_ui_last_item_changed(userdata: ?*anyopaque) u32 {
+    if (!supportsEditorUi(userdata)) {
+        return 0;
+    }
     const ctx = activeContext(userdata) orelse return 0;
     if (ctx.editor_ui_state) |ui_state| {
         return if (ui_state.last_item_changed) 1 else 0;
@@ -787,29 +823,47 @@ pub export fn guava_wasm_host_ui_last_item_changed(userdata: ?*anyopaque) u32 {
     return 0;
 }
 
-pub export fn guava_wasm_host_ui_text(_: ?*anyopaque, ptr: [*]const u8, len: u32) void {
+pub export fn guava_wasm_host_ui_text(userdata: ?*anyopaque, ptr: [*]const u8, len: u32) void {
+    if (!supportsEditorUi(userdata)) {
+        return;
+    }
     ui.text(ptr[0..len]);
 }
 
-pub export fn guava_wasm_host_ui_text_wrapped(_: ?*anyopaque, ptr: [*]const u8, len: u32) void {
+pub export fn guava_wasm_host_ui_text_wrapped(userdata: ?*anyopaque, ptr: [*]const u8, len: u32) void {
+    if (!supportsEditorUi(userdata)) {
+        return;
+    }
     ui.textWrapped(ptr[0..len]);
 }
 
-pub export fn guava_wasm_host_ui_separator(_: ?*anyopaque) void {
+pub export fn guava_wasm_host_ui_separator(userdata: ?*anyopaque) void {
+    if (!supportsEditorUi(userdata)) {
+        return;
+    }
     ui.separator();
 }
 
-pub export fn guava_wasm_host_ui_same_line(_: ?*anyopaque) void {
+pub export fn guava_wasm_host_ui_same_line(userdata: ?*anyopaque) void {
+    if (!supportsEditorUi(userdata)) {
+        return;
+    }
     ui.sameLine();
 }
 
 pub export fn guava_wasm_host_ui_button(userdata: ?*anyopaque, ptr: [*]const u8, len: u32) u32 {
+    if (!supportsEditorUi(userdata)) {
+        return 0;
+    }
     const clicked = ui.button(ptr[0..len]);
     setLastItemChanged(userdata, clicked);
     return if (clicked) 1 else 0;
 }
 
 pub export fn guava_wasm_host_ui_checkbox(userdata: ?*anyopaque, ptr: [*]const u8, len: u32, value_raw: u32) u32 {
+    if (!supportsEditorUi(userdata)) {
+        return value_raw;
+    }
     var value = value_raw != 0;
     const changed = ui.checkbox(ptr[0..len], &value);
     setLastItemChanged(userdata, changed);
@@ -825,27 +879,41 @@ pub export fn guava_wasm_host_ui_drag_float_bits(
     min_value: f32,
     max_value: f32,
 ) u32 {
+    if (!supportsEditorUi(userdata)) {
+        return current_bits;
+    }
     var value: f32 = @bitCast(current_bits);
     const changed = ui.dragFloat(ptr[0..len], &value, speed, min_value, max_value);
     setLastItemChanged(userdata, changed);
     return @bitCast(value);
 }
 
-pub export fn guava_wasm_host_ui_set_next_item_width(_: ?*anyopaque, width: f32) void {
+pub export fn guava_wasm_host_ui_set_next_item_width(userdata: ?*anyopaque, width: f32) void {
+    if (!supportsEditorUi(userdata)) {
+        return;
+    }
     ui.setNextItemWidth(width);
 }
 
 pub export fn guava_wasm_host_ui_begin_window(userdata: ?*anyopaque, ptr: [*]const u8, len: u32) u32 {
-    _ = userdata;
+    if (!supportsEditorUi(userdata)) {
+        return 0;
+    }
     const open = ui.beginWindow(ptr[0..len]);
     return if (open) 1 else 0;
 }
 
-pub export fn guava_wasm_host_ui_end_window(_: ?*anyopaque) void {
+pub export fn guava_wasm_host_ui_end_window(userdata: ?*anyopaque) void {
+    if (!supportsEditorUi(userdata)) {
+        return;
+    }
     ui.endWindow();
 }
 
 pub export fn guava_wasm_host_ui_collapsing_header(userdata: ?*anyopaque, ptr: [*]const u8, len: u32, default_open: u32) u32 {
+    if (!supportsEditorUi(userdata)) {
+        return 0;
+    }
     const open = ui.collapsingHeader(ptr[0..len], default_open != 0);
     setLastItemChanged(userdata, open);
     return if (open) 1 else 0;
@@ -858,7 +926,9 @@ pub export fn guava_wasm_host_ui_input_text(
     buffer_ptr: [*]u8,
     buffer_len: u32,
 ) u32 {
-    _ = userdata;
+    if (!supportsEditorUi(userdata)) {
+        return 0;
+    }
     const changed = ui.inputText(label_ptr[0..label_len], buffer_ptr[0..buffer_len]);
     return if (changed) 1 else 0;
 }
@@ -874,6 +944,9 @@ pub export fn guava_wasm_host_ui_drag_float3_bits(
     min_value: f32,
     max_value: f32,
 ) u32 {
+    if (!supportsEditorUi(userdata)) {
+        return x_bits;
+    }
     var value: [3]f32 = .{
         @bitCast(x_bits),
         @bitCast(y_bits),
@@ -886,33 +959,53 @@ pub export fn guava_wasm_host_ui_drag_float3_bits(
         ((@as(u32, @bitCast(value[2])) & 0xFFF) << 20);
 }
 
-pub export fn guava_wasm_host_ui_indent(_: ?*anyopaque, width: f32) void {
+pub export fn guava_wasm_host_ui_indent(userdata: ?*anyopaque, width: f32) void {
+    if (!supportsEditorUi(userdata)) {
+        return;
+    }
     ui.indent(width);
 }
 
-pub export fn guava_wasm_host_ui_unindent(_: ?*anyopaque, width: f32) void {
+pub export fn guava_wasm_host_ui_unindent(userdata: ?*anyopaque, width: f32) void {
+    if (!supportsEditorUi(userdata)) {
+        return;
+    }
     ui.unindent(width);
 }
 
 pub export fn guava_wasm_host_ui_begin_child(userdata: ?*anyopaque, ptr: [*]const u8, len: u32, width: f32, height: f32, border: u32) u32 {
-    _ = userdata;
+    if (!supportsEditorUi(userdata)) {
+        return 0;
+    }
     const open = ui.beginChild(ptr[0..len], width, height, border != 0);
     return if (open) 1 else 0;
 }
 
-pub export fn guava_wasm_host_ui_end_child(_: ?*anyopaque) void {
+pub export fn guava_wasm_host_ui_end_child(userdata: ?*anyopaque) void {
+    if (!supportsEditorUi(userdata)) {
+        return;
+    }
     ui.endChild();
 }
 
-pub export fn guava_wasm_host_ui_is_item_clicked(_: ?*anyopaque) u32 {
+pub export fn guava_wasm_host_ui_is_item_clicked(userdata: ?*anyopaque) u32 {
+    if (!supportsEditorUi(userdata)) {
+        return 0;
+    }
     return if (ui.isItemClicked()) 1 else 0;
 }
 
-pub export fn guava_wasm_host_ui_is_item_hovered(_: ?*anyopaque) u32 {
+pub export fn guava_wasm_host_ui_is_item_hovered(userdata: ?*anyopaque) u32 {
+    if (!supportsEditorUi(userdata)) {
+        return 0;
+    }
     return if (ui.isItemHovered()) 1 else 0;
 }
 
-pub export fn guava_wasm_host_ui_set_tooltip(_: ?*anyopaque, ptr: [*]const u8, len: u32) void {
+pub export fn guava_wasm_host_ui_set_tooltip(userdata: ?*anyopaque, ptr: [*]const u8, len: u32) void {
+    if (!supportsEditorUi(userdata)) {
+        return;
+    }
     ui.setTooltip(ptr[0..len]);
 }
 

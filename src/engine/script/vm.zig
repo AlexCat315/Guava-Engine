@@ -88,285 +88,670 @@ const FpsControllerState = struct {
 
 pub const ScriptVM = vm_interface.ScriptVM;
 pub const WasmVM = wasm_vm_mod.WasmVM;
+pub const WasmHostProfile = wasm_vm_mod.HostProfile;
 
-/// Zig 原生虚拟机 - 使用内建脚本定义驱动运行时行为
-pub const ZigVM = struct {
-    /// 当前加载的脚本源码
-    source: []const u8 = &.{},
-    /// 已解析的内建脚本定义
-    definition: ScriptDefinition = .{},
-    /// 错误信息
-    error_msg: []u8 = &.{},
-    /// 分配器
-    allocator: std.mem.Allocator,
+fn GameplayBuiltinVM(comptime accepted_language: types.ScriptLanguage, comptime frontend_label: []const u8) type {
+    return struct {
+        source: []const u8 = &.{},
+        definition: ScriptDefinition = .{},
+        error_msg: []u8 = &.{},
+        allocator: std.mem.Allocator,
 
-    pub fn init(allocator: std.mem.Allocator) ZigVM {
-        return .{
-            .allocator = allocator,
-        };
-    }
+        const Self = @This();
 
-    pub fn load(vm: *ZigVM, resource: *const script_resource_mod.ScriptResource) types.ScriptError!void {
-        if (resource.language != .zig) {
-            setOwnedMessage(vm.allocator, &vm.error_msg, "script language does not match ZigVM");
-            return types.ScriptError.InvalidLanguage;
+        pub fn init(allocator: std.mem.Allocator) Self {
+            return .{ .allocator = allocator };
         }
 
-        vm.source = resource.source;
-        vm.definition = parseScriptDefinition(resource.source) catch |err| {
-            const message = switch (err) {
-                error.InvalidDirective => "invalid //!guava directive in Zig script",
-                error.UnsupportedBuiltinScript => "dynamic Zig compilation is unavailable; add //!guava builtin=rotate|patrol|fly_camera|fps_controller",
-            };
-            setOwnedMessage(vm.allocator, &vm.error_msg, message);
-            return types.ScriptError.CompileError;
-        };
-
-        clearOwnedMessage(vm.allocator, &vm.error_msg);
-        log.info("Zig builtin script loaded kind={s}", .{@tagName(vm.definition.kind)});
-    }
-
-    pub fn unload(vm: *ZigVM) void {
-        vm.source = &.{};
-        vm.definition = .{};
-        clearOwnedMessage(vm.allocator, &vm.error_msg);
-    }
-
-    pub fn createInstance(vm: *ZigVM, ctx: *context.ScriptContext) types.ScriptError!*types.ScriptInstance {
-        if (vm.definition.kind == .none) {
-            setOwnedMessage(vm.allocator, &vm.error_msg, "no Zig builtin script is loaded");
-            return types.ScriptError.NotFound;
-        }
-
-        const instance = try vm.allocator.create(types.ScriptInstance);
-        errdefer vm.allocator.destroy(instance);
-
-        instance.* = .{
-            .id = 0, // 由 runtime 分配
-            .entity_id = ctx.entity,
-            .script_handle = undefined,
-            .vtable = vtableForKind(vm.definition.kind),
-            .user_data_tag = @intFromEnum(vm.definition.kind),
-            .state = .ready,
-        };
-
-        switch (vm.definition.kind) {
-            .rotate => {
-                const state = try vm.allocator.create(RotateState);
-                state.* = .{
-                    .axis = vec3.normalize(vm.definition.rotate_axis),
-                    .speed_radians = vm.definition.rotate_speed_radians,
-                    .local_space = vm.definition.rotate_local_space,
-                };
-                instance.user_data = state;
-                instance.user_data_size = @sizeOf(RotateState);
-            },
-            .patrol => {
-                const state = try vm.allocator.create(PatrolState);
-                state.* = .{
-                    .speed = vm.definition.patrol_speed,
-                    .waypoints = vm.definition.patrol_waypoints,
-                    .waypoint_count = vm.definition.patrol_waypoint_count,
-                    .arrival_threshold = vm.definition.patrol_arrival_threshold,
-                    .loop = vm.definition.patrol_loop,
-                    .wait_at_waypoint = vm.definition.patrol_wait_at_waypoint,
-                    .wait_time = vm.definition.patrol_wait_time,
-                };
-                instance.user_data = state;
-                instance.user_data_size = @sizeOf(PatrolState);
-            },
-            .fly_camera => {
-                const state = try vm.allocator.create(FlyCameraState);
-                state.* = .{
-                    .move_speed = vm.definition.fly_move_speed,
-                    .mouse_sensitivity = vm.definition.fly_mouse_sensitivity,
-                };
-                initializeLookAnglesFromTransform(&state.pitch, &state.yaw, ctx);
-                instance.user_data = state;
-                instance.user_data_size = @sizeOf(FlyCameraState);
-            },
-            .fps_controller => {
-                const state = try vm.allocator.create(FpsControllerState);
-                state.* = .{
-                    .move_speed = vm.definition.fps_move_speed,
-                    .mouse_sensitivity = vm.definition.fps_mouse_sensitivity,
-                    .gravity = vm.definition.fps_gravity,
-                    .jump_velocity = vm.definition.fps_jump_velocity,
-                };
-                initializeLookAnglesFromTransform(&state.pitch, &state.yaw, ctx);
-                instance.user_data = state;
-                instance.user_data_size = @sizeOf(FpsControllerState);
-            },
-            .none => unreachable,
-        }
-
-        return instance;
-    }
-
-    pub fn destroyInstance(vm: *ZigVM, instance: *types.ScriptInstance) void {
-        if (instance.user_data) |data| {
-            switch (builtinKindFromTag(instance.user_data_tag)) {
-                .rotate => vm.allocator.destroy(castUserData(RotateState, data)),
-                .patrol => vm.allocator.destroy(castUserData(PatrolState, data)),
-                .fly_camera => vm.allocator.destroy(castUserData(FlyCameraState, data)),
-                .fps_controller => vm.allocator.destroy(castUserData(FpsControllerState, data)),
-                .none => {},
+        pub fn load(vm: *Self, resource: *const script_resource_mod.ScriptResource) types.ScriptError!void {
+            if (resource.language != accepted_language) {
+                setOwnedMessage(vm.allocator, &vm.error_msg, std.fmt.comptimePrint("script language does not match {s}", .{frontend_label}));
+                return types.ScriptError.InvalidLanguage;
             }
-            instance.user_data = null;
-            instance.user_data_size = 0;
+
+            vm.source = resource.source;
+            vm.definition = parseScriptDefinition(resource.source) catch |err| {
+                const message = switch (err) {
+                    error.InvalidDirective => std.fmt.comptimePrint("invalid //!guava directive in {s} gameplay script", .{frontend_label}),
+                    error.UnsupportedBuiltinScript => std.fmt.comptimePrint(
+                        "dynamic {s} gameplay compilation is unavailable; add //!guava builtin=rotate|patrol|fly_camera|fps_controller",
+                        .{frontend_label},
+                    ),
+                };
+                setOwnedMessage(vm.allocator, &vm.error_msg, message);
+                return types.ScriptError.CompileError;
+            };
+
+            clearOwnedMessage(vm.allocator, &vm.error_msg);
+            log.info("{s} gameplay script loaded kind={s}", .{ frontend_label, @tagName(vm.definition.kind) });
         }
-        vm.allocator.destroy(instance);
-    }
 
-    pub fn callInit(_: *ZigVM, instance: *types.ScriptInstance, ctx: *context.ScriptContext) types.ScriptError!void {
-        ctx.instance = instance;
-        if (instance.vtable.onInit) |fn_ptr| {
-            fn_ptr(ctx);
+        pub fn unload(vm: *Self) void {
+            vm.source = &.{};
+            vm.definition = .{};
+            clearOwnedMessage(vm.allocator, &vm.error_msg);
         }
-    }
 
-    pub fn callUpdate(_: *ZigVM, instance: *types.ScriptInstance, ctx: *context.ScriptContext, dt: f32) types.ScriptError!void {
-        ctx.instance = instance;
-        if (instance.vtable.onUpdate) |fn_ptr| {
-            fn_ptr(ctx, dt);
+        pub fn createInstance(vm: *Self, ctx: *context.ScriptContext) types.ScriptError!*types.ScriptInstance {
+            if (vm.definition.kind == .none) {
+                setOwnedMessage(vm.allocator, &vm.error_msg, std.fmt.comptimePrint("no {s} gameplay script is loaded", .{frontend_label}));
+                return types.ScriptError.NotFound;
+            }
+
+            const instance = try vm.allocator.create(types.ScriptInstance);
+            errdefer vm.allocator.destroy(instance);
+
+            instance.* = .{
+                .id = 0,
+                .entity_id = ctx.entity,
+                .script_handle = undefined,
+                .vtable = vtableForKind(vm.definition.kind),
+                .user_data_tag = @intFromEnum(vm.definition.kind),
+                .state = .ready,
+            };
+
+            switch (vm.definition.kind) {
+                .rotate => {
+                    const state = try vm.allocator.create(RotateState);
+                    state.* = .{
+                        .axis = vec3.normalize(vm.definition.rotate_axis),
+                        .speed_radians = vm.definition.rotate_speed_radians,
+                        .local_space = vm.definition.rotate_local_space,
+                    };
+                    instance.user_data = state;
+                    instance.user_data_size = @sizeOf(RotateState);
+                },
+                .patrol => {
+                    const state = try vm.allocator.create(PatrolState);
+                    state.* = .{
+                        .speed = vm.definition.patrol_speed,
+                        .waypoints = vm.definition.patrol_waypoints,
+                        .waypoint_count = vm.definition.patrol_waypoint_count,
+                        .arrival_threshold = vm.definition.patrol_arrival_threshold,
+                        .loop = vm.definition.patrol_loop,
+                        .wait_at_waypoint = vm.definition.patrol_wait_at_waypoint,
+                        .wait_time = vm.definition.patrol_wait_time,
+                    };
+                    instance.user_data = state;
+                    instance.user_data_size = @sizeOf(PatrolState);
+                },
+                .fly_camera => {
+                    const state = try vm.allocator.create(FlyCameraState);
+                    state.* = .{
+                        .move_speed = vm.definition.fly_move_speed,
+                        .mouse_sensitivity = vm.definition.fly_mouse_sensitivity,
+                    };
+                    initializeLookAnglesFromTransform(&state.pitch, &state.yaw, ctx);
+                    instance.user_data = state;
+                    instance.user_data_size = @sizeOf(FlyCameraState);
+                },
+                .fps_controller => {
+                    const state = try vm.allocator.create(FpsControllerState);
+                    state.* = .{
+                        .move_speed = vm.definition.fps_move_speed,
+                        .mouse_sensitivity = vm.definition.fps_mouse_sensitivity,
+                        .gravity = vm.definition.fps_gravity,
+                        .jump_velocity = vm.definition.fps_jump_velocity,
+                    };
+                    initializeLookAnglesFromTransform(&state.pitch, &state.yaw, ctx);
+                    instance.user_data = state;
+                    instance.user_data_size = @sizeOf(FpsControllerState);
+                },
+                .none => unreachable,
+            }
+
+            return instance;
         }
-    }
 
-    pub fn callDestroy(_: *ZigVM, instance: *types.ScriptInstance, ctx: *context.ScriptContext) types.ScriptError!void {
-        ctx.instance = instance;
-        if (instance.vtable.onDestroy) |fn_ptr| {
-            fn_ptr(ctx);
+        pub fn destroyInstance(vm: *Self, instance: *types.ScriptInstance) void {
+            if (instance.user_data) |data| {
+                switch (builtinKindFromTag(instance.user_data_tag)) {
+                    .rotate => vm.allocator.destroy(castUserData(RotateState, data)),
+                    .patrol => vm.allocator.destroy(castUserData(PatrolState, data)),
+                    .fly_camera => vm.allocator.destroy(castUserData(FlyCameraState, data)),
+                    .fps_controller => vm.allocator.destroy(castUserData(FpsControllerState, data)),
+                    .none => {},
+                }
+                instance.user_data = null;
+                instance.user_data_size = 0;
+            }
+            vm.allocator.destroy(instance);
         }
-    }
 
-    pub fn getError(vm: *ZigVM) []const u8 {
-        return vm.error_msg;
-    }
+        pub fn callInit(_: *Self, instance: *types.ScriptInstance, ctx: *context.ScriptContext) types.ScriptError!void {
+            ctx.instance = instance;
+            if (instance.vtable.onInit) |fn_ptr| {
+                fn_ptr(ctx);
+            }
+        }
 
-    fn destroyContext(context_ptr: *anyopaque, allocator: std.mem.Allocator) void {
-        const vm = castContext(ZigVM, context_ptr);
-        clearOwnedMessage(vm.allocator, &vm.error_msg);
-        allocator.destroy(vm);
-    }
+        pub fn callUpdate(_: *Self, instance: *types.ScriptInstance, ctx: *context.ScriptContext, dt: f32) types.ScriptError!void {
+            ctx.instance = instance;
+            if (instance.vtable.onUpdate) |fn_ptr| {
+                fn_ptr(ctx, dt);
+            }
+        }
 
-    /// 获取 Zig VM 的 VTable
-    pub const script_vm_vtable: ScriptVM.VTable = .{
-        .load = zigLoadBridge,
-        .unload = zigUnloadBridge,
-        .createInstance = zigCreateInstanceBridge,
-        .destroyInstance = zigDestroyInstanceBridge,
-        .callInit = zigCallInitBridge,
-        .callUpdate = zigCallUpdateBridge,
-        .callDestroy = zigCallDestroyBridge,
-        .getError = zigGetErrorBridge,
-        .destroy = destroyContext,
+        pub fn callDestroy(_: *Self, instance: *types.ScriptInstance, ctx: *context.ScriptContext) types.ScriptError!void {
+            ctx.instance = instance;
+            if (instance.vtable.onDestroy) |fn_ptr| {
+                fn_ptr(ctx);
+            }
+        }
+
+        pub fn getError(vm: *Self) []const u8 {
+            return vm.error_msg;
+        }
+
+        fn destroyContext(context_ptr: *anyopaque, allocator: std.mem.Allocator) void {
+            const vm = castContext(Self, context_ptr);
+            clearOwnedMessage(vm.allocator, &vm.error_msg);
+            allocator.destroy(vm);
+        }
+
+        pub const script_vm_vtable: ScriptVM.VTable = .{
+            .load = loadBridge,
+            .unload = unloadBridge,
+            .createInstance = createInstanceBridge,
+            .destroyInstance = destroyInstanceBridge,
+            .callInit = callInitBridge,
+            .callUpdate = callUpdateBridge,
+            .callDestroy = callDestroyBridge,
+            .getError = getErrorBridge,
+            .destroy = destroyContext,
+        };
+
+        fn loadBridge(context_ptr: *anyopaque, resource: *const script_resource_mod.ScriptResource) types.ScriptError!void {
+            return Self.load(castContext(Self, context_ptr), resource);
+        }
+
+        fn unloadBridge(context_ptr: *anyopaque) void {
+            Self.unload(castContext(Self, context_ptr));
+        }
+
+        fn createInstanceBridge(context_ptr: *anyopaque, ctx: *context.ScriptContext) types.ScriptError!*types.ScriptInstance {
+            return Self.createInstance(castContext(Self, context_ptr), ctx);
+        }
+
+        fn destroyInstanceBridge(context_ptr: *anyopaque, instance: *types.ScriptInstance) void {
+            Self.destroyInstance(castContext(Self, context_ptr), instance);
+        }
+
+        fn callInitBridge(context_ptr: *anyopaque, instance: *types.ScriptInstance, ctx: *context.ScriptContext) types.ScriptError!void {
+            return Self.callInit(castContext(Self, context_ptr), instance, ctx);
+        }
+
+        fn callUpdateBridge(context_ptr: *anyopaque, instance: *types.ScriptInstance, ctx: *context.ScriptContext, dt: f32) types.ScriptError!void {
+            return Self.callUpdate(castContext(Self, context_ptr), instance, ctx, dt);
+        }
+
+        fn callDestroyBridge(context_ptr: *anyopaque, instance: *types.ScriptInstance, ctx: *context.ScriptContext) types.ScriptError!void {
+            return Self.callDestroy(castContext(Self, context_ptr), instance, ctx);
+        }
+
+        fn getErrorBridge(context_ptr: *anyopaque) []const u8 {
+            return Self.getError(castContext(Self, context_ptr));
+        }
     };
+}
+
+pub const ZigVM = GameplayBuiltinVM(.zig, "ZigVM");
+const CSharpBuiltinVM = GameplayBuiltinVM(.csharp, "CSharpVM");
+
+const csharp_native_aot_api_version: u32 = 1;
+const csharp_native_aot_user_data_tag: u32 = 0x43534E41;
+
+const CSharpNativeAotHostContext = struct {
+    active_context: ?*context.ScriptContext = null,
 };
 
-/// C# 虚拟机存根 - 当前构建不包含 .NET 运行时
+const CSharpNativeAotHostApi = extern struct {
+    log: *const fn (?*anyopaque, [*]const u8, usize) callconv(.c) void,
+    find_entity_by_name: *const fn (?*anyopaque, [*]const u8, usize) callconv(.c) u64,
+    get_position: *const fn (?*anyopaque, *f32, *f32, *f32) callconv(.c) u32,
+    set_position: *const fn (?*anyopaque, f32, f32, f32) callconv(.c) u32,
+    get_rotation: *const fn (?*anyopaque, *f32, *f32, *f32, *f32) callconv(.c) u32,
+    set_rotation: *const fn (?*anyopaque, f32, f32, f32, f32) callconv(.c) u32,
+    get_scale: *const fn (?*anyopaque, *f32, *f32, *f32) callconv(.c) u32,
+    set_scale: *const fn (?*anyopaque, f32, f32, f32) callconv(.c) u32,
+    is_key_down: *const fn (?*anyopaque, u32) callconv(.c) u32,
+    was_key_pressed: *const fn (?*anyopaque, u32) callconv(.c) u32,
+    get_mouse_position: *const fn (?*anyopaque, *f32, *f32) callconv(.c) u32,
+    get_delta_time: *const fn (?*anyopaque) callconv(.c) f32,
+    get_time_scale: *const fn (?*anyopaque) callconv(.c) f32,
+    get_game_state: *const fn (?*anyopaque) callconv(.c) u32,
+};
+
+const csharp_native_aot_host_api: CSharpNativeAotHostApi = .{
+    .log = csharpNativeAotHostLog,
+    .find_entity_by_name = csharpNativeAotHostFindEntityByName,
+    .get_position = csharpNativeAotHostGetPosition,
+    .set_position = csharpNativeAotHostSetPosition,
+    .get_rotation = csharpNativeAotHostGetRotation,
+    .set_rotation = csharpNativeAotHostSetRotation,
+    .get_scale = csharpNativeAotHostGetScale,
+    .set_scale = csharpNativeAotHostSetScale,
+    .is_key_down = csharpNativeAotHostIsKeyDown,
+    .was_key_pressed = csharpNativeAotHostWasKeyPressed,
+    .get_mouse_position = csharpNativeAotHostGetMousePosition,
+    .get_delta_time = csharpNativeAotHostGetDeltaTime,
+    .get_time_scale = csharpNativeAotHostGetTimeScale,
+    .get_game_state = csharpNativeAotHostGetGameState,
+};
+
+const CSharpNativeAotLibrary = struct {
+    path: []u8,
+    lib: std.DynLib,
+    api_version: *const fn () callconv(.c) u32,
+    create_instance: *const fn (*const CSharpNativeAotHostApi, ?*anyopaque, u64) callconv(.c) ?*anyopaque,
+    destroy_instance: *const fn (?*anyopaque) callconv(.c) void,
+    on_init: ?*const fn (?*anyopaque) callconv(.c) void,
+    on_update: ?*const fn (?*anyopaque, f32) callconv(.c) void,
+    on_destroy: ?*const fn (?*anyopaque) callconv(.c) void,
+};
+
+const CSharpNativeAotInstanceState = struct {
+    library: *const CSharpNativeAotLibrary,
+    host_context: CSharpNativeAotHostContext = .{},
+    guest_instance: ?*anyopaque = null,
+};
+
 pub const CSharpVM = struct {
     allocator: std.mem.Allocator,
+    builtin: CSharpBuiltinVM,
+    loaded_native_libraries: std.ArrayList(*CSharpNativeAotLibrary) = .empty,
+    current_native_library: ?*CSharpNativeAotLibrary = null,
     error_msg: []u8 = &.{},
 
-    pub fn init(allocator: std.mem.Allocator) CSharpVM {
-        return .{ .allocator = allocator };
+    const Self = @This();
+
+    pub fn init(allocator: std.mem.Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .builtin = CSharpBuiltinVM.init(allocator),
+        };
     }
 
-    pub fn load(vm: *CSharpVM, resource: *const script_resource_mod.ScriptResource) types.ScriptError!void {
+    pub fn load(vm: *Self, resource: *const script_resource_mod.ScriptResource) types.ScriptError!void {
         if (resource.language != .csharp) {
             setOwnedMessage(vm.allocator, &vm.error_msg, "script language does not match CSharpVM");
             return types.ScriptError.InvalidLanguage;
         }
-        setOwnedMessage(vm.allocator, &vm.error_msg, "C# scripting is not available in this build");
-        return types.ScriptError.NotFound;
+
+        vm.current_native_library = null;
+        clearOwnedMessage(vm.allocator, &vm.error_msg);
+        vm.builtin.unload();
+
+        if (resolveCSharpNativeAotPath(resource)) |library_path| {
+            vm.current_native_library = try vm.ensureNativeLibrary(library_path);
+            log.info("C# NativeAOT gameplay library loaded path={s}", .{library_path});
+            return;
+        }
+
+        vm.builtin.load(resource) catch |err| {
+            setOwnedMessage(vm.allocator, &vm.error_msg, vm.builtin.getError());
+            return err;
+        };
     }
 
-    pub fn getError(vm: *CSharpVM) []const u8 {
-        return vm.error_msg;
+    pub fn unload(vm: *Self) void {
+        vm.current_native_library = null;
+        vm.builtin.unload();
+        clearOwnedMessage(vm.allocator, &vm.error_msg);
+    }
+
+    pub fn createInstance(vm: *Self, ctx: *context.ScriptContext) types.ScriptError!*types.ScriptInstance {
+        if (vm.current_native_library) |library| {
+            const instance = try vm.allocator.create(types.ScriptInstance);
+            errdefer vm.allocator.destroy(instance);
+
+            const state = try vm.allocator.create(CSharpNativeAotInstanceState);
+            errdefer vm.allocator.destroy(state);
+            state.* = .{ .library = library };
+            state.host_context.active_context = ctx;
+            defer state.host_context.active_context = null;
+
+            state.guest_instance = library.create_instance(&csharp_native_aot_host_api, &state.host_context, ctx.entity);
+            if (state.guest_instance == null) {
+                setOwnedMessage(vm.allocator, &vm.error_msg, "C# NativeAOT create_instance returned null");
+                return types.ScriptError.LoadError;
+            }
+
+            instance.* = .{
+                .id = 0,
+                .entity_id = ctx.entity,
+                .script_handle = undefined,
+                .language = .csharp,
+                .vtable = .{},
+                .user_data = state,
+                .user_data_size = @sizeOf(CSharpNativeAotInstanceState),
+                .user_data_tag = csharp_native_aot_user_data_tag,
+                .state = .ready,
+            };
+            return instance;
+        }
+
+        return vm.builtin.createInstance(ctx);
+    }
+
+    pub fn destroyInstance(vm: *Self, instance: *types.ScriptInstance) void {
+        if (instance.user_data_tag == csharp_native_aot_user_data_tag) {
+            const state = castUserData(CSharpNativeAotInstanceState, instance.user_data.?);
+            state.library.destroy_instance(state.guest_instance);
+            vm.allocator.destroy(state);
+            vm.allocator.destroy(instance);
+            return;
+        }
+        vm.builtin.destroyInstance(instance);
+    }
+
+    pub fn callInit(vm: *Self, instance: *types.ScriptInstance, ctx: *context.ScriptContext) types.ScriptError!void {
+        if (instance.user_data_tag == csharp_native_aot_user_data_tag) {
+            return vm.callNativeLifecycle(instance, ctx, .init, null);
+        }
+        return vm.builtin.callInit(instance, ctx);
+    }
+
+    pub fn callUpdate(vm: *Self, instance: *types.ScriptInstance, ctx: *context.ScriptContext, dt: f32) types.ScriptError!void {
+        if (instance.user_data_tag == csharp_native_aot_user_data_tag) {
+            return vm.callNativeLifecycle(instance, ctx, .update, dt);
+        }
+        return vm.builtin.callUpdate(instance, ctx, dt);
+    }
+
+    pub fn callDestroy(vm: *Self, instance: *types.ScriptInstance, ctx: *context.ScriptContext) types.ScriptError!void {
+        if (instance.user_data_tag == csharp_native_aot_user_data_tag) {
+            return vm.callNativeLifecycle(instance, ctx, .destroy, null);
+        }
+        return vm.builtin.callDestroy(instance, ctx);
+    }
+
+    pub fn getError(vm: *Self) []const u8 {
+        if (vm.error_msg.len != 0) {
+            return vm.error_msg;
+        }
+        return vm.builtin.getError();
+    }
+
+    fn callNativeLifecycle(
+        vm: *Self,
+        instance: *types.ScriptInstance,
+        ctx: *context.ScriptContext,
+        comptime phase: enum { init, update, destroy },
+        dt: ?f32,
+    ) types.ScriptError!void {
+        const state = castUserData(CSharpNativeAotInstanceState, instance.user_data orelse return types.ScriptError.NotFound);
+        state.host_context.active_context = ctx;
+        defer state.host_context.active_context = null;
+
+        switch (phase) {
+            .init => if (state.library.on_init) |callback| callback(state.guest_instance),
+            .update => if (state.library.on_update) |callback| callback(state.guest_instance, dt orelse 0.0),
+            .destroy => if (state.library.on_destroy) |callback| callback(state.guest_instance),
+        }
+        _ = vm;
+    }
+
+    fn ensureNativeLibrary(vm: *Self, path: []const u8) types.ScriptError!*CSharpNativeAotLibrary {
+        if (vm.findNativeLibrary(path)) |library| {
+            return library;
+        }
+
+        var lib = std.DynLib.open(path) catch {
+            setOwnedMessage(vm.allocator, &vm.error_msg, "failed to open C# NativeAOT shared library");
+            return types.ScriptError.LoadError;
+        };
+
+        const library = try vm.allocator.create(CSharpNativeAotLibrary);
+        errdefer vm.allocator.destroy(library);
+
+        const owned_path = try vm.allocator.dupe(u8, path);
+        errdefer vm.allocator.free(owned_path);
+
+        library.* = .{
+            .path = owned_path,
+            .lib = lib,
+            .api_version = lookupRequired(&lib, *const fn () callconv(.c) u32, "guava_csharp_api_version") orelse {
+                setOwnedMessage(vm.allocator, &vm.error_msg, "missing guava_csharp_api_version export");
+                return types.ScriptError.LoadError;
+            },
+            .create_instance = lookupRequired(&lib, *const fn (*const CSharpNativeAotHostApi, ?*anyopaque, u64) callconv(.c) ?*anyopaque, "guava_csharp_create_instance") orelse {
+                setOwnedMessage(vm.allocator, &vm.error_msg, "missing guava_csharp_create_instance export");
+                return types.ScriptError.LoadError;
+            },
+            .destroy_instance = lookupRequired(&lib, *const fn (?*anyopaque) callconv(.c) void, "guava_csharp_destroy_instance") orelse {
+                setOwnedMessage(vm.allocator, &vm.error_msg, "missing guava_csharp_destroy_instance export");
+                return types.ScriptError.LoadError;
+            },
+            .on_init = lib.lookup(*const fn (?*anyopaque) callconv(.c) void, "guava_csharp_on_init"),
+            .on_update = lib.lookup(*const fn (?*anyopaque, f32) callconv(.c) void, "guava_csharp_on_update"),
+            .on_destroy = lib.lookup(*const fn (?*anyopaque) callconv(.c) void, "guava_csharp_on_destroy"),
+        };
+
+        if (library.api_version() != csharp_native_aot_api_version) {
+            setOwnedMessage(vm.allocator, &vm.error_msg, "unsupported C# NativeAOT API version");
+            return types.ScriptError.LoadError;
+        }
+
+        try vm.loaded_native_libraries.append(vm.allocator, library);
+        return library;
+    }
+
+    fn findNativeLibrary(vm: *Self, path: []const u8) ?*CSharpNativeAotLibrary {
+        for (vm.loaded_native_libraries.items) |library| {
+            if (std.mem.eql(u8, library.path, path)) {
+                return library;
+            }
+        }
+        return null;
     }
 
     fn destroyContext(context_ptr: *anyopaque, allocator: std.mem.Allocator) void {
-        const vm = castContext(CSharpVM, context_ptr);
+        const vm = castContext(Self, context_ptr);
+        vm.builtin.unload();
+        for (vm.loaded_native_libraries.items) |library| {
+            allocator.free(library.path);
+            allocator.destroy(library);
+        }
+        vm.loaded_native_libraries.deinit(allocator);
         clearOwnedMessage(vm.allocator, &vm.error_msg);
         allocator.destroy(vm);
     }
 
     pub const script_vm_vtable: ScriptVM.VTable = .{
-        .load = csharpLoadBridge,
-        .unload = csharpUnloadBridge,
-        .createInstance = csharpCreateInstanceBridge,
-        .destroyInstance = csharpDestroyInstanceBridge,
-        .callInit = csharpCallInitBridge,
-        .callUpdate = csharpCallUpdateBridge,
-        .callDestroy = csharpCallDestroyBridge,
-        .getError = csharpGetErrorBridge,
+        .load = loadBridge,
+        .unload = unloadBridge,
+        .createInstance = createInstanceBridge,
+        .destroyInstance = destroyInstanceBridge,
+        .callInit = callInitBridge,
+        .callUpdate = callUpdateBridge,
+        .callDestroy = callDestroyBridge,
+        .getError = getErrorBridge,
         .destroy = destroyContext,
     };
 
-    fn unloadStub(vm: *CSharpVM) void {
-        clearOwnedMessage(vm.allocator, &vm.error_msg);
+    fn loadBridge(context_ptr: *anyopaque, resource: *const script_resource_mod.ScriptResource) types.ScriptError!void {
+        return Self.load(castContext(Self, context_ptr), resource);
     }
-    fn createInstanceStub(vm: *CSharpVM, _: *context.ScriptContext) types.ScriptError!*types.ScriptInstance {
-        setOwnedMessage(vm.allocator, &vm.error_msg, "C# scripting is not available in this build");
-        return types.ScriptError.NotFound;
+
+    fn unloadBridge(context_ptr: *anyopaque) void {
+        Self.unload(castContext(Self, context_ptr));
     }
-    fn destroyInstanceStub(vm: *CSharpVM, instance: *types.ScriptInstance) void {
-        vm.allocator.destroy(instance);
+
+    fn createInstanceBridge(context_ptr: *anyopaque, ctx: *context.ScriptContext) types.ScriptError!*types.ScriptInstance {
+        return Self.createInstance(castContext(Self, context_ptr), ctx);
     }
-    fn callInitStub(vm: *CSharpVM, _: *types.ScriptInstance, _: *context.ScriptContext) types.ScriptError!void {
-        setOwnedMessage(vm.allocator, &vm.error_msg, "C# scripting is not available in this build");
-        return types.ScriptError.NotFound;
+
+    fn destroyInstanceBridge(context_ptr: *anyopaque, instance: *types.ScriptInstance) void {
+        Self.destroyInstance(castContext(Self, context_ptr), instance);
     }
-    fn callUpdateStub(vm: *CSharpVM, _: *types.ScriptInstance, _: *context.ScriptContext, _: f32) types.ScriptError!void {
-        setOwnedMessage(vm.allocator, &vm.error_msg, "C# scripting is not available in this build");
-        return types.ScriptError.NotFound;
+
+    fn callInitBridge(context_ptr: *anyopaque, instance: *types.ScriptInstance, ctx: *context.ScriptContext) types.ScriptError!void {
+        return Self.callInit(castContext(Self, context_ptr), instance, ctx);
     }
-    fn callDestroyStub(vm: *CSharpVM, _: *types.ScriptInstance, _: *context.ScriptContext) types.ScriptError!void {
-        setOwnedMessage(vm.allocator, &vm.error_msg, "C# scripting is not available in this build");
-        return types.ScriptError.NotFound;
+
+    fn callUpdateBridge(context_ptr: *anyopaque, instance: *types.ScriptInstance, ctx: *context.ScriptContext, dt: f32) types.ScriptError!void {
+        return Self.callUpdate(castContext(Self, context_ptr), instance, ctx, dt);
+    }
+
+    fn callDestroyBridge(context_ptr: *anyopaque, instance: *types.ScriptInstance, ctx: *context.ScriptContext) types.ScriptError!void {
+        return Self.callDestroy(castContext(Self, context_ptr), instance, ctx);
+    }
+
+    fn getErrorBridge(context_ptr: *anyopaque) []const u8 {
+        return Self.getError(castContext(Self, context_ptr));
     }
 };
 
+fn createWrappedVM(comptime T: type, allocator: std.mem.Allocator, instance_value: T) !*ScriptVM {
+    const script_vm = try allocator.create(ScriptVM);
+    errdefer allocator.destroy(script_vm);
+
+    const vm = try allocator.create(T);
+    errdefer allocator.destroy(vm);
+    vm.* = instance_value;
+
+    script_vm.* = .{
+        .context = vm,
+        .vtable = &T.script_vm_vtable,
+    };
+    return script_vm;
+}
+
+pub fn createGameplayVM(language: types.ScriptLanguage, allocator: std.mem.Allocator) types.ScriptError!*ScriptVM {
+    return switch (language) {
+        .zig => createWrappedVM(ZigVM, allocator, ZigVM.init(allocator)),
+        .csharp => createWrappedVM(CSharpVM, allocator, CSharpVM.init(allocator)),
+        .wasm => types.ScriptError.InvalidLanguage,
+    };
+}
+
+pub fn createPluginVM(allocator: std.mem.Allocator, profile: WasmHostProfile) types.ScriptError!*ScriptVM {
+    return createWrappedVM(WasmVM, allocator, try WasmVM.init(allocator, profile));
+}
+
 /// 获取指定语言的虚拟机
 pub fn createVM(language: types.ScriptLanguage, allocator: std.mem.Allocator) types.ScriptError!*ScriptVM {
-    switch (language) {
-        .zig => {
-            const script_vm = try allocator.create(ScriptVM);
-            errdefer allocator.destroy(script_vm);
-            const vm = try allocator.create(ZigVM);
-            errdefer allocator.destroy(vm);
-            vm.* = ZigVM.init(allocator);
-            script_vm.* = .{
-                .context = vm,
-                .vtable = &ZigVM.script_vm_vtable,
-            };
-            return script_vm;
-        },
-        .csharp => {
-            const script_vm = try allocator.create(ScriptVM);
-            errdefer allocator.destroy(script_vm);
-            const vm = try allocator.create(CSharpVM);
-            errdefer allocator.destroy(vm);
-            vm.* = CSharpVM.init(allocator);
-            script_vm.* = .{
-                .context = vm,
-                .vtable = &CSharpVM.script_vm_vtable,
-            };
-            return script_vm;
-        },
-        .wasm => {
-            const script_vm = try allocator.create(ScriptVM);
-            errdefer allocator.destroy(script_vm);
-            const vm = try allocator.create(WasmVM);
-            errdefer allocator.destroy(vm);
-            vm.* = try WasmVM.init(allocator);
-            script_vm.* = .{
-                .context = vm,
-                .vtable = &WasmVM.script_vm_vtable,
-            };
-            return script_vm;
-        },
+    return switch (types.vmRoleForLanguage(language)) {
+        .gameplay => createGameplayVM(language, allocator),
+        .plugin => createPluginVM(allocator, .plugin),
+    };
+}
+
+fn resolveCSharpNativeAotPath(resource: *const script_resource_mod.ScriptResource) ?[]const u8 {
+    if (resource.artifact_path.len != 0 and isSharedLibraryPath(resource.artifact_path)) {
+        return resource.artifact_path;
     }
+    if (isSharedLibraryPath(resource.source_path)) {
+        return resource.source_path;
+    }
+    return null;
+}
+
+fn isSharedLibraryPath(path: []const u8) bool {
+    return std.mem.endsWith(u8, path, ".dll") or
+        std.mem.endsWith(u8, path, ".so") or
+        std.mem.endsWith(u8, path, ".dylib");
+}
+
+fn lookupRequired(lib: *std.DynLib, comptime T: type, name: [:0]const u8) ?T {
+    return lib.lookup(T, name);
+}
+
+fn csharpNativeAotActiveContext(userdata: ?*anyopaque) ?*context.ScriptContext {
+    const host_context: *CSharpNativeAotHostContext = @ptrCast(@alignCast(userdata orelse return null));
+    return host_context.active_context;
+}
+
+fn csharpNativeAotHostLog(userdata: ?*anyopaque, ptr: [*]const u8, len: usize) callconv(.c) void {
+    const ctx = csharpNativeAotActiveContext(userdata) orelse return;
+    std.log.info("[CSharpScript:{d}] {s}", .{ ctx.entity, ptr[0..len] });
+}
+
+fn csharpNativeAotHostFindEntityByName(userdata: ?*anyopaque, ptr: [*]const u8, len: usize) callconv(.c) u64 {
+    const ctx = csharpNativeAotActiveContext(userdata) orelse return 0;
+    return ctx.findEntityByName(ptr[0..len]) orelse 0;
+}
+
+fn csharpNativeAotHostGetPosition(userdata: ?*anyopaque, x: *f32, y: *f32, z: *f32) callconv(.c) u32 {
+    const ctx = csharpNativeAotActiveContext(userdata) orelse return 0;
+    const position = ctx.getPosition() orelse return 0;
+    x.* = position[0];
+    y.* = position[1];
+    z.* = position[2];
+    return 1;
+}
+
+fn csharpNativeAotHostSetPosition(userdata: ?*anyopaque, x: f32, y: f32, z: f32) callconv(.c) u32 {
+    const ctx = csharpNativeAotActiveContext(userdata) orelse return 0;
+    ctx.setPosition(.{ x, y, z });
+    return 1;
+}
+
+fn csharpNativeAotHostGetRotation(userdata: ?*anyopaque, x: *f32, y: *f32, z: *f32, w: *f32) callconv(.c) u32 {
+    const ctx = csharpNativeAotActiveContext(userdata) orelse return 0;
+    const rotation = ctx.getRotation() orelse return 0;
+    x.* = rotation[0];
+    y.* = rotation[1];
+    z.* = rotation[2];
+    w.* = rotation[3];
+    return 1;
+}
+
+fn csharpNativeAotHostSetRotation(userdata: ?*anyopaque, x: f32, y: f32, z: f32, w: f32) callconv(.c) u32 {
+    const ctx = csharpNativeAotActiveContext(userdata) orelse return 0;
+    ctx.setRotation(.{ x, y, z, w });
+    return 1;
+}
+
+fn csharpNativeAotHostGetScale(userdata: ?*anyopaque, x: *f32, y: *f32, z: *f32) callconv(.c) u32 {
+    const ctx = csharpNativeAotActiveContext(userdata) orelse return 0;
+    const scale = ctx.getScale() orelse return 0;
+    x.* = scale[0];
+    y.* = scale[1];
+    z.* = scale[2];
+    return 1;
+}
+
+fn csharpNativeAotHostSetScale(userdata: ?*anyopaque, x: f32, y: f32, z: f32) callconv(.c) u32 {
+    const ctx = csharpNativeAotActiveContext(userdata) orelse return 0;
+    ctx.setScale(.{ x, y, z });
+    return 1;
+}
+
+fn csharpNativeAotHostIsKeyDown(userdata: ?*anyopaque, key_raw: u32) callconv(.c) u32 {
+    const ctx = csharpNativeAotActiveContext(userdata) orelse return 0;
+    const key = std.meta.intToEnum(input_mod.Key, @as(u8, @intCast(key_raw))) catch return 0;
+    return if (ctx.isKeyDown(key)) 1 else 0;
+}
+
+fn csharpNativeAotHostWasKeyPressed(userdata: ?*anyopaque, key_raw: u32) callconv(.c) u32 {
+    const ctx = csharpNativeAotActiveContext(userdata) orelse return 0;
+    const key = std.meta.intToEnum(input_mod.Key, @as(u8, @intCast(key_raw))) catch return 0;
+    return if (ctx.wasKeyPressed(key)) 1 else 0;
+}
+
+fn csharpNativeAotHostGetMousePosition(userdata: ?*anyopaque, x: *f32, y: *f32) callconv(.c) u32 {
+    const ctx = csharpNativeAotActiveContext(userdata) orelse return 0;
+    const mouse = ctx.getMousePosition() orelse return 0;
+    x.* = mouse[0];
+    y.* = mouse[1];
+    return 1;
+}
+
+fn csharpNativeAotHostGetDeltaTime(userdata: ?*anyopaque) callconv(.c) f32 {
+    const ctx = csharpNativeAotActiveContext(userdata) orelse return 0.0;
+    return ctx.delta_time;
+}
+
+fn csharpNativeAotHostGetTimeScale(userdata: ?*anyopaque) callconv(.c) f32 {
+    const ctx = csharpNativeAotActiveContext(userdata) orelse return 1.0;
+    return ctx.time_scale;
+}
+
+fn csharpNativeAotHostGetGameState(userdata: ?*anyopaque) callconv(.c) u32 {
+    const ctx = csharpNativeAotActiveContext(userdata) orelse return 0;
+    return ctx.game_state;
 }
 
 fn clearOwnedMessage(allocator: std.mem.Allocator, slot: *[]u8) void {
@@ -962,4 +1347,49 @@ test "zig vm rejects source without builtin directive" {
     };
     try std.testing.expectError(types.ScriptError.CompileError, vm.load(&resource));
     try std.testing.expect(vm.getError().len != 0);
+}
+
+test "csharp vm gameplay builtin fallback updates entity rotation" {
+    var world = world_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+
+    const entity_id = try world.createEntity(.{ .name = "RotateMeCs" });
+    world.getEntity(entity_id).?.local_transform.rotation = quat.identity();
+
+    var vm = CSharpVM.init(std.testing.allocator);
+    defer vm.unload();
+
+    const resource = script_resource_mod.ScriptResource{
+        .source = "//!guava builtin=rotate axis=y speed_deg=90 local=true\n",
+        .language = .csharp,
+    };
+    try vm.load(&resource);
+
+    var ctx = context.ScriptContext{
+        .entity = entity_id,
+        .world = &world,
+        .instance = undefined,
+        .allocator = std.testing.allocator,
+    };
+    const instance = try vm.createInstance(&ctx);
+    defer vm.destroyInstance(instance);
+    ctx.instance = instance;
+
+    try vm.callUpdate(instance, &ctx, 1.0);
+    try vm.callUpdate(instance, &ctx, 1.0);
+
+    const rotated = world.getEntity(entity_id).?.local_transform.rotation;
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), rotated[1], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), rotated[3], 0.0001);
+}
+
+test "csharp vm prefers nativeaot artifact path when present" {
+    const resource = script_resource_mod.ScriptResource{
+        .source = "",
+        .language = .csharp,
+        .source_path = "scripts/player.cs",
+        .artifact_path = "build/native/player.dylib",
+    };
+
+    try std.testing.expectEqualStrings("build/native/player.dylib", resolveCSharpNativeAotPath(&resource).?);
 }

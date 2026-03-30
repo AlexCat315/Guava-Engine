@@ -81,17 +81,17 @@ fn drawToolbarIconButton(
 
 fn hudIdlePalette() ui_icons.ButtonPalette {
     return .{
-        .button = .{ 0.20, 0.22, 0.25, 0.76 },
-        .hovered = .{ 0.24, 0.27, 0.31, 0.82 },
-        .active = .{ 0.18, 0.20, 0.24, 0.88 },
+        .button = .{ 0.15, 0.16, 0.18, 0.90 },
+        .hovered = .{ 0.20, 0.22, 0.25, 0.96 },
+        .active = .{ 0.12, 0.14, 0.17, 1.0 },
     };
 }
 
 fn hudActivePalette() ui_icons.ButtonPalette {
     return .{
-        .button = .{ 0.30, 0.35, 0.34, 0.80 },
-        .hovered = .{ 0.34, 0.40, 0.38, 0.86 },
-        .active = .{ 0.28, 0.32, 0.31, 0.92 },
+        .button = .{ 0.18, 0.24, 0.30, 0.96 },
+        .hovered = .{ 0.22, 0.29, 0.36, 1.0 },
+        .active = .{ 0.15, 0.20, 0.26, 1.0 },
     };
 }
 
@@ -139,6 +139,42 @@ fn drawOverlayTitleChip(label: []const u8) void {
     gui.pushStyleColor(.text, .{ 0.95, 0.97, 0.99, 1.0 });
     defer gui.popStyleColor(1);
     gui.text(label);
+}
+
+fn drawHudWindowChrome() void {
+    const draw_list = gui.getWindowDrawList();
+    const pos = gui.windowPos();
+    const size = gui.windowSize();
+    const top_color = gui.getColorU32(.{ 0.42, 0.45, 0.50, 0.26 });
+    const bottom_color = gui.getColorU32(.{ 0.03, 0.04, 0.05, 0.55 });
+    const side_color = gui.getColorU32(.{ 0.50, 0.53, 0.58, 0.12 });
+    draw_list.addLine(pos, .{ pos[0] + size[0], pos[1] }, top_color, 1.0);
+    draw_list.addLine(
+        .{ pos[0], pos[1] + size[1] - 1.0 },
+        .{ pos[0] + size[0], pos[1] + size[1] - 1.0 },
+        bottom_color,
+        1.0,
+    );
+    draw_list.addLine(pos, .{ pos[0], pos[1] + size[1] }, side_color, 1.0);
+    draw_list.addLine(
+        .{ pos[0] + size[0] - 1.0, pos[1] },
+        .{ pos[0] + size[0] - 1.0, pos[1] + size[1] },
+        side_color,
+        1.0,
+    );
+}
+
+fn drawToolbarDivider(height: f32) void {
+    const draw_list = gui.getWindowDrawList();
+    const pos = gui.cursorScreenPos();
+    const x = pos[0] + 4.0;
+    draw_list.addLine(
+        .{ x, pos[1] + 3.0 },
+        .{ x, pos[1] + height - 3.0 },
+        gui.getColorU32(.{ 0.55, 0.59, 0.64, 0.22 }),
+        1.0,
+    );
+    gui.dummy(8.0, height);
 }
 
 fn syncPlaybackState(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -869,6 +905,7 @@ fn drawViewportToolbarStrip(state: *EditorState, layer_context: *engine.core.Lay
     const content_width = gui.contentRegionAvail()[0];
     gui.pushStyleVarVec2(.item_spacing, .{ 6.0, 6.0 });
     defer gui.popStyleVar(1);
+    const strip_height = gui.frameHeight();
 
     if (try drawToolbarIconButton(state, layer_context, "toolbar_select", ui_icons.paths.toolbar.select, state.manipulation_mode == .none)) {
         try manipulation.activateSelectTool(state, layer_context);
@@ -898,9 +935,12 @@ fn drawViewportToolbarStrip(state: *EditorState, layer_context: *engine.core.Lay
         gui.setTooltip(state.text(.scale_tool));
     }
 
+    gui.sameLine();
+    drawToolbarDivider(strip_height);
+    gui.sameLine();
+
     const edit_mode_active = mesh_edit.isEditModeActive(state);
     const can_enter_edit_mode = mesh_edit.canEnterEditMode(state, layer_context);
-    gui.sameLine();
     {
         gui.pushStyleVarVec2(.item_spacing, .{ 0.0, 6.0 });
         defer gui.popStyleVar(1);
@@ -944,6 +984,10 @@ fn drawViewportToolbarStrip(state: *EditorState, layer_context: *engine.core.Lay
             if (gui.isItemHovered()) gui.setTooltip("3");
         }
     }
+
+    gui.sameLine();
+    drawToolbarDivider(strip_height);
+    gui.sameLine();
 
     const utility_width: f32 = 90.0;
     gui.sameLineEx(@max(0.0, content_width - utility_width), 0.0);
@@ -2082,6 +2126,7 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
             gui.WindowFlags.always_auto_resize,
     );
     defer gui.endWindow();
+    drawHudWindowChrome();
 
     if (gui.isWindowHovered()) {
         state.viewport_overlay_hovered = true;
@@ -2089,9 +2134,6 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
 
     gui.pushStyleVarVec2(.item_spacing, .{ 6.0, 4.0 });
     defer gui.popStyleVar(1);
-
-    drawOverlayTitleChip(state.text(.viewport));
-    gui.sameLine();
 
     if (try drawOverlayMenuButton(
         state,
@@ -2134,6 +2176,8 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
         }
     }
     gui.sameLine();
+    drawToolbarDivider(gui.frameHeight());
+    gui.sameLine();
 
     if (try drawOverlayMenuButton(
         state,
@@ -2159,6 +2203,8 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
             state.viewport_show_collision = !state.viewport_show_collision;
         }
     }
+    gui.sameLine();
+    drawToolbarDivider(gui.frameHeight());
     gui.sameLine();
 
     if (try drawOverlayMenuButton(
@@ -2212,6 +2258,7 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
             gui.WindowFlags.always_auto_resize,
     );
     defer gui.endWindow();
+    drawHudWindowChrome();
 
     // Overlay hover should always block viewport world interactions.
     const input = layer_context.input;
@@ -2247,6 +2294,8 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
     if (gui.isItemHovered() or (state.manipulation_started_from_ui and input.isMouseDown(.left))) state.viewport_overlay_hovered = true;
 
     gui.sameLine();
+    drawToolbarDivider(gui.frameHeight());
+    gui.sameLine();
     if (gui.isWindowHovered() and input.wasMousePressed(.left)) {
         state.manipulation_started_from_ui = true;
     }
@@ -2266,6 +2315,8 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
     }
     if (gui.isItemHovered() or (state.manipulation_started_from_ui and input.isMouseDown(.left))) state.viewport_overlay_hovered = true;
 
+    gui.sameLine();
+    drawToolbarDivider(gui.frameHeight());
     gui.sameLine();
     if (gui.isWindowHovered() and input.wasMousePressed(.left)) {
         state.manipulation_started_from_ui = true;
@@ -2331,6 +2382,7 @@ fn drawViewportAiStateOverlayWindow(state: *EditorState) void {
             gui.WindowFlags.no_scrollbar,
     );
     defer gui.endWindow();
+    drawHudWindowChrome();
 
     if (gui.isWindowHovered()) {
         state.viewport_overlay_hovered = true;
@@ -2444,6 +2496,7 @@ fn drawViewportFpsOverlayWindow(state: *EditorState, layer_context: *engine.core
             gui.WindowFlags.always_auto_resize,
     );
     defer gui.endWindow();
+    drawHudWindowChrome();
 
     if (gui.isWindowHovered()) {
         state.viewport_overlay_hovered = true;
@@ -2483,6 +2536,7 @@ fn drawViewportDebugOverlayWindow(state: *EditorState, layer_context: *engine.co
             gui.WindowFlags.no_docking,
     );
     defer gui.endWindow();
+    drawHudWindowChrome();
 
     if (gui.isWindowHovered()) {
         state.viewport_overlay_hovered = true;
