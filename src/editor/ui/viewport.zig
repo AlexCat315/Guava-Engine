@@ -63,7 +63,7 @@ fn drawToolbarIconButton(
     gui.pushStyleColor(.button, palette.button);
     gui.pushStyleColor(.button_hovered, palette.hovered);
     gui.pushStyleColor(.button_active, palette.active);
-    gui.pushStyleVarVec2(.frame_padding, .{ 7.0, 4.0 });
+    gui.pushStyleVarVec2(.frame_padding, .{ 7.0, 5.0 });
     gui.pushStyleVarFloat(.frame_rounding, 4.0);
     defer {
         gui.popStyleVar(2);
@@ -107,12 +107,12 @@ fn drawOverlayMenuButton(
     else
         hudIdlePalette();
     const text_width = gui.calcTextSize(label, false, 0.0)[0];
-    const button_width = @max(58.0, text_width + 22.0);
+    const button_width = @max(50.0, text_width + 18.0);
     gui.pushStyleColor(.button, palette.button);
     gui.pushStyleColor(.button_hovered, palette.hovered);
     gui.pushStyleColor(.button_active, palette.active);
-    gui.pushStyleVarVec2(.frame_padding, .{ 9.0, 4.0 });
-    gui.pushStyleVarFloat(.frame_rounding, 4.0);
+    gui.pushStyleVarVec2(.frame_padding, .{ 7.0, 3.0 });
+    gui.pushStyleVarFloat(.frame_rounding, 3.0);
     defer {
         gui.popStyleVar(2);
         gui.popStyleColor(3);
@@ -1222,7 +1222,7 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
     var title_buffer: [80]u8 = undefined;
     const title = try state.windowLabel(&title_buffer, .viewport, "viewport_panel");
 
-    gui.pushStyleVarVec2(.window_padding, .{ 0.0, 0.0 });
+    gui.pushStyleVarVec2(.window_padding, .{ 0.0, 4.0 });
     defer gui.popStyleVar(1);
 
     _ = gui.beginWindowFlags(
@@ -1859,8 +1859,8 @@ fn drawPlaybackToolbarIconButton(
     gui.pushStyleColor(.button, palette.button);
     gui.pushStyleColor(.button_hovered, palette.hovered);
     gui.pushStyleColor(.button_active, palette.active);
-    gui.pushStyleVarVec2(.frame_padding, .{ 7.0, 4.0 });
-    gui.pushStyleVarFloat(.frame_rounding, 4.0);
+    gui.pushStyleVarVec2(.frame_padding, .{ 5.0, 3.0 });
+    gui.pushStyleVarFloat(.frame_rounding, 3.0);
     defer {
         gui.popStyleVar(2);
         gui.popStyleColor(3);
@@ -2112,10 +2112,10 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
         state.viewport_origin[0] + 14.0,
         state.viewport_origin[1] + viewportOverlayTopInset(),
     };
-    gui.pushStyleVarVec2(.window_padding, .{ 6.0, 6.0 });
+    gui.pushStyleVarVec2(.window_padding, .{ 4.0, 4.0 });
     defer gui.popStyleVar(1);
     gui.setNextWindowPos(overlay_pos);
-    gui.setNextWindowBgAlpha(0.46);
+    gui.setNextWindowBgAlpha(0.38);
     _ = gui.beginWindowFlags(
         "##viewport_overlay_controls",
         gui.WindowFlags.no_title_bar |
@@ -2240,14 +2240,14 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
 }
 
 fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
-    const window_width = 128.0;
-    gui.pushStyleVarVec2(.window_padding, .{ 6.0, 6.0 });
+    const window_width = 108.0;
+    gui.pushStyleVarVec2(.window_padding, .{ 4.0, 4.0 });
     defer gui.popStyleVar(1);
     gui.setNextWindowPos(.{
         state.viewport_origin[0] + @max((state.viewport_extent[0] - window_width) * 0.5, 18.0),
         state.viewport_origin[1] + viewportOverlayTopInset(),
     });
-    gui.setNextWindowBgAlpha(0.44);
+    gui.setNextWindowBgAlpha(0.38);
     _ = gui.beginWindowFlags(
         "##viewport_playback_overlay",
         gui.WindowFlags.no_title_bar |
@@ -2364,7 +2364,7 @@ fn drawViewportAiStateOverlayWindow(state: *EditorState) void {
     const bg_alpha = std.math.clamp(@max(0.54, base_color[3] + pulse) * 0.72, 0.0, 0.68);
 
     const overlay_width: f32 = if (ai_status.stage == .waiting_approval) 320.0 else 280.0;
-    gui.pushStyleVarVec2(.window_padding, .{ 6.0, 6.0 });
+    gui.pushStyleVarVec2(.window_padding, .{ 4.0, 3.0 });
     defer gui.popStyleVar(1);
     gui.setNextWindowPos(.{
         state.viewport_origin[0] + @max((state.viewport_extent[0] - overlay_width) * 0.5, 12.0),
@@ -2485,7 +2485,7 @@ fn drawViewportFpsOverlayWindow(state: *EditorState, layer_context: *engine.core
         state.viewport_origin[0] + overlay_margin,
         overlay_y,
     });
-    gui.setNextWindowBgAlpha(0.42);
+    gui.setNextWindowBgAlpha(0.34);
     _ = gui.beginWindowFlags(
         "##viewport_fps_overlay",
         gui.WindowFlags.no_title_bar |
