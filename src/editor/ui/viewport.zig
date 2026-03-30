@@ -79,11 +79,16 @@ fn drawOverlayMenuButton(
     else
         ui_icons.palettes.toolbar_idle;
     const text_width = gui.calcTextSize(label, false, 0.0)[0];
-    const button_width = @max(58.0, text_width + 22.0);
+    const button_width = @max(64.0, text_width + 28.0);
     gui.pushStyleColor(.button, palette.button);
     gui.pushStyleColor(.button_hovered, palette.hovered);
     gui.pushStyleColor(.button_active, palette.active);
-    defer gui.popStyleColor(3);
+    gui.pushStyleVarVec2(.frame_padding, .{ 12.0, 7.0 });
+    gui.pushStyleVarFloat(.frame_rounding, 999.0);
+    defer {
+        gui.popStyleVar(2);
+        gui.popStyleColor(3);
+    }
     gui.pushIdU64(std.hash.Wyhash.hash(0, id));
     defer gui.popId();
     const clicked = gui.buttonEx(label, button_width, 0.0);
@@ -94,6 +99,21 @@ fn drawOverlayMenuButton(
         }
     }
     return clicked;
+}
+
+fn drawOverlayStatusChip(label: []const u8) void {
+    const button_width = @max(34.0, gui.calcTextSize(label, false, 0.0)[0] + 22.0);
+    gui.pushStyleColor(.button, .{ 0.24, 0.26, 0.30, 0.92 });
+    gui.pushStyleColor(.button_hovered, .{ 0.24, 0.26, 0.30, 0.92 });
+    gui.pushStyleColor(.button_active, .{ 0.24, 0.26, 0.30, 0.92 });
+    gui.pushStyleColor(.text, .{ 0.88, 0.90, 0.94, 1.0 });
+    gui.pushStyleVarVec2(.frame_padding, .{ 10.0, 7.0 });
+    gui.pushStyleVarFloat(.frame_rounding, 999.0);
+    defer {
+        gui.popStyleVar(2);
+        gui.popStyleColor(4);
+    }
+    _ = gui.buttonEx(label, button_width, 0.0);
 }
 
 fn syncPlaybackState(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -821,6 +841,7 @@ fn drawViewportSceneEntityIcons(state: *EditorState, layer_context: *engine.core
 }
 
 fn drawViewportToolbarStrip(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const content_width = gui.contentRegionAvail()[0];
     gui.pushStyleVarVec2(.item_spacing, .{ 6.0, 6.0 });
     defer gui.popStyleVar(1);
 
@@ -852,26 +873,35 @@ fn drawViewportToolbarStrip(state: *EditorState, layer_context: *engine.core.Lay
         gui.setTooltip(state.text(.scale_tool));
     }
 
-    if (mesh_edit.isEditModeActive(state) or mesh_edit.canEnterEditMode(state, layer_context)) {
-        gui.sameLine();
+    const edit_mode_active = mesh_edit.isEditModeActive(state);
+    const can_enter_edit_mode = mesh_edit.canEnterEditMode(state, layer_context);
+    gui.sameLine();
+    {
         gui.pushStyleVarVec2(.item_spacing, .{ 0.0, 6.0 });
         defer gui.popStyleVar(1);
-        if (drawSegmentedModeButton(state.text(.object_mode), !mesh_edit.isEditModeActive(state), 66.0, .first)) {
+        if (drawSegmentedModeButton(state.text(.object_mode), !edit_mode_active, 66.0, .first)) {
             mesh_edit.exitEditMode(state, layer_context);
         }
         if (gui.isItemHovered()) gui.setTooltip(state.text(.object_mode));
         gui.sameLine();
         if (drawSegmentedModeButton(
             state.text(.edit_mode),
-            mesh_edit.isEditModeActive(state),
+            edit_mode_active,
             58.0,
-            if (mesh_edit.isEditModeActive(state)) .middle else .last,
+            if (edit_mode_active) .middle else .last,
         )) {
-            _ = try mesh_edit.enterEditMode(state, layer_context);
+            if (edit_mode_active or can_enter_edit_mode) {
+                _ = try mesh_edit.enterEditMode(state, layer_context);
+            }
         }
-        if (gui.isItemHovered()) gui.setTooltip(state.text(.edit_mode));
+        if (gui.isItemHovered()) {
+            gui.setTooltip(if (!edit_mode_active and !can_enter_edit_mode)
+                state.text(.select_mesh_to_edit)
+            else
+                state.text(.edit_mode));
+        }
 
-        if (mesh_edit.isEditModeActive(state)) {
+        if (edit_mode_active) {
             gui.sameLine();
             if (drawSegmentedModeButton(state.text(.vertex_mode), state.mesh_edit_selection_mode == .vertex, 54.0, .middle)) {
                 mesh_edit.setSelectionMode(state, .vertex);
@@ -890,11 +920,8 @@ fn drawViewportToolbarStrip(state: *EditorState, layer_context: *engine.core.Lay
         }
     }
 
-    const utility_width: f32 = 64.0;
-    const remaining_width = gui.contentRegionAvail()[0];
-    gui.sameLine();
-    gui.dummy(@max(remaining_width - utility_width, 8.0), 1.0);
-    gui.sameLine();
+    const utility_width: f32 = 78.0;
+    gui.sameLineEx(@max(0.0, content_width - utility_width), 0.0);
     if (try drawToolbarIconButton(state, layer_context, "toolbar_ai_chat", ui_icons.paths.toolbar.ai_chat, state.ai_chat_open)) {
         state.ai_chat_open = !state.ai_chat_open;
     }
@@ -1763,8 +1790,8 @@ fn drawPlaybackToolbarIconButton(
     gui.pushStyleColor(.button, palette.button);
     gui.pushStyleColor(.button_hovered, palette.hovered);
     gui.pushStyleColor(.button_active, palette.active);
-    gui.pushStyleVarVec2(.frame_padding, ui_icons.regular_icon_button_padding);
-    gui.pushStyleVarFloat(.frame_rounding, ui_icons.regular_icon_button_rounding);
+    gui.pushStyleVarVec2(.frame_padding, .{ 11.0, 7.0 });
+    gui.pushStyleVarFloat(.frame_rounding, 999.0);
     defer {
         gui.popStyleVar(2);
         gui.popStyleColor(3);
@@ -2016,8 +2043,10 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
         state.viewport_origin[0] + 14.0,
         state.viewport_origin[1] + viewportOverlayTopInset(),
     };
+    gui.pushStyleVarVec2(.window_padding, .{ 8.0, 8.0 });
+    defer gui.popStyleVar(1);
     gui.setNextWindowPos(overlay_pos);
-    gui.setNextWindowBgAlpha(0.6);
+    gui.setNextWindowBgAlpha(0.76);
     _ = gui.beginWindowFlags(
         "##viewport_overlay_controls",
         gui.WindowFlags.no_title_bar |
@@ -2028,6 +2057,10 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
             gui.WindowFlags.always_auto_resize,
     );
     defer gui.endWindow();
+
+    if (gui.isWindowHovered()) {
+        state.viewport_overlay_hovered = true;
+    }
 
     gui.pushStyleVarVec2(.item_spacing, .{ 6.0, 4.0 });
     defer gui.popStyleVar(1);
@@ -2121,7 +2154,10 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
     // Show camera speed indicator when shift is held
     if (layer_context.input.modifiers.shift) {
         gui.sameLine();
-        gui.text("3x");
+        drawOverlayStatusChip("3x");
+        if (gui.isItemHovered()) {
+            state.viewport_overlay_hovered = true;
+        }
     }
 
     if (view_popup_open or display_popup_open or snap_popup_open) {
@@ -2131,11 +2167,13 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
 
 fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const window_width = 128.0;
+    gui.pushStyleVarVec2(.window_padding, .{ 8.0, 8.0 });
+    defer gui.popStyleVar(1);
     gui.setNextWindowPos(.{
         state.viewport_origin[0] + @max((state.viewport_extent[0] - window_width) * 0.5, 18.0),
-        state.viewport_origin[1] + 10.0,
+        state.viewport_origin[1] + viewportOverlayTopInset(),
     });
-    gui.setNextWindowBgAlpha(0.6);
+    gui.setNextWindowBgAlpha(0.76);
     _ = gui.beginWindowFlags(
         "##viewport_playback_overlay",
         gui.WindowFlags.no_title_bar |

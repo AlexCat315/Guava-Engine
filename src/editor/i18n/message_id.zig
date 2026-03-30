@@ -335,6 +335,7 @@ pub const MessageId = enum {
     scale_tool,
     object_mode,
     edit_mode,
+    select_mesh_to_edit,
     vertex_mode,
     edge_mode,
     face_mode,

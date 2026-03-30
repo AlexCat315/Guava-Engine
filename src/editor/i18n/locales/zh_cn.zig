@@ -344,6 +344,7 @@ pub const locale = blk: {
             .scale_tool = "缩放 (R)",
             .object_mode = "对象",
             .edit_mode = "编辑",
+            .select_mesh_to_edit = "选择一个网格对象后可进入编辑模式",
             .vertex_mode = "顶点",
             .edge_mode = "边",
             .face_mode = "面",

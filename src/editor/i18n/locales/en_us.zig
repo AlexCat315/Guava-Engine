@@ -344,6 +344,7 @@ pub const locale = blk: {
             .scale_tool = "Scale (R)",
             .object_mode = "Object",
             .edit_mode = "Edit",
+            .select_mesh_to_edit = "Select a mesh object to enter Edit Mode",
             .vertex_mode = "Vertex",
             .edge_mode = "Edge",
             .face_mode = "Face",
