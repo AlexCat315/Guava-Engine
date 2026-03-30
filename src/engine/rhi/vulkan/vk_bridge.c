@@ -62,7 +62,19 @@ typedef struct { uint32_t index_count; uint32_t instance_count; uint32_t first_i
 typedef struct { uint32_t buffer_id; uint32_t offset; uint32_t draw_count; } CmdDrawIndirect;
 typedef struct { uint32_t x; uint32_t y; uint32_t z; } CmdDispatch;
 typedef struct { uint32_t buffer_id; uint32_t offset; } CmdDispatchIndirect;
-typedef struct { uint32_t resource_id; uint32_t src_state; uint32_t dst_state; uint8_t src_queue; uint8_t dst_queue; uint16_t pad; } CmdPipelineBarrier;
+typedef struct {
+    uint32_t resource_id;
+    uint32_t src_state;
+    uint32_t dst_state;
+    uint16_t subresource_base;
+    uint16_t subresource_count;
+    uint8_t resource_kind;
+    uint8_t sync_action;
+    uint8_t pass_scope;
+    uint8_t src_queue;
+    uint8_t dst_queue;
+    uint8_t pad[3];
+} CmdPipelineBarrier;
 typedef struct { uint32_t vertex_count; uint32_t instance_count; uint32_t first_vertex; uint32_t first_instance; } CmdDraw;
 typedef struct { uint8_t stage; uint8_t slot; uint16_t pad; uint32_t data_len; } CmdPushUniform;
 typedef struct { float x; float y; float width; float height; float min_depth; float max_depth; } CmdSetViewport;

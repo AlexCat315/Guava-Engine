@@ -189,6 +189,59 @@ pub const TextureUsage = struct {
     pub const compute_storage_rw: u32 = 1 << 6;
 };
 
+pub const ResourceStates = packed struct(u32) {
+    constant_buffer: bool = false,
+    vertex_buffer: bool = false,
+    index_buffer: bool = false,
+    indirect_argument: bool = false,
+    shader_resource: bool = false,
+    unordered_access: bool = false,
+    render_target: bool = false,
+    depth_write: bool = false,
+    depth_read: bool = false,
+    copy_dest: bool = false,
+    copy_source: bool = false,
+    present: bool = false,
+    accel_struct_read: bool = false,
+    accel_struct_write: bool = false,
+    resolve_dest: bool = false,
+    resolve_source: bool = false,
+    _padding: u16 = 0,
+
+    pub fn asBits(self: ResourceStates) u32 {
+        return @bitCast(self);
+    }
+
+    pub fn fromBits(bits: u32) ResourceStates {
+        return @bitCast(bits);
+    }
+};
+
+pub const ResourceKind = enum(u8) {
+    buffer,
+    texture,
+    accel_structure,
+};
+
+pub const ResourceRef = struct {
+    kind: ResourceKind,
+    id: u32,
+    subresource_base: u16 = 0,
+    subresource_count: u16 = 1,
+};
+
+pub const BarrierSyncAction = enum(u8) {
+    full,
+    acquire,
+    release,
+};
+
+pub const BarrierPassScope = enum(u8) {
+    outside_pass,
+    before_pass,
+    after_pass,
+};
+
 pub const BufferDesc = struct {
     size: u32,
     usage: u32,

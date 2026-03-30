@@ -1,4 +1,9 @@
 const std = @import("std");
+const rhi_types = @import("types.zig");
+
+pub const ResourceKind = rhi_types.ResourceKind;
+pub const BarrierSyncAction = rhi_types.BarrierSyncAction;
+pub const BarrierPassScope = rhi_types.BarrierPassScope;
 
 pub const Error = error{
     OutOfMemory,
@@ -98,10 +103,14 @@ pub const PipelineBarrierCmd = extern struct {
     resource_id: u32,
     src_state_bits: u32,
     dst_state_bits: u32,
+    subresource_base: u16 = 0,
+    subresource_count: u16 = 1,
     resource_kind: u8,
-    src_queue: u8,
-    dst_queue: u8,
-    _padding: u8 = 0,
+    sync_action: u8 = @intCast(@intFromEnum(BarrierSyncAction.full)),
+    pass_scope: u8 = @intCast(@intFromEnum(BarrierPassScope.outside_pass)),
+    src_queue: u8 = 0,
+    dst_queue: u8 = 0,
+    _padding: [3]u8 = .{ 0, 0, 0 },
 };
 
 pub const DrawCmd = extern struct {
@@ -252,6 +261,12 @@ pub const CommandBuffer = struct {
         try self.writeStruct(PipelineBarrierCmd, cmd);
     }
 
+    pub fn encodePipelineBarriers(self: *CommandBuffer, cmds: []const PipelineBarrierCmd) Error!void {
+        for (cmds) |cmd| {
+            try self.encodePipelineBarrier(cmd);
+        }
+    }
+
     pub fn encodeDraw(self: *CommandBuffer, cmd: DrawCmd) Error!void {
         try self.writeOp(.draw);
         try self.writeStruct(DrawCmd, cmd);
@@ -396,4 +411,41 @@ test "decoder readStruct handles unaligned stream" {
     var d = Decoder.init(bytes.items[1..]);
     const decoded = try d.readStruct(DrawIndexedCmd);
     try std.testing.expectEqual(cmd.index_count, decoded.index_count);
+}
+
+test "encodePipelineBarriers preserves barrier order" {
+    var cb = CommandBuffer.init(std.testing.allocator);
+    defer cb.deinit();
+
+    try cb.encodePipelineBarriers(&.{
+        .{
+            .resource_id = 3,
+            .src_state_bits = 1,
+            .dst_state_bits = 2,
+            .resource_kind = @intCast(@intFromEnum(ResourceKind.texture)),
+        },
+        .{
+            .resource_id = 7,
+            .src_state_bits = 4,
+            .dst_state_bits = 8,
+            .resource_kind = @intCast(@intFromEnum(ResourceKind.buffer)),
+            .subresource_base = 2,
+            .subresource_count = 4,
+            .sync_action = @intCast(@intFromEnum(BarrierSyncAction.acquire)),
+            .pass_scope = @intCast(@intFromEnum(BarrierPassScope.before_pass)),
+        },
+    });
+
+    var decoder = cb.decoder();
+    const first = (try decoder.next()).?.pipeline_barrier;
+    const second = (try decoder.next()).?.pipeline_barrier;
+
+    try std.testing.expectEqual(@as(u32, 3), first.resource_id);
+    try std.testing.expectEqual(@as(u32, 7), second.resource_id);
+    try std.testing.expectEqual(@as(u16, 2), second.subresource_base);
+    try std.testing.expectEqual(@as(u16, 4), second.subresource_count);
+    try std.testing.expectEqual(
+        @as(u8, @intCast(@intFromEnum(BarrierPassScope.before_pass))),
+        second.pass_scope,
+    );
 }

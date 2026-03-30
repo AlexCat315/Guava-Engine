@@ -51,14 +51,15 @@ pub const MetalBackend = struct {
         self.last_submit_queue = queue_class;
 
         var decoder = soft_buf.decoder();
+        var inside_pass = false;
         while (try decoder.next()) |cmd| {
             switch (cmd) {
-                .begin_render_pass => |_| {},
-                .end_render_pass => {},
-                .begin_compute_pass => |_| {},
-                .end_compute_pass => {},
-                .begin_copy_pass => |_| {},
-                .end_copy_pass => {},
+                .begin_render_pass => |_| inside_pass = true,
+                .end_render_pass => inside_pass = false,
+                .begin_compute_pass => |_| inside_pass = true,
+                .end_compute_pass => inside_pass = false,
+                .begin_copy_pass => |_| inside_pass = true,
+                .end_copy_pass => inside_pass = false,
                 .set_binding_set => |_| {},
                 .set_vertex_buffer => |_| {},
                 .set_index_buffer => |_| {},
@@ -73,6 +74,11 @@ pub const MetalBackend = struct {
                 .set_scissor => |_| {},
                 .imgui_draw => {},
                 .pipeline_barrier => |b| {
+                    const pass_scope = std.meta.intToEnum(rhi.BarrierPassScope, b.pass_scope) catch return error.SubmitFailed;
+                    if (inside_pass and pass_scope != .outside_pass) {
+                        return error.SubmitFailed;
+                    }
+
                     const resource = resourceRefFromBarrier(b) catch return error.SubmitFailed;
                     const prev_state = self.resource_state_bits.get(resource) orelse 0;
                     if (prev_state != 0 and prev_state != b.src_state_bits) {
@@ -230,7 +236,12 @@ fn uploadBufferData(ctx: *anyopaque, buffer: rhi.Buffer, offset: u64, data: []co
 
 fn resourceRefFromBarrier(barrier: command_buffer.PipelineBarrierCmd) !rhi.ResourceRef {
     const kind = std.meta.intToEnum(rhi.ResourceKind, barrier.resource_kind) catch return error.InvalidArgument;
-    return .{ .kind = kind, .id = barrier.resource_id };
+    return .{
+        .kind = kind,
+        .id = barrier.resource_id,
+        .subresource_base = barrier.subresource_base,
+        .subresource_count = barrier.subresource_count,
+    };
 }
 
 const device_vtable = rhi.DeviceVTable{

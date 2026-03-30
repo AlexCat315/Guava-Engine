@@ -228,7 +228,19 @@ struct CmdDrawIndexed      { uint32_t index_count; uint32_t instance_count; uint
 struct CmdDrawIndirect     { uint32_t buffer_id; uint32_t offset; uint32_t draw_count; };
 struct CmdDispatch         { uint32_t x; uint32_t y; uint32_t z; };
 struct CmdDispatchIndirect { uint32_t buffer_id; uint32_t offset; };
-struct CmdPipelineBarrier  { uint32_t resource_id; uint32_t src_state_bits; uint32_t dst_state_bits; uint8_t src_queue; uint8_t dst_queue; uint16_t _padding; };
+struct CmdPipelineBarrier  {
+    uint32_t resource_id;
+    uint32_t src_state_bits;
+    uint32_t dst_state_bits;
+    uint16_t subresource_base;
+    uint16_t subresource_count;
+    uint8_t resource_kind;
+    uint8_t sync_action;
+    uint8_t pass_scope;
+    uint8_t src_queue;
+    uint8_t dst_queue;
+    uint8_t _padding[3];
+};
 struct CmdDraw             { uint32_t vertex_count; uint32_t instance_count; uint32_t first_vertex; uint32_t first_instance; };
 struct CmdPushUniform      { uint8_t stage; uint8_t slot; uint16_t _pad; uint32_t data_len; /* followed by data_len bytes */ };
 struct CmdSetViewport      { float x; float y; float w; float h; float min_depth; float max_depth; };

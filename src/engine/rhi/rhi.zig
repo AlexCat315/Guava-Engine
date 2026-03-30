@@ -21,10 +21,12 @@ pub const Queue = queue_mod.Queue;
 pub const SubmitDesc = queue_mod.SubmitDesc;
 pub const TimelineSemaphore = queue_mod.TimelineSemaphore;
 
-pub const ResourceStates = state_tracker.ResourceStates;
+pub const ResourceStates = rhi_types.ResourceStates;
 pub const Barrier = state_tracker.Barrier;
-pub const ResourceKind = state_tracker.ResourceKind;
-pub const ResourceRef = state_tracker.ResourceRef;
+pub const ResourceKind = rhi_types.ResourceKind;
+pub const ResourceRef = rhi_types.ResourceRef;
+pub const BarrierSyncAction = rhi_types.BarrierSyncAction;
+pub const BarrierPassScope = rhi_types.BarrierPassScope;
 
 pub const Buffer = struct { id: u32 };
 pub const Texture = struct { id: u32 };
@@ -284,6 +286,12 @@ const SubmissionTracking = struct {
     }
 };
 
+const PassBlockKind = enum {
+    render,
+    compute,
+    copy,
+};
+
 pub const Device = struct {
     ctx: *anyopaque,
     vtable: *const DeviceVTable,
@@ -523,20 +531,27 @@ pub const Device = struct {
 
         var decoder = original.decoder();
         while (true) {
-            const maybe_decoded = decoder.next() catch |err| switch (err) {
-                error.OutOfMemory => return error.OutOfMemory,
-                error.InvalidOpcode,
-                error.TruncatedStream,
-                => return error.SubmitFailed,
-            };
+            const maybe_decoded = try nextDecodedCommand(&decoder);
             const decoded = maybe_decoded orelse break;
             switch (decoded) {
+                .begin_render_pass => try self.preparePassBlockForSubmit(&prepared, &decoder, queue_class, decoded, .render),
+                .begin_compute_pass => try self.preparePassBlockForSubmit(&prepared, &decoder, queue_class, decoded, .compute),
+                .begin_copy_pass => try self.preparePassBlockForSubmit(&prepared, &decoder, queue_class, decoded, .copy),
                 .pipeline_barrier => |barrier| {
                     prepared.encodeDecoded(decoded) catch |err| return mapCommandBufferError(err);
                     try self.applyExplicitBarrier(barrier);
                 },
                 else => {
-                    try self.injectAutomaticBarriers(&prepared, queue_class, decoded);
+                    var pending_barriers = std.ArrayList(command_buffer.PipelineBarrierCmd).empty;
+                    defer pending_barriers.deinit(self.pipeline_layout_cache.allocator);
+
+                    try self.collectAutomaticBarriersForCommand(
+                        &pending_barriers,
+                        queue_class,
+                        decoded,
+                        .outside_pass,
+                    );
+                    try flushPendingBarriers(&prepared, pending_barriers.items);
                     prepared.encodeDecoded(decoded) catch |err| return mapCommandBufferError(err);
                 },
             }
@@ -545,28 +560,103 @@ pub const Device = struct {
         return prepared;
     }
 
-    fn injectAutomaticBarriers(
+    fn preparePassBlockForSubmit(
         self: *const Device,
         prepared: *command_buffer.CommandBuffer,
+        decoder: *command_buffer.Decoder,
+        queue_class: QueueClass,
+        begin_decoded: command_buffer.DecodedCommand,
+        pass_kind: PassBlockKind,
+    ) Error!void {
+        var pre_barriers = std.ArrayList(command_buffer.PipelineBarrierCmd).empty;
+        defer pre_barriers.deinit(self.pipeline_layout_cache.allocator);
+
+        var post_barriers = std.ArrayList(command_buffer.PipelineBarrierCmd).empty;
+        defer post_barriers.deinit(self.pipeline_layout_cache.allocator);
+
+        var body_commands = std.ArrayList(command_buffer.DecodedCommand).empty;
+        defer body_commands.deinit(self.pipeline_layout_cache.allocator);
+
+        try self.collectAutomaticBarriersForCommand(
+            &pre_barriers,
+            queue_class,
+            begin_decoded,
+            .before_pass,
+        );
+
+        const end_opcode = passBlockEndOpcode(pass_kind);
+        while (true) {
+            const maybe_decoded = try nextDecodedCommand(decoder);
+            const decoded = maybe_decoded orelse return error.SubmitFailed;
+            if (std.meta.activeTag(decoded) == end_opcode) break;
+
+            switch (decoded) {
+                .pipeline_barrier => |barrier| switch (try decodeBarrierPassScope(barrier.pass_scope)) {
+                    .before_pass => {
+                        try pre_barriers.append(self.pipeline_layout_cache.allocator, barrier);
+                        try self.applyExplicitBarrier(barrier);
+                    },
+                    .after_pass => {
+                        try post_barriers.append(self.pipeline_layout_cache.allocator, barrier);
+                    },
+                    .outside_pass => return error.SubmitFailed,
+                },
+                else => {
+                    try self.collectAutomaticBarriersForCommand(
+                        &pre_barriers,
+                        queue_class,
+                        decoded,
+                        .before_pass,
+                    );
+                    try body_commands.append(self.pipeline_layout_cache.allocator, decoded);
+                },
+            }
+        }
+
+        try flushPendingBarriers(prepared, pre_barriers.items);
+        prepared.encodeDecoded(begin_decoded) catch |err| return mapCommandBufferError(err);
+
+        for (body_commands.items) |decoded| {
+            prepared.encodeDecoded(decoded) catch |err| return mapCommandBufferError(err);
+        }
+
+        switch (pass_kind) {
+            .render => prepared.encodeEndRenderPass() catch |err| return mapCommandBufferError(err),
+            .compute => prepared.encodeEndComputePass() catch |err| return mapCommandBufferError(err),
+            .copy => prepared.encodeEndCopyPass() catch |err| return mapCommandBufferError(err),
+        }
+
+        try flushPendingBarriers(prepared, post_barriers.items);
+        for (post_barriers.items) |barrier| {
+            try self.applyExplicitBarrier(barrier);
+        }
+    }
+
+    fn collectAutomaticBarriersForCommand(
+        self: *const Device,
+        pending_barriers: *std.ArrayList(command_buffer.PipelineBarrierCmd),
         queue_class: QueueClass,
         decoded: command_buffer.DecodedCommand,
+        pass_scope: BarrierPassScope,
     ) Error!void {
         switch (decoded) {
             .begin_render_pass => |cmd| {
                 if (cmd.color_target_id != 0) {
-                    try self.requireTrackedState(
-                        prepared,
+                    try self.collectTrackedStateTransitions(
+                        pending_barriers,
                         queue_class,
                         .{ .kind = .texture, .id = cmd.color_target_id },
                         ResourceStates{ .render_target = true },
+                        pass_scope,
                     );
                 }
                 if (cmd.depth_target_id != 0) {
-                    try self.requireTrackedState(
-                        prepared,
+                    try self.collectTrackedStateTransitions(
+                        pending_barriers,
                         queue_class,
                         .{ .kind = .texture, .id = cmd.depth_target_id },
                         ResourceStates{ .depth_write = true },
+                        pass_scope,
                     );
                 }
             },
@@ -574,51 +664,62 @@ pub const Device = struct {
                 const entries = self.submission_tracking.binding_set_entries.get(cmd.set_id) orelse return;
                 for (entries) |entry| {
                     const tracked = trackedResourceForBinding(entry) orelse continue;
-                    try self.requireTrackedState(prepared, queue_class, tracked.resource, tracked.state);
+                    try self.collectTrackedStateTransitions(
+                        pending_barriers,
+                        queue_class,
+                        tracked.resource,
+                        tracked.state,
+                        pass_scope,
+                    );
                 }
             },
             .set_vertex_buffer => |cmd| {
-                try self.requireTrackedState(
-                    prepared,
+                try self.collectTrackedStateTransitions(
+                    pending_barriers,
                     queue_class,
                     .{ .kind = .buffer, .id = cmd.buffer_id },
                     ResourceStates{ .vertex_buffer = true },
+                    pass_scope,
                 );
             },
             .set_index_buffer => |cmd| {
-                try self.requireTrackedState(
-                    prepared,
+                try self.collectTrackedStateTransitions(
+                    pending_barriers,
                     queue_class,
                     .{ .kind = .buffer, .id = cmd.buffer_id },
                     ResourceStates{ .index_buffer = true },
+                    pass_scope,
                 );
             },
             .draw_indirect => |cmd| {
-                try self.requireTrackedState(
-                    prepared,
+                try self.collectTrackedStateTransitions(
+                    pending_barriers,
                     queue_class,
                     .{ .kind = .buffer, .id = cmd.buffer_id },
                     ResourceStates{ .indirect_argument = true },
+                    pass_scope,
                 );
             },
             .dispatch_indirect => |cmd| {
-                try self.requireTrackedState(
-                    prepared,
+                try self.collectTrackedStateTransitions(
+                    pending_barriers,
                     queue_class,
                     .{ .kind = .buffer, .id = cmd.buffer_id },
                     ResourceStates{ .indirect_argument = true },
+                    pass_scope,
                 );
             },
             else => {},
         }
     }
 
-    fn requireTrackedState(
+    fn collectTrackedStateTransitions(
         self: *const Device,
-        prepared: *command_buffer.CommandBuffer,
+        pending_barriers: *std.ArrayList(command_buffer.PipelineBarrierCmd),
         queue_class: QueueClass,
         resource: ResourceRef,
         desired: ResourceStates,
+        pass_scope: BarrierPassScope,
     ) Error!void {
         try self.submission_tracking.state_tracker.requireState(resource, desired);
         const barriers = try self.submission_tracking.state_tracker.commitBarriers(self.pipeline_layout_cache.allocator);
@@ -626,21 +727,30 @@ pub const Device = struct {
 
         for (barriers) |barrier| {
             const src_queue = self.submission_tracking.resource_queues.get(barrier.resource) orelse queue_class;
-            prepared.encodePipelineBarrier(.{
+            try pending_barriers.append(self.pipeline_layout_cache.allocator, .{
                 .resource_id = barrier.resource.id,
                 .src_state_bits = barrier.before.asBits(),
                 .dst_state_bits = barrier.after.asBits(),
+                .subresource_base = barrier.resource.subresource_base,
+                .subresource_count = barrier.resource.subresource_count,
                 .resource_kind = @intCast(@intFromEnum(barrier.resource.kind)),
+                .sync_action = @intCast(@intFromEnum(deriveBarrierSyncAction(src_queue, queue_class, pass_scope))),
+                .pass_scope = @intCast(@intFromEnum(pass_scope)),
                 .src_queue = @intCast(@intFromEnum(src_queue)),
                 .dst_queue = @intCast(@intFromEnum(queue_class)),
-            }) catch |err| return mapCommandBufferError(err);
+            });
             try self.submission_tracking.resource_queues.put(barrier.resource, queue_class);
         }
     }
 
     fn applyExplicitBarrier(self: *const Device, barrier: command_buffer.PipelineBarrierCmd) Error!void {
-        const resource_kind = std.meta.intToEnum(state_tracker.ResourceKind, barrier.resource_kind) catch return error.SubmitFailed;
-        const resource = ResourceRef{ .kind = resource_kind, .id = barrier.resource_id };
+        const resource_kind = std.meta.intToEnum(ResourceKind, barrier.resource_kind) catch return error.SubmitFailed;
+        const resource = ResourceRef{
+            .kind = resource_kind,
+            .id = barrier.resource_id,
+            .subresource_base = barrier.subresource_base,
+            .subresource_count = barrier.subresource_count,
+        };
         try self.submission_tracking.state_tracker.setCurrentState(resource, ResourceStates.fromBits(barrier.dst_state_bits));
         const dst_queue: QueueClass = @enumFromInt(@as(u8, barrier.dst_queue));
         try self.submission_tracking.resource_queues.put(resource, dst_queue);
@@ -684,6 +794,34 @@ fn mapCommandBufferError(err: command_buffer.Error) Error {
         error.TruncatedStream,
         => error.SubmitFailed,
     };
+}
+
+fn nextDecodedCommand(decoder: *command_buffer.Decoder) Error!?command_buffer.DecodedCommand {
+    return decoder.next() catch |err| return mapCommandBufferError(err);
+}
+
+fn flushPendingBarriers(prepared: *command_buffer.CommandBuffer, pending_barriers: []const command_buffer.PipelineBarrierCmd) Error!void {
+    if (pending_barriers.len == 0) return;
+    prepared.encodePipelineBarriers(pending_barriers) catch |err| return mapCommandBufferError(err);
+}
+
+fn passBlockEndOpcode(pass_kind: PassBlockKind) command_buffer.OpCode {
+    return switch (pass_kind) {
+        .render => .end_render_pass,
+        .compute => .end_compute_pass,
+        .copy => .end_copy_pass,
+    };
+}
+
+fn decodeBarrierPassScope(raw_scope: u8) Error!BarrierPassScope {
+    return std.meta.intToEnum(BarrierPassScope, raw_scope) catch error.SubmitFailed;
+}
+
+fn deriveBarrierSyncAction(src_queue: QueueClass, dst_queue: QueueClass, pass_scope: BarrierPassScope) BarrierSyncAction {
+    if (src_queue != dst_queue and pass_scope == .before_pass) {
+        return .acquire;
+    }
+    return .full;
 }
 
 const TrackedBindingResource = struct {
@@ -879,6 +1017,117 @@ test "submit command buffer injects shader resource state for bound sampled text
 
     const tracked_bits = backend.resource_state_bits.get(.{ .kind = .texture, .id = tex.id }) orelse 0;
     try std.testing.expectEqual((ResourceStates{ .shader_resource = true }).asBits(), tracked_bits);
+}
+
+test "prepare command buffer hoists automatic barriers to pass boundary" {
+    const metal_backend = @import("metal/metal_backend.zig");
+
+    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
+    defer backend.deinit();
+    var device = backend.createDevice();
+    defer device.deinit();
+
+    const layout = try device.createBindingLayout(.{
+        .entries = &.{.{
+            .slot = 0,
+            .binding_type = .texture,
+            .stage = .fragment,
+        }},
+    });
+    const sampled_texture = try device.createTexture(.{
+        .width = 1,
+        .height = 1,
+        .format = .rgba8_unorm,
+        .usage = .{ .sampled = true },
+    });
+    defer device.destroyTexture(sampled_texture);
+    const color_target = try device.createTexture(.{
+        .width = 1,
+        .height = 1,
+        .format = .rgba8_unorm,
+        .usage = .{ .color_target = true },
+    });
+    defer device.destroyTexture(color_target);
+
+    const set = try device.createBindingSetCached(layout, .{
+        .entries = &.{.{ .slot = 0, .resource = .{ .texture = sampled_texture } }},
+    });
+
+    var original = try device.createCommandBuffer(std.testing.allocator);
+    defer original.deinit();
+    try original.encodeBeginRenderPass(.{
+        .color_target_id = color_target.id,
+        .depth_target_id = 0,
+        .clear_mask = 0,
+    });
+    try original.encodeSetBindingSet(.{ .slot = 0, .set_id = set.id });
+    try original.encodeDraw(.{
+        .vertex_count = 3,
+        .instance_count = 1,
+        .first_vertex = 0,
+        .first_instance = 0,
+    });
+    try original.encodeEndRenderPass();
+
+    var prepared = try device.prepareCommandBufferForSubmit(.graphics, &original);
+    defer prepared.deinit();
+
+    var decoder = prepared.decoder();
+    var saw_begin_render_pass = false;
+    var saw_end_render_pass = false;
+    var barrier_count_before_pass: usize = 0;
+    while (try decoder.next()) |decoded| {
+        switch (decoded) {
+            .pipeline_barrier => {
+                if (saw_begin_render_pass and !saw_end_render_pass) {
+                    return error.TestUnexpectedResult;
+                }
+                barrier_count_before_pass += 1;
+            },
+            .begin_render_pass => saw_begin_render_pass = true,
+            .end_render_pass => saw_end_render_pass = true,
+            else => {},
+        }
+    }
+
+    try std.testing.expect(saw_begin_render_pass);
+    try std.testing.expect(saw_end_render_pass);
+    try std.testing.expect(barrier_count_before_pass >= 2);
+}
+
+test "prepare command buffer rejects explicit outside-pass barrier inside render pass" {
+    const metal_backend = @import("metal/metal_backend.zig");
+
+    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
+    defer backend.deinit();
+    var device = backend.createDevice();
+    defer device.deinit();
+
+    const color_target = try device.createTexture(.{
+        .width = 1,
+        .height = 1,
+        .format = .rgba8_unorm,
+        .usage = .{ .color_target = true },
+    });
+    defer device.destroyTexture(color_target);
+
+    var original = try device.createCommandBuffer(std.testing.allocator);
+    defer original.deinit();
+    try original.encodeBeginRenderPass(.{
+        .color_target_id = color_target.id,
+        .depth_target_id = 0,
+        .clear_mask = 0,
+    });
+    try original.encodePipelineBarrier(.{
+        .resource_id = color_target.id,
+        .src_state_bits = 0,
+        .dst_state_bits = (ResourceStates{ .shader_resource = true }).asBits(),
+        .resource_kind = @intCast(@intFromEnum(ResourceKind.texture)),
+        .pass_scope = @intCast(@intFromEnum(BarrierPassScope.outside_pass)),
+    });
+    try original.encodeEndRenderPass();
+
+    try std.testing.expectError(error.SubmitFailed, device.prepareCommandBufferForSubmit(.graphics, &original));
 }
 
 test "submit command buffer keeps buffer and texture states separate when ids overlap" {
