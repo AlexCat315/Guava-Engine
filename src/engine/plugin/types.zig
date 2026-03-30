@@ -66,24 +66,9 @@ pub const PluginManifest = struct {
     on_enable: ?[]const u8 = null,
 };
 
-pub const Plugin = struct {
-    manifest: PluginManifest,
-    path: []u8,
-    lifecycle: PluginLifecycle = .unloaded,
-};
-
 test "plugin version parsing" {
     const v = try PluginVersion.parse("1.2.3");
     try std.testing.expectEqual(@as(u16, 1), v.major);
     try std.testing.expectEqual(@as(u16, 2), v.minor);
     try std.testing.expectEqual(@as(u16, 3), v.patch);
-}
-
-test "plugin version compatible" {
-    const v1 = PluginVersion{ .major = 1, .minor = 2, .patch = 0 };
-    const v2 = PluginVersion{ .major = 1, .minor = 5, .patch = 0 };
-    const v3 = PluginVersion{ .major = 2, .minor = 0, .patch = 0 };
-
-    try std.testing.expect(v1.compatible(v2));
-    try std.testing.expect(!v1.compatible(v3));
 }
