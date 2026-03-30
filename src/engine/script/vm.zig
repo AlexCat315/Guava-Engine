@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const std = @import("std");
 const script_resource_mod = @import("../assets/script_resource.zig");
 const types = @import("./types.zig");
@@ -400,6 +401,11 @@ pub const CSharpVM = struct {
         clearOwnedMessage(vm.allocator, &vm.error_msg);
     }
 
+    pub fn deinit(vm: *Self) void {
+        vm.unload();
+        vm.freeCachedLibraries();
+    }
+
     pub fn createInstance(vm: *Self, ctx: *context.ScriptContext) types.ScriptError!*types.ScriptInstance {
         if (vm.current_native_library) |library| {
             const instance = try vm.allocator.create(types.ScriptInstance);
@@ -548,14 +554,16 @@ pub const CSharpVM = struct {
 
     fn destroyContext(context_ptr: *anyopaque, allocator: std.mem.Allocator) void {
         const vm = castContext(Self, context_ptr);
-        vm.builtin.unload();
-        for (vm.loaded_native_libraries.items) |library| {
-            allocator.free(library.path);
-            allocator.destroy(library);
-        }
-        vm.loaded_native_libraries.deinit(allocator);
-        clearOwnedMessage(vm.allocator, &vm.error_msg);
+        vm.deinit();
         allocator.destroy(vm);
+    }
+
+    fn freeCachedLibraries(vm: *Self) void {
+        for (vm.loaded_native_libraries.items) |library| {
+            vm.allocator.free(library.path);
+            vm.allocator.destroy(library);
+        }
+        vm.loaded_native_libraries.deinit(vm.allocator);
     }
 
     pub const script_vm_vtable: ScriptVM.VTable = .{
@@ -1357,7 +1365,7 @@ test "csharp vm gameplay builtin fallback updates entity rotation" {
     world.getEntity(entity_id).?.local_transform.rotation = quat.identity();
 
     var vm = CSharpVM.init(std.testing.allocator);
-    defer vm.unload();
+    defer vm.deinit();
 
     const resource = script_resource_mod.ScriptResource{
         .source = "//!guava builtin=rotate axis=y speed_deg=90 local=true\n",
@@ -1392,4 +1400,270 @@ test "csharp vm prefers nativeaot artifact path when present" {
     };
 
     try std.testing.expectEqualStrings("build/native/player.dylib", resolveCSharpNativeAotPath(&resource).?);
+}
+
+test "csharp nativeaot shared library drives entity movement" {
+    if (!shouldRunNativeAotIntegrationTests()) return error.SkipZigTest;
+
+    const library_path = try publishNativeAotMoverLibrary(std.testing.allocator);
+    defer std.testing.allocator.free(library_path);
+
+    var world = world_mod.World.init(std.testing.allocator, null);
+    defer world.deinit();
+
+    const entity_id = try world.createEntity(.{
+        .name = "NativeAotMover",
+        .local_transform = .{ .translation = .{ 0.0, 0.0, 0.0 } },
+    });
+
+    var vm = CSharpVM.init(std.testing.allocator);
+    defer vm.deinit();
+
+    const resource = script_resource_mod.ScriptResource{
+        .source = "",
+        .language = .csharp,
+        .artifact_path = library_path,
+    };
+    try vm.load(&resource);
+
+    var ctx = context.ScriptContext{
+        .entity = entity_id,
+        .world = &world,
+        .instance = undefined,
+        .allocator = std.testing.allocator,
+        .delta_time = 1.0,
+    };
+    const instance = try vm.createInstance(&ctx);
+    defer vm.destroyInstance(instance);
+    ctx.instance = instance;
+
+    try vm.callInit(instance, &ctx);
+    try vm.callUpdate(instance, &ctx, 1.0);
+
+    const moved = world.getEntity(entity_id).?.local_transform.translation;
+    try std.testing.expectApproxEqAbs(@as(f32, 2.0), moved[0], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), moved[1], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), moved[2], 0.0001);
+}
+
+fn shouldRunNativeAotIntegrationTests() bool {
+    const flag = std.process.getEnvVarOwned(std.testing.allocator, "GUAVA_RUN_NATIVEAOT_TESTS") catch return false;
+    defer std.testing.allocator.free(flag);
+    return std.mem.eql(u8, flag, "1");
+}
+
+fn publishNativeAotMoverLibrary(allocator: std.mem.Allocator) ![]u8 {
+    const dotnet = (try findDotnetBinary(allocator)) orelse return error.SkipZigTest;
+    defer allocator.free(dotnet);
+    const rid = nativeAotRuntimeIdentifier() orelse return error.SkipZigTest;
+
+    const output_dir = try std.fmt.allocPrint(allocator, "zig-cache/guava/nativeaot-mover/{s}", .{rid});
+    defer allocator.free(output_dir);
+    try std.fs.cwd().makePath(output_dir);
+
+    const project_path = "examples/csharp/nativeaot_mover/GuavaNativeAotMover.csproj";
+    const argv = [_][]const u8{
+        dotnet,
+        "publish",
+        project_path,
+        "-c",
+        "Release",
+        "-r",
+        rid,
+        "-o",
+        output_dir,
+        "-p:PublishAot=true",
+        "-p:NativeLib=Shared",
+        "-p:SelfContained=true",
+    };
+
+    const result = try std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &argv,
+        .max_output_bytes = 8 * 1024 * 1024,
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    switch (result.term) {
+        .Exited => |code| {
+            if (code != 0) {
+                std.debug.print("dotnet publish failed:\n{s}\n{s}\n", .{ result.stdout, result.stderr });
+                return error.Unexpected;
+            }
+        },
+        else => return error.Unexpected,
+    }
+
+    return findPublishedNativeAotLibrary(allocator, output_dir, result.stdout, result.stderr);
+}
+
+fn findDotnetBinary(allocator: std.mem.Allocator) !?[]u8 {
+    if (try getOwnedEnvVarOrNull(allocator, "GUAVA_DOTNET")) |override| {
+        if (override.len != 0) {
+            return override;
+        }
+        allocator.free(override);
+    }
+
+    const executable_name = if (builtin.os.tag == .windows) "dotnet.exe" else "dotnet";
+    const dotnet_root_vars = [_][]const u8{
+        "DOTNET_ROOT",
+        "DOTNET_ROOT_X64",
+        "DOTNET_ROOT_X86",
+        "DOTNET_ROOT(x86)",
+    };
+
+    for (dotnet_root_vars) |env_name| {
+        const root = (try getOwnedEnvVarOrNull(allocator, env_name)) orelse continue;
+        defer allocator.free(root);
+        if (root.len == 0) continue;
+
+        const candidate = try std.fs.path.join(allocator, &.{ root, executable_name });
+        errdefer allocator.free(candidate);
+        if (pathExists(candidate)) {
+            return candidate;
+        }
+        allocator.free(candidate);
+    }
+
+    if (try findExecutableInPath(allocator, executable_name)) |candidate| {
+        return candidate;
+    }
+
+    for (fallbackDotnetPaths()) |candidate| {
+        if (pathExists(candidate)) {
+            return try allocator.dupe(u8, candidate);
+        }
+    }
+    return null;
+}
+
+fn getOwnedEnvVarOrNull(allocator: std.mem.Allocator, name: []const u8) !?[]u8 {
+    return std.process.getEnvVarOwned(allocator, name) catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => null,
+        else => return err,
+    };
+}
+
+fn findExecutableInPath(allocator: std.mem.Allocator, executable_name: []const u8) !?[]u8 {
+    const path_env = (try getOwnedEnvVarOrNull(allocator, "PATH")) orelse return null;
+    defer allocator.free(path_env);
+    return findExecutableInPathString(allocator, path_env, executable_name);
+}
+
+fn findExecutableInPathString(allocator: std.mem.Allocator, path_env: []const u8, executable_name: []const u8) !?[]u8 {
+    var path_it = std.mem.tokenizeScalar(u8, path_env, std.fs.path.delimiter);
+    while (path_it.next()) |entry| {
+        const dir = if (entry.len == 0) "." else entry;
+        const candidate = try std.fs.path.join(allocator, &.{ dir, executable_name });
+        errdefer allocator.free(candidate);
+        if (pathExists(candidate)) {
+            return candidate;
+        }
+        allocator.free(candidate);
+    }
+    return null;
+}
+
+fn pathExists(path: []const u8) bool {
+    std.fs.cwd().access(path, .{}) catch return false;
+    return true;
+}
+
+fn fallbackDotnetPaths() []const []const u8 {
+    return switch (builtin.os.tag) {
+        .windows => &.{
+            "C:\\Program Files\\dotnet\\dotnet.exe",
+            "C:\\Program Files (x86)\\dotnet\\dotnet.exe",
+        },
+        .linux => &.{
+            "/usr/bin/dotnet",
+            "/usr/local/bin/dotnet",
+            "/usr/share/dotnet/dotnet",
+            "/snap/bin/dotnet",
+        },
+        .macos => &.{
+            "/usr/local/share/dotnet/dotnet",
+            "/opt/homebrew/share/dotnet/dotnet",
+            "/usr/local/bin/dotnet",
+            "/opt/homebrew/bin/dotnet",
+        },
+        else => &.{},
+    };
+}
+
+fn nativeAotRuntimeIdentifier() ?[]const u8 {
+    return switch (builtin.os.tag) {
+        .macos => switch (builtin.cpu.arch) {
+            .aarch64 => "osx-arm64",
+            .x86_64 => "osx-x64",
+            else => null,
+        },
+        .linux => switch (builtin.cpu.arch) {
+            .aarch64 => "linux-arm64",
+            .x86_64 => "linux-x64",
+            else => null,
+        },
+        .windows => switch (builtin.cpu.arch) {
+            .aarch64 => "win-arm64",
+            .x86_64 => "win-x64",
+            else => null,
+        },
+        else => null,
+    };
+}
+
+test "dotnet lookup finds executable in PATH entries" {
+    var temp_dir = std.testing.tmpDir(.{});
+    defer temp_dir.cleanup();
+
+    try temp_dir.dir.makePath("sdk");
+
+    const executable_name = if (builtin.os.tag == .windows) "dotnet.exe" else "dotnet";
+
+    var relative_path_buf: [64]u8 = undefined;
+    const relative_path = try std.fmt.bufPrint(&relative_path_buf, "sdk/{s}", .{executable_name});
+    try temp_dir.dir.writeFile(.{
+        .sub_path = relative_path,
+        .data = "",
+    });
+
+    var original = try std.fs.cwd().openDir(".", .{});
+    defer original.close();
+    try temp_dir.dir.setAsCwd();
+    defer original.setAsCwd() catch {};
+
+    const found = try findExecutableInPathString(std.testing.allocator, "sdk", executable_name);
+    defer if (found) |path| std.testing.allocator.free(path);
+
+    try std.testing.expect(found != null);
+
+    const expected = try std.fs.path.join(std.testing.allocator, &.{ "sdk", executable_name });
+    defer std.testing.allocator.free(expected);
+    try std.testing.expectEqualStrings(expected, found.?);
+}
+
+fn findPublishedNativeAotLibrary(
+    allocator: std.mem.Allocator,
+    output_dir: []const u8,
+    stdout: []const u8,
+    stderr: []const u8,
+) ![]u8 {
+    var dir = try std.fs.cwd().openDir(output_dir, .{ .iterate = true });
+    defer dir.close();
+
+    var iter = dir.iterate();
+    while (try iter.next()) |entry| {
+        if (entry.kind != .file) {
+            continue;
+        }
+        if (!isSharedLibraryPath(entry.name)) {
+            continue;
+        }
+        return try std.fmt.allocPrint(allocator, "{s}/{s}", .{ output_dir, entry.name });
+    }
+
+    std.debug.print("nativeaot output missing in {s}\nstdout:\n{s}\nstderr:\n{s}\n", .{ output_dir, stdout, stderr });
+    return error.FileNotFound;
 }

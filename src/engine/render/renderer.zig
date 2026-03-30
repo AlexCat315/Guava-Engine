@@ -326,6 +326,8 @@ pub const Renderer = struct {
     gizmo_pass: gizmo_pass_mod.GizmoPass,
     /// SSAO Compute 通道（GPU Compute 加速）
     ssao_compute_pass: ?ssao_compute_pass_mod.SSAOComputePass = null,
+    /// Contact Shadows 屏幕空间接触阴影通道
+    contact_shadow_pass: contact_shadow_pass_mod.ContactShadowPass,
     ssgi_compute_pass: ?ssgi_compute_pass_mod.SSGIComputePass = null,
     ssgi_composite_pass: ssgi_composite_pass_mod.SSGICompositePass,
     /// RHI 设备（抽象后端）
@@ -354,6 +356,8 @@ pub const Renderer = struct {
     rt_shadow_denoise_pass: rt_shadow_denoise_pass_mod.RtShadowDenoisePass,
     /// SSAO 环境光遮蔽合成通道 — 将 SSAO 纹理以乘法混合叠加到 HDR 缓冲
     ssao_composite_pass: rt_shadow_composite_pass_mod.RtShadowCompositePass,
+    /// Contact Shadows 合成通道 — 将接触阴影遮罩以乘法混合叠加到 HDR 缓冲
+    contact_shadow_composite_pass: rt_shadow_composite_pass_mod.RtShadowCompositePass,
     /// RT 阴影遮罩纹理（屏幕分辨率，BGRA8）
     rt_shadow_mask_texture: ?rhi_mod.Texture = null,
     /// RT 阴影遮罩像素缓冲 (CPU 侧)
@@ -452,6 +456,7 @@ pub const Renderer = struct {
             .outline_pass = undefined,
             .gizmo_pass = undefined,
             .ssao_compute_pass = null,
+            .contact_shadow_pass = undefined,
             .ssgi_compute_pass = null,
             .ssgi_composite_pass = undefined,
             .ibl_compute_pass = null,
@@ -461,6 +466,7 @@ pub const Renderer = struct {
             .rt_shadow_composite_pass = undefined,
             .rt_shadow_denoise_pass = undefined,
             .ssao_composite_pass = undefined,
+            .contact_shadow_composite_pass = undefined,
             .selection_history = SelectionHistory.init(allocator, 64),
             .material_thumbnail_cache = std.StringHashMap(MaterialThumbnailCacheEntry).init(allocator),
             .material_thumbnail_preview = undefined,
@@ -509,6 +515,9 @@ pub const Renderer = struct {
             break :blk null;
         };
 
+        renderer.contact_shadow_pass = try contact_shadow_pass_mod.ContactShadowPass.init(&renderer.rhi);
+        errdefer renderer.contact_shadow_pass.deinit(&renderer.rhi);
+
         renderer.ibl_compute_pass = blk: {
             const p = ibl_compute_pass_mod.IBLComputePass.init(&renderer.rhi);
             if (!p.hasBRDF() and !p.hasIrradiance()) {
@@ -536,6 +545,9 @@ pub const Renderer = struct {
         // SSAO 合成通道复用 RT 阴影合成的 multiply-blend 管线
         renderer.ssao_composite_pass = try rt_shadow_composite_pass_mod.RtShadowCompositePass.init(&renderer.rhi);
         errdefer renderer.ssao_composite_pass.deinit(&renderer.rhi);
+
+        renderer.contact_shadow_composite_pass = try rt_shadow_composite_pass_mod.RtShadowCompositePass.init(&renderer.rhi);
+        errdefer renderer.contact_shadow_composite_pass.deinit(&renderer.rhi);
 
         renderer.ssgi_compute_pass = ssgi_compute_pass_mod.SSGIComputePass.init(&renderer.rhi) catch |err| blk: {
             std.log.warn("SSGI compute pass init failed (falling back to fragment): {}", .{err});
@@ -615,6 +627,7 @@ pub const Renderer = struct {
             pass.deinit(&self.rhi);
         }
         if (self.ssao_compute_pass) |*p| p.deinit(&self.rhi);
+        self.contact_shadow_pass.deinit(&self.rhi);
         if (self.gpu_brdf_lut) |*t| self.rhi.releaseTexture(t);
         if (self.ibl_compute_pass) |*p| p.deinit(&self.rhi);
         self.taa_pass.deinit(&self.rhi);
@@ -623,6 +636,7 @@ pub const Renderer = struct {
         self.rt_shadow_composite_pass.deinit(&self.rhi);
         self.rt_shadow_denoise_pass.deinit(&self.rhi);
         self.ssao_composite_pass.deinit(&self.rhi);
+        self.contact_shadow_composite_pass.deinit(&self.rhi);
         if (self.ssgi_compute_pass) |*p| p.deinit(&self.rhi);
         self.ssgi_composite_pass.deinit(&self.rhi);
         if (self.rt_shadow_mask_texture) |*t| self.rhi.releaseTexture(t);
@@ -1608,38 +1622,55 @@ pub const Renderer = struct {
                         }
 
                         // Contact Shadows: screen-space ray march for small-scale occlusion
-                        const cs_enabled = self.editor_viewport_state.contact_shadows_enabled and self.scene_viewport.contactShadow() != null and self.scene_viewport.depth() != null;
+                        const cs_enabled = self.editor_viewport_state.contact_shadows_enabled and
+                            self.scene_viewport.contactShadow() != null and
+                            self.scene_viewport.depth() != null and
+                            self.scene_viewport.hdrColor() != null;
                         if (cs_enabled) {
-                            if (self.rhi_device) |dev| {
-                                const mat4_cs = @import("../math/mat4.zig");
-                                const inv_proj_cs = mat4_cs.inverse(prepared_scene.projection_matrix) orelse mat4_cs.identity();
-                                const cs_light_dir: [4]f32 = if (prepared_scene.lights.directional_lights.len > 0) cs_ld: {
-                                    const dl = prepared_scene.lights.directional_lights[0];
-                                    break :cs_ld .{ dl.direction[0], dl.direction[1], dl.direction[2], 0.0 };
-                                } else .{ 0.3, -0.9, -0.2, 0.0 };
+                            const mat4_cs = @import("../math/mat4.zig");
+                            const inv_proj_cs = mat4_cs.inverse(prepared_scene.projection_matrix) orelse mat4_cs.identity();
+                            const cs_light_dir: [4]f32 = if (prepared_scene.lights.directional_lights.len > 0) cs_ld: {
+                                const dl = prepared_scene.lights.directional_lights[0];
+                                break :cs_ld .{ dl.direction[0], dl.direction[1], dl.direction[2], 0.0 };
+                            } else .{ 0.3, -0.9, -0.2, 0.0 };
 
-                                contact_shadow_pass_mod.ContactShadowPass.execute(
-                                    self.allocator,
-                                    dev,
-                                    &self.graph,
-                                    0,
-                                    0,
-                                    .{
-                                        .projection = prepared_scene.projection_matrix,
-                                        .inv_projection = inv_proj_cs,
-                                        .view = prepared_scene.view_matrix,
-                                        .light_direction = cs_light_dir,
-                                        .resolution = .{ @floatFromInt(self.scene_viewport.width), @floatFromInt(self.scene_viewport.height) },
-                                        .max_distance = self.editor_viewport_state.contact_shadows_distance,
-                                        .thickness = self.editor_viewport_state.contact_shadows_thickness,
-                                        .intensity = self.editor_viewport_state.contact_shadows_intensity,
-                                        .bias = self.editor_viewport_state.contact_shadows_bias,
-                                        .num_steps = @intCast(self.editor_viewport_state.contact_shadows_steps),
-                                    },
-                                ) catch |err| {
-                                    std.log.warn("contact shadow failed: {}", .{err});
-                                };
+                            const cs_start = std.time.nanoTimestamp();
+                            try self.contact_shadow_pass.syncTexture(&self.rhi, self.scene_viewport.depth().?);
+                            const cs_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.contactShadow().? }));
+                            const cs_stats = self.contact_shadow_pass.draw(&self.rhi, frame, cs_render_pass, .{
+                                .projection = prepared_scene.projection_matrix,
+                                .inv_projection = inv_proj_cs,
+                                .view = prepared_scene.view_matrix,
+                                .light_direction = cs_light_dir,
+                                .resolution = .{ @floatFromInt(self.scene_viewport.width), @floatFromInt(self.scene_viewport.height) },
+                                .max_distance = self.editor_viewport_state.contact_shadows_distance,
+                                .thickness = self.editor_viewport_state.contact_shadows_thickness,
+                                .intensity = self.editor_viewport_state.contact_shadows_intensity,
+                                .bias = self.editor_viewport_state.contact_shadows_bias,
+                                .num_steps = @intCast(self.editor_viewport_state.contact_shadows_steps),
+                            });
+                            draw_stats.add(cs_stats);
+                            self.rhi.endRenderPass(cs_render_pass);
+
+                            var cs_composite_draw_calls: usize = 0;
+                            var cs_composite_triangles: usize = 0;
+                            if (self.contact_shadow_composite_pass.isReady()) {
+                                try self.contact_shadow_composite_pass.syncTexture(&self.rhi, self.scene_viewport.contactShadow().?);
+                                const cs_composite_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(.{ .texture = self.scene_viewport.hdrColor().? }));
+                                const cs_composite_stats = self.contact_shadow_composite_pass.draw(&self.rhi, frame, cs_composite_pass, 1.0);
+                                draw_stats.add(cs_composite_stats);
+                                cs_composite_draw_calls = cs_composite_stats.draw_calls;
+                                cs_composite_triangles = cs_composite_stats.triangles_drawn;
+                                self.rhi.endRenderPass(cs_composite_pass);
                             }
+
+                            self.graph.recordPassStat(
+                                pass_stats,
+                                .post_process,
+                                durationNs(cs_start, std.time.nanoTimestamp()),
+                                cs_stats.draw_calls + cs_composite_draw_calls,
+                                cs_stats.triangles_drawn + cs_composite_triangles,
+                            );
                         }
 
                         // SSR dispatch

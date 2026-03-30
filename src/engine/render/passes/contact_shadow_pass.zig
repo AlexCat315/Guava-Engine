@@ -1,137 +1,138 @@
 const std = @import("std");
-const rhi = @import("../../rhi/rhi.zig");
-const render_graph = @import("../render_graph.zig");
+const mesh_pass_mod = @import("mesh_pass.zig");
+const rhi_mod = @import("../../rhi/device.zig");
+const shader_support = @import("../shader_support.zig");
 
-/// Contact shadow pass
-///
-/// Two binding sets:
-///   Set 0 — Depth texture (sampled)
-///   Set 1 — ContactShadow params (uniform buffer: projection, view, light dir, resolution, etc.)
+const fullscreen_triangle_vertex_count: u32 = 3;
+
+pub const ContactShadowParams = extern struct {
+    projection: [16]f32 = std.mem.zeroes([16]f32),
+    inv_projection: [16]f32 = std.mem.zeroes([16]f32),
+    view: [16]f32 = std.mem.zeroes([16]f32),
+    light_direction: [4]f32 = .{ 0.3, -0.9, -0.2, 0.0 },
+    resolution: [2]f32 = .{ 1.0, 1.0 },
+    max_distance: f32 = 0.5,
+    thickness: f32 = 0.1,
+    intensity: f32 = 0.7,
+    bias: f32 = 0.01,
+    num_steps: i32 = 16,
+    padding: f32 = 0.0,
+};
+
 pub const ContactShadowPass = struct {
-    pub const ContactShadowParams = extern struct {
-        projection: [16]f32 = std.mem.zeroes([16]f32),
-        inv_projection: [16]f32 = std.mem.zeroes([16]f32),
-        view: [16]f32 = std.mem.zeroes([16]f32),
-        light_direction: [4]f32 = .{ 0.3, -0.9, -0.2, 0.0 },
-        resolution: [2]f32 = .{ 1.0, 1.0 },
-        max_distance: f32 = 0.5,
-        thickness: f32 = 0.1,
-        intensity: f32 = 0.7,
-        bias: f32 = 0.01,
-        num_steps: i32 = 16,
-        padding: f32 = 0,
-    };
+    sampler: ?rhi_mod.Sampler = null,
+    bind_group: ?rhi_mod.BindGroup = null,
+    bound_depth_handle: usize = 0,
+    pipeline: ?rhi_mod.GraphicsPipeline = null,
+    stages: ?shader_support.ProgramStages = null,
 
-    pub const LayoutIds = struct {
-        depth_layout: rhi.BindingLayout,
-        uniform_layout: rhi.BindingLayout,
-    };
-
-    pub fn createLayouts(device: *rhi.Device) !LayoutIds {
-        const depth_layout = try device.createBindingLayout(.{
-            .entries = &.{.{
-                .slot = 0,
-                .binding_type = .texture,
-                .stage = .fragment,
-            }},
-            .label = "contact_shadow_depth_layout",
-        });
-
-        const uniform_layout = try device.createBindingLayout(.{
-            .entries = &.{.{
-                .slot = 0,
-                .binding_type = .uniform_buffer,
-                .stage = .fragment,
-            }},
-            .label = "contact_shadow_uniform_layout",
-        });
-
-        return .{
-            .depth_layout = depth_layout,
-            .uniform_layout = uniform_layout,
-        };
+    pub fn init(device: *rhi_mod.RhiDevice) !ContactShadowPass {
+        var pass = ContactShadowPass{};
+        try pass.createResources(device);
+        return pass;
     }
 
-    pub fn execute(
-        allocator: std.mem.Allocator,
-        device: *rhi.Device,
-        graph: ?*const render_graph.RenderGraph,
-        input_resource_id: u32,
-        output_resource_id: u32,
-        params: ContactShadowParams,
+    pub fn deinit(self: *ContactShadowPass, device: *rhi_mod.RhiDevice) void {
+        if (self.bind_group) |*bind_group| {
+            device.releaseBindGroup(bind_group);
+        }
+        if (self.sampler) |*sampler| {
+            device.releaseSampler(sampler);
+        }
+        if (self.pipeline) |*pipeline| {
+            device.releaseGraphicsPipeline(pipeline);
+        }
+        if (self.stages) |*stages| {
+            stages.deinit(device);
+        }
+        self.* = undefined;
+    }
+
+    pub fn isReady(self: *const ContactShadowPass) bool {
+        return self.pipeline != null and self.sampler != null;
+    }
+
+    pub fn syncTexture(
+        self: *ContactShadowPass,
+        device: *rhi_mod.RhiDevice,
+        depth_texture: *const rhi_mod.Texture,
     ) !void {
-        // V2 prototype: skip GPU submission when no valid render target is bound
-        if (output_resource_id == 0) return;
-        const layouts = try createLayouts(device);
-
-        const pipeline_layout = try device.resolvePipelineLayout(&.{
-            layouts.depth_layout,
-            layouts.uniform_layout,
-        });
-
-        const depth_tex = try device.createTexture(.{
-            .width = 1,
-            .height = 1,
-            .format = .d32_float,
-            .usage = .{ .sampled = true },
-            .label = "contact_shadow_depth",
-        });
-        defer device.destroyTexture(depth_tex);
-
-        const uniform_buf = try device.createBuffer(.{
-            .size = @sizeOf(ContactShadowParams),
-            .usage = .{ .uniform = true },
-            .label = "contact_shadow_params",
-        });
-        defer device.destroyBuffer(uniform_buf);
-
-        const depth_set = try device.createBindingSetCached(layouts.depth_layout, .{
-            .entries = &.{.{ .slot = 0, .resource = .{ .texture = depth_tex } }},
-            .label = "contact_shadow_depth_set",
-        });
-        const uniform_set = try device.createBindingSetCached(layouts.uniform_layout, .{
-            .entries = &.{.{ .slot = 0, .resource = .{ .uniform_buffer = uniform_buf } }},
-            .label = "contact_shadow_params_set",
-        });
-
-        try device.validateBindingSetForPipelineSlot(pipeline_layout, 0, depth_set);
-        try device.validateBindingSetForPipelineSlot(pipeline_layout, 1, uniform_set);
-
-        _ = params;
-
-        var cmd = try device.createCommandBuffer(allocator);
-        defer cmd.deinit();
-
-        if (graph) |g| {
-            try g.encodeBarrierPlansToCommandBuffer(allocator, device, &cmd);
+        const depth_handle = depth_texture.id;
+        if (self.bind_group != null and self.bound_depth_handle == depth_handle) {
+            return;
         }
 
-        try render_graph.RenderGraph.encodeBarrierTransition(
-            &cmd,
-            input_resource_id,
-            .texture,
-            .depth_write,
-            .shader_read,
-            .graphics,
-            .graphics,
-        );
+        if (self.bind_group) |*bind_group| {
+            device.releaseBindGroup(bind_group);
+        }
 
-        try cmd.encodeBeginRenderPass(.{
-            .color_target_id = output_resource_id,
-            .depth_target_id = 0,
-            .clear_mask = 0,
+        const bindings = [_]rhi_mod.TextureSamplerBinding{
+            .{ .texture = depth_texture, .sampler = &self.sampler.? },
+        };
+        self.bind_group = try device.createBindGroup(.{
+            .stage = .fragment,
+            .texture_sampler_bindings = bindings[0..],
         });
-        try cmd.encodeSetBindingSet(.{ .slot = 0, .set_id = depth_set.id });
-        try cmd.encodeSetBindingSet(.{ .slot = 1, .set_id = uniform_set.id });
-        try cmd.encodeDrawIndexed(.{
-            .index_count = 3,
-            .instance_count = 1,
-            .first_index = 0,
-            .vertex_offset = 0,
-            .first_instance = 0,
-        });
-        try cmd.encodeEndRenderPass();
+        self.bound_depth_handle = depth_handle;
+    }
 
-        try device.submitCommandBuffer(.graphics, &cmd, .{});
+    pub fn draw(
+        self: *ContactShadowPass,
+        device: *rhi_mod.RhiDevice,
+        frame: rhi_mod.Frame,
+        pass: rhi_mod.RenderPass,
+        uniforms: ContactShadowParams,
+    ) mesh_pass_mod.DrawStats {
+        var stats = mesh_pass_mod.DrawStats{};
+        if (!self.isReady() or self.bind_group == null) {
+            return stats;
+        }
+
+        device.bindGraphicsPipeline(pass, &self.pipeline.?);
+        device.bindGroup(pass, &self.bind_group.?);
+        device.pushFragmentUniformData(frame, 0, std.mem.asBytes(&uniforms));
+        device.drawPrimitives(pass, fullscreen_triangle_vertex_count, 1, 0, 0);
+
+        stats.draw_calls = 1;
+        stats.triangles_drawn = 1;
+        return stats;
+    }
+
+    fn createResources(self: *ContactShadowPass, device: *rhi_mod.RhiDevice) !void {
+        self.sampler = try device.createSampler(.{
+            .min_filter = .linear,
+            .mag_filter = .linear,
+            .mipmap_mode = .nearest,
+            .address_mode_u = .clamp_to_edge,
+            .address_mode_v = .clamp_to_edge,
+            .address_mode_w = .clamp_to_edge,
+        });
+        errdefer if (self.sampler) |*sampler| {
+            device.releaseSampler(sampler);
+        };
+
+        self.stages = try shader_support.loadProgramStages(device, "contact_shadow");
+        errdefer if (self.stages) |*stages| {
+            stages.deinit(device);
+        };
+
+        const vertex_layouts = [_]rhi_mod.VertexBufferLayoutDesc{};
+        const vertex_attributes = [_]rhi_mod.VertexAttributeDesc{};
+
+        self.pipeline = try device.createGraphicsPipeline(.{
+            .vertex_shader = &self.stages.?.vertex,
+            .fragment_shader = &self.stages.?.fragment,
+            .vertex_buffer_layouts = vertex_layouts[0..],
+            .vertex_attributes = vertex_attributes[0..],
+            .color_format = .r8_unorm,
+            .depth_format = null,
+            .primitive_type = .triangle_list,
+            .fill_mode = .fill,
+            .cull_mode = .none,
+            .front_face = .counter_clockwise,
+            .depth_compare = .always,
+            .depth_test = false,
+            .depth_write = false,
+        });
     }
 };
