@@ -14,17 +14,23 @@ pub const MetalBackend = struct {
     next_sampler_id: u32 = 1,
     resource_state_bits: std.AutoHashMap(rhi.ResourceRef, u32),
     resource_owner_queue: std.AutoHashMap(rhi.ResourceRef, rhi.QueueClass),
+    pending_transfers: std.AutoHashMap(rhi.ResourceRef, PendingTransfer),
     last_submit_queue: ?rhi.QueueClass = null,
+    submit_queue_history: std.ArrayList(rhi.QueueClass),
 
     pub fn init(allocator: std.mem.Allocator) MetalBackend {
         return .{
             .allocator = allocator,
             .resource_state_bits = std.AutoHashMap(rhi.ResourceRef, u32).init(allocator),
             .resource_owner_queue = std.AutoHashMap(rhi.ResourceRef, rhi.QueueClass).init(allocator),
+            .pending_transfers = std.AutoHashMap(rhi.ResourceRef, PendingTransfer).init(allocator),
+            .submit_queue_history = .empty,
         };
     }
 
     pub fn deinit(self: *MetalBackend) void {
+        self.submit_queue_history.deinit(self.allocator);
+        self.pending_transfers.deinit();
         self.resource_state_bits.deinit();
         self.resource_owner_queue.deinit();
         self.* = undefined;
@@ -49,6 +55,7 @@ pub const MetalBackend = struct {
 
     pub fn translateAndSubmit(self: *MetalBackend, queue_class: rhi.QueueClass, soft_buf: *const command_buffer.CommandBuffer) !void {
         self.last_submit_queue = queue_class;
+        try self.submit_queue_history.append(self.allocator, queue_class);
 
         var decoder = soft_buf.decoder();
         var inside_pass = false;
@@ -81,20 +88,54 @@ pub const MetalBackend = struct {
 
                     const resource = resourceRefFromBarrier(b) catch return error.SubmitFailed;
                     const prev_state = self.resource_state_bits.get(resource) orelse 0;
-                    if (prev_state != 0 and prev_state != b.src_state_bits) {
-                        return error.SubmitFailed;
-                    }
-                    try self.resource_state_bits.put(resource, b.dst_state_bits);
-
                     const src_q: rhi.QueueClass = @enumFromInt(@as(u8, b.src_queue));
                     const dst_q: rhi.QueueClass = @enumFromInt(@as(u8, b.dst_queue));
-                    const owner = self.resource_owner_queue.get(resource) orelse src_q;
-                    if (owner != src_q) return error.SubmitFailed;
-                    try self.resource_owner_queue.put(resource, dst_q);
+                    const sync_action = std.meta.intToEnum(rhi.BarrierSyncAction, b.sync_action) catch return error.SubmitFailed;
+
+                    switch (sync_action) {
+                        .full => {
+                            if (prev_state != 0 and prev_state != b.src_state_bits) {
+                                return error.SubmitFailed;
+                            }
+                            const owner = self.resource_owner_queue.get(resource) orelse src_q;
+                            if (owner != src_q) return error.SubmitFailed;
+                            _ = self.pending_transfers.remove(resource);
+                            try self.resource_state_bits.put(resource, b.dst_state_bits);
+                            try self.resource_owner_queue.put(resource, dst_q);
+                        },
+                        .release => {
+                            if (prev_state != 0 and prev_state != b.src_state_bits) {
+                                return error.SubmitFailed;
+                            }
+                            const owner = self.resource_owner_queue.get(resource) orelse src_q;
+                            if (owner != src_q) return error.SubmitFailed;
+                            try self.pending_transfers.put(resource, .{
+                                .src_queue = src_q,
+                                .dst_queue = dst_q,
+                                .released_state_bits = b.src_state_bits,
+                            });
+                            try self.resource_state_bits.put(resource, b.src_state_bits);
+                        },
+                        .acquire => {
+                            const pending = self.pending_transfers.get(resource) orelse return error.SubmitFailed;
+                            if (pending.src_queue != src_q or pending.dst_queue != dst_q or pending.released_state_bits != b.src_state_bits) {
+                                return error.SubmitFailed;
+                            }
+                            _ = self.pending_transfers.remove(resource);
+                            try self.resource_state_bits.put(resource, b.dst_state_bits);
+                            try self.resource_owner_queue.put(resource, dst_q);
+                        },
+                    }
                 },
             }
         }
     }
+};
+
+const PendingTransfer = struct {
+    src_queue: rhi.QueueClass,
+    dst_queue: rhi.QueueClass,
+    released_state_bits: u32,
 };
 
 fn createBuffer(ctx: *anyopaque, desc: rhi.BufferDesc) rhi.Error!rhi.Buffer {
@@ -117,12 +158,14 @@ fn destroyBuffer(ctx: *anyopaque, buffer: rhi.Buffer) void {
     var backend: *MetalBackend = @ptrCast(@alignCast(ctx));
     _ = backend.resource_state_bits.remove(.{ .kind = .buffer, .id = buffer.id });
     _ = backend.resource_owner_queue.remove(.{ .kind = .buffer, .id = buffer.id });
+    _ = backend.pending_transfers.remove(.{ .kind = .buffer, .id = buffer.id });
 }
 
 fn destroyTexture(ctx: *anyopaque, texture: rhi.Texture) void {
     var backend: *MetalBackend = @ptrCast(@alignCast(ctx));
     _ = backend.resource_state_bits.remove(.{ .kind = .texture, .id = texture.id });
     _ = backend.resource_owner_queue.remove(.{ .kind = .texture, .id = texture.id });
+    _ = backend.pending_transfers.remove(.{ .kind = .texture, .id = texture.id });
 }
 
 fn submitGraphicsQueue(ctx: *anyopaque, cmd: *const command_buffer.CommandBuffer, desc: queue_mod.SubmitDesc) !void {

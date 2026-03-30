@@ -263,6 +263,7 @@ const SubmissionTracking = struct {
     allocator: std.mem.Allocator,
     state_tracker: state_tracker.StateTracker,
     resource_queues: std.AutoHashMap(ResourceRef, QueueClass),
+    pending_transfers: std.AutoHashMap(ResourceRef, PendingTransfer),
     binding_set_entries: std.AutoHashMap(u32, []BindingSetEntry),
 
     fn init(allocator: std.mem.Allocator) SubmissionTracking {
@@ -270,6 +271,7 @@ const SubmissionTracking = struct {
             .allocator = allocator,
             .state_tracker = state_tracker.StateTracker.init(allocator),
             .resource_queues = std.AutoHashMap(ResourceRef, QueueClass).init(allocator),
+            .pending_transfers = std.AutoHashMap(ResourceRef, PendingTransfer).init(allocator),
             .binding_set_entries = std.AutoHashMap(u32, []BindingSetEntry).init(allocator),
         };
     }
@@ -280,8 +282,33 @@ const SubmissionTracking = struct {
             self.allocator.free(entry.value_ptr.*);
         }
         self.binding_set_entries.deinit();
+        self.pending_transfers.deinit();
         self.resource_queues.deinit();
         self.state_tracker.deinit();
+        self.* = undefined;
+    }
+};
+
+const PendingTransfer = struct {
+    src_queue: QueueClass,
+    dst_queue: QueueClass,
+    released_state: ResourceStates,
+};
+
+const SplitReleaseRequest = struct {
+    resource: ResourceRef,
+    src_state: ResourceStates,
+    src_queue: QueueClass,
+    dst_queue: QueueClass,
+};
+
+const PreparedSubmission = struct {
+    command_buffer: command_buffer.CommandBuffer,
+    split_releases: std.ArrayList(SplitReleaseRequest),
+
+    fn deinit(self: *PreparedSubmission, allocator: std.mem.Allocator) void {
+        self.command_buffer.deinit();
+        self.split_releases.deinit(allocator);
         self.* = undefined;
     }
 };
@@ -423,6 +450,7 @@ pub const Device = struct {
         const resource = ResourceRef{ .kind = .buffer, .id = buffer.id };
         self.submission_tracking.state_tracker.removeResource(resource);
         _ = self.submission_tracking.resource_queues.remove(resource);
+        _ = self.submission_tracking.pending_transfers.remove(resource);
         self.vtable.destroy_buffer(self.ctx, buffer);
     }
 
@@ -430,6 +458,7 @@ pub const Device = struct {
         const resource = ResourceRef{ .kind = .texture, .id = texture.id };
         self.submission_tracking.state_tracker.removeResource(resource);
         _ = self.submission_tracking.resource_queues.remove(resource);
+        _ = self.submission_tracking.pending_transfers.remove(resource);
         self.vtable.destroy_texture(self.ctx, texture);
     }
 
@@ -442,9 +471,11 @@ pub const Device = struct {
     }
 
     pub fn submitCommandBuffer(self: *const Device, queue_class: QueueClass, cmd: *const command_buffer.CommandBuffer, desc: SubmitDesc) Error!void {
-        var prepared = try self.prepareCommandBufferForSubmit(queue_class, cmd);
-        defer prepared.deinit();
-        return self.vtable.submit_command_buffer(self.ctx, queue_class, &prepared, desc);
+        var prepared_submission = try self.prepareSubmissionForSubmit(queue_class, cmd);
+        defer prepared_submission.deinit(self.pipeline_layout_cache.allocator);
+
+        try self.submitSplitReleaseRequests(prepared_submission.split_releases.items);
+        return self.vtable.submit_command_buffer(self.ctx, queue_class, &prepared_submission.command_buffer, desc);
     }
 
     pub fn present(self: *const Device, image: SwapchainImage) Error!void {
@@ -526,20 +557,35 @@ pub const Device = struct {
         queue_class: QueueClass,
         original: *const command_buffer.CommandBuffer,
     ) Error!command_buffer.CommandBuffer {
+        var prepared_submission = try self.prepareSubmissionForSubmit(queue_class, original);
+        defer prepared_submission.split_releases.deinit(self.pipeline_layout_cache.allocator);
+        return prepared_submission.command_buffer;
+    }
+
+    fn prepareSubmissionForSubmit(
+        self: *const Device,
+        queue_class: QueueClass,
+        original: *const command_buffer.CommandBuffer,
+    ) Error!PreparedSubmission {
         var prepared = command_buffer.CommandBuffer.init(self.pipeline_layout_cache.allocator);
         errdefer prepared.deinit();
+
+        var split_releases = std.ArrayList(SplitReleaseRequest).empty;
+        errdefer split_releases.deinit(self.pipeline_layout_cache.allocator);
 
         var decoder = original.decoder();
         while (true) {
             const maybe_decoded = try nextDecodedCommand(&decoder);
             const decoded = maybe_decoded orelse break;
             switch (decoded) {
-                .begin_render_pass => try self.preparePassBlockForSubmit(&prepared, &decoder, queue_class, decoded, .render),
-                .begin_compute_pass => try self.preparePassBlockForSubmit(&prepared, &decoder, queue_class, decoded, .compute),
-                .begin_copy_pass => try self.preparePassBlockForSubmit(&prepared, &decoder, queue_class, decoded, .copy),
+                .begin_render_pass => try self.preparePassBlockForSubmit(&prepared, &split_releases, &decoder, queue_class, decoded, .render),
+                .begin_compute_pass => try self.preparePassBlockForSubmit(&prepared, &split_releases, &decoder, queue_class, decoded, .compute),
+                .begin_copy_pass => try self.preparePassBlockForSubmit(&prepared, &split_releases, &decoder, queue_class, decoded, .copy),
                 .pipeline_barrier => |barrier| {
-                    prepared.encodeDecoded(decoded) catch |err| return mapCommandBufferError(err);
-                    try self.applyExplicitBarrier(barrier);
+                    if (try self.resolveExplicitBarrierForQueue(&split_releases, queue_class, barrier)) |resolved| {
+                        prepared.encodePipelineBarrier(resolved) catch |err| return mapCommandBufferError(err);
+                        try self.applyExplicitBarrier(resolved);
+                    }
                 },
                 else => {
                     var pending_barriers = std.ArrayList(command_buffer.PipelineBarrierCmd).empty;
@@ -547,6 +593,7 @@ pub const Device = struct {
 
                     try self.collectAutomaticBarriersForCommand(
                         &pending_barriers,
+                        &split_releases,
                         queue_class,
                         decoded,
                         .outside_pass,
@@ -557,12 +604,16 @@ pub const Device = struct {
             }
         }
 
-        return prepared;
+        return .{
+            .command_buffer = prepared,
+            .split_releases = split_releases,
+        };
     }
 
     fn preparePassBlockForSubmit(
         self: *const Device,
         prepared: *command_buffer.CommandBuffer,
+        split_releases: *std.ArrayList(SplitReleaseRequest),
         decoder: *command_buffer.Decoder,
         queue_class: QueueClass,
         begin_decoded: command_buffer.DecodedCommand,
@@ -579,6 +630,7 @@ pub const Device = struct {
 
         try self.collectAutomaticBarriersForCommand(
             &pre_barriers,
+            split_releases,
             queue_class,
             begin_decoded,
             .before_pass,
@@ -593,17 +645,22 @@ pub const Device = struct {
             switch (decoded) {
                 .pipeline_barrier => |barrier| switch (try decodeBarrierPassScope(barrier.pass_scope)) {
                     .before_pass => {
-                        try pre_barriers.append(self.pipeline_layout_cache.allocator, barrier);
-                        try self.applyExplicitBarrier(barrier);
+                        if (try self.resolveExplicitBarrierForQueue(split_releases, queue_class, barrier)) |resolved| {
+                            try pre_barriers.append(self.pipeline_layout_cache.allocator, resolved);
+                            try self.applyExplicitBarrier(resolved);
+                        }
                     },
                     .after_pass => {
-                        try post_barriers.append(self.pipeline_layout_cache.allocator, barrier);
+                        if (try self.resolveExplicitBarrierForQueue(split_releases, queue_class, barrier)) |resolved| {
+                            try post_barriers.append(self.pipeline_layout_cache.allocator, resolved);
+                        }
                     },
                     .outside_pass => return error.SubmitFailed,
                 },
                 else => {
                     try self.collectAutomaticBarriersForCommand(
                         &pre_barriers,
+                        split_releases,
                         queue_class,
                         decoded,
                         .before_pass,
@@ -635,6 +692,7 @@ pub const Device = struct {
     fn collectAutomaticBarriersForCommand(
         self: *const Device,
         pending_barriers: *std.ArrayList(command_buffer.PipelineBarrierCmd),
+        split_releases: *std.ArrayList(SplitReleaseRequest),
         queue_class: QueueClass,
         decoded: command_buffer.DecodedCommand,
         pass_scope: BarrierPassScope,
@@ -644,6 +702,7 @@ pub const Device = struct {
                 if (cmd.color_target_id != 0) {
                     try self.collectTrackedStateTransitions(
                         pending_barriers,
+                        split_releases,
                         queue_class,
                         .{ .kind = .texture, .id = cmd.color_target_id },
                         ResourceStates{ .render_target = true },
@@ -653,6 +712,7 @@ pub const Device = struct {
                 if (cmd.depth_target_id != 0) {
                     try self.collectTrackedStateTransitions(
                         pending_barriers,
+                        split_releases,
                         queue_class,
                         .{ .kind = .texture, .id = cmd.depth_target_id },
                         ResourceStates{ .depth_write = true },
@@ -666,6 +726,7 @@ pub const Device = struct {
                     const tracked = trackedResourceForBinding(entry) orelse continue;
                     try self.collectTrackedStateTransitions(
                         pending_barriers,
+                        split_releases,
                         queue_class,
                         tracked.resource,
                         tracked.state,
@@ -676,6 +737,7 @@ pub const Device = struct {
             .set_vertex_buffer => |cmd| {
                 try self.collectTrackedStateTransitions(
                     pending_barriers,
+                    split_releases,
                     queue_class,
                     .{ .kind = .buffer, .id = cmd.buffer_id },
                     ResourceStates{ .vertex_buffer = true },
@@ -685,6 +747,7 @@ pub const Device = struct {
             .set_index_buffer => |cmd| {
                 try self.collectTrackedStateTransitions(
                     pending_barriers,
+                    split_releases,
                     queue_class,
                     .{ .kind = .buffer, .id = cmd.buffer_id },
                     ResourceStates{ .index_buffer = true },
@@ -694,6 +757,7 @@ pub const Device = struct {
             .draw_indirect => |cmd| {
                 try self.collectTrackedStateTransitions(
                     pending_barriers,
+                    split_releases,
                     queue_class,
                     .{ .kind = .buffer, .id = cmd.buffer_id },
                     ResourceStates{ .indirect_argument = true },
@@ -703,6 +767,7 @@ pub const Device = struct {
             .dispatch_indirect => |cmd| {
                 try self.collectTrackedStateTransitions(
                     pending_barriers,
+                    split_releases,
                     queue_class,
                     .{ .kind = .buffer, .id = cmd.buffer_id },
                     ResourceStates{ .indirect_argument = true },
@@ -716,6 +781,7 @@ pub const Device = struct {
     fn collectTrackedStateTransitions(
         self: *const Device,
         pending_barriers: *std.ArrayList(command_buffer.PipelineBarrierCmd),
+        split_releases: *std.ArrayList(SplitReleaseRequest),
         queue_class: QueueClass,
         resource: ResourceRef,
         desired: ResourceStates,
@@ -727,6 +793,18 @@ pub const Device = struct {
 
         for (barriers) |barrier| {
             const src_queue = self.submission_tracking.resource_queues.get(barrier.resource) orelse queue_class;
+            const cross_queue = src_queue != queue_class;
+            if (cross_queue and !self.hasPendingTransfer(barrier.resource, src_queue, queue_class, barrier.before)) {
+                try self.appendSplitReleaseRequest(
+                    split_releases,
+                    .{
+                        .resource = barrier.resource,
+                        .src_state = barrier.before,
+                        .src_queue = src_queue,
+                        .dst_queue = queue_class,
+                    },
+                );
+            }
             try pending_barriers.append(self.pipeline_layout_cache.allocator, .{
                 .resource_id = barrier.resource.id,
                 .src_state_bits = barrier.before.asBits(),
@@ -734,11 +812,14 @@ pub const Device = struct {
                 .subresource_base = barrier.resource.subresource_base,
                 .subresource_count = barrier.resource.subresource_count,
                 .resource_kind = @intCast(@intFromEnum(barrier.resource.kind)),
-                .sync_action = @intCast(@intFromEnum(deriveBarrierSyncAction(src_queue, queue_class, pass_scope))),
+                .sync_action = @intCast(@intFromEnum(deriveBarrierSyncAction(src_queue, queue_class))),
                 .pass_scope = @intCast(@intFromEnum(pass_scope)),
                 .src_queue = @intCast(@intFromEnum(src_queue)),
                 .dst_queue = @intCast(@intFromEnum(queue_class)),
             });
+            if (cross_queue) {
+                _ = self.submission_tracking.pending_transfers.remove(barrier.resource);
+            }
             try self.submission_tracking.resource_queues.put(barrier.resource, queue_class);
         }
     }
@@ -751,9 +832,156 @@ pub const Device = struct {
             .subresource_base = barrier.subresource_base,
             .subresource_count = barrier.subresource_count,
         };
-        try self.submission_tracking.state_tracker.setCurrentState(resource, ResourceStates.fromBits(barrier.dst_state_bits));
+        const src_queue: QueueClass = @enumFromInt(@as(u8, barrier.src_queue));
         const dst_queue: QueueClass = @enumFromInt(@as(u8, barrier.dst_queue));
-        try self.submission_tracking.resource_queues.put(resource, dst_queue);
+        const sync_action = std.meta.intToEnum(BarrierSyncAction, barrier.sync_action) catch return error.SubmitFailed;
+        switch (sync_action) {
+            .full => {
+                try self.submission_tracking.state_tracker.setCurrentState(resource, ResourceStates.fromBits(barrier.dst_state_bits));
+                try self.submission_tracking.resource_queues.put(resource, dst_queue);
+                _ = self.submission_tracking.pending_transfers.remove(resource);
+            },
+            .acquire => {
+                if (self.submission_tracking.pending_transfers.get(resource)) |pending| {
+                    if (pending.src_queue != src_queue or pending.dst_queue != dst_queue) {
+                        return error.SubmitFailed;
+                    }
+                    if (pending.released_state.asBits() != barrier.src_state_bits) {
+                        return error.SubmitFailed;
+                    }
+                    _ = self.submission_tracking.pending_transfers.remove(resource);
+                }
+                try self.submission_tracking.state_tracker.setCurrentState(resource, ResourceStates.fromBits(barrier.dst_state_bits));
+                try self.submission_tracking.resource_queues.put(resource, dst_queue);
+            },
+            .release => {
+                const released_state = ResourceStates.fromBits(barrier.src_state_bits);
+                try self.submission_tracking.state_tracker.setCurrentState(resource, released_state);
+                try self.submission_tracking.resource_queues.put(resource, src_queue);
+                try self.submission_tracking.pending_transfers.put(resource, .{
+                    .src_queue = src_queue,
+                    .dst_queue = dst_queue,
+                    .released_state = released_state,
+                });
+            },
+        }
+    }
+
+    fn resolveExplicitBarrierForQueue(
+        self: *const Device,
+        split_releases: *std.ArrayList(SplitReleaseRequest),
+        queue_class: QueueClass,
+        barrier: command_buffer.PipelineBarrierCmd,
+    ) Error!?command_buffer.PipelineBarrierCmd {
+        const sync_action = try decodeBarrierSyncAction(barrier.sync_action);
+        const src_queue: QueueClass = @enumFromInt(@as(u8, barrier.src_queue));
+        const dst_queue: QueueClass = @enumFromInt(@as(u8, barrier.dst_queue));
+        const resource_kind = std.meta.intToEnum(ResourceKind, barrier.resource_kind) catch return error.SubmitFailed;
+        const resource = ResourceRef{
+            .kind = resource_kind,
+            .id = barrier.resource_id,
+            .subresource_base = barrier.subresource_base,
+            .subresource_count = barrier.subresource_count,
+        };
+
+        if (src_queue == dst_queue) {
+            return barrier;
+        }
+
+        switch (sync_action) {
+            .full => {
+                if (queue_class != dst_queue) return null;
+                if (!self.hasPendingTransfer(resource, src_queue, dst_queue, ResourceStates.fromBits(barrier.src_state_bits))) {
+                    try self.appendSplitReleaseRequest(split_releases, .{
+                        .resource = resource,
+                        .src_state = ResourceStates.fromBits(barrier.src_state_bits),
+                        .src_queue = src_queue,
+                        .dst_queue = dst_queue,
+                    });
+                }
+
+                var acquire = barrier;
+                acquire.sync_action = @intCast(@intFromEnum(BarrierSyncAction.acquire));
+                return acquire;
+            },
+            .acquire => {
+                if (queue_class != dst_queue) return null;
+                if (!self.hasPendingTransfer(resource, src_queue, dst_queue, ResourceStates.fromBits(barrier.src_state_bits))) {
+                    try self.appendSplitReleaseRequest(split_releases, .{
+                        .resource = resource,
+                        .src_state = ResourceStates.fromBits(barrier.src_state_bits),
+                        .src_queue = src_queue,
+                        .dst_queue = dst_queue,
+                    });
+                }
+                return barrier;
+            },
+            .release => {
+                if (queue_class != src_queue) return null;
+                var release = barrier;
+                release.dst_state_bits = release.src_state_bits;
+                return release;
+            },
+        }
+    }
+
+    fn appendSplitReleaseRequest(
+        self: *const Device,
+        split_releases: *std.ArrayList(SplitReleaseRequest),
+        request: SplitReleaseRequest,
+    ) Error!void {
+        for (split_releases.items) |*existing| {
+            if (std.meta.eql(existing.resource, request.resource) and existing.src_queue == request.src_queue and existing.dst_queue == request.dst_queue) {
+                existing.src_state = ResourceStates.fromBits(existing.src_state.asBits() | request.src_state.asBits());
+                return;
+            }
+        }
+        try split_releases.append(self.pipeline_layout_cache.allocator, request);
+    }
+
+    fn hasPendingTransfer(
+        self: *const Device,
+        resource: ResourceRef,
+        src_queue: QueueClass,
+        dst_queue: QueueClass,
+        released_state: ResourceStates,
+    ) bool {
+        const pending = self.submission_tracking.pending_transfers.get(resource) orelse return false;
+        return pending.src_queue == src_queue and pending.dst_queue == dst_queue and pending.released_state.asBits() == released_state.asBits();
+    }
+
+    fn submitSplitReleaseRequests(self: *const Device, split_releases: []const SplitReleaseRequest) Error!void {
+        var graphics_barriers = std.ArrayList(command_buffer.PipelineBarrierCmd).empty;
+        defer graphics_barriers.deinit(self.pipeline_layout_cache.allocator);
+        var compute_barriers = std.ArrayList(command_buffer.PipelineBarrierCmd).empty;
+        defer compute_barriers.deinit(self.pipeline_layout_cache.allocator);
+        var transfer_barriers = std.ArrayList(command_buffer.PipelineBarrierCmd).empty;
+        defer transfer_barriers.deinit(self.pipeline_layout_cache.allocator);
+
+        for (split_releases) |request| {
+            const release_barrier: command_buffer.PipelineBarrierCmd = .{
+                .resource_id = request.resource.id,
+                .src_state_bits = request.src_state.asBits(),
+                .dst_state_bits = request.src_state.asBits(),
+                .subresource_base = request.resource.subresource_base,
+                .subresource_count = request.resource.subresource_count,
+                .resource_kind = @intCast(@intFromEnum(request.resource.kind)),
+                .sync_action = @intCast(@intFromEnum(BarrierSyncAction.release)),
+                .pass_scope = @intCast(@intFromEnum(BarrierPassScope.outside_pass)),
+                .src_queue = @intCast(@intFromEnum(request.src_queue)),
+                .dst_queue = @intCast(@intFromEnum(request.dst_queue)),
+            };
+
+            switch (request.src_queue) {
+                .graphics => try graphics_barriers.append(self.pipeline_layout_cache.allocator, release_barrier),
+                .compute => try compute_barriers.append(self.pipeline_layout_cache.allocator, release_barrier),
+                .transfer => try transfer_barriers.append(self.pipeline_layout_cache.allocator, release_barrier),
+            }
+        }
+
+        try submitReleaseBarrierBatch(self, .graphics, graphics_barriers.items);
+        try submitReleaseBarrierBatch(self, .compute, compute_barriers.items);
+        try submitReleaseBarrierBatch(self, .transfer, transfer_barriers.items);
     }
 
     fn validateBindingSetDesc(self: *const Device, layout_entries: []const BindingLayoutEntry, desc: BindingSetDesc) Error!void {
@@ -800,6 +1028,19 @@ fn nextDecodedCommand(decoder: *command_buffer.Decoder) Error!?command_buffer.De
     return decoder.next() catch |err| return mapCommandBufferError(err);
 }
 
+fn submitReleaseBarrierBatch(
+    self: *const Device,
+    queue_class: QueueClass,
+    barriers: []const command_buffer.PipelineBarrierCmd,
+) Error!void {
+    if (barriers.len == 0) return;
+
+    var release_cmd = command_buffer.CommandBuffer.init(self.pipeline_layout_cache.allocator);
+    defer release_cmd.deinit();
+    release_cmd.encodePipelineBarriers(barriers) catch |err| return mapCommandBufferError(err);
+    try self.vtable.submit_command_buffer(self.ctx, queue_class, &release_cmd, .{});
+}
+
 fn flushPendingBarriers(prepared: *command_buffer.CommandBuffer, pending_barriers: []const command_buffer.PipelineBarrierCmd) Error!void {
     if (pending_barriers.len == 0) return;
     prepared.encodePipelineBarriers(pending_barriers) catch |err| return mapCommandBufferError(err);
@@ -817,11 +1058,15 @@ fn decodeBarrierPassScope(raw_scope: u8) Error!BarrierPassScope {
     return std.meta.intToEnum(BarrierPassScope, raw_scope) catch error.SubmitFailed;
 }
 
-fn deriveBarrierSyncAction(src_queue: QueueClass, dst_queue: QueueClass, pass_scope: BarrierPassScope) BarrierSyncAction {
-    if (src_queue != dst_queue and pass_scope == .before_pass) {
+fn deriveBarrierSyncAction(src_queue: QueueClass, dst_queue: QueueClass) BarrierSyncAction {
+    if (src_queue != dst_queue) {
         return .acquire;
     }
     return .full;
+}
+
+fn decodeBarrierSyncAction(raw_action: u8) Error!BarrierSyncAction {
+    return std.meta.intToEnum(BarrierSyncAction, raw_action) catch error.SubmitFailed;
 }
 
 const TrackedBindingResource = struct {
@@ -1186,4 +1431,135 @@ test "submit command buffer keeps buffer and texture states separate when ids ov
     const buffer_bits = backend.resource_state_bits.get(.{ .kind = .buffer, .id = uniform_buffer.id }) orelse 0;
     try std.testing.expectEqual((ResourceStates{ .shader_resource = true }).asBits(), texture_bits);
     try std.testing.expectEqual((ResourceStates{ .constant_buffer = true }).asBits(), buffer_bits);
+}
+
+test "submit command buffer schedules producer-side release before cross-queue acquire" {
+    const metal_backend = @import("metal/metal_backend.zig");
+
+    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
+    defer backend.deinit();
+    var device = backend.createDevice();
+    defer device.deinit();
+
+    const compute_layout = try device.createBindingLayout(.{
+        .entries = &.{.{
+            .slot = 0,
+            .binding_type = .storage_texture,
+            .stage = .compute,
+        }},
+    });
+    const graphics_layout = try device.createBindingLayout(.{
+        .entries = &.{.{
+            .slot = 0,
+            .binding_type = .texture,
+            .stage = .fragment,
+        }},
+    });
+
+    const shared_texture = try device.createTexture(.{
+        .width = 1,
+        .height = 1,
+        .format = .rgba8_unorm,
+        .usage = .{ .sampled = true, .storage_write = true },
+    });
+    defer device.destroyTexture(shared_texture);
+
+    const color_target = try device.createTexture(.{
+        .width = 1,
+        .height = 1,
+        .format = .rgba8_unorm,
+        .usage = .{ .color_target = true },
+    });
+    defer device.destroyTexture(color_target);
+
+    const compute_set = try device.createBindingSetCached(compute_layout, .{
+        .entries = &.{.{ .slot = 0, .resource = .{ .storage_texture = shared_texture } }},
+    });
+    const graphics_set = try device.createBindingSetCached(graphics_layout, .{
+        .entries = &.{.{ .slot = 0, .resource = .{ .texture = shared_texture } }},
+    });
+
+    var compute_cmd = try device.createCommandBuffer(std.testing.allocator);
+    defer compute_cmd.deinit();
+    try compute_cmd.encodeBeginComputePass(.{});
+    try compute_cmd.encodeSetBindingSet(.{ .slot = 0, .set_id = compute_set.id });
+    try compute_cmd.encodeDispatch(.{ .x = 1, .y = 1, .z = 1 });
+    try compute_cmd.encodeEndComputePass();
+
+    try device.submitCommandBuffer(.compute, &compute_cmd, .{});
+
+    var graphics_cmd = try device.createCommandBuffer(std.testing.allocator);
+    defer graphics_cmd.deinit();
+    try graphics_cmd.encodeBeginRenderPass(.{
+        .color_target_id = color_target.id,
+        .depth_target_id = 0,
+        .clear_mask = 0,
+    });
+    try graphics_cmd.encodeSetBindingSet(.{ .slot = 0, .set_id = graphics_set.id });
+    try graphics_cmd.encodeDraw(.{
+        .vertex_count = 3,
+        .instance_count = 1,
+        .first_vertex = 0,
+        .first_instance = 0,
+    });
+    try graphics_cmd.encodeEndRenderPass();
+
+    try device.submitCommandBuffer(.graphics, &graphics_cmd, .{});
+
+    try std.testing.expectEqual(@as(usize, 3), backend.submit_queue_history.items.len);
+    try std.testing.expectEqual(QueueClass.compute, backend.submit_queue_history.items[0]);
+    try std.testing.expectEqual(QueueClass.compute, backend.submit_queue_history.items[1]);
+    try std.testing.expectEqual(QueueClass.graphics, backend.submit_queue_history.items[2]);
+
+    const tracked_bits = backend.resource_state_bits.get(.{ .kind = .texture, .id = shared_texture.id }) orelse 0;
+    try std.testing.expectEqual((ResourceStates{ .shader_resource = true }).asBits(), tracked_bits);
+    try std.testing.expectEqual(QueueClass.graphics, backend.resource_owner_queue.get(.{ .kind = .texture, .id = shared_texture.id }).?);
+    try std.testing.expectEqual(@as(usize, 0), backend.pending_transfers.count());
+}
+
+test "consumer-side explicit full barrier triggers split release scheduling" {
+    const metal_backend = @import("metal/metal_backend.zig");
+
+    var backend = metal_backend.MetalBackend.init(std.testing.allocator);
+    defer backend.deinit();
+    var device = backend.createDevice();
+    defer device.deinit();
+
+    const texture = try device.createTexture(.{
+        .width = 1,
+        .height = 1,
+        .format = .rgba8_unorm,
+        .usage = .{ .sampled = true, .storage_write = true },
+    });
+    defer device.destroyTexture(texture);
+
+    var producer_cmd = try device.createCommandBuffer(std.testing.allocator);
+    defer producer_cmd.deinit();
+    try producer_cmd.encodePipelineBarrier(.{
+        .resource_id = texture.id,
+        .src_state_bits = 0,
+        .dst_state_bits = (ResourceStates{ .shader_resource = true, .unordered_access = true }).asBits(),
+        .resource_kind = @intCast(@intFromEnum(ResourceKind.texture)),
+        .src_queue = @intCast(@intFromEnum(QueueClass.compute)),
+        .dst_queue = @intCast(@intFromEnum(QueueClass.compute)),
+    });
+    try device.submitCommandBuffer(.compute, &producer_cmd, .{});
+
+    var consumer_cmd = try device.createCommandBuffer(std.testing.allocator);
+    defer consumer_cmd.deinit();
+    try consumer_cmd.encodePipelineBarrier(.{
+        .resource_id = texture.id,
+        .src_state_bits = (ResourceStates{ .shader_resource = true, .unordered_access = true }).asBits(),
+        .dst_state_bits = (ResourceStates{ .shader_resource = true }).asBits(),
+        .resource_kind = @intCast(@intFromEnum(ResourceKind.texture)),
+        .src_queue = @intCast(@intFromEnum(QueueClass.compute)),
+        .dst_queue = @intCast(@intFromEnum(QueueClass.graphics)),
+    });
+    try device.submitCommandBuffer(.graphics, &consumer_cmd, .{});
+
+    try std.testing.expectEqual(@as(usize, 3), backend.submit_queue_history.items.len);
+    try std.testing.expectEqual(QueueClass.compute, backend.submit_queue_history.items[1]);
+    try std.testing.expectEqual(QueueClass.graphics, backend.submit_queue_history.items[2]);
+    try std.testing.expectEqual(QueueClass.graphics, backend.resource_owner_queue.get(.{ .kind = .texture, .id = texture.id }).?);
+    try std.testing.expectEqual(@as(usize, 0), backend.pending_transfers.count());
 }
