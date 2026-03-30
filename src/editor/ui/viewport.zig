@@ -636,6 +636,7 @@ fn drawViewportSceneEntityIcons(state: *EditorState, layer_context: *engine.core
 
 fn drawViewportToolbarStrip(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const width = gui.contentRegionAvail()[0];
+    const transform_constraints_popup_id = "viewport_transform_constraints_popup";
     gui.pushStyleVarVec2(.item_spacing, .{ 6.0, 6.0 });
     defer gui.popStyleVar(1);
 
@@ -665,6 +666,34 @@ fn drawViewportToolbarStrip(state: *EditorState, layer_context: *engine.core.Lay
     }
     if (gui.isItemHovered()) {
         gui.setTooltip(state.text(.scale_tool));
+    }
+
+    gui.sameLine();
+    if (state.manipulation_mode != .none) {
+        if (drawConstraintChipButton("toolbar_axis_constraint", currentAxisConstraintShortLabel(state), state.manipulation_axis != .free)) {
+            gui.openPopup(transform_constraints_popup_id);
+        }
+        if (gui.isItemHovered()) {
+            gui.setTooltip(state.text(.axis_constraint));
+        }
+        gui.sameLine();
+    }
+    if (try drawToolbarIconButton(
+        state,
+        layer_context,
+        "toolbar_transform_constraints",
+        ui_icons.paths.toolbar.snap,
+        transformConstraintsActive(state),
+    )) {
+        gui.openPopup(transform_constraints_popup_id);
+    }
+    if (gui.isItemHovered()) {
+        gui.setTooltip(state.text(.transform_constraints));
+    }
+    if (gui.beginPopup(transform_constraints_popup_id)) {
+        defer gui.endPopup();
+        state.viewport_overlay_hovered = true;
+        drawTransformConstraintsPopup(state, layer_context);
     }
 
     // 模式切换始终显示（不受宽度限制）
@@ -797,6 +826,150 @@ fn drawModeButton(label: []const u8, active: bool, width: f32) bool {
     gui.pushStyleColor(.button_active, palette.active);
     defer gui.popStyleColor(3);
     return gui.buttonEx(label, width, 0.0);
+}
+
+fn drawConstraintChipButton(id: []const u8, label: []const u8, active: bool) bool {
+    const palette = if (active)
+        ui_icons.palettes.toolbar_active
+    else
+        ui_icons.palettes.toolbar_idle;
+    const text_width = gui.calcTextSize(label, false, 0.0)[0];
+    const button_width = @max(44.0, text_width + 18.0);
+    gui.pushStyleColor(.button, palette.button);
+    gui.pushStyleColor(.button_hovered, palette.hovered);
+    gui.pushStyleColor(.button_active, palette.active);
+    defer gui.popStyleColor(3);
+    gui.pushIdU64(std.hash.Wyhash.hash(0, id));
+    defer gui.popId();
+    return gui.buttonEx(label, button_width, 0.0);
+}
+
+fn transformConstraintsActive(state: *const EditorState) bool {
+    return state.transform_pivot_mode != .origin or
+        state.translation_snap_target != .grid or
+        state.manipulation_axis != .free or
+        state.translation_snap_enabled or
+        state.rotation_snap_enabled or
+        state.scale_snap_enabled;
+}
+
+fn drawTransformConstraintsPopup(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+    var changed = false;
+
+    gui.text(state.text(.coordinate_space));
+    if (drawConstraintPopupButton(state.text(.local_space), 96.0, state.transform_space == .local)) {
+        state.transform_space = .local;
+        changed = true;
+    }
+    gui.sameLine();
+    if (drawConstraintPopupButton(state.text(.world_space), 96.0, state.transform_space == .world)) {
+        state.transform_space = .world;
+        changed = true;
+    }
+
+    gui.separator();
+    gui.text(state.text(.pivot_point));
+    if (drawConstraintPopupButton(state.text(.pivot_origin), 96.0, state.transform_pivot_mode == .origin)) {
+        state.transform_pivot_mode = .origin;
+        changed = true;
+    }
+    gui.sameLine();
+    if (drawConstraintPopupButton(state.text(.pivot_bounds_center), 120.0, state.transform_pivot_mode == .bounds_center)) {
+        state.transform_pivot_mode = .bounds_center;
+        changed = true;
+    }
+
+    gui.separator();
+    gui.text(state.text(.axis_constraint));
+    if (drawConstraintPopupButton(state.text(.free_axis), 56.0, state.manipulation_axis == .free)) {
+        state.manipulation_axis = .free;
+        changed = true;
+    }
+    gui.sameLine();
+    if (drawConstraintPopupButton("X", 40.0, state.manipulation_axis == .x)) {
+        toggleAxisConstraint(state, .x);
+        changed = true;
+    }
+    gui.sameLine();
+    if (drawConstraintPopupButton("Y", 40.0, state.manipulation_axis == .y)) {
+        toggleAxisConstraint(state, .y);
+        changed = true;
+    }
+    gui.sameLine();
+    if (drawConstraintPopupButton("Z", 40.0, state.manipulation_axis == .z)) {
+        toggleAxisConstraint(state, .z);
+        changed = true;
+    }
+
+    gui.separator();
+    gui.text(state.text(.snap_target));
+    if (drawConstraintPopupButton(state.text(.grid_view), 72.0, state.translation_snap_target == .grid)) {
+        state.translation_snap_target = .grid;
+        changed = true;
+    }
+    gui.sameLine();
+    if (drawConstraintPopupButton(state.text(.surface_snap), 84.0, state.translation_snap_target == .surface)) {
+        state.translation_snap_target = .surface;
+        changed = true;
+    }
+    gui.sameLine();
+    if (drawConstraintPopupButton(state.text(.vertex_snap), 76.0, state.translation_snap_target == .vertex)) {
+        state.translation_snap_target = .vertex;
+        changed = true;
+    }
+
+    gui.separator();
+    gui.text(state.text(.transform_constraints));
+    drawSnapControlRow(state.text(.translation_snap), "translation", &state.translation_snap_enabled, &state.translation_snap_step, 0.01, 0.01, 1024.0);
+    drawSnapControlRow(state.text(.rotation_snap), "rotation", &state.rotation_snap_enabled, &state.rotation_snap_step_degrees, 1.0, 1.0, 180.0);
+    drawSnapControlRow(state.text(.scale_snap), "scale", &state.scale_snap_enabled, &state.scale_snap_step, 0.01, 0.01, 10.0);
+    if (changed) {
+        manipulation.refreshGizmoState(state, layer_context);
+    }
+}
+
+fn drawSnapControlRow(
+    label: []const u8,
+    id_suffix: []const u8,
+    enabled: *bool,
+    step_value: *f32,
+    speed: f32,
+    min_value: f32,
+    max_value: f32,
+) void {
+    _ = gui.checkbox(label, enabled);
+    gui.sameLine();
+    gui.setNextItemWidth(88.0);
+    var drag_id_buf: [64]u8 = undefined;
+    const drag_id = std.fmt.bufPrint(&drag_id_buf, "##{s}_snap_step", .{id_suffix}) catch "##snap_step";
+    if (gui.dragFloat(drag_id, step_value, speed, min_value, max_value)) {
+        step_value.* = std.math.clamp(step_value.*, min_value, max_value);
+    }
+}
+
+fn drawConstraintPopupButton(label: []const u8, width: f32, active: bool) bool {
+    const palette = if (active)
+        ui_icons.palettes.toolbar_active
+    else
+        ui_icons.palettes.toolbar_idle;
+    gui.pushStyleColor(.button, palette.button);
+    gui.pushStyleColor(.button_hovered, palette.hovered);
+    gui.pushStyleColor(.button_active, palette.active);
+    defer gui.popStyleColor(3);
+    return gui.buttonEx(label, width, 0.0);
+}
+
+fn toggleAxisConstraint(state: *EditorState, axis: state_mod.AxisConstraint) void {
+    state.manipulation_axis = if (state.manipulation_axis == axis) .free else axis;
+}
+
+fn currentAxisConstraintShortLabel(state: *const EditorState) []const u8 {
+    return switch (state.manipulation_axis) {
+        .free => state.text(.free_axis),
+        .x => "X",
+        .y => "Y",
+        .z => "Z",
+    };
 }
 
 fn drawToolbarUndoSourceChip(state: *EditorState) void {
@@ -1835,28 +2008,23 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
     }
     gui.sameLine();
 
-    // Note: Transform tools and transform space are now in the toolbar strip above the viewport
-    // Only snap buttons remain in overlay
-
-    if (try drawOverlayIconButton(state, layer_context, "viewport_snap_translate", ui_icons.paths.toolbar.snap_translate, state.translation_snap_enabled)) {
-        state.translation_snap_enabled = !state.translation_snap_enabled;
+    const overlay_constraints_popup_id = "viewport_overlay_transform_constraints_popup";
+    if (try drawOverlayIconButton(
+        state,
+        layer_context,
+        "viewport_overlay_transform_constraints",
+        ui_icons.paths.toolbar.snap,
+        transformConstraintsActive(state),
+    )) {
+        gui.openPopup(overlay_constraints_popup_id);
     }
     if (gui.isItemHovered()) {
-        gui.setTooltip(state.text(.translation_snap));
+        gui.setTooltip(state.text(.transform_constraints));
     }
-    gui.sameLine();
-    if (try drawOverlayIconButton(state, layer_context, "viewport_snap_rotate", ui_icons.paths.toolbar.snap_rotate, state.rotation_snap_enabled)) {
-        state.rotation_snap_enabled = !state.rotation_snap_enabled;
-    }
-    if (gui.isItemHovered()) {
-        gui.setTooltip(state.text(.rotation_snap));
-    }
-    gui.sameLine();
-    if (try drawOverlayIconButton(state, layer_context, "viewport_snap_scale", ui_icons.paths.toolbar.snap_scale, state.scale_snap_enabled)) {
-        state.scale_snap_enabled = !state.scale_snap_enabled;
-    }
-    if (gui.isItemHovered()) {
-        gui.setTooltip(state.text(.scale_snap));
+    if (gui.beginPopup(overlay_constraints_popup_id)) {
+        defer gui.endPopup();
+        state.viewport_overlay_hovered = true;
+        drawTransformConstraintsPopup(state, layer_context);
     }
 
     // Show camera speed indicator when shift is held

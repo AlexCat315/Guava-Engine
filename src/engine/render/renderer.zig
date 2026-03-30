@@ -367,6 +367,8 @@ pub const Renderer = struct {
     selection_seeded: bool = false,
     /// 编辑器 Gizmo 状态
     editor_gizmo_state: EditorGizmoState = .{},
+    /// 编辑器变换枢轴覆盖（例如 bounds center）
+    editor_gizmo_transform_override: ?components.Transform = null,
     /// staged preview 的自定义 gizmo 目标
     preview_gizmo_transform: ?components.Transform = null,
     /// staged preview 根实体过滤列表
@@ -761,6 +763,7 @@ pub const Renderer = struct {
         self.scene_cache = try mesh_pass_mod.MeshSceneCache.init(self.allocator, &self.rhi);
         self.cached_env_textures = .{};
         self.preview_scene = null;
+        self.editor_gizmo_transform_override = null;
         self.preview_gizmo_transform = null;
         self.preview_entity_filter.clearRetainingCapacity();
     }
@@ -782,6 +785,10 @@ pub const Renderer = struct {
 
     pub fn setEditorGizmoState(self: *Renderer, state: EditorGizmoState) void {
         self.editor_gizmo_state = state;
+    }
+
+    pub fn setEditorGizmoTransformOverride(self: *Renderer, transform: ?components.Transform) void {
+        self.editor_gizmo_transform_override = transform;
     }
 
     pub fn setPreviewGizmoTransform(self: *Renderer, transform: ?components.Transform) void {
@@ -1841,7 +1848,9 @@ pub const Renderer = struct {
                     const gizmo_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(scene_color_target));
                     const gizmo_start = std.time.nanoTimestamp();
                     var gizmo_overlay_stats = mesh_pass_mod.DrawStats{};
-                    const gizmo_target_transform = if (self.preview_gizmo_transform) |preview_transform|
+                    const gizmo_target_transform = if (self.editor_gizmo_transform_override) |override_transform|
+                        override_transform
+                    else if (self.preview_gizmo_transform) |preview_transform|
                         preview_transform
                     else if (self.selection_history.primarySelection()) |selected_entity_id|
                         scene.worldTransformConst(selected_entity_id)
@@ -3401,6 +3410,7 @@ pub const Renderer = struct {
             return false;
         }
         return self.selection_history.primarySelection() != null or
+            self.editor_gizmo_transform_override != null or
             self.preview_gizmo_transform != null or
             self.editor_viewport_state.show_grid or
             self.editor_viewport_state.show_bones or

@@ -416,10 +416,16 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
             beginInspectorSectionBody();
             defer endInspectorSectionBody();
             gui.dummy(0.0, 4.0);
-            gui.labelText(state.text(.coordinate_space), switch (state.transform_space) {
-                .local => state.text(.local_space),
-                .world => state.text(.world_space),
-            });
+            gui.alignTextToFramePadding();
+            gui.text(state.text(.coordinate_space));
+            gui.sameLine();
+            if (drawInspectorToggleButton(state.text(.local_space), state.transform_space == .local, 72.0)) {
+                state.transform_space = .local;
+            }
+            gui.sameLine();
+            if (drawInspectorToggleButton(state.text(.world_space), state.transform_space == .world, 72.0)) {
+                state.transform_space = .world;
+            }
             gui.dummy(0.0, 6.0);
 
             const transform_grid_available_width = gui.contentRegionAvail()[0];
@@ -1817,6 +1823,26 @@ fn drawActionRow2(first: []const u8, second: []const u8, min_button_width: f32) 
         return .second;
     }
     return .none;
+}
+
+fn drawInspectorToggleButton(label: []const u8, active: bool, width: f32) bool {
+    const background = if (active)
+        [4]f32{ 0.18, 0.56, 0.33, 0.92 }
+    else
+        [4]f32{ 0.18, 0.20, 0.24, 0.90 };
+    const hovered = if (active)
+        [4]f32{ 0.22, 0.65, 0.38, 0.98 }
+    else
+        [4]f32{ 0.24, 0.27, 0.32, 0.96 };
+    const pressed = if (active)
+        [4]f32{ 0.15, 0.48, 0.28, 1.0 }
+    else
+        [4]f32{ 0.20, 0.23, 0.28, 1.0 };
+    gui.pushStyleColor(.button, background);
+    gui.pushStyleColor(.button_hovered, hovered);
+    gui.pushStyleColor(.button_active, pressed);
+    defer gui.popStyleColor(3);
+    return gui.buttonEx(label, width, 0.0);
 }
 
 fn drawTransformTableRow(

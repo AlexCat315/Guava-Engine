@@ -61,6 +61,17 @@ pub const TransformSpace = enum {
     world,
 };
 
+pub const TransformPivotMode = enum {
+    origin,
+    bounds_center,
+};
+
+pub const TranslationSnapTarget = enum {
+    grid,
+    surface,
+    vertex,
+};
+
 pub const ManipulationTarget = enum {
     main_world,
     staged_preview,
@@ -416,7 +427,9 @@ pub const EditorState = struct {
     translation_drag_sensitivity: f32 = 0.0025,
     rotation_drag_sensitivity: f32 = 0.01,
     scale_drag_sensitivity: f32 = 0.01,
+    transform_pivot_mode: TransformPivotMode = .origin,
     translation_snap_enabled: bool = false,
+    translation_snap_target: TranslationSnapTarget = .grid,
     translation_snap_step: f32 = 10.0,
     rotation_snap_enabled: bool = false,
     rotation_snap_step_degrees: f32 = 15.0,
@@ -426,6 +439,7 @@ pub const EditorState = struct {
     manipulation_axis: AxisConstraint = .free,
     manipulation_entity: ?engine.scene.EntityId = null,
     manipulation_origin: engine.scene.Transform = .{},
+    manipulation_pivot_local_offset: [3]f32 = .{ 0.0, 0.0, 0.0 },
     manipulation_drag_active: bool = false,
     manipulation_keyboard_mode: bool = false, // Blender-style: keyboard activates, mouse moves freely, click confirms
     manipulation_started_from_ui: bool = false, // 记录拖拽是否从UI元素开始，防止事件穿透
@@ -923,7 +937,10 @@ test "viewport drop defaults and payload constants stay stable" {
     try std.testing.expectEqual(@as(f32, 0.0025), state.translation_drag_sensitivity);
     try std.testing.expectEqual(@as(f32, 0.01), state.rotation_drag_sensitivity);
     try std.testing.expectEqual(@as(f32, 0.01), state.scale_drag_sensitivity);
+    try std.testing.expectEqual(TransformPivotMode.origin, state.transform_pivot_mode);
+    try std.testing.expectEqual(TranslationSnapTarget.grid, state.translation_snap_target);
     try std.testing.expect(!state.manipulation_drag_active);
+    try std.testing.expectEqual([3]f32{ 0.0, 0.0, 0.0 }, state.manipulation_pivot_local_offset);
     try std.testing.expectEqual([2]f32{ 0.0, 0.0 }, state.manipulation_drag_accumulator);
     try std.testing.expectEqual(GizmoDragMode.none, state.gizmo_drag_session.mode);
     try std.testing.expect(state.pending_viewport_drop == null);

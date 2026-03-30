@@ -42,13 +42,13 @@ pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.L
             return;
         }
         if (input.wasKeyPressed(.x)) {
-            state.manipulation_axis = .x;
+            toggleManipulationAxis(state, .x);
         }
         if (input.wasKeyPressed(.y)) {
-            state.manipulation_axis = .y;
+            toggleManipulationAxis(state, .y);
         }
         if (input.wasKeyPressed(.z)) {
-            state.manipulation_axis = .z;
+            toggleManipulationAxis(state, .z);
         }
         if (input.wasKeyPressed(.space)) {
             try commitActiveTransform(state, layer_context);
@@ -151,6 +151,10 @@ pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.L
     }
 }
 
+fn toggleManipulationAxis(state: *EditorState, axis: AxisConstraint) void {
+    state.manipulation_axis = if (state.manipulation_axis == axis) .free else axis;
+}
+
 pub fn activateTransformTool(
     state: *EditorState,
     layer_context: *engine.core.LayerContext,
@@ -162,6 +166,7 @@ pub fn activateTransformTool(
     state.manipulation_target = .main_world;
     state.manipulation_drag_active = false;
     state.manipulation_keyboard_mode = false;
+    state.manipulation_pivot_local_offset = .{ 0.0, 0.0, 0.0 };
     state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
     state.manipulation_accumulated_delta = .{ 0.0, 0.0 };
     state.gizmo_drag_session = .{};
@@ -198,6 +203,7 @@ pub fn clearTransformTool(state: *EditorState) void {
     state.manipulation_axis = .free;
     state.manipulation_entity = null;
     state.manipulation_target = .main_world;
+    state.manipulation_pivot_local_offset = .{ 0.0, 0.0, 0.0 };
     state.manipulation_drag_active = false;
     state.manipulation_keyboard_mode = false;
     state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
@@ -550,11 +556,12 @@ fn startGizmoDragSession(
         [3]f32{ 0.0, 0.0, 0.0 }
     else
         gizmoAxisDirection(state.transform_space, picked_handle.axis, entity_transform.rotation);
-    const gizmo_scale_value = gizmoDrawScale(camera_transform.translation, entity_transform.translation);
+    const gizmo_origin = pivotWorldPosition(entity_transform, state.manipulation_pivot_local_offset);
+    const gizmo_scale_value = gizmoDrawScale(camera_transform.translation, gizmo_origin);
 
     var projection = GizmoDragSession{
         .mode = .mouse_delta,
-        .plane_origin = entity_transform.translation,
+        .plane_origin = gizmo_origin,
         .plane_normal = camera_basis.forward,
         .handle_axis_world = if (picked_handle.axis == .free) uniformScaleDragDirection(camera_basis.right, camera_basis.up) else axis_world,
         .draw_scale = gizmo_scale_value,
@@ -629,17 +636,17 @@ fn applyGizmoDragTranslate(
     ray: engine.scene.Ray,
     entity_transform: *engine.scene.Transform,
 ) void {
-    _ = layer_context;
     const projection = state.gizmo_drag_session;
     const current_point = rayPlaneHitPoint(ray, projection.plane_origin, projection.plane_normal) orelse return;
+    const pivot_origin = currentManipulationPivotWorldPosition(state);
 
     var target = switch (projection.mode) {
         .move_plane => vec3.add(
-            state.manipulation_origin.translation,
+            pivot_origin,
             vec3.sub(current_point, projection.drag_start_point),
         ),
         .move_axis => vec3.add(
-            state.manipulation_origin.translation,
+            pivot_origin,
             vec3.scale(
                 projection.handle_axis_world,
                 vec3.dot(vec3.sub(current_point, projection.drag_start_point), projection.handle_axis_world),
@@ -649,10 +656,10 @@ fn applyGizmoDragTranslate(
     };
 
     if (state.translation_snap_enabled) {
-        target = snapPositionFromOrigin(state.manipulation_origin.translation, target, state.translation_snap_step);
+        target = snapPivotTargetPosition(state, layer_context, ray, target);
     }
 
-    entity_transform.translation = target;
+    setTransformPivotPosition(entity_transform, state.manipulation_pivot_local_offset, target);
 }
 
 fn applyGizmoDragRotate(
@@ -681,6 +688,16 @@ fn applyGizmoDragRotate(
             state.manipulation_origin.rotation,
         )),
     };
+    const delta_rotation = switch (state.transform_space) {
+        .local => quat.fromAxisAngle(projection.handle_axis_world, angle),
+        .world => quat.fromAxisAngle(projection.handle_axis_world, angle),
+    };
+    const pivot_origin = currentManipulationPivotWorldPosition(state);
+    const origin_offset = vec3.sub(state.manipulation_origin.translation, pivot_origin);
+    entity_transform.translation = vec3.add(
+        pivot_origin,
+        engine.math.quat.rotateVec3(delta_rotation, origin_offset),
+    );
 }
 
 fn applyGizmoDragScale(
@@ -738,6 +755,7 @@ fn applyGizmoDragScale(
         utils.clampScale(raw_scale[1]),
         utils.clampScale(raw_scale[2]),
     };
+    setTransformPivotPosition(entity_transform, state.manipulation_pivot_local_offset, currentManipulationPivotWorldPosition(state));
 }
 
 pub fn applyQuickTranslate(
@@ -755,6 +773,9 @@ pub fn applyQuickTranslate(
     const distance = @max(vec3.length(vec3.sub(camera_transform.translation, state.manipulation_origin.translation)), 1.0);
     const move_scale = distance * state.translation_drag_sensitivity;
 
+    const pivot_origin = currentManipulationPivotWorldPosition(state);
+    var pivot_target = pivot_origin;
+
     // 基于累计偏移量计算
     switch (state.manipulation_axis) {
         .free => {
@@ -762,29 +783,23 @@ pub fn applyQuickTranslate(
                 vec3.scale(right, state.manipulation_accumulated_delta[0] * move_scale),
                 vec3.scale(up, state.manipulation_accumulated_delta[1] * move_scale),
             );
-            entity_transform.translation = vec3.add(state.manipulation_origin.translation, delta);
+            pivot_target = vec3.add(pivot_origin, delta);
         },
         .x, .y, .z => {
             const axis = gizmoAxisDirection(state.transform_space, state.manipulation_axis, state.manipulation_origin.rotation);
             const scalar = combinedMouseDrag(state.manipulation_accumulated_delta) * move_scale;
-            entity_transform.translation = vec3.add(state.manipulation_origin.translation, vec3.scale(axis, scalar));
+            pivot_target = vec3.add(pivot_origin, vec3.scale(axis, scalar));
         },
     }
 
-    // 对计算出的绝对值进行Snap，不污染下一次计算
     if (state.translation_snap_enabled) {
-        const origin = state.manipulation_origin.translation;
-        const snap = state.translation_snap_step;
-        const delta_x = entity_transform.translation[0] - origin[0];
-        const delta_y = entity_transform.translation[1] - origin[1];
-        const delta_z = entity_transform.translation[2] - origin[2];
-
-        entity_transform.translation = .{
-            origin[0] + @round(delta_x / snap) * snap,
-            origin[1] + @round(delta_y / snap) * snap,
-            origin[2] + @round(delta_z / snap) * snap,
+        const ray = viewportRayUnderCursor(state, layer_context, true) orelse {
+            setTransformPivotPosition(entity_transform, state.manipulation_pivot_local_offset, pivot_target);
+            return;
         };
+        pivot_target = snapPivotTargetPosition(state, layer_context, ray, pivot_target);
     }
+    setTransformPivotPosition(entity_transform, state.manipulation_pivot_local_offset, pivot_target);
 }
 pub fn applyQuickRotate(state: *EditorState, entity_transform: *engine.scene.Transform) void {
     // 基于累计偏移量计算旋转
@@ -817,6 +832,13 @@ pub fn applyQuickRotate(state: *EditorState, entity_transform: *engine.scene.Tra
     }
 
     entity_transform.rotation = quat.fromEuler(euler);
+    const pivot_origin = currentManipulationPivotWorldPosition(state);
+    const delta_rotation = quat.mul(entity_transform.rotation, quat.inverse(state.manipulation_origin.rotation));
+    const origin_offset = vec3.sub(state.manipulation_origin.translation, pivot_origin);
+    entity_transform.translation = vec3.add(
+        pivot_origin,
+        engine.math.quat.rotateVec3(delta_rotation, origin_offset),
+    );
 }
 
 pub fn applyQuickScale(state: *EditorState, entity_transform: *engine.scene.Transform) void {
@@ -856,12 +878,22 @@ pub fn applyQuickScale(state: *EditorState, entity_transform: *engine.scene.Tran
         utils.clampScale(raw_scale[1]),
         utils.clampScale(raw_scale[2]),
     };
+    setTransformPivotPosition(entity_transform, state.manipulation_pivot_local_offset, currentManipulationPivotWorldPosition(state));
 }
 
 pub fn refreshGizmoState(state: *EditorState, layer_context: *engine.core.LayerContext) void {
     refreshTransformToolTarget(state, layer_context) catch |err| {
         std.log.err("failed to refresh transform tool target: {}", .{err});
     };
+    if (!state.manipulation_drag_active) {
+        if (state.manipulation_entity) |entity_id| {
+            if (currentManipulationWorld(state, layer_context)) |world| {
+                state.manipulation_pivot_local_offset = computePivotLocalOffsetForEntity(state, world, entity_id);
+            }
+        } else {
+            state.manipulation_pivot_local_offset = .{ 0.0, 0.0, 0.0 };
+        }
+    }
     layer_context.renderer.setEditorGizmoState(.{
         .mode = switch (state.manipulation_mode) {
             .none => .idle,
@@ -875,6 +907,7 @@ pub fn refreshGizmoState(state: *EditorState, layer_context: *engine.core.LayerC
             .world => .world,
         },
     });
+    syncEditorGizmoTransformOverride(state, layer_context);
 }
 
 fn refreshTransformToolTarget(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -882,6 +915,7 @@ fn refreshTransformToolTarget(state: *EditorState, layer_context: *engine.core.L
         if (state.manipulation_mode == .none) {
             clearTransformSnapshot(state);
             state.manipulation_entity = null;
+            state.manipulation_pivot_local_offset = .{ 0.0, 0.0, 0.0 };
         }
         return;
     }
@@ -895,12 +929,16 @@ fn refreshTransformToolTarget(state: *EditorState, layer_context: *engine.core.L
     clearTransformSnapshot(state);
     state.manipulation_entity = next.entity_id;
     state.manipulation_target = next.target;
+    state.manipulation_pivot_local_offset = .{ 0.0, 0.0, 0.0 };
     state.manipulation_drag_active = false;
     state.manipulation_drag_accumulator = .{ 0.0, 0.0 };
     state.manipulation_accumulated_delta = .{ 0.0, 0.0 };
 
     if (next.entity_id) |entity_id| {
         state.manipulation_origin = currentToolTargetTransform(state, layer_context, entity_id) orelse return;
+        if (currentManipulationWorld(state, layer_context)) |world| {
+            state.manipulation_pivot_local_offset = computePivotLocalOffsetForEntity(state, world, entity_id);
+        }
         if (next.target == .main_world) {
             state.manipulation_snapshot = try history.captureEntitySnapshot(state, layer_context.world, entity_id);
         }
@@ -955,12 +993,138 @@ fn currentToolTargetTransform(
     };
 }
 
+fn currentManipulationWorld(state: *EditorState, layer_context: *engine.core.LayerContext) ?*engine.scene.World {
+    return switch (state.manipulation_target) {
+        .main_world => layer_context.world,
+        .staged_preview => if (state.ai_preview_runtime) |*runtime|
+            &runtime.world
+        else
+            null,
+    };
+}
+
+fn syncEditorGizmoTransformOverride(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+    const next = nextTransformToolTarget(state, layer_context);
+    const entity_id = next.entity_id orelse {
+        layer_context.renderer.setEditorGizmoTransformOverride(null);
+        return;
+    };
+
+    const world = switch (next.target) {
+        .main_world => layer_context.world,
+        .staged_preview => if (state.ai_preview_runtime) |*runtime|
+            &runtime.world
+        else {
+            layer_context.renderer.setEditorGizmoTransformOverride(null);
+            return;
+        },
+    };
+
+    const transform = switch (next.target) {
+        .main_world => layer_context.world.worldTransform(entity_id),
+        .staged_preview => world.worldTransformConst(entity_id),
+    } orelse {
+        layer_context.renderer.setEditorGizmoTransformOverride(null);
+        return;
+    };
+
+    const pivot_local_offset = computePivotLocalOffsetForEntity(state, world, entity_id);
+    if (vec3.length(pivot_local_offset) <= 0.0001) {
+        layer_context.renderer.setEditorGizmoTransformOverride(null);
+        return;
+    }
+
+    var gizmo_transform = transform;
+    gizmo_transform.translation = pivotWorldPosition(transform, pivot_local_offset);
+    layer_context.renderer.setEditorGizmoTransformOverride(gizmo_transform);
+}
+
+fn computePivotLocalOffsetForEntity(
+    state: *const EditorState,
+    world: *const engine.scene.World,
+    entity_id: engine.scene.EntityId,
+) [3]f32 {
+    return switch (state.transform_pivot_mode) {
+        .origin => .{ 0.0, 0.0, 0.0 },
+        .bounds_center => blk: {
+            const entity = world.getEntityConst(entity_id) orelse break :blk .{ 0.0, 0.0, 0.0 };
+            if (entity.mesh) |mesh_component| {
+                if (mesh_component.handle) |mesh_handle| {
+                    if (world.resources.mesh(mesh_handle)) |mesh| {
+                        break :blk mesh.local_bounds.centroid();
+                    }
+                }
+            }
+            if (entity.skinned_mesh) |skinned_mesh_component| {
+                if (skinned_mesh_component.mesh_handle) |mesh_handle| {
+                    if (world.resources.mesh(mesh_handle)) |mesh| {
+                        break :blk mesh.local_bounds.centroid();
+                    }
+                }
+            }
+            const transform = world.worldTransformConst(entity_id) orelse entity.local_transform;
+            if (world.worldBoundsConst(entity_id)) |bounds| {
+                break :blk worldPointToLocal(transform, bounds.centroid());
+            }
+            break :blk .{ 0.0, 0.0, 0.0 };
+        },
+    };
+}
+
 fn gizmoAxisDirection(space: TransformSpace, axis: state_mod.AxisConstraint, rotation: [4]f32) [3]f32 {
     const base_axis = engine.math.axis.vector(axis);
     return switch (space) {
         .world => base_axis,
         .local => engine.math.quat.rotateVec3(rotation, base_axis),
     };
+}
+
+fn pivotWorldPosition(transform: engine.scene.Transform, pivot_local_offset: [3]f32) [3]f32 {
+    return localPointToWorld(transform, pivot_local_offset);
+}
+
+fn currentManipulationPivotWorldPosition(state: *const EditorState) [3]f32 {
+    return pivotWorldPosition(state.manipulation_origin, state.manipulation_pivot_local_offset);
+}
+
+fn setTransformPivotPosition(
+    transform: *engine.scene.Transform,
+    pivot_local_offset: [3]f32,
+    pivot_world_position: [3]f32,
+) void {
+    transform.translation = vec3.sub(
+        pivot_world_position,
+        engine.math.quat.rotateVec3(transform.rotation, componentMul(transform.scale, pivot_local_offset)),
+    );
+}
+
+fn localPointToWorld(transform: engine.scene.Transform, local_point: [3]f32) [3]f32 {
+    return vec3.add(
+        transform.translation,
+        engine.math.quat.rotateVec3(transform.rotation, componentMul(transform.scale, local_point)),
+    );
+}
+
+fn worldPointToLocal(transform: engine.scene.Transform, world_point: [3]f32) [3]f32 {
+    const offset_world = vec3.sub(world_point, transform.translation);
+    const unrotated = engine.math.quat.rotateVec3(quat.inverse(transform.rotation), offset_world);
+    return .{
+        safeComponentDivide(unrotated[0], transform.scale[0]),
+        safeComponentDivide(unrotated[1], transform.scale[1]),
+        safeComponentDivide(unrotated[2], transform.scale[2]),
+    };
+}
+
+fn componentMul(a: [3]f32, b: [3]f32) [3]f32 {
+    return .{
+        a[0] * b[0],
+        a[1] * b[1],
+        a[2] * b[2],
+    };
+}
+
+fn safeComponentDivide(numerator: f32, denominator: f32) f32 {
+    return if (@abs(denominator) > 0.00001) numerator / denominator else 0.0;
 }
 
 fn combinedMouseDrag(drag: [2]f32) f32 {
@@ -972,6 +1136,180 @@ fn snapPositionFromOrigin(origin: [3]f32, target: [3]f32, step: f32) [3]f32 {
         origin[0] + @round((target[0] - origin[0]) / step) * step,
         origin[1] + @round((target[1] - origin[1]) / step) * step,
         origin[2] + @round((target[2] - origin[2]) / step) * step,
+    };
+}
+
+fn snapPivotTargetPosition(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    ray: engine.scene.Ray,
+    raw_target: [3]f32,
+) [3]f32 {
+    return switch (state.translation_snap_target) {
+        .grid => snapPositionFromOrigin(
+            currentManipulationPivotWorldPosition(state),
+            raw_target,
+            state.translation_snap_step,
+        ),
+        .surface, .vertex => blk: {
+            const snap_point = resolveSurfaceOrVertexSnapPoint(state, layer_context, ray) orelse break :blk raw_target;
+            break :blk constrainSnapPointToActiveAxis(state, snap_point);
+        },
+    };
+}
+
+fn constrainSnapPointToActiveAxis(state: *const EditorState, point: [3]f32) [3]f32 {
+    if (state.manipulation_axis == .free) return point;
+    const pivot_origin = currentManipulationPivotWorldPosition(state);
+    const axis = gizmoAxisDirection(state.transform_space, state.manipulation_axis, state.manipulation_origin.rotation);
+    const distance_along_axis = vec3.dot(vec3.sub(point, pivot_origin), axis);
+    return vec3.add(pivot_origin, vec3.scale(axis, distance_along_axis));
+}
+
+fn resolveSurfaceOrVertexSnapPoint(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    ray: engine.scene.Ray,
+) ?[3]f32 {
+    const world = currentManipulationWorld(state, layer_context) orelse return null;
+    const surface_hit = raycastSurfaceIgnoringEntity(world, ray, state.manipulation_entity) orelse return null;
+    return switch (state.translation_snap_target) {
+        .grid => null,
+        .surface => surface_hit.position,
+        .vertex => nearestVertexWorldPosition(world, surface_hit.entity_id, surface_hit.position) orelse surface_hit.position,
+    };
+}
+
+const SnapSurfaceHit = struct {
+    entity_id: engine.scene.EntityId,
+    distance: f32,
+    position: [3]f32,
+};
+
+const SnapTriangleHit = struct {
+    distance: f32,
+    position: [3]f32,
+};
+
+fn raycastSurfaceIgnoringEntity(
+    world: *engine.scene.World,
+    ray: engine.scene.Ray,
+    ignored_entity: ?engine.scene.EntityId,
+) ?SnapSurfaceHit {
+    const direction = safeNormalizeOr(ray.direction, .{ 0.0, 0.0, -1.0 });
+    const candidates = world.queryRenderableRayBounds(
+        world.allocator,
+        ray.origin,
+        direction,
+        std.math.inf(f32),
+    ) catch return null;
+    defer world.allocator.free(candidates);
+
+    var best_hit: ?SnapSurfaceHit = null;
+    for (candidates) |candidate| {
+        if (ignored_entity != null and candidate.id == ignored_entity.?) continue;
+        if (best_hit) |resolved_best_hit| {
+            if (candidate.enter_distance > resolved_best_hit.distance) break;
+        }
+
+        const entity = world.getEntityConst(candidate.id) orelse continue;
+        if (!entity.visible or entity.editor_only) continue;
+        const mesh = (if (entity.mesh) |mesh_component|
+            if (mesh_component.handle) |mesh_handle|
+                world.resources.mesh(mesh_handle)
+            else
+                null
+        else if (entity.skinned_mesh) |skinned_mesh_component|
+            if (skinned_mesh_component.mesh_handle) |mesh_handle|
+                world.resources.mesh(mesh_handle)
+            else
+                null
+        else
+            null) orelse continue;
+        if (mesh.primitive_type != .triangle_list or mesh.indices.len < 3) continue;
+
+        const world_transform = world.worldTransformConst(entity.id) orelse entity.local_transform;
+        var triangle_index: usize = 0;
+        while (triangle_index + 2 < mesh.indices.len) : (triangle_index += 3) {
+            const v0 = localPointToWorld(world_transform, mesh.vertices[mesh.indices[triangle_index]].position);
+            const v1 = localPointToWorld(world_transform, mesh.vertices[mesh.indices[triangle_index + 1]].position);
+            const v2 = localPointToWorld(world_transform, mesh.vertices[mesh.indices[triangle_index + 2]].position);
+            const hit = rayTriangleIntersection(ray.origin, direction, v0, v1, v2) orelse continue;
+            if (best_hit == null or hit.distance < best_hit.?.distance) {
+                best_hit = .{
+                    .entity_id = entity.id,
+                    .distance = hit.distance,
+                    .position = hit.position,
+                };
+            }
+        }
+    }
+    return best_hit;
+}
+
+fn nearestVertexWorldPosition(
+    world: *const engine.scene.World,
+    entity_id: engine.scene.EntityId,
+    reference_position: [3]f32,
+) ?[3]f32 {
+    const entity = world.getEntityConst(entity_id) orelse return null;
+    const mesh = (if (entity.mesh) |mesh_component|
+        if (mesh_component.handle) |mesh_handle|
+            world.resources.mesh(mesh_handle)
+        else
+            null
+    else if (entity.skinned_mesh) |skinned_mesh_component|
+        if (skinned_mesh_component.mesh_handle) |mesh_handle|
+            world.resources.mesh(mesh_handle)
+        else
+            null
+    else
+        null) orelse return null;
+    const world_transform = world.worldTransformConst(entity_id) orelse entity.local_transform;
+
+    var nearest: ?[3]f32 = null;
+    var best_distance_sq = std.math.inf(f32);
+    for (mesh.vertices) |vertex| {
+        const world_position = localPointToWorld(world_transform, vertex.position);
+        const delta = vec3.sub(world_position, reference_position);
+        const distance_sq = vec3.dot(delta, delta);
+        if (distance_sq < best_distance_sq) {
+            best_distance_sq = distance_sq;
+            nearest = world_position;
+        }
+    }
+    return nearest;
+}
+
+fn rayTriangleIntersection(
+    ray_origin: [3]f32,
+    ray_direction: [3]f32,
+    v0: [3]f32,
+    v1: [3]f32,
+    v2: [3]f32,
+) ?SnapTriangleHit {
+    const epsilon: f32 = 0.00001;
+    const edge1 = vec3.sub(v1, v0);
+    const edge2 = vec3.sub(v2, v0);
+    const pvec = vec3.cross(ray_direction, edge2);
+    const determinant = vec3.dot(edge1, pvec);
+    if (@abs(determinant) <= epsilon) return null;
+
+    const inverse_determinant = 1.0 / determinant;
+    const tvec = vec3.sub(ray_origin, v0);
+    const u = vec3.dot(tvec, pvec) * inverse_determinant;
+    if (u < 0.0 or u > 1.0) return null;
+
+    const qvec = vec3.cross(tvec, edge1);
+    const v = vec3.dot(ray_direction, qvec) * inverse_determinant;
+    if (v < 0.0 or u + v > 1.0) return null;
+
+    const distance = vec3.dot(edge2, qvec) * inverse_determinant;
+    if (distance <= epsilon) return null;
+
+    return .{
+        .distance = distance,
+        .position = vec3.add(ray_origin, vec3.scale(ray_direction, distance)),
     };
 }
 
@@ -1242,8 +1580,21 @@ pub fn pickGizmoHandle(
             return null,
     };
 
+    const world = switch (state.manipulation_target) {
+        .main_world => layer_context.world,
+        .staged_preview => if (state.ai_preview_runtime) |*runtime|
+            &runtime.world
+        else
+            return null,
+    };
+    const pivot_local_offset = if (state.manipulation_entity != null and state.manipulation_entity.? == entity_id)
+        state.manipulation_pivot_local_offset
+    else
+        computePivotLocalOffsetForEntity(state, world, entity_id);
+
     const cam_transform = camera.activeCameraTransform(state, layer_context);
-    const scale = gizmoDrawScale(cam_transform.translation, entity_transform.translation);
+    const origin = pivotWorldPosition(entity_transform, pivot_local_offset);
+    const scale = gizmoDrawScale(cam_transform.translation, origin);
     const threshold = scale * 0.18; // click tolerance in world units
 
     const rotation_euler = switch (state.transform_space) {
@@ -1252,7 +1603,6 @@ pub fn pickGizmoHandle(
     };
 
     const mode: ManipulationMode = state.manipulation_mode;
-    const origin = entity_transform.translation;
 
     // Build the three axis directions in world space (considering transform space)
     const axes = [3][3]f32{
