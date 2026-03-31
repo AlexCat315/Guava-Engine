@@ -15,6 +15,19 @@ const theme = @import("../../theme.zig");
 const icon_button = @import("../../components/icon_button.zig");
 const toggle_button = @import("../../components/toggle_button.zig");
 
+fn collectVisibleChildren(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    parent_id: engine.scene.EntityId,
+    out: *std.ArrayList(engine.scene.EntityId),
+) !void {
+    for (layer_context.world.entities.items) |child| {
+        if (child.editor_only or child.parent != parent_id) continue;
+        if (!utils.shouldShowEntityInSceneTree(state, layer_context.world, child.id)) continue;
+        try out.append(state.allocator orelse layer_context.world.allocator, child.id);
+    }
+}
+
 fn entityDragPreviewTypeLabel(state: *const EditorState, entity: *const engine.scene.Entity) []const u8 {
     if (entity.is_folder) {
         return state.text(.folder);
@@ -102,19 +115,40 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
     }
     layout.drawSidebarSectionDivider();
 
-    // Tree (no table, pure tree)
-    // First pass: collect visible root entities to compute sibling info
-    var root_entities = std.ArrayList(engine.scene.EntityId).empty;
-    defer root_entities.deinit(state.allocator orelse layer_context.world.allocator);
-    for (layer_context.world.entities.items) |entity| {
-        if (entity.editor_only or entity.parent != null) continue;
-        if (!utils.shouldShowEntityInSceneTree(state, layer_context.world, entity.id)) continue;
-        try root_entities.append(state.allocator orelse layer_context.world.allocator, entity.id);
-    }
-    for (root_entities.items, 0..) |entity_id, i| {
-        var ancestor_has_next: [32]bool = .{false} ** 32;
-        ancestor_has_next[0] = i < root_entities.items.len - 1;
-        drawHierarchyNodeImpl(state, layer_context, entity_id, 0, &ancestor_has_next) catch |err| switch (err) {
+    // Tree — start from the scene root entity so all guide lines have a
+    // single unified parent chain.  The scene root itself is hidden (editor_only).
+    const scene_root = state.scene_root_entity orelse {
+        // Fallback for legacy scenes without a scene root: collect top-level
+        // entities and draw them as before.
+        var root_entities = std.ArrayList(engine.scene.EntityId).empty;
+        defer root_entities.deinit(state.allocator orelse layer_context.world.allocator);
+        for (layer_context.world.entities.items) |entity| {
+            if (entity.editor_only or entity.parent != null) continue;
+            if (!utils.shouldShowEntityInSceneTree(state, layer_context.world, entity.id)) continue;
+            try root_entities.append(state.allocator orelse layer_context.world.allocator, entity.id);
+        }
+        for (root_entities.items, 0..) |entity_id, i| {
+            var ancestor_has_next: [32]bool = .{false} ** 32;
+            ancestor_has_next[0] = i < root_entities.items.len - 1;
+            drawHierarchyNodeImpl(state, layer_context, entity_id, 0, &ancestor_has_next) catch |err| switch (err) {
+                error.HierarchyMutated => return,
+                else => return err,
+            };
+        }
+        if (try drawSceneWindowContextMenu(state, layer_context)) {
+            return;
+        }
+        return;
+    };
+
+    // Draw children of the scene root as depth-0 nodes
+    var ancestor_has_next: [32]bool = .{false} ** 32;
+    var root_children = std.ArrayList(engine.scene.EntityId).empty;
+    defer root_children.deinit(state.allocator orelse layer_context.world.allocator);
+    try collectVisibleChildren(state, layer_context, scene_root, &root_children);
+    for (root_children.items, 0..) |child_id, i| {
+        ancestor_has_next[0] = i < root_children.items.len - 1;
+        drawHierarchyNodeImpl(state, layer_context, child_id, 0, &ancestor_has_next) catch |err| switch (err) {
             error.HierarchyMutated => return,
             else => return err,
         };
@@ -185,17 +219,19 @@ fn drawHierarchyNodeImpl(
         theme.Palette.hierarchy.active_icon,
     );
 
-    // Calculate has_next_sibling
+    // Calculate has_next_sibling — must account for filtered/hidden entities,
+    // not just editor_only.  A node is "last" only if no VISIBLE sibling follows it.
     const has_next_sibling = blk: {
         if (entity.parent) |parent_id| {
-            const parent = layer_context.world.getEntity(parent_id) orelse break :blk false;
             var found_self = false;
-            for (parent.children.items) |child_id| {
+            for (layer_context.world.entities.items) |sibling| {
+                if (sibling.parent != parent_id) continue;
                 if (found_self) {
-                    const child = layer_context.world.getEntity(child_id) orelse continue;
-                    if (!child.editor_only) break :blk true;
+                    if (!sibling.editor_only and
+                        utils.shouldShowEntityInSceneTree(state, layer_context.world, sibling.id))
+                        break :blk true;
                 }
-                if (child_id == entity_id) found_self = true;
+                if (sibling.id == entity_id) found_self = true;
             }
         }
         break :blk false;
@@ -311,13 +347,14 @@ fn drawHierarchyNodeImpl(
     // Recurse children
     if (has_visible_children and is_open) {
         const child_depth = depth + 1;
-        if (child_depth < 32) {
-            ancestor_has_next[@intCast(child_depth)] = has_next_sibling;
-        }
-        for (layer_context.world.entities.items) |child| {
-            if (child.editor_only or child.parent != entity_id) continue;
-            if (!utils.shouldShowEntityInSceneTree(state, layer_context.world, child.id)) continue;
-            drawHierarchyNodeImpl(state, layer_context, child.id, child_depth, ancestor_has_next) catch |err| switch (err) {
+        var visible_children = std.ArrayList(engine.scene.EntityId).empty;
+        defer visible_children.deinit(state.allocator orelse layer_context.world.allocator);
+        try collectVisibleChildren(state, layer_context, entity_id, &visible_children);
+        for (visible_children.items, 0..) |child_id, i| {
+            if (child_depth < 32) {
+                ancestor_has_next[@intCast(child_depth)] = i < visible_children.items.len - 1;
+            }
+            drawHierarchyNodeImpl(state, layer_context, child_id, child_depth, ancestor_has_next) catch |err| switch (err) {
                 error.HierarchyMutated => return error.HierarchyMutated,
                 else => return err,
             };

@@ -442,6 +442,7 @@ pub const EditorState = struct {
     ai_preview_selected_entity: ?engine.scene.EntityId = null,
     editor_camera: ?engine.scene.EntityId = null,
     scene_camera: ?engine.scene.EntityId = null,
+    scene_root_entity: ?engine.scene.EntityId = null,
     inspector_name_entity: ?engine.scene.EntityId = null,
     inspector_name_buffer: [inspector_name_buffer_size]u8 = [_]u8{0} ** inspector_name_buffer_size,
     inspector_filter_buffer: [inspector_filter_buffer_size]u8 = [_]u8{0} ** inspector_filter_buffer_size,

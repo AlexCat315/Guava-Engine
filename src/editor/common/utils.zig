@@ -173,15 +173,57 @@ pub fn hasVisibleSceneTreeChildren(state: *const EditorState, world: *const engi
 
 pub fn shouldShowEntityInSceneTree(state: *const EditorState, world: *const engine.scene.World, entity_id: engine.scene.EntityId) bool {
     const scene_filter = zeroTerminatedSlice(state.scene_filter_buffer[0..]);
-    if (scene_filter.len != 0 and !entityMatchesFilterRecursive(state, world, entity_id, scene_filter)) {
-        return false;
+    if (scene_filter.len != 0) {
+        // Show if self/descendants match, OR if any ancestor matches (keeps tree connected)
+        if (!entityMatchesFilterRecursive(state, world, entity_id, scene_filter) and
+            !ancestorMatchesFilter(state, world, entity_id, scene_filter))
+        {
+            return false;
+        }
     }
 
     const hierarchy_filter = zeroTerminatedSlice(state.hierarchy_filter_buffer[0..]);
     if (hierarchy_filter.len != 0 or state.hierarchy_category != .all) {
-        return entityMatchesHierarchyFilterRecursive(state, world, entity_id, hierarchy_filter);
+        if (!entityMatchesHierarchyFilterRecursive(state, world, entity_id, hierarchy_filter) and
+            !ancestorMatchesHierarchyFilter(state, world, entity_id, hierarchy_filter))
+        {
+            return false;
+        }
     }
     return true;
+}
+
+/// Check if any ancestor of entity_id matches the filter text.
+/// This ensures parent nodes remain visible when a deep child matches.
+pub fn ancestorMatchesFilter(
+    state: *const EditorState,
+    world: *const engine.scene.World,
+    entity_id: engine.scene.EntityId,
+    filter: []const u8,
+) bool {
+    const entity = world.getEntityConst(entity_id) orelse return false;
+    const parent_id = entity.parent orelse return false;
+    const parent = world.getEntityConst(parent_id) orelse return false;
+    if (parent.editor_only) return false;
+    if (containsAsciiInsensitive(parent.name, filter)) return true;
+    return ancestorMatchesFilter(state, world, parent_id, filter);
+}
+
+/// Check if any ancestor matches the hierarchy filter (text + category).
+pub fn ancestorMatchesHierarchyFilter(
+    state: *const EditorState,
+    world: *const engine.scene.World,
+    entity_id: engine.scene.EntityId,
+    hierarchy_filter: []const u8,
+) bool {
+    const entity = world.getEntityConst(entity_id) orelse return false;
+    const parent_id = entity.parent orelse return false;
+    const parent = world.getEntityConst(parent_id) orelse return false;
+    if (parent.editor_only) return false;
+    if (hierarchy_filter.len == 0 or containsAsciiInsensitive(parent.name, hierarchy_filter)) {
+        if (entityMatchesHierarchyCategory(state.hierarchy_category, parent)) return true;
+    }
+    return ancestorMatchesHierarchyFilter(state, world, parent_id, hierarchy_filter);
 }
 
 pub fn entityMatchesFilterRecursive(

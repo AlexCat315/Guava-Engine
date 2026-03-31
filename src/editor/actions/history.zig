@@ -747,6 +747,7 @@ pub fn newScene(state: *EditorState, layer_context: *engine.core.LayerContext) !
     state.scene_camera = null;
     state.editor_camera = null;
     try camera.createEditorCamera(state, layer_context);
+    state.scene_root_entity = try createSceneRootEntity(layer_context.world);
     if (!state.editor_camera_active) {
         if (state.scene_camera) |scene_camera_id| {
             _ = layer_context.world.setPrimaryCamera(scene_camera_id);
@@ -756,6 +757,13 @@ pub fn newScene(state: *EditorState, layer_context: *engine.core.LayerContext) !
     utils.syncInspectorNameBuffer(state, layer_context);
     try resetSnapshotHistory(state, layer_context);
     try refreshWindowTitle(state, layer_context);
+}
+
+fn createSceneRootEntity(world: *engine.scene.World) !engine.scene.EntityId {
+    return world.createEntity(.{
+        .name = "Scene Root",
+        .editor_only = true,
+    });
 }
 
 pub fn loadScenePath(state: *EditorState, layer_context: *engine.core.LayerContext, path: []const u8) !void {
@@ -782,6 +790,8 @@ pub fn loadScenePath(state: *EditorState, layer_context: *engine.core.LayerConte
     state.scene_camera = layer_context.world.primaryCameraEntity();
     state.editor_camera = null;
     try camera.createEditorCamera(state, layer_context);
+    state.scene_root_entity = try createSceneRootEntity(layer_context.world);
+    try reparentAllRootEntitiesToSceneRoot(layer_context.world, state.scene_root_entity.?);
     if (!state.editor_camera_active) {
         if (state.scene_camera) |scene_camera_id| {
             _ = layer_context.world.setPrimaryCamera(scene_camera_id);
@@ -791,6 +801,18 @@ pub fn loadScenePath(state: *EditorState, layer_context: *engine.core.LayerConte
     utils.syncInspectorNameBuffer(state, layer_context);
     try resetSnapshotHistory(state, layer_context);
     try refreshWindowTitle(state, layer_context);
+}
+
+fn reparentAllRootEntitiesToSceneRoot(world: *engine.scene.World, scene_root: engine.scene.EntityId) !void {
+    var root_ids = std.ArrayList(engine.scene.EntityId).empty;
+    defer root_ids.deinit(world.allocator);
+    for (world.entities.items) |entity| {
+        if (entity.editor_only or entity.parent != null) continue;
+        try root_ids.append(world.allocator, entity.id);
+    }
+    for (root_ids.items) |root_id| {
+        _ = try world.setParentLocal(root_id, scene_root);
+    }
 }
 
 pub fn importModelPath(state: *EditorState, layer_context: *engine.core.LayerContext, path: []const u8) !void {
