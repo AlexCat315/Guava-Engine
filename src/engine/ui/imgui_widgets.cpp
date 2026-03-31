@@ -220,196 +220,188 @@ extern "C" uint32_t guava_imgui_tree_node_entity(
 
   ImGui::PushID(static_cast<int>(id));
 
-  const ImGuiStyle& style = ImGui::GetStyle();
-  const float indent = 18.0f;
-  const float row_height = ImGui::GetFrameHeight();
+  const float indent = 20.0f;
+  const float row_height = ImGui::GetFontSize() + 6.0f;  // Tight row height
+  const float rounding = 4.0f;  // Item corner radius
   ImDrawList* draw_list = ImGui::GetWindowDrawList();
   const ImVec2 window_pos = ImGui::GetWindowPos();
   const float content_left = window_pos.x + ImGui::GetWindowContentRegionMin().x;
   const float content_right = window_pos.x + ImGui::GetWindowContentRegionMax().x;
 
-  // ── Row position ────────────────────────────────────────────────────────
+  // ── Reserve row space ───────────────────────────────────────────────────
   const ImVec2 cursor = ImGui::GetCursorScreenPos();
   const float row_top = cursor.y;
   const float row_center_y = row_top + row_height * 0.5f;
 
-  // ── Reserve row space ───────────────────────────────────────────────────
   ImGui::Dummy(ImVec2(content_right - content_left, row_height));
   const ImVec2 item_min = ImGui::GetItemRectMin();
   const ImVec2 item_max = ImGui::GetItemRectMax();
 
-  // ── Get open state from storage ─────────────────────────────────────────
+  // ── Open state ──────────────────────────────────────────────────────────
   ImGuiStorage* storage = ImGui::GetStateStorage();
   ImGuiID open_id = ImGui::GetID("##open");
   bool is_open = storage->GetInt(open_id, default_open ? 1 : 0) != 0;
 
-  // ── Row background (hover / selected) ───────────────────────────────────
+  // ── Hover state ─────────────────────────────────────────────────────────
   const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+
+  // ── Row background with rounded corners ─────────────────────────────────
   if (selected) {
     draw_list->AddRectFilled(
-        ImVec2(content_left, item_min.y),
-        ImVec2(content_right, item_max.y),
-        IM_COL32(38, 70, 83, 180));
+        ImVec2(content_left + 2.0f, item_min.y + 1.0f),
+        ImVec2(content_right - 2.0f, item_max.y - 1.0f),
+        IM_COL32(38, 75, 80, 200), rounding);
   } else if (hovered) {
     draw_list->AddRectFilled(
-        ImVec2(content_left, item_min.y),
-        ImVec2(content_right, item_max.y),
-        IM_COL32(255, 255, 255, 16));
+        ImVec2(content_left + 2.0f, item_min.y + 1.0f),
+        ImVec2(content_right - 2.0f, item_max.y - 1.0f),
+        IM_COL32(255, 255, 255, 12), rounding);
   }
 
-  // ── Selection indicator bar (left edge) ─────────────────────────────────
+  // ── Selection indicator (left bar, rounded) ─────────────────────────────
   if (selected) {
     draw_list->AddRectFilled(
-        ImVec2(content_left, item_min.y),
-        ImVec2(content_left + 3.0f, item_max.y),
-        IM_COL32(34, 205, 100, 255), 2.0f);
+        ImVec2(content_left, item_min.y + 2.0f),
+        ImVec2(content_left + 2.5f, item_max.y - 2.0f),
+        IM_COL32(79, 195, 247, 255), 1.0f);
   }
 
-  // ── Draw vertical guide lines ───────────────────────────────────────────
-  const ImU32 guide_color = IM_COL32(58, 64, 78, 200);
-  const float guide_thickness = 1.0f;
-
+  // ── Vertical guide lines ────────────────────────────────────────────────
+  const ImU32 guide_color = IM_COL32(85, 90, 100, 120);
   for (int d = 0; d < depth; ++d) {
     if (ancestor_has_next != nullptr && ancestor_has_next[d]) {
       const float line_x = content_left + indent * (d + 1) - indent * 0.5f;
       draw_list->AddLine(
           ImVec2(line_x, item_min.y),
-          ImVec2(line_x, item_max.y + 1.0f),
-          guide_color, guide_thickness);
+          ImVec2(line_x, item_max.y),
+          guide_color, 1.0f);
     }
   }
+
+  // ── Calculate base x position ───────────────────────────────────────────
+  float x_offset = content_left + depth * indent;
 
   // ── Horizontal branch line ──────────────────────────────────────────────
   if (depth > 0) {
-    const float branch_start_x = content_left + indent * depth - indent * 0.5f;
-    const float branch_end_x = content_left + depth * indent;
+    const float branch_x = content_left + indent * depth - indent * 0.5f;
     draw_list->AddLine(
-        ImVec2(branch_start_x, row_center_y),
-        ImVec2(branch_end_x, row_center_y),
-        guide_color, guide_thickness);
+        ImVec2(branch_x, row_center_y),
+        ImVec2(x_offset + 2.0f, row_center_y),
+        guide_color, 1.0f);
   }
 
-  // ── Arrow / expand icon ─────────────────────────────────────────────────
-  float x_offset = content_left + depth * indent;
-  const float arrow_size = 10.0f;
-
+  // ── Arrow ───────────────────────────────────────────────────────────────
+  const float arrow_size = 6.0f;
   if (has_children) {
-    const ImVec2 arrow_center(x_offset + arrow_size * 0.5f + 2.0f, row_center_y);
-    const ImU32 arrow_color = hovered ? IM_COL32(200, 210, 225, 255)
-                                       : IM_COL32(140, 150, 170, 200);
+    const ImVec2 arrow_center(x_offset + arrow_size * 0.5f, row_center_y);
+    const ImU32 arrow_color = selected
+        ? IM_COL32(200, 220, 240, 255)
+        : (hovered ? IM_COL32(180, 190, 200, 220) : IM_COL32(130, 140, 155, 160));
 
     if (is_open) {
-      const ImVec2 p1(arrow_center.x - 4.0f, arrow_center.y - 2.0f);
-      const ImVec2 p2(arrow_center.x + 4.0f, arrow_center.y - 2.0f);
-      const ImVec2 p3(arrow_center.x, arrow_center.y + 3.0f);
-      draw_list->AddTriangleFilled(p1, p2, p3, arrow_color);
+      ImVec2 pts[3] = {
+          {arrow_center.x - 3.0f, arrow_center.y - 2.0f},
+          {arrow_center.x + 3.0f, arrow_center.y - 2.0f},
+          {arrow_center.x, arrow_center.y + 2.0f}
+      };
+      draw_list->AddTriangleFilled(pts[0], pts[1], pts[2], arrow_color);
     } else {
-      const ImVec2 p1(arrow_center.x - 2.0f, arrow_center.y - 4.0f);
-      const ImVec2 p2(arrow_center.x + 3.0f, arrow_center.y);
-      const ImVec2 p3(arrow_center.x - 2.0f, arrow_center.y + 4.0f);
-      draw_list->AddTriangleFilled(p1, p2, p3, arrow_color);
+      ImVec2 pts[3] = {
+          {arrow_center.x - 2.0f, arrow_center.y - 3.0f},
+          {arrow_center.x + 2.0f, arrow_center.y},
+          {arrow_center.x - 2.0f, arrow_center.y + 3.0f}
+      };
+      draw_list->AddTriangleFilled(pts[0], pts[1], pts[2], arrow_color);
     }
-    x_offset += arrow_size + 6.0f;
+    x_offset += arrow_size + 3.0f;
   } else {
-    x_offset += arrow_size + 6.0f;
+    x_offset += arrow_size + 3.0f;
   }
 
   // ── Icon ────────────────────────────────────────────────────────────────
   if (icon_texture != nullptr && icon_size > 0.0f) {
     const float draw_size = (std::min)(icon_size, row_height - 4.0f);
-    const ImVec2 icon_min(x_offset + 2.0f,
-                          row_top + (row_height - draw_size) * 0.5f);
+    const ImVec2 icon_min(x_offset, row_top + (row_height - draw_size) * 0.5f);
     const ImVec2 icon_max(icon_min.x + draw_size, icon_min.y + draw_size);
-    draw_list->AddImage(
-        reinterpret_cast<ImTextureID>(icon_texture), icon_min, icon_max);
-    x_offset += draw_size + 6.0f;
+    draw_list->AddImage(reinterpret_cast<ImTextureID>(icon_texture), icon_min, icon_max);
+    x_offset += draw_size + 4.0f;
+  } else {
+    x_offset += 2.0f;
   }
 
-  // ── Label ───────────────────────────────────────────────────────────────
-  float label_x = x_offset;
-  const std::string owned_label = make_string(label, label_len);
-  const float text_y = row_top + (row_height - ImGui::GetFontSize()) * 0.5f;
-  draw_list->AddText(ImVec2(x_offset, text_y),
-                     selected ? IM_COL32(220, 230, 240, 255)
-                              : (visible ? ImGui::GetColorU32(ImGuiCol_Text)
-                                         : IM_COL32(130, 135, 145, 180)),
-                     owned_label.c_str());
+  // ── Text color ──────────────────────────────────────────────────────────
+  ImU32 text_color;
+  if (selected) {
+    text_color = IM_COL32(230, 240, 250, 255);
+  } else if (!visible) {
+    text_color = IM_COL32(100, 108, 120, 160);
+  } else {
+    text_color = IM_COL32(200, 210, 220, 255);
+  }
 
-  // ── Visibility eye button (right side) ──────────────────────────────────
+  // ── Eye button (right side) ─────────────────────────────────────────────
+  const float eye_size = 14.0f;
+  const float eye_x = content_right - eye_size - 8.0f;
+  const ImVec2 eye_min(eye_x, row_top + (row_height - eye_size) * 0.5f);
+
+  ImGui::SetCursorScreenPos(eye_min);
+  ImGui::InvisibleButton("##eye", ImVec2(eye_size, eye_size));
+  const bool eye_hovered = ImGui::IsItemHovered();
+  if (ImGui::IsItemClicked() && visible_clicked) {
+    *visible_clicked = true;
+  }
+
+  // Draw eye
   {
-    const float eye_size = 16.0f;
-    const float eye_x = content_right - eye_size - 8.0f;
-    const ImVec2 eye_min(eye_x, row_top + (row_height - eye_size) * 0.5f);
-    const ImVec2 eye_max(eye_min.x + eye_size, eye_min.y + eye_size);
-
-    ImGui::SetCursorScreenPos(eye_min);
-    ImGui::InvisibleButton("##eye", ImVec2(eye_size, eye_size));
-    const bool eye_hovered = ImGui::IsItemHovered();
-    const bool eye_clicked = ImGui::IsItemClicked();
-
-    if (eye_clicked && visible_clicked) {
-      *visible_clicked = true;
-    }
-
-    // Draw eye icon
-    const ImU32 eye_color = visible
-        ? (eye_hovered ? IM_COL32(41, 150, 112, 255) : IM_COL32(140, 150, 170, 200))
-        : IM_COL32(80, 85, 95, 140);
-
-    const ImVec2 eye_center = ImVec2((eye_min.x + eye_max.x) * 0.5f,
-                                      (eye_min.y + eye_max.y) * 0.5f);
-    const float r = eye_size * 0.22f;
-
-    // Eye shape: ellipse
-    draw_list->AddEllipseFilled(eye_center, ImVec2(r * 1.5f, r), eye_color, 0.0f, 32);
-    // Pupil
+    const ImVec2 ec = ImVec2(eye_min.x + eye_size * 0.5f, eye_min.y + eye_size * 0.5f);
+    const float r = eye_size * 0.25f;
+    const ImU32 eye_col = visible
+        ? (eye_hovered ? IM_COL32(79, 195, 247, 255) : IM_COL32(120, 130, 145, 180))
+        : IM_COL32(70, 75, 85, 100);
+    draw_list->AddEllipseFilled(ec, ImVec2(r * 1.5f, r * 0.8f), eye_col, 0.0f, 24);
     if (visible) {
-      draw_list->AddCircleFilled(eye_center, r * 0.55f, IM_COL32(20, 22, 26, 255));
+      draw_list->AddCircleFilled(ec, r * 0.4f, IM_COL32(41, 41, 41, 255));
     } else {
-      // Strikethrough for hidden
       draw_list->AddLine(
-          ImVec2(eye_center.x - r * 1.4f, eye_center.y + r * 0.6f),
-          ImVec2(eye_center.x + r * 1.4f, eye_center.y - r * 0.6f),
-          IM_COL32(160, 60, 60, 200), 1.5f);
+          ImVec2(ec.x - r * 1.3f, ec.y + r * 0.4f),
+          ImVec2(ec.x + r * 1.3f, ec.y - r * 0.4f),
+          IM_COL32(150, 60, 60, 180), 1.5f);
     }
   }
 
-  // ── Rename input overlay ────────────────────────────────────────────────
+  // ── Label text ──────────────────────────────────────────────────────────
+  const float text_y = row_top + (row_height - ImGui::GetFontSize()) * 0.5f;
+  const float max_text_x = eye_x - 4.0f;
+  if (x_offset < max_text_x) {
+    const std::string owned_label = make_string(label, label_len);
+    draw_list->AddText(ImVec2(x_offset, text_y), text_color, owned_label.c_str());
+  }
+
+  // ── Rename input ────────────────────────────────────────────────────────
   if (rename_buffer != nullptr && rename_buffer_size > 0) {
-    const ImVec2 input_pos(label_x, item_min.y + 1.0f);
-    const float eye_space = 28.0f;
-    const float input_width =
-        (std::max)(content_right - label_x - eye_space - style.FramePadding.x, 72.0f);
+    const ImVec2 input_pos(x_offset, item_min.y);
+    const float input_width = (std::max)(max_text_x - x_offset - 2.0f, 60.0f);
     ImGui::SetCursorScreenPos(input_pos);
     ImGui::SetNextItemWidth(input_width);
-    if (request_rename_focus) {
-      ImGui::SetKeyboardFocusHere();
-    }
-    const bool submitted =
-        ImGui::InputText("##rename", rename_buffer, rename_buffer_size,
-                         ImGuiInputTextFlags_AutoSelectAll |
-                             ImGuiInputTextFlags_EnterReturnsTrue);
-    const bool deactivated_after_edit = ImGui::IsItemDeactivatedAfterEdit();
-    const bool rename_finished = submitted || ImGui::IsItemDeactivated();
+    if (request_rename_focus) ImGui::SetKeyboardFocusHere();
+    const bool submitted = ImGui::InputText("##rename", rename_buffer, rename_buffer_size,
+                                            ImGuiInputTextFlags_AutoSelectAll |
+                                            ImGuiInputTextFlags_EnterReturnsTrue);
+    const bool deactivated = ImGui::IsItemDeactivatedAfterEdit();
+    const bool finished = submitted || ImGui::IsItemDeactivated();
 
     uint32_t result = 0;
-    if (submitted || deactivated_after_edit) {
-      result |= GUAVA_IMGUI_TREE_NODE_RENAME_COMMITTED;
-    }
-    if (rename_finished) {
-      result |= GUAVA_IMGUI_TREE_NODE_RENAME_FINISHED;
-    }
-    if (is_open) {
-      result |= GUAVA_IMGUI_TREE_NODE_OPEN;
-    }
+    if (submitted || deactivated) result |= GUAVA_IMGUI_TREE_NODE_RENAME_COMMITTED;
+    if (finished) result |= GUAVA_IMGUI_TREE_NODE_RENAME_FINISHED;
+    if (is_open) result |= GUAVA_IMGUI_TREE_NODE_OPEN;
     ImGui::PopID();
     return result;
   }
 
-  // ── Handle click for expand/collapse ────────────────────────────────────
+  // ── Click handling ──────────────────────────────────────────────────────
   ImGui::SetNextItemAllowOverlap();
-  ImGui::SetCursorScreenPos(item_min);
-  ImGui::InvisibleButton("##click", ImVec2(content_right - content_left - 28.0f, row_height));
+  ImGui::SetCursorScreenPos(ImVec2(content_left, item_min.y));
+  ImGui::InvisibleButton("##row", ImVec2(eye_x - content_left, row_height));
 
   uint32_t result = 0;
   if (ImGui::IsItemClicked()) {
@@ -419,18 +411,15 @@ extern "C" uint32_t guava_imgui_tree_node_entity(
       storage->SetInt(open_id, is_open ? 1 : 0);
     }
   }
-
-  if (is_open) {
-    result |= GUAVA_IMGUI_TREE_NODE_OPEN;
-  }
+  if (is_open) result |= GUAVA_IMGUI_TREE_NODE_OPEN;
 
   ImGui::PopID();
   return result;
 }
 
 extern "C" uint32_t guava_imgui_draw_view_cube(const float view[16], float x,
-                                                float y, float size,
-                                                float out_drag_delta[2]) {
+                                               float y, float size,
+                                               float out_drag_delta[2]) {
   if (out_drag_delta != nullptr) {
     out_drag_delta[0] = 0.0f;
     out_drag_delta[1] = 0.0f;

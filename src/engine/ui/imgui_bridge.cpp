@@ -337,8 +337,8 @@ void apply_guava_editor_style(float content_scale) {
   ImVec4* colors = style.Colors;
   colors[ImGuiCol_Text] = make_color(225, 230, 240);
   colors[ImGuiCol_TextDisabled] = make_color(140, 150, 165);
-  colors[ImGuiCol_WindowBg] = make_color(24, 25, 28);  // Darker background
-  colors[ImGuiCol_ChildBg] = make_color(30, 31, 34);  // Darker child background
+  colors[ImGuiCol_WindowBg] = make_color(41, 41, 41);  // Scene panel background
+  colors[ImGuiCol_ChildBg] = make_color(41, 41, 41);  // Match window bg
   colors[ImGuiCol_PopupBg] = make_color(32, 34, 40, 245);
   colors[ImGuiCol_Border] = make_color(58, 64, 75, 120);
   colors[ImGuiCol_BorderShadow] = make_color(0, 0, 0, 0);

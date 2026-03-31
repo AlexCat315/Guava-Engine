@@ -1792,7 +1792,10 @@ fn formatDragDetail(buffer: []u8, drag_payload: DragPayload) []const u8 {
 }
 
 fn formatDragEndedDetail(buffer: []u8, drag_payload: DragPayload) []const u8 {
-    return std.fmt.bufPrint(buffer, "end {s}", .{formatDragDetail(buffer[4..], drag_payload)}) catch "drag clear";
+    // Use separate buffer to avoid @memcpy alias
+    var temp: [128]u8 = undefined;
+    const inner = formatDragDetail(&temp, drag_payload);
+    return std.fmt.bufPrint(buffer, "end {s}", .{inner}) catch "drag clear";
 }
 
 fn containsAsciiInsensitive(haystack: []const u8, needle: []const u8) bool {
