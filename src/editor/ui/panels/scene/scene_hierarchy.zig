@@ -11,12 +11,9 @@ const camera = @import("../../../interaction/camera.zig");
 const ui_icons = @import("../../icons.zig");
 const layout = @import("../../layout.zig");
 const prefab_mod = @import("guava").scene.prefab;
-
-const hierarchy_row_icon_size: f32 = 16.0;
-const hierarchy_status_icon_size: f32 = 16.0;
-const hierarchy_status_button_extent: f32 = 26.0;
-const hierarchy_status_column_width: f32 = 32.0;
-const hierarchy_drag_preview_icon_size: f32 = 20.0;
+const theme = @import("../../theme.zig");
+const icon_button = @import("../../components/icon_button.zig");
+const toggle_button = @import("../../components/toggle_button.zig");
 
 fn entityDragPreviewTypeLabel(state: *const EditorState, entity: *const engine.scene.Entity) []const u8 {
     if (entity.is_folder) {
@@ -55,7 +52,7 @@ fn drawHierarchyDragPreview(state: *EditorState, entity: *const engine.scene.Ent
         .{ entity.name, entityDragPreviewTypeLabel(state, entity) },
     ) catch entity.name;
 
-    gui.image(icon_texture, hierarchy_drag_preview_icon_size, hierarchy_drag_preview_icon_size);
+    gui.image(icon_texture, theme.Size.drag_preview_icon, theme.Size.drag_preview_icon);
     gui.sameLine();
     gui.text(preview_text);
 }
@@ -64,7 +61,7 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
     var title_buffer: [80]u8 = undefined;
     const title = try state.windowLabel(&title_buffer, .scene, "scene_panel");
     // 防止场景层级面板被拖到过窄无法显示内容
-    gui.setNextWindowSizeConstraints(.{ 220.0, 120.0 }, .{ std.math.floatMax(f32), std.math.floatMax(f32) });
+    gui.setNextWindowSizeConstraints(.{ theme.Size.panel_min_width, theme.Size.panel_min_height }, .{ std.math.floatMax(f32), std.math.floatMax(f32) });
     _ = gui.beginWindow(title);
     defer gui.endWindow();
 
@@ -82,7 +79,7 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
         _ = gui.inputTextWithHint("##scene_filter", state.text(.scene_filter), state.scene_filter_buffer[0..]);
         gui.sameLineEx(0.0, 8.0);
 
-        gui.pushStyleColor(.text, .{ 0.55, 0.58, 0.62, 1.0 });
+        gui.pushStyleColor(.text, theme.Palette.hierarchy.filter_text);
         gui.text(selection_count_text);
         gui.popStyleColor(1);
         if (gui.isItemHovered()) {
@@ -112,9 +109,9 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
         return;
     }
     gui.tableSetupColumn(state.text(.name), true, 1.0);
-    gui.tableSetupColumn("##scene_visible", false, hierarchy_status_column_width);
-    gui.tableSetupColumn("##scene_frozen", false, hierarchy_status_column_width);
-    gui.tableSetupColumn("##scene_locked", false, hierarchy_status_column_width);
+    gui.tableSetupColumn("##scene_visible", false, theme.Size.status_column_width);
+    gui.tableSetupColumn("##scene_frozen", false, theme.Size.status_column_width);
+    gui.tableSetupColumn("##scene_locked", false, theme.Size.status_column_width);
 
     for (layer_context.world.entities.items) |entity| {
         if (entity.editor_only or entity.parent != null) {
@@ -154,15 +151,12 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
         state,
         layer_context,
         ui_icons.entityIconPath(entity),
-        hierarchy_row_icon_size,
-        if (is_selected)
-            .{ 41, 150, 112, 255 }
-        else if (is_frozen)
-            .{ 148, 158, 173, 255 }
-        else if (entity.visible)
-            .{ 224, 230, 235, 255 }
-        else
-            .{ 100, 105, 115, 255 },
+        theme.Size.hierarchy_icon,
+        theme.hierarchyIconTint(.{
+            .selected = is_selected,
+            .frozen = is_frozen,
+            .visible = entity.visible,
+        }),
     );
 
     gui.tableNextRow();
@@ -171,7 +165,7 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
         entity_id,
         entity.name,
         icon_texture,
-        hierarchy_row_icon_size,
+        theme.Size.hierarchy_icon,
         is_selected,
         leaf,
         filter_active and has_visible_children,
@@ -250,25 +244,26 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
     gui.tableNextColumn();
     var visibility_button_id_buffer: [48]u8 = undefined;
     const visibility_button_id = try std.fmt.bufPrint(&visibility_button_id_buffer, "{d}_visibility", .{entity_id});
-    if (try drawHierarchyStatusIconButton(
-        state,
-        layer_context,
-        visibility_button_id,
-        if (entity.visible) ui_icons.paths.hierarchy.eye else ui_icons.paths.hierarchy.eye_off,
-        hierarchy_status_icon_size,
-        if (entity.visible) .{ 41, 150, 112, 255 } else .{ 148, 158, 173, 255 },
-        if (entity.visible) ui_icons.palettes.status_on else ui_icons.palettes.status_off,
-    )) {
+    if (try icon_button.draw(state, layer_context, .{
+        .id = visibility_button_id,
+        .icon_path = if (entity.visible) ui_icons.paths.hierarchy.eye else ui_icons.paths.hierarchy.eye_off,
+        .size = theme.Size.hierarchy_icon,
+        .tint = if (entity.visible) theme.Palette.status.on_icon else theme.Palette.status.off_icon,
+        .palette = theme.statusPalette(entity.visible),
+        .tooltip = if (entity.visible) "Visible - Click to hide" else "Hidden - Click to show",
+    })) {
         _ = try setEntityVisibleViaCommandQueue(state, layer_context, entity_id, !entity.visible);
-    }
-    if (gui.isItemHovered()) {
-        gui.setTooltip(if (entity.visible) "Visible - Click to hide" else "Hidden - Click to show");
     }
 
     gui.tableNextColumn();
     var freeze_button_id_buffer: [40]u8 = undefined;
-    const freeze_button_id = try std.fmt.bufPrint(&freeze_button_id_buffer, "{d}_freeze", .{entity_id});
-    if (try drawFreezeToggleButton(freeze_button_id, is_frozen)) {
+    const freeze_button_id = try std.fmt.bufPrint(&freeze_button_id_buffer, "F##{d}", .{entity_id});
+    if (toggle_button.draw(.{
+        .label = freeze_button_id,
+        .active = is_frozen,
+        .palette = .freeze,
+        .width = theme.Size.status_button_extent,
+    })) {
         try setFrozenForEntities(state, layer_context, &.{entity_id}, !is_frozen);
     }
     if (gui.isItemHovered()) {
@@ -278,19 +273,15 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
     gui.tableNextColumn();
     var lock_button_id_buffer: [40]u8 = undefined;
     const lock_button_id = try std.fmt.bufPrint(&lock_button_id_buffer, "{d}_lock", .{entity_id});
-    if (try drawHierarchyStatusIconButton(
-        state,
-        layer_context,
-        lock_button_id,
-        if (is_locked) ui_icons.paths.hierarchy.lock else ui_icons.paths.hierarchy.unlock,
-        hierarchy_status_icon_size,
-        if (is_locked) .{ 41, 150, 112, 255 } else .{ 148, 158, 173, 255 },
-        if (is_locked) ui_icons.palettes.status_on else ui_icons.palettes.status_off,
-    )) {
+    if (try icon_button.draw(state, layer_context, .{
+        .id = lock_button_id,
+        .icon_path = if (is_locked) ui_icons.paths.hierarchy.lock else ui_icons.paths.hierarchy.unlock,
+        .size = theme.Size.hierarchy_icon,
+        .tint = if (is_locked) theme.Palette.status.on_icon else theme.Palette.status.off_icon,
+        .palette = theme.statusPalette(is_locked),
+        .tooltip = if (is_locked) "Locked - Click to unlock" else "Unlocked - Click to lock",
+    })) {
         try setLockedForEntities(state, layer_context, &.{entity_id}, !is_locked);
-    }
-    if (gui.isItemHovered()) {
-        gui.setTooltip(if (is_locked) "Locked - Click to unlock" else "Unlocked - Click to lock");
     }
 
     if (rename_active and tree_result.rename_finished) {
@@ -1008,44 +999,6 @@ fn anyEntityHasParent(world: *const engine.scene.World, entity_ids: []const engi
         }
     }
     return false;
-}
-
-fn drawFreezeToggleButton(id: []const u8, active: bool) !bool {
-    gui.pushStyleColor(.text, if (active) .{ 0.34, 0.90, 0.60, 1.0 } else .{ 0.55, 0.58, 0.62, 1.0 });
-    gui.pushStyleColor(.button, if (active) .{ 0.13, 0.45, 0.28, 0.82 } else .{ 0.16, 0.17, 0.19, 0.54 });
-    gui.pushStyleColor(.button_hovered, if (active) .{ 0.18, 0.55, 0.35, 0.92 } else .{ 0.21, 0.23, 0.27, 0.74 });
-    gui.pushStyleColor(.button_active, if (active) .{ 0.10, 0.35, 0.22, 0.96 } else .{ 0.18, 0.20, 0.24, 0.86 });
-    gui.pushStyleVarVec2(.frame_padding, .{ 0.0, 0.0 });
-    gui.pushStyleVarFloat(.frame_rounding, ui_icons.regular_icon_button_rounding);
-    defer {
-        gui.popStyleVar(2);
-        gui.popStyleColor(4);
-    }
-    var label_buffer: [64]u8 = undefined;
-    const label = try std.fmt.bufPrint(&label_buffer, "F##{s}", .{id});
-    return gui.buttonEx(label, hierarchy_status_button_extent, hierarchy_status_button_extent);
-}
-
-fn drawHierarchyStatusIconButton(
-    state: *EditorState,
-    layer_context: *engine.core.LayerContext,
-    id: []const u8,
-    path: []const u8,
-    size: f32,
-    tint: [4]u8,
-    palette: ui_icons.ButtonPalette,
-) !bool {
-    const texture = try ui_icons.ensureTintedIconTexture(state, layer_context, path, size, tint);
-    gui.pushStyleColor(.button, palette.button);
-    gui.pushStyleColor(.button_hovered, palette.hovered);
-    gui.pushStyleColor(.button_active, palette.active);
-    gui.pushStyleVarVec2(.frame_padding, ui_icons.regular_icon_button_padding);
-    gui.pushStyleVarFloat(.frame_rounding, ui_icons.regular_icon_button_rounding);
-    defer {
-        gui.popStyleVar(2);
-        gui.popStyleColor(3);
-    }
-    return gui.imageButton(id, texture, size, size, .{ 0.0, 0.0, 0.0, 0.0 }, .{ 1.0, 1.0, 1.0, 1.0 });
 }
 
 fn createFolderEntity(state: *EditorState, layer_context: *engine.core.LayerContext) !void {

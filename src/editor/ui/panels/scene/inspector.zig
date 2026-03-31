@@ -12,6 +12,9 @@ const vfx_runtime = @import("../../../runtime/vfx.zig");
 const scene_hierarchy = @import("scene_hierarchy.zig");
 const layout = @import("../../layout.zig");
 const script_parameter_reflection = engine.script.parameter_reflection_mod;
+const theme = @import("../../theme.zig");
+const toggle_button = @import("../../components/toggle_button.zig");
+const property_row = @import("../../components/property_row.zig");
 
 /// Inspector 数据源：决定当前属性面板从哪个 World 读写数据
 const InspectorSource = enum {
@@ -34,10 +37,10 @@ fn resolveInspectorSource(state: *const EditorState, entity_id: engine.scene.Ent
 
 /// 绘制 AI Preview 来源 badge（紫色胶囊）
 fn drawAiPreviewBadge() void {
-    gui.pushStyleColor(.text, .{ 0.78, 0.50, 1.0, 1.0 });
-    gui.pushStyleColor(.button, .{ 0.36, 0.18, 0.56, 0.30 });
-    gui.pushStyleColor(.button_hovered, .{ 0.36, 0.18, 0.56, 0.30 });
-    gui.pushStyleColor(.button_active, .{ 0.36, 0.18, 0.56, 0.30 });
+    gui.pushStyleColor(.text, theme.Palette.inspector.ai_preview_badge);
+    gui.pushStyleColor(.button, theme.Palette.inspector.ai_preview_bg);
+    gui.pushStyleColor(.button_hovered, theme.Palette.inspector.ai_preview_bg);
+    gui.pushStyleColor(.button_active, theme.Palette.inspector.ai_preview_bg);
     gui.pushStyleVarFloat(.frame_rounding, 8.0);
     _ = gui.buttonEx("  ◆ AI Preview  ", 0.0, 0.0);
     gui.popStyleVar(1);
@@ -65,17 +68,7 @@ const TransformResetTarget = enum {
     all,
 };
 
-const PropertyGridMode = enum {
-    table,
-    stacked,
-};
-
-const max_property_grid_depth = 8;
-const stacked_property_grid_min_width = 320.0;
-
-var property_grid_modes: [max_property_grid_depth]PropertyGridMode = undefined;
-var property_grid_depth: usize = 0;
-var transform_grid_mode: PropertyGridMode = .table;
+var transform_grid_mode: property_row.GridMode = .table;
 
 const AxisStyle = struct {
     background: [4]f32,
@@ -112,46 +105,23 @@ fn endInspectorSectionBody() void {
 }
 
 fn beginInspectorPropertyGrid(id: []const u8) bool {
-    const available_width = gui.contentRegionAvail()[0];
-    var mode: PropertyGridMode = .stacked;
-    if (available_width >= stacked_property_grid_min_width and property_grid_depth < max_property_grid_depth and layout.beginInspectorPropertyTable(id, 0.38)) {
-        mode = .table;
-    }
-    if (property_grid_depth < max_property_grid_depth) {
-        property_grid_modes[property_grid_depth] = mode;
-        property_grid_depth += 1;
-    }
-
-    const item_spacing: [2]f32 = if (mode == .table) .{ 10.0, 8.0 } else .{ 10.0, 6.0 };
-    gui.pushStyleVarVec2(.item_spacing, item_spacing);
-    return true;
+    return property_row.beginGrid(id, 0.38);
 }
 
 fn endInspectorPropertyGrid() void {
-    if (property_grid_depth == 0) {
-        return;
-    }
-    property_grid_depth -= 1;
-    const mode = property_grid_modes[property_grid_depth];
-    gui.popStyleVar(1);
-    if (mode == .table) {
-        layout.endInspectorPropertyTable();
-    }
+    property_row.endGrid();
 }
 
 fn drawInspectorTextRow(label: []const u8, value: []const u8) void {
-    drawInspectorPropertyLabel(label, null);
-    gui.textWrapped(value);
+    property_row.textRow(label, value);
 }
 
 fn drawInspectorInputTextRow(label: []const u8, widget_id: []const u8, hint: []const u8, buffer: []u8) bool {
-    drawInspectorPropertyLabel(label, null);
-    return gui.inputTextWithHint(widget_id, hint, buffer);
+    return property_row.inputTextRow(label, widget_id, hint, buffer);
 }
 
 fn drawInspectorCheckboxRow(label: []const u8, widget_id: []const u8, value: *bool) bool {
-    drawInspectorPropertyLabel(label, null);
-    return gui.checkbox(widget_id, value);
+    return property_row.checkboxRow(label, widget_id, value);
 }
 
 fn drawInspectorFloatRow(
@@ -162,8 +132,7 @@ fn drawInspectorFloatRow(
     min_value: f32,
     max_value: f32,
 ) bool {
-    drawInspectorPropertyLabel(label, null);
-    return gui.dragFloat(widget_id, value, speed, min_value, max_value);
+    return property_row.dragFloatRow(label, widget_id, value, speed, min_value, max_value);
 }
 
 fn drawInspectorFloat3Row(
@@ -174,40 +143,19 @@ fn drawInspectorFloat3Row(
     min_value: f32,
     max_value: f32,
 ) bool {
-    drawInspectorPropertyLabel(label, null);
-    return gui.dragFloat3(widget_id, value, speed, min_value, max_value);
+    return property_row.dragFloat3Row(label, widget_id, value, speed, min_value, max_value);
 }
 
 fn beginInspectorComboRow(label: []const u8, widget_id: []const u8, preview: []const u8) bool {
-    drawInspectorPropertyLabel(label, null);
-    return gui.beginCombo(widget_id, preview);
+    return property_row.beginComboRow(label, widget_id, preview);
 }
 
 fn drawInspectorPropertyLabel(label: []const u8, label_color: ?[4]f32) void {
-    if (currentPropertyGridMode() == .table) {
-        layout.drawInspectorPropertyRow(label, label_color);
-        return;
-    }
-
-    const default_dimmed = [4]f32{ 0.64, 0.68, 0.74, 1.0 };
-    if (label_color) |color| {
-        gui.pushStyleColor(.text, color);
-        defer gui.popStyleColor(1);
-    } else {
-        gui.pushStyleColor(.text, default_dimmed);
-        defer gui.popStyleColor(1);
-    }
-    gui.alignTextToFramePadding();
-    gui.text(label);
-    gui.dummy(0.0, 2.0);
-    gui.setNextItemWidth(-1.0);
+    property_row.drawLabel(label, label_color);
 }
 
-fn currentPropertyGridMode() PropertyGridMode {
-    if (property_grid_depth == 0) {
-        return .table;
-    }
-    return property_grid_modes[property_grid_depth - 1];
+fn currentPropertyGridMode() property_row.GridMode {
+    return property_row.currentGridMode();
 }
 
 pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -419,17 +367,25 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
             gui.alignTextToFramePadding();
             gui.text(state.text(.coordinate_space));
             gui.sameLine();
-            if (drawInspectorToggleButton(state.text(.local_space), state.transform_space == .local, 72.0)) {
+            if (toggle_button.draw(.{
+                .label = state.text(.local_space),
+                .active = state.transform_space == .local,
+                .width = 72.0,
+            })) {
                 state.transform_space = .local;
             }
             gui.sameLine();
-            if (drawInspectorToggleButton(state.text(.world_space), state.transform_space == .world, 72.0)) {
+            if (toggle_button.draw(.{
+                .label = state.text(.world_space),
+                .active = state.transform_space == .world,
+                .width = 72.0,
+            })) {
                 state.transform_space = .world;
             }
             gui.dummy(0.0, 6.0);
 
             const transform_grid_available_width = gui.contentRegionAvail()[0];
-            const transform_grid_use_table = transform_grid_available_width >= 360.0 and gui.beginTable("transform_grid", 4);
+            const transform_grid_use_table = transform_grid_available_width >= theme.Size.transform_grid_min_width and gui.beginTable("transform_grid", 4);
             transform_grid_mode = if (transform_grid_use_table) .table else .stacked;
             defer {
                 if (transform_grid_use_table) {
@@ -1823,26 +1779,6 @@ fn drawActionRow2(first: []const u8, second: []const u8, min_button_width: f32) 
         return .second;
     }
     return .none;
-}
-
-fn drawInspectorToggleButton(label: []const u8, active: bool, width: f32) bool {
-    const background = if (active)
-        [4]f32{ 0.18, 0.56, 0.33, 0.92 }
-    else
-        [4]f32{ 0.18, 0.20, 0.24, 0.90 };
-    const hovered = if (active)
-        [4]f32{ 0.22, 0.65, 0.38, 0.98 }
-    else
-        [4]f32{ 0.24, 0.27, 0.32, 0.96 };
-    const pressed = if (active)
-        [4]f32{ 0.15, 0.48, 0.28, 1.0 }
-    else
-        [4]f32{ 0.20, 0.23, 0.28, 1.0 };
-    gui.pushStyleColor(.button, background);
-    gui.pushStyleColor(.button_hovered, hovered);
-    gui.pushStyleColor(.button_active, pressed);
-    defer gui.popStyleColor(3);
-    return gui.buttonEx(label, width, 0.0);
 }
 
 fn drawTransformTableRow(
