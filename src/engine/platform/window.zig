@@ -27,12 +27,12 @@ pub const MetalLayerBinding = extern struct {
 
 pub const WindowConfig = struct {
     title: []const u8 = "Guava Engine",
-    width: u32 = 1280,
-    height: u32 = 720,
+    width: u32 = 0,
+    height: u32 = 0,
     resizable: bool = true,
     borderless: bool = false,
     maximized: bool = false,
-    native_titlebar_controls: bool = false,
+    native_titlebar_controls: bool = true,
     high_pixel_density: bool = true,
     hidden: bool = false,
 };
@@ -75,6 +75,7 @@ pub const Window = struct {
     logical_height: u32 = 0,
     drawable_width: u32 = 0,
     drawable_height: u32 = 0,
+    content_scale: f32 = 1.0,
     native_titlebar_controls: bool = false,
     native_titlebar_leading_inset: f32 = 0.0,
     native_titlebar_trailing_inset: f32 = 0.0,
@@ -95,6 +96,14 @@ pub const Window = struct {
             else => false,
         };
 
+        var target_width = config.width;
+        var target_height = config.height;
+        if (target_width == 0 or target_height == 0) {
+            const bounds = try primaryDisplayUsableBounds();
+            target_width = @intCast(@divTrunc(bounds.w * 85, 100));
+            target_height = @intCast(@divTrunc(bounds.h * 85, 100));
+        }
+
         var flags: sdl.SDL_WindowFlags = 0;
         if (config.resizable) {
             flags |= sdl.SDL_WINDOW_RESIZABLE;
@@ -114,8 +123,8 @@ pub const Window = struct {
 
         const handle = sdl.SDL_CreateWindow(
             title_z.ptr,
-            @intCast(config.width),
-            @intCast(config.height),
+            @intCast(target_width),
+            @intCast(target_height),
             flags,
         );
         if (handle == null) {
@@ -145,12 +154,19 @@ pub const Window = struct {
             window.refreshNativeTitlebarInsets();
         }
         if (!config.maximized) {
-            try window.positionInUsableBounds(config.width, config.height);
+            try window.positionInUsableBounds(target_width, target_height);
         }
         try window.refreshSizes();
 
         // Bring window to front
         _ = sdl.SDL_RaiseWindow(window.handle);
+        if (config.maximized) {
+            // On macOS, SDL_WINDOW_MAXIMIZED may not fully fill the usable area.
+            // Explicitly maximize after creation to ensure it covers the full screen
+            // below the menu bar and above the dock.
+            _ = sdl.SDL_MaximizeWindow(window.handle);
+            try window.refreshSizes();
+        }
         if (builtin.os.tag == .macos) {
             guava_window_activate_macos_app();
         }
@@ -182,6 +198,12 @@ pub const Window = struct {
         self.logical_height = @intCast(@max(logical_h, 0));
         self.drawable_width = @intCast(@max(drawable_w, 0));
         self.drawable_height = @intCast(@max(drawable_h, 0));
+
+        // Calculate content scale factor for UI scaling
+        if (self.logical_width > 0) {
+            self.content_scale = @as(f32, @floatFromInt(self.drawable_width)) / @as(f32, @floatFromInt(self.logical_width));
+        }
+
         self.refreshNativeTitlebarInsets();
     }
 
@@ -315,6 +337,22 @@ pub const Window = struct {
                         .kind = .text_input,
                         .raw = raw_event,
                     };
+                },
+                sdl.SDL_EVENT_DROP_FILE => {
+                    // Handle file drop events (SDL3 uses 'data' and 'source' instead of 'file')
+                    const c_path: [*c]const u8 = if (raw_event.drop.data != null) raw_event.drop.data else raw_event.drop.source;
+                    if (c_path == null) {
+                        // Nothing to process
+                        continue;
+                    }
+                    const path_slice = std.mem.sliceTo(c_path, 0);
+                    const file_path = try std.heap.c_allocator.dupeZ(u8, path_slice);
+                    defer std.heap.c_allocator.free(file_path);
+                    // For now, we'll just log the dropped file path
+                    std.log.debug("File dropped: {s}", .{file_path});
+                    // We could create a custom event kind for file drops if needed
+                    // For now, we'll just return null to continue processing
+                    continue;
                 },
                 else => {},
             }
@@ -559,6 +597,24 @@ fn keyFromScancode(scancode: c_uint) ?input_mod.Key {
         sdl.SDL_SCANCODE_LALT, sdl.SDL_SCANCODE_RALT => .alt,
         sdl.SDL_SCANCODE_SPACE => .space,
         sdl.SDL_SCANCODE_ESCAPE => .escape,
+        // Directional keys
+        sdl.SDL_SCANCODE_UP => .up,
+        sdl.SDL_SCANCODE_DOWN => .down,
+        sdl.SDL_SCANCODE_LEFT => .left,
+        sdl.SDL_SCANCODE_RIGHT => .right,
+        // Function keys
+        sdl.SDL_SCANCODE_F1 => .f1,
+        sdl.SDL_SCANCODE_F2 => .f2,
+        sdl.SDL_SCANCODE_F3 => .f3,
+        sdl.SDL_SCANCODE_F4 => .f4,
+        sdl.SDL_SCANCODE_F5 => .f5,
+        sdl.SDL_SCANCODE_F6 => .f6,
+        sdl.SDL_SCANCODE_F7 => .f7,
+        sdl.SDL_SCANCODE_F8 => .f8,
+        sdl.SDL_SCANCODE_F9 => .f9,
+        sdl.SDL_SCANCODE_F10 => .f10,
+        sdl.SDL_SCANCODE_F11 => .f11,
+        sdl.SDL_SCANCODE_F12 => .f12,
         else => null,
     };
 }

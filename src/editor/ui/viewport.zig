@@ -1571,8 +1571,8 @@ pub fn drawEditorUi(
     try drawLeftSidebar(state, layer_context);
     try drawRightSidebar(state, layer_context);
 
-    // Shell Layer 3: Bottom Workspace (drawer in viewport)
-    try content_browser.drawContentBrowser(state, layer_context);
+    // Shell Layer 3: Bottom drawer (positioned at viewport bottom)
+    try content_browser.drawBottomDrawer(state, layer_context);
 
     // Shell Layer 4: Auxiliary / Floating Windows
     try drawAuxiliaryWindows(state, layer_context);

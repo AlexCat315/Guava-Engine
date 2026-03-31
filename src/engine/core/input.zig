@@ -29,6 +29,24 @@ pub const Key = enum(u8) {
     alt,
     space,
     escape,
+    // Directional keys
+    up,
+    down,
+    left,
+    right,
+    // Function keys
+    f1,
+    f2,
+    f3,
+    f4,
+    f5,
+    f6,
+    f7,
+    f8,
+    f9,
+    f10,
+    f11,
+    f12,
 };
 
 pub const MouseButton = enum(u8) {

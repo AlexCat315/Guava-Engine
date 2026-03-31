@@ -207,6 +207,14 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
         g_pending_top_bar_drag = true;
         g_pending_top_bar_drag_mouse = gui.mousePos();
     }
+    if (gui.isItemHovered() and layer_context.input.wasMouseDoubleClicked(.left)) {
+        state.top_bar_drag_active = false;
+        if (layer_context.window.isMaximized()) {
+            try layer_context.window.restore();
+        } else {
+            try layer_context.window.maximize();
+        }
+    }
 
     const mouse_over_floating_window = floating_window_blocker.anyContainsPoint(gui.mousePos());
     if (state.top_bar_drag_active) {

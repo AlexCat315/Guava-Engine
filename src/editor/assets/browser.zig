@@ -17,20 +17,18 @@ const AssetEntry = state_mod.AssetEntry;
 const BottomWorkspaceTab = state_mod.BottomWorkspaceTab;
 const asset_drag_preview_icon_size: f32 = 24.0;
 
-pub fn drawContentBrowser(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
-    // Godot-style drawer: thin tab bar at bottom of viewport, expands upward
-    const window_width = @as(f32, @floatFromInt(layer_context.window.logical_width));
-    const window_height = @as(f32, @floatFromInt(layer_context.window.logical_height));
-    const tab_bar_height: f32 = 28.0;
-    const drawer_height = state.bottom_drawer_height;
+pub fn drawBottomDrawer(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const drawer_bar_height: f32 = 28.0;
+    const drawer_height = if (state.bottom_drawer_open) state.bottom_drawer_height else 0.0;
+    const total_height = drawer_bar_height + drawer_height;
 
-    const drawer_top = if (state.bottom_drawer_open)
-        window_height - drawer_height
-    else
-        window_height - tab_bar_height;
+    // Position at bottom of the viewport window
+    const vp_origin = state.viewport_origin;
+    const vp_extent = state.viewport_extent;
+    const drawer_y = vp_origin[1] + vp_extent[1] - total_height;
 
-    gui.setNextWindowPos(.{ 0.0, drawer_top });
-    gui.setNextWindowSize(.{ window_width, if (state.bottom_drawer_open) drawer_height else tab_bar_height });
+    gui.setNextWindowPos(.{ vp_origin[0], drawer_y });
+    gui.setNextWindowSize(.{ vp_extent[0], total_height });
 
     var title_buffer: [64]u8 = undefined;
     const title = try std.fmt.bufPrint(&title_buffer, "##bottom_drawer", .{});
@@ -42,69 +40,82 @@ pub fn drawContentBrowser(state: *EditorState, layer_context: *engine.core.Layer
             gui.WindowFlags.no_resize |
             gui.WindowFlags.no_move |
             gui.WindowFlags.no_saved_settings |
-            gui.WindowFlags.no_docking |
-            gui.WindowFlags.no_background,
+            gui.WindowFlags.no_docking,
     );
     defer gui.endWindow();
 
+    // Tab bar always at top of drawer
+    try drawDrawerTabBar(state, layer_context, vp_extent[0], drawer_bar_height);
+
     if (state.bottom_drawer_open) {
-        try drawDrawerContent(state, layer_context, tab_bar_height);
-    } else {
-        try drawDrawerTabBar(state, layer_context, tab_bar_height);
+        gui.separator();
+
+        gui.pushStyleColor(.child_bg, .{ 0.12, 0.12, 0.14, 1.0 });
+        _ = gui.beginChild("##drawer_content", vp_extent[0], drawer_height, false);
+        gui.popStyleColor(1);
+        defer gui.endChild();
+
+        switch (state.bottom_workspace_tab) {
+            .project => try drawProjectPanel(state, layer_context),
+            .console => try console.drawConsolePanel(state),
+            .command_timeline => try command_timeline.drawCommandTimelinePanel(state, layer_context),
+            .ai_assistant => try drawAiAssistantTab(state),
+        }
     }
 }
 
-fn drawDrawerContent(state: *EditorState, layer_context: *engine.core.LayerContext, tab_bar_height: f32) !void {
-    // Tab bar at top of drawer
-    try drawDrawerTabBar(state, layer_context, tab_bar_height);
+fn drawDrawerTabBar(state: *EditorState, _: *engine.core.LayerContext, width: f32, tab_bar_height: f32) !void {
+    gui.dummy(width, tab_bar_height);
+    const item_min = gui.getItemRectMin();
+    const item_max = gui.getItemRectMax();
 
-    gui.separator();
+    // Background for tab bar
+    const draw_list = gui.getWindowDrawList();
+    draw_list.addRectFilled(
+        .{ item_min[0], item_min[1] },
+        .{ item_max[0], item_max[1] },
+        gui.getColorU32(.{ 0.10, 0.10, 0.12, 1.0 }),
+        0.0,
+        0,
+    );
 
-    switch (state.bottom_workspace_tab) {
-        .project => try drawProjectPanel(state, layer_context),
-        .console => try console.drawConsolePanel(state),
-        .command_timeline => try command_timeline.drawCommandTimelinePanel(state, layer_context),
-        .ai_assistant => try drawAiAssistantTab(state),
-    }
-}
-
-fn drawDrawerTabBar(state: *EditorState, layer_context: *engine.core.LayerContext, tab_bar_height: f32) !void {
-    _ = tab_bar_height;
-
-    gui.setCursorPos(.{ 0.0, 2.0 });
+    // Separator line at top of tab bar
+    draw_list.addLine(
+        .{ item_min[0], item_min[1] },
+        .{ item_max[0], item_min[1] },
+        gui.getColorU32(.{ 0.22, 0.23, 0.25, 1.0 }),
+        1.0,
+    );
 
     // Expand/collapse chevron button on the left
     const chevron_size: f32 = 16.0;
+    const chevron_x: f32 = item_min[0] + 6.0;
+    const chevron_y: f32 = item_min[1] + (tab_bar_height - chevron_size) * 0.5;
+    gui.setCursorScreenPos(.{ chevron_x, chevron_y });
     if (gui.invisibleButton("##drawer_toggle", chevron_size, chevron_size)) {
         state.bottom_drawer_open = !state.bottom_drawer_open;
     }
     const chevron_hovered = gui.isItemHovered();
-    gui.setCursorPos(.{ 0.0, 2.0 });
-    const draw_list = gui.getWindowDrawList();
-    const item_min = gui.getItemRectMin();
-    const item_max = gui.getItemRectMax();
     const chevron_center = .{
-        (item_min[0] + item_max[0]) * 0.5,
-        (item_min[1] + item_max[1]) * 0.5,
+        chevron_x + chevron_size * 0.5,
+        chevron_y + chevron_size * 0.5,
     };
     const chevron_col = if (chevron_hovered)
         gui.getColorU32(.{ 0.85, 0.88, 0.92, 1.0 })
     else
         gui.getColorU32(.{ 0.55, 0.58, 0.62, 1.0 });
     if (state.bottom_drawer_open) {
-        // Down chevron
         draw_list.addLine(.{ chevron_center[0] - 3.0, chevron_center[1] - 2.0 }, .{ chevron_center[0] + 3.0, chevron_center[1] - 2.0 }, chevron_col, 1.5);
         draw_list.addLine(.{ chevron_center[0] + 3.0, chevron_center[1] - 2.0 }, .{ chevron_center[0], chevron_center[1] + 2.5 }, chevron_col, 1.5);
         draw_list.addLine(.{ chevron_center[0], chevron_center[1] + 2.5 }, .{ chevron_center[0] - 3.0, chevron_center[1] - 2.0 }, chevron_col, 1.5);
     } else {
-        // Right chevron
         draw_list.addLine(.{ chevron_center[0] - 2.0, chevron_center[1] - 3.0 }, .{ chevron_center[0] - 2.0, chevron_center[1] + 3.0 }, chevron_col, 1.5);
         draw_list.addLine(.{ chevron_center[0] - 2.0, chevron_center[1] + 3.0 }, .{ chevron_center[0] + 2.5, chevron_center[1] }, chevron_col, 1.5);
         draw_list.addLine(.{ chevron_center[0] + 2.5, chevron_center[1] }, .{ chevron_center[0] - 2.0, chevron_center[1] - 3.0 }, chevron_col, 1.5);
     }
 
     // Tab buttons
-    gui.sameLineEx(chevron_size + 4.0, 4.0);
+    const tab_start_x = chevron_x + chevron_size + 8.0;
     const tab_width: f32 = 80.0;
     const tab_labels = [_]struct { tab: @import("../core/state.zig").BottomWorkspaceTab, label: []const u8 }{
         .{ .tab = .project, .label = "Project" },
@@ -112,7 +123,9 @@ fn drawDrawerTabBar(state: *EditorState, layer_context: *engine.core.LayerContex
         .{ .tab = .command_timeline, .label = "Timeline" },
     };
     for (tab_labels, 0..) |t, i| {
-        if (i > 0) gui.sameLine();
+        const tx = tab_start_x + @as(f32, @floatFromInt(i)) * (tab_width + 4.0);
+        const ty = item_min[1] + (tab_bar_height - 22.0) * 0.5;
+        gui.setCursorScreenPos(.{ tx, ty });
         const active = state.bottom_workspace_tab == t.tab;
         if (drawTabButton(state, t.tab, t.label, tab_width)) {
             state.bottom_workspace_tab = t.tab;
@@ -120,8 +133,7 @@ fn drawDrawerTabBar(state: *EditorState, layer_context: *engine.core.LayerContex
                 state.bottom_drawer_open = true;
             }
         }
-        if (active and !state.bottom_drawer_open) {
-            // Draw bottom indicator for active tab
+        if (active) {
             const pos_min = gui.getItemRectMin();
             const pos_max = gui.getItemRectMax();
             const indicator_color = gui.getColorU32(.{ 0.20, 0.60, 0.45, 1.0 });
@@ -136,12 +148,12 @@ fn drawDrawerTabBar(state: *EditorState, layer_context: *engine.core.LayerContex
 
     // Resize handle on top edge (when expanded)
     if (state.bottom_drawer_open) {
-        gui.setCursorPos(.{ 0.0, 0.0 });
-        _ = gui.invisibleButton("##drawer_resize", 9999.0, 4.0);
+        gui.setCursorScreenPos(.{ item_min[0], item_min[1] - 3.0 });
+        _ = gui.invisibleButton("##drawer_resize", width, 4.0);
         if (gui.isItemActive()) {
             const mouse = gui.mousePos();
-            const window_h = @as(f32, @floatFromInt(layer_context.window.logical_height));
-            state.bottom_drawer_height = @max(100.0, window_h - mouse[1]);
+            const drawer_bottom = state.viewport_origin[1] + state.viewport_extent[1];
+            state.bottom_drawer_height = @max(100.0, drawer_bottom - mouse[1]);
         }
     }
 }

@@ -72,7 +72,7 @@ pub const ApplicationConfig = struct {
     /// 是否无边框窗口
     window_borderless: bool = false,
     /// 是否启动时最大化窗口
-    window_maximized: bool = false,
+    window_maximized: bool = true,
     /// 是否使用原生标题栏控件（macOS）
     window_native_titlebar_controls: bool = false,
     /// 帧延迟（毫秒，用于限制帧率）

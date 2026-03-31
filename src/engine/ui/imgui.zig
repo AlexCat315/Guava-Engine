@@ -36,6 +36,7 @@ pub const StyleColor = enum(c_uint) {
     text_selected_bg = c.GUAVA_IMGUI_STYLE_COLOR_TEXT_SELECTED_BG,
     nav_cursor = c.GUAVA_IMGUI_STYLE_COLOR_NAV_CURSOR,
     input_text_cursor = c.GUAVA_IMGUI_STYLE_COLOR_INPUT_TEXT_CURSOR,
+    child_bg = 6,
 };
 
 pub const Col = enum(u32) {
