@@ -18,12 +18,46 @@ const BottomWorkspaceTab = state_mod.BottomWorkspaceTab;
 const asset_drag_preview_icon_size: f32 = 24.0;
 
 pub fn drawContentBrowser(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
-    // 工作区面板包含文件浏览器/控制台等多个 Tab，需要最小宽度保证可用性
-    gui.setNextWindowSizeConstraints(.{ 200.0, 100.0 }, .{ std.math.floatMax(f32), std.math.floatMax(f32) });
-    _ = gui.beginWindow("Workspace##content_browser_panel");
+    // Godot-style drawer: thin tab bar at bottom of viewport, expands upward
+    const window_width = @as(f32, @floatFromInt(layer_context.window.logical_width));
+    const window_height = @as(f32, @floatFromInt(layer_context.window.logical_height));
+    const tab_bar_height: f32 = 28.0;
+    const drawer_height = state.bottom_drawer_height;
+
+    const drawer_top = if (state.bottom_drawer_open)
+        window_height - drawer_height
+    else
+        window_height - tab_bar_height;
+
+    gui.setNextWindowPos(.{ 0.0, drawer_top });
+    gui.setNextWindowSize(.{ window_width, if (state.bottom_drawer_open) drawer_height else tab_bar_height });
+
+    var title_buffer: [64]u8 = undefined;
+    const title = try std.fmt.bufPrint(&title_buffer, "##bottom_drawer", .{});
+    _ = gui.beginWindowFlags(
+        title,
+        gui.WindowFlags.no_title_bar |
+            gui.WindowFlags.no_collapse |
+            gui.WindowFlags.no_scrollbar |
+            gui.WindowFlags.no_resize |
+            gui.WindowFlags.no_move |
+            gui.WindowFlags.no_saved_settings |
+            gui.WindowFlags.no_docking |
+            gui.WindowFlags.no_background,
+    );
     defer gui.endWindow();
 
-    try drawWorkspaceShellHeader(state);
+    if (state.bottom_drawer_open) {
+        try drawDrawerContent(state, layer_context, tab_bar_height);
+    } else {
+        try drawDrawerTabBar(state, layer_context, tab_bar_height);
+    }
+}
+
+fn drawDrawerContent(state: *EditorState, layer_context: *engine.core.LayerContext, tab_bar_height: f32) !void {
+    // Tab bar at top of drawer
+    try drawDrawerTabBar(state, layer_context, tab_bar_height);
+
     gui.separator();
 
     switch (state.bottom_workspace_tab) {
@@ -31,6 +65,84 @@ pub fn drawContentBrowser(state: *EditorState, layer_context: *engine.core.Layer
         .console => try console.drawConsolePanel(state),
         .command_timeline => try command_timeline.drawCommandTimelinePanel(state, layer_context),
         .ai_assistant => try drawAiAssistantTab(state),
+    }
+}
+
+fn drawDrawerTabBar(state: *EditorState, layer_context: *engine.core.LayerContext, tab_bar_height: f32) !void {
+    _ = tab_bar_height;
+
+    gui.setCursorPos(.{ 0.0, 2.0 });
+
+    // Expand/collapse chevron button on the left
+    const chevron_size: f32 = 16.0;
+    if (gui.invisibleButton("##drawer_toggle", chevron_size, chevron_size)) {
+        state.bottom_drawer_open = !state.bottom_drawer_open;
+    }
+    const chevron_hovered = gui.isItemHovered();
+    gui.setCursorPos(.{ 0.0, 2.0 });
+    const draw_list = gui.getWindowDrawList();
+    const item_min = gui.getItemRectMin();
+    const item_max = gui.getItemRectMax();
+    const chevron_center = .{
+        (item_min[0] + item_max[0]) * 0.5,
+        (item_min[1] + item_max[1]) * 0.5,
+    };
+    const chevron_col = if (chevron_hovered)
+        gui.getColorU32(.{ 0.85, 0.88, 0.92, 1.0 })
+    else
+        gui.getColorU32(.{ 0.55, 0.58, 0.62, 1.0 });
+    if (state.bottom_drawer_open) {
+        // Down chevron
+        draw_list.addLine(.{ chevron_center[0] - 3.0, chevron_center[1] - 2.0 }, .{ chevron_center[0] + 3.0, chevron_center[1] - 2.0 }, chevron_col, 1.5);
+        draw_list.addLine(.{ chevron_center[0] + 3.0, chevron_center[1] - 2.0 }, .{ chevron_center[0], chevron_center[1] + 2.5 }, chevron_col, 1.5);
+        draw_list.addLine(.{ chevron_center[0], chevron_center[1] + 2.5 }, .{ chevron_center[0] - 3.0, chevron_center[1] - 2.0 }, chevron_col, 1.5);
+    } else {
+        // Right chevron
+        draw_list.addLine(.{ chevron_center[0] - 2.0, chevron_center[1] - 3.0 }, .{ chevron_center[0] - 2.0, chevron_center[1] + 3.0 }, chevron_col, 1.5);
+        draw_list.addLine(.{ chevron_center[0] - 2.0, chevron_center[1] + 3.0 }, .{ chevron_center[0] + 2.5, chevron_center[1] }, chevron_col, 1.5);
+        draw_list.addLine(.{ chevron_center[0] + 2.5, chevron_center[1] }, .{ chevron_center[0] - 2.0, chevron_center[1] - 3.0 }, chevron_col, 1.5);
+    }
+
+    // Tab buttons
+    gui.sameLineEx(chevron_size + 4.0, 4.0);
+    const tab_width: f32 = 80.0;
+    const tab_labels = [_]struct { tab: @import("../core/state.zig").BottomWorkspaceTab, label: []const u8 }{
+        .{ .tab = .project, .label = "Project" },
+        .{ .tab = .console, .label = "Console" },
+        .{ .tab = .command_timeline, .label = "Timeline" },
+    };
+    for (tab_labels, 0..) |t, i| {
+        if (i > 0) gui.sameLine();
+        const active = state.bottom_workspace_tab == t.tab;
+        if (drawTabButton(state, t.tab, t.label, tab_width)) {
+            state.bottom_workspace_tab = t.tab;
+            if (!state.bottom_drawer_open) {
+                state.bottom_drawer_open = true;
+            }
+        }
+        if (active and !state.bottom_drawer_open) {
+            // Draw bottom indicator for active tab
+            const pos_min = gui.getItemRectMin();
+            const pos_max = gui.getItemRectMax();
+            const indicator_color = gui.getColorU32(.{ 0.20, 0.60, 0.45, 1.0 });
+            draw_list.addLine(
+                .{ pos_min[0] + 4.0, pos_max[1] - 1.0 },
+                .{ pos_max[0] - 4.0, pos_max[1] - 1.0 },
+                indicator_color,
+                2.0,
+            );
+        }
+    }
+
+    // Resize handle on top edge (when expanded)
+    if (state.bottom_drawer_open) {
+        gui.setCursorPos(.{ 0.0, 0.0 });
+        _ = gui.invisibleButton("##drawer_resize", 9999.0, 4.0);
+        if (gui.isItemActive()) {
+            const mouse = gui.mousePos();
+            const window_h = @as(f32, @floatFromInt(layer_context.window.logical_height));
+            state.bottom_drawer_height = @max(100.0, window_h - mouse[1]);
+        }
     }
 }
 

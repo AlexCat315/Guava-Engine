@@ -15,14 +15,6 @@ const debug_icon_tint = [4]u8{ 196, 224, 255, 255 };
 
 const settings_filter_buffer_size = @import("../../../core/state.zig").settings_filter_buffer_size;
 
-fn drawSettingsChoiceButton(label: []const u8, active: bool, width: f32) bool {
-    gui.pushStyleColor(.button, if (active) .{ 0.13, 0.45, 0.28, 0.82 } else .{ 0.16, 0.17, 0.19, 0.54 });
-    gui.pushStyleColor(.button_hovered, if (active) .{ 0.18, 0.55, 0.35, 0.92 } else .{ 0.21, 0.23, 0.27, 0.74 });
-    gui.pushStyleColor(.button_active, if (active) .{ 0.10, 0.35, 0.22, 0.96 } else .{ 0.18, 0.20, 0.24, 0.86 });
-    defer gui.popStyleColor(3);
-    return gui.buttonEx(label, width, 0.0);
-}
-
 fn drawSettingsCategoryList(state: *EditorState) void {
     const categories = [_]struct {
         id: SettingsCategory,
@@ -82,7 +74,6 @@ fn drawSettingsContentGeneral(state: *EditorState) void {
         mode: FpsDisplayMode,
     }{
         .{ .label = state.text(.viewport), .mode = .viewport },
-        .{ .label = state.text(.status_bar), .mode = .status_bar },
         .{ .label = state.text(.none), .mode = .none },
     };
     const fps_columns = layout.responsiveButtonColumns(fps_options.len, 92.0);
@@ -98,6 +89,14 @@ fn drawSettingsContentGeneral(state: *EditorState) void {
 
     gui.dummy(0.0, 6.0);
     _ = gui.checkbox(state.text(.viewport_debug_overlay), &state.viewport_debug_overlay);
+}
+
+fn drawSettingsChoiceButton(label: []const u8, active: bool, width: f32) bool {
+    gui.pushStyleColor(.button, if (active) .{ 0.13, 0.45, 0.28, 0.82 } else .{ 0.16, 0.17, 0.19, 0.54 });
+    gui.pushStyleColor(.button_hovered, if (active) .{ 0.18, 0.55, 0.35, 0.92 } else .{ 0.21, 0.23, 0.27, 0.74 });
+    gui.pushStyleColor(.button_active, if (active) .{ 0.10, 0.35, 0.22, 0.96 } else .{ 0.18, 0.20, 0.24, 0.86 });
+    defer gui.popStyleColor(3);
+    return gui.buttonEx(label, width, 0.0);
 }
 
 fn drawSettingsContentInterface(_: *EditorState) void {
@@ -140,52 +139,44 @@ pub fn drawSettingsWindow(state: *EditorState, layer_context: *engine.core.Layer
     defer gui.endWindow();
     floating_window_blocker.registerCurrentWindow("settings_popup");
 
-    const sidebar_width: f32 = 140.0;
-    const avail = gui.contentRegionAvail();
-
-    gui.dummy(avail[0], 4.0);
-
     gui.pushStyleVarFloat(.frame_rounding, 4.0);
     gui.pushStyleVarVec2(.item_spacing, .{ 8.0, 4.0 });
     defer gui.popStyleVar(2);
 
-    if (gui.beginTable("##settings_main", 3)) {
-        gui.tableSetupColumn("##toolbar", true, avail[0] - 24.0);
-        gui.tableSetupColumn("##sidebar", false, sidebar_width);
+    // Row 0: Top toolbar (search + advanced) spanning all columns
+    if (gui.beginTable("##settings_main", 2)) {
+        defer gui.endTable();
+
+        // Column 0: Left navigation sidebar
+        gui.tableSetupColumn("##sidebar", false, 160.0);
+        // Column 1: Right content area
         gui.tableSetupColumn("##content", true, 1.0);
 
+        // ── Top bar row ──────────────────────────────────────────────
         gui.tableNextRow();
         gui.tableNextColumn();
 
-        gui.dummy(0.0, 4.0);
-
-        if (gui.beginTable("##settings_toolbar", 2)) {
-            gui.tableSetupColumn("##search", true, 1.0);
-            gui.tableSetupColumn("##advanced", false, 100.0);
-
-            gui.tableNextRow();
-            gui.tableNextColumn();
-
-            gui.pushStyleColor(.frame_bg, .{ 0.12, 0.13, 0.15, 0.65 });
-            _ = gui.inputTextWithHint("##settings_filter", state.text(.settings_filter), state.settings_filter_buffer[0..settings_filter_buffer_size]);
-            gui.popStyleColor(1);
-
-            gui.tableNextColumn();
-
-            _ = gui.checkbox(state.text(.settings_advanced), &state.settings_advanced_mode);
-
-            gui.endTable();
-        }
+        // Search input in sidebar column
+        gui.pushStyleColor(.frame_bg, .{ 0.12, 0.13, 0.15, 0.65 });
+        _ = gui.inputTextWithHint("##settings_filter", state.text(.settings_filter), state.settings_filter_buffer[0..settings_filter_buffer_size]);
+        gui.popStyleColor(1);
 
         gui.tableNextColumn();
 
-        gui.dummy(0.0, 4.0);
+        // Advanced toggle in content column
+        _ = gui.checkbox(state.text(.settings_advanced), &state.settings_advanced_mode);
+
+        // ── Body row ─────────────────────────────────────────────────
+        gui.tableNextRow();
+        gui.tableNextColumn();
+
+        // Left navigation
+        gui.dummy(0.0, 8.0);
         drawSettingsCategoryList(state);
 
         gui.tableNextColumn();
 
-        gui.dummy(0.0, 4.0);
-
+        // Right content area
         layout.beginSectionBody();
         defer layout.endSectionBody();
 
@@ -204,7 +195,5 @@ pub fn drawSettingsWindow(state: *EditorState, layer_context: *engine.core.Layer
                 }
             },
         }
-
-        gui.endTable();
     }
 }

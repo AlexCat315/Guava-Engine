@@ -21,7 +21,6 @@ const floating_window_blocker = @import("floating_window_blocker.zig");
 const render_settings = @import("panels/rendering/render_settings.zig");
 const settings = @import("panels/rendering/settings.zig");
 const material_editor = @import("panels/assets/material_editor.zig");
-const viewport_status = @import("panels/viewport/viewport_status.zig");
 const ai_chat = @import("panels/ai/ai_chat.zig");
 const ui_icons = @import("icons.zig");
 const layout = @import("layout.zig");
@@ -1382,108 +1381,6 @@ pub fn drawStatsWindow(state: *EditorState, layer_context: *engine.core.LayerCon
     gui.labelText(state.text(.cameras), cameras_text);
 }
 
-pub fn drawStatusBarWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
-    const window_width = @as(f32, @floatFromInt(layer_context.window.logical_width));
-    const height = 38.0;
-    gui.setNextWindowPos(.{ 0.0, @as(f32, @floatFromInt(layer_context.window.logical_height)) - height });
-    gui.setNextWindowSize(.{ window_width, height });
-    var title_buffer: [96]u8 = undefined;
-    const title = try state.windowLabel(&title_buffer, .status_bar, "status_bar_panel");
-    _ = gui.beginWindowFlags(
-        title,
-        gui.WindowFlags.no_title_bar |
-            gui.WindowFlags.no_collapse |
-            gui.WindowFlags.no_scrollbar |
-            gui.WindowFlags.no_resize |
-            gui.WindowFlags.no_move |
-            gui.WindowFlags.no_saved_settings |
-            gui.WindowFlags.no_docking,
-    );
-    defer gui.endWindow();
-
-    const fps = if (layer_context.delta_seconds > 0.0001) 1.0 / layer_context.delta_seconds else 0.0;
-    const selection_count = layer_context.renderer.selectedEntities().len;
-    const save_status = if (history.hasUnsavedChanges(state)) state.text(.unsaved) else state.text(.saved);
-    const mode_text = switch (state.manipulation_mode) {
-        .none => state.text(.select),
-        .translate => state.text(.move),
-        .rotate => state.text(.rotate),
-        .scale => state.text(.scale),
-    };
-    const camera_text = if (state.editor_camera_active) state.text(.editor_camera_mode) else state.text(.scene_camera_mode);
-    const space_text = switch (state.transform_space) {
-        .local => state.text(.local_space),
-        .world => state.text(.world_space),
-    };
-    const backend_text = engine.render.graphicsApiName(layer_context.renderer.backendApi());
-    var memory_buffer: [32]u8 = undefined;
-    const memory_text = if (engine.platform.processResidentMemoryBytes()) |memory_bytes| blk: {
-        const memory_mb = @as(f32, @floatFromInt(memory_bytes)) / (1024.0 * 1024.0);
-        break :blk try std.fmt.bufPrint(&memory_buffer, "{d:.1} MB", .{memory_mb});
-    } else "N/A";
-
-    var path_buffer: [320]u8 = undefined;
-    const selected_path = if (layer_context.renderer.selectedEntity()) |selected|
-        utils.entityPath(&path_buffer, layer_context.world, selected) catch "/"
-    else
-        "/";
-
-    const status_context_ratio = viewport_status.statusBarContextRatio(window_width);
-    const status_metrics_ratio = 1.0 - status_context_ratio;
-    const context_width = window_width * status_context_ratio;
-    const metrics_width = @max(window_width - context_width, 0.0);
-
-    var compact_path_buffer: [160]u8 = undefined;
-    const compact_path = viewport_status.compactStatusPath(
-        &compact_path_buffer,
-        selected_path,
-        viewport_status.statusPathCharacterBudget(context_width),
-    );
-
-    var metrics_buffer: [320]u8 = undefined;
-    var metrics_stream = std.io.fixedBufferStream(&metrics_buffer);
-    try viewport_status.buildStatusMetricsText(
-        metrics_stream.writer(),
-        state,
-        selection_count,
-        fps,
-        save_status,
-        backend_text,
-        memory_text,
-        metrics_width,
-    );
-    const metrics_text = metrics_stream.getWritten();
-
-    var context_buffer: [384]u8 = undefined;
-    var context_stream = std.io.fixedBufferStream(&context_buffer);
-    try viewport_status.buildStatusContextText(
-        context_stream.writer(),
-        state,
-        compact_path,
-        camera_text,
-        mode_text,
-        space_text,
-        context_width,
-    );
-    const context_text = context_stream.getWritten();
-
-    gui.pushStyleVarVec2(.item_spacing, .{ 8.0, 0.0 });
-    defer gui.popStyleVar(1);
-    gui.setCursorPos(.{ 0.0, 3.0 });
-    if (gui.beginTable("status_bar_layout", 2)) {
-        defer gui.endTable();
-        gui.tableSetupColumn("##status_context", true, status_context_ratio);
-        gui.tableSetupColumn("##status_metrics", true, status_metrics_ratio);
-        gui.tableNextRow();
-        gui.tableNextColumn();
-        gui.alignTextToFramePadding();
-        gui.text(context_text);
-        gui.tableNextColumn();
-        gui.alignTextToFramePadding();
-        gui.text(metrics_text);
-    }
-}
-
 pub fn handleViewportSelection(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const input = layer_context.input;
     if (input.wasMousePressed(.left)) {
@@ -1674,15 +1571,12 @@ pub fn drawEditorUi(
     try drawLeftSidebar(state, layer_context);
     try drawRightSidebar(state, layer_context);
 
-    // Shell Layer 3: Bottom Workspace
+    // Shell Layer 3: Bottom Workspace (drawer in viewport)
     try content_browser.drawContentBrowser(state, layer_context);
 
     // Shell Layer 4: Auxiliary / Floating Windows
     try drawAuxiliaryWindows(state, layer_context);
     try menu_bar.resolvePendingTopBarDrag(state, layer_context);
-
-    // Shell Layer 5: Status Bar (pinned bottom)
-    try drawStatusBarWindow(state, layer_context);
 }
 
 /// Left sidebar: Scene Hierarchy + Place Actors

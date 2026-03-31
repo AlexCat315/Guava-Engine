@@ -535,13 +535,13 @@ pub const EditorState = struct {
     // Material thumbnail render queue (asset IDs pending render)
     material_thumbnail_queue: std.ArrayList([]const u8) = .empty,
 
-    bottom_workspace_tab: BottomWorkspaceTab = .command_timeline,
+    bottom_workspace_tab: BottomWorkspaceTab = .project,
+    bottom_drawer_open: bool = false,
+    bottom_drawer_height: f32 = 260.0,
     shell_show_left_sidebar: bool = true,
     shell_show_right_sidebar: bool = true,
-    shell_show_bottom_workspace: bool = true,
     shell_left_sidebar_width: f32 = 320.0,
     shell_right_sidebar_width: f32 = 380.0,
-    shell_bottom_workspace_height: f32 = 260.0,
     shell_dense_mode: bool = false,
     ghost_highlight_enabled: bool = true,
     ghost_highlight_pulse_speed: f32 = 1.85,

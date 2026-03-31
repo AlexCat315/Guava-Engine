@@ -202,11 +202,7 @@ void build_default_dock_layout() {
 
   ImGuiID dock_main = g_dockspace_id;
 
-  // 1) Bottom workspace strip (Project / Console / Timeline tabs) — 18% height.
-  ImGuiID dock_bottom = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Down,
-                                                    0.18f, nullptr, &dock_main);
-
-  // 2) Left sidebar: Scene hierarchy + Place Actors — 20% width.
+  // 1) Left sidebar: Scene hierarchy + Place Actors — 20% width.
   ImGuiID dock_left = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Left,
                                                   0.20f, nullptr, &dock_main);
 
@@ -229,9 +225,6 @@ void build_default_dock_layout() {
   ImGuiID dock_inspector = ImGui::DockBuilderSplitNode(
       dock_right, ImGuiDir_Up, 0.58f, nullptr, &dock_right_bottom);
   ImGuiID dock_jarvis = dock_right_bottom;
-
-  // Bottom workspace — single tabbed node for Project / Console / Timeline.
-  ImGui::DockBuilderDockWindow("Workspace##content_browser_panel", dock_bottom);
 
   // Left sidebar.
   ImGui::DockBuilderDockWindow("Scene###scene_panel", dock_scene);
