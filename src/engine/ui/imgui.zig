@@ -11,6 +11,7 @@ var g_metal_device: ?*metal_device_mod.MetalDevice = null;
 
 pub const c = @cImport({
     @cInclude("imgui_bridge.h");
+    @cInclude("imgui_widgets.h");
 });
 
 pub const Error = error{
