@@ -12,6 +12,7 @@ const i18n = @import("../i18n/mod.zig");
 
 var g_pending_top_bar_drag = false;
 var g_pending_top_bar_drag_mouse = [2]f32{ 0.0, 0.0 };
+var g_double_click_cooldown: i32 = 0;
 
 pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     if (!gui.beginMainMenuBar()) {
@@ -203,23 +204,31 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
 
     gui.sameLine();
     _ = gui.invisibleButton("top_bar_drag_region", drag_width, 22.0);
-    // Allow starting a pending top-bar drag when the invisible top-bar region is hovered
-    // and the left mouse button is pressed. Also keep existing behavior when the item
-    // is already active (pressed). This makes dragging more responsive.
-    if ((gui.isItemActive() or gui.isItemHovered()) and layer_context.input.wasMousePressed(.left)) {
-        g_pending_top_bar_drag = true;
-        g_pending_top_bar_drag_mouse = gui.mousePos();
+    // Update double click cooldown
+    if (g_double_click_cooldown > 0) {
+        g_double_click_cooldown -= 1;
     }
+
+    // Check for double click first
     if (gui.isItemHovered() and layer_context.input.wasMouseDoubleClicked(.left)) {
         // Clear any pending top-bar drag so resolvePendingTopBarDrag won't start a drag
         // immediately after a double-click maximize/restore.
         g_pending_top_bar_drag = false;
         state.top_bar_drag_active = false;
+        g_double_click_cooldown = 1; // set cooldown to 1 frame (so we skip the pending drag start in this frame)
         // Treat maximizeFull as equivalent to native maximize for restore logic.
         if (layer_context.window.isMaximized() or layer_context.window.isMaximizedFull()) {
             try layer_context.window.restore();
         } else {
             try layer_context.window.maximizeFull();
+        }
+    }
+
+    // Then, check for starting a pending drag only if we are not in cooldown
+    if (g_double_click_cooldown == 0) {
+        if ((gui.isItemActive() or gui.isItemHovered()) and layer_context.input.wasMousePressed(.left)) {
+            g_pending_top_bar_drag = true;
+            g_pending_top_bar_drag_mouse = gui.mousePos();
         }
     }
 
