@@ -93,7 +93,7 @@ void  guava_vk_rhi_destroy(void* ctx);
 
 // ── Surface / swapchain ───────────────────────────────────────────────────
 bool guava_vk_rhi_create_surface(void* ctx, void* native_window);
-bool guava_vk_rhi_create_swapchain(void* ctx, uint32_t width, uint32_t height);
+bool guava_vk_rhi_create_swapchain(void* ctx, uint32_t width, uint32_t height, bool vsync_enabled);
 
 // ── Resource creation (returns ID > 0 on success, 0 on failure) ──────────
 uint32_t guava_vk_rhi_create_buffer(void* ctx, uint64_t size,

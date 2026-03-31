@@ -5,6 +5,7 @@ const EditorState = @import("../core/state.zig").EditorState;
 const history = @import("../actions/history.zig");
 const camera = @import("../interaction/camera.zig");
 const content_browser = @import("../assets/browser.zig");
+const preferences = @import("../core/preferences.zig");
 const scene_hierarchy = @import("panels/scene/scene_hierarchy.zig");
 const floating_window_blocker = @import("floating_window_blocker.zig");
 const layout = @import("layout.zig");
@@ -13,6 +14,12 @@ const i18n = @import("../i18n/mod.zig");
 var g_pending_top_bar_drag = false;
 var g_pending_top_bar_drag_mouse = [2]f32{ 0.0, 0.0 };
 var g_double_click_cooldown: i32 = 0;
+var g_last_top_bar_click_time: f32 = -1.0;
+var g_last_top_bar_click_mouse = [2]f32{ 0.0, 0.0 };
+
+const top_bar_double_click_interval_seconds: f32 = 0.35;
+const top_bar_double_click_max_distance: f32 = 6.0;
+const top_bar_drag_start_distance: f32 = 4.0;
 
 pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     if (!gui.beginMainMenuBar()) {
@@ -105,12 +112,15 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
         }
         if (gui.menuItem(state.text(.command_timeline), null, state.bottom_workspace_tab == .command_timeline, true)) {
             state.bottom_workspace_tab = .command_timeline;
+            state.bottom_drawer_open = true;
         }
         if (gui.menuItem("Project Browser", null, state.bottom_workspace_tab == .project, true)) {
             state.bottom_workspace_tab = .project;
+            state.bottom_drawer_open = true;
         }
         if (gui.menuItem("Console", null, state.bottom_workspace_tab == .console, true)) {
             state.bottom_workspace_tab = .console;
+            state.bottom_drawer_open = true;
         }
         gui.separator();
         if (gui.menuItem("Ghost Highlight (AI Outline)", null, state.ghost_highlight_enabled, true)) {
@@ -191,6 +201,9 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
             const locale_info = i18n.locale(language);
             if (gui.menuItem(locale_info.native_name, null, state.language == language, true)) {
                 state.language = language;
+                preferences.saveEditorPreferences(state) catch |err| {
+                    std.log.warn("Editor: failed to save editor preferences: {s}", .{@errorName(err)});
+                };
             }
         }
     }
@@ -209,16 +222,16 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
         g_double_click_cooldown -= 1;
     }
 
-    // Check for double click first
-    if (gui.isItemHovered() and layer_context.input.wasMouseDoubleClicked(.left)) {
-        // Clear any pending top-bar drag so resolvePendingTopBarDrag won't start a drag
-        // immediately after a double-click maximize/restore.
+    // Check for double click first. We track it locally instead of relying on
+    // SDL click-count state, which can become unreliable after native window drags.
+    if (gui.isItemHovered() and layer_context.input.wasMousePressed(.left) and isTopBarDoubleClick(gui.mousePos(), gui.time())) {
         g_pending_top_bar_drag = false;
         state.top_bar_drag_active = false;
         g_double_click_cooldown = 1; // set cooldown to 1 frame (so we skip the pending drag start in this frame)
-        // Treat maximizeFull as equivalent to native maximize for restore logic.
         if (layer_context.window.isMaximized() or layer_context.window.isMaximizedFull()) {
             try layer_context.window.restore();
+        } else if (native_titlebar_controls) {
+            try layer_context.window.maximize();
         } else {
             try layer_context.window.maximizeFull();
         }
@@ -227,8 +240,10 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
     // Then, check for starting a pending drag only if we are not in cooldown
     if (g_double_click_cooldown == 0) {
         if ((gui.isItemActive() or gui.isItemHovered()) and layer_context.input.wasMousePressed(.left)) {
-            g_pending_top_bar_drag = true;
-            g_pending_top_bar_drag_mouse = gui.mousePos();
+            if (!floating_window_blocker.anyContainsPoint(gui.mousePos())) {
+                g_pending_top_bar_drag = true;
+                g_pending_top_bar_drag_mouse = gui.mousePos();
+            }
         }
     }
 
@@ -276,9 +291,18 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
 
 pub fn resolvePendingTopBarDrag(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     if (!g_pending_top_bar_drag) return;
-    defer g_pending_top_bar_drag = false;
 
-    if (!layer_context.input.isMouseDown(.left)) return;
+    if (!layer_context.input.isMouseDown(.left)) {
+        g_pending_top_bar_drag = false;
+        return;
+    }
+    const mouse = gui.mousePos();
+    const dx = mouse[0] - g_pending_top_bar_drag_mouse[0];
+    const dy = mouse[1] - g_pending_top_bar_drag_mouse[1];
+    if (dx * dx + dy * dy < top_bar_drag_start_distance * top_bar_drag_start_distance) return;
+    defer g_pending_top_bar_drag = false;
+    resetTopBarClickTracking();
+
     if (floating_window_blocker.anyContainsPoint(g_pending_top_bar_drag_mouse)) return;
     try beginTopBarDrag(state, layer_context);
 }
@@ -286,7 +310,7 @@ pub fn resolvePendingTopBarDrag(state: *EditorState, layer_context: *engine.core
 fn beginTopBarDrag(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const mouse = layer_context.window.globalMousePosition();
 
-    if (layer_context.window.isMaximized()) {
+    if (layer_context.window.isMaximized() or layer_context.window.isMaximizedFull()) {
         const usable = try layer_context.window.usableBounds();
         const width_before_restore = @max(layer_context.window.logical_width, 1);
         const click_ratio_x = std.math.clamp(
@@ -332,4 +356,29 @@ fn beginTopBarDrag(state: *EditorState, layer_context: *engine.core.LayerContext
         mouse[0] - @as(f32, @floatFromInt(window_pos[0])),
         mouse[1] - @as(f32, @floatFromInt(window_pos[1])),
     };
+}
+
+fn isTopBarDoubleClick(mouse: [2]f32, now: f32) bool {
+    const delta_time = now - g_last_top_bar_click_time;
+    const dx = mouse[0] - g_last_top_bar_click_mouse[0];
+    const dy = mouse[1] - g_last_top_bar_click_mouse[1];
+    const within_distance = dx * dx + dy * dy <= top_bar_double_click_max_distance * top_bar_double_click_max_distance;
+    const is_double = g_last_top_bar_click_time >= 0.0 and
+        delta_time >= 0.0 and
+        delta_time <= top_bar_double_click_interval_seconds and
+        within_distance;
+
+    if (is_double) {
+        resetTopBarClickTracking();
+        return true;
+    }
+
+    g_last_top_bar_click_time = now;
+    g_last_top_bar_click_mouse = mouse;
+    return false;
+}
+
+fn resetTopBarClickTracking() void {
+    g_last_top_bar_click_time = -1.0;
+    g_last_top_bar_click_mouse = .{ 0.0, 0.0 };
 }

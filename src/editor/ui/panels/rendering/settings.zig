@@ -5,6 +5,7 @@ const floating_window_blocker = @import("../../floating_window_blocker.zig");
 const EditorState = @import("../../../core/state.zig").EditorState;
 const SettingsCategory = @import("../../../core/state.zig").SettingsCategory;
 const FpsDisplayMode = @import("../../../core/state.zig").FpsDisplayMode;
+const preferences = @import("../../../core/preferences.zig");
 const i18n = @import("../../../i18n/mod.zig");
 const icon_cache = @import("../../icon_cache.zig");
 const ui_icons = @import("../../icons.zig");
@@ -114,7 +115,7 @@ fn drawSettingsCategoryList(state: *EditorState, layer_context: *engine.core.Lay
     }
 }
 
-fn drawSettingsContentGeneral(state: *EditorState) void {
+fn drawSettingsContentGeneral(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     gui.labelText(state.text(.language), state.languageInfo().native_name);
     const content_width = gui.contentRegionAvail()[0];
     const language_count = i18n.available_languages.len;
@@ -135,6 +136,9 @@ fn drawSettingsContentGeneral(state: *EditorState) void {
         }
         if (gui.buttonEx(locale_info.native_name, language_button_width, 0.0)) {
             state.language = language;
+            preferences.saveEditorPreferences(state) catch |err| {
+                std.log.warn("Editor: failed to save editor preferences: {s}", .{@errorName(err)});
+            };
         }
     }
 
@@ -157,11 +161,22 @@ fn drawSettingsContentGeneral(state: *EditorState) void {
         }
         if (drawSettingsChoiceButton(option.label, state.fps_display_mode == option.mode, fps_button_width)) {
             state.fps_display_mode = option.mode;
+            state.fps_overlay_last_sample_time = -1.0;
+            preferences.saveEditorPreferences(state) catch |err| {
+                std.log.warn("Editor: failed to save editor preferences: {s}", .{@errorName(err)});
+            };
         }
     }
 
     gui.dummy(0.0, 6.0);
-    _ = gui.checkbox(state.text(.viewport_debug_overlay), &state.viewport_debug_overlay);
+    var vsync_enabled = state.vsync_enabled;
+    if (gui.checkbox(state.text(.vsync), &vsync_enabled)) {
+        try layer_context.renderer.setVSyncEnabled(vsync_enabled);
+        state.vsync_enabled = layer_context.renderer.vsyncEnabled();
+        preferences.saveEditorPreferences(state) catch |err| {
+            std.log.warn("Editor: failed to save editor preferences: {s}", .{@errorName(err)});
+        };
+    }
 }
 
 fn drawSettingsChoiceButton(label: []const u8, active: bool, width: f32) bool {
@@ -254,7 +269,7 @@ pub fn drawSettingsWindow(state: *EditorState, layer_context: *engine.core.Layer
         defer layout.endSectionBody();
 
         switch (state.settings_category) {
-            .general => drawSettingsContentGeneral(state),
+            .general => try drawSettingsContentGeneral(state, layer_context),
             .interface => drawSettingsContentInterface(state),
             .editor => drawSettingsContentEditor(state),
             .viewport => drawSettingsContentViewport(state, layer_context),

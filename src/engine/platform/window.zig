@@ -6,6 +6,7 @@ const sdl = @import("sdl.zig").c;
 extern fn guava_window_apply_macos_native_titlebar_style(window: *sdl.SDL_Window) bool;
 extern fn guava_window_macos_titlebar_leading_inset(window: *sdl.SDL_Window) f32;
 extern fn guava_window_activate_macos_app() void;
+extern fn guava_window_begin_macos_native_drag(window: *sdl.SDL_Window) bool;
 extern fn guava_window_apply_windows_native_titlebar_style(window: *sdl.SDL_Window) bool;
 extern fn guava_window_windows_titlebar_trailing_inset(window: *sdl.SDL_Window) f32;
 extern fn guava_window_create_metal_layer_binding(window_handle: *anyopaque, out_binding: *MetalLayerBinding) bool;
@@ -373,6 +374,25 @@ pub const Window = struct {
         sdl.SDL_Delay(milliseconds);
     }
 
+    pub fn displayRefreshRate(self: *const Window) ?f32 {
+        const display_id = sdl.SDL_GetDisplayForWindow(self.handle);
+        if (display_id == 0) {
+            return null;
+        }
+
+        const current_mode = sdl.SDL_GetCurrentDisplayMode(display_id);
+        if (current_mode != null and current_mode[0].refresh_rate > 0.0) {
+            return current_mode[0].refresh_rate;
+        }
+
+        const desktop_mode = sdl.SDL_GetDesktopDisplayMode(display_id);
+        if (desktop_mode != null and desktop_mode[0].refresh_rate > 0.0) {
+            return desktop_mode[0].refresh_rate;
+        }
+
+        return null;
+    }
+
     pub fn setTitle(self: *Window, allocator: std.mem.Allocator, title: []const u8) !void {
         const title_z = try allocator.dupeZ(u8, title);
         defer allocator.free(title_z);
@@ -401,6 +421,13 @@ pub const Window = struct {
         var y: f32 = 0.0;
         _ = sdl.SDL_GetGlobalMouseState(&x, &y);
         return .{ x, y };
+    }
+
+    pub fn beginNativeDrag(self: *Window) bool {
+        return switch (builtin.os.tag) {
+            .macos => guava_window_begin_macos_native_drag(self.handle),
+            else => false,
+        };
     }
 
     /// 启用/禁用相对鼠标模式。

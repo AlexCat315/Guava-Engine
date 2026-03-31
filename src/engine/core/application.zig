@@ -362,6 +362,7 @@ pub const Application = struct {
             const elapsed_ns = self.timer.lap();
             var delta_seconds = @as(f32, @floatFromInt(elapsed_ns)) / @as(f32, @floatFromInt(std.time.ns_per_s));
             delta_seconds = @min(delta_seconds, 0.1); // 最大帧间隔锁定为 0.1 秒
+            self.renderer.device().recordFrame(@min(elapsed_ns, 100 * std.time.ns_per_ms));
 
             try self.applyPendingCommands();
 

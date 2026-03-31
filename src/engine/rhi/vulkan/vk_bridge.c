@@ -958,6 +958,39 @@ void guava_vk_rhi_destroy(void* raw) {
 // Surface / Swapchain
 // ===========================================================================
 
+static void destroy_swapchain_resources(GuavaVkContext* ctx) {
+    if (!ctx->device) return;
+
+    vkDeviceWaitIdle(ctx->device);
+
+    for (uint32_t i = 0; i < ctx->fb_cache_count; i++) {
+        vkDestroyFramebuffer(ctx->device, ctx->fb_cache[i].framebuffer, NULL);
+    }
+    ctx->fb_cache_count = 0;
+
+    if (ctx->swapchain_image_views) {
+        for (uint32_t i = 0; i < ctx->swapchain_image_count; i++) {
+            vkDestroyImageView(ctx->device, ctx->swapchain_image_views[i], NULL);
+        }
+        free(ctx->swapchain_image_views);
+        ctx->swapchain_image_views = NULL;
+    }
+
+    if (ctx->swapchain_images) {
+        free(ctx->swapchain_images);
+        ctx->swapchain_images = NULL;
+    }
+
+    if (ctx->swapchain) {
+        vkDestroySwapchainKHR(ctx->device, ctx->swapchain, NULL);
+        ctx->swapchain = VK_NULL_HANDLE;
+    }
+
+    ctx->swapchain_image_count = 0;
+    ctx->current_swapchain_index = 0;
+    ctx->swapchain_texture_id = 0;
+}
+
 bool guava_vk_rhi_create_surface(void* raw, void* native_window) {
     GuavaVkContext* ctx = (GuavaVkContext*)raw;
     if (!guava_window_create_vulkan_surface(native_window, ctx->instance, &ctx->surface)) {
@@ -967,8 +1000,12 @@ bool guava_vk_rhi_create_surface(void* raw, void* native_window) {
     return true;
 }
 
-bool guava_vk_rhi_create_swapchain(void* raw, uint32_t width, uint32_t height) {
+bool guava_vk_rhi_create_swapchain(void* raw, uint32_t width, uint32_t height, bool vsync_enabled) {
     GuavaVkContext* ctx = (GuavaVkContext*)raw;
+
+    if (ctx->swapchain || ctx->swapchain_image_views || ctx->swapchain_images) {
+        destroy_swapchain_resources(ctx);
+    }
 
     VkSurfaceCapabilitiesKHR caps;
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(ctx->physical_device, ctx->surface, &caps);
@@ -990,7 +1027,7 @@ bool guava_vk_rhi_create_swapchain(void* raw, uint32_t width, uint32_t height) {
     }
     ctx->swapchain_format = chosen.format;
 
-    // Choose present mode (prefer mailbox → fifo)
+    // Choose present mode based on VSync preference.
     uint32_t pm_count = 0;
     vkGetPhysicalDeviceSurfacePresentModesKHR(ctx->physical_device, ctx->surface, &pm_count, NULL);
     VkPresentModeKHR modes[16];
@@ -998,10 +1035,22 @@ bool guava_vk_rhi_create_swapchain(void* raw, uint32_t width, uint32_t height) {
     vkGetPhysicalDeviceSurfacePresentModesKHR(ctx->physical_device, ctx->surface, &pm_count, modes);
 
     VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
-    for (uint32_t i = 0; i < pm_count; i++) {
-        if (modes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
-            present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
-            break;
+    if (vsync_enabled) {
+        present_mode = VK_PRESENT_MODE_FIFO_KHR;
+    } else {
+        for (uint32_t i = 0; i < pm_count; i++) {
+            if (modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR) {
+                present_mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+                break;
+            }
+        }
+        if (present_mode == VK_PRESENT_MODE_FIFO_KHR) {
+            for (uint32_t i = 0; i < pm_count; i++) {
+                if (modes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
+                    present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
+                    break;
+                }
+            }
         }
     }
 

@@ -108,3 +108,24 @@ extern "C" void guava_window_activate_macos_app(void) {
         [NSApp activate];
     }
 }
+
+extern "C" bool guava_window_begin_macos_native_drag(SDL_Window* window) {
+    @autoreleasepool {
+        NSWindow* native_window = guava_ns_window_from_sdl(window);
+        if (native_window == nil) {
+            return false;
+        }
+
+        NSEvent* event = [NSApp currentEvent];
+        if (event == nil) {
+            return false;
+        }
+
+        if (event.type != NSEventTypeLeftMouseDown && event.type != NSEventTypeLeftMouseDragged) {
+            return false;
+        }
+
+        [native_window performWindowDragWithEvent:event];
+        return true;
+    }
+}

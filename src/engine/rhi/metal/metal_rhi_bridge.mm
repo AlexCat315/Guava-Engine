@@ -26,6 +26,7 @@ struct GuavaMetalRhiContext {
     CAMetalLayer*        metal_layer    = nil;
     id<CAMetalDrawable>  current_drawable = nil;
     uint32_t             swapchain_texture_id = 0; // texture ID for current drawable
+    bool                 vsync_enabled = true;
 
     uint32_t next_buffer_id   = 1;
     uint32_t next_texture_id  = 1;
@@ -325,9 +326,20 @@ void guava_metal_rhi_set_layer(void* raw, void* ca_metal_layer) {
     ctx->metal_layer.device = ctx->device;
     ctx->metal_layer.pixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
     ctx->metal_layer.framebufferOnly = YES;
+    if ([ctx->metal_layer respondsToSelector:@selector(setDisplaySyncEnabled:)]) {
+        ctx->metal_layer.displaySyncEnabled = ctx->vsync_enabled ? YES : NO;
+    }
     fprintf(stderr, "[GuavaMetal] CAMetalLayer configured — size: %.0fx%.0f\n",
             ctx->metal_layer.drawableSize.width,
             ctx->metal_layer.drawableSize.height);
+}
+
+void guava_metal_rhi_set_vsync_enabled(void* raw, bool enabled) {
+    auto* ctx = static_cast<GuavaMetalRhiContext*>(raw);
+    ctx->vsync_enabled = enabled;
+    if (ctx->metal_layer && [ctx->metal_layer respondsToSelector:@selector(setDisplaySyncEnabled:)]) {
+        ctx->metal_layer.displaySyncEnabled = enabled ? YES : NO;
+    }
 }
 
 // ---------------------------------------------------------------------------

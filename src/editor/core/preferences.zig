@@ -1,13 +1,16 @@
 const std = @import("std");
 const gui = @import("../ui/gui.zig");
+const i18n = @import("../i18n/mod.zig");
 const provider_support = @import("../ui/panels/ai/provider_support.zig");
 const state_mod = @import("state.zig");
 
 const EditorState = state_mod.EditorState;
 const AiProviderType = state_mod.AiProviderType;
+const FpsDisplayMode = state_mod.FpsDisplayMode;
 const max_ai_providers = state_mod.max_ai_providers;
 
-const prefs_file_name = "ai_provider_settings.json";
+const ai_prefs_file_name = "ai_provider_settings.json";
+const editor_prefs_file_name = "editor_preferences.json";
 const max_prefs_file_size: usize = 256 * 1024;
 
 const PersistedProvider = struct {
@@ -23,6 +26,13 @@ const PersistedPrefs = struct {
     provider_type: []const u8 = "openai",
     active_provider: usize = 0,
     providers: []const PersistedProvider = &.{},
+};
+
+const PersistedEditorPrefs = struct {
+    version: u32 = 1,
+    language: ?[]const u8 = null,
+    fps_display_mode: ?[]const u8 = null,
+    vsync_enabled: ?bool = null,
 };
 
 const ProviderDefaults = struct {
@@ -145,10 +155,37 @@ fn persistedProviderType(provider: PersistedProvider, fallback: AiProviderType) 
     return std.meta.stringToEnum(AiProviderType, resolved) orelse fallback;
 }
 
-fn prefsPathAlloc(allocator: std.mem.Allocator) ![]u8 {
+fn prefsPathAlloc(allocator: std.mem.Allocator, file_name: []const u8) ![]u8 {
     const pref_path = try gui.editorPrefPathAlloc(allocator);
     defer allocator.free(pref_path);
-    return std.fs.path.join(allocator, &.{ pref_path, prefs_file_name });
+    return std.fs.path.join(allocator, &.{ pref_path, file_name });
+}
+
+fn writeJsonFileAtomically(allocator: std.mem.Allocator, path: []const u8, payload: anytype) !void {
+    var output = std.ArrayList(u8).empty;
+    defer output.deinit(allocator);
+    var writer = output.writer(allocator);
+    var adapter_buffer: [4096]u8 = undefined;
+    var writer_adapter = writer.adaptToNewApi(&adapter_buffer);
+    try std.json.Stringify.value(payload, .{ .whitespace = .indent_2 }, &writer_adapter.new_interface);
+    try writer_adapter.new_interface.flush();
+
+    if (std.fs.path.dirname(path)) |dir_path| {
+        try std.fs.cwd().makePath(dir_path);
+    }
+    const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp", .{path});
+    defer allocator.free(tmp_path);
+
+    const file = try std.fs.createFileAbsolute(tmp_path, .{ .truncate = true });
+    defer file.close();
+    try file.writeAll(output.items);
+    file.sync() catch {};
+
+    std.fs.deleteFileAbsolute(path) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
+    try std.fs.renameAbsolute(tmp_path, path);
 }
 
 fn saveAiProviderSettingsToPath(state: *const EditorState, path: []const u8) !void {
@@ -206,31 +243,7 @@ fn saveAiProviderSettingsToPath(state: *const EditorState, path: []const u8) !vo
         .active_provider = active_provider_index,
         .providers = persisted_providers,
     };
-
-    var output = std.ArrayList(u8).empty;
-    defer output.deinit(allocator);
-    var writer = output.writer(allocator);
-    var adapter_buffer: [4096]u8 = undefined;
-    var writer_adapter = writer.adaptToNewApi(&adapter_buffer);
-    try std.json.Stringify.value(payload, .{ .whitespace = .indent_2 }, &writer_adapter.new_interface);
-    try writer_adapter.new_interface.flush();
-
-    if (std.fs.path.dirname(path)) |dir_path| {
-        try std.fs.cwd().makePath(dir_path);
-    }
-    const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp", .{path});
-    defer allocator.free(tmp_path);
-
-    const file = try std.fs.createFileAbsolute(tmp_path, .{ .truncate = true });
-    defer file.close();
-    try file.writeAll(output.items);
-    file.sync() catch {};
-
-    std.fs.deleteFileAbsolute(path) catch |err| switch (err) {
-        error.FileNotFound => {},
-        else => return err,
-    };
-    try std.fs.renameAbsolute(tmp_path, path);
+    try writeJsonFileAtomically(allocator, path, payload);
 }
 
 fn loadAiProviderSettingsFromPath(state: *EditorState, path: []const u8) !void {
@@ -328,14 +341,67 @@ fn loadAiProviderSettingsFromPath(state: *EditorState, path: []const u8) !void {
 
 pub fn loadAiProviderSettings(state: *EditorState) !void {
     const allocator = state.allocator orelse return error.AllocatorNotInitialized;
-    const path = try prefsPathAlloc(allocator);
+    const path = try prefsPathAlloc(allocator, ai_prefs_file_name);
     defer allocator.free(path);
     try loadAiProviderSettingsFromPath(state, path);
 }
 
 pub fn saveAiProviderSettings(state: *const EditorState) !void {
     const allocator = state.allocator orelse return error.AllocatorNotInitialized;
-    const path = try prefsPathAlloc(allocator);
+    const path = try prefsPathAlloc(allocator, ai_prefs_file_name);
     defer allocator.free(path);
     try saveAiProviderSettingsToPath(state, path);
+}
+
+fn loadEditorPreferencesFromPath(state: *EditorState, path: []const u8) !void {
+    const allocator = state.allocator orelse return error.AllocatorNotInitialized;
+
+    const file = std.fs.openFileAbsolute(path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => return err,
+    };
+    defer file.close();
+
+    const bytes = try file.readToEndAlloc(allocator, max_prefs_file_size);
+    defer allocator.free(bytes);
+
+    var parsed = try std.json.parseFromSlice(PersistedEditorPrefs, allocator, bytes, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    if (parsed.value.language) |language_name| {
+        state.language = std.meta.stringToEnum(i18n.Language, language_name) orelse state.language;
+    }
+    if (parsed.value.fps_display_mode) |fps_mode_name| {
+        state.fps_display_mode = std.meta.stringToEnum(FpsDisplayMode, fps_mode_name) orelse state.fps_display_mode;
+    }
+    if (parsed.value.vsync_enabled) |enabled| {
+        state.vsync_enabled = enabled;
+    }
+}
+
+fn saveEditorPreferencesToPath(state: *const EditorState, path: []const u8) !void {
+    const allocator = state.allocator orelse return error.AllocatorNotInitialized;
+    const payload = PersistedEditorPrefs{
+        .language = @tagName(state.language),
+        .fps_display_mode = @tagName(state.fps_display_mode),
+        .vsync_enabled = state.vsync_enabled,
+    };
+    try writeJsonFileAtomically(allocator, path, payload);
+}
+
+pub fn loadEditorPreferences(state: *EditorState) !void {
+    const allocator = state.allocator orelse return error.AllocatorNotInitialized;
+    const path = try prefsPathAlloc(allocator, editor_prefs_file_name);
+    defer allocator.free(path);
+    try loadEditorPreferencesFromPath(state, path);
+}
+
+pub fn saveEditorPreferences(state: *const EditorState) !void {
+    const allocator = state.allocator orelse return error.AllocatorNotInitialized;
+    const path = try prefsPathAlloc(allocator, editor_prefs_file_name);
+    defer allocator.free(path);
+    try saveEditorPreferencesToPath(state, path);
 }

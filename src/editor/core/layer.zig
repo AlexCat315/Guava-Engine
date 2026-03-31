@@ -163,13 +163,19 @@ pub const EditorLayer = struct {
         try gui.init(layer_context.window, layer_context.rhi());
 
         initEditorStyle();
+        preferences.loadEditorPreferences(&self.state) catch |err| {
+            std.log.warn("Editor: failed to load editor preferences: {s}", .{@errorName(err)});
+        };
         preferences.loadAiProviderSettings(&self.state) catch |err| {
             std.log.warn("Editor: failed to load AI provider settings: {s}", .{@errorName(err)});
         };
+        layer_context.renderer.setVSyncEnabled(self.state.vsync_enabled) catch |err| {
+            std.log.warn("Editor: failed to apply VSync preference: {s}", .{@errorName(err)});
+        };
+        self.state.vsync_enabled = layer_context.renderer.vsyncEnabled();
 
         // Default to Material preview on startup so imported model textures are visible immediately.
         _ = @import("state.zig").setViewportShadingMode(&self.state, .material);
-        self.state.viewport_debug_overlay = false;
 
         self.state.dock_layout_initialized = false;
         self.state.scene_camera = layer_context.world.primaryCameraEntity();
@@ -193,6 +199,9 @@ pub const EditorLayer = struct {
 
     fn onDetach(context: *anyopaque) void {
         const self: *EditorLayer = @ptrCast(@alignCast(context));
+        preferences.saveEditorPreferences(&self.state) catch |err| {
+            std.log.warn("Editor: failed to save editor preferences: {s}", .{@errorName(err)});
+        };
         preferences.saveAiProviderSettings(&self.state) catch |err| {
             std.log.warn("Editor: failed to save AI provider settings: {s}", .{@errorName(err)});
         };

@@ -549,6 +549,11 @@ pub const EditorState = struct {
     ghost_highlight_alpha_max: f32 = 0.92,
     ghost_highlight_show_preview_selection_only: bool = false,
     fps_display_mode: FpsDisplayMode = .viewport,
+    vsync_enabled: bool = true,
+    fps_overlay_display_fps: f32 = 0.0,
+    fps_overlay_display_frame_ms: f32 = 0.0,
+    fps_overlay_display_refresh_hz: ?f32 = null,
+    fps_overlay_last_sample_time: f64 = -1.0,
     console_show_errors: bool = true,
     console_show_warnings: bool = true,
     console_show_info: bool = true,
@@ -603,7 +608,6 @@ pub const EditorState = struct {
     render_output_restore_bounces: u32 = 2,
     render_output_restore_resolution_scale: f32 = 0.75,
     viewport_view_preset: ViewportViewPreset = .perspective,
-    viewport_debug_overlay: bool = false,
     viewport_show_grid: bool = true,
     viewport_show_bones: bool = false,
     viewport_show_collision: bool = false,
@@ -986,7 +990,7 @@ test "viewport drop defaults and payload constants stay stable" {
     try std.testing.expectEqual(ViewportViewPreset.perspective, state.viewport_view_preset);
     try std.testing.expectEqual(PlaceActorCategory.basics, state.place_actor_category);
     try std.testing.expectEqual(FpsDisplayMode.viewport, state.fps_display_mode);
-    try std.testing.expect(!state.viewport_debug_overlay);
+    try std.testing.expect(state.vsync_enabled);
     try std.testing.expect(!state.translation_snap_enabled);
     try std.testing.expectEqual(@as(f32, 10.0), state.translation_snap_step);
     try std.testing.expect(!state.rotation_snap_enabled);

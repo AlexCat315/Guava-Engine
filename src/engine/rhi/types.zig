@@ -143,6 +143,7 @@ pub const DeviceConfig = struct {
     enable_validation: bool = true,
     frames_in_flight: u32 = 2,
     prefer_low_power: bool = false,
+    vsync_enabled: bool = true,
 };
 
 pub const TextureFormat = enum {

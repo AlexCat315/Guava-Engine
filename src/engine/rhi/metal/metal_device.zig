@@ -18,6 +18,7 @@ pub const MetalDevice = struct {
         extern fn guava_metal_rhi_destroy(ctx: *anyopaque) void;
         // Layer configuration
         extern fn guava_metal_rhi_set_layer(ctx: *anyopaque, layer: *anyopaque) void;
+        extern fn guava_metal_rhi_set_vsync_enabled(ctx: *anyopaque, enabled: bool) void;
         // Resource creation
         extern fn guava_metal_rhi_create_buffer(ctx: *anyopaque, size: u64, usage_bits: u32, label: ?[*:0]const u8) u32;
         extern fn guava_metal_rhi_create_texture(ctx: *anyopaque, desc: *const TextureDescC, label: ?[*:0]const u8) u32;
@@ -177,6 +178,10 @@ pub const MetalDevice = struct {
     /// The layer pointer must be obtained from the window system (e.g. SDL_Metal_GetLayer).
     pub fn setLayer(self: *MetalDevice, layer: *anyopaque) void {
         bridge.guava_metal_rhi_set_layer(self.bridge_ctx, layer);
+    }
+
+    pub fn setVSyncEnabled(self: *MetalDevice, enabled: bool) void {
+        bridge.guava_metal_rhi_set_vsync_enabled(self.bridge_ctx, enabled);
     }
 
     /// Register a binding set with the Metal bridge so it knows what resources

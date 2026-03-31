@@ -94,6 +94,7 @@ void  guava_metal_rhi_destroy(void* ctx);
 // ── Swapchain layer configuration ─────────────────────────────────────────
 // Pass the CAMetalLayer* (as void*) obtained from the window system.
 void guava_metal_rhi_set_layer(void* ctx, void* ca_metal_layer);
+void guava_metal_rhi_set_vsync_enabled(void* ctx, bool enabled);
 
 // ── Resource creation (returns ID > 0 on success, 0 on failure) ──────────
 uint32_t guava_metal_rhi_create_buffer(void* ctx, uint64_t size,

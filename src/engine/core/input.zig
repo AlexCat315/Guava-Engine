@@ -114,7 +114,7 @@ pub const InputState = struct {
         if (is_down) {
             if (!was_down) {
                 self.mouse_pressed[index] = true;
-                if (clicks >= 2) {
+                if (clicks == 2) {
                     self.mouse_double_clicked[index] = true;
                 }
             }
@@ -169,6 +169,14 @@ pub const InputState = struct {
     pub fn wasMouseDoubleClicked(self: *const InputState, button: MouseButton) bool {
         return self.mouse_double_clicked[@intFromEnum(button)];
     }
+
+    pub fn cancelMouseButton(self: *InputState, button: MouseButton) void {
+        const index = @intFromEnum(button);
+        self.mouse_down[index] = false;
+        self.mouse_pressed[index] = false;
+        self.mouse_released[index] = false;
+        self.mouse_double_clicked[index] = false;
+    }
 };
 
 test "mouse double click is reported only on the press frame" {
@@ -188,5 +196,37 @@ test "mouse double click is reported only on the press frame" {
     input.beginFrame();
     input.setMouseButton(.left, true, 1);
     try std.testing.expect(input.wasMousePressed(.left));
+    try std.testing.expect(!input.wasMouseDoubleClicked(.left));
+}
+
+test "mouse triple click is not reported as another double click" {
+    var input = InputState{};
+
+    input.beginFrame();
+    input.setMouseButton(.left, true, 2);
+    try std.testing.expect(input.wasMouseDoubleClicked(.left));
+
+    input.beginFrame();
+    input.setMouseButton(.left, false, 0);
+    try std.testing.expect(input.wasMouseReleased(.left));
+
+    input.beginFrame();
+    input.setMouseButton(.left, true, 3);
+    try std.testing.expect(input.wasMousePressed(.left));
+    try std.testing.expect(!input.wasMouseDoubleClicked(.left));
+}
+
+test "cancelMouseButton clears mouse state without synthesizing release" {
+    var input = InputState{};
+
+    input.beginFrame();
+    input.setMouseButton(.left, true, 1);
+    try std.testing.expect(input.isMouseDown(.left));
+    try std.testing.expect(input.wasMousePressed(.left));
+
+    input.cancelMouseButton(.left);
+    try std.testing.expect(!input.isMouseDown(.left));
+    try std.testing.expect(!input.wasMousePressed(.left));
+    try std.testing.expect(!input.wasMouseReleased(.left));
     try std.testing.expect(!input.wasMouseDoubleClicked(.left));
 }

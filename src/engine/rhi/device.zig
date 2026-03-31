@@ -28,6 +28,7 @@ pub const Error = error{
     SwapchainAcquireFailed,
     RenderPassBeginFailed,
     FenceAcquireFailed,
+    SwapchainCreateFailed,
     TextureCreateFailed,
     BufferCreateFailed,
     TransferBufferCreateFailed,
@@ -307,6 +308,7 @@ pub const RhiDevice = struct {
     pending_pixel_downloads: std.ArrayList(PendingPixelDownload) = .empty,
     pending_texture_blits: std.ArrayList(PendingTextureBlit) = .empty,
     next_fence_id: u64 = 1,
+    vsync_enabled: bool = true,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -329,6 +331,7 @@ pub const RhiDevice = struct {
                     md_ptr.setLayer(layer);
                 }
             }
+            md_ptr.setVSyncEnabled(config.vsync_enabled);
 
             const dev_ptr = allocator.create(rhi.Device) catch return error.OutOfMemory;
             errdefer allocator.destroy(dev_ptr);
@@ -349,6 +352,7 @@ pub const RhiDevice = struct {
                 .owned_device = true,
                 .owned_metal_device = md_ptr,
                 .metal_layer_binding = metal_layer_binding,
+                .vsync_enabled = config.vsync_enabled,
             };
             out.setFramesInFlight(config.frames_in_flight);
             copyCStringSlice(out.runtime_info.device_name[0..], md_ptr.getDeviceName());
@@ -366,7 +370,7 @@ pub const RhiDevice = struct {
 
             // Create the Vulkan surface through the platform window bridge.
             _ = vk_ptr.createSurface(@ptrCast(window.handle));
-            _ = vk_ptr.createSwapchain(window.drawable_width, window.drawable_height);
+            _ = vk_ptr.createSwapchain(window.drawable_width, window.drawable_height, config.vsync_enabled);
 
             const dev_ptr = allocator.create(rhi.Device) catch return error.OutOfMemory;
             errdefer allocator.destroy(dev_ptr);
@@ -386,6 +390,7 @@ pub const RhiDevice = struct {
                 },
                 .owned_device = true,
                 .owned_vulkan_device = vk_ptr,
+                .vsync_enabled = config.vsync_enabled,
             };
             out.setFramesInFlight(config.frames_in_flight);
             copyCStringSlice(out.runtime_info.device_name[0..], vk_ptr.getDeviceName());
@@ -418,6 +423,7 @@ pub const RhiDevice = struct {
             },
             .owned_device = true,
             .owned_mock_backend = backend_ptr,
+            .vsync_enabled = config.vsync_enabled,
         };
         out.setFramesInFlight(config.frames_in_flight);
         copyCStringSlice(out.runtime_info.device_name[0..], "Mock Metal Device");
@@ -601,6 +607,33 @@ pub const RhiDevice = struct {
 
     pub fn runtimeInfo(self: *const RhiDevice) types.RuntimeInfo {
         return self.runtime_info;
+    }
+
+    pub fn vsyncEnabled(self: *const RhiDevice) bool {
+        return self.vsync_enabled;
+    }
+
+    pub fn setVSyncEnabled(self: *RhiDevice, enabled: bool) Error!void {
+        if (self.vsync_enabled == enabled) return;
+        self.vsync_enabled = enabled;
+
+        switch (self.api) {
+            .metal => {
+                if (self.owned_metal_device) |metal| {
+                    metal.setVSyncEnabled(enabled);
+                }
+            },
+            .vulkan => {
+                if (self.owned_vulkan_device) |vk| {
+                    if (self.runtime_info.drawable_width > 0 and self.runtime_info.drawable_height > 0) {
+                        if (!vk.createSwapchain(self.runtime_info.drawable_width, self.runtime_info.drawable_height, enabled)) {
+                            return error.SwapchainCreateFailed;
+                        }
+                    }
+                }
+            },
+            .dx12 => {},
+        }
     }
 
     pub fn activeCommandBuffer(self: *RhiDevice) ?*command_buffer.CommandBuffer {
@@ -1408,9 +1441,18 @@ pub const RhiDevice = struct {
     }
 
     pub fn resize(self: *RhiDevice, width: u32, height: u32) Error!void {
+        self.runtime_info.drawable_width = width;
+        self.runtime_info.drawable_height = height;
+
         if (width == 0 or height == 0) {
             self.releaseAllDepthTextures();
             return;
+        }
+
+        if (self.owned_vulkan_device) |vk| {
+            if (!vk.createSwapchain(width, height, self.vsync_enabled)) {
+                return error.SwapchainCreateFailed;
+            }
         }
 
         // Check if existing textures match required size

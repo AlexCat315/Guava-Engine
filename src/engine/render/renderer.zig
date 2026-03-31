@@ -714,6 +714,14 @@ pub const Renderer = struct {
         return self.rhi.runtimeInfo();
     }
 
+    pub fn vsyncEnabled(self: *const Renderer) bool {
+        return self.rhi.vsyncEnabled();
+    }
+
+    pub fn setVSyncEnabled(self: *Renderer, enabled: bool) !void {
+        try self.rhi.setVSyncEnabled(enabled);
+    }
+
     pub fn device(self: *Renderer) *rhi_mod.RhiDevice {
         return &self.rhi;
     }
