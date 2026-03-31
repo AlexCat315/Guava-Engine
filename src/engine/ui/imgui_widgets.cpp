@@ -273,38 +273,55 @@ extern "C" uint32_t guava_imgui_tree_node_entity(
         IM_COL32(86, 200, 250, 255), 2.0f);
   }
 
-  // ── Guide lines (L-shaped connectors) ───────────────────────────────────
+  // ── Guide lines (L/T-shaped connectors) ─────────────────────────────────
   const ImU32 guide_color = IM_COL32(70, 76, 90, 200);
   const ImU32 guide_color_active = IM_COL32(90, 98, 115, 240);
   const float guide_thickness = 1.0f;
   const ImU32 col = (selected || hovered) ? guide_color_active : guide_color;
+  const float overlap = 3.0f;
 
-  // Vertical lines for ancestor levels (continuous across rows)
+  // Vertical lines for ancestor levels — extend beyond row bounds so
+  // adjacent rows blend into a single continuous line
   for (int d = 0; d < depth; ++d) {
     if (ancestor_has_next != nullptr && ancestor_has_next[d]) {
       const float line_x = content_left + indent * (d + 1) - indent * 0.5f;
-      draw_list->AddLine(ImVec2(line_x, item_min.y), ImVec2(line_x, item_max.y), col, guide_thickness);
+      draw_list->AddLine(
+          ImVec2(line_x, item_min.y - overlap),
+          ImVec2(line_x, item_max.y + overlap),
+          col, guide_thickness);
     }
   }
 
   // ── Calculate base x position ───────────────────────────────────────────
   float x_offset = content_left + depth * indent;
 
-  // L-shaped connector for current node (depth > 0)
+  // L/T-shaped connector for current node (depth > 0)
+  // Vertical segment sits at the SAME x as the ancestor guide line for
+  // this depth level, so they visually merge into one continuous line.
   if (depth > 0) {
     const float vert_x = content_left + indent * depth - indent * 0.5f;
     const float horiz_end = x_offset + icon_button_size * 0.5f;
 
-    // Vertical segment: from row top to center
-    draw_list->AddLine(ImVec2(vert_x, item_min.y), ImVec2(vert_x, row_center_y), col, guide_thickness);
-    // Horizontal segment: from vertical line to chevron center
-    draw_list->AddLine(ImVec2(vert_x, row_center_y), ImVec2(horiz_end, row_center_y), col, guide_thickness);
+    // Vertical: from above row top down to center
+    draw_list->AddLine(
+        ImVec2(vert_x, item_min.y - overlap),
+        ImVec2(vert_x, row_center_y),
+        col, guide_thickness);
+    // Horizontal: from vertical line to chevron center
+    draw_list->AddLine(
+        ImVec2(vert_x, row_center_y),
+        ImVec2(horiz_end, row_center_y),
+        col, guide_thickness);
   }
 
-  // Extend vertical line below center for nodes with next siblings
+  // Extend vertical below center when this node has following siblings
+  // ┬ shape (├) vs └ shape (last child)
   if (has_next_sibling) {
     const float vert_x = content_left + indent * depth - indent * 0.5f;
-    draw_list->AddLine(ImVec2(vert_x, row_center_y), ImVec2(vert_x, item_max.y), col, guide_thickness);
+    draw_list->AddLine(
+        ImVec2(vert_x, row_center_y),
+        ImVec2(vert_x, item_max.y + overlap),
+        col, guide_thickness);
   }
 
   // ── Chevron (expand/collapse) using SVG icon ────────────────────────────

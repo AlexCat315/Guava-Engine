@@ -103,11 +103,18 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
     layout.drawSidebarSectionDivider();
 
     // Tree (no table, pure tree)
+    // First pass: collect visible root entities to compute sibling info
+    var root_entities = std.ArrayList(engine.scene.EntityId).empty;
+    defer root_entities.deinit(state.allocator orelse layer_context.world.allocator);
     for (layer_context.world.entities.items) |entity| {
         if (entity.editor_only or entity.parent != null) continue;
         if (!utils.shouldShowEntityInSceneTree(state, layer_context.world, entity.id)) continue;
+        try root_entities.append(state.allocator orelse layer_context.world.allocator, entity.id);
+    }
+    for (root_entities.items, 0..) |entity_id, i| {
         var ancestor_has_next: [32]bool = .{false} ** 32;
-        drawHierarchyNodeImpl(state, layer_context, entity.id, 0, &ancestor_has_next) catch |err| switch (err) {
+        ancestor_has_next[0] = i < root_entities.items.len - 1;
+        drawHierarchyNodeImpl(state, layer_context, entity_id, 0, &ancestor_has_next) catch |err| switch (err) {
             error.HierarchyMutated => return,
             else => return err,
         };
