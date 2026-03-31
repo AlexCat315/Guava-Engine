@@ -77,6 +77,8 @@ pub const paths = struct {
         pub const eye_off = "assets/ui/icons/svg/eye-slash.svg";
         pub const lock = "assets/ui/icons/svg/lock-closed.svg";
         pub const unlock = "assets/ui/icons/svg/lock-open.svg";
+        pub const chevron_down = "assets/ui/icons/svg/chevron-down.svg";
+        pub const chevron_right = "assets/ui/icons/svg/chevron-right.svg";
     };
 };
 

@@ -626,9 +626,18 @@ pub fn treeNodeEntity(
     has_children: bool,
     visible: bool,
     visible_clicked: *bool,
+    chevron_down_texture: ?*const rhi_mod.Texture,
+    chevron_right_texture: ?*const rhi_mod.Texture,
+    eye_texture: ?*const rhi_mod.Texture,
+    eye_off_texture: ?*const rhi_mod.Texture,
+    icon_button_size: f32,
 ) TreeNodeEntityResult {
     visible_clicked.* = false;
     const native_icon_texture = if (icon_texture) |value| resolveNativeTextureHandle(value) else null;
+    const native_chevron_down = if (chevron_down_texture) |value| resolveNativeTextureHandle(value) else null;
+    const native_chevron_right = if (chevron_right_texture) |value| resolveNativeTextureHandle(value) else null;
+    const native_eye = if (eye_texture) |value| resolveNativeTextureHandle(value) else null;
+    const native_eye_off = if (eye_off_texture) |value| resolveNativeTextureHandle(value) else null;
     const raw_state = c.guava_imgui_tree_node_entity(
         id,
         label.ptr,
@@ -647,6 +656,11 @@ pub fn treeNodeEntity(
         has_children,
         visible,
         visible_clicked,
+        native_chevron_down,
+        native_chevron_right,
+        native_eye,
+        native_eye_off,
+        icon_button_size,
     );
     return .{
         .open = (raw_state & c.GUAVA_IMGUI_TREE_NODE_OPEN) != 0,

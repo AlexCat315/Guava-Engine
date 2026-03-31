@@ -212,7 +212,9 @@ extern "C" uint32_t guava_imgui_tree_node_entity(
     float icon_size, bool selected, bool leaf, bool default_open,
     char* rename_buffer, size_t rename_buffer_size, bool request_rename_focus,
     int depth, const bool* ancestor_has_next, bool has_next_sibling,
-    bool has_children, bool visible, bool* visible_clicked) {
+    bool has_children, bool visible, bool* visible_clicked,
+    void* chevron_down_texture, void* chevron_right_texture,
+    void* eye_texture, void* eye_off_texture, float icon_button_size) {
   if (!g_imgui_initialized) {
     return 0;
   }
@@ -221,13 +223,17 @@ extern "C" uint32_t guava_imgui_tree_node_entity(
   ImGui::PushID(static_cast<int>(id));
 
   // ── Constants ───────────────────────────────────────────────────────────
-  const float indent = 24.0f;           // Indent per depth level (slightly wider)
-  const float row_height = ImGui::GetFontSize() + 10.0f;  // More comfortable row height
-  const float rounding = 4.0f;          // Softer corners
+  const float indent = 20.0f;
+  const float row_height = ImGui::GetFontSize() + 8.0f;
+  const float rounding = 4.0f;
   ImDrawList* draw_list = ImGui::GetWindowDrawList();
   const ImVec2 window_pos = ImGui::GetWindowPos();
   const float content_left = window_pos.x + ImGui::GetWindowContentRegionMin().x;
   const float content_right = window_pos.x + ImGui::GetWindowContentRegionMax().x;
+
+  // ── Eye button area (right-aligned, separate from row background) ───────
+  const float eye_button_area_width = icon_button_size + 12.0f;
+  const float eye_button_area_left = content_right - eye_button_area_width;
 
   // ── Reserve row space ───────────────────────────────────────────────────
   const ImVec2 cursor = ImGui::GetCursorScreenPos();
@@ -246,39 +252,37 @@ extern "C" uint32_t guava_imgui_tree_node_entity(
   // ── Hover state ─────────────────────────────────────────────────────────
   const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
 
-  // ── Row background (full width, rounded) ────────────────────────────────
+  // ── Row background (only in content area, NOT covering eye button) ──────
   if (selected) {
-    // Selected: more visible accent background
     draw_list->AddRectFilled(
         ImVec2(content_left, item_min.y + 1.0f),
-        ImVec2(content_right, item_max.y - 1.0f),
+        ImVec2(eye_button_area_left, item_max.y - 1.0f),
         IM_COL32(40, 80, 90, 240), rounding);
   } else if (hovered) {
-    // Hovered: subtle highlight
     draw_list->AddRectFilled(
         ImVec2(content_left, item_min.y + 1.0f),
-        ImVec2(content_right, item_max.y - 1.0f),
+        ImVec2(eye_button_area_left, item_max.y - 1.0f),
         IM_COL32(255, 255, 255, 15), rounding);
   }
 
-  // ── Selection accent bar (left edge, full height) ───────────────────────
+  // ── Selection accent bar (left edge) ────────────────────────────────────
   if (selected) {
     draw_list->AddRectFilled(
         ImVec2(content_left, item_min.y),
         ImVec2(content_left + 3.0f, item_max.y),
-        IM_COL32(86, 200, 250, 255), rounding);
+        IM_COL32(86, 200, 250, 255), 2.0f);
   }
 
-  // ── Vertical guide lines (solid, more visible) ─────────────────────────
-  const ImU32 guide_color = IM_COL32(65, 70, 82, 180);
-  const ImU32 guide_color_active = IM_COL32(80, 86, 100, 220);
+  // ── Guide lines (L-shaped connectors) ───────────────────────────────────
+  const ImU32 guide_color = IM_COL32(70, 76, 90, 200);
+  const ImU32 guide_color_active = IM_COL32(90, 98, 115, 240);
   const float guide_thickness = 1.0f;
+  const ImU32 col = (selected || hovered) ? guide_color_active : guide_color;
 
+  // Vertical lines for ancestor levels (continuous across rows)
   for (int d = 0; d < depth; ++d) {
     if (ancestor_has_next != nullptr && ancestor_has_next[d]) {
       const float line_x = content_left + indent * (d + 1) - indent * 0.5f;
-      // Draw solid vertical line (continuous, not dashed)
-      const ImU32 col = (selected || hovered) ? guide_color_active : guide_color;
       draw_list->AddLine(ImVec2(line_x, item_min.y), ImVec2(line_x, item_max.y), col, guide_thickness);
     }
   }
@@ -286,47 +290,40 @@ extern "C" uint32_t guava_imgui_tree_node_entity(
   // ── Calculate base x position ───────────────────────────────────────────
   float x_offset = content_left + depth * indent;
 
-  // ── Horizontal branch line (extends to arrow center) ────────────────────
+  // L-shaped connector for current node (depth > 0)
   if (depth > 0) {
-    const float branch_x = content_left + indent * depth - indent * 0.5f;
-    const float branch_end = x_offset + 4.0f;
-    const ImU32 branch_col = (selected || hovered) ? guide_color_active : guide_color;
-    draw_list->AddLine(ImVec2(branch_x, row_center_y), ImVec2(branch_end, row_center_y), branch_col, guide_thickness);
+    const float vert_x = content_left + indent * depth - indent * 0.5f;
+    const float horiz_end = x_offset + icon_button_size * 0.5f;
+
+    // Vertical segment: from row top to center
+    draw_list->AddLine(ImVec2(vert_x, item_min.y), ImVec2(vert_x, row_center_y), col, guide_thickness);
+    // Horizontal segment: from vertical line to chevron center
+    draw_list->AddLine(ImVec2(vert_x, row_center_y), ImVec2(horiz_end, row_center_y), col, guide_thickness);
   }
 
-  // ── Arrow (expand/collapse indicator) ───────────────────────────────────
-  const float arrow_size = 8.0f;  // Larger arrow for better visibility
-  if (has_children) {
-    const ImVec2 ac(x_offset + arrow_size * 0.5f, row_center_y);
-    // Arrow color: brighter when selected/hovered, dim otherwise
-    ImU32 arrow_col;
-    if (selected) {
-      arrow_col = IM_COL32(210, 225, 240, 255);
-    } else if (hovered) {
-      arrow_col = IM_COL32(180, 190, 205, 220);
-    } else {
-      arrow_col = IM_COL32(120, 130, 145, 150);  // Dim by default
-    }
+  // Extend vertical line below center for nodes with next siblings
+  if (has_next_sibling) {
+    const float vert_x = content_left + indent * depth - indent * 0.5f;
+    draw_list->AddLine(ImVec2(vert_x, row_center_y), ImVec2(vert_x, item_max.y), col, guide_thickness);
+  }
 
-    if (is_open) {
-      // Down arrow ▼ (slightly larger)
-      ImVec2 pts[3] = {
-          {ac.x - 3.5f, ac.y - 2.5f}, {ac.x + 3.5f, ac.y - 2.5f}, {ac.x, ac.y + 3.0f}};
-      draw_list->AddTriangleFilled(pts[0], pts[1], pts[2], arrow_col);
-    } else {
-      // Right arrow ▶ (slightly larger)
-      ImVec2 pts[3] = {
-          {ac.x - 2.5f, ac.y - 3.5f}, {ac.x + 2.5f, ac.y}, {ac.x - 2.5f, ac.y + 3.5f}};
-      draw_list->AddTriangleFilled(pts[0], pts[1], pts[2], arrow_col);
-    }
-    x_offset += arrow_size + 4.0f;
+  // ── Chevron (expand/collapse) using SVG icon ────────────────────────────
+  void* chevron_tex = nullptr;
+  if (has_children) {
+    chevron_tex = is_open ? chevron_down_texture : chevron_right_texture;
+  }
+  if (chevron_tex != nullptr && icon_button_size > 0.0f) {
+    const ImVec2 chev_min(x_offset, row_top + (row_height - icon_button_size) * 0.5f);
+    const ImVec2 chev_max(chev_min.x + icon_button_size, chev_min.y + icon_button_size);
+    draw_list->AddImage(reinterpret_cast<ImTextureID>(chevron_tex), chev_min, chev_max);
+    x_offset += icon_button_size + 2.0f;
   } else {
-    x_offset += arrow_size + 4.0f;
+    x_offset += icon_button_size + 2.0f;
   }
 
   // ── Entity icon ─────────────────────────────────────────────────────────
   if (icon_texture != nullptr && icon_size > 0.0f) {
-    const float draw_size = (std::min)(icon_size, row_height - 6.0f);
+    const float draw_size = (std::min)(icon_size, row_height - 4.0f);
     const ImVec2 icon_min(x_offset, row_top + (row_height - draw_size) * 0.5f);
     const ImVec2 icon_max(icon_min.x + draw_size, icon_min.y + draw_size);
     draw_list->AddImage(reinterpret_cast<ImTextureID>(icon_texture), icon_min, icon_max);
@@ -335,61 +332,55 @@ extern "C" uint32_t guava_imgui_tree_node_entity(
     x_offset += 3.0f;
   }
 
-  // ── Eye button (visibility toggle) ──────────────────────────────────────
-  const float eye_size = 16.0f;  // Slightly larger for easier clicking
-  const float eye_x = content_right - eye_size - 8.0f;
-  const ImVec2 eye_min(eye_x, row_top + (row_height - eye_size) * 0.5f);
-
-  ImGui::SetCursorScreenPos(eye_min);
-  ImGui::InvisibleButton("##eye", ImVec2(eye_size, eye_size));
-  const bool eye_hovered = ImGui::IsItemHovered();
-  if (ImGui::IsItemClicked() && visible_clicked) {
-    *visible_clicked = true;
-  }
-
-  // Draw eye icon (dim by default, bright on row hover or eye hover)
-  {
-    const ImVec2 ec(eye_min.x + eye_size * 0.5f, eye_min.y + eye_size * 0.5f);
-    const float r = eye_size * 0.25f;
-    ImU32 eye_col;
-    if (eye_hovered) {
-      eye_col = IM_COL32(79, 195, 247, 255);  // Accent on hover
-    } else if (visible) {
-      eye_col = (selected || hovered)
-          ? IM_COL32(140, 155, 170, 220)  // Bright when row active
-          : IM_COL32(90, 100, 115, 120);  // Dim by default
-    } else {
-      eye_col = IM_COL32(70, 75, 85, 80);  // Very dim for hidden
-    }
-
-    draw_list->AddEllipseFilled(ec, ImVec2(r * 1.5f, r * 0.8f), eye_col, 0.0f, 24);
-    if (visible) {
-      draw_list->AddCircleFilled(ec, r * 0.4f, IM_COL32(41, 41, 41, 255));
-    } else {
-      draw_list->AddLine(
-          ImVec2(ec.x - r * 1.3f, ec.y + r * 0.4f),
-          ImVec2(ec.x + r * 1.3f, ec.y - r * 0.4f),
-          IM_COL32(150, 60, 60, 180), 1.5f);
-    }
-  }
-
   // ── Label text ──────────────────────────────────────────────────────────
   const float text_y = row_top + (row_height - ImGui::GetFontSize()) * 0.5f;
-  const float max_text_x = eye_x - 6.0f;
+  const float max_text_x = eye_button_area_left - 8.0f;
 
-  // Text color: brighter for better readability
   ImU32 text_color;
   if (selected) {
-    text_color = IM_COL32(240, 248, 255, 255);  // Very bright when selected
+    text_color = IM_COL32(240, 248, 255, 255);
   } else if (!visible) {
-    text_color = IM_COL32(90, 100, 115, 140);   // Dim for hidden entities
+    text_color = IM_COL32(90, 100, 115, 140);
   } else {
-    text_color = IM_COL32(210, 220, 235, 255);   // Bright default text
+    text_color = IM_COL32(210, 220, 235, 255);
   }
 
   if (x_offset < max_text_x) {
     const std::string owned_label = make_string(label, label_len);
     draw_list->AddText(ImVec2(x_offset, text_y), text_color, owned_label.c_str());
+  }
+
+  // ── Eye button (visibility toggle, separate from row background) ────────
+  const ImVec2 eye_min(eye_button_area_left + 6.0f, row_top + (row_height - icon_button_size) * 0.5f);
+
+  ImGui::SetCursorScreenPos(eye_min);
+  ImGui::InvisibleButton("##eye", ImVec2(icon_button_size, icon_button_size));
+  const bool eye_hovered = ImGui::IsItemHovered();
+  if (ImGui::IsItemClicked() && visible_clicked) {
+    *visible_clicked = true;
+  }
+
+  // Draw eye icon using SVG texture
+  {
+    void* eye_tex = visible ? eye_texture : eye_off_texture;
+    if (eye_tex != nullptr && icon_button_size > 0.0f) {
+      const ImVec2 eye_img_min(eye_min.x, eye_min.y);
+      const ImVec2 eye_img_max(eye_img_min.x + icon_button_size, eye_img_min.y + icon_button_size);
+
+      ImU32 tint_col;
+      if (eye_hovered) {
+        tint_col = IM_COL32(255, 255, 255, 255);
+      } else if (visible) {
+        tint_col = (selected || hovered)
+            ? IM_COL32(200, 210, 220, 240)
+            : IM_COL32(140, 150, 165, 180);
+      } else {
+        tint_col = IM_COL32(100, 105, 115, 120);
+      }
+
+      draw_list->AddImage(reinterpret_cast<ImTextureID>(eye_tex), eye_img_min, eye_img_max,
+                          ImVec2(0, 0), ImVec2(1, 1), tint_col);
+    }
   }
 
   // ── Inline rename input ─────────────────────────────────────────────────
@@ -413,10 +404,10 @@ extern "C" uint32_t guava_imgui_tree_node_entity(
     return result;
   }
 
-  // ── Click handling (entire row, excluding eye) ──────────────────────────
+  // ── Click handling (content area only, excluding eye button) ────────────
   ImGui::SetNextItemAllowOverlap();
   ImGui::SetCursorScreenPos(ImVec2(content_left, item_min.y));
-  ImGui::InvisibleButton("##row", ImVec2(eye_x - content_left, row_height));
+  ImGui::InvisibleButton("##row", ImVec2(eye_button_area_left - content_left, row_height));
 
   uint32_t result = 0;
   if (ImGui::IsItemClicked()) {

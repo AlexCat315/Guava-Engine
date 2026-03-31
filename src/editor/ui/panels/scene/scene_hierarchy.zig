@@ -149,6 +149,35 @@ fn drawHierarchyNodeImpl(
         theme.hierarchyIconTint(.{ .selected = is_selected, .frozen = false, .visible = entity.visible }),
     );
 
+    const chevron_down_tex = try ui_icons.ensureTintedIconTexture(
+        state,
+        layer_context,
+        ui_icons.paths.hierarchy.chevron_down,
+        theme.Size.hierarchy_icon,
+        theme.Palette.hierarchy.active_icon,
+    );
+    const chevron_right_tex = try ui_icons.ensureTintedIconTexture(
+        state,
+        layer_context,
+        ui_icons.paths.hierarchy.chevron_right,
+        theme.Size.hierarchy_icon,
+        theme.Palette.hierarchy.active_icon,
+    );
+    const eye_tex = try ui_icons.ensureTintedIconTexture(
+        state,
+        layer_context,
+        ui_icons.paths.hierarchy.eye,
+        theme.Size.hierarchy_icon,
+        theme.Palette.hierarchy.active_icon,
+    );
+    const eye_off_tex = try ui_icons.ensureTintedIconTexture(
+        state,
+        layer_context,
+        ui_icons.paths.hierarchy.eye_off,
+        theme.Size.hierarchy_icon,
+        theme.Palette.hierarchy.active_icon,
+    );
+
     // Calculate has_next_sibling
     const has_next_sibling = blk: {
         if (entity.parent) |parent_id| {
@@ -182,6 +211,11 @@ fn drawHierarchyNodeImpl(
         has_visible_children,
         entity.visible,
         &visible_clicked,
+        chevron_down_tex,
+        chevron_right_tex,
+        eye_tex,
+        eye_off_tex,
+        theme.Size.hierarchy_icon,
     );
     const is_open = tree_result.open;
 

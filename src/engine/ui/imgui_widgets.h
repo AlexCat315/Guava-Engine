@@ -49,7 +49,9 @@ uint32_t guava_imgui_tree_node_entity(
     float icon_size, bool selected, bool leaf, bool default_open,
     char *rename_buffer, size_t rename_buffer_size, bool request_rename_focus,
     int depth, const bool *ancestor_has_next, bool has_next_sibling,
-    bool has_children, bool visible, bool *visible_clicked);
+    bool has_children, bool visible, bool *visible_clicked,
+    void *chevron_down_texture, void *chevron_right_texture,
+    void *eye_texture, void *eye_off_texture, float icon_button_size);
 
 // ── Window Control Button ────────────────────────────────────────────────────
 
