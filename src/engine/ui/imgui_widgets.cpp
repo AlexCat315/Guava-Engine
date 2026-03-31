@@ -221,9 +221,9 @@ extern "C" uint32_t guava_imgui_tree_node_entity(
   ImGui::PushID(static_cast<int>(id));
 
   // ── Constants ───────────────────────────────────────────────────────────
-  const float indent = 22.0f;           // Indent per depth level
-  const float row_height = ImGui::GetFontSize() + 8.0f;  // Compact row height
-  const float rounding = 3.0f;          // Softer corners
+  const float indent = 24.0f;           // Indent per depth level (slightly wider)
+  const float row_height = ImGui::GetFontSize() + 10.0f;  // More comfortable row height
+  const float rounding = 4.0f;          // Softer corners
   ImDrawList* draw_list = ImGui::GetWindowDrawList();
   const ImVec2 window_pos = ImGui::GetWindowPos();
   const float content_left = window_pos.x + ImGui::GetWindowContentRegionMin().x;
@@ -248,42 +248,38 @@ extern "C" uint32_t guava_imgui_tree_node_entity(
 
   // ── Row background (full width, rounded) ────────────────────────────────
   if (selected) {
-    // Selected: subtle accent background
+    // Selected: more visible accent background
     draw_list->AddRectFilled(
         ImVec2(content_left, item_min.y + 1.0f),
         ImVec2(content_right, item_max.y - 1.0f),
-        IM_COL32(35, 70, 78, 220), rounding);
+        IM_COL32(40, 80, 90, 240), rounding);
   } else if (hovered) {
-    // Hovered: very subtle highlight
+    // Hovered: subtle highlight
     draw_list->AddRectFilled(
         ImVec2(content_left, item_min.y + 1.0f),
         ImVec2(content_right, item_max.y - 1.0f),
-        IM_COL32(255, 255, 255, 10), rounding);
+        IM_COL32(255, 255, 255, 15), rounding);
   }
 
   // ── Selection accent bar (left edge, full height) ───────────────────────
   if (selected) {
     draw_list->AddRectFilled(
         ImVec2(content_left, item_min.y),
-        ImVec2(content_left + 2.5f, item_max.y),
-        IM_COL32(79, 195, 247, 255), rounding);
+        ImVec2(content_left + 3.0f, item_max.y),
+        IM_COL32(86, 200, 250, 255), rounding);
   }
 
-  // ── Vertical guide lines (VS Code style - dashed) ───────────────────────
-  const ImU32 guide_color = IM_COL32(75, 80, 92, 140);
-  const float dash_len = 3.0f;
-  const float gap_len = 3.0f;
+  // ── Vertical guide lines (solid, more visible) ─────────────────────────
+  const ImU32 guide_color = IM_COL32(65, 70, 82, 180);
+  const ImU32 guide_color_active = IM_COL32(80, 86, 100, 220);
+  const float guide_thickness = 1.0f;
 
   for (int d = 0; d < depth; ++d) {
     if (ancestor_has_next != nullptr && ancestor_has_next[d]) {
       const float line_x = content_left + indent * (d + 1) - indent * 0.5f;
-      // Draw dashed vertical line
-      float y = item_min.y;
-      while (y < item_max.y) {
-        float y_end = (std::min)(y + dash_len, item_max.y);
-        draw_list->AddLine(ImVec2(line_x, y), ImVec2(line_x, y_end), guide_color, 1.0f);
-        y += dash_len + gap_len;
-      }
+      // Draw solid vertical line (continuous, not dashed)
+      const ImU32 col = (selected || hovered) ? guide_color_active : guide_color;
+      draw_list->AddLine(ImVec2(line_x, item_min.y), ImVec2(line_x, item_max.y), col, guide_thickness);
     }
   }
 
@@ -293,12 +289,13 @@ extern "C" uint32_t guava_imgui_tree_node_entity(
   // ── Horizontal branch line (extends to arrow center) ────────────────────
   if (depth > 0) {
     const float branch_x = content_left + indent * depth - indent * 0.5f;
-    const float branch_end = x_offset + 3.0f;
-    draw_list->AddLine(ImVec2(branch_x, row_center_y), ImVec2(branch_end, row_center_y), guide_color, 1.0f);
+    const float branch_end = x_offset + 4.0f;
+    const ImU32 branch_col = (selected || hovered) ? guide_color_active : guide_color;
+    draw_list->AddLine(ImVec2(branch_x, row_center_y), ImVec2(branch_end, row_center_y), branch_col, guide_thickness);
   }
 
   // ── Arrow (expand/collapse indicator) ───────────────────────────────────
-  const float arrow_size = 6.0f;
+  const float arrow_size = 8.0f;  // Larger arrow for better visibility
   if (has_children) {
     const ImVec2 ac(x_offset + arrow_size * 0.5f, row_center_y);
     // Arrow color: brighter when selected/hovered, dim otherwise
@@ -312,14 +309,14 @@ extern "C" uint32_t guava_imgui_tree_node_entity(
     }
 
     if (is_open) {
-      // Down arrow ▼
+      // Down arrow ▼ (slightly larger)
       ImVec2 pts[3] = {
-          {ac.x - 3.0f, ac.y - 2.0f}, {ac.x + 3.0f, ac.y - 2.0f}, {ac.x, ac.y + 2.0f}};
+          {ac.x - 3.5f, ac.y - 2.5f}, {ac.x + 3.5f, ac.y - 2.5f}, {ac.x, ac.y + 3.0f}};
       draw_list->AddTriangleFilled(pts[0], pts[1], pts[2], arrow_col);
     } else {
-      // Right arrow ▶
+      // Right arrow ▶ (slightly larger)
       ImVec2 pts[3] = {
-          {ac.x - 2.0f, ac.y - 3.0f}, {ac.x + 2.0f, ac.y}, {ac.x - 2.0f, ac.y + 3.0f}};
+          {ac.x - 2.5f, ac.y - 3.5f}, {ac.x + 2.5f, ac.y}, {ac.x - 2.5f, ac.y + 3.5f}};
       draw_list->AddTriangleFilled(pts[0], pts[1], pts[2], arrow_col);
     }
     x_offset += arrow_size + 4.0f;
@@ -339,7 +336,7 @@ extern "C" uint32_t guava_imgui_tree_node_entity(
   }
 
   // ── Eye button (visibility toggle) ──────────────────────────────────────
-  const float eye_size = 14.0f;
+  const float eye_size = 16.0f;  // Slightly larger for easier clicking
   const float eye_x = content_right - eye_size - 8.0f;
   const ImVec2 eye_min(eye_x, row_top + (row_height - eye_size) * 0.5f);
 
