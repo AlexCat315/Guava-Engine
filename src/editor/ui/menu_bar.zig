@@ -203,16 +203,23 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
 
     gui.sameLine();
     _ = gui.invisibleButton("top_bar_drag_region", drag_width, 22.0);
-    if (gui.isItemActive() and layer_context.input.wasMousePressed(.left)) {
+    // Allow starting a pending top-bar drag when the invisible top-bar region is hovered
+    // and the left mouse button is pressed. Also keep existing behavior when the item
+    // is already active (pressed). This makes dragging more responsive.
+    if ((gui.isItemActive() or gui.isItemHovered()) and layer_context.input.wasMousePressed(.left)) {
         g_pending_top_bar_drag = true;
         g_pending_top_bar_drag_mouse = gui.mousePos();
     }
     if (gui.isItemHovered() and layer_context.input.wasMouseDoubleClicked(.left)) {
+        // Clear any pending top-bar drag so resolvePendingTopBarDrag won't start a drag
+        // immediately after a double-click maximize/restore.
+        g_pending_top_bar_drag = false;
         state.top_bar_drag_active = false;
-        if (layer_context.window.isMaximized()) {
+        // Treat maximizeFull as equivalent to native maximize for restore logic.
+        if (layer_context.window.isMaximized() or layer_context.window.isMaximizedFull()) {
             try layer_context.window.restore();
         } else {
-            try layer_context.window.maximize();
+            try layer_context.window.maximizeFull();
         }
     }
 
@@ -239,9 +246,11 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
         }
 
         gui.sameLine();
-        if (gui.windowControlButton(.maximize, layer_context.window.isMaximized())) {
+        // Mark the maximize control active if either native maximize or our maximizeFull is active.
+        if (gui.windowControlButton(.maximize, (layer_context.window.isMaximized() or layer_context.window.isMaximizedFull()))) {
             state.top_bar_drag_active = false;
-            if (layer_context.window.isMaximized()) {
+            // Treat both maximize modes as needing a restore when active.
+            if (layer_context.window.isMaximized() or layer_context.window.isMaximizedFull()) {
                 try layer_context.window.restore();
             } else {
                 try layer_context.window.maximize();

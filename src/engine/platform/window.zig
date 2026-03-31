@@ -81,6 +81,14 @@ pub const Window = struct {
     native_titlebar_trailing_inset: f32 = 0.0,
     should_close: bool = false,
 
+    // Saved bounds for maximizeFull / restore pair. When the user triggers the
+    // explicit fullscreen/usable-area maximize (maximizeFull), we save the
+    // previous window position and size here so restore() can put the window
+    // back to its previous bounds.
+    prev_bounds_valid: bool = false,
+    prev_bounds_pos: [2]i32 = .{ 0, 0 },
+    prev_bounds_size: [2]i32 = .{ 0, 0 },
+
     pub fn init(allocator: std.mem.Allocator, config: WindowConfig) !Window {
         if (!sdl.SDL_Init(sdl.SDL_INIT_VIDEO)) {
             std.log.err("SDL_Init failed: {s}", .{lastError()});
@@ -416,7 +424,62 @@ pub const Window = struct {
         }
     }
 
+    pub fn maximizeFull(self: *Window) !void {
+        // Save previous bounds so restore() can return to them.
+        // Only overwrite saved bounds if we don't already have a saved state;
+        // this prevents clobbering the original bounds if maximizeFull is called
+        // repeatedly before a restore.
+        if (!self.prev_bounds_valid) {
+            const pos = try self.position();
+            self.prev_bounds_pos = pos;
+            // Use logical width/height as the size we will restore to.
+            self.prev_bounds_size = .{
+                @intCast(@max(self.logical_width, 1)),
+                @intCast(@max(self.logical_height, 1)),
+            };
+            self.prev_bounds_valid = true;
+        }
+
+        // Ensure the window fills the entire usable display area (work area).
+        const usable = try primaryDisplayUsableBounds();
+        // Set position and size explicitly to usable bounds.
+        if (!sdl.SDL_SetWindowPosition(self.handle, usable.x, usable.y)) {
+            std.log.err("SDL_SetWindowPosition failed: {s}", .{lastError()});
+            return error.SdlWindowOperationFailed;
+        }
+        if (!sdl.SDL_SetWindowSize(self.handle, usable.w, usable.h)) {
+            std.log.err("SDL_SetWindowSize failed: {s}", .{lastError()});
+            return error.SdlWindowOperationFailed;
+        }
+        try self.refreshSizes();
+    }
+
     pub fn restore(self: *Window) !void {
+        // If we previously maximized via maximizeFull and saved bounds, restore
+        // to those exact bounds instead of relying on SDL_RestoreWindow, which
+        // may not map to the saved bounds we expect.
+        if (self.prev_bounds_valid) {
+            const px = self.prev_bounds_pos[0];
+            const py = self.prev_bounds_pos[1];
+            const pw = self.prev_bounds_size[0];
+            const ph = self.prev_bounds_size[1];
+
+            if (!sdl.SDL_SetWindowPosition(self.handle, px, py)) {
+                std.log.err("SDL_SetWindowPosition (restore) failed: {s}", .{lastError()});
+                return error.SdlWindowOperationFailed;
+            }
+            if (!sdl.SDL_SetWindowSize(self.handle, pw, ph)) {
+                std.log.err("SDL_SetWindowSize (restore) failed: {s}", .{lastError()});
+                return error.SdlWindowOperationFailed;
+            }
+
+            // Clear saved bounds after a successful restore.
+            self.prev_bounds_valid = false;
+            try self.refreshSizes();
+            return;
+        }
+
+        // Fallback to SDL's restore if we don't have saved bounds.
         if (!sdl.SDL_RestoreWindow(self.handle)) {
             std.log.err("SDL_RestoreWindow failed: {s}", .{lastError()});
             return error.SdlWindowOperationFailed;
@@ -462,6 +525,14 @@ pub const Window = struct {
 
     pub fn isMaximized(self: *const Window) bool {
         return (sdl.SDL_GetWindowFlags(self.handle) & sdl.SDL_WINDOW_MAXIMIZED) != 0;
+    }
+
+    pub fn isMaximizedFull(self: *const Window) bool {
+        // Return true if the window is currently maximized via maximizeFull().
+        // We track maximizeFull state by whether we have saved previous bounds
+        // (prev_bounds_valid). This lets the UI distinguish between an OS/native
+        // maximize and our explicit "usable-bounds" maximize.
+        return self.prev_bounds_valid;
     }
 
     pub fn usableBounds(_: *const Window) !Rect {
