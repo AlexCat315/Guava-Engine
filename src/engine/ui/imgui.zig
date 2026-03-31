@@ -620,7 +620,14 @@ pub fn treeNodeEntity(
     default_open: bool,
     rename_buffer: ?[]u8,
     request_rename_focus: bool,
+    depth: i32,
+    ancestor_has_next: ?[*]const bool,
+    has_next_sibling: bool,
+    has_children: bool,
+    visible: bool,
+    visible_clicked: *bool,
 ) TreeNodeEntityResult {
+    visible_clicked.* = false;
     const native_icon_texture = if (icon_texture) |value| resolveNativeTextureHandle(value) else null;
     const raw_state = c.guava_imgui_tree_node_entity(
         id,
@@ -634,6 +641,12 @@ pub fn treeNodeEntity(
         if (rename_buffer) |value| value.ptr else null,
         if (rename_buffer) |value| value.len else 0,
         request_rename_focus,
+        depth,
+        ancestor_has_next orelse null,
+        has_next_sibling,
+        has_children,
+        visible,
+        visible_clicked,
     );
     return .{
         .open = (raw_state & c.GUAVA_IMGUI_TREE_NODE_OPEN) != 0,

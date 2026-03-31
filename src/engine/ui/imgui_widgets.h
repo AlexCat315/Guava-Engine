@@ -35,12 +35,21 @@ enum {
   GUAVA_IMGUI_TREE_NODE_RENAME_FINISHED = 1 << 3,
 };
 
-uint32_t guava_imgui_tree_node_entity(uint64_t id, const char *label,
-                                      size_t label_len, void *icon_texture,
-                                      float icon_size, bool selected, bool leaf,
-                                      bool default_open, char *rename_buffer,
-                                      size_t rename_buffer_size,
-                                      bool request_rename_focus);
+/// Draw a tree node with vertical guide lines (VS Code style).
+/// @param depth               0 = root, 1 = first child, ...
+/// @param ancestor_has_next   per-depth flag: whether ancestor at that depth
+///                            has a sibling after it (used to draw vertical
+///                            guide lines).  Caller allocates depth+1 entries.
+/// @param has_next_sibling    whether this node has a sibling after it
+/// @param has_children        true if this node has visible children
+/// @param visible             entity visibility flag (for eye icon)
+/// @param visible_clicked     out: set to true if visibility toggle was clicked
+uint32_t guava_imgui_tree_node_entity(
+    uint64_t id, const char *label, size_t label_len, void *icon_texture,
+    float icon_size, bool selected, bool leaf, bool default_open,
+    char *rename_buffer, size_t rename_buffer_size, bool request_rename_focus,
+    int depth, const bool *ancestor_has_next, bool has_next_sibling,
+    bool has_children, bool visible, bool *visible_clicked);
 
 // ── Window Control Button ────────────────────────────────────────────────────
 

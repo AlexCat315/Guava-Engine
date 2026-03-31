@@ -60,25 +60,21 @@ fn drawHierarchyDragPreview(state: *EditorState, entity: *const engine.scene.Ent
 pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     var title_buffer: [80]u8 = undefined;
     const title = try state.windowLabel(&title_buffer, .scene, "scene_panel");
-    // 防止场景层级面板被拖到过窄无法显示内容
     gui.setNextWindowSizeConstraints(.{ theme.Size.panel_min_width, theme.Size.panel_min_height }, .{ std.math.floatMax(f32), std.math.floatMax(f32) });
     _ = gui.beginWindow(title);
     defer gui.endWindow();
 
     syncHierarchyRenameState(state, layer_context);
 
+    // Filter bar
     layout.beginSectionBody();
-    var selection_count_buffer: [32]u8 = undefined;
-    const selection_count_text = try std.fmt.bufPrint(&selection_count_buffer, "{d}", .{layer_context.renderer.selectedEntities().len});
-
-    // 精简筛选区域：过滤框 + 选中计数，无冗余按钮
     const controls_width = gui.contentRegionAvail()[0];
-
     if (controls_width >= 180.0) {
+        var selection_count_buffer: [32]u8 = undefined;
+        const selection_count_text = try std.fmt.bufPrint(&selection_count_buffer, "{d}", .{layer_context.renderer.selectedEntities().len});
         gui.setNextItemWidth(controls_width - 40.0);
         _ = gui.inputTextWithHint("##scene_filter", state.text(.scene_filter), state.scene_filter_buffer[0..]);
         gui.sameLineEx(0.0, 8.0);
-
         gui.pushStyleColor(.text, theme.Palette.hierarchy.filter_text);
         gui.text(selection_count_text);
         gui.popStyleColor(1);
@@ -89,9 +85,10 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
         gui.setNextItemWidth(-1.0);
         _ = gui.inputTextWithHint("##scene_filter", state.text(.scene_filter), state.scene_filter_buffer[0..]);
     }
-
     layout.drawSidebarSectionGap();
     layout.endSectionBody();
+
+    // Drop targets
     var dropped_root: u64 = 0;
     if (gui.acceptDragDropPayloadU64(state_mod.entity_drag_payload, &dropped_root)) {
         _ = try handleHierarchyEntityDrop(state, layer_context, dropped_root, null);
@@ -105,27 +102,16 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
     }
     layout.drawSidebarSectionDivider();
 
-    if (!gui.beginTable("scene_tree_table", 4)) {
-        return;
-    }
-    gui.tableSetupColumn(state.text(.name), true, 1.0);
-    gui.tableSetupColumn("##scene_visible", false, theme.Size.status_column_width);
-    gui.tableSetupColumn("##scene_frozen", false, theme.Size.status_column_width);
-    gui.tableSetupColumn("##scene_locked", false, theme.Size.status_column_width);
-
+    // Tree (no table, pure tree)
     for (layer_context.world.entities.items) |entity| {
-        if (entity.editor_only or entity.parent != null) {
-            continue;
-        }
-        if (!utils.shouldShowEntityInSceneTree(state, layer_context.world, entity.id)) {
-            continue;
-        }
-        drawHierarchyNode(state, layer_context, entity.id) catch |err| switch (err) {
+        if (entity.editor_only or entity.parent != null) continue;
+        if (!utils.shouldShowEntityInSceneTree(state, layer_context.world, entity.id)) continue;
+        var ancestor_has_next: [32]bool = .{false} ** 32;
+        drawHierarchyNodeImpl(state, layer_context, entity.id, 0, &ancestor_has_next) catch |err| switch (err) {
             error.HierarchyMutated => return,
             else => return err,
         };
     }
-    gui.endTable();
 
     if (try drawSceneWindowContextMenu(state, layer_context)) {
         return;
@@ -133,34 +119,53 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
 }
 
 pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerContext, entity_id: engine.scene.EntityId) anyerror!void {
+    var ancestor_has_next: [32]bool = .{false} ** 32;
+    try drawHierarchyNodeImpl(state, layer_context, entity_id, 0, &ancestor_has_next);
+}
+
+fn drawHierarchyNodeImpl(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity_id: engine.scene.EntityId,
+    depth: i32,
+    ancestor_has_next: *[32]bool,
+) anyerror!void {
     const entity = layer_context.world.getEntity(entity_id) orelse return;
-    if (entity.editor_only) {
-        return;
-    }
+    if (entity.editor_only) return;
 
     const is_selected = utils.isEntitySelected(state, layer_context, entity_id);
-    const is_frozen = utils.isEntityFrozen(state, entity_id);
-    const is_locked = utils.isEntitySelectionLocked(state, entity_id);
     const filter_active = utils.zeroTerminatedSlice(state.scene_filter_buffer[0..]).len != 0 or
         utils.zeroTerminatedSlice(state.hierarchy_filter_buffer[0..]).len != 0 or
         state.hierarchy_category != .all;
     const has_visible_children = utils.hasVisibleSceneTreeChildren(state, layer_context.world, entity_id);
     const leaf = !has_visible_children;
     const rename_active = state.hierarchy_rename_entity != null and state.hierarchy_rename_entity.? == entity_id;
+
     const icon_texture = try ui_icons.ensureTintedIconTexture(
         state,
         layer_context,
         ui_icons.entityIconPath(entity),
         theme.Size.hierarchy_icon,
-        theme.hierarchyIconTint(.{
-            .selected = is_selected,
-            .frozen = is_frozen,
-            .visible = entity.visible,
-        }),
+        theme.hierarchyIconTint(.{ .selected = is_selected, .frozen = false, .visible = entity.visible }),
     );
 
-    gui.tableNextRow();
-    gui.tableNextColumn();
+    // Calculate has_next_sibling
+    const has_next_sibling = blk: {
+        if (entity.parent) |parent_id| {
+            const parent = layer_context.world.getEntity(parent_id) orelse break :blk false;
+            var found_self = false;
+            for (parent.children.items) |child_id| {
+                if (found_self) {
+                    const child = layer_context.world.getEntity(child_id) orelse continue;
+                    if (!child.editor_only) break :blk true;
+                }
+                if (child_id == entity_id) found_self = true;
+            }
+        }
+        break :blk false;
+    };
+
+    var visible_clicked: bool = false;
     const tree_result = gui.treeNodeEntity(
         entity_id,
         entity.name,
@@ -171,13 +176,26 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
         filter_active and has_visible_children,
         if (rename_active) state.hierarchy_rename_buffer[0..] else null,
         rename_active and state.hierarchy_rename_focus_pending,
+        depth,
+        ancestor_has_next,
+        has_next_sibling,
+        has_visible_children,
+        entity.visible,
+        &visible_clicked,
     );
     const is_open = tree_result.open;
+
+    // Handle visibility toggle
+    if (visible_clicked) {
+        _ = try setEntityVisibleViaCommandQueue(state, layer_context, entity_id, !entity.visible);
+    }
+
     if (rename_active) {
         state.hierarchy_rename_focus_pending = false;
     }
 
-    if (tree_result.clicked and !is_locked and !is_frozen) {
+    // Click handling
+    if (tree_result.clicked) {
         if (state.hierarchy_rename_entity != null and state.hierarchy_rename_entity.? != entity_id) {
             cancelHierarchyRename(state);
         }
@@ -190,7 +208,6 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
         utils.syncInspectorNameBuffer(state, layer_context);
         if (!multi_select and layer_context.input.wasMouseDoubleClicked(.left)) {
             if (is_selected) {
-                // 双击已选中实体 → 进入重命名
                 beginHierarchyRename(state, layer_context.world, entity_id);
             } else {
                 camera.focusSelection(state, layer_context);
@@ -198,7 +215,8 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
         }
     }
 
-    if (!is_locked and !is_frozen and !rename_active) {
+    // Drag & drop
+    if (!rename_active) {
         drawHierarchyDragPreview(state, entity, icon_texture);
         var dropped_child: u64 = 0;
         if (gui.acceptDragDropPayloadU64(state_mod.entity_drag_payload, &dropped_child)) {
@@ -227,11 +245,12 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
         }
     }
 
+    // Context menu
     var popup_id_buffer: [48]u8 = undefined;
     const popup_id = try std.fmt.bufPrint(&popup_id_buffer, "{d}_context", .{entity_id});
     if (gui.beginPopupContextItem(popup_id)) {
         defer gui.endPopup();
-        if (!is_selected and !is_frozen) {
+        if (!is_selected) {
             try layer_context.renderer.replaceSelection(entity_id);
             utils.syncInspectorNameBuffer(state, layer_context);
         }
@@ -240,50 +259,7 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
         }
     }
 
-    // Always show status buttons for better accessibility and discoverability
-    gui.tableNextColumn();
-    var visibility_button_id_buffer: [48]u8 = undefined;
-    const visibility_button_id = try std.fmt.bufPrint(&visibility_button_id_buffer, "{d}_visibility", .{entity_id});
-    if (try icon_button.draw(state, layer_context, .{
-        .id = visibility_button_id,
-        .icon_path = if (entity.visible) ui_icons.paths.hierarchy.eye else ui_icons.paths.hierarchy.eye_off,
-        .size = theme.Size.hierarchy_icon,
-        .tint = if (entity.visible) theme.Palette.status.on_icon else theme.Palette.status.off_icon,
-        .palette = theme.statusPalette(entity.visible),
-        .tooltip = if (entity.visible) "Visible - Click to hide" else "Hidden - Click to show",
-    })) {
-        _ = try setEntityVisibleViaCommandQueue(state, layer_context, entity_id, !entity.visible);
-    }
-
-    gui.tableNextColumn();
-    var freeze_button_id_buffer: [40]u8 = undefined;
-    const freeze_button_id = try std.fmt.bufPrint(&freeze_button_id_buffer, "F##{d}", .{entity_id});
-    if (toggle_button.draw(.{
-        .label = freeze_button_id,
-        .active = is_frozen,
-        .palette = .freeze,
-        .width = theme.Size.status_button_extent,
-    })) {
-        try setFrozenForEntities(state, layer_context, &.{entity_id}, !is_frozen);
-    }
-    if (gui.isItemHovered()) {
-        gui.setTooltip(if (is_frozen) "Frozen - Click to unfreeze" else "Unfrozen - Click to freeze");
-    }
-
-    gui.tableNextColumn();
-    var lock_button_id_buffer: [40]u8 = undefined;
-    const lock_button_id = try std.fmt.bufPrint(&lock_button_id_buffer, "{d}_lock", .{entity_id});
-    if (try icon_button.draw(state, layer_context, .{
-        .id = lock_button_id,
-        .icon_path = if (is_locked) ui_icons.paths.hierarchy.lock else ui_icons.paths.hierarchy.unlock,
-        .size = theme.Size.hierarchy_icon,
-        .tint = if (is_locked) theme.Palette.status.on_icon else theme.Palette.status.off_icon,
-        .palette = theme.statusPalette(is_locked),
-        .tooltip = if (is_locked) "Locked - Click to unlock" else "Unlocked - Click to lock",
-    })) {
-        try setLockedForEntities(state, layer_context, &.{entity_id}, !is_locked);
-    }
-
+    // Rename finish
     if (rename_active and tree_result.rename_finished) {
         if (tree_result.rename_committed) {
             try commitHierarchyRename(state, layer_context, entity_id);
@@ -291,20 +267,20 @@ pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerC
         cancelHierarchyRename(state);
     }
 
+    // Recurse children
     if (has_visible_children and is_open) {
+        const child_depth = depth + 1;
+        if (child_depth < 32) {
+            ancestor_has_next[@intCast(child_depth)] = has_next_sibling;
+        }
         for (layer_context.world.entities.items) |child| {
-            if (child.editor_only or child.parent != entity_id) {
-                continue;
-            }
-            if (!utils.shouldShowEntityInSceneTree(state, layer_context.world, child.id)) {
-                continue;
-            }
-            drawHierarchyNode(state, layer_context, child.id) catch |err| switch (err) {
+            if (child.editor_only or child.parent != entity_id) continue;
+            if (!utils.shouldShowEntityInSceneTree(state, layer_context.world, child.id)) continue;
+            drawHierarchyNodeImpl(state, layer_context, child.id, child_depth, ancestor_has_next) catch |err| switch (err) {
                 error.HierarchyMutated => return error.HierarchyMutated,
                 else => return err,
             };
         }
-        gui.treePop();
     }
 }
 

@@ -210,71 +210,178 @@ extern "C" bool guava_imgui_window_control_button(uint32_t kind, bool toggled) {
 extern "C" uint32_t guava_imgui_tree_node_entity(
     uint64_t id, const char* label, size_t label_len, void* icon_texture,
     float icon_size, bool selected, bool leaf, bool default_open,
-    char* rename_buffer, size_t rename_buffer_size, bool request_rename_focus) {
+    char* rename_buffer, size_t rename_buffer_size, bool request_rename_focus,
+    int depth, const bool* ancestor_has_next, bool has_next_sibling,
+    bool has_children, bool visible, bool* visible_clicked) {
   if (!g_imgui_initialized) {
     return 0;
   }
+  if (visible_clicked) *visible_clicked = false;
 
-  const ImVec2 cursor = ImGui::GetCursorScreenPos();
+  ImGui::PushID(static_cast<int>(id));
+
   const ImGuiStyle& style = ImGui::GetStyle();
+  const float indent = 18.0f;
   const float row_height = ImGui::GetFrameHeight();
-  const float row_pitch = row_height + style.ItemSpacing.y;
-  const float window_top = ImGui::GetWindowPos().y + style.WindowPadding.y;
-  const int row_index = static_cast<int>((cursor.y - window_top) /
-                                         (row_pitch > 0.0f ? row_pitch : 1.0f));
-  const ImVec2 row_min(
-      ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMin().x, cursor.y);
-  const ImVec2 row_max(
-      ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x,
-      cursor.y + row_height);
-  if ((row_index & 1) != 0) {
-    ImGui::GetWindowDrawList()->AddRectFilled(
-        row_min, row_max, IM_COL32(255, 255, 255, 18), 0.0f);
-  }
+  ImDrawList* draw_list = ImGui::GetWindowDrawList();
+  const ImVec2 window_pos = ImGui::GetWindowPos();
+  const float content_left = window_pos.x + ImGui::GetWindowContentRegionMin().x;
+  const float content_right = window_pos.x + ImGui::GetWindowContentRegionMax().x;
 
-  ImGuiTreeNodeFlags flags =
-      ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanFullWidth |
-      ImGuiTreeNodeFlags_FramePadding | ImGuiTreeNodeFlags_DrawLinesFull;
+  // ── Row position ────────────────────────────────────────────────────────
+  const ImVec2 cursor = ImGui::GetCursorScreenPos();
+  const float row_top = cursor.y;
+  const float row_center_y = row_top + row_height * 0.5f;
+
+  // ── Reserve row space ───────────────────────────────────────────────────
+  ImGui::Dummy(ImVec2(content_right - content_left, row_height));
+  const ImVec2 item_min = ImGui::GetItemRectMin();
+  const ImVec2 item_max = ImGui::GetItemRectMax();
+
+  // ── Get open state from storage ─────────────────────────────────────────
+  ImGuiStorage* storage = ImGui::GetStateStorage();
+  ImGuiID open_id = ImGui::GetID("##open");
+  bool is_open = storage->GetInt(open_id, default_open ? 1 : 0) != 0;
+
+  // ── Row background (hover / selected) ───────────────────────────────────
+  const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
   if (selected) {
-    flags |= ImGuiTreeNodeFlags_Selected;
-  }
-  if (leaf) {
-    flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
-  }
-  if (default_open) {
-    flags |= ImGuiTreeNodeFlags_DefaultOpen;
+    draw_list->AddRectFilled(
+        ImVec2(content_left, item_min.y),
+        ImVec2(content_right, item_max.y),
+        IM_COL32(38, 70, 83, 180));
+  } else if (hovered) {
+    draw_list->AddRectFilled(
+        ImVec2(content_left, item_min.y),
+        ImVec2(content_right, item_max.y),
+        IM_COL32(255, 255, 255, 16));
   }
 
-  const std::string owned_label = make_string(label, label_len);
-  const bool is_open = ImGui::TreeNodeEx(
-      reinterpret_cast<void*>(static_cast<uintptr_t>(id)), flags, "%s", "");
-  uint32_t result = 0;
-  if (is_open) {
-    result |= GUAVA_IMGUI_TREE_NODE_OPEN;
+  // ── Selection indicator bar (left edge) ─────────────────────────────────
+  if (selected) {
+    draw_list->AddRectFilled(
+        ImVec2(content_left, item_min.y),
+        ImVec2(content_left + 3.0f, item_max.y),
+        IM_COL32(34, 205, 100, 255), 2.0f);
   }
-  if (ImGui::IsItemClicked()) {
-    result |= GUAVA_IMGUI_TREE_NODE_CLICKED;
+
+  // ── Draw vertical guide lines ───────────────────────────────────────────
+  const ImU32 guide_color = IM_COL32(58, 64, 78, 200);
+  const float guide_thickness = 1.0f;
+
+  for (int d = 0; d < depth; ++d) {
+    if (ancestor_has_next != nullptr && ancestor_has_next[d]) {
+      const float line_x = content_left + indent * (d + 1) - indent * 0.5f;
+      draw_list->AddLine(
+          ImVec2(line_x, item_min.y),
+          ImVec2(line_x, item_max.y + 1.0f),
+          guide_color, guide_thickness);
+    }
   }
-  const ImRect rect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
-  const float label_x = rect.Min.x;
-  float text_x = label_x + ImGui::GetTreeNodeToLabelSpacing();
+
+  // ── Horizontal branch line ──────────────────────────────────────────────
+  if (depth > 0) {
+    const float branch_start_x = content_left + indent * depth - indent * 0.5f;
+    const float branch_end_x = content_left + depth * indent;
+    draw_list->AddLine(
+        ImVec2(branch_start_x, row_center_y),
+        ImVec2(branch_end_x, row_center_y),
+        guide_color, guide_thickness);
+  }
+
+  // ── Arrow / expand icon ─────────────────────────────────────────────────
+  float x_offset = content_left + depth * indent;
+  const float arrow_size = 10.0f;
+
+  if (has_children) {
+    const ImVec2 arrow_center(x_offset + arrow_size * 0.5f + 2.0f, row_center_y);
+    const ImU32 arrow_color = hovered ? IM_COL32(200, 210, 225, 255)
+                                       : IM_COL32(140, 150, 170, 200);
+
+    if (is_open) {
+      const ImVec2 p1(arrow_center.x - 4.0f, arrow_center.y - 2.0f);
+      const ImVec2 p2(arrow_center.x + 4.0f, arrow_center.y - 2.0f);
+      const ImVec2 p3(arrow_center.x, arrow_center.y + 3.0f);
+      draw_list->AddTriangleFilled(p1, p2, p3, arrow_color);
+    } else {
+      const ImVec2 p1(arrow_center.x - 2.0f, arrow_center.y - 4.0f);
+      const ImVec2 p2(arrow_center.x + 3.0f, arrow_center.y);
+      const ImVec2 p3(arrow_center.x - 2.0f, arrow_center.y + 4.0f);
+      draw_list->AddTriangleFilled(p1, p2, p3, arrow_color);
+    }
+    x_offset += arrow_size + 6.0f;
+  } else {
+    x_offset += arrow_size + 6.0f;
+  }
+
+  // ── Icon ────────────────────────────────────────────────────────────────
   if (icon_texture != nullptr && icon_size > 0.0f) {
-    const float draw_size = (std::min)(icon_size, rect.GetHeight() - 6.0f);
-    const float icon_slot_width = icon_size + 12.0f;
-    const ImVec2 icon_min(label_x + (icon_slot_width - draw_size) * 0.5f,
-                          rect.Min.y + (rect.GetHeight() - draw_size) * 0.5f);
+    const float draw_size = (std::min)(icon_size, row_height - 4.0f);
+    const ImVec2 icon_min(x_offset + 2.0f,
+                          row_top + (row_height - draw_size) * 0.5f);
     const ImVec2 icon_max(icon_min.x + draw_size, icon_min.y + draw_size);
-    ImGui::GetWindowDrawList()->AddImage(
+    draw_list->AddImage(
         reinterpret_cast<ImTextureID>(icon_texture), icon_min, icon_max);
-    text_x += icon_slot_width;
+    x_offset += draw_size + 6.0f;
   }
+
+  // ── Label ───────────────────────────────────────────────────────────────
+  float label_x = x_offset;
+  const std::string owned_label = make_string(label, label_len);
+  const float text_y = row_top + (row_height - ImGui::GetFontSize()) * 0.5f;
+  draw_list->AddText(ImVec2(x_offset, text_y),
+                     selected ? IM_COL32(220, 230, 240, 255)
+                              : (visible ? ImGui::GetColorU32(ImGuiCol_Text)
+                                         : IM_COL32(130, 135, 145, 180)),
+                     owned_label.c_str());
+
+  // ── Visibility eye button (right side) ──────────────────────────────────
+  {
+    const float eye_size = 16.0f;
+    const float eye_x = content_right - eye_size - 8.0f;
+    const ImVec2 eye_min(eye_x, row_top + (row_height - eye_size) * 0.5f);
+    const ImVec2 eye_max(eye_min.x + eye_size, eye_min.y + eye_size);
+
+    ImGui::SetCursorScreenPos(eye_min);
+    ImGui::InvisibleButton("##eye", ImVec2(eye_size, eye_size));
+    const bool eye_hovered = ImGui::IsItemHovered();
+    const bool eye_clicked = ImGui::IsItemClicked();
+
+    if (eye_clicked && visible_clicked) {
+      *visible_clicked = true;
+    }
+
+    // Draw eye icon
+    const ImU32 eye_color = visible
+        ? (eye_hovered ? IM_COL32(41, 150, 112, 255) : IM_COL32(140, 150, 170, 200))
+        : IM_COL32(80, 85, 95, 140);
+
+    const ImVec2 eye_center = ImVec2((eye_min.x + eye_max.x) * 0.5f,
+                                      (eye_min.y + eye_max.y) * 0.5f);
+    const float r = eye_size * 0.22f;
+
+    // Eye shape: ellipse
+    draw_list->AddEllipseFilled(eye_center, ImVec2(r * 1.5f, r), eye_color, 0.0f, 32);
+    // Pupil
+    if (visible) {
+      draw_list->AddCircleFilled(eye_center, r * 0.55f, IM_COL32(20, 22, 26, 255));
+    } else {
+      // Strikethrough for hidden
+      draw_list->AddLine(
+          ImVec2(eye_center.x - r * 1.4f, eye_center.y + r * 0.6f),
+          ImVec2(eye_center.x + r * 1.4f, eye_center.y - r * 0.6f),
+          IM_COL32(160, 60, 60, 200), 1.5f);
+    }
+  }
+
+  // ── Rename input overlay ────────────────────────────────────────────────
   if (rename_buffer != nullptr && rename_buffer_size > 0) {
-    const ImVec2 input_pos(text_x - 4.0f, rect.Min.y + 1.0f);
+    const ImVec2 input_pos(label_x, item_min.y + 1.0f);
+    const float eye_space = 28.0f;
     const float input_width =
-        (std::max)(rect.Max.x - input_pos.x - style.FramePadding.x, 72.0f);
+        (std::max)(content_right - label_x - eye_space - style.FramePadding.x, 72.0f);
     ImGui::SetCursorScreenPos(input_pos);
     ImGui::SetNextItemWidth(input_width);
-    ImGui::PushID(reinterpret_cast<void*>(static_cast<uintptr_t>(id)));
     if (request_rename_focus) {
       ImGui::SetKeyboardFocusHere();
     }
@@ -284,25 +391,40 @@ extern "C" uint32_t guava_imgui_tree_node_entity(
                              ImGuiInputTextFlags_EnterReturnsTrue);
     const bool deactivated_after_edit = ImGui::IsItemDeactivatedAfterEdit();
     const bool rename_finished = submitted || ImGui::IsItemDeactivated();
+
+    uint32_t result = 0;
     if (submitted || deactivated_after_edit) {
       result |= GUAVA_IMGUI_TREE_NODE_RENAME_COMMITTED;
     }
     if (rename_finished) {
       result |= GUAVA_IMGUI_TREE_NODE_RENAME_FINISHED;
     }
+    if (is_open) {
+      result |= GUAVA_IMGUI_TREE_NODE_OPEN;
+    }
     ImGui::PopID();
-  } else {
-    const float text_y =
-        rect.Min.y + (rect.GetHeight() - ImGui::GetFontSize()) * 0.5f;
-    ImGui::GetWindowDrawList()->AddText(ImVec2(text_x, text_y),
-                                        ImGui::GetColorU32(ImGuiCol_Text),
-                                        owned_label.c_str());
+    return result;
   }
-  if (selected) {
-    ImGui::GetWindowDrawList()->AddRectFilled(
-        ImVec2(row_min.x, row_min.y), ImVec2(row_min.x + 3.0f, row_max.y),
-        IM_COL32(34, 205, 100, 255), 2.0f);
+
+  // ── Handle click for expand/collapse ────────────────────────────────────
+  ImGui::SetNextItemAllowOverlap();
+  ImGui::SetCursorScreenPos(item_min);
+  ImGui::InvisibleButton("##click", ImVec2(content_right - content_left - 28.0f, row_height));
+
+  uint32_t result = 0;
+  if (ImGui::IsItemClicked()) {
+    result |= GUAVA_IMGUI_TREE_NODE_CLICKED;
+    if (has_children) {
+      is_open = !is_open;
+      storage->SetInt(open_id, is_open ? 1 : 0);
+    }
   }
+
+  if (is_open) {
+    result |= GUAVA_IMGUI_TREE_NODE_OPEN;
+  }
+
+  ImGui::PopID();
   return result;
 }
 
