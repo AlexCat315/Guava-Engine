@@ -41,7 +41,7 @@ fn initEditorStyle() void {
     const bg_mid = .{ 0.11, 0.12, 0.14, 1.0 };
     const bg_light = .{ 0.14, 0.15, 0.18, 1.0 };
     const bg_panel = .{ 0.12, 0.13, 0.15, 1.0 };
-    const bg_frame = .{ 0.08, 0.09, 0.10, 1.0 };
+    const bg_frame = .{ 0.16, 0.17, 0.20, 1.0 };
     const bg_frame_hover = .{ 0.15, 0.17, 0.20, 1.0 };
     const bg_frame_active = .{ 0.18, 0.20, 0.24, 1.0 };
 
@@ -57,7 +57,7 @@ fn initEditorStyle() void {
     gui.setStyleColor(@intFromEnum(gui.Col.modal_window_dim_bg), .{ 0.03, 0.04, 0.05, 0.76 });
 
     gui.setStyleColor(@intFromEnum(gui.Col.border), border_subtle);
-    gui.setStyleColor(@intFromEnum(gui.Col.border), .{ 0.0, 0.0, 0.0, 0.0 });
+    // gui.setStyleColor(@intFromEnum(gui.Col.border), .{ 0.0, 0.0, 0.0, 0.0 });
     gui.setStyleColor(@intFromEnum(gui.Col.separator), border_subtle);
     gui.setStyleColor(@intFromEnum(gui.Col.separator_hovered), accent_hover);
     gui.setStyleColor(@intFromEnum(gui.Col.separator_active), accent_primary);
