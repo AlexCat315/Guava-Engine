@@ -72,6 +72,10 @@ pub const PluginManifest = struct {
     pub fn deinit(self: *PluginManifest, allocator: std.mem.Allocator) void {
         if (self.name.len > 0) allocator.free(self.name);
         if (self.path.len > 0) allocator.free(self.path);
+        if (self.capabilities.len > 0) {
+            const ptr: [*]const PluginCapability = self.capabilities.ptr;
+            allocator.free(ptr[0..self.capabilities.len]);
+        }
         self.* = undefined;
     }
 };
@@ -80,10 +84,23 @@ pub const PluginManifest = struct {
 pub const PluginRecord = struct {
     manifest: PluginManifest,
     lifecycle: PluginLifecycle = .unloaded,
-    last_error: ?[]const u8 = null,
+    last_error: ?[]u8 = null,
 
     pub fn deinit(self: *PluginRecord, allocator: std.mem.Allocator) void {
+        self.clearLastError(allocator);
         self.manifest.deinit(allocator);
+    }
+
+    /// Set an owned error message (dupes `msg`). Frees any previous error.
+    pub fn setLastError(self: *PluginRecord, allocator: std.mem.Allocator, msg: []const u8) void {
+        self.clearLastError(allocator);
+        self.last_error = allocator.dupe(u8, msg) catch null;
+    }
+
+    /// Clear the owned error message.
+    pub fn clearLastError(self: *PluginRecord, allocator: std.mem.Allocator) void {
+        if (self.last_error) |err| allocator.free(err);
+        self.last_error = null;
     }
 
     pub fn getName(self: *const PluginRecord) []const u8 {

@@ -11,6 +11,7 @@ pub const PluginVersion = types.PluginVersion;
 pub const PluginManifest = types.PluginManifest;
 pub const Plugin = registry.Plugin;
 pub const PluginRegistry = registry.PluginRegistry;
+pub const parseManifest = manifest.parseManifest;
 
 pub fn createRegistry(allocator: std.mem.Allocator) !registry.PluginRegistry {
     return try registry.PluginRegistry.init(allocator);

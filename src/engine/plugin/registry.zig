@@ -1,5 +1,6 @@
 const std = @import("std");
 const types = @import("types.zig");
+const manifest_mod = @import("manifest.zig");
 
 /// Backward-compatible alias — prefer using types.PluginRecord directly.
 pub const Plugin = types.PluginRecord;
@@ -102,37 +103,20 @@ pub const PluginRegistry = struct {
             const content = std.fs.cwd().readFileAlloc(self.allocator, manifest_path, 64 * 1024) catch continue;
             defer self.allocator.free(content);
 
-            const ManifestJson = struct {
-                name: []const u8,
-                version: []const u8 = "1.0.0",
-                plugin_type: []const u8 = "render_style",
-                source: []const u8 = "project",
-            };
+            var plugin_manifest = manifest_mod.parseManifest(self.allocator, content) catch continue;
+            errdefer plugin_manifest.deinit(self.allocator);
 
-            var parsed = std.json.parseFromSlice(ManifestJson, self.allocator, content, .{ .ignore_unknown_fields = true }) catch continue;
-            defer parsed.deinit();
-
-            const m = parsed.value;
-            const plugin_type = std.meta.stringToEnum(types.PluginType, m.plugin_type) orelse continue;
-            const source = std.meta.stringToEnum(types.PluginSource, m.source) orelse .project;
-            const version = types.PluginVersion.parse(m.version) catch continue;
-
-            const name_dupe = self.allocator.dupe(u8, m.name) catch continue;
-            const path_dupe = self.allocator.dupe(u8, manifest_path) catch continue;
+            // Set the path field (parseManifest does not know about file paths).
+            plugin_manifest.path = self.allocator.dupe(u8, manifest_path) catch continue;
 
             const record = self.allocator.create(types.PluginRecord) catch continue;
             record.* = .{
-                .manifest = .{
-                    .name = name_dupe,
-                    .version = version,
-                    .plugin_type = plugin_type,
-                    .source = source,
-                    .path = path_dupe,
-                },
+                .manifest = plugin_manifest,
                 .lifecycle = .loaded,
             };
 
             self.register(record) catch {
+                record.deinit(self.allocator);
                 self.allocator.destroy(record);
                 continue;
             };

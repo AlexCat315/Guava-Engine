@@ -152,6 +152,20 @@ pub const PostProcessPipelineEditorState = struct {
         return null;
     }
 
+    pub fn autoConnectLinear(self: *PostProcessPipelineEditorState) void {
+        if (self.nodes.items.len < 2) return;
+
+        for (self.nodes.items) |*node| {
+            node.input_connections.clearRetainingCapacity();
+            node.output_connections.clearRetainingCapacity();
+        }
+
+        var i: usize = 0;
+        while (i < self.nodes.items.len - 1) : (i += 1) {
+            self.connect(i, i + 1) catch {};
+        }
+    }
+
     pub fn syncGraphToViewportState(self: *const PostProcessPipelineEditorState, viewport_state: *EditorViewportState) void {
         var has_bloom = false;
         var has_tonemap = false;
@@ -201,6 +215,7 @@ pub fn drawPostProcessPipelineEditorWindow(
 ) !void {
     _ = layer_context;
 
+    editor_state.autoConnectLinear();
     editor_state.syncGraphToViewportState(viewport_state);
 
     var title_buffer: [80]u8 = undefined;
@@ -660,6 +675,12 @@ fn drawAccentButton(label: []const u8, width: f32, hint: []const u8, active: boo
 fn addNodeAndSelect(editor_state: *PostProcessPipelineEditorState, effect: PostProcessEffect, x: f32, y: f32) bool {
     const index = editor_state.addNode(effect, x, y) catch return false;
     editor_state.selected_node_index = index;
+
+    if (index > 0) {
+        const prev = index - 1;
+        editor_state.connect(prev, index) catch {};
+    }
+
     return true;
 }
 
@@ -671,18 +692,18 @@ fn clearAllNodes(editor_state: *PostProcessPipelineEditorState) void {
     editor_state.selected_node_index = null;
 }
 fn enabledEffectCount(viewport_state: *const EditorViewportState) usize {
-    return @intFromBool(viewport_state.exposure_enabled) +
-        @intFromBool(viewport_state.bloom_enabled) +
-        @intFromBool(viewport_state.color_grading_enabled) +
-        @intFromBool(viewport_state.fxaa_enabled) +
-        @intFromBool(viewport_state.ssao_enabled) +
-        @intFromBool(viewport_state.ssgi_enabled) +
-        @intFromBool(viewport_state.ssr_enabled) +
-        @intFromBool(viewport_state.taa_enabled) +
-        @intFromBool(viewport_state.dof_enabled) +
-        @intFromBool(viewport_state.contact_shadows_enabled) +
-        @intFromBool(viewport_state.rt_shadows_enabled) +
-        @intFromBool(viewport_state.lut_enabled);
+    return @as(usize, @intFromBool(viewport_state.exposure_enabled)) +
+        @as(usize, @intFromBool(viewport_state.bloom_enabled)) +
+        @as(usize, @intFromBool(viewport_state.color_grading_enabled)) +
+        @as(usize, @intFromBool(viewport_state.fxaa_enabled)) +
+        @as(usize, @intFromBool(viewport_state.ssao_enabled)) +
+        @as(usize, @intFromBool(viewport_state.ssgi_enabled)) +
+        @as(usize, @intFromBool(viewport_state.ssr_enabled)) +
+        @as(usize, @intFromBool(viewport_state.taa_enabled)) +
+        @as(usize, @intFromBool(viewport_state.dof_enabled)) +
+        @as(usize, @intFromBool(viewport_state.contact_shadows_enabled)) +
+        @as(usize, @intFromBool(viewport_state.rt_shadows_enabled)) +
+        @as(usize, @intFromBool(viewport_state.lut_enabled));
 }
 
 fn nodeLabel(effect: PostProcessEffect) []const u8 {

@@ -761,24 +761,117 @@ pub const Renderer = struct {
     ///    plugin manifests in `root_path`.
     /// 2. For each discovered `render_style` plugin, dispatches to
     ///    `StyleRegistry.loadFromDiscoveredPlugin()`.
+    /// 3. Writes error state back to `PluginRecord` on typed-loader failure.
     pub fn discoverPlugins(self: *Renderer, root_path: []const u8) void {
         self.plugin_registry.discover(root_path) catch |err| {
             std.log.warn("Renderer: plugin discovery failed for '{s}': {s}", .{ root_path, @errorName(err) });
             return;
         };
 
-        // Dispatch render_style plugins to StyleRegistry
+        self.dispatchStylePlugins();
+    }
+
+    /// Dispatch all `render_style` PluginRecords to the typed StyleRegistry.
+    /// On typed-loader failure the error is written back to the PluginRecord.
+    fn dispatchStylePlugins(self: *Renderer) void {
         const style_plugins = self.plugin_registry.getByType(.render_style);
         for (style_plugins) |record| {
             if (record.manifest.path.len == 0) continue;
-            // Derive the plugin directory from the manifest.json path
             const dir_path = std.fs.path.dirname(record.manifest.path) orelse continue;
             // Only load if StyleRegistry doesn't already know about it
-            if (self.style_registry.getStyle(record.manifest.name) != null) continue;
+            if (self.style_registry.getStyle(record.manifest.name) != null) {
+                // Already loaded — ensure PluginRecord reflects success.
+                if (record.lifecycle == .loaded) {
+                    record.lifecycle = .enabled;
+                    record.clearLastError(self.allocator);
+                }
+                continue;
+            }
             self.style_registry.loadFromDiscoveredPlugin(dir_path) catch |err| {
+                record.lifecycle = .load_error;
+                record.setLastError(self.allocator, @errorName(err));
                 std.log.warn("Renderer: failed to load render style '{s}': {s}", .{ record.getName(), @errorName(err) });
+                continue;
             };
+            // Typed loader succeeded
+            record.lifecycle = .enabled;
+            record.clearLastError(self.allocator);
         }
+    }
+
+    // ── Plugin lifecycle orchestration ──────────────────────────────────
+
+    /// Enable a plugin by name.  For `render_style` plugins this is
+    /// currently a no-op on the StyleRegistry side (the style is already
+    /// registered); only the PluginRecord lifecycle state changes.
+    pub fn enablePlugin(self: *Renderer, name: []const u8) void {
+        self.plugin_registry.enable(name) catch |err| {
+            if (self.plugin_registry.plugins.getPtr(name)) |rec| {
+                rec.*.setLastError(self.allocator, @errorName(err));
+            }
+        };
+    }
+
+    /// Disable a plugin.  For `render_style` plugins, if the disabled
+    /// style is currently active the StyleRegistry rolls back to default_pbr.
+    pub fn disablePlugin(self: *Renderer, name: []const u8) void {
+        // If it is a render_style and currently active, deactivate first.
+        if (std.mem.eql(u8, self.style_registry.active_style_name, name)) {
+            _ = self.style_registry.setActiveStyle("default_pbr");
+        }
+        self.plugin_registry.disable(name) catch |err| {
+            if (self.plugin_registry.plugins.getPtr(name)) |rec| {
+                rec.*.setLastError(self.allocator, @errorName(err));
+            }
+        };
+    }
+
+    /// Fully unload a plugin.  Removes it from both PluginRegistry and,
+    /// for `render_style` plugins, from StyleRegistry (freeing per-style
+    /// allocations).
+    pub fn unloadPlugin(self: *Renderer, name: []const u8) void {
+        // Determine type before removal
+        const is_render_style = blk: {
+            const rec = self.plugin_registry.plugins.get(name) orelse break :blk false;
+            break :blk rec.manifest.plugin_type == .render_style;
+        };
+
+        if (is_render_style) {
+            self.style_registry.unregister(name);
+        }
+
+        self.plugin_registry.unload(name) catch |err| {
+            std.log.warn("Renderer: unloadPlugin('{s}') failed: {s}", .{ name, @errorName(err) });
+        };
+    }
+
+    /// Re-scan a plugin directory.  Removes plugins that disappeared from
+    /// disk, discovers new ones, and dispatches to typed loaders.
+    pub fn rescanPlugins(self: *Renderer, root_path: []const u8) void {
+        // 1. Collect names of plugins currently registered from this root.
+        var stale_names: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer stale_names.deinit(self.allocator);
+        {
+            var it = self.plugin_registry.plugins.iterator();
+            while (it.next()) |entry| {
+                const rec = entry.value_ptr.*;
+                if (rec.manifest.path.len == 0) continue;
+                if (!std.mem.startsWith(u8, rec.manifest.path, root_path)) continue;
+                // Check if the manifest file still exists on disk
+                std.fs.cwd().access(rec.manifest.path, .{}) catch {
+                    stale_names.append(self.allocator, rec.manifest.name) catch {};
+                    continue;
+                };
+            }
+        }
+
+        // 2. Unload stale plugins.
+        for (stale_names.items) |name| {
+            self.unloadPlugin(name);
+        }
+
+        // 3. Discover new plugins (already-registered ones are skipped).
+        self.discoverPlugins(root_path);
     }
 
     pub fn handleResize(self: *Renderer, width: u32, height: u32) !void {

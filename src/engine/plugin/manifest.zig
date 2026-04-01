@@ -1,48 +1,60 @@
 const std = @import("std");
 const types = @import("types.zig");
 
-const ManifestParseError = error{
+pub const ManifestParseError = error{
     InvalidJson,
     MissingField,
     InvalidPluginType,
     InvalidCapability,
     InvalidVersion,
+    OutOfMemory,
 };
 
+/// Parse a `manifest.json` blob into a `PluginManifest`.
+/// All string fields in the returned manifest are allocator-owned and must
+/// be released by calling `PluginManifest.deinit(allocator)`.
 pub fn parseManifest(allocator: std.mem.Allocator, json_content: []const u8) ManifestParseError!types.PluginManifest {
-    var parser = std.json.Parser.init(allocator, false);
-    defer parser.deinit();
+    const ManifestJson = struct {
+        name: []const u8 = "",
+        version: []const u8 = "1.0.0",
+        plugin_type: []const u8 = "render_style",
+        source: []const u8 = "user",
+        capabilities: []const []const u8 = &.{},
+    };
 
-    const json = try parser.parse(json_content);
+    const parsed = std.json.parseFromSlice(ManifestJson, allocator, json_content, .{
+        .ignore_unknown_fields = true,
+    }) catch return ManifestParseError.InvalidJson;
+    defer parsed.deinit();
 
-    const name = json.root.object.get("name") orelse return ManifestParseError.MissingField;
-    const name_str = try allocator.dupe(u8, name.string);
+    const m = parsed.value;
+    if (m.name.len == 0) return ManifestParseError.MissingField;
 
-    const version_str = json.root.object.get("version") orelse return ManifestParseError.MissingField;
-    const version = types.PluginVersion.parse(version_str.string) catch return ManifestParseError.InvalidVersion;
+    const plugin_type = std.meta.stringToEnum(types.PluginType, m.plugin_type) orelse
+        return ManifestParseError.InvalidPluginType;
+    const source = std.meta.stringToEnum(types.PluginSource, m.source) orelse .user;
+    const version = types.PluginVersion.parse(m.version) catch
+        return ManifestParseError.InvalidVersion;
 
-    const plugin_type_str = json.root.object.get("plugin_type") orelse return ManifestParseError.MissingField;
-    const plugin_type = std.meta.stringToEnum(types.PluginType, plugin_type_str.string) orelse return ManifestParseError.InvalidPluginType;
-
-    const source_str = json.root.object.get("source") orelse "user";
-    const source = std.meta.stringToEnum(types.PluginSource, source_str.str) orelse .user;
-
-    var capabilities = std.ArrayList(types.PluginCapability).init(allocator);
-    defer capabilities.deinit();
-
-    if (json.root.object.get("capabilities")) |caps_val| {
-        for (caps_val.array.items) |cap_val| {
-            const cap_str = cap_val.string;
-            const cap = std.meta.stringToEnum(types.PluginCapability, cap_str) orelse return ManifestParseError.InvalidCapability;
-            try capabilities.append(cap);
-        }
+    // Parse capabilities into an owned slice.
+    var caps: std.ArrayListUnmanaged(types.PluginCapability) = .empty;
+    defer caps.deinit(allocator);
+    for (m.capabilities) |cap_str| {
+        const cap = std.meta.stringToEnum(types.PluginCapability, cap_str) orelse
+            return ManifestParseError.InvalidCapability;
+        caps.append(allocator, cap) catch return ManifestParseError.OutOfMemory;
     }
 
-    return types.PluginManifest{
-        .name = name_str,
+    const name_dupe = allocator.dupe(u8, m.name) catch return ManifestParseError.OutOfMemory;
+    errdefer allocator.free(name_dupe);
+
+    const owned_caps = caps.toOwnedSlice(allocator) catch return ManifestParseError.OutOfMemory;
+
+    return .{
+        .name = name_dupe,
         .version = version,
         .plugin_type = plugin_type,
-        .capabilities = try capabilities.toOwnedSlice(),
+        .capabilities = owned_caps,
         .source = source,
     };
 }
@@ -58,7 +70,8 @@ test "parse manifest basic" {
         \\}
     ;
 
-    const manifest = try parseManifest(allocator, json);
+    var manifest = try parseManifest(allocator, json);
+    defer manifest.deinit(allocator);
     try std.testing.expectEqualSlices(u8, "test_plugin", manifest.name);
     try std.testing.expectEqual(@as(u16, 1), manifest.version.major);
 }

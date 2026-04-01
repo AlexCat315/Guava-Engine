@@ -107,6 +107,14 @@ pub const StyleParamValues = struct {
     }
 };
 
+/// Per-style heap allocations tracked for individual unload.
+const StyleAlloc = struct {
+    /// Raw JSON content buffer — parsed string slices point into this.
+    content_buf: []u8,
+    /// Allocator-owned directory path copy.
+    path_buf: []u8,
+};
+
 /// Registry managing all available render styles and tracking the active one.
 /// This is the typed runtime owner for `render_style` plugins.
 /// `PluginRegistry` handles discovery/lifecycle; `StyleRegistry` handles
@@ -114,7 +122,7 @@ pub const StyleParamValues = struct {
 ///
 /// Ownership: Builtin styles use comptime string literals and are never freed.
 /// User/project styles hold allocator-owned strings (`name`, `display_name`,
-/// `path`, etc.) tracked in `owned_buffers`.  `deinit()` and `unregister()`
+/// `path`, etc.) tracked in `style_allocs`.  `deinit()` and `unregister()`
 /// release them.
 pub const StyleRegistry = struct {
     allocator: std.mem.Allocator,
@@ -122,11 +130,9 @@ pub const StyleRegistry = struct {
     active_style_name: []const u8,
     previous_style_name: []const u8,
     param_values: std.StringHashMap(StyleParamValues),
-    /// Raw JSON content buffers kept alive so that string slices inside
-    /// `StylePluginManifest` (parsed from JSON) remain valid.
-    owned_buffers: std.ArrayList([]u8),
-    /// Allocator-owned path strings (one per loaded user plugin).
-    owned_paths: std.ArrayList([]u8),
+    /// Per-style allocation records for user/project plugins.
+    /// Keyed by style name (same slice as in `styles`).
+    style_allocs: std.StringHashMap(StyleAlloc),
 
     pub fn init(allocator: std.mem.Allocator) StyleRegistry {
         var registry = StyleRegistry{
@@ -135,8 +141,7 @@ pub const StyleRegistry = struct {
             .active_style_name = "default_pbr",
             .previous_style_name = "default_pbr",
             .param_values = std.StringHashMap(StyleParamValues).init(allocator),
-            .owned_buffers = std.ArrayList([]u8).empty,
-            .owned_paths = std.ArrayList([]u8).empty,
+            .style_allocs = std.StringHashMap(StyleAlloc).init(allocator),
         };
         // Always register the builtin styles
         registry.styles.put(default_pbr_style.name, default_pbr_style) catch {};
@@ -152,10 +157,12 @@ pub const StyleRegistry = struct {
         }
         self.param_values.deinit();
         self.styles.deinit();
-        for (self.owned_buffers.items) |buf| self.allocator.free(buf);
-        self.owned_buffers.deinit(self.allocator);
-        for (self.owned_paths.items) |p| self.allocator.free(p);
-        self.owned_paths.deinit(self.allocator);
+        var alloc_it = self.style_allocs.iterator();
+        while (alloc_it.next()) |entry| {
+            self.allocator.free(entry.value_ptr.path_buf);
+            self.allocator.free(entry.value_ptr.content_buf);
+        }
+        self.style_allocs.deinit();
     }
 
     pub fn register(self: *StyleRegistry, manifest: StylePluginManifest) !void {
@@ -163,6 +170,34 @@ pub const StyleRegistry = struct {
             return error.StyleAlreadyRegistered;
         }
         try self.styles.put(manifest.name, manifest);
+    }
+
+    /// Remove a user/project style and free its per-style allocations.
+    /// Builtins (no entry in `style_allocs`) are silently ignored.
+    /// If the removed style was active, falls back to `default_pbr`.
+    pub fn unregister(self: *StyleRegistry, name: []const u8) void {
+        // Active/previous style rollback
+        if (std.mem.eql(u8, self.active_style_name, name)) {
+            self.active_style_name = "default_pbr";
+        }
+        if (std.mem.eql(u8, self.previous_style_name, name)) {
+            self.previous_style_name = "default_pbr";
+        }
+
+        // Remove param values
+        if (self.param_values.fetchRemove(name)) |kv| {
+            var pv = kv.value;
+            pv.deinit();
+        }
+
+        // Remove from styles map
+        _ = self.styles.remove(name);
+
+        // Free per-style owned allocations
+        if (self.style_allocs.fetchRemove(name)) |kv| {
+            self.allocator.free(kv.value.path_buf);
+            self.allocator.free(kv.value.content_buf);
+        }
     }
 
     /// Switch active style. Returns false if the style doesn't exist.
@@ -277,9 +312,11 @@ pub const StyleRegistry = struct {
 
         try self.register(style_manifest);
 
-        // Track allocations — only after register succeeds.
-        try self.owned_buffers.append(self.allocator, content);
-        try self.owned_paths.append(self.allocator, path_copy);
+        // Track per-style allocations — only after register succeeds.
+        try self.style_allocs.put(m.name, .{
+            .content_buf = content,
+            .path_buf = path_copy,
+        });
     }
 
     /// Register a render_style directly from PluginRegistry discovery data.
