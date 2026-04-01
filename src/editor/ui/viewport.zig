@@ -145,9 +145,9 @@ fn drawHudWindowChrome() void {
     const draw_list = gui.getWindowDrawList();
     const pos = gui.windowPos();
     const size = gui.windowSize();
-    const top_color = gui.getColorU32(.{ 0.42, 0.45, 0.50, theme.Spacing.viewport_hud_window_top_alpha });
-    const bottom_color = gui.getColorU32(.{ 0.03, 0.04, 0.05, theme.Spacing.viewport_hud_window_bottom_alpha });
-    const side_color = gui.getColorU32(.{ 0.50, 0.53, 0.58, theme.Spacing.viewport_hud_window_side_alpha });
+    const top_color = gui.getColorU32(theme.Palette.viewport.hud_window_top);
+    const bottom_color = gui.getColorU32(theme.Palette.viewport.hud_window_bottom);
+    const side_color = gui.getColorU32(theme.Palette.viewport.hud_window_side);
     draw_list.addLine(pos, .{ pos[0] + size[0], pos[1] }, top_color, theme.Spacing.viewport_hud_window_line_thickness);
     draw_list.addLine(
         .{ pos[0], pos[1] + size[1] - theme.Spacing.viewport_hud_window_line_inset },
@@ -171,7 +171,7 @@ fn drawToolbarDivider(height: f32) void {
     draw_list.addLine(
         .{ x, pos[1] + theme.Spacing.viewport_divider_padding_top },
         .{ x, pos[1] + height - theme.Spacing.viewport_divider_padding_top },
-        gui.getColorU32(.{ 0.55, 0.59, 0.64, theme.Spacing.viewport_divider_alpha }),
+        gui.getColorU32(theme.Palette.viewport.divider),
         theme.Spacing.viewport_hud_window_line_thickness,
     );
     gui.dummy(theme.Spacing.viewport_divider_width, height);
@@ -389,6 +389,33 @@ fn viewportEntityAccent(kind: ViewportEntityGlyph) [4]f32 {
     };
 }
 
+fn viewportEntityGlowColor(accent: [4]f32, alpha: f32) [4]f32 {
+    return .{ accent[0], accent[1], accent[2], alpha };
+}
+
+fn viewportEntityBackgroundColor() [4]f32 {
+    return .{
+        theme.Spacing.viewport_entity_bg_rgb[0],
+        theme.Spacing.viewport_entity_bg_rgb[1],
+        theme.Spacing.viewport_entity_bg_rgb[2],
+        theme.Spacing.viewport_entity_bg_alpha,
+    };
+}
+
+fn viewportEntityInnerColor(accent: [4]f32) [4]f32 {
+    return .{
+        accent[0] * theme.Spacing.viewport_entity_inner_color_factor,
+        accent[1] * theme.Spacing.viewport_entity_inner_color_factor,
+        accent[2] * theme.Spacing.viewport_entity_inner_color_factor,
+        theme.Spacing.viewport_entity_inner_alpha,
+    };
+}
+
+fn viewportGhostHighlightTextColor(pulse: f32) [4]f32 {
+    const base = theme.Palette.viewport.ghost_highlight_text;
+    return .{ base[0] * pulse, base[1] * pulse, base[2] * pulse, base[3] };
+}
+
 fn drawViewportEntityIconButton(
     state: *EditorState,
     layer_context: *engine.core.LayerContext,
@@ -398,11 +425,11 @@ fn drawViewportEntityIconButton(
     tint: [4]u8,
 ) !bool {
     const texture = try ui_icons.ensureTintedIconTexture(state, layer_context, path, size, tint);
-    gui.pushStyleColor(.button, .{ 0.0, 0.0, 0.0, 0.0 });
-    gui.pushStyleColor(.button_hovered, .{ 0.0, 0.0, 0.0, 0.0 });
-    gui.pushStyleColor(.button_active, .{ 0.0, 0.0, 0.0, 0.0 });
-    gui.pushStyleVarVec2(.frame_padding, .{ 0.0, 0.0 });
-    gui.pushStyleVarFloat(.frame_rounding, 0.0);
+    gui.pushStyleColor(.button, theme.Palette.viewport.entity_button_bg);
+    gui.pushStyleColor(.button_hovered, theme.Palette.viewport.entity_button_bg);
+    gui.pushStyleColor(.button_active, theme.Palette.viewport.entity_button_bg);
+    gui.pushStyleVarVec2(.frame_padding, theme.Spacing.viewport_entity_button_padding);
+    gui.pushStyleVarFloat(.frame_rounding, theme.Spacing.viewport_entity_button_rounding);
     defer {
         gui.popStyleVar(2);
         gui.popStyleColor(3);
@@ -846,13 +873,13 @@ fn drawViewportSceneEntityIcons(state: *EditorState, layer_context: *engine.core
         const halo_radius = icon_size * theme.Spacing.viewport_entity_icon_halo_factor;
 
         if (is_selected) {
-            draw_list.addCircleFilled(screen_pos, halo_radius + theme.Spacing.viewport_entity_icon_halo_selected_glow, gui.getColorU32(.{ accent[0], accent[1], accent[2], theme.Spacing.viewport_entity_icon_halo_selected_alpha }), theme.Spacing.viewport_entity_icon_segments);
+            draw_list.addCircleFilled(screen_pos, halo_radius + theme.Spacing.viewport_entity_icon_halo_selected_glow, gui.getColorU32(viewportEntityGlowColor(accent, theme.Spacing.viewport_entity_icon_halo_selected_alpha)), theme.Spacing.viewport_entity_icon_segments);
         }
         if (is_primary_scene_camera) {
-            draw_list.addCircleFilled(screen_pos, halo_radius + theme.Spacing.viewport_entity_icon_halo_primary_glow, gui.getColorU32(.{ accent[0], accent[1], accent[2], theme.Spacing.viewport_entity_icon_halo_primary_alpha }), theme.Spacing.viewport_entity_icon_segments);
+            draw_list.addCircleFilled(screen_pos, halo_radius + theme.Spacing.viewport_entity_icon_halo_primary_glow, gui.getColorU32(viewportEntityGlowColor(accent, theme.Spacing.viewport_entity_icon_halo_primary_alpha)), theme.Spacing.viewport_entity_icon_segments);
         }
-        draw_list.addCircleFilled(screen_pos, halo_radius, gui.getColorU32(.{ theme.Spacing.viewport_entity_bg_rgb[0], theme.Spacing.viewport_entity_bg_rgb[1], theme.Spacing.viewport_entity_bg_rgb[2], theme.Spacing.viewport_entity_bg_alpha }), theme.Spacing.viewport_entity_icon_segments);
-        draw_list.addCircleFilled(screen_pos, halo_radius - theme.Spacing.viewport_entity_icon_halo_inner_shrink, gui.getColorU32(.{ accent[0] * theme.Spacing.viewport_entity_inner_color_factor, accent[1] * theme.Spacing.viewport_entity_inner_color_factor, accent[2] * theme.Spacing.viewport_entity_inner_color_factor, theme.Spacing.viewport_entity_inner_alpha }), theme.Spacing.viewport_entity_icon_segments);
+        draw_list.addCircleFilled(screen_pos, halo_radius, gui.getColorU32(viewportEntityBackgroundColor()), theme.Spacing.viewport_entity_icon_segments);
+        draw_list.addCircleFilled(screen_pos, halo_radius - theme.Spacing.viewport_entity_icon_halo_inner_shrink, gui.getColorU32(viewportEntityInnerColor(accent)), theme.Spacing.viewport_entity_icon_segments);
 
         var button_id_buffer: [64]u8 = undefined;
         const button_id = std.fmt.bufPrint(&button_id_buffer, "viewport_entity_icon##{d}", .{entity.id}) catch continue;
@@ -944,7 +971,7 @@ fn drawViewportToolbarStrip(state: *EditorState, layer_context: *engine.core.Lay
     const edit_mode_active = mesh_edit.isEditModeActive(state);
     const can_enter_edit_mode = mesh_edit.canEnterEditMode(state, layer_context);
     {
-        gui.pushStyleVarVec2(.item_spacing, .{ 0.0, 6.0 });
+        gui.pushStyleVarVec2(.item_spacing, theme.Spacing.viewport_mode_item_spacing);
         defer gui.popStyleVar(1);
         if (drawSegmentedModeButton(state.text(.object_mode), !edit_mode_active, theme.Spacing.segmented_button_width_object_mode, .first)) {
             mesh_edit.exitEditMode(state, layer_context);
@@ -2364,7 +2391,7 @@ fn drawViewportAiStateOverlayWindow(state: *EditorState) void {
     // Ghost Highlight indicator when waiting approval and enabled
     if (ai_status.stage == .waiting_approval and state.ghost_highlight_enabled) {
         const ghost_pulse = theme.Spacing.ghost_highlight_pulse_base + theme.Spacing.ghost_highlight_pulse_amplitude * @abs(std.math.sin(gui.time() * state.ghost_highlight_pulse_speed));
-        gui.pushStyleColor(.text, .{ theme.Spacing.ghost_highlight_text_r * ghost_pulse, theme.Spacing.ghost_highlight_text_g * ghost_pulse, theme.Spacing.ghost_highlight_text_b * ghost_pulse, 1.0 });
+        gui.pushStyleColor(.text, viewportGhostHighlightTextColor(ghost_pulse));
         gui.text(state.text(.ghost_highlight_active));
         gui.popStyleColor(1);
     }

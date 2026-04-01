@@ -28,8 +28,16 @@ pub const ButtonPalette = struct {
     active: Color,
 };
 
+pub const ChipPalette = struct {
+    background: Color,
+    border: Color,
+    text: Color,
+};
+
 /// Icon tint in 0-255 byte range (matches RHI texture tinting).
 pub const IconTint = [4]u8;
+
+pub const transparent: Color = .{ 0.0, 0.0, 0.0, 0.0 };
 
 // ── Palettes ─────────────────────────────────────────────────────────────────
 
@@ -138,12 +146,30 @@ pub const Palette = struct {
             .hovered = .{ 0.36, 0.64, 0.96, 0.50 }, // #5CB3F5 50%
             .active = .{ 0.24, 0.52, 0.88, 0.70 }, // #3D85E1 70%
         };
+        pub const active_text: Color = .{ 0.20, 0.60, 0.45, 1.0 };
+        pub const idle_text: Color = .{ 0.72, 0.76, 0.81, 1.0 };
+    };
+
+    pub const layer = struct {
+        pub const scrollbar_grab: Color = .{ 0.22, 0.24, 0.28, 1.0 };
+        pub const scrollbar_grab_hovered: Color = .{ 0.28, 0.31, 0.36, 1.0 };
+        pub const scrollbar_grab_active: Color = .{ 0.34, 0.38, 0.44, 1.0 };
+        pub const tab: Color = .{ 0.13, 0.14, 0.17, 1.0 };
+        pub const tab_hovered: Color = .{ 0.22, 0.24, 0.30, 1.0 };
+        pub const tab_active: Color = .{ 0.18, 0.21, 0.26, 1.0 };
+        pub const tab_unfocused: Color = .{ 0.11, 0.12, 0.14, 1.0 };
+        pub const tab_unfocused_active: Color = .{ 0.15, 0.17, 0.21, 1.0 };
+        pub const resize_grip: Color = transparent;
     };
 
     // ── Viewport ─────────────────────────────────────────────────────────────
     pub const viewport = struct {
         pub const overlay_bg: Color = .{ 0.10, 0.11, 0.14, 0.40 }; // #191C24 40% 半透明背景用于视口覆盖层
         pub const overlay_border: Color = .{ 0.06, 0.07, 0.09, 0.60 }; // #0F1217 60% 用于视口覆盖层边框
+        pub const hud_window_top: Color = .{ 0.42, 0.45, 0.50, 0.26 };
+        pub const hud_window_bottom: Color = .{ 0.03, 0.04, 0.05, 0.55 };
+        pub const hud_window_side: Color = .{ 0.50, 0.53, 0.58, 0.12 };
+        pub const divider: Color = .{ 0.55, 0.59, 0.64, 0.22 };
         pub const grid_line: Color = .{ 0.18, 0.19, 0.22, 0.45 }; // #2E323B 45% 视口网格线颜色
         pub const grid_line_major: Color = .{ 0.26, 0.27, 0.31, 0.55 }; // #42474F 55% 视口主网格线颜色
         pub const gizmo_x: Color = .{ 0.85, 0.20, 0.20, 1.0 }; // #D9534F 红色用于X轴变换工具
@@ -156,6 +182,8 @@ pub const Palette = struct {
         pub const entity_icon_accent: IconTint = .{ 210, 215, 225, 255 }; // #D2D7E1 强调状态下的实体图标颜色（如鼠标悬停）
         pub const entity_icon_selected: IconTint = .{ 77, 148, 235, 255 }; // #4D94EB 选中状态下的实体图标颜色
         pub const cursor_3d: Color = .{ 0.88, 0.90, 0.94, 0.75 }; // #E0E5EE 75% 用于3D光标的颜色
+        pub const entity_button_bg: Color = transparent;
+        pub const ghost_highlight_text: Color = .{ 0.75, 0.38, 1.0, 1.0 };
     };
 
     // ── Inspector / Details ──────────────────────────────────────────────────
@@ -213,6 +241,21 @@ pub const Palette = struct {
         pub const thumbnail_border: Color = .{ 0.16, 0.17, 0.20, 1.0 }; // #292C33 缩略图边框颜色
         pub const thumbnail_selected_border: Color = .{ 0.30, 0.58, 0.92, 1.0 }; // #4D94EB 选中缩略图边框颜色
         pub const path_bar_bg: Color = .{ 0.11, 0.12, 0.15, 1.0 }; // #1C1F26 路径栏背景颜色
+        pub const drawer_child_bg: Color = .{ 0.10, 0.11, 0.13, 0.96 };
+        pub const drawer_bg: Color = .{ 0.06, 0.07, 0.09, 0.96 };
+        pub const drawer_header_bg: Color = .{ 0.11, 0.12, 0.15, 0.98 };
+        pub const drawer_header_highlight: Color = .{ 0.62, 0.67, 0.74, 0.16 };
+        pub const drawer_separator: Color = .{ 0.34, 0.37, 0.42, 0.45 };
+        pub const drawer_resize_grip: Color = .{ 0.72, 0.76, 0.82, 0.28 };
+        pub const drawer_assistant_body_text: Color = .{ 0.55, 0.60, 0.68, 1.0 };
+        pub const drawer_workspace_title_text: Color = .{ 0.78, 0.82, 0.88, 1.0 };
+        pub const drawer_empty_text: Color = .{ 0.61, 0.64, 0.68, 1.0 };
+        pub const breadcrumb_separator_text: Color = .{ 0.58, 0.62, 0.68, 1.0 };
+        pub const bottom_tab = ButtonPalette{
+            .bg = transparent,
+            .hovered = .{ 0.22, 0.25, 0.29, 0.92 },
+            .active = .{ 0.15, 0.18, 0.21, 1.0 },
+        };
     };
 
     // ── AI / Jarvis ──────────────────────────────────────────────────────────
@@ -223,6 +266,174 @@ pub const Palette = struct {
         pub const user_msg_bg: Color = .{ 0.16, 0.17, 0.21, 1.0 }; // #282C34 用户消息背景颜色
         pub const assistant_msg_bg: Color = .{ 0.12, 0.13, 0.16, 1.0 }; // #1F212B 助手消息背景颜色
         pub const streaming_indicator: Color = .{ 0.60, 0.34, 0.90, 1.0 }; // #9955E6 流媒体指示器颜色
+    };
+
+    pub const settings = struct {
+        pub const section_hover_bg: Color = .{ 1.0, 1.0, 1.0, 0.04 };
+        pub const section_arrow_text: Color = .{ 0.60, 0.63, 0.68, 1.0 };
+        pub const section_title_text: Color = .{ 0.88, 0.91, 0.95, 1.0 };
+        pub const category_selected_bg: Color = .{ 0.17, 0.33, 0.50, 0.72 };
+        pub const category_hover_bg: Color = .{ 1.0, 1.0, 1.0, 0.06 };
+        pub const category_selected_text: Color = .{ 0.94, 0.97, 1.0, 1.0 };
+        pub const category_hover_text: Color = .{ 0.88, 0.91, 0.95, 1.0 };
+        pub const category_idle_text: Color = .{ 0.72, 0.76, 0.82, 1.0 };
+        pub const choice_active = ButtonPalette{
+            .bg = .{ 0.13, 0.45, 0.28, 0.82 },
+            .hovered = .{ 0.18, 0.55, 0.35, 0.92 },
+            .active = .{ 0.10, 0.35, 0.22, 0.96 },
+        };
+        pub const choice_idle = ButtonPalette{
+            .bg = .{ 0.16, 0.17, 0.19, 0.54 },
+            .hovered = .{ 0.21, 0.23, 0.27, 0.74 },
+            .active = .{ 0.18, 0.20, 0.24, 0.86 },
+        };
+        pub const warning_text: Color = .{ 0.95, 0.82, 0.35, 1.0 };
+        pub const error_text: Color = .{ 1.0, 0.42, 0.42, 1.0 };
+        pub const search_bg: Color = .{ 0.12, 0.13, 0.15, 0.65 };
+        pub const sidebar_bg: Color = .{ 0.08, 0.09, 0.10, 0.70 };
+        pub const separator: Color = .{ 1.0, 1.0, 1.0, 0.08 };
+    };
+
+    pub const timeline = struct {
+        pub const summary_text: Color = .{ 0.55, 0.60, 0.68, 1.0 };
+        pub const preview_text: Color = .{ 0.80, 0.95, 1.0, 1.0 };
+        pub const hint_text: Color = .{ 0.50, 0.52, 0.56, 1.0 };
+        pub const empty_text: Color = .{ 0.40, 0.42, 0.46, 1.0 };
+        pub const connector_text: Color = .{ 0.35, 0.38, 0.44, 1.0 };
+        pub const current_text: Color = .{ 0.98, 0.98, 0.78, 1.0 };
+        pub const preview_node_text: Color = .{ 0.80, 0.95, 1.0, 1.0 };
+        pub const confirm_button = ButtonPalette{
+            .bg = .{ 0.13, 0.50, 0.36, 0.90 },
+            .hovered = .{ 0.15, 0.62, 0.43, 1.0 },
+            .active = .{ 0.10, 0.40, 0.28, 1.0 },
+        };
+        pub const human_node = ButtonPalette{
+            .bg = .{ 0.16, 0.34, 0.66, 0.88 },
+            .hovered = .{ 0.20, 0.41, 0.77, 0.96 },
+            .active = .{ 0.13, 0.28, 0.54, 1.0 },
+        };
+        pub const ai_node = ButtonPalette{
+            .bg = .{ 0.47, 0.28, 0.72, 0.88 },
+            .hovered = .{ 0.56, 0.33, 0.84, 0.96 },
+            .active = .{ 0.38, 0.22, 0.60, 1.0 },
+        };
+    };
+
+    pub const place_actor = struct {
+        pub const card_idle = ButtonPalette{
+            .bg = .{ 0.16, 0.17, 0.18, 0.64 },
+            .hovered = .{ 0.20, 0.21, 0.22, 0.82 },
+            .active = .{ 0.14, 0.15, 0.16, 0.92 },
+        };
+        pub const card_active = ButtonPalette{
+            .bg = .{ 0.16, 0.59, 0.44, 0.8 },
+            .hovered = .{ 0.20, 0.69, 0.52, 0.9 },
+            .active = .{ 0.12, 0.49, 0.36, 1.0 },
+        };
+        pub const card_text_muted: Color = .{ 0.55, 0.58, 0.62, 1.0 };
+    };
+
+    pub const ai_chat = struct {
+        pub const role_user_accent: Color = .{ 0.42, 0.66, 0.95, 1.0 };
+        pub const role_assistant_accent: Color = .{ 0.27, 0.86, 0.57, 1.0 };
+        pub const role_reasoning_accent: Color = .{ 0.88, 0.76, 0.42, 1.0 };
+        pub const role_system_accent: Color = .{ 0.58, 0.62, 0.68, 1.0 };
+        pub const user_card_bg: Color = .{ 0.08, 0.13, 0.19, 0.92 };
+        pub const assistant_card_bg: Color = .{ 0.08, 0.15, 0.11, 0.92 };
+        pub const system_card_bg: Color = .{ 0.12, 0.12, 0.14, 0.92 };
+        pub const reasoning_card_bg: Color = .{ 0.10, 0.10, 0.11, 0.92 };
+        pub const user_body_text: Color = .{ 0.90, 0.95, 1.0, 1.0 };
+        pub const assistant_body_text: Color = .{ 0.88, 0.97, 0.91, 1.0 };
+        pub const system_body_text: Color = .{ 0.78, 0.80, 0.84, 1.0 };
+        pub const reasoning_body_text: Color = .{ 0.80, 0.80, 0.80, 1.0 };
+        pub const message_card_border: Color = .{ 0.18, 0.22, 0.28, 0.95 };
+        pub const empty_text: Color = .{ 0.44, 0.47, 0.53, 1.0 };
+        pub const status_ready = ChipPalette{
+            .background = .{ 0.10, 0.18, 0.15, 1.0 },
+            .border = .{ 0.27, 0.58, 0.46, 1.0 },
+            .text = .{ 0.78, 0.94, 0.86, 1.0 },
+        };
+        pub const status_error = ChipPalette{
+            .background = .{ 0.22, 0.11, 0.12, 1.0 },
+            .border = .{ 0.72, 0.28, 0.31, 1.0 },
+            .text = .{ 0.97, 0.79, 0.80, 1.0 },
+        };
+        pub const status_warning = ChipPalette{
+            .background = .{ 0.24, 0.18, 0.08, 1.0 },
+            .border = .{ 0.82, 0.63, 0.24, 1.0 },
+            .text = .{ 0.98, 0.90, 0.66, 1.0 },
+        };
+        pub const status_neutral = ChipPalette{
+            .background = .{ 0.14, 0.17, 0.22, 1.0 },
+            .border = .{ 0.36, 0.42, 0.53, 1.0 },
+            .text = .{ 0.77, 0.82, 0.90, 1.0 },
+        };
+        pub const status_waiting = ChipPalette{
+            .background = .{ 0.28, 0.16, 0.08, 1.0 },
+            .border = .{ 0.92, 0.46, 0.18, 1.0 },
+            .text = .{ 0.99, 0.84, 0.67, 1.0 },
+        };
+        pub const status_dot_ready: Color = .{ 0.44, 0.86, 0.60, 1.0 };
+        pub const status_dot_error: Color = .{ 0.90, 0.38, 0.35, 1.0 };
+        pub const status_dot_warning: Color = .{ 0.95, 0.80, 0.30, 1.0 };
+        pub const card_border: Color = .{ 0.18, 0.22, 0.28, 0.98 };
+        pub const messages_border: Color = .{ 0.17, 0.21, 0.28, 0.98 };
+        pub const composer_border: Color = .{ 0.20, 0.28, 0.34, 1.0 };
+        pub const setup_card_border: Color = .{ 0.23, 0.42, 0.38, 0.92 };
+        pub const setup_title: Color = .{ 0.95, 0.84, 0.44, 1.0 };
+        pub const setup_body: Color = .{ 0.80, 0.85, 0.92, 1.0 };
+        pub const setup_hint: Color = .{ 0.58, 0.66, 0.76, 1.0 };
+        pub const provider_error_text: Color = .{ 0.66, 0.74, 0.84, 1.0 };
+        pub const staged_banner_text: Color = .{ 0.98, 0.85, 0.40, 1.0 };
+        pub const staged_banner_hint: Color = .{ 0.68, 0.72, 0.80, 1.0 };
+        pub const stage_detail_text: Color = .{ 0.58, 0.65, 0.75, 1.0 };
+        pub const settings_title: Color = .{ 0.90, 0.93, 0.98, 1.0 };
+        pub const settings_description: Color = .{ 0.55, 0.60, 0.68, 1.0 };
+        pub const input_hint_text: Color = .{ 0.52, 0.57, 0.66, 1.0 };
+        pub const critical_text: Color = .{ 0.90, 0.30, 0.30, 1.0 };
+        pub const primary_button = ButtonPalette{
+            .bg = .{ 0.13, 0.50, 0.36, 0.88 },
+            .hovered = .{ 0.15, 0.62, 0.43, 1.0 },
+            .active = .{ 0.10, 0.40, 0.28, 1.0 },
+        };
+        pub const primary_button_strong = ButtonPalette{
+            .bg = .{ 0.13, 0.50, 0.36, 0.90 },
+            .hovered = .{ 0.15, 0.62, 0.43, 1.0 },
+            .active = .{ 0.10, 0.40, 0.28, 1.0 },
+        };
+        pub const secondary_button = ButtonPalette{
+            .bg = .{ 0.22, 0.24, 0.27, 1.0 },
+            .hovered = .{ 0.30, 0.33, 0.37, 1.0 },
+            .active = .{ 0.18, 0.20, 0.24, 1.0 },
+        };
+        pub const secondary_header_button = ButtonPalette{
+            .bg = .{ 0.19, 0.22, 0.28, 1.0 },
+            .hovered = .{ 0.25, 0.29, 0.36, 1.0 },
+            .active = .{ 0.15, 0.18, 0.24, 1.0 },
+        };
+        pub const dropdown_button = ButtonPalette{
+            .bg = .{ 0.12, 0.15, 0.19, 1.0 },
+            .hovered = .{ 0.15, 0.19, 0.24, 1.0 },
+            .active = .{ 0.18, 0.22, 0.29, 1.0 },
+        };
+        pub const provider_action_disabled = ButtonPalette{
+            .bg = .{ 0.16, 0.18, 0.21, 0.38 },
+            .hovered = .{ 0.16, 0.18, 0.21, 0.38 },
+            .active = .{ 0.16, 0.18, 0.21, 0.38 },
+        };
+        pub const provider_action_enabled = ButtonPalette{
+            .bg = .{ 0.22, 0.24, 0.27, 1.0 },
+            .hovered = .{ 0.30, 0.33, 0.37, 1.0 },
+            .active = .{ 0.30, 0.33, 0.37, 1.0 },
+        };
+        pub const input_frame_bg: Color = .{ 0.07, 0.09, 0.13, 1.0 };
+        pub const input_frame_hovered: Color = .{ 0.10, 0.13, 0.18, 1.0 };
+        pub const input_frame_active: Color = .{ 0.13, 0.17, 0.24, 1.0 };
+        pub const input_border: Color = .{ 0.22, 0.44, 0.38, 0.90 };
+        pub const input_text: Color = .{ 0.94, 0.96, 0.99, 1.0 };
+        pub const input_text_cursor: Color = .{ 0.24, 0.92, 0.56, 1.0 };
+        pub const input_nav_cursor: Color = .{ 0.30, 0.88, 0.67, 1.0 };
+        pub const input_text_selected_bg: Color = .{ 0.22, 0.72, 0.56, 0.45 };
     };
 };
 
@@ -260,6 +471,7 @@ pub const Spacing = struct {
     // ── Viewport overlay ─────────────────────────────────────────────────────
     pub const viewport_overlay_padding: [2]f32 = .{ 4.0, 4.0 };
     pub const viewport_overlay_item_spacing: [2]f32 = .{ 6.0, 4.0 };
+    pub const viewport_mode_item_spacing: [2]f32 = .{ 0.0, 6.0 };
     pub const viewport_hud_window_top_alpha: f32 = 0.26;
     pub const viewport_hud_window_bottom_alpha: f32 = 0.55;
     pub const viewport_hud_window_side_alpha: f32 = 0.12;
@@ -538,6 +750,29 @@ pub const Spacing = struct {
     pub const hierarchy_window_padding: [2]f32 = .{ 0.0, 4.0 };
     pub const hierarchy_rename_buffer_size: usize = 128;
 
+    // ── Content Browser ─────────────────────────────────────────────────────
+    pub const content_browser_window_padding: [2]f32 = .{ 0.0, 0.0 };
+    pub const content_browser_drawer_content_padding: [2]f32 = .{ 10.0, 10.0 };
+    pub const content_browser_header_item_spacing: [2]f32 = .{ 8.0, 6.0 };
+    pub const content_browser_tab_padding: [2]f32 = .{ 12.0, 5.0 };
+
+    // ── Timeline ────────────────────────────────────────────────────────────
+    pub const timeline_item_spacing: [2]f32 = .{ 4.0, 0.0 };
+    pub const timeline_node_padding: [2]f32 = .{ 10.0, 6.0 };
+
+    // ── Place Actor ─────────────────────────────────────────────────────────
+    pub const place_actor_row_padding: [2]f32 = .{ 6.0, 4.0 };
+
+    // ── Settings ────────────────────────────────────────────────────────────
+    pub const settings_window_item_spacing: [2]f32 = .{ 8.0, 4.0 };
+    pub const settings_sidebar_padding: [2]f32 = .{ 0.0, 4.0 };
+
+    // ── AI Chat ─────────────────────────────────────────────────────────────
+    pub const ai_chat_message_padding: [2]f32 = .{ 12.0, 10.0 };
+    pub const ai_chat_chip_padding: [2]f32 = .{ 10.0, 6.0 };
+    pub const ai_chat_setup_padding: [2]f32 = .{ 16.0, 14.0 };
+    pub const ai_chat_composer_padding: [2]f32 = .{ 10.0, 10.0 };
+
     // ── Layout ───────────────────────────────────────────────────────────────
     pub const layout_divider_spacing: f32 = 6.0;
     pub const layout_label_width_min: f32 = 86.0;
@@ -755,6 +990,10 @@ pub const BorderRadius = struct {
     pub const thumbnail: f32 = 4.0;
     pub const badge: f32 = 8.0;
     pub const progress: f32 = 2.0;
+    pub const timeline_node: f32 = 7.0;
+    pub const ai_input: f32 = 7.0;
+    pub const pill: f32 = 999.0;
+    pub const place_actor_card: f32 = 5.0;
 };
 
 // ── Style Helpers ────────────────────────────────────────────────────────────

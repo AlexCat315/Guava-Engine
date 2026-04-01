@@ -64,9 +64,9 @@ fn initEditorStyle() void {
 
     // ── Scrollbars ────────────────────────────────────────────────────────
     gui.setStyleColor(@intFromEnum(gui.Col.scrollbar_bg), p.bg.dock_area);
-    gui.setStyleColor(@intFromEnum(gui.Col.scrollbar_grab), .{ 0.22, 0.24, 0.28, 1.0 });
-    gui.setStyleColor(@intFromEnum(gui.Col.scrollbar_grab_hovered), .{ 0.28, 0.31, 0.36, 1.0 });
-    gui.setStyleColor(@intFromEnum(gui.Col.scrollbar_grab_active), .{ 0.34, 0.38, 0.44, 1.0 });
+    gui.setStyleColor(@intFromEnum(gui.Col.scrollbar_grab), p.layer.scrollbar_grab);
+    gui.setStyleColor(@intFromEnum(gui.Col.scrollbar_grab_hovered), p.layer.scrollbar_grab_hovered);
+    gui.setStyleColor(@intFromEnum(gui.Col.scrollbar_grab_active), p.layer.scrollbar_grab_active);
 
     // ── Headers (tree nodes, collapsing headers) ──────────────────────────
     gui.setStyleColor(@intFromEnum(gui.Col.header), p.selection.bg);
@@ -79,11 +79,11 @@ fn initEditorStyle() void {
     gui.setStyleColor(@intFromEnum(gui.Col.button_active), p.interactive.accent);
 
     // ── Tabs ──────────────────────────────────────────────────────────────
-    gui.setStyleColor(@intFromEnum(gui.Col.tab), .{ 0.13, 0.14, 0.17, 1.0 });
-    gui.setStyleColor(@intFromEnum(gui.Col.tab_hovered), .{ 0.22, 0.24, 0.30, 1.0 });
-    gui.setStyleColor(@intFromEnum(gui.Col.tab_active), .{ 0.18, 0.21, 0.26, 1.0 });
-    gui.setStyleColor(@intFromEnum(gui.Col.tab_unfocused), .{ 0.11, 0.12, 0.14, 1.0 });
-    gui.setStyleColor(@intFromEnum(gui.Col.tab_unfocused_active), .{ 0.15, 0.17, 0.21, 1.0 });
+    gui.setStyleColor(@intFromEnum(gui.Col.tab), p.layer.tab);
+    gui.setStyleColor(@intFromEnum(gui.Col.tab_hovered), p.layer.tab_hovered);
+    gui.setStyleColor(@intFromEnum(gui.Col.tab_active), p.layer.tab_active);
+    gui.setStyleColor(@intFromEnum(gui.Col.tab_unfocused), p.layer.tab_unfocused);
+    gui.setStyleColor(@intFromEnum(gui.Col.tab_unfocused_active), p.layer.tab_unfocused_active);
 
     // ── Docking & Drag-Drop ───────────────────────────────────────────────
     gui.setStyleColor(@intFromEnum(gui.Col.docking_preview), p.selection.bg);
@@ -97,7 +97,7 @@ fn initEditorStyle() void {
     gui.setStyleColor(@intFromEnum(gui.Col.check_mark), p.interactive.accent);
 
     // ── Resize Grips ──────────────────────────────────────────────────────
-    gui.setStyleColor(@intFromEnum(gui.Col.resize_grip), .{ 0.00, 0.00, 0.00, 0.0 });
+    gui.setStyleColor(@intFromEnum(gui.Col.resize_grip), p.layer.resize_grip);
     gui.setStyleColor(@intFromEnum(gui.Col.resize_grip_hovered), p.interactive.accent_hovered);
     gui.setStyleColor(@intFromEnum(gui.Col.resize_grip_active), p.ai.accent);
 

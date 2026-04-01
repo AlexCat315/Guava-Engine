@@ -2,6 +2,7 @@ const std = @import("std");
 const engine = @import("guava");
 const gui = @import("../../gui.zig");
 const layout = @import("../../layout.zig");
+const theme = @import("../../theme.zig");
 const ui_icons = @import("../../icons.zig");
 const floating_window_blocker = @import("../../floating_window_blocker.zig");
 const history = @import("../../../actions/history.zig");
@@ -1527,11 +1528,7 @@ fn submitInput(state: *EditorState, layer_context: *engine.core.LayerContext) vo
     @memset(&g_input_buffer, 0);
 }
 
-const StatusChipPalette = struct {
-    background: [4]f32,
-    border: [4]f32,
-    text: [4]f32,
-};
+const StatusChipPalette = theme.ChipPalette;
 
 fn drawStatusDot(id: u64, color: [4]f32) void {
     gui.pushIdU64(id);
@@ -1540,8 +1537,8 @@ fn drawStatusDot(id: u64, color: [4]f32) void {
     gui.pushStyleColor(.button, color);
     gui.pushStyleColor(.button_hovered, color);
     gui.pushStyleColor(.button_active, color);
-    gui.pushStyleColor(.border, .{ 0.0, 0.0, 0.0, 0.0 });
-    gui.pushStyleVarFloat(.frame_rounding, 999.0);
+    gui.pushStyleColor(.border, theme.transparent);
+    gui.pushStyleVarFloat(.frame_rounding, theme.BorderRadius.pill);
     defer {
         gui.popStyleVar(1);
         gui.popStyleColor(4);
@@ -1560,8 +1557,8 @@ fn drawStatusChip(label: []const u8, palette: StatusChipPalette) void {
     gui.pushStyleColor(.button_active, palette.background);
     gui.pushStyleColor(.border, palette.border);
     gui.pushStyleColor(.text, palette.text);
-    gui.pushStyleVarVec2(.frame_padding, .{ 10.0, 6.0 });
-    gui.pushStyleVarFloat(.frame_rounding, 999.0);
+    gui.pushStyleVarVec2(.frame_padding, theme.Spacing.ai_chat_chip_padding);
+    gui.pushStyleVarFloat(.frame_rounding, theme.BorderRadius.pill);
     defer {
         gui.popStyleVar(2);
         gui.popStyleColor(5);
@@ -1579,15 +1576,15 @@ fn chatHasVisibleContent(preview: *const StreamState) bool {
 
 fn drawProviderSetupGuideCard(state: *EditorState) void {
     const provider_error = activeProviderValidationError(state) orelse {
-        gui.pushStyleColor(.text, .{ 0.44, 0.47, 0.53, 1.0 });
+        gui.pushStyleColor(.text, theme.Palette.ai_chat.empty_text);
         gui.textWrapped(state.text(.ai_chat_empty));
         gui.popStyleColor(1);
         return;
     };
 
     const card_height: f32 = 208.0;
-    gui.pushStyleColor(.border, .{ 0.23, 0.42, 0.38, 0.92 });
-    gui.pushStyleVarVec2(.window_padding, .{ 16.0, 14.0 });
+    gui.pushStyleColor(.border, theme.Palette.ai_chat.setup_card_border);
+    gui.pushStyleVarVec2(.window_padding, theme.Spacing.ai_chat_setup_padding);
     defer {
         gui.popStyleVar(1);
         gui.popStyleColor(1);
@@ -1599,29 +1596,29 @@ fn drawProviderSetupGuideCard(state: *EditorState) void {
         state.viewport_overlay_hovered = true;
     }
 
-    gui.pushStyleColor(.text, .{ 0.95, 0.84, 0.44, 1.0 });
+    gui.pushStyleColor(.text, theme.Palette.ai_chat.setup_title);
     gui.text(state.text(.ai_chat_provider_not_configured));
     gui.popStyleColor(1);
 
     gui.dummy(0.0, 6.0);
-    gui.pushStyleColor(.text, .{ 0.80, 0.85, 0.92, 1.0 });
+    gui.pushStyleColor(.text, theme.Palette.ai_chat.setup_body);
     gui.textWrapped(state.text(.ai_chat_provider_setup_incomplete_prefix));
     gui.popStyleColor(1);
 
     gui.dummy(0.0, 4.0);
-    gui.pushStyleColor(.text, .{ 0.58, 0.66, 0.76, 1.0 });
+    gui.pushStyleColor(.text, theme.Palette.ai_chat.setup_hint);
     gui.textWrapped(providerValidationErrorText(state, provider_error));
     gui.popStyleColor(1);
 
     gui.dummy(0.0, 8.0);
-    gui.pushStyleColor(.text, .{ 0.58, 0.66, 0.76, 1.0 });
+    gui.pushStyleColor(.text, theme.Palette.ai_chat.setup_hint);
     gui.textWrapped(state.text(.ai_chat_provider_setup_open_config_hint));
     gui.popStyleColor(1);
 
     gui.dummy(0.0, 18.0);
-    gui.pushStyleColor(.button, .{ 0.13, 0.50, 0.36, 0.90 });
-    gui.pushStyleColor(.button_hovered, .{ 0.15, 0.62, 0.43, 1.0 });
-    gui.pushStyleColor(.button_active, .{ 0.10, 0.40, 0.28, 1.0 });
+    gui.pushStyleColor(.button, theme.Palette.ai_chat.primary_button_strong.bg);
+    gui.pushStyleColor(.button_hovered, theme.Palette.ai_chat.primary_button_strong.hovered);
+    gui.pushStyleColor(.button_active, theme.Palette.ai_chat.primary_button_strong.active);
     if (gui.buttonEx(state.text(.ai_chat_configure), 120.0, 34.0)) {
         state.ai_provider_settings_open = true;
         requestAiFocus(.provider_name);
@@ -1631,9 +1628,9 @@ fn drawProviderSetupGuideCard(state: *EditorState) void {
 
 fn providerFeedbackColor(kind: ProviderPanelFeedbackKind) [4]f32 {
     return switch (kind) {
-        .success => .{ 0.44, 0.86, 0.60, 1.0 },
-        .failure => .{ 0.93, 0.42, 0.38, 1.0 },
-        .none => .{ 0.56, 0.60, 0.66, 1.0 },
+        .success => theme.Palette.ai_chat.status_dot_ready,
+        .failure => theme.Palette.ai_chat.status_dot_error,
+        .none => theme.Palette.text_secondary,
     };
 }
 
@@ -1642,8 +1639,8 @@ fn drawHeaderBar(state: *EditorState) void {
     const provider_error = activeProviderValidationError(state);
     const provider_ready = provider_error == null;
     const header_height: f32 = if (provider_error != null) 136.0 else 106.0;
-    gui.pushStyleColor(.border, .{ 0.18, 0.22, 0.28, 0.98 });
-    gui.pushStyleVarVec2(.window_padding, .{ 12.0, 10.0 });
+    gui.pushStyleColor(.border, theme.Palette.ai_chat.card_border);
+    gui.pushStyleVarVec2(.window_padding, theme.Spacing.ai_chat_message_padding);
     defer {
         gui.popStyleVar(1);
         gui.popStyleColor(1);
@@ -1657,29 +1654,13 @@ fn drawHeaderBar(state: *EditorState) void {
 
     drawStatusChip(
         if (mcp_ready) state.text(.ai_chat_mcp_ready_builtin) else state.text(.ai_chat_mcp_not_ready),
-        if (mcp_ready) .{
-            .background = .{ 0.10, 0.18, 0.15, 1.0 },
-            .border = .{ 0.27, 0.58, 0.46, 1.0 },
-            .text = .{ 0.78, 0.94, 0.86, 1.0 },
-        } else .{
-            .background = .{ 0.22, 0.11, 0.12, 1.0 },
-            .border = .{ 0.72, 0.28, 0.31, 1.0 },
-            .text = .{ 0.97, 0.79, 0.80, 1.0 },
-        },
+        if (mcp_ready) theme.Palette.ai_chat.status_ready else theme.Palette.ai_chat.status_error,
     );
 
     gui.sameLine();
     drawStatusChip(
         if (provider_ready) state.text(.ai_chat_provider_configured) else state.text(.ai_chat_provider_not_configured),
-        if (provider_ready) .{
-            .background = .{ 0.10, 0.18, 0.15, 1.0 },
-            .border = .{ 0.27, 0.58, 0.46, 1.0 },
-            .text = .{ 0.78, 0.94, 0.86, 1.0 },
-        } else .{
-            .background = .{ 0.24, 0.18, 0.08, 1.0 },
-            .border = .{ 0.82, 0.63, 0.24, 1.0 },
-            .text = .{ 0.98, 0.90, 0.66, 1.0 },
-        },
+        if (provider_ready) theme.Palette.ai_chat.status_ready else theme.Palette.ai_chat.status_warning,
     );
 
     if (mcp_ready and provider_ready) {
@@ -1688,11 +1669,7 @@ fn drawHeaderBar(state: *EditorState) void {
             if (asyncIsRunning()) {
                 drawStatusChip(
                     state.text(.ai_chat_running),
-                    .{
-                        .background = .{ 0.24, 0.18, 0.08, 1.0 },
-                        .border = .{ 0.82, 0.63, 0.24, 1.0 },
-                        .text = .{ 0.98, 0.90, 0.66, 1.0 },
-                    },
+                    theme.Palette.ai_chat.status_warning,
                 );
             } else {
                 const ai_status = store.aiStatusSnapshot();
@@ -1703,21 +1680,9 @@ fn drawHeaderBar(state: *EditorState) void {
                     .waiting_approval => state.text(.ai_chat_stage_waiting_approval),
                 };
                 const stage_palette: StatusChipPalette = switch (ai_status.stage) {
-                    .ready => .{
-                        .background = .{ 0.14, 0.17, 0.22, 1.0 },
-                        .border = .{ 0.36, 0.42, 0.53, 1.0 },
-                        .text = .{ 0.77, 0.82, 0.90, 1.0 },
-                    },
-                    .analyzing_screenshot, .compiling_shader => .{
-                        .background = .{ 0.24, 0.18, 0.08, 1.0 },
-                        .border = .{ 0.82, 0.63, 0.24, 1.0 },
-                        .text = .{ 0.98, 0.90, 0.66, 1.0 },
-                    },
-                    .waiting_approval => .{
-                        .background = .{ 0.28, 0.16, 0.08, 1.0 },
-                        .border = .{ 0.92, 0.46, 0.18, 1.0 },
-                        .text = .{ 0.99, 0.84, 0.67, 1.0 },
-                    },
+                    .ready => theme.Palette.ai_chat.status_neutral,
+                    .analyzing_screenshot, .compiling_shader => theme.Palette.ai_chat.status_warning,
+                    .waiting_approval => theme.Palette.ai_chat.status_waiting,
                 };
                 drawStatusChip(stage_label, stage_palette);
             }
@@ -1726,7 +1691,7 @@ fn drawHeaderBar(state: *EditorState) void {
 
     gui.dummy(0.0, 10.0);
     if (provider_error) |validation_error| {
-        gui.pushStyleColor(.text, .{ 0.66, 0.74, 0.84, 1.0 });
+        gui.pushStyleColor(.text, theme.Palette.ai_chat.provider_error_text);
         gui.textWrapped(providerValidationErrorText(state, validation_error));
         gui.popStyleColor(1);
     }
@@ -1741,9 +1706,9 @@ fn drawHeaderBar(state: *EditorState) void {
     const total_btns = clear_w + config_w + btn_gap;
     if (gui.contentRegionAvail()[0] > total_btns + 8.0) {
         gui.sameLineEx(@max(0.0, gui.contentRegionAvail()[0] - total_btns), 0.0);
-        gui.pushStyleColor(.button, .{ 0.19, 0.22, 0.28, 1.0 });
-        gui.pushStyleColor(.button_hovered, .{ 0.25, 0.29, 0.36, 1.0 });
-        gui.pushStyleColor(.button_active, .{ 0.15, 0.18, 0.24, 1.0 });
+        gui.pushStyleColor(.button, theme.Palette.ai_chat.secondary_header_button.bg);
+        gui.pushStyleColor(.button_hovered, theme.Palette.ai_chat.secondary_header_button.hovered);
+        gui.pushStyleColor(.button_active, theme.Palette.ai_chat.secondary_header_button.active);
         if (gui.buttonEx(state.text(.ai_chat_clear), clear_w, 30.0)) {
             clearHistory();
         }
@@ -1763,10 +1728,10 @@ fn drawStagedTransactionBanner(state: *EditorState) void {
     if (ai_status.stage != .waiting_approval) return;
 
     gui.dummy(0.0, 2.0);
-    gui.pushStyleColor(.text, .{ 0.98, 0.85, 0.40, 1.0 });
+    gui.pushStyleColor(.text, theme.Palette.ai_chat.staged_banner_text);
     gui.text(state.text(.ai_chat_staged_banner));
     gui.popStyleColor(1);
-    gui.pushStyleColor(.text, .{ 0.68, 0.72, 0.80, 1.0 });
+    gui.pushStyleColor(.text, theme.Palette.ai_chat.staged_banner_hint);
     gui.text(state.text(.ai_chat_staged_hint));
     gui.popStyleColor(1);
     gui.dummy(0.0, 2.0);
@@ -1774,7 +1739,7 @@ fn drawStagedTransactionBanner(state: *EditorState) void {
 
 fn drawStageDetail(state: *EditorState) void {
     if (asyncIsRunning()) {
-        gui.pushStyleColor(.text, .{ 0.58, 0.65, 0.75, 1.0 });
+        gui.pushStyleColor(.text, theme.Palette.ai_chat.stage_detail_text);
         gui.textWrapped(state.text(.ai_chat_background_job_running));
         gui.popStyleColor(1);
         return;
@@ -1790,7 +1755,7 @@ fn drawStageDetail(state: *EditorState) void {
         return;
 
     ai_chat_log.debug("AI stage detail: {s}", .{detail});
-    gui.pushStyleColor(.text, .{ 0.58, 0.65, 0.75, 1.0 });
+    gui.pushStyleColor(.text, theme.Palette.ai_chat.stage_detail_text);
     gui.textWrapped(detail);
     gui.popStyleColor(1);
 }
@@ -1804,15 +1769,15 @@ const provider_action_icon_size: f32 = 16.0;
 fn providerActionPalette(enabled: bool) ui_icons.ButtonPalette {
     if (!enabled) {
         return .{
-            .button = .{ 0.16, 0.18, 0.21, 0.38 },
-            .hovered = .{ 0.16, 0.18, 0.21, 0.38 },
-            .active = .{ 0.16, 0.18, 0.21, 0.38 },
+            .button = theme.Palette.ai_chat.provider_action_disabled.bg,
+            .hovered = theme.Palette.ai_chat.provider_action_disabled.hovered,
+            .active = theme.Palette.ai_chat.provider_action_disabled.active,
         };
     }
     return .{
-        .button = .{ 0.22, 0.24, 0.27, 1.0 },
-        .hovered = .{ 0.30, 0.33, 0.37, 1.0 },
-        .active = .{ 0.30, 0.33, 0.37, 1.0 },
+        .button = theme.Palette.ai_chat.provider_action_enabled.bg,
+        .hovered = theme.Palette.ai_chat.provider_action_enabled.hovered,
+        .active = theme.Palette.ai_chat.provider_action_enabled.active,
     };
 }
 
@@ -1841,15 +1806,15 @@ fn drawProviderActionIconButton(
 }
 
 fn pushAiInputWidgetStyle() void {
-    gui.pushStyleColor(.frame_bg, .{ 0.07, 0.09, 0.13, 1.0 });
-    gui.pushStyleColor(.frame_bg_hovered, .{ 0.10, 0.13, 0.18, 1.0 });
-    gui.pushStyleColor(.frame_bg_active, .{ 0.13, 0.17, 0.24, 1.0 });
-    gui.pushStyleColor(.border, .{ 0.22, 0.44, 0.38, 0.90 });
-    gui.pushStyleColor(.text, .{ 0.94, 0.96, 0.99, 1.0 });
-    gui.pushStyleColor(.input_text_cursor, .{ 0.24, 0.92, 0.56, 1.0 });
-    gui.pushStyleColor(.nav_cursor, .{ 0.30, 0.88, 0.67, 1.0 });
-    gui.pushStyleColor(.text_selected_bg, .{ 0.22, 0.72, 0.56, 0.45 });
-    gui.pushStyleVarFloat(.frame_rounding, 7.0);
+    gui.pushStyleColor(.frame_bg, theme.Palette.ai_chat.input_frame_bg);
+    gui.pushStyleColor(.frame_bg_hovered, theme.Palette.ai_chat.input_frame_hovered);
+    gui.pushStyleColor(.frame_bg_active, theme.Palette.ai_chat.input_frame_active);
+    gui.pushStyleColor(.border, theme.Palette.ai_chat.input_border);
+    gui.pushStyleColor(.text, theme.Palette.ai_chat.input_text);
+    gui.pushStyleColor(.input_text_cursor, theme.Palette.ai_chat.input_text_cursor);
+    gui.pushStyleColor(.nav_cursor, theme.Palette.ai_chat.input_nav_cursor);
+    gui.pushStyleColor(.text_selected_bg, theme.Palette.ai_chat.input_text_selected_bg);
+    gui.pushStyleVarFloat(.frame_rounding, theme.BorderRadius.ai_input);
 }
 
 fn popAiInputWidgetStyle() void {
@@ -1885,7 +1850,7 @@ fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerCo
 
     gui.separator();
     const settings_height = gui.contentRegionAvail()[1];
-    gui.pushStyleColor(.border, .{ 0.18, 0.22, 0.28, 0.98 });
+    gui.pushStyleColor(.border, theme.Palette.ai_chat.card_border);
     _ = gui.beginChild("ai_provider_settings##jt", 0.0, settings_height, true);
     defer {
         gui.endChild();
@@ -1901,10 +1866,10 @@ fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerCo
     if (side_padding > 0.0) gui.indent(side_padding);
     defer if (side_padding > 0.0) gui.unindent(side_padding);
 
-    gui.pushStyleColor(.text, .{ 0.90, 0.93, 0.98, 1.0 });
+    gui.pushStyleColor(.text, theme.Palette.ai_chat.settings_title);
     gui.text(state.text(.ai_chat_provider_settings_title));
     gui.popStyleColor(1);
-    gui.pushStyleColor(.text, .{ 0.55, 0.60, 0.68, 1.0 });
+    gui.pushStyleColor(.text, theme.Palette.ai_chat.settings_description);
     gui.textWrapped(state.text(.ai_chat_provider_settings_desc));
     gui.popStyleColor(1);
     gui.dummy(0.0, 8.0);
@@ -1913,18 +1878,18 @@ fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerCo
     const provider_error = activeProviderValidationError(state);
     const provider_ready = provider_error == null;
 
-    drawStatusDot(1, if (mcp_ready) .{ 0.44, 0.86, 0.60, 1.0 } else .{ 0.90, 0.38, 0.35, 1.0 });
-    gui.pushStyleColor(.text, if (mcp_ready) .{ 0.72, 0.91, 0.80, 1.0 } else .{ 0.92, 0.56, 0.54, 1.0 });
+    drawStatusDot(1, if (mcp_ready) theme.Palette.ai_chat.status_dot_ready else theme.Palette.ai_chat.status_dot_error);
+    gui.pushStyleColor(.text, if (mcp_ready) theme.Palette.ai_chat.status_ready.text else theme.Palette.ai_chat.status_error.text);
     gui.text(if (mcp_ready) state.text(.ai_chat_provider_status_ready_builtin) else state.text(.ai_chat_provider_status_not_ready));
     gui.popStyleColor(1);
 
-    drawStatusDot(2, if (provider_ready) .{ 0.44, 0.86, 0.60, 1.0 } else .{ 0.95, 0.80, 0.30, 1.0 });
-    gui.pushStyleColor(.text, if (provider_ready) .{ 0.72, 0.91, 0.80, 1.0 } else .{ 0.95, 0.84, 0.50, 1.0 });
+    drawStatusDot(2, if (provider_ready) theme.Palette.ai_chat.status_dot_ready else theme.Palette.ai_chat.status_dot_warning);
+    gui.pushStyleColor(.text, if (provider_ready) theme.Palette.ai_chat.status_ready.text else theme.Palette.ai_chat.status_warning.text);
     gui.text(if (provider_ready) state.text(.ai_chat_provider_status_configured) else state.text(.ai_chat_provider_not_configured));
     gui.popStyleColor(1);
     if (provider_error) |validation_error| {
         gui.sameLine();
-        gui.pushStyleColor(.text, .{ 0.55, 0.60, 0.68, 1.0 });
+        gui.pushStyleColor(.text, theme.Palette.ai_chat.settings_description);
         gui.text(providerValidationErrorText(state, validation_error));
         gui.popStyleColor(1);
     }
@@ -1954,9 +1919,9 @@ fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerCo
                 .{providerTypeText(state, active_type)},
             ) catch "##ai_provider_type_preview";
 
-            gui.pushStyleColor(.button, .{ 0.12, 0.15, 0.19, 1.0 });
-            gui.pushStyleColor(.button_hovered, .{ 0.15, 0.19, 0.24, 1.0 });
-            gui.pushStyleColor(.button_active, .{ 0.18, 0.22, 0.29, 1.0 });
+            gui.pushStyleColor(.button, theme.Palette.ai_chat.dropdown_button.bg);
+            gui.pushStyleColor(.button_hovered, theme.Palette.ai_chat.dropdown_button.hovered);
+            gui.pushStyleColor(.button_active, theme.Palette.ai_chat.dropdown_button.active);
             if (gui.buttonEx(type_preview_label, preview_width, 0.0)) {
                 gui.openPopup(type_popup_id);
             }
@@ -2002,9 +1967,9 @@ fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerCo
                 .{providerDisplayNameForUi(state, active_provider)},
             ) catch "##ai_provider_select_preview";
 
-            gui.pushStyleColor(.button, .{ 0.12, 0.15, 0.19, 1.0 });
-            gui.pushStyleColor(.button_hovered, .{ 0.15, 0.19, 0.24, 1.0 });
-            gui.pushStyleColor(.button_active, .{ 0.18, 0.22, 0.29, 1.0 });
+            gui.pushStyleColor(.button, theme.Palette.ai_chat.dropdown_button.bg);
+            gui.pushStyleColor(.button_hovered, theme.Palette.ai_chat.dropdown_button.hovered);
+            gui.pushStyleColor(.button_active, theme.Palette.ai_chat.dropdown_button.active);
             if (gui.buttonEx(provider_preview_label, preview_width, 0.0)) {
                 gui.openPopup(provider_popup_id);
             }
@@ -2152,9 +2117,9 @@ fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerCo
     const action_row_width = button_width * 2.0 + button_gap;
     gui.sameLineEx(@max(0.0, form_width - action_row_width), 0.0);
 
-    gui.pushStyleColor(.button, .{ 0.13, 0.50, 0.36, 0.88 });
-    gui.pushStyleColor(.button_hovered, .{ 0.15, 0.62, 0.43, 1.0 });
-    gui.pushStyleColor(.button_active, .{ 0.10, 0.40, 0.28, 1.0 });
+    gui.pushStyleColor(.button, theme.Palette.ai_chat.primary_button.bg);
+    gui.pushStyleColor(.button_hovered, theme.Palette.ai_chat.primary_button.hovered);
+    gui.pushStyleColor(.button_active, theme.Palette.ai_chat.primary_button.active);
     if (gui.buttonEx(state.text(.ai_chat_apply_config), button_width, 0.0)) {
         applyProviderDefaults(state);
         logProviderConfig(state);
@@ -2181,9 +2146,9 @@ fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerCo
     gui.popStyleColor(3);
 
     gui.sameLine();
-    gui.pushStyleColor(.button, .{ 0.22, 0.24, 0.27, 1.0 });
-    gui.pushStyleColor(.button_hovered, .{ 0.30, 0.33, 0.37, 1.0 });
-    gui.pushStyleColor(.button_active, .{ 0.18, 0.20, 0.24, 1.0 });
+    gui.pushStyleColor(.button, theme.Palette.ai_chat.secondary_button.bg);
+    gui.pushStyleColor(.button_hovered, theme.Palette.ai_chat.secondary_button.hovered);
+    gui.pushStyleColor(.button_active, theme.Palette.ai_chat.secondary_button.active);
     if (gui.buttonEx(state.text(.ai_chat_test_connection), button_width, 0.0)) {
         const provider = provider_support.activeProvider(state);
         const provider_type = provider_support.activeProviderType(state);
@@ -2232,7 +2197,7 @@ fn drawProviderSettings(state: *EditorState, layer_context: *engine.core.LayerCo
         gui.popStyleColor(1);
     } else if (g_connection_error) |err| {
         gui.dummy(0.0, 8.0);
-        gui.pushStyleColor(.text, .{ 0.90, 0.30, 0.30, 1.0 });
+        gui.pushStyleColor(.text, theme.Palette.ai_chat.critical_text);
         gui.textWrapped(err);
         gui.popStyleColor(1);
     }
@@ -2325,7 +2290,7 @@ pub fn drawAiChatPanel(state: *EditorState, layer_context: *engine.core.LayerCon
     const messages_height = avail[1] - composer_height - 8.0;
 
     if (messages_height > 10.0) {
-        gui.pushStyleColor(.border, .{ 0.17, 0.21, 0.28, 0.98 });
+        gui.pushStyleColor(.border, theme.Palette.ai_chat.messages_border);
         _ = gui.beginChild("ai_messages##jt", 0.0, messages_height, true);
         defer {
             gui.endChild();
@@ -2348,8 +2313,8 @@ pub fn drawAiChatPanel(state: *EditorState, layer_context: *engine.core.LayerCon
     }
 
     gui.dummy(0.0, 8.0);
-    gui.pushStyleColor(.border, .{ 0.20, 0.28, 0.34, 1.0 });
-    gui.pushStyleVarVec2(.window_padding, .{ 10.0, 10.0 });
+    gui.pushStyleColor(.border, theme.Palette.ai_chat.composer_border);
+    gui.pushStyleVarVec2(.window_padding, theme.Spacing.ai_chat_composer_padding);
     _ = gui.beginChild("ai_composer##jt", 0.0, composer_height, true);
     defer {
         gui.endChild();
@@ -2368,7 +2333,7 @@ pub fn drawAiChatPanel(state: *EditorState, layer_context: *engine.core.LayerCon
 
     if (input_width > 30.0) {
         if (!busy) applyAiFocusIfRequested(.chat_input);
-        gui.pushStyleColor(.text, .{ 0.52, 0.57, 0.66, 1.0 });
+        gui.pushStyleColor(.text, theme.Palette.ai_chat.input_hint_text);
         gui.text(if (busy) state.text(.ai_chat_background_processing) else state.text(.ai_chat_input_hint));
         gui.popStyleColor(1);
         gui.dummy(0.0, 4.0);
@@ -2377,9 +2342,9 @@ pub fn drawAiChatPanel(state: *EditorState, layer_context: *engine.core.LayerCon
         if (!busy) requestAiFocusIfClicked(layer_context, .chat_input);
 
         gui.sameLine();
-        gui.pushStyleColor(.button, .{ 0.13, 0.50, 0.36, 0.88 });
-        gui.pushStyleColor(.button_hovered, .{ 0.15, 0.62, 0.43, 1.0 });
-        gui.pushStyleColor(.button_active, .{ 0.10, 0.40, 0.28, 1.0 });
+        gui.pushStyleColor(.button, theme.Palette.ai_chat.primary_button.bg);
+        gui.pushStyleColor(.button_hovered, theme.Palette.ai_chat.primary_button.hovered);
+        gui.pushStyleColor(.button_active, theme.Palette.ai_chat.primary_button.active);
         const send_pressed = gui.buttonEx(if (busy) state.text(.ai_chat_wait) else state.text(.ai_chat_send), send_btn_width, input_height);
         gui.popStyleColor(3);
 

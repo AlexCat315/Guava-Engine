@@ -630,6 +630,7 @@ pub const EditorState = struct {
     settings_section_ai_open: bool = true,
     render_settings_open: bool = false,
     material_editor_open: bool = false,
+    material_editor_preview_primitive: engine.scene.Primitive = .sphere,
     editor_utilities_open: bool = false,
     animation_editor_open: bool = false,
     ai_chat_open: bool = false,

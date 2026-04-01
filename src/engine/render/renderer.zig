@@ -42,6 +42,8 @@
 //! ```
 
 const std = @import("std");
+const assets_lib = @import("../assets/library.zig");
+const material_ast_mod = @import("../assets/material_ast.zig");
 const mesh_resource_mod = @import("../assets/mesh_resource.zig");
 const handles = @import("../assets/handles.zig");
 const base_pass_mod = @import("passes/base_pass.zig");
@@ -290,6 +292,7 @@ const MaterialThumbnailSource = renderer_thumbnails.MaterialThumbnailSource;
 const ThumbnailRenderTarget = renderer_thumbnails.ThumbnailRenderTarget;
 const MaterialThumbnailCacheEntry = renderer_thumbnails.MaterialThumbnailCacheEntry;
 const MaterialThumbnailPreview = renderer_thumbnails.MaterialThumbnailPreview;
+const makeMaterialThumbnailSourceFromAst = renderer_thumbnails.makeMaterialThumbnailSourceFromAst;
 const resolveMaterialThumbnailSource = renderer_thumbnails.resolveMaterialThumbnailSource;
 
 pub const Renderer = struct {
@@ -418,6 +421,18 @@ pub const Renderer = struct {
     shadow_map: ShadowMapState = .{},
     /// 材质缩略图预览
     material_thumbnail_preview: MaterialThumbnailPreview,
+    /// 材质编辑器独立预览离屏目标
+    material_editor_preview_target: ThumbnailRenderTarget,
+    /// 材质编辑器预览签名
+    material_editor_preview_signature: MaterialThumbnailSignature = .{},
+    /// 材质编辑器预览图元
+    material_editor_preview_primitive: components.Primitive = .sphere,
+    /// 材质编辑器预览是否需要重绘
+    material_editor_preview_dirty: bool = true,
+    /// 材质编辑器预览贴图是否已就绪
+    material_editor_preview_ready: bool = false,
+    /// 本帧是否请求了材质编辑器预览
+    material_editor_preview_requested: bool = false,
     /// 材质缩略图缓存
     material_thumbnail_cache: std.StringHashMap(MaterialThumbnailCacheEntry) = undefined,
     /// 材质缩略图请求队列
@@ -504,6 +519,7 @@ pub const Renderer = struct {
             .selection_history = SelectionHistory.init(allocator, 64),
             .material_thumbnail_cache = std.StringHashMap(MaterialThumbnailCacheEntry).init(allocator),
             .material_thumbnail_preview = undefined,
+            .material_editor_preview_target = undefined,
         };
         errdefer renderer.prev_mesh_models.deinit();
         errdefer renderer.material_thumbnail_cache.deinit();
@@ -524,6 +540,9 @@ pub const Renderer = struct {
 
         renderer.material_thumbnail_preview = try MaterialThumbnailPreview.init(allocator);
         errdefer renderer.material_thumbnail_preview.deinit();
+
+        renderer.material_editor_preview_target = try ThumbnailRenderTarget.init(&renderer.rhi);
+        errdefer renderer.material_editor_preview_target.deinit(&renderer.rhi);
 
         renderer.id_pass = try id_pass_mod.IdPass.init(&renderer.rhi);
         errdefer renderer.id_pass.deinit(&renderer.rhi);
@@ -678,6 +697,7 @@ pub const Renderer = struct {
         self.releaseMaterialThumbnailRequests();
         self.releaseMaterialThumbnailCache();
         self.material_thumbnail_preview.deinit();
+        self.material_editor_preview_target.deinit(&self.rhi);
         self.thumbnail_scene_cache.deinit(&self.rhi);
         self.preview_scene_cache.deinit(&self.rhi);
         if (self.skybox_pass) |*pass| {
@@ -1135,6 +1155,40 @@ pub const Renderer = struct {
             return null;
         }
         return &entry.target.color_texture;
+    }
+
+    pub fn requestMaterialEditorPreview(
+        self: *Renderer,
+        resources: *const assets_lib.ResourceLibrary,
+        ast: *const material_ast_mod.MaterialAst,
+        primitive: components.Primitive,
+    ) !void {
+        self.material_editor_preview_requested = true;
+
+        const source = makeMaterialThumbnailSourceFromAst(resources, ast);
+        const primitive_changed = self.material_editor_preview_primitive != primitive;
+        const signature_changed = !std.meta.eql(self.material_editor_preview_signature, source.signature);
+        if (!primitive_changed and !signature_changed) {
+            return;
+        }
+
+        if (primitive_changed) {
+            try self.material_thumbnail_preview.setPreviewPrimitive(primitive);
+            self.material_editor_preview_primitive = primitive;
+        }
+
+        try self.material_thumbnail_preview.syncFromSource(source);
+        self.thumbnail_scene_cache.invalidateMaterialResources(&self.rhi);
+        self.material_editor_preview_signature = source.signature;
+        self.material_editor_preview_dirty = true;
+        self.material_editor_preview_ready = false;
+    }
+
+    pub fn materialEditorPreviewTexture(self: *const Renderer) ?*const rhi_mod.Texture {
+        if (!self.material_editor_preview_ready) {
+            return null;
+        }
+        return &self.material_editor_preview_target.color_texture;
     }
 
     /// Renders a complete frame: processes scene data, executes render graph passes, and returns statistics.
@@ -2252,6 +2306,9 @@ pub const Renderer = struct {
                 self.prev_taa_jitter = current_taa_jitter_uv;
                 try self.cachePreviousMeshModels(&prepared_scene);
             }
+
+            const material_editor_preview_stats = try self.processMaterialEditorPreview(frame);
+            draw_stats.add(material_editor_preview_stats);
 
             const thumbnail_stats = try self.processMaterialThumbnailRequests(frame, scene);
             draw_stats.add(thumbnail_stats);
@@ -3744,6 +3801,22 @@ pub const Renderer = struct {
         scene: *const scene_mod.Scene,
     ) !mesh_pass_mod.DrawStats {
         return renderer_thumbnails.processMaterialThumbnailRequests(self, frame, scene);
+    }
+
+    pub fn processMaterialEditorPreview(self: *Renderer, frame: rhi_mod.Frame) !mesh_pass_mod.DrawStats {
+        defer self.material_editor_preview_requested = false;
+
+        if (!self.material_editor_preview_requested or !self.material_editor_preview_dirty) {
+            return .{};
+        }
+        if (!self.depth_prepass.isReady() or !self.base_pass.isReady()) {
+            return .{};
+        }
+
+        const stats = try renderer_thumbnails.renderMaterialPreviewTarget(self, frame, &self.material_editor_preview_target);
+        self.material_editor_preview_dirty = false;
+        self.material_editor_preview_ready = true;
+        return stats;
     }
 
     pub fn findMaterialThumbnailCacheIndex(self: *const Renderer, asset_id: []const u8) ?*MaterialThumbnailCacheEntry {

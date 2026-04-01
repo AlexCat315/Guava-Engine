@@ -6,6 +6,7 @@ const state_mod = @import("../../../core/state.zig");
 const MessageId = @import("../../../i18n/message_id.zig").MessageId;
 const ui_icons = @import("../../icons.zig");
 const layout = @import("../../layout.zig");
+const theme = @import("../../theme.zig");
 const history = @import("../../../actions/history.zig");
 const camera = @import("../../../interaction/camera.zig");
 const utils = @import("../../../common/utils.zig");
@@ -21,20 +22,20 @@ const PlaceActorEntry = struct {
 
 const category_button_height: f32 = 28.0;
 const place_actor_row_height: f32 = 44.0;
-const place_actor_card_rounding: f32 = 5.0;
+const place_actor_card_rounding: f32 = theme.BorderRadius.place_actor_card;
 const place_actor_list_icon_size: f32 = 24.0;
 const place_actor_card_icon_tint = [4]u8{ 210, 215, 220, 255 };
-const place_actor_card_text_muted = [4]f32{ 0.55, 0.58, 0.62, 1.0 };
+const place_actor_card_text_muted = theme.Palette.place_actor.card_text_muted;
 const place_actor_drag_preview_icon_size: f32 = 22.0;
 const place_actor_card_idle = ui_icons.ButtonPalette{
-    .button = .{ 0.16, 0.17, 0.18, 0.64 },
-    .hovered = .{ 0.20, 0.21, 0.22, 0.82 },
-    .active = .{ 0.14, 0.15, 0.16, 0.92 },
+    .button = theme.Palette.place_actor.card_idle.bg,
+    .hovered = theme.Palette.place_actor.card_idle.hovered,
+    .active = theme.Palette.place_actor.card_idle.active,
 };
 const place_actor_card_active = ui_icons.ButtonPalette{
-    .button = .{ 0.16, 0.59, 0.44, 0.8 },
-    .hovered = .{ 0.20, 0.69, 0.52, 0.9 },
-    .active = .{ 0.12, 0.49, 0.36, 1.0 },
+    .button = theme.Palette.place_actor.card_active.bg,
+    .hovered = theme.Palette.place_actor.card_active.hovered,
+    .active = theme.Palette.place_actor.card_active.active,
 };
 
 const categories = [_]struct {
@@ -198,7 +199,7 @@ fn drawCategoryButton(state: *EditorState, category: state_mod.PlaceActorCategor
     gui.pushStyleVarFloat(.frame_rounding, ui_icons.regular_icon_button_rounding);
 
     if (active) {
-        gui.pushStyleColor(.text, .{ 0.20, 0.60, 0.45, 1.0 });
+        gui.pushStyleColor(.text, theme.Palette.toolbar.active_text);
     }
 
     const clicked = gui.buttonEx(label, width, category_button_height);
@@ -418,7 +419,7 @@ fn drawPlaceActorEntry(
         gui.pushStyleColor(.button, place_actor_card_idle.button);
         gui.pushStyleColor(.button_hovered, place_actor_card_idle.hovered);
         gui.pushStyleColor(.button_active, place_actor_card_active.button);
-        gui.pushStyleVarVec2(.frame_padding, .{ 6.0, 4.0 });
+        gui.pushStyleVarVec2(.frame_padding, theme.Spacing.place_actor_row_padding);
         gui.pushStyleVarFloat(.frame_rounding, place_actor_card_rounding);
 
         const start_pos = gui.cursorScreenPos();

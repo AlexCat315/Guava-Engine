@@ -11,6 +11,9 @@ const inspector = @import("../scene/inspector.zig");
 const ui_icons = @import("../../icons.zig");
 const layout = @import("../../layout.zig");
 
+const preview_texture_size_min: f32 = 168.0;
+const preview_texture_size_max: f32 = 320.0;
+
 const MaterialTextureSlot = enum {
     base_color,
     metallic_roughness,
@@ -216,13 +219,20 @@ pub fn drawMaterialEditorWindow(state: *EditorState, layer_context: *engine.core
     gui.separator();
     gui.text("Preview");
 
+    const preview_width = std.math.clamp(gui.contentRegionAvail()[0], preview_texture_size_min, preview_texture_size_max);
+    if (layer_context.renderer.materialEditorPreviewTexture()) |preview_texture| {
+        gui.image(preview_texture, preview_width, preview_width);
+    } else {
+        gui.textWrapped("Preview is rendering in an isolated material scene.");
+        gui.dummy(preview_width, preview_width * 0.28);
+    }
+    gui.dummy(0.0, 6.0);
+
     if (gui.buttonEx("Use Sphere Preview Mesh", -1.0, 0.0)) {
-        try applyPreviewPrimitive(layer_context, entity, .sphere);
-        try history.captureSnapshot(state, layer_context);
+        state.material_editor_preview_primitive = .sphere;
     }
     if (gui.buttonEx("Use Plane Preview Mesh", -1.0, 0.0)) {
-        try applyPreviewPrimitive(layer_context, entity, .plane);
-        try history.captureSnapshot(state, layer_context);
+        state.material_editor_preview_primitive = .plane;
     }
     if (gui.buttonEx("Apply Checker To Base Color", -1.0, 0.0)) {
         const checker = try ensureMaterialPreviewCheckerTexture(layer_context);
@@ -243,6 +253,14 @@ pub fn drawMaterialEditorWindow(state: *EditorState, layer_context: *engine.core
     if (try drawTextureSlot(state, layer_context, entity, .normal)) try history.captureSnapshot(state, layer_context);
     if (try drawTextureSlot(state, layer_context, entity, .occlusion)) try history.captureSnapshot(state, layer_context);
     if (try drawTextureSlot(state, layer_context, entity, .emissive)) try history.captureSnapshot(state, layer_context);
+
+    if (materialAstFromEntity(layer_context, entity)) |current_ast| {
+        try layer_context.renderer.requestMaterialEditorPreview(
+            layer_context.world.assets(),
+            &current_ast,
+            state.material_editor_preview_primitive,
+        );
+    }
 }
 
 fn drawTextureSlot(
@@ -411,23 +429,6 @@ fn commitAstToEditableMaterial(
         return true;
     }
     return false;
-}
-
-fn applyPreviewPrimitive(
-    layer_context: *engine.core.LayerContext,
-    entity: *engine.scene.Entity,
-    primitive: engine.scene.Primitive,
-) !void {
-    const mesh_handle = try layer_context.world.assets().ensurePrimitiveMesh(primitive);
-    if (entity.mesh) |*mesh_component| {
-        mesh_component.primitive = primitive;
-        mesh_component.handle = mesh_handle;
-    } else {
-        entity.mesh = .{
-            .primitive = primitive,
-            .handle = mesh_handle,
-        };
-    }
 }
 
 fn ensureMaterialPreviewCheckerTexture(layer_context: *engine.core.LayerContext) !engine.assets.TextureHandle {

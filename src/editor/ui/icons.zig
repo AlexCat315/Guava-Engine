@@ -1,6 +1,7 @@
 const std = @import("std");
 const engine = @import("guava");
 const gui = @import("gui.zig");
+const theme = @import("theme.zig");
 
 const EditorState = @import("../core/state.zig").EditorState;
 const icon_cache = @import("icon_cache.zig");
@@ -88,36 +89,36 @@ pub const ButtonPalette = struct {
     active: [4]f32,
 };
 
-pub const compact_icon_button_padding = [2]f32{ 3.0, 3.0 };
-pub const regular_icon_button_padding = [2]f32{ 5.0, 5.0 };
-pub const compact_icon_button_rounding: f32 = 6.0;
-pub const regular_icon_button_rounding: f32 = 8.0;
+pub const compact_icon_button_padding = theme.Size.compact_icon_padding;
+pub const regular_icon_button_padding = theme.Size.regular_icon_padding;
+pub const compact_icon_button_rounding: f32 = theme.BorderRadius.compact_icon_rounding;
+pub const regular_icon_button_rounding: f32 = theme.BorderRadius.regular_icon_rounding;
 
 pub const palettes = struct {
     pub const toolbar_idle = ButtonPalette{
-        .button = .{ 0.16, 0.17, 0.18, 0.0 }, // Transparent by default
-        .hovered = .{ 0.20, 0.21, 0.22, 0.6 },
-        .active = .{ 0.14, 0.15, 0.16, 0.8 },
+        .button = theme.Palette.toolbar.idle.bg,
+        .hovered = theme.Palette.toolbar.idle.hovered,
+        .active = theme.Palette.toolbar.idle.active,
     };
     pub const toolbar_active = ButtonPalette{
-        .button = .{ 0.20, 0.60, 0.45, 0.15 }, // Subtle background tint
-        .hovered = .{ 0.20, 0.60, 0.45, 0.25 },
-        .active = .{ 0.20, 0.60, 0.45, 0.35 },
+        .button = theme.Palette.toolbar.active.bg,
+        .hovered = theme.Palette.toolbar.active.hovered,
+        .active = theme.Palette.toolbar.active.active,
     };
     pub const toolbar_accent = ButtonPalette{
-        .button = .{ 0.20, 0.60, 0.45, 0.4 },
-        .hovered = .{ 0.25, 0.70, 0.55, 0.6 },
-        .active = .{ 0.15, 0.50, 0.35, 0.8 },
+        .button = theme.Palette.toolbar.accent.bg,
+        .hovered = theme.Palette.toolbar.accent.hovered,
+        .active = theme.Palette.toolbar.accent.active,
     };
     pub const status_on = ButtonPalette{
-        .button = .{ 0.16, 0.59, 0.44, 0.3 },
-        .hovered = .{ 0.16, 0.59, 0.44, 0.5 },
-        .active = .{ 0.16, 0.59, 0.44, 0.7 },
+        .button = theme.Palette.status.on.bg,
+        .hovered = theme.Palette.status.on.hovered,
+        .active = theme.Palette.status.on.active,
     };
     pub const status_off = ButtonPalette{
-        .button = .{ 0.58, 0.62, 0.68, 0.1 },
-        .hovered = .{ 0.58, 0.62, 0.68, 0.3 },
-        .active = .{ 0.58, 0.62, 0.68, 0.5 },
+        .button = theme.Palette.status.off.bg,
+        .hovered = theme.Palette.status.off.hovered,
+        .active = theme.Palette.status.off.active,
     };
 };
 

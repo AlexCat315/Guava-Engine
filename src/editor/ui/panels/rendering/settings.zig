@@ -39,7 +39,7 @@ fn drawSectionHeader(label: []const u8, is_open: *bool) void {
         draw_list.addRectFilled(
             .{ item_min[0], item_min[1] },
             .{ item_max[0], item_max[1] },
-            gui.getColorU32(.{ 1.0, 1.0, 1.0, 0.04 }),
+            gui.getColorU32(theme.Palette.settings.section_hover_bg),
             0.0,
             0,
         );
@@ -49,13 +49,13 @@ fn drawSectionHeader(label: []const u8, is_open: *bool) void {
     const arrow_x = item_min[0] + 8.0;
     const arrow_y = row_top + (row_height - 12.0) * 0.5;
     const arrow_text: []const u8 = if (is_open.*) "\xE2\x96\xBC" else "\xE2\x96\xB6";
-    const arrow_color = gui.getColorU32(.{ 0.60, 0.63, 0.68, 1.0 });
+    const arrow_color = gui.getColorU32(theme.Palette.settings.section_arrow_text);
     draw_list.addText(.{ arrow_x, arrow_y }, arrow_color, arrow_text);
 
     // Section label (bold appearance via brighter color)
     const text_x = arrow_x + 16.0;
     const text_y = row_top + (row_height - 14.0) * 0.5;
-    const text_color = gui.getColorU32(.{ 0.88, 0.91, 0.95, 1.0 });
+    const text_color = gui.getColorU32(theme.Palette.settings.section_title_text);
     draw_list.addText(.{ text_x, text_y }, text_color, label);
 
     if (hovered and gui.isItemClicked()) {
@@ -83,7 +83,7 @@ fn drawCategoryChildItem(label: []const u8, is_selected: bool) bool {
         draw_list.addRectFilled(
             .{ item_min[0] + 4.0, item_min[1] + 1.0 },
             .{ item_max[0] - 4.0, item_max[1] - 1.0 },
-            gui.getColorU32(.{ 0.17, 0.33, 0.50, 0.72 }),
+            gui.getColorU32(theme.Palette.settings.category_selected_bg),
             rounding,
             0,
         );
@@ -91,7 +91,7 @@ fn drawCategoryChildItem(label: []const u8, is_selected: bool) bool {
         draw_list.addRectFilled(
             .{ item_min[0] + 4.0, item_min[1] + 1.0 },
             .{ item_max[0] - 4.0, item_max[1] - 1.0 },
-            gui.getColorU32(.{ 1.0, 1.0, 1.0, 0.06 }),
+            gui.getColorU32(theme.Palette.settings.category_hover_bg),
             rounding,
             0,
         );
@@ -100,11 +100,11 @@ fn drawCategoryChildItem(label: []const u8, is_selected: bool) bool {
     const indent: f32 = 28.0;
     const text_y = row_top + (row_height - 14.0) * 0.5;
     const text_color = if (is_selected)
-        gui.getColorU32(.{ 0.94, 0.97, 1.0, 1.0 })
+        gui.getColorU32(theme.Palette.settings.category_selected_text)
     else if (hovered)
-        gui.getColorU32(.{ 0.88, 0.91, 0.95, 1.0 })
+        gui.getColorU32(theme.Palette.settings.category_hover_text)
     else
-        gui.getColorU32(.{ 0.72, 0.76, 0.82, 1.0 });
+        gui.getColorU32(theme.Palette.settings.category_idle_text);
     draw_list.addText(.{ item_min[0] + indent, text_y }, text_color, label);
 
     return hovered and gui.isItemClicked();
@@ -228,9 +228,10 @@ fn drawSettingsContentGeneral(state: *EditorState, layer_context: *engine.core.L
 }
 
 fn drawSettingsChoiceButton(label: []const u8, active: bool, width: f32) bool {
-    gui.pushStyleColor(.button, if (active) .{ 0.13, 0.45, 0.28, 0.82 } else .{ 0.16, 0.17, 0.19, 0.54 });
-    gui.pushStyleColor(.button_hovered, if (active) .{ 0.18, 0.55, 0.35, 0.92 } else .{ 0.21, 0.23, 0.27, 0.74 });
-    gui.pushStyleColor(.button_active, if (active) .{ 0.10, 0.35, 0.22, 0.96 } else .{ 0.18, 0.20, 0.24, 0.86 });
+    const palette = if (active) theme.Palette.settings.choice_active else theme.Palette.settings.choice_idle;
+    gui.pushStyleColor(.button, palette.bg);
+    gui.pushStyleColor(.button_hovered, palette.hovered);
+    gui.pushStyleColor(.button_active, palette.active);
     defer gui.popStyleColor(3);
     return gui.buttonEx(label, width, 0.0);
 }
@@ -455,7 +456,7 @@ fn drawShortcutRow(state: *EditorState, slot: ShortcutSlot, binding: *MeshShortc
 
     gui.tableNextColumn();
     if (has_conflict) {
-        gui.pushStyleColor(.text, .{ 1.0, 0.42, 0.42, 1.0 });
+        gui.pushStyleColor(.text, theme.Palette.settings.error_text);
         defer gui.popStyleColor(1);
     }
     gui.text(action_label);
@@ -549,14 +550,14 @@ fn drawSettingsContentShortcuts(state: *EditorState, layer_context: *engine.core
 
     var changed = handleShortcutRecording(state, layer_context);
     if (active_record_slot != null) {
-        gui.pushStyleColor(.text, .{ 0.95, 0.82, 0.35, 1.0 });
+        gui.pushStyleColor(.text, theme.Palette.settings.warning_text);
         gui.text("Recording shortcut: press a key combo, Esc to cancel");
         gui.popStyleColor(1);
         gui.dummy(0.0, 4.0);
     }
     if (last_conflict_text[0] != 0) {
         const end = std.mem.indexOfScalar(u8, last_conflict_text[0..], 0) orelse last_conflict_text.len;
-        gui.pushStyleColor(.text, .{ 1.0, 0.42, 0.42, 1.0 });
+        gui.pushStyleColor(.text, theme.Palette.settings.error_text);
         gui.text(last_conflict_text[0..end]);
         gui.popStyleColor(1);
         gui.dummy(0.0, 4.0);
@@ -642,8 +643,8 @@ pub fn drawSettingsWindow(state: *EditorState, layer_context: *engine.core.Layer
     defer gui.endWindow();
     floating_window_blocker.registerCurrentWindow("settings_popup");
 
-    gui.pushStyleVarFloat(.frame_rounding, 4.0);
-    gui.pushStyleVarVec2(.item_spacing, .{ 8.0, 4.0 });
+    gui.pushStyleVarFloat(.frame_rounding, theme.BorderRadius.popup);
+    gui.pushStyleVarVec2(.item_spacing, theme.Spacing.settings_window_item_spacing);
     defer gui.popStyleVar(2);
 
     // ── Top tabs: 常规 | 快捷键 ──────────────────────────────────────
@@ -665,7 +666,7 @@ pub fn drawSettingsWindow(state: *EditorState, layer_context: *engine.core.Layer
         const search_avail = gui.contentRegionAvail()[0];
         const toggle_width: f32 = 120.0;
         const search_width = @max(search_avail - toggle_width - 16.0, 100.0);
-        gui.pushStyleColor(.frame_bg, .{ 0.12, 0.13, 0.15, 0.65 });
+        gui.pushStyleColor(.frame_bg, theme.Palette.settings.search_bg);
         gui.setNextItemWidth(search_width);
         _ = gui.inputTextWithHint("##settings_filter", state.text(.settings_filter), state.settings_filter_buffer[0..settings_filter_buffer_size]);
         gui.popStyleColor(1);
@@ -691,8 +692,8 @@ pub fn drawSettingsWindow(state: *EditorState, layer_context: *engine.core.Layer
     const body_height = @max(avail[1], 100.0);
 
     // Left sidebar (scrollable collapsible tree)
-    gui.pushStyleColor(.child_bg, .{ 0.08, 0.09, 0.10, 0.70 });
-    gui.pushStyleVarVec2(.window_padding, .{ 0.0, 4.0 });
+    gui.pushStyleColor(.child_bg, theme.Palette.settings.sidebar_bg);
+    gui.pushStyleVarVec2(.window_padding, theme.Spacing.settings_sidebar_padding);
     _ = gui.beginChild("##settings_sidebar", sidebar_width, body_height, false);
     gui.popStyleVar(1);
     gui.popStyleColor(1);
@@ -708,7 +709,7 @@ pub fn drawSettingsWindow(state: *EditorState, layer_context: *engine.core.Layer
         draw_list.addLine(
             .{ cursor[0], cursor[1] },
             .{ cursor[0], cursor[1] + body_height },
-            gui.getColorU32(.{ 1.0, 1.0, 1.0, 0.08 }),
+            gui.getColorU32(theme.Palette.settings.separator),
             separator_width,
         );
     }

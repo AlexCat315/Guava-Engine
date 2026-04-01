@@ -1,11 +1,11 @@
 const std = @import("std");
 const engine = @import("guava");
 const gui = @import("../../gui.zig");
+const theme = @import("../../theme.zig");
 const EditorState = @import("../../../core/state.zig").EditorState;
 const command_mod = @import("../../../actions/command.zig");
 const history = @import("../../../actions/history.zig");
 const i18n = @import("../../../i18n/mod.zig");
-const ui_icons = @import("../../icons.zig");
 
 fn timelineSourceText(state: *const EditorState, source: command_mod.TimelineSource) []const u8 {
     return switch (source) {
@@ -61,7 +61,7 @@ pub fn drawCommandTimelinePanel(state: *EditorState, layer_context: *engine.core
             state.language,
             .{ state.timeline_entries.items.len, current_cursor, total_history_commands },
         ) catch state.text(.command_timeline);
-        gui.pushStyleColor(.text, .{ 0.55, 0.60, 0.68, 1.0 });
+        gui.pushStyleColor(.text, theme.Palette.timeline.summary_text);
         gui.text(summary);
         gui.popStyleColor(1);
 
@@ -104,13 +104,13 @@ pub fn drawCommandTimelinePanel(state: *EditorState, layer_context: *engine.core
                 state.language,
                 .{ preview_entry.sequence, preview_entry.label },
             ) catch state.text(.command_timeline_preview_pending);
-            gui.pushStyleColor(.text, .{ 0.80, 0.95, 1.0, 1.0 });
+            gui.pushStyleColor(.text, theme.Palette.timeline.preview_text);
             gui.text(preview_text);
             gui.popStyleColor(1);
             gui.sameLine();
-            gui.pushStyleColor(.button, .{ 0.13, 0.50, 0.36, 0.90 });
-            gui.pushStyleColor(.button_hovered, .{ 0.15, 0.62, 0.43, 1.0 });
-            gui.pushStyleColor(.button_active, .{ 0.10, 0.40, 0.28, 1.0 });
+            gui.pushStyleColor(.button, theme.Palette.timeline.confirm_button.bg);
+            gui.pushStyleColor(.button_hovered, theme.Palette.timeline.confirm_button.hovered);
+            gui.pushStyleColor(.button_active, theme.Palette.timeline.confirm_button.active);
             var confirm_button_buffer: [160]u8 = undefined;
             const confirm_button_label = std.fmt.bufPrint(
                 &confirm_button_buffer,
@@ -124,7 +124,7 @@ pub fn drawCommandTimelinePanel(state: *EditorState, layer_context: *engine.core
             }
             gui.popStyleColor(3);
         } else {
-            gui.pushStyleColor(.text, .{ 0.50, 0.52, 0.56, 1.0 });
+            gui.pushStyleColor(.text, theme.Palette.timeline.hint_text);
             gui.text(state.text(.command_timeline_hover_hint));
             gui.popStyleColor(1);
         }
@@ -134,7 +134,7 @@ pub fn drawCommandTimelinePanel(state: *EditorState, layer_context: *engine.core
 
     if (available_entries == 0) {
         gui.dummy(0.0, 6.0);
-        gui.pushStyleColor(.text, .{ 0.40, 0.42, 0.46, 1.0 });
+        gui.pushStyleColor(.text, theme.Palette.timeline.empty_text);
         gui.text(state.text(.command_timeline_empty));
         gui.popStyleColor(1);
         return;
@@ -147,29 +147,21 @@ pub fn drawCommandTimelinePanel(state: *EditorState, layer_context: *engine.core
     }
     defer gui.endChild();
 
-    gui.pushStyleVarVec2(.item_spacing, .{ 4.0, 0.0 });
+    gui.pushStyleVarVec2(.item_spacing, theme.Spacing.timeline_item_spacing);
     defer gui.popStyleVar(1);
 
     for (state.timeline_entries.items[timeline_start_index..], 0..) |entry, index| {
         if (index > 0) {
             gui.sameLine();
-            gui.pushStyleColor(.text, .{ 0.35, 0.38, 0.44, 1.0 });
+            gui.pushStyleColor(.text, theme.Palette.timeline.connector_text);
             gui.text("→");
             gui.popStyleColor(1);
             gui.sameLine();
         }
 
         const palette = switch (entry.source) {
-            .human => ui_icons.ButtonPalette{
-                .button = .{ 0.16, 0.34, 0.66, 0.88 },
-                .hovered = .{ 0.20, 0.41, 0.77, 0.96 },
-                .active = .{ 0.13, 0.28, 0.54, 1.0 },
-            },
-            .ai => ui_icons.ButtonPalette{
-                .button = .{ 0.47, 0.28, 0.72, 0.88 },
-                .hovered = .{ 0.56, 0.33, 0.84, 0.96 },
-                .active = .{ 0.38, 0.22, 0.60, 1.0 },
-            },
+            .human => theme.Palette.timeline.human_node,
+            .ai => theme.Palette.timeline.ai_node,
         };
 
         const node_cursor = index + 1;
@@ -186,16 +178,16 @@ pub fn drawCommandTimelinePanel(state: *EditorState, layer_context: *engine.core
             .{ entry.sequence, entry.label },
         ) catch entry.label;
 
-        gui.pushStyleColor(.button, palette.button);
+        gui.pushStyleColor(.button, palette.bg);
         gui.pushStyleColor(.button_hovered, palette.hovered);
         gui.pushStyleColor(.button_active, palette.active);
         if (is_current) {
-            gui.pushStyleColor(.text, .{ 0.98, 0.98, 0.78, 1.0 });
+            gui.pushStyleColor(.text, theme.Palette.timeline.current_text);
         } else if (is_preview) {
-            gui.pushStyleColor(.text, .{ 0.80, 0.95, 1.0, 1.0 });
+            gui.pushStyleColor(.text, theme.Palette.timeline.preview_node_text);
         }
-        gui.pushStyleVarVec2(.frame_padding, .{ 10.0, 6.0 });
-        gui.pushStyleVarFloat(.frame_rounding, 7.0);
+        gui.pushStyleVarVec2(.frame_padding, theme.Spacing.timeline_node_padding);
+        gui.pushStyleVarFloat(.frame_rounding, theme.BorderRadius.timeline_node);
         defer {
             gui.popStyleVar(2);
             gui.popStyleColor(if (is_current or is_preview) 4 else 3);

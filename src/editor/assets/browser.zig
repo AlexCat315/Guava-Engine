@@ -11,6 +11,7 @@ const console = @import("../ui/panels/debug/console.zig");
 const command_timeline = @import("../ui/panels/debug/command_timeline.zig");
 const ui_icons = @import("../ui/icons.zig");
 const layout = @import("../ui/layout.zig");
+const theme = @import("../ui/theme.zig");
 
 const AssetKind = state_mod.AssetKind;
 const AssetEntry = state_mod.AssetEntry;
@@ -47,7 +48,7 @@ pub fn drawBottomDrawer(state: *EditorState, layer_context: *engine.core.LayerCo
 
     var title_buffer: [64]u8 = undefined;
     const title = try std.fmt.bufPrint(&title_buffer, "##bottom_drawer", .{});
-    gui.pushStyleVarVec2(.window_padding, .{ 0.0, 0.0 });
+    gui.pushStyleVarVec2(.window_padding, theme.Spacing.content_browser_window_padding);
     defer gui.popStyleVar(1);
     _ = gui.beginWindowFlags(
         title,
@@ -79,8 +80,8 @@ pub fn drawBottomDrawer(state: *EditorState, layer_context: *engine.core.LayerCo
             window_pos[0] + drawer_content_margin,
             window_pos[1] + drawer_bar_height + drawer_content_margin * 0.5,
         });
-        gui.pushStyleColor(.child_bg, .{ 0.10, 0.11, 0.13, 0.96 });
-        gui.pushStyleVarVec2(.window_padding, .{ 10.0, 10.0 });
+        gui.pushStyleColor(.child_bg, theme.Palette.content_browser.drawer_child_bg);
+        gui.pushStyleVarVec2(.window_padding, theme.Spacing.content_browser_drawer_content_padding);
         _ = gui.beginChild("##drawer_content", content_width, content_height, false);
         gui.popStyleVar(1);
         gui.popStyleColor(1);
@@ -113,28 +114,28 @@ fn drawDrawerChrome(state: *EditorState, width: f32, total_height: f32) void {
     draw_list.addRectFilled(
         window_pos,
         window_max,
-        gui.getColorU32(.{ 0.06, 0.07, 0.09, 0.96 }),
+        gui.getColorU32(theme.Palette.content_browser.drawer_bg),
         drawer_corner_radius,
         0,
     );
     draw_list.addRectFilled(
         window_pos,
         .{ window_max[0], window_pos[1] + drawer_bar_height },
-        gui.getColorU32(.{ 0.11, 0.12, 0.15, 0.98 }),
+        gui.getColorU32(theme.Palette.content_browser.drawer_header_bg),
         drawer_corner_radius,
         0,
     );
     draw_list.addLine(
         .{ window_pos[0] + 1.0, window_pos[1] + 1.0 },
         .{ window_max[0] - 1.0, window_pos[1] + 1.0 },
-        gui.getColorU32(.{ 0.62, 0.67, 0.74, 0.16 }),
+        gui.getColorU32(theme.Palette.content_browser.drawer_header_highlight),
         1.0,
     );
     if (total_height > drawer_bar_height + 1.0) {
         draw_list.addLine(
             .{ window_pos[0] + 12.0, window_pos[1] + drawer_bar_height },
             .{ window_max[0] - 12.0, window_pos[1] + drawer_bar_height },
-            gui.getColorU32(.{ 0.34, 0.37, 0.42, 0.45 }),
+            gui.getColorU32(theme.Palette.content_browser.drawer_separator),
             1.0,
         );
     }
@@ -196,7 +197,7 @@ fn drawDrawerTabBar(state: *EditorState, layer_context: *engine.core.LayerContex
         draw_list.addRectFilled(
             .{ grip_x, grip_y },
             .{ grip_x + drawer_resize_grip_width, grip_y + drawer_resize_grip_height },
-            gui.getColorU32(.{ 0.72, 0.76, 0.82, 0.28 }),
+            gui.getColorU32(theme.Palette.content_browser.drawer_resize_grip),
             drawer_resize_grip_height * 0.5,
             0,
         );
@@ -225,20 +226,20 @@ fn drawDrawerTabBar(state: *EditorState, layer_context: *engine.core.LayerContex
 fn drawAiAssistantTab(state: *EditorState) !void {
     _ = state;
     gui.dummy(0.0, 8.0);
-    gui.pushStyleColor(.text, .{ 0.60, 0.34, 0.90, 1.0 });
+    gui.pushStyleColor(.text, theme.Palette.ai.accent);
     gui.text("Jarvis AI Assistant");
     gui.popStyleColor(1);
     gui.dummy(0.0, 4.0);
-    gui.pushStyleColor(.text, .{ 0.55, 0.60, 0.68, 1.0 });
+    gui.pushStyleColor(.text, theme.Palette.content_browser.drawer_assistant_body_text);
     gui.textWrapped("AI terminal is docked in the right sidebar. Use the Jarvis Terminal panel for chat, or open it via Window > Jarvis Terminal.");
     gui.popStyleColor(1);
 }
 
 fn drawWorkspaceShellHeader(state: *EditorState) !void {
-    gui.pushStyleVarVec2(.item_spacing, .{ 8.0, 6.0 });
+    gui.pushStyleVarVec2(.item_spacing, theme.Spacing.content_browser_header_item_spacing);
     defer gui.popStyleVar(1);
 
-    gui.pushStyleColor(.text, .{ 0.78, 0.82, 0.88, 1.0 });
+    gui.pushStyleColor(.text, theme.Palette.content_browser.drawer_workspace_title_text);
     gui.text("Workspace");
     gui.popStyleColor(1);
 
@@ -337,21 +338,17 @@ fn drawAssetDragSource(state: *EditorState, entry: AssetEntry, index: usize, pre
 
 fn drawTabButton(state: *EditorState, tab: BottomWorkspaceTab, label: []const u8, width: f32) bool {
     const active = state.bottom_drawer_open and state.bottom_workspace_tab == tab;
-    const palette = ui_icons.ButtonPalette{
-        .button = .{ 0.0, 0.0, 0.0, 0.0 },
-        .hovered = .{ 0.22, 0.25, 0.29, 0.92 },
-        .active = .{ 0.15, 0.18, 0.21, 1.0 },
-    };
+    const palette = theme.Palette.content_browser.bottom_tab;
 
-    gui.pushStyleColor(.button, palette.button);
+    gui.pushStyleColor(.button, palette.bg);
     gui.pushStyleColor(.button_hovered, palette.hovered);
     gui.pushStyleColor(.button_active, palette.active);
     gui.pushStyleColor(.text, if (active)
-        .{ 0.20, 0.60, 0.45, 1.0 }
+        theme.Palette.toolbar.active_text
     else
-        .{ 0.72, 0.76, 0.81, 1.0 });
-    gui.pushStyleVarVec2(.frame_padding, .{ 12.0, 5.0 });
-    gui.pushStyleVarFloat(.frame_rounding, 8.0);
+        theme.Palette.toolbar.idle_text);
+    gui.pushStyleVarVec2(.frame_padding, theme.Spacing.content_browser_tab_padding);
+    gui.pushStyleVarFloat(.frame_rounding, theme.BorderRadius.badge);
     const clicked = gui.buttonEx(label, width, 26.0);
     gui.popStyleVar(2);
     gui.popStyleColor(4);
@@ -361,7 +358,7 @@ fn drawTabButton(state: *EditorState, tab: BottomWorkspaceTab, label: []const u8
         gui.getWindowDrawList().addLine(
             .{ pos_min[0] + 8.0, pos_max[1] - 2.0 },
             .{ pos_max[0] - 8.0, pos_max[1] - 2.0 },
-            gui.getColorU32(.{ 0.20, 0.60, 0.45, 1.0 }),
+            gui.getColorU32(theme.Palette.toolbar.active_text),
             2.0,
         );
     }
@@ -393,7 +390,7 @@ fn drawBreadcrumbButton(label: []const u8, active: bool, width: f32) bool {
     gui.pushStyleColor(.button_active, palette.active);
 
     if (active) {
-        gui.pushStyleColor(.text, .{ 0.20, 0.60, 0.45, 1.0 });
+        gui.pushStyleColor(.text, theme.Palette.toolbar.active_text);
     }
 
     gui.pushStyleVarVec2(.frame_padding, ui_icons.compact_icon_button_padding);
@@ -491,7 +488,7 @@ fn drawAssetGridView(state: *EditorState, layer_context: *engine.core.LayerConte
     // Show empty state message if no assets
     if (shown == 0) {
         gui.tableNextColumn();
-        gui.pushStyleColor(.text, .{ 0.61, 0.64, 0.68, 1.0 });
+        gui.pushStyleColor(.text, theme.Palette.content_browser.drawer_empty_text);
         const selected_dir = selectedDirectory(state);
         if (std.mem.eql(u8, selected_dir, "/")) {
             gui.text("No assets in the current project content root.");
@@ -828,7 +825,7 @@ fn drawBreadcrumbs(state: *EditorState) !void {
         }
         if (!stacked) {
             gui.sameLine();
-            gui.pushStyleColor(.text, .{ 0.58, 0.62, 0.68, 1.0 });
+            gui.pushStyleColor(.text, theme.Palette.content_browser.breadcrumb_separator_text);
             gui.text(">");
             gui.popStyleColor(1);
             gui.sameLine();

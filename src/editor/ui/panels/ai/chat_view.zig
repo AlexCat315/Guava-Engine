@@ -1,5 +1,6 @@
 const std = @import("std");
 const gui = @import("../../gui.zig");
+const theme = @import("../../theme.zig");
 const EditorState = @import("../../../core/state.zig").EditorState;
 
 pub const max_messages = 128;
@@ -77,28 +78,28 @@ fn roleLabel(state: *EditorState, role: Role) []const u8 {
 
 fn roleAccent(role: Role) [4]f32 {
     return switch (role) {
-        .user => .{ 0.42, 0.66, 0.95, 1.0 },
-        .assistant => .{ 0.27, 0.86, 0.57, 1.0 },
-        .reasoning => .{ 0.88, 0.76, 0.42, 1.0 },
-        .system => .{ 0.58, 0.62, 0.68, 1.0 },
+        .user => theme.Palette.ai_chat.role_user_accent,
+        .assistant => theme.Palette.ai_chat.role_assistant_accent,
+        .reasoning => theme.Palette.ai_chat.role_reasoning_accent,
+        .system => theme.Palette.ai_chat.role_system_accent,
     };
 }
 
 fn cardBackground(role: Role) [4]f32 {
     return switch (role) {
-        .user => .{ 0.08, 0.13, 0.19, 0.92 },
-        .assistant => .{ 0.08, 0.15, 0.11, 0.92 },
-        .system => .{ 0.12, 0.12, 0.14, 0.92 },
-        .reasoning => .{ 0.10, 0.10, 0.11, 0.92 },
+        .user => theme.Palette.ai_chat.user_card_bg,
+        .assistant => theme.Palette.ai_chat.assistant_card_bg,
+        .system => theme.Palette.ai_chat.system_card_bg,
+        .reasoning => theme.Palette.ai_chat.reasoning_card_bg,
     };
 }
 
 fn bodyColor(role: Role) [4]f32 {
     return switch (role) {
-        .user => .{ 0.90, 0.95, 1.0, 1.0 },
-        .assistant => .{ 0.88, 0.97, 0.91, 1.0 },
-        .system => .{ 0.78, 0.80, 0.84, 1.0 },
-        .reasoning => .{ 0.80, 0.80, 0.80, 1.0 },
+        .user => theme.Palette.ai_chat.user_body_text,
+        .assistant => theme.Palette.ai_chat.assistant_body_text,
+        .system => theme.Palette.ai_chat.system_body_text,
+        .reasoning => theme.Palette.ai_chat.reasoning_body_text,
     };
 }
 
@@ -113,8 +114,8 @@ fn drawTextCard(state: *EditorState, role: Role, content_text: []const u8, card_
     gui.pushIdU64(card_id);
     defer gui.popId();
 
-    gui.pushStyleColor(.border, .{ 0.18, 0.22, 0.28, 0.95 });
-    gui.pushStyleVarVec2(.window_padding, .{ 12.0, 10.0 });
+    gui.pushStyleColor(.border, theme.Palette.ai_chat.message_card_border);
+    gui.pushStyleVarVec2(.window_padding, theme.Spacing.ai_chat_message_padding);
     defer {
         gui.popStyleVar(1);
         gui.popStyleColor(1);
@@ -185,7 +186,7 @@ pub fn drawMessages(state: *EditorState, messages: []const Message, message_coun
 
     if (!rendered_any) {
         gui.dummy(0.0, 8.0);
-        gui.pushStyleColor(.text, .{ 0.44, 0.47, 0.53, 1.0 });
+        gui.pushStyleColor(.text, theme.Palette.ai_chat.empty_text);
         gui.textWrapped(state.text(.ai_chat_empty));
         gui.popStyleColor(1);
     }
