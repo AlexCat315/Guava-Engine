@@ -49,6 +49,9 @@ pub const PluginVersion = struct {
     }
 };
 
+/// Common shell shared by all plugin types.
+/// Type-specific payloads (StylePluginManifest, etc.) are owned by their
+/// respective subsystem registries, not embedded here.
 pub const PluginManifest = struct {
     name: []u8,
     version: PluginVersion,
@@ -56,14 +59,42 @@ pub const PluginManifest = struct {
     capabilities: []const PluginCapability = &.{},
     source: PluginSource = .user,
     path: []u8 = &.{},
-
-    shaders: []const []const u8 = &.{},
-    post_passes: []const []const u8 = &.{},
     dependencies: []const []const u8 = &.{},
 
     on_load: ?[]const u8 = null,
     on_unload: ?[]const u8 = null,
     on_enable: ?[]const u8 = null,
+};
+
+/// Record tracked by PluginRegistry: common manifest + lifecycle + error state.
+pub const PluginRecord = struct {
+    manifest: PluginManifest,
+    lifecycle: PluginLifecycle = .unloaded,
+    last_error: ?[]const u8 = null,
+
+    pub fn getName(self: *const PluginRecord) []const u8 {
+        return self.manifest.name;
+    }
+
+    pub fn getVersion(self: *const PluginRecord) PluginVersion {
+        return self.manifest.version;
+    }
+
+    pub fn getType(self: *const PluginRecord) PluginType {
+        return self.manifest.plugin_type;
+    }
+
+    pub fn getSource(self: *const PluginRecord) PluginSource {
+        return self.manifest.source;
+    }
+
+    pub fn isEnabled(self: *const PluginRecord) bool {
+        return self.lifecycle == .enabled;
+    }
+
+    pub fn hasError(self: *const PluginRecord) bool {
+        return self.lifecycle == .load_error;
+    }
 };
 
 test "plugin version parsing" {

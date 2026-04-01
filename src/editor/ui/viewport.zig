@@ -2437,19 +2437,38 @@ fn drawViewportFpsOverlayWindow(state: *EditorState, layer_context: *engine.core
         });
 
     const margin = 10.0;
-    const text_height = 13.0;
-    const text_x = state.viewport_origin[0] + margin;
-    const text_y = state.viewport_origin[1] + state.viewport_extent[1] - margin - text_height;
+    const overlay_height: f32 = 20.0;
+    const text_size = gui.calcTextSize(display_text, false, 0.0);
+    const overlay_width = text_size[0] + 12.0;
+    const overlay_x = state.viewport_origin[0] + margin;
+    const overlay_y = state.viewport_origin[1] + state.viewport_extent[1] - margin - overlay_height;
 
+    gui.pushStyleVarVec2(.window_padding, .{ 6.0, 2.0 });
+    defer gui.popStyleVar(1);
+    gui.setNextWindowPos(.{ overlay_x, overlay_y });
+    gui.setNextWindowSize(.{ overlay_width, overlay_height });
+    gui.setNextWindowBgAlpha(0.0);
+    _ = gui.beginWindowFlags(
+        "##viewport_fps_overlay",
+        gui.WindowFlags.no_title_bar |
+            gui.WindowFlags.no_resize |
+            gui.WindowFlags.no_move |
+            gui.WindowFlags.no_scrollbar |
+            gui.WindowFlags.no_saved_settings |
+            gui.WindowFlags.no_docking |
+            gui.WindowFlags.no_background,
+    );
+    defer gui.endWindow();
+
+    // Draw shadow + foreground text via draw list for crisp text-with-shadow effect
     const draw_list = gui.getWindowDrawList();
-    const shadow_color = gui.getColorU32(.{ 0.0, 0.0, 0.0, 0.80 });
-    const text_color = gui.getColorU32(.{ 1, 0.97, 1.0, 0.95 });
+    const text_pos = gui.cursorScreenPos();
+    const shadow_color = gui.getColorU32(.{ 0.0, 0.0, 0.0, 0.85 });
+    const text_color = gui.getColorU32(.{ 0.95, 0.97, 1.0, 0.95 });
 
-    // Double shadow for better contrast on any background
-    draw_list.addText(.{ text_x + 1.0, text_y + 2.0 }, shadow_color, display_text);
-    draw_list.addText(.{ text_x + 1.0, text_y + 1.0 }, shadow_color, display_text);
-    // Foreground pass
-    draw_list.addText(.{ text_x, text_y }, text_color, display_text);
+    draw_list.addText(.{ text_pos[0] + 1.0, text_pos[1] + 1.0 }, shadow_color, display_text);
+    draw_list.addText(.{ text_pos[0] + 1.0, text_pos[1] + 2.0 }, shadow_color, display_text);
+    draw_list.addText(.{ text_pos[0], text_pos[1] }, text_color, display_text);
 }
 
 fn drawViewportViewCube(state: *EditorState, layer_context: *engine.core.LayerContext) void {

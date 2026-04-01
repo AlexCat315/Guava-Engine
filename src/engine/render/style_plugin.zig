@@ -18,24 +18,47 @@ pub const StyleParam = struct {
     };
 };
 
+/// Execution stage for a post-process pass injected by a style plugin.
+pub const StylePassStage = enum {
+    post_lighting,
+    post_tonemap,
+    pre_ui,
+};
+
+/// Descriptor for a single post-process pass contributed by a style plugin.
+/// Declares execution stage, resource dependencies, and ordering constraints
+/// so `RenderGraph` can safely schedule barriers and resource aliasing.
+pub const StylePostPassDescriptor = struct {
+    name: []const u8,
+    shader_program: []const u8,
+    stage: StylePassStage = .post_lighting,
+    reads: []const []const u8 = &.{},
+    writes: []const []const u8 = &.{},
+    order_after: ?[]const u8 = null,
+    order_before: ?[]const u8 = null,
+};
+
 /// Manifest describing a render style plugin's capabilities and shaders.
+/// This is the typed payload for `render_style` plugins; `PluginManifest`
+/// (in plugin/types.zig) holds the common shell (name, version, source, deps).
 pub const StylePluginManifest = struct {
     name: []const u8,
     display_name: []const u8 = "",
     version: []const u8 = "1.0.0",
-    builtin: bool = false,
-    /// Shader program name for mesh rendering (from manifest.json)
-    mesh_program: []const u8 = "mesh",
-    /// Optional override shader program for shadows
-    shadow_program: ?[]const u8 = null,
-    /// Additional post-process pass names injected by this style
-    post_passes: []const []const u8 = &.{},
-    /// Built-in passes to disable when this style is active (e.g. bloom, taa)
-    disabled_passes: []const []const u8 = &.{},
-    /// User-tunable parameters for this style
-    config_schema: []const StyleParam = &.{},
-    /// Source path for user plugins
+    source: plugin_types.PluginSource = .builtin,
     path: ?[]const u8 = null,
+
+    /// Shader program name for mesh rendering.
+    mesh_program: []const u8 = "mesh",
+    /// Optional override shader program for shadows.
+    shadow_program: ?[]const u8 = null,
+    /// Built-in passes to disable when this style is active (e.g. "bloom", "taa").
+    disabled_passes: []const []const u8 = &.{},
+    /// User-tunable parameters for this style.
+    config_schema: []const StyleParam = &.{},
+    /// Post-process pass chain contributed by this style.
+    /// Phase C feature — loaded but not yet injected into RenderGraph.
+    post_chain: []const StylePostPassDescriptor = &.{},
 };
 
 /// Default PBR render style — maps to the built-in "mesh" shader program.
@@ -43,7 +66,7 @@ pub const default_pbr_style = StylePluginManifest{
     .name = "default_pbr",
     .display_name = "PBR (Default)",
     .version = "1.0.0",
-    .builtin = true,
+    .source = .builtin,
     .mesh_program = "mesh",
     .shadow_program = "shadow_pass",
 };
@@ -53,7 +76,7 @@ pub const unlit_flat_style = StylePluginManifest{
     .name = "unlit_flat",
     .display_name = "Unlit Flat",
     .version = "1.0.0",
-    .builtin = true,
+    .source = .builtin,
     .mesh_program = "mesh",
     .shadow_program = null,
     .disabled_passes = &.{ "bloom", "ssr" },
@@ -85,10 +108,14 @@ pub const StyleParamValues = struct {
 };
 
 /// Registry managing all available render styles and tracking the active one.
+/// This is the typed runtime owner for `render_style` plugins.
+/// `PluginRegistry` handles discovery/lifecycle; `StyleRegistry` handles
+/// shader selection, parameters, and activation.
 pub const StyleRegistry = struct {
     allocator: std.mem.Allocator,
     styles: std.StringHashMap(StylePluginManifest),
     active_style_name: []const u8,
+    previous_style_name: []const u8,
     param_values: std.StringHashMap(StyleParamValues),
 
     pub fn init(allocator: std.mem.Allocator) StyleRegistry {
@@ -96,6 +123,7 @@ pub const StyleRegistry = struct {
             .allocator = allocator,
             .styles = std.StringHashMap(StylePluginManifest).init(allocator),
             .active_style_name = "default_pbr",
+            .previous_style_name = "default_pbr",
             .param_values = std.StringHashMap(StyleParamValues).init(allocator),
         };
         // Always register the builtin styles
@@ -121,12 +149,20 @@ pub const StyleRegistry = struct {
         try self.styles.put(manifest.name, manifest);
     }
 
+    /// Switch active style. Returns false if the style doesn't exist.
+    /// Saves previous style for rollback.
     pub fn setActiveStyle(self: *StyleRegistry, name: []const u8) bool {
         if (self.styles.contains(name)) {
+            self.previous_style_name = self.active_style_name;
             self.active_style_name = name;
             return true;
         }
         return false;
+    }
+
+    /// Rollback to the previously active style (e.g. on switch failure).
+    pub fn rollbackStyle(self: *StyleRegistry) void {
+        self.active_style_name = self.previous_style_name;
     }
 
     pub fn getActiveStyle(self: *const StyleRegistry) StylePluginManifest {
@@ -164,23 +200,21 @@ pub const StyleRegistry = struct {
     }
 
     /// Load a user plugin manifest from a directory path.
-    /// Expects `dir_path/manifest.json` with fields: name, display_name, version,
-    /// mesh_program, shadow_program, post_passes, disabled_passes.
+    /// Expects `dir_path/manifest.json` with the structure documented in R-9.
     pub fn loadUserPlugin(self: *StyleRegistry, dir_path: []const u8) !void {
         _ = self;
         _ = dir_path;
-        // TODO: Parse manifest.json from dir_path, construct StylePluginManifest,
-        // and call register(). Requires JSON parsing + file I/O integration with
-        // the asset system. Will be wired once the asset pipeline JSON reader is
-        // available at engine init time.
+        // TODO(Phase B): Parse manifest.json from dir_path, extract the
+        // "render_style" typed payload, construct StylePluginManifest,
+        // and call register(). Requires JSON parsing + directory I/O.
     }
 
     /// Scan a directory for plugin subdirectories and load each one.
     pub fn scanPluginDirectory(self: *StyleRegistry, root_path: []const u8) !void {
         _ = self;
         _ = root_path;
-        // TODO: Iterate subdirectories of root_path; for each containing a
-        // manifest.json, call loadUserPlugin(). Requires std.fs directory
-        // iteration at init time.
+        // TODO(Phase B): Iterate subdirectories of root_path; for each
+        // containing a manifest.json with plugin_type=="render_style",
+        // call loadUserPlugin().
     }
 };
