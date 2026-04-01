@@ -70,6 +70,7 @@ const ssr_pass_mod = @import("passes/ssr_pass.zig");
 const ssr_blur_pass_mod = @import("passes/ssr_blur_pass.zig");
 const style_plugin_mod = @import("style_plugin.zig");
 const plugin_mod = @import("../plugin/plugin.zig");
+const loader_mod = @import("../plugin/loader.zig");
 const script_vm_plugin_mod = @import("../script/script_vm_plugin.zig");
 const fullscreen_post_mod = @import("passes/fullscreen_post_pass.zig");
 const platform_mod = @import("../core/platform.zig");
@@ -331,6 +332,10 @@ pub const Renderer = struct {
     plugin_registry: plugin_mod.PluginRegistry,
     /// script_vm typed loader (validates script_vm plugins)
     script_vm_loader: script_vm_plugin_mod.ScriptVmPluginLoader,
+    /// Type-erased loader dispatch table (render_style, script_vm, etc.)
+    typed_loader_registry: loader_mod.TypedLoaderRegistry,
+    /// Plugin hot-reload manager (polls manifests for changes)
+    plugin_hot_reload: plugin_mod.PluginHotReloadManager,
     /// 天空盒通道
     skybox_pass: ?skybox_pass_mod.SkyboxPass = null,
     /// 轮廓通道（选中物体高亮）
@@ -479,6 +484,8 @@ pub const Renderer = struct {
             .style_registry = undefined,
             .plugin_registry = undefined,
             .script_vm_loader = undefined,
+            .typed_loader_registry = undefined,
+            .plugin_hot_reload = undefined,
             .skybox_pass = undefined,
             .outline_pass = undefined,
             .gizmo_pass = undefined,
@@ -544,6 +551,12 @@ pub const Renderer = struct {
         renderer.plugin_registry = try plugin_mod.PluginRegistry.init(allocator);
 
         renderer.script_vm_loader = script_vm_plugin_mod.ScriptVmPluginLoader.init(allocator);
+
+        renderer.typed_loader_registry = loader_mod.TypedLoaderRegistry.init(allocator);
+        renderer.typed_loader_registry.register(.render_style, renderer.style_registry.pluginLoader()) catch {};
+        renderer.typed_loader_registry.register(.script_vm, renderer.script_vm_loader.pluginLoader()) catch {};
+
+        renderer.plugin_hot_reload = plugin_mod.PluginHotReloadManager.init(allocator);
 
         renderer.skybox_pass = try skybox_pass_mod.SkyboxPass.init(&renderer.rhi);
         errdefer if (renderer.skybox_pass) |*pass| {
@@ -708,6 +721,8 @@ pub const Renderer = struct {
         self.gizmo_pass.deinit(&self.rhi);
         self.outline_pass.deinit(&self.rhi);
         self.base_pass.deinit(&self.rhi);
+        self.plugin_hot_reload.deinit();
+        self.typed_loader_registry.deinit();
         self.style_registry.deinit();
         self.plugin_registry.deinit();
         self.shadow_map.deinit(&self.rhi);
@@ -774,56 +789,21 @@ pub const Renderer = struct {
             return;
         };
 
-        self.dispatchStylePlugins();
-        self.dispatchScriptVmPlugins();
-    }
-
-    /// Dispatch all `render_style` PluginRecords to the typed StyleRegistry.
-    /// On typed-loader failure the error is written back to the PluginRecord.
-    fn dispatchStylePlugins(self: *Renderer) void {
-        const style_plugins = self.plugin_registry.getByType(.render_style);
-        for (style_plugins) |record| {
-            if (record.manifest.path.len == 0) continue;
-            const dir_path = std.fs.path.dirname(record.manifest.path) orelse continue;
-            // Only load if StyleRegistry doesn't already know about it
-            if (self.style_registry.getStyle(record.manifest.name) != null) {
-                // Already loaded — ensure PluginRecord reflects success.
-                if (record.lifecycle == .loaded) {
-                    record.lifecycle = .enabled;
-                    record.clearLastError(self.allocator);
-                }
-                continue;
-            }
-            self.style_registry.loadFromDiscoveredPlugin(dir_path) catch |err| {
-                record.lifecycle = .load_error;
-                record.setLastError(self.allocator, @errorName(err));
-                std.log.warn("Renderer: failed to load render style '{s}': {s}", .{ record.getName(), @errorName(err) });
-                continue;
-            };
-            // Typed loader succeeded
-            record.lifecycle = .enabled;
-            record.clearLastError(self.allocator);
-        }
-    }
-
-    /// Dispatch all `script_vm` PluginRecords to the ScriptVmPluginLoader
-    /// for validation.  Actual loading into ScriptRuntime happens when the
-    /// application enables the plugin.
-    fn dispatchScriptVmPlugins(self: *Renderer) void {
-        const vm_plugins = self.plugin_registry.getByType(.script_vm);
-        for (vm_plugins) |record| {
-            if (record.lifecycle == .enabled) continue;
-            if (record.lifecycle == .load_error) continue;
-            self.script_vm_loader.validate(record);
-        }
+        self.typed_loader_registry.dispatchAllDiscover(&self.plugin_registry);
     }
 
     // ── Plugin lifecycle orchestration ──────────────────────────────────
 
-    /// Enable a plugin by name.  For `render_style` plugins this is
-    /// currently a no-op on the StyleRegistry side (the style is already
-    /// registered); only the PluginRecord lifecycle state changes.
+    /// Enable a plugin by name.  Dispatches to the appropriate typed
+    /// loader (render_style, script_vm, etc.) via TypedLoaderRegistry.
     pub fn enablePlugin(self: *Renderer, name: []const u8) void {
+        const record = self.plugin_registry.plugins.get(name) orelse {
+            std.log.warn("Renderer: enablePlugin('{s}') — not found", .{name});
+            return;
+        };
+        if (self.typed_loader_registry.get(record.manifest.plugin_type)) |loader| {
+            loader.onEnable(record);
+        }
         self.plugin_registry.enable(name) catch |err| {
             if (self.plugin_registry.plugins.getPtr(name)) |rec| {
                 rec.*.setLastError(self.allocator, @errorName(err));
@@ -831,12 +811,15 @@ pub const Renderer = struct {
         };
     }
 
-    /// Disable a plugin.  For `render_style` plugins, if the disabled
-    /// style is currently active the StyleRegistry rolls back to default_pbr.
+    /// Disable a plugin.  Dispatches to the appropriate typed loader
+    /// for subsystem-specific deactivation (e.g. rollback active style).
     pub fn disablePlugin(self: *Renderer, name: []const u8) void {
-        // If it is a render_style and currently active, deactivate first.
-        if (std.mem.eql(u8, self.style_registry.active_style_name, name)) {
-            _ = self.style_registry.setActiveStyle("default_pbr");
+        const record = self.plugin_registry.plugins.get(name) orelse {
+            std.log.warn("Renderer: disablePlugin('{s}') — not found", .{name});
+            return;
+        };
+        if (self.typed_loader_registry.get(record.manifest.plugin_type)) |loader| {
+            loader.onDisable(record);
         }
         self.plugin_registry.disable(name) catch |err| {
             if (self.plugin_registry.plugins.getPtr(name)) |rec| {
@@ -845,18 +828,13 @@ pub const Renderer = struct {
         };
     }
 
-    /// Fully unload a plugin.  Removes it from both PluginRegistry and,
-    /// for `render_style` plugins, from StyleRegistry (freeing per-style
-    /// allocations).
+    /// Fully unload a plugin.  Dispatches subsystem teardown via the
+    /// typed loader, then removes from PluginRegistry.
     pub fn unloadPlugin(self: *Renderer, name: []const u8) void {
-        // Determine type before removal
-        const is_render_style = blk: {
-            const rec = self.plugin_registry.plugins.get(name) orelse break :blk false;
-            break :blk rec.manifest.plugin_type == .render_style;
-        };
-
-        if (is_render_style) {
-            self.style_registry.unregister(name);
+        if (self.plugin_registry.plugins.get(name)) |record| {
+            if (self.typed_loader_registry.get(record.manifest.plugin_type)) |loader| {
+                loader.onUnload(record);
+            }
         }
 
         self.plugin_registry.unload(name) catch |err| {
@@ -893,6 +871,22 @@ pub const Renderer = struct {
         self.discoverPlugins(root_path);
     }
 
+    /// Tick the plugin hot-reload manager.  Call once per frame.
+    /// Internally throttled to 1 s.  On detected changes the plugin is
+    /// unloaded and re-discovered via `rescanPlugins`.
+    pub fn tickPluginHotReload(self: *Renderer) void {
+        self.plugin_hot_reload.tick();
+        const changes = self.plugin_hot_reload.pendingChanges();
+        if (changes.len > 0) {
+            // Each pending change is a directory name; unload matching plugin
+            // and let rescan pick it up.  We iterate watched dirs to find the
+            // root that contains this plugin directory.
+            var dir_it = self.plugin_hot_reload.watched_dirs.iterator();
+            while (dir_it.next()) |dir_entry| {
+                self.rescanPlugins(dir_entry.key_ptr.*);
+            }
+        }
+    }
     pub fn handleResize(self: *Renderer, width: u32, height: u32) !void {
         try self.rhi.resize(width, height);
     }

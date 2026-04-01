@@ -1,5 +1,6 @@
 const std = @import("std");
 const plugin_types = @import("../plugin/types.zig");
+const loader_mod = @import("../plugin/loader.zig");
 
 /// Configurable parameter exposed by a render style plugin.
 pub const StyleParam = struct {
@@ -343,6 +344,78 @@ pub const StyleRegistry = struct {
                 std.log.warn("StyleRegistry: failed to load plugin '{s}': {s}", .{ entry.name, @errorName(err) });
             };
         }
+    }
+
+    // ── PluginLoader vtable implementation ──────────────────────────────
+
+    /// Return a type-erased PluginLoader backed by this StyleRegistry.
+    pub fn pluginLoader(self: *StyleRegistry) loader_mod.PluginLoader {
+        return .{
+            .context = @ptrCast(self),
+            .vtable = &style_loader_vtable,
+        };
+    }
+
+    const style_loader_vtable = loader_mod.PluginLoader.VTable{
+        .on_discover = &styleOnDiscover,
+        .on_enable = &styleOnEnable,
+        .on_disable = &styleOnDisable,
+        .on_unload = &styleOnUnload,
+    };
+
+    fn styleOnDiscover(ctx: *anyopaque, record: *plugin_types.PluginRecord) void {
+        const self: *StyleRegistry = @ptrCast(@alignCast(ctx));
+        if (record.manifest.path.len == 0) return;
+        const dir_path = std.fs.path.dirname(record.manifest.path) orelse return;
+        // Already loaded in StyleRegistry — just sync lifecycle
+        if (self.getStyle(record.manifest.name) != null) {
+            if (record.lifecycle == .loaded) {
+                record.lifecycle = .enabled;
+                record.clearLastError(self.allocator);
+            }
+            return;
+        }
+        self.loadFromDiscoveredPlugin(dir_path) catch |err| {
+            record.lifecycle = .load_error;
+            record.setLastError(self.allocator, @errorName(err));
+            std.log.warn("StyleRegistry: failed to load render style '{s}': {s}", .{ record.getName(), @errorName(err) });
+            return;
+        };
+        record.lifecycle = .enabled;
+        record.clearLastError(self.allocator);
+    }
+
+    fn styleOnEnable(ctx: *anyopaque, record: *plugin_types.PluginRecord) void {
+        const self: *StyleRegistry = @ptrCast(@alignCast(ctx));
+        // If not yet in StyleRegistry, try loading
+        if (self.getStyle(record.manifest.name) == null) {
+            const dir_path = std.fs.path.dirname(record.manifest.path) orelse {
+                record.lifecycle = .load_error;
+                record.setLastError(self.allocator, "cannot derive plugin directory");
+                return;
+            };
+            self.loadFromDiscoveredPlugin(dir_path) catch |err| {
+                record.lifecycle = .load_error;
+                record.setLastError(self.allocator, @errorName(err));
+                return;
+            };
+        }
+        record.lifecycle = .enabled;
+        record.clearLastError(self.allocator);
+    }
+
+    fn styleOnDisable(ctx: *anyopaque, record: *plugin_types.PluginRecord) void {
+        const self: *StyleRegistry = @ptrCast(@alignCast(ctx));
+        // If this style is currently active, roll back to default
+        if (std.mem.eql(u8, self.active_style_name, record.manifest.name)) {
+            _ = self.setActiveStyle("default_pbr");
+        }
+        record.lifecycle = .loaded;
+    }
+
+    fn styleOnUnload(ctx: *anyopaque, record: *plugin_types.PluginRecord) void {
+        const self: *StyleRegistry = @ptrCast(@alignCast(ctx));
+        self.unregister(record.manifest.name);
     }
 };
 

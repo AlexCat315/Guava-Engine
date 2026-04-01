@@ -173,6 +173,40 @@ pub const PluginRegistry = struct {
         record_ptr.deinit(self.allocator);
         self.allocator.destroy(record_ptr);
     }
+
+    /// Startup recovery: scan all plugins and apply error policies.
+    /// - `skip_on_error`: leave in load_error, user can retry manually.
+    /// - `retry_once`: if error_retry_count < 1, reset to .loaded for
+    ///   re-discovery; otherwise leave in load_error.
+    /// - `disable_permanently`: mark as .unloaded (effectively disabled).
+    /// Returns the number of plugins that were reset for retry.
+    pub fn applyStartupRecovery(self: *PluginRegistry) usize {
+        var retry_count: usize = 0;
+        var it = self.plugins.iterator();
+        while (it.next()) |entry| {
+            const record = entry.value_ptr.*;
+            if (record.lifecycle != .load_error) continue;
+
+            switch (record.error_policy) {
+                .skip_on_error => {
+                    // Leave in load_error — user can retry via Plugin Manager.
+                },
+                .retry_once => {
+                    if (record.error_retry_count < 1) {
+                        record.error_retry_count += 1;
+                        record.lifecycle = .loaded;
+                        record.clearLastError(self.allocator);
+                        retry_count += 1;
+                    }
+                    // else: already retried once — leave in load_error.
+                },
+                .disable_permanently => {
+                    record.lifecycle = .unloaded;
+                },
+            }
+        }
+        return retry_count;
+    }
 };
 
 test "plugin registry init and deinit" {

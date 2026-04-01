@@ -10,7 +10,7 @@ const EditorState = @import("../../../core/state.zig").EditorState;
 const EditorViewportState = engine.render.EditorViewportState;
 const EditorViewportLutPreset = engine.render.EditorViewportLutPreset;
 
-const effect_drag_id: u64 = 0x50504545;
+const effect_drag_type = "post_effect";
 
 const EffectPaletteItem = struct {
     effect: PostProcessEffect,
@@ -416,17 +416,13 @@ fn handleCanvasDrop(
 
     if (!inside) return;
 
-    if (gui.beginDragDropTarget()) {
-        defer gui.endDragDropTarget();
-
-        const payload = gui.acceptDragDropPayloadU64(effect_drag_id);
-        if (payload) |effect_val| {
-            const effect: PostProcessEffect = @enumFromInt(effect_val);
-            const local_x = mouse[0] - canvas_pos[0] - editor_state.view_pan[0] - 82.0;
-            const local_y = mouse[1] - canvas_pos[1] - editor_state.view_pan[1] - 37.0;
-            const idx = try editor_state.addNode(effect, local_x, local_y);
-            editor_state.selected_node_index = idx;
-        }
+    var effect_val: u64 = 0;
+    if (gui.acceptDragDropPayloadU64(effect_drag_type, &effect_val)) {
+        const effect: PostProcessEffect = @enumFromInt(effect_val);
+        const local_x = mouse[0] - canvas_pos[0] - editor_state.view_pan[0] - 82.0;
+        const local_y = mouse[1] - canvas_pos[1] - editor_state.view_pan[1] - 37.0;
+        const idx = try editor_state.addNode(effect, local_x, local_y);
+        editor_state.selected_node_index = idx;
     }
 }
 
@@ -592,7 +588,6 @@ fn drawEmptyPipelineCanvas(state: *const EditorState, editor_state: *PostProcess
 fn drawEffectPalette(
     editor_state: *PostProcessPipelineEditorState,
 ) void {
-    _ = editor_state;
     gui.text("Effects");
     gui.separator();
     gui.textColored(.{ 0.62, 0.66, 0.71, 1.0 }, "Drag effects onto the canvas");
@@ -620,12 +615,7 @@ fn drawEffectPalette(
             gui.setTooltip(item.hint);
         }
 
-        if (gui.beginDragDropSourceU64(effect_drag_id)) {
-            const val: u64 = @intFromEnum(item.effect);
-            gui.dragDropSourceU64(effect_drag_id, val);
-            gui.textColored(item.color, item.label);
-            gui.endDragDropSource();
-        }
+        _ = gui.dragDropSourceU64(effect_drag_type, @intFromEnum(item.effect), item.label);
     }
 }
 

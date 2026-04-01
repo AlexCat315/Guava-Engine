@@ -31,6 +31,16 @@ pub const PluginLifecycle = enum {
     load_error,
 };
 
+/// Error governance policy — controls how the system handles plugin failures.
+pub const PluginErrorPolicy = enum {
+    /// Skip the plugin on error; it can be manually re-enabled later.
+    skip_on_error,
+    /// The system will retry enable once on the next discovery pass.
+    retry_once,
+    /// Permanently disable; requires explicit user intervention to re-enable.
+    disable_permanently,
+};
+
 pub const PluginVersion = struct {
     major: u16,
     minor: u16,
@@ -85,6 +95,9 @@ pub const PluginRecord = struct {
     manifest: PluginManifest,
     lifecycle: PluginLifecycle = .unloaded,
     last_error: ?[]u8 = null,
+    error_policy: PluginErrorPolicy = .skip_on_error,
+    /// Number of consecutive enable attempts that resulted in load_error.
+    error_retry_count: u8 = 0,
 
     pub fn deinit(self: *PluginRecord, allocator: std.mem.Allocator) void {
         self.clearLastError(allocator);
