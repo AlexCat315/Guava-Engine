@@ -27,6 +27,11 @@ const EdgeEntry = struct {
     directed_b: u32 = 0,
 };
 
+const EdgeSplit = struct {
+    min_split: u32,
+    max_split: u32,
+};
+
 pub fn isEditModeActive(state: *const EditorState) bool {
     return state.mesh_edit_mode == .edit and state.mesh_edit_entity != null;
 }
@@ -435,6 +440,10 @@ pub fn bevelSelectedEdges(state: *EditorState, layer_context: *engine.core.Layer
     defer allocator.free(result.vertices);
     defer allocator.free(result.indices);
 
+    if (!meshDataIsValid(result.vertices, result.indices)) {
+        return false;
+    }
+
     try applyMeshMutation(state, layer_context, context.mesh_handle, result.vertices, result.indices);
     clearElementSelection(state);
     try history.captureSnapshotWithLabel(
@@ -471,6 +480,10 @@ pub fn loopCut(state: *EditorState, layer_context: *engine.core.LayerContext) !b
     defer allocator.free(result.vertices);
     defer allocator.free(result.indices);
     defer allocator.free(result.new_edge_indices);
+
+    if (!meshDataIsValid(result.vertices, result.indices)) {
+        return false;
+    }
 
     try applyMeshMutation(state, layer_context, context.mesh_handle, result.vertices, result.indices);
     clearElementSelection(state);
@@ -1144,44 +1157,111 @@ fn bevelEdgeRegion(
     edges: []const Edge,
     selected_edge_indices: []const u32,
 ) !BevelResult {
-    const bevel_offset: f32 = 0.1;
+    const bevel_ratio: f32 = 0.2;
 
     var next_vertices = std.ArrayList(engine.assets.MeshVertex).empty;
     defer next_vertices.deinit(allocator);
     try next_vertices.appendSlice(allocator, vertices);
 
-    var next_indices = std.ArrayList(u32).empty;
-    defer next_indices.deinit(allocator);
-    try next_indices.appendSlice(allocator, indices);
+    var split_by_edge = std.AutoHashMap(u64, EdgeSplit).init(allocator);
+    defer split_by_edge.deinit();
 
-    var vertex_split = std.AutoHashMap(u64, [2]u32).init(allocator);
-    defer vertex_split.deinit();
+    var selected_edge_mask = std.AutoHashMap(u64, void).init(allocator);
+    defer selected_edge_mask.deinit();
 
     for (selected_edge_indices) |edge_index| {
         if (edge_index >= edges.len) continue;
         const edge = edges[edge_index];
+        const min_v = @min(edge.a, edge.b);
+        const max_v = @max(edge.a, edge.b);
+        const selected_key = edgeKey(min_v, max_v);
+        if (selected_edge_mask.contains(selected_key)) {
+            continue;
+        }
+        try selected_edge_mask.put(selected_key, {});
 
-        const pa = vertices[edge.a].position;
-        const pb = vertices[edge.b].position;
+        const pa = vertices[min_v].position;
+        const pb = vertices[max_v].position;
+        const edge_len = distance3(pa, pb);
+        if (edge_len <= 0.0001) {
+            continue;
+        }
+        const bevel_offset = std.math.clamp(edge_len * bevel_ratio, 0.01, edge_len * 0.45);
         const edge_dir = normalize3(sub3(pb, pa));
 
-        var va_new = vertices[edge.a];
+        var va_new = vertices[min_v];
         va_new.position = add3(pa, scale3(edge_dir, bevel_offset));
         const va_new_index: u32 = @intCast(next_vertices.items.len);
         try next_vertices.append(allocator, va_new);
 
-        var vb_new = vertices[edge.b];
+        var vb_new = vertices[max_v];
         vb_new.position = sub3(pb, scale3(edge_dir, bevel_offset));
         const vb_new_index: u32 = @intCast(next_vertices.items.len);
         try next_vertices.append(allocator, vb_new);
 
-        const edge_key = (@as(u64, @min(edge.a, edge.b)) << 32) | @as(u64, @max(edge.a, edge.b));
-        try vertex_split.put(edge_key, .{ va_new_index, vb_new_index });
+        try split_by_edge.put(selected_key, .{ .min_split = va_new_index, .max_split = vb_new_index });
+    }
+
+    if (split_by_edge.count() == 0) {
+        return .{
+            .vertices = try allocator.dupe(engine.assets.MeshVertex, vertices),
+            .indices = try allocator.dupe(u32, indices),
+        };
+    }
+
+    var next_indices = std.ArrayList(u32).empty;
+    defer next_indices.deinit(allocator);
+
+    var triangle_offset: usize = 0;
+    while (triangle_offset + 2 < indices.len) : (triangle_offset += 3) {
+        const tri = [3]u32{ indices[triangle_offset], indices[triangle_offset + 1], indices[triangle_offset + 2] };
+        const tri_edges = [3][2]u32{
+            .{ tri[0], tri[1] },
+            .{ tri[1], tri[2] },
+            .{ tri[2], tri[0] },
+        };
+
+        var split_count: u32 = 0;
+        var split_slot: usize = 0;
+        var split_info: EdgeSplit = undefined;
+        for (tri_edges, 0..) |tri_edge, slot| {
+            const key = edgeKey(@min(tri_edge[0], tri_edge[1]), @max(tri_edge[0], tri_edge[1]));
+            if (split_by_edge.get(key)) |info| {
+                split_count += 1;
+                split_slot = slot;
+                split_info = info;
+            }
+        }
+
+        if (split_count != 1) {
+            try next_indices.appendSlice(allocator, &[_]u32{ tri[0], tri[1], tri[2] });
+            continue;
+        }
+
+        const a = tri_edges[split_slot][0];
+        const b = tri_edges[split_slot][1];
+        const c = tri[(split_slot + 2) % 3];
+        const a_split = splitVertexForEndpoint(a, b, split_info);
+        const b_split = splitVertexForEndpoint(b, a, split_info);
+
+        try next_indices.appendSlice(allocator, &[_]u32{ a, a_split, c });
+        try next_indices.appendSlice(allocator, &[_]u32{ a_split, b_split, c });
+        try next_indices.appendSlice(allocator, &[_]u32{ b_split, b, c });
+    }
+
+    var split_iter = split_by_edge.iterator();
+    while (split_iter.next()) |entry| {
+        const min_v: u32 = @intCast(entry.key_ptr.* >> 32);
+        const max_v: u32 = @intCast(entry.key_ptr.* & 0xffffffff);
+        const split = entry.value_ptr.*;
 
         try next_indices.appendSlice(allocator, &[_]u32{
-            edge.a,       va_new_index,
-            vb_new_index, edge.a,
-            vb_new_index, edge.b,
+            min_v,
+            max_v,
+            split.max_split,
+            min_v,
+            split.max_split,
+            split.min_split,
         });
     }
 
@@ -1206,83 +1286,74 @@ fn loopCutMesh(
     edges: []const Edge,
     seed_edge_index: u32,
 ) !LoopCutResult {
-    const face_count = indices.len / 3;
     const seed_edge = edges[seed_edge_index];
+    const face_count = indices.len / 3;
 
-    var edge_to_faces = std.AutoHashMap(u64, std.ArrayList(u32)).init(allocator);
-    defer {
-        var it = edge_to_faces.valueIterator();
-        while (it.next()) |list| list.deinit(allocator);
-        edge_to_faces.deinit();
-    }
-
-    var fi: u32 = 0;
-    while (fi < face_count) : (fi += 1) {
-        const off = @as(usize, fi) * 3;
-        const tri = [3]u32{ indices[off], indices[off + 1], indices[off + 2] };
+    var edge_face_count = std.AutoHashMap(u64, u32).init(allocator);
+    defer edge_face_count.deinit();
+    var triangle_offset: usize = 0;
+    while (triangle_offset + 2 < indices.len) : (triangle_offset += 3) {
+        const tri = [3]u32{ indices[triangle_offset], indices[triangle_offset + 1], indices[triangle_offset + 2] };
         const tri_edges = [3][2]u32{
             .{ @min(tri[0], tri[1]), @max(tri[0], tri[1]) },
             .{ @min(tri[1], tri[2]), @max(tri[1], tri[2]) },
             .{ @min(tri[2], tri[0]), @max(tri[2], tri[0]) },
         };
         for (tri_edges) |te| {
-            const key = (@as(u64, te[0]) << 32) | @as(u64, te[1]);
-            const gop = try edge_to_faces.getOrPut(key);
+            const key = edgeKey(te[0], te[1]);
+            const gop = try edge_face_count.getOrPut(key);
             if (!gop.found_existing) {
-                gop.value_ptr.* = std.ArrayList(u32).empty;
-            }
-            try gop.value_ptr.append(allocator, fi);
-        }
-    }
-
-    var loop_edges = std.ArrayList([2]u32).empty;
-    defer loop_edges.deinit(allocator);
-    try loop_edges.append(allocator, .{ @min(seed_edge.a, seed_edge.b), @max(seed_edge.a, seed_edge.b) });
-
-    var visited_faces = std.AutoHashMap(u32, void).init(allocator);
-    defer visited_faces.deinit();
-    var visited_edges = std.AutoHashMap(u64, void).init(allocator);
-    defer visited_edges.deinit();
-
-    const seed_key = (@as(u64, @min(seed_edge.a, seed_edge.b)) << 32) | @as(u64, @max(seed_edge.a, seed_edge.b));
-    try visited_edges.put(seed_key, {});
-
-    var queue = std.ArrayList([2]u32).empty;
-    defer queue.deinit(allocator);
-    try queue.append(allocator, loop_edges.items[0]);
-
-    while (queue.items.len > 0) {
-        const current_edge = queue.pop().?;
-        const current_key = (@as(u64, current_edge[0]) << 32) | @as(u64, current_edge[1]);
-
-        const faces_for_edge = edge_to_faces.get(current_key) orelse continue;
-        for (faces_for_edge.items) |face_idx| {
-            if (visited_faces.contains(face_idx)) continue;
-            try visited_faces.put(face_idx, {});
-
-            const off = @as(usize, face_idx) * 3;
-            const tri = [3]u32{ indices[off], indices[off + 1], indices[off + 2] };
-            const tri_edges_raw = [3][2]u32{
-                .{ @min(tri[0], tri[1]), @max(tri[0], tri[1]) },
-                .{ @min(tri[1], tri[2]), @max(tri[1], tri[2]) },
-                .{ @min(tri[2], tri[0]), @max(tri[2], tri[0]) },
-            };
-
-            for (tri_edges_raw) |te| {
-                const te_key = (@as(u64, te[0]) << 32) | @as(u64, te[1]);
-                if (te_key == current_key) continue;
-                if (visited_edges.contains(te_key)) continue;
-
-                if (te[0] != current_edge[0] and te[0] != current_edge[1] and
-                    te[1] != current_edge[0] and te[1] != current_edge[1])
-                {
-                    try visited_edges.put(te_key, {});
-                    try loop_edges.append(allocator, te);
-                    try queue.append(allocator, te);
-                }
+                gop.value_ptr.* = 1;
+            } else {
+                gop.value_ptr.* += 1;
             }
         }
     }
+
+    var vertex_edges = try allocator.alloc(std.ArrayList(u32), vertices.len);
+    defer {
+        for (vertex_edges) |*list| list.deinit(allocator);
+        allocator.free(vertex_edges);
+    }
+    for (vertex_edges) |*list| list.* = .empty;
+    for (edges, 0..) |edge, idx| {
+        try vertex_edges[edge.a].append(allocator, @intCast(idx));
+        try vertex_edges[edge.b].append(allocator, @intCast(idx));
+    }
+
+    var loop_edge_keys = std.ArrayList(u64).empty;
+    defer loop_edge_keys.deinit(allocator);
+    var loop_edge_set = std.AutoHashMap(u64, void).init(allocator);
+    defer loop_edge_set.deinit();
+
+    const seed_min = @min(seed_edge.a, seed_edge.b);
+    const seed_max = @max(seed_edge.a, seed_edge.b);
+    const seed_key = edgeKey(seed_min, seed_max);
+    try loop_edge_set.put(seed_key, {});
+    try loop_edge_keys.append(allocator, seed_key);
+
+    try extendEdgeLoop(
+        allocator,
+        vertices,
+        edges,
+        vertex_edges,
+        &edge_face_count,
+        seed_edge.a,
+        seed_edge.b,
+        &loop_edge_set,
+        &loop_edge_keys,
+    );
+    try extendEdgeLoop(
+        allocator,
+        vertices,
+        edges,
+        vertex_edges,
+        &edge_face_count,
+        seed_edge.b,
+        seed_edge.a,
+        &loop_edge_set,
+        &loop_edge_keys,
+    );
 
     var midpoint_map = std.AutoHashMap(u64, u32).init(allocator);
     defer midpoint_map.deinit();
@@ -1293,16 +1364,18 @@ fn loopCutMesh(
     var new_vertex_indices = std.ArrayList(u32).empty;
     defer new_vertex_indices.deinit(allocator);
 
-    for (loop_edges.items) |le| {
-        const key = (@as(u64, le[0]) << 32) | @as(u64, le[1]);
+    for (loop_edge_keys.items) |key| {
         if (midpoint_map.contains(key)) continue;
 
-        var mid_vert = vertices[le[0]];
-        mid_vert.position = scale3(add3(vertices[le[0]].position, vertices[le[1]].position), 0.5);
-        mid_vert.normal = normalize3(scale3(add3(vertices[le[0]].normal, vertices[le[1]].normal), 0.5));
+        const min_v: u32 = @intCast(key >> 32);
+        const max_v: u32 = @intCast(key & 0xffffffff);
+
+        var mid_vert = vertices[min_v];
+        mid_vert.position = scale3(add3(vertices[min_v].position, vertices[max_v].position), 0.5);
+        mid_vert.normal = normalize3(scale3(add3(vertices[min_v].normal, vertices[max_v].normal), 0.5));
         mid_vert.uv = .{
-            (vertices[le[0]].uv[0] + vertices[le[1]].uv[0]) * 0.5,
-            (vertices[le[0]].uv[1] + vertices[le[1]].uv[1]) * 0.5,
+            (vertices[min_v].uv[0] + vertices[max_v].uv[0]) * 0.5,
+            (vertices[min_v].uv[1] + vertices[max_v].uv[1]) * 0.5,
         };
 
         const mid_index: u32 = @intCast(next_vertices.items.len);
@@ -1314,7 +1387,7 @@ fn loopCutMesh(
     var next_indices = std.ArrayList(u32).empty;
     defer next_indices.deinit(allocator);
 
-    fi = 0;
+    var fi: u32 = 0;
     while (fi < face_count) : (fi += 1) {
         const off = @as(usize, fi) * 3;
         const tri = [3]u32{ indices[off], indices[off + 1], indices[off + 2] };
@@ -1386,6 +1459,106 @@ fn loopCutMesh(
         .indices = try next_indices.toOwnedSlice(allocator),
         .new_edge_indices = try new_vertex_indices.toOwnedSlice(allocator),
     };
+}
+
+fn extendEdgeLoop(
+    allocator: std.mem.Allocator,
+    vertices: []const engine.assets.MeshVertex,
+    edges: []const Edge,
+    vertex_edges: []const std.ArrayList(u32),
+    edge_face_count: *const std.AutoHashMap(u64, u32),
+    start_vertex: u32,
+    previous_vertex: u32,
+    loop_edge_set: *std.AutoHashMap(u64, void),
+    loop_edge_keys: *std.ArrayList(u64),
+) !void {
+    var current_vertex = start_vertex;
+    var prev_vertex = previous_vertex;
+    var steps: usize = 0;
+
+    while (steps < edges.len) : (steps += 1) {
+        var best_edge_index: ?u32 = null;
+        var best_next_vertex: u32 = 0;
+        var best_score: f32 = -2.0;
+
+        const prev_dir = normalize3(sub3(vertices[current_vertex].position, vertices[prev_vertex].position));
+        for (vertex_edges[current_vertex].items) |candidate_edge_index| {
+            const edge = edges[candidate_edge_index];
+            const next_vertex = if (edge.a == current_vertex) edge.b else edge.a;
+            if (next_vertex == prev_vertex) {
+                continue;
+            }
+
+            const key = edgeKey(@min(edge.a, edge.b), @max(edge.a, edge.b));
+            if (loop_edge_set.contains(key)) {
+                continue;
+            }
+
+            const face_count = edge_face_count.get(key) orelse 0;
+            if (face_count == 0 or face_count > 2) {
+                continue;
+            }
+
+            const cand_dir = normalize3(sub3(vertices[next_vertex].position, vertices[current_vertex].position));
+            const score = dot3(prev_dir, cand_dir);
+            if (score > best_score) {
+                best_score = score;
+                best_edge_index = candidate_edge_index;
+                best_next_vertex = next_vertex;
+            }
+        }
+
+        const chosen_edge_index = best_edge_index orelse break;
+        if (best_score < -0.1) {
+            break;
+        }
+
+        const chosen = edges[chosen_edge_index];
+        const chosen_key = edgeKey(@min(chosen.a, chosen.b), @max(chosen.a, chosen.b));
+        try loop_edge_set.put(chosen_key, {});
+        try loop_edge_keys.append(allocator, chosen_key);
+
+        prev_vertex = current_vertex;
+        current_vertex = best_next_vertex;
+    }
+}
+
+fn splitVertexForEndpoint(endpoint: u32, other: u32, split: EdgeSplit) u32 {
+    if (endpoint <= other) {
+        return split.min_split;
+    }
+    return split.max_split;
+}
+
+fn meshDataIsValid(vertices: []const engine.assets.MeshVertex, indices: []const u32) bool {
+    if (indices.len % 3 != 0) {
+        return false;
+    }
+    for (indices) |index| {
+        if (index >= vertices.len) {
+            return false;
+        }
+    }
+    for (vertices) |vertex| {
+        if (!std.math.isFinite(vertex.position[0]) or
+            !std.math.isFinite(vertex.position[1]) or
+            !std.math.isFinite(vertex.position[2]))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn edgeKey(a: u32, b: u32) u64 {
+    return (@as(u64, a) << 32) | @as(u64, b);
+}
+
+fn distance3(a: [3]f32, b: [3]f32) f32 {
+    const dx = a[0] - b[0];
+    const dy = a[1] - b[1];
+    const dz = a[2] - b[2];
+    return @sqrt(dx * dx + dy * dy + dz * dz);
 }
 
 fn compactMeshData(
