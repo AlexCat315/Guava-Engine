@@ -20,6 +20,14 @@ pub const EditorUiState = struct {
     last_item_changed: bool = false,
 };
 
+pub const SceneManagerApi = struct {
+    context: *anyopaque,
+    load_scene: *const fn (context: *anyopaque, path: []const u8) void,
+    unload_scene: *const fn (context: *anyopaque) void,
+    set_dont_destroy_on_load: *const fn (context: *anyopaque, entity_id: EntityId, enabled: bool) void,
+    is_loading: *const fn (context: *anyopaque) bool,
+};
+
 /// 脚本执行上下文 - 脚本运行时可用的 API
 pub const ScriptContext = struct {
     /// 关联的实体 ID
@@ -48,6 +56,8 @@ pub const ScriptContext = struct {
     time_scale_ptr: ?*f32 = null,
     /// 可写回的 game_state 指针（指向 Application.game_state 的 u32 表示）
     game_state_ptr: ?*u32 = null,
+    /// 场景切换 API
+    scene_manager_api: ?SceneManagerApi = null,
     /// 编辑器当前选择集（Editor Utility UI 使用）
     editor_selection: []const EntityId = &.{},
     /// 编辑器选择回调（Editor Utility UI 使用）
@@ -369,6 +379,37 @@ pub const ScriptContext = struct {
     /// 获取已缩放的DeltaTime（delta_time * time_scale）
     pub fn getScaledDeltaTime(self: *ScriptContext) f32 {
         return self.delta_time * self.time_scale;
+    }
+
+    pub fn loadScene(self: *ScriptContext, path: []const u8) void {
+        if (self.scene_manager_api) |api| {
+            api.load_scene(api.context, path);
+        }
+    }
+
+    pub fn unloadScene(self: *ScriptContext) void {
+        if (self.scene_manager_api) |api| {
+            api.unload_scene(api.context);
+        }
+    }
+
+    pub fn setDontDestroyOnLoad(self: *ScriptContext, enabled: bool) void {
+        if (self.scene_manager_api) |api| {
+            api.set_dont_destroy_on_load(api.context, self.entity, enabled);
+        }
+    }
+
+    pub fn setEntityDontDestroyOnLoad(self: *ScriptContext, entity_id: EntityId, enabled: bool) void {
+        if (self.scene_manager_api) |api| {
+            api.set_dont_destroy_on_load(api.context, entity_id, enabled);
+        }
+    }
+
+    pub fn isSceneLoading(self: *ScriptContext) bool {
+        if (self.scene_manager_api) |api| {
+            return api.is_loading(api.context);
+        }
+        return false;
     }
 
     /// ===== 物理查询 API =====

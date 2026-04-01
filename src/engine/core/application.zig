@@ -50,6 +50,7 @@ const layer_mod = @import("layer.zig");
 const layer_stack_mod = @import("layer_stack.zig");
 const input_mod = @import("input.zig");
 const command_queue_mod = @import("command_queue.zig");
+const scene_manager_mod = @import("scene_manager.zig");
 const platform_mod = @import("platform.zig");
 const renderer_mod = @import("../render/renderer.zig");
 const render_types = @import("../render/types.zig");
@@ -147,6 +148,8 @@ pub const Application = struct {
     renderer: renderer_mod.Renderer,
     /// 引擎级命令队列
     command_queue: command_queue_mod.CommandQueue,
+    /// 多场景管理器
+    scene_manager: scene_manager_mod.SceneManager,
     /// 场景世界
     world: scene_mod.World,
     /// 层栈
@@ -238,6 +241,7 @@ pub const Application = struct {
             .window = window,
             .renderer = renderer,
             .command_queue = command_queue_mod.CommandQueue.init(allocator),
+            .scene_manager = scene_manager_mod.SceneManager.init(allocator),
             .world = world,
             .job_system = job_system,
             .script_runtime = script_runtime,
@@ -279,6 +283,7 @@ pub const Application = struct {
             snapshot.deinit(self.allocator);
             self.play_mode_snapshot = null;
         }
+        self.scene_manager.deinit();
         self.editor_utility_runtime.deinit();
         self.script_runtime.deinit();
         if (audio_mod.get() catch null) |audio_runtime| {
@@ -363,6 +368,14 @@ pub const Application = struct {
             var delta_seconds = @as(f32, @floatFromInt(elapsed_ns)) / @as(f32, @floatFromInt(std.time.ns_per_s));
             delta_seconds = @min(delta_seconds, 0.1); // 最大帧间隔锁定为 0.1 秒
             self.renderer.device().recordFrame(@min(elapsed_ns, 100 * std.time.ns_per_ms));
+
+            try self.scene_manager.pump(
+                &self.world,
+                &self.physics_state,
+                &self.script_runtime,
+                &self.command_queue,
+                &self.renderer,
+            );
 
             try self.applyPendingCommands();
 
@@ -513,6 +526,7 @@ pub const Application = struct {
             .world = &self.world,
             .scene = &self.world,
             .renderer = &self.renderer,
+            .scene_manager = &self.scene_manager,
             .command_queue = &self.command_queue,
             .script_runtime = &self.script_runtime,
             .editor_utility_runtime = &self.editor_utility_runtime,
@@ -598,6 +612,13 @@ pub const Application = struct {
                     .game_state = @intFromEnum(self.game_state),
                     .time_scale_ptr = &self.time_scale,
                     .game_state_ptr = @ptrCast(&self.game_state),
+                    .scene_manager_api = .{
+                        .context = self,
+                        .load_scene = scriptLoadScene,
+                        .unload_scene = scriptUnloadScene,
+                        .set_dont_destroy_on_load = scriptSetDontDestroyOnLoad,
+                        .is_loading = scriptIsSceneLoading,
+                    },
                 };
 
                 vm.callUpdate(instance, &ctx, delta_seconds) catch |err| {
@@ -663,6 +684,30 @@ pub const Application = struct {
             return .wasm;
         }
         return .zig;
+    }
+
+    fn scriptLoadScene(context: *anyopaque, path: []const u8) void {
+        const self: *Application = @ptrCast(@alignCast(context));
+        self.scene_manager.requestLoadScene(self.job_system, path, .{}) catch |err| {
+            std.log.warn("scene manager: failed to queue load for '{s}': {s}", .{ path, @errorName(err) });
+        };
+    }
+
+    fn scriptUnloadScene(context: *anyopaque) void {
+        const self: *Application = @ptrCast(@alignCast(context));
+        self.scene_manager.requestUnloadScene(.{}) catch |err| {
+            std.log.warn("scene manager: failed to queue unload: {s}", .{@errorName(err)});
+        };
+    }
+
+    fn scriptSetDontDestroyOnLoad(context: *anyopaque, entity_id: scene_mod.EntityId, enabled: bool) void {
+        const self: *Application = @ptrCast(@alignCast(context));
+        _ = self.scene_manager.setDontDestroyOnLoad(&self.world, entity_id, enabled);
+    }
+
+    fn scriptIsSceneLoading(context: *anyopaque) bool {
+        const self: *Application = @ptrCast(@alignCast(context));
+        return self.scene_manager.isBusy();
     }
 
     fn applyPendingCommands(self: *Application) !void {

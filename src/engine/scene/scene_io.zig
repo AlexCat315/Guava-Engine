@@ -347,6 +347,7 @@ const EntityRecord = struct {
     audio_listener: ?AudioListenerComponentRecord = null,
     visible: bool = true,
     editor_only: bool = false,
+    dont_destroy_on_load: bool = false,
     is_folder: bool = false,
 };
 
@@ -439,7 +440,22 @@ const ScriptBinding = struct {
 };
 
 pub fn serializeWorldAlloc(allocator: std.mem.Allocator, world: *const world_mod.World) ![]u8 {
-    return try buildSceneFileAlloc(allocator, world);
+    return try buildSceneFileAlloc(allocator, world, null);
+}
+
+pub fn serializeWorldSubsetAlloc(
+    allocator: std.mem.Allocator,
+    world: *const world_mod.World,
+    root_entity_ids: []const world_mod.EntityId,
+) ![]u8 {
+    var included_entities = std.AutoHashMap(world_mod.EntityId, void).init(allocator);
+    defer included_entities.deinit();
+
+    for (root_entity_ids) |root_id| {
+        try collectEntitySubtreeIds(world, root_id, &included_entities);
+    }
+
+    return try buildSceneFileAlloc(allocator, world, &included_entities);
 }
 
 pub fn serializeWorldWithRuntimeStateAlloc(
@@ -451,7 +467,7 @@ pub fn serializeWorldWithRuntimeStateAlloc(
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const scene = try buildSceneFile(arena, world);
+    const scene = try buildSceneFileFiltered(arena, world, null);
 
     var output = std.ArrayList(u8).empty;
     defer output.deinit(allocator);
@@ -469,12 +485,16 @@ pub fn serializeWorldWithRuntimeStateAlloc(
     return output.toOwnedSlice(allocator);
 }
 
-fn buildSceneFileAlloc(allocator: std.mem.Allocator, world: *const world_mod.World) ![]u8 {
+fn buildSceneFileAlloc(
+    allocator: std.mem.Allocator,
+    world: *const world_mod.World,
+    included_entities: ?*const std.AutoHashMap(world_mod.EntityId, void),
+) ![]u8 {
     var arena_state = std.heap.ArenaAllocator.init(allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const scene = try buildSceneFile(arena, world);
+    const scene = try buildSceneFileFiltered(arena, world, included_entities);
 
     var output = std.ArrayList(u8).empty;
     defer output.deinit(allocator);
@@ -504,6 +524,25 @@ pub fn deserializeWorldFromSlice(allocator: std.mem.Allocator, world: *world_mod
             });
             defer parsed.deinit();
             try deserializeWorldFromSceneFile(allocator, world, &parsed.value.scene);
+        },
+        else => return error.UnsupportedSceneVersion,
+    }
+}
+
+pub fn appendWorldFromSlice(allocator: std.mem.Allocator, world: *world_mod.World, source: []const u8) !void {
+    var header_parse = try std.json.parseFromSlice(SceneHeader, allocator, source, .{
+        .ignore_unknown_fields = true,
+    });
+    defer header_parse.deinit();
+
+    switch (header_parse.value.version) {
+        3, 4, 5, 6 => try appendWorldV4FromSlice(allocator, world, source),
+        runtime_scene_file_version => {
+            var parsed = try std.json.parseFromSlice(SceneRuntimeFile, allocator, source, .{
+                .ignore_unknown_fields = true,
+            });
+            defer parsed.deinit();
+            try applySceneFileToWorld(allocator, world, &parsed.value.scene, false, false);
         },
         else => return error.UnsupportedSceneVersion,
     }
@@ -595,6 +634,14 @@ pub fn loadWorldWithRuntimeStateFromPath(
 }
 
 fn buildSceneFile(allocator: std.mem.Allocator, world: *const world_mod.World) !SceneFile {
+    return buildSceneFileFiltered(allocator, world, null);
+}
+
+fn buildSceneFileFiltered(
+    allocator: std.mem.Allocator,
+    world: *const world_mod.World,
+    included_entities: ?*const std.AutoHashMap(world_mod.EntityId, void),
+) !SceneFile {
     var mesh_records = std.ArrayList(MeshRecord).empty;
     defer mesh_records.deinit(allocator);
     var texture_records = std.ArrayList(TextureRecord).empty;
@@ -633,7 +680,7 @@ fn buildSceneFile(allocator: std.mem.Allocator, world: *const world_mod.World) !
 
     var exported_entity_index: u32 = 0;
     for (world.entities.items) |entity| {
-        if (entity.editor_only) {
+        if (!shouldExportEntity(&entity, included_entities)) {
             continue;
         }
         try entity_indices.put(entity.id, exported_entity_index);
@@ -641,7 +688,7 @@ fn buildSceneFile(allocator: std.mem.Allocator, world: *const world_mod.World) !
     }
 
     for (world.entities.items) |entity| {
-        if (entity.editor_only) {
+        if (!shouldExportEntity(&entity, included_entities)) {
             continue;
         }
 
@@ -880,6 +927,7 @@ fn buildSceneFile(allocator: std.mem.Allocator, world: *const world_mod.World) !
             } else null,
             .visible = entity.visible,
             .editor_only = entity.editor_only,
+            .dont_destroy_on_load = entity.dont_destroy_on_load,
             .is_folder = entity.is_folder,
         });
     }
@@ -917,20 +965,40 @@ fn buildSceneFile(allocator: std.mem.Allocator, world: *const world_mod.World) !
     };
 }
 
-fn deserializeWorldFromSceneFile(allocator: std.mem.Allocator, world: *world_mod.World, scene: *const SceneFile) anyerror!void {
-    var output = std.ArrayList(u8).empty;
-    defer output.deinit(allocator);
-    var legacy_writer = output.writer(allocator);
-    var adapter_buffer: [4096]u8 = undefined;
-    var writer_adapter = legacy_writer.adaptToNewApi(&adapter_buffer);
-    try std.json.Stringify.value(scene.*, .{ .whitespace = .indent_2 }, &writer_adapter.new_interface);
-    try writer_adapter.new_interface.flush();
-    if (writer_adapter.err) |err| {
-        return err;
+fn shouldExportEntity(
+    entity: *const world_mod.Entity,
+    included_entities: ?*const std.AutoHashMap(world_mod.EntityId, void),
+) bool {
+    if (entity.editor_only) {
+        return false;
     }
-    const encoded = try output.toOwnedSlice(allocator);
-    defer allocator.free(encoded);
-    try deserializeWorldFromSlice(allocator, world, encoded);
+    if (included_entities) |filter| {
+        return filter.contains(entity.id);
+    }
+    return true;
+}
+
+fn collectEntitySubtreeIds(
+    world: *const world_mod.World,
+    root_id: world_mod.EntityId,
+    included_entities: *std.AutoHashMap(world_mod.EntityId, void),
+) !void {
+    const root = world.getEntityConst(root_id) orelse return;
+    if (root.editor_only) {
+        return;
+    }
+
+    if (!included_entities.contains(root_id)) {
+        try included_entities.put(root_id, {});
+    }
+
+    for (root.children.items) |child_id| {
+        try collectEntitySubtreeIds(world, child_id, included_entities);
+    }
+}
+
+fn deserializeWorldFromSceneFile(allocator: std.mem.Allocator, world: *world_mod.World, scene: *const SceneFile) anyerror!void {
+    try applySceneFileToWorld(allocator, world, scene, true, true);
 }
 
 fn deserializeWorldV4FromSlice(allocator: std.mem.Allocator, world: *world_mod.World, source: []const u8) !void {
@@ -944,11 +1012,39 @@ fn deserializeWorldV4FromSlice(allocator: std.mem.Allocator, world: *world_mod.W
         return error.UnsupportedSceneVersion;
     }
 
-    world.clear();
+    try applySceneFileToWorld(allocator, world, &scene, true, true);
+}
 
-    if (scene.environment_asset_id) |environment_asset_id| {
-        if (findAssetRecord(scene.asset_records, environment_asset_id) != null) {
-            _ = try world.resources.setSceneEnvironmentAssetId(environment_asset_id);
+fn appendWorldV4FromSlice(allocator: std.mem.Allocator, world: *world_mod.World, source: []const u8) !void {
+    var parsed = try std.json.parseFromSlice(SceneFile, allocator, source, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    const scene = parsed.value;
+    if (scene.version != 3 and scene.version != 4 and scene.version != 5 and scene.version != current_scene_version) {
+        return error.UnsupportedSceneVersion;
+    }
+
+    try applySceneFileToWorld(allocator, world, &scene, false, false);
+}
+
+fn applySceneFileToWorld(
+    allocator: std.mem.Allocator,
+    world: *world_mod.World,
+    scene: *const SceneFile,
+    clear_existing: bool,
+    apply_environment_asset: bool,
+) anyerror!void {
+    if (clear_existing) {
+        world.clear();
+    }
+
+    if (apply_environment_asset) {
+        if (scene.environment_asset_id) |environment_asset_id| {
+            if (findAssetRecord(scene.asset_records, environment_asset_id) != null) {
+                _ = try world.resources.setSceneEnvironmentAssetId(environment_asset_id);
+            }
         }
     }
 
@@ -965,7 +1061,7 @@ fn deserializeWorldV4FromSlice(allocator: std.mem.Allocator, world: *world_mod.W
             .format = texture.format,
             .pixels = decoded_pixels,
         });
-        try bindTextureAssetFromScene(allocator, world, &scene, texture.asset_id, texture.name, handle);
+        try bindTextureAssetFromScene(allocator, world, scene, texture.asset_id, texture.name, handle);
         applyBuiltinTextureHandle(&world.resources, texture.name, handle);
         try texture_bindings.append(allocator, .{
             .asset_id = texture.asset_id,
@@ -1008,7 +1104,7 @@ fn deserializeWorldV4FromSlice(allocator: std.mem.Allocator, world: *world_mod.W
             .use_ibl = material.use_ibl,
             .ibl_intensity = material.ibl_intensity,
         });
-        try bindMaterialAssetFromScene(allocator, world, &scene, material.asset_id, material.name, handle);
+        try bindMaterialAssetFromScene(allocator, world, scene, material.asset_id, material.name, handle);
         applyBuiltinMaterialHandle(&world.resources, material.name, handle);
         try material_bindings.append(allocator, .{
             .asset_id = material.asset_id,
@@ -1025,7 +1121,7 @@ fn deserializeWorldV4FromSlice(allocator: std.mem.Allocator, world: *world_mod.W
             .indices = mesh.indices,
             .primitive_type = mesh.primitive_type,
         });
-        try bindMeshAssetFromScene(allocator, world, &scene, mesh.asset_id, mesh.name, handle);
+        try bindMeshAssetFromScene(allocator, world, scene, mesh.asset_id, mesh.name, handle);
         applyBuiltinMeshHandle(&world.resources, mesh.name, handle);
         try mesh_bindings.append(allocator, .{
             .asset_id = mesh.asset_id,
@@ -1051,7 +1147,7 @@ fn deserializeWorldV4FromSlice(allocator: std.mem.Allocator, world: *world_mod.W
             .name = skeleton.name,
             .joints = joint_descs,
         });
-        try bindSkeletonAssetFromScene(allocator, world, &scene, skeleton.asset_id, skeleton.name, handle);
+        try bindSkeletonAssetFromScene(allocator, world, scene, skeleton.asset_id, skeleton.name, handle);
         try skeleton_bindings.append(allocator, .{
             .asset_id = skeleton.asset_id,
             .handle = handle,
@@ -1068,7 +1164,7 @@ fn deserializeWorldV4FromSlice(allocator: std.mem.Allocator, world: *world_mod.W
             .joint_entity_indices = skin.joint_entity_indices,
             .inverse_bind_matrices = skin.inverse_bind_matrices,
         });
-        try bindSkinAssetFromScene(allocator, world, &scene, skin.asset_id, skin.name, handle);
+        try bindSkinAssetFromScene(allocator, world, scene, skin.asset_id, skin.name, handle);
         try skin_bindings.append(allocator, .{
             .asset_id = skin.asset_id,
             .handle = handle,
@@ -1118,7 +1214,7 @@ fn deserializeWorldV4FromSlice(allocator: std.mem.Allocator, world: *world_mod.W
             .rotation_tracks = rotation_descs,
             .scale_tracks = scale_descs,
         });
-        try bindAnimationClipAssetFromScene(allocator, world, &scene, clip.asset_id, clip.name, handle);
+        try bindAnimationClipAssetFromScene(allocator, world, scene, clip.asset_id, clip.name, handle);
         try animation_clip_bindings.append(allocator, .{
             .asset_id = clip.asset_id,
             .handle = handle,
@@ -1148,7 +1244,7 @@ fn deserializeWorldV4FromSlice(allocator: std.mem.Allocator, world: *world_mod.W
             try bindScriptAssetFromScene(
                 allocator,
                 world,
-                &scene,
+                scene,
                 script.asset_id,
                 if (script.description.len != 0) script.description else script.entry_fn,
                 created,
@@ -1307,6 +1403,7 @@ fn deserializeWorldV4FromSlice(allocator: std.mem.Allocator, world: *world_mod.W
                 null,
             .visible = entity.visible,
             .editor_only = entity.editor_only,
+            .dont_destroy_on_load = entity.dont_destroy_on_load,
             .is_folder = entity.is_folder,
         });
     }

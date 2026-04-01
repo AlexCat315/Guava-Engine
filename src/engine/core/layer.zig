@@ -5,6 +5,7 @@ const rhi_mod = @import("../rhi/device.zig");
 const input_mod = @import("input.zig");
 const command_queue_mod = @import("command_queue.zig");
 const editor_utility_runtime_mod = @import("../script/editor_utility_runtime.zig");
+const scene_manager_mod = @import("scene_manager.zig");
 const script_runtime_mod = @import("../script/runtime.zig");
 const window_mod = @import("../platform/window.zig");
 const physics_mod = @import("../physics/system.zig");
@@ -69,6 +70,7 @@ pub const LayerContext = struct {
     world: *scene_mod.World,
     scene: *scene_mod.Scene,
     renderer: *renderer_mod.Renderer,
+    scene_manager: ?*scene_manager_mod.SceneManager = null,
     command_queue: ?*command_queue_mod.CommandQueue = null,
     script_runtime: ?*script_runtime_mod.ScriptRuntime = null,
     editor_utility_runtime: ?*editor_utility_runtime_mod.EditorUtilityRuntime = null,

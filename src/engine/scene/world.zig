@@ -114,6 +114,7 @@ pub const EntityId = u64;
 /// - `dirty` - 是否需要更新变换
 /// - `visible` - 是否可见
 /// - `editor_only` - 是否仅在编辑器中显示
+/// - `dont_destroy_on_load` - 场景切换时是否保留
 ///
 /// ## 组件字段
 ///
@@ -185,6 +186,8 @@ pub const Entity = struct {
     visible: bool = true,
     /// 是否仅在编辑器中显示
     editor_only: bool = false,
+    /// 场景切换时是否保留
+    dont_destroy_on_load: bool = false,
     /// 是否为文件夹（用于层级面板组织）
     is_folder: bool = false,
     /// 子实体列表
@@ -317,6 +320,8 @@ pub const EntityDesc = struct {
     visible: bool = true,
     /// 是否仅在编辑器中显示
     editor_only: bool = false,
+    /// 场景切换时是否保留
+    dont_destroy_on_load: bool = false,
     /// 是否为文件夹
     is_folder: bool = false,
 };
@@ -608,6 +613,7 @@ pub const World = struct {
             .audio_listener = desc.audio_listener,
             .visible = desc.visible,
             .editor_only = desc.editor_only,
+            .dont_destroy_on_load = desc.dont_destroy_on_load,
             .is_folder = desc.is_folder,
             .world_transform_cache = .{},
             .world_matrix_cache = .{
@@ -693,6 +699,10 @@ pub const World = struct {
 
     pub fn sceneRevision(self: *const World) u64 {
         return self.scene_revision;
+    }
+
+    pub fn markSceneChanged(self: *World) void {
+        self.bumpSceneRevision();
     }
 
     fn bumpSceneRevision(self: *World) void {
@@ -1785,8 +1795,12 @@ pub const World = struct {
             .material = source.material,
             .light = source.light,
             .vfx = source.vfx,
+            .script = try cloneScriptComponent(self.allocator, source.script),
+            .audio_source = try cloneAudioSourceComponent(self.allocator, source.audio_source),
+            .audio_listener = source.audio_listener,
             .visible = source.visible,
             .editor_only = source.editor_only,
+            .dont_destroy_on_load = source.dont_destroy_on_load,
             .is_folder = source.is_folder,
         });
 

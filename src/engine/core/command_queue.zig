@@ -34,6 +34,13 @@ pub const CommandQueue = struct {
         self.commands.deinit(self.allocator);
     }
 
+    pub fn clear(self: *CommandQueue) void {
+        for (self.commands.items) |*queued| {
+            queued.deinit(self.allocator);
+        }
+        self.commands.clearRetainingCapacity();
+    }
+
     pub fn setMaxPending(self: *CommandQueue, max: usize) void {
         self.max_pending = max;
     }
