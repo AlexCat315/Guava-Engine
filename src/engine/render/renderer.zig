@@ -214,10 +214,7 @@ fn buildSceneExtractionFrustum(
 }
 
 fn previewRenderMode(render_mode: types.EditorViewportRenderMode) types.EditorViewportRenderMode {
-    return switch (render_mode) {
-        .wireframe => .textured,
-        else => render_mode,
-    };
+    return render_mode;
 }
 
 fn effectiveViewportRenderMode(state: types.EditorViewportState) types.EditorViewportRenderMode {
@@ -1352,7 +1349,8 @@ pub const Renderer = struct {
                 defer if (has_prepared_preview_scene) {
                     prepared_preview_scene.deinit();
                 };
-                if (viewport_active and self.preview_scene != null and self.preview_entity_filter.items.len > 0) {
+                const preview_active = self.preview_gizmo_transform != null or self.editor_gizmo_transform_override != null;
+                if (viewport_active and preview_active and self.preview_scene != null and self.preview_entity_filter.items.len > 0) {
                     const preview_frustum = frustum_mod.Frustum.fromViewProjection(prepared_scene.view_projection);
                     _ = try scene_extraction.extractWorld(
                         @constCast(self.preview_scene.?),

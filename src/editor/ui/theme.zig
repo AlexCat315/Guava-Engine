@@ -35,12 +35,12 @@ pub const IconTint = [4]u8;
 
 pub const Palette = struct {
     // ── General Text ─────────────────────────────────────────────────────────
-    pub const text_dimmed: Color = .{ 0.55, 0.58, 0.64, 1.0 };
-    pub const text_bright: Color = .{ 0.90, 0.91, 0.94, 1.0 };
-    pub const text_primary: Color = .{ 0.90, 0.91, 0.94, 1.0 };
-    pub const text_secondary: Color = .{ 0.58, 0.60, 0.66, 1.0 };
-    pub const text_muted: Color = .{ 0.38, 0.40, 0.45, 1.0 };
-    pub const separator: Color = .{ 0.14, 0.15, 0.18, 1.0 };
+    pub const text_dimmed: Color = .{ 0.55, 0.58, 0.64, 1.0 }; // rgba(0.55, 0.58, 0.64, 1.0) #8C919F
+    pub const text_bright: Color = .{ 0.90, 0.91, 0.94, 1.0 }; // rgba(0.90, 0.91, 0.94, 1.0) #E6E8F0
+    pub const text_primary: Color = .{ 0.90, 0.91, 0.94, 1.0 }; // rgba(0.90, 0.91, 0.94, 1.0) #E6E8F0
+    pub const text_secondary: Color = .{ 0.58, 0.60, 0.66, 1.0 }; // rgba(0.58, 0.60, 0.66, 1.0) #949AA8
+    pub const text_muted: Color = .{ 0.38, 0.40, 0.45, 1.0 }; // rgba(0.38, 0.40, 0.45, 1.0) #61646D
+    pub const separator: Color = .{ 0.14, 0.15, 0.18, 1.0 }; // rgba(0.14, 0.15, 0.18, 1.0) #24262E
 
     // ── Background ───────────────────────────────────────────────────────────
     // Unreal Editor 深蓝灰风格：比旧主题明显更暗、更冷
@@ -60,172 +60,171 @@ pub const Palette = struct {
     // ── Interactive ──────────────────────────────────────────────────────────
     // UE 蓝色强调色 (旧主题是绿色 0.22, 0.62, 0.48)
     pub const interactive = struct {
-        pub const button_bg: Color = .{ 0.18, 0.19, 0.23, 1.0 };
-        pub const button_hovered: Color = .{ 0.24, 0.25, 0.30, 1.0 };
-        pub const button_active: Color = .{ 0.28, 0.30, 0.36, 1.0 };
-        pub const button_disabled: Color = .{ 0.15, 0.16, 0.19, 0.50 };
-        pub const frame_bg: Color = .{ 0.14, 0.15, 0.18, 1.0 };
-        pub const frame_hovered: Color = .{ 0.18, 0.19, 0.23, 1.0 };
-        pub const frame_active: Color = .{ 0.22, 0.23, 0.28, 1.0 };
-        pub const accent: Color = .{ 0.30, 0.58, 0.92, 1.0 }; // #4D94EB UE 蓝
+        pub const button_bg: Color = .{ 0.18, 0.19, 0.23, 1.0 }; // #2E323B
+        pub const button_hovered: Color = .{ 0.24, 0.25, 0.30, 1.0 }; // #3D424B
+        pub const button_active: Color = .{ 0.28, 0.30, 0.36, 1.0 }; // #474E5A
+        pub const button_disabled: Color = .{ 0.15, 0.16, 0.19, 0.50 }; // #262A30 50%
+        pub const frame_bg: Color = .{ 0.14, 0.15, 0.18, 1.0 }; // #24262E
+        pub const frame_hovered: Color = .{ 0.18, 0.19, 0.23, 1.0 }; // #2E323B
+        pub const frame_active: Color = .{ 0.22, 0.23, 0.28, 1.0 }; // #39404A
+        pub const accent: Color = .{ 0.30, 0.58, 0.92, 1.0 }; // #4D94EB 
         pub const accent_hovered: Color = .{ 0.36, 0.64, 0.96, 1.0 }; // #5CA3F5
         pub const accent_active: Color = .{ 0.24, 0.52, 0.88, 1.0 }; // #3D85E0
     };
 
     // ── Selection ────────────────────────────────────────────────────────────
     pub const selection = struct {
-        pub const bg: Color = .{ 0.25, 0.45, 0.75, 0.30 };
-        pub const border: Color = .{ 0.30, 0.58, 0.92, 1.0 };
-        pub const text: Color = .{ 0.92, 0.94, 0.98, 1.0 };
-        pub const hovered: Color = .{ 0.20, 0.30, 0.50, 0.25 };
+        pub const bg: Color = .{ 0.25, 0.45, 0.75, 0.30 }; // #3F73BF 
+        pub const border: Color = .{ 0.30, 0.58, 0.92, 1.0 }; // #4D94EB
+        pub const text: Color = .{ 0.92, 0.94, 0.98, 1.0 }; // #EBF0FA 选中时的文本颜色
+        pub const hovered: Color = .{ 0.20, 0.30, 0.50, 0.25 }; // #334D80 
     };
 
     // ── Semantic ─────────────────────────────────────────────────────────────
     pub const semantic = struct {
-        pub const success: Color = .{ 0.20, 0.70, 0.35, 1.0 };
-        pub const success_bg: Color = .{ 0.20, 0.70, 0.35, 0.12 };
-        pub const warning: Color = .{ 0.90, 0.68, 0.15, 1.0 };
-        pub const warning_bg: Color = .{ 0.90, 0.68, 0.15, 0.12 };
-        pub const err: Color = .{ 0.88, 0.25, 0.22, 1.0 };
-        pub const err_bg: Color = .{ 0.88, 0.25, 0.22, 0.12 };
-        pub const info: Color = .{ 0.30, 0.58, 0.92, 1.0 };
-        pub const info_bg: Color = .{ 0.30, 0.58, 0.92, 0.12 };
+        pub const success: Color = .{ 0.20, 0.70, 0.35, 1.0 }; // #34B252
+        pub const success_bg: Color = .{ 0.20, 0.70, 0.35, 0.12 }; // #34B252 12%
+        pub const warning: Color = .{ 0.90, 0.68, 0.15, 1.0 }; // #E5AD26
+        pub const warning_bg: Color = .{ 0.90, 0.68, 0.15, 0.12 }; // #E5AD26 12%
+        pub const err: Color = .{ 0.88, 0.25, 0.22, 1.0 }; // #E14238
+        pub const err_bg: Color = .{ 0.88, 0.25, 0.22, 0.12 }; // #E14238 12%
+        pub const info: Color = .{ 0.30, 0.58, 0.92, 1.0 }; // #4D94EB
+        pub const info_bg: Color = .{ 0.30, 0.58, 0.92, 0.12 }; // #4D94EB 12%
     };
 
     // ── Hierarchy panel ──────────────────────────────────────────────────────
     pub const hierarchy = struct {
-        pub const selected_icon: IconTint = .{ 77, 148, 235, 255 }; // 蓝色 (旧: 绿色 41,150,112)
-        pub const frozen_icon: IconTint = .{ 120, 125, 135, 255 };
-        pub const active_icon: IconTint = .{ 210, 215, 225, 255 };
-        pub const dimmed_icon: IconTint = .{ 80, 85, 95, 255 };
+        pub const selected_icon: IconTint = .{ 77, 148, 235, 255 }; // #4D94EB 选中时的图标颜色
+        pub const frozen_icon: IconTint = .{ 120, 125, 135, 255 }; // #787D87 冻结时的图标颜色
+        pub const active_icon: IconTint = .{ 210, 215, 225, 255 }; // #D2D7E1 可见时的图标颜色
+        pub const dimmed_icon: IconTint = .{ 80, 85, 95, 255 }; // #50555F 不可见时的图标颜色
 
-        pub const filter_text: Color = .{ 0.45, 0.48, 0.54, 1.0 };
-        pub const row_hovered: Color = .{ 0.16, 0.17, 0.21, 1.0 };
-        pub const row_selected: Color = .{ 0.25, 0.45, 0.75, 0.30 };
-        pub const guide_line: Color = .{ 0.18, 0.19, 0.22, 1.0 };
-        pub const drop_target: Color = .{ 0.30, 0.58, 0.92, 0.35 };
+        pub const filter_text: Color = .{ 0.45, 0.48, 0.54, 1.0 }; // #727A87 层级过滤器文本颜色
+        pub const row_hovered: Color = .{ 0.16, 0.17, 0.21, 1.0 }; // #282C34 层级行悬停背景
+        pub const row_selected: Color = .{ 0.25, 0.45, 0.75, 0.30 }; // #3F73BF 层级行选中背景
+        pub const guide_line: Color = .{ 0.18, 0.19, 0.22, 1.0 }; // #2E323B 层级引导线颜色
+        pub const drop_target: Color = .{ 0.30, 0.58, 0.92, 0.35 }; // #4D94EB 35% 层级拖放目标高亮
     };
 
     // ── Status buttons (eye / lock / freeze) ─────────────────────────────────
     pub const status = struct {
         pub const on = ButtonPalette{
-            .bg = .{ 0.20, 0.55, 0.85, 0.25 },
-            .hovered = .{ 0.25, 0.60, 0.90, 0.40 },
-            .active = .{ 0.30, 0.65, 0.95, 0.55 },
+            .bg = .{ 0.20, 0.55, 0.85, 0.25 }, // #3390D9 25%
+            .hovered = .{ 0.25, 0.60, 0.90, 0.40 }, // #4095E6 40%
+            .active = .{ 0.30, 0.65, 0.95, 0.55 }, // #4D94EB 55%
         };
         pub const off = ButtonPalette{
-            .bg = .{ 0.45, 0.48, 0.54, 0.10 },
-            .hovered = .{ 0.50, 0.52, 0.58, 0.25 },
-            .active = .{ 0.55, 0.58, 0.64, 0.40 },
+            .bg = .{ 0.45, 0.48, 0.54, 0.10 }, // #727A87 10%
+            .hovered = .{ 0.50, 0.52, 0.58, 0.25 }, // #7F858E 25%
+            .active = .{ 0.55, 0.58, 0.64, 0.40 }, // #8C919F 40%
         };
 
-        pub const on_icon: IconTint = .{ 77, 148, 235, 255 }; // 蓝色
-        pub const off_icon: IconTint = .{ 120, 125, 135, 255 };
+        pub const on_icon: IconTint = .{ 77, 148, 235, 255 }; // #4D94EB 亮蓝色图标表示开启状态
+        pub const off_icon: IconTint = .{ 120, 125, 135, 255 }; // #787D87 暗灰色图标表示关闭状态
     };
 
     // ── Toolbar ──────────────────────────────────────────────────────────────
     pub const toolbar = struct {
         pub const idle = ButtonPalette{
-            .bg = .{ 0.12, 0.13, 0.16, 0.0 },
-            .hovered = .{ 0.20, 0.21, 0.26, 0.6 },
-            .active = .{ 0.15, 0.16, 0.20, 0.8 },
+            .bg = .{ 0.12, 0.13, 0.16, 0.0 }, // 默认状态下工具栏按钮没有背景色
+            .hovered = .{ 0.20, 0.21, 0.26, 0.6 }, // #34373F 60%
+            .active = .{ 0.15, 0.16, 0.20, 0.8 }, // #26282D 80%
         };
         pub const active = ButtonPalette{
-            .bg = .{ 0.30, 0.58, 0.92, 0.15 },
-            .hovered = .{ 0.30, 0.58, 0.92, 0.25 },
-            .active = .{ 0.30, 0.58, 0.92, 0.35 },
+            .bg = .{ 0.30, 0.58, 0.92, 0.15 }, // #4D94EB 15%
+            .hovered = .{ 0.30, 0.58, 0.92, 0.25 }, // #4D94EB 25%
+            .active = .{ 0.30, 0.58, 0.92, 0.35 }, // #4D94EB 35%
         };
         pub const accent = ButtonPalette{
-            .bg = .{ 0.30, 0.58, 0.92, 0.30 },
-            .hovered = .{ 0.36, 0.64, 0.96, 0.50 },
-            .active = .{ 0.24, 0.52, 0.88, 0.70 },
+            .bg = .{ 0.30, 0.58, 0.92, 0.30 }, // #4D94EB 30%
+            .hovered = .{ 0.36, 0.64, 0.96, 0.50 }, // #5CB3F5 50%
+            .active = .{ 0.24, 0.52, 0.88, 0.70 }, // #3D85E1 70%
         };
     };
 
     // ── Viewport ─────────────────────────────────────────────────────────────
     pub const viewport = struct {
-        pub const overlay_bg: Color = .{ 0.10, 0.11, 0.14, 0.40 };
-        pub const overlay_border: Color = .{ 0.06, 0.07, 0.09, 0.60 };
-        pub const grid_line: Color = .{ 0.18, 0.19, 0.22, 0.45 };
-        pub const grid_line_major: Color = .{ 0.26, 0.27, 0.31, 0.55 };
-        pub const gizmo_x: Color = .{ 0.85, 0.20, 0.20, 1.0 };
-        pub const gizmo_y: Color = .{ 0.20, 0.70, 0.30, 1.0 };
-        pub const gizmo_z: Color = .{ 0.25, 0.50, 0.90, 1.0 };
-        pub const gizmo_screen: Color = .{ 0.90, 0.85, 0.30, 1.0 };
-        pub const frustum_wire: Color = .{ 0.45, 0.48, 0.54, 0.65 };
-        pub const frustum_selected: Color = .{ 0.30, 0.58, 0.92, 0.85 };
-        pub const entity_icon_idle: IconTint = .{ 140, 145, 155, 255 };
-        pub const entity_icon_accent: IconTint = .{ 210, 215, 225, 255 };
-        pub const entity_icon_selected: IconTint = .{ 77, 148, 235, 255 };
-        pub const cursor_3d: Color = .{ 0.88, 0.90, 0.94, 0.75 };
+        pub const overlay_bg: Color = .{ 0.10, 0.11, 0.14, 0.40 }; // #191C24 40% 半透明背景用于视口覆盖层
+        pub const overlay_border: Color = .{ 0.06, 0.07, 0.09, 0.60 }; // #0F1217 60% 用于视口覆盖层边框
+        pub const grid_line: Color = .{ 0.18, 0.19, 0.22, 0.45 }; // #2E323B 45% 视口网格线颜色
+        pub const grid_line_major: Color = .{ 0.26, 0.27, 0.31, 0.55 }; // #42474F 55% 视口主网格线颜色
+        pub const gizmo_x: Color = .{ 0.85, 0.20, 0.20, 1.0 }; // #D9534F 红色用于X轴变换工具
+        pub const gizmo_y: Color = .{ 0.20, 0.70, 0.30, 1.0 }; // #5CB85C 绿色用于Y轴变换工具
+        pub const gizmo_z: Color = .{ 0.25, 0.50, 0.90, 1.0 }; // #5BC0DE 蓝色用于Z轴变换工具
+        pub const gizmo_screen: Color = .{ 0.90, 0.85, 0.30, 1.0 }; // #F0AD4E 黄色用于屏幕空间变换工具
+        pub const frustum_wire: Color = .{ 0.45, 0.48, 0.54, 0.65 }; // #727A87 65% 用于摄像机视锥线框颜色
+        pub const frustum_selected: Color = .{ 0.30, 0.58, 0.92, 0.85 }; // #4D94EB 85% 用于选中对象的摄像机视锥线框颜色
+        pub const entity_icon_idle: IconTint = .{ 140, 145, 155, 255 }; // #8C919F 默认状态下的实体图标颜色
+        pub const entity_icon_accent: IconTint = .{ 210, 215, 225, 255 }; // #D2D7E1 强调状态下的实体图标颜色（如鼠标悬停）
+        pub const entity_icon_selected: IconTint = .{ 77, 148, 235, 255 }; // #4D94EB 选中状态下的实体图标颜色
+        pub const cursor_3d: Color = .{ 0.88, 0.90, 0.94, 0.75 }; // #E0E5EE 75% 用于3D光标的颜色
     };
 
     // ── Inspector / Details ──────────────────────────────────────────────────
     pub const inspector = struct {
-        pub const ai_preview_badge: Color = .{ 0.72, 0.42, 0.88, 1.0 };
-        pub const ai_preview_bg: Color = .{ 0.32, 0.16, 0.50, 0.25 };
-        pub const ai_preview_name: Color = .{ 0.72, 0.42, 0.88, 0.75 };
-        pub const component_header_bg: Color = .{ 0.11, 0.12, 0.15, 1.0 };
-        pub const component_header_hovered: Color = .{ 0.16, 0.17, 0.21, 1.0 };
-        pub const component_separator: Color = .{ 0.08, 0.09, 0.11, 1.0 };
-        pub const property_label: Color = .{ 0.52, 0.54, 0.60, 1.0 };
-        pub const property_value_bg: Color = .{ 0.12, 0.13, 0.16, 1.0 };
-        pub const add_component_bg: Color = .{ 0.10, 0.11, 0.14, 1.0 };
-        pub const add_component_hovered: Color = .{ 0.16, 0.17, 0.21, 1.0 };
+        pub const ai_preview_badge: Color = .{ 0.72, 0.42, 0.88, 1.0 }; // #B86AF0 用于AI预览的徽章背景颜色
+        pub const ai_preview_bg: Color = .{ 0.32, 0.16, 0.50, 0.25 }; // #521A80 25% 用于AI预览的背景颜色
+        pub const ai_preview_name: Color = .{ 0.72, 0.42, 0.88, 0.75 }; // #B86AF0 75% 用于AI预览名称文本颜色
+        pub const component_header_bg: Color = .{ 0.11, 0.12, 0.15, 1.0 }; // #1C1F26 组件标题背景颜色
+        pub const component_header_hovered: Color = .{ 0.16, 0.17, 0.21, 1.0 }; // #282C34 组件标题悬停背景颜色
+        pub const property_label: Color = .{ 0.52, 0.54, 0.60, 1.0 }; // #848A97 用于属性标签的文本颜色
+        pub const property_value_bg: Color = .{ 0.12, 0.13, 0.16, 1.0 }; // #1F212B 用于属性值输入框的背景颜色
+        pub const add_component_bg: Color = .{ 0.10, 0.11, 0.14, 1.0 }; // #191C24 用于“添加组件”按钮的背景颜色
+        pub const add_component_hovered: Color = .{ 0.16, 0.17, 0.21, 1.0 }; // #282C34 用于“添加组件”按钮的悬停背景颜色
     };
 
     // ── Axis colors (transform gizmo / inspector) ────────────────────────────
     pub const axis = struct {
-        pub const x_bg: Color = .{ 0.85, 0.20, 0.20, 1.0 };
-        pub const y_bg: Color = .{ 0.20, 0.70, 0.30, 1.0 };
-        pub const z_bg: Color = .{ 0.25, 0.50, 0.90, 1.0 };
-        pub const label: Color = .{ 1.0, 1.0, 1.0, 1.0 };
+        pub const x_bg: Color = .{ 0.85, 0.20, 0.20, 1.0 }; // #D9534F X轴背景颜色
+        pub const y_bg: Color = .{ 0.20, 0.70, 0.30, 1.0 }; // #5CB85C Y轴背景颜色
+        pub const z_bg: Color = .{ 0.25, 0.50, 0.90, 1.0 }; // #5BC0DE Z轴背景颜色
+        pub const label: Color = .{ 1.0, 1.0, 1.0, 1.0 }; // #FFFFFF 轴标签颜色
     };
 
     // ── Freeze toggle (legacy text-based button) ─────────────────────────────
     pub const freeze = struct {
-        pub const text_active: Color = .{ 0.30, 0.70, 0.95, 1.0 };
-        pub const text_inactive: Color = .{ 0.45, 0.48, 0.54, 1.0 };
+        pub const text_active: Color = .{ 0.30, 0.70, 0.95, 1.0 }; // #4D94EB 亮蓝色文本表示冻结状态
+        pub const text_inactive: Color = .{ 0.45, 0.48, 0.54, 1.0 }; // #727A87 暗灰色文本表示非冻结状态
         pub const bg_active = ButtonPalette{
-            .bg = .{ 0.15, 0.40, 0.70, 0.75 },
-            .hovered = .{ 0.20, 0.50, 0.80, 0.85 },
-            .active = .{ 0.10, 0.35, 0.65, 0.90 },
+            .bg = .{ 0.15, 0.40, 0.70, 0.75 }, // #264D80 75%
+            .hovered = .{ 0.20, 0.50, 0.80, 0.85 }, // #3373BF 85%
+            .active = .{ 0.10, 0.35, 0.65, 0.90 }, // #1A4065 90%
         };
         pub const bg_inactive = ButtonPalette{
-            .bg = .{ 0.14, 0.15, 0.18, 0.50 },
-            .hovered = .{ 0.18, 0.19, 0.23, 0.70 },
-            .active = .{ 0.16, 0.17, 0.21, 0.82 },
+            .bg = .{ 0.14, 0.15, 0.18, 0.50 }, // #24262E 50%
+            .hovered = .{ 0.18, 0.19, 0.23, 0.70 }, // #2E323B 70%
+            .active = .{ 0.16, 0.17, 0.21, 0.82 }, // #282C34 82%
         };
     };
 
     // ── Console / Log ────────────────────────────────────────────────────────
     pub const console = struct {
-        pub const error_text: Color = .{ 0.88, 0.25, 0.22, 1.0 };
-        pub const warning_text: Color = .{ 0.90, 0.68, 0.15, 1.0 };
-        pub const info_text: Color = .{ 0.30, 0.58, 0.92, 1.0 };
-        pub const debug_text: Color = .{ 0.42, 0.44, 0.50, 1.0 };
-        pub const row_error: Color = .{ 0.88, 0.25, 0.22, 0.06 };
-        pub const row_warning: Color = .{ 0.90, 0.68, 0.15, 0.06 };
+        pub const error_text: Color = .{ 0.88, 0.25, 0.22, 1.0 }; // #E14238 红色用于错误日志文本
+        pub const warning_text: Color = .{ 0.90, 0.68, 0.15, 1.0 }; // #E5AD26 黄色用于警告日志文本
+        pub const info_text: Color = .{ 0.30, 0.58, 0.92, 1.0 }; // #4D94EB 蓝色用于信息日志文本
+        pub const debug_text: Color = .{ 0.42, 0.44, 0.50, 1.0 }; // #6B707F 灰蓝色用于调试日志文本
+        pub const row_error: Color = .{ 0.88, 0.25, 0.22, 0.06 }; // #E14238 6% 用于错误日志行背景
+        pub const row_warning: Color = .{ 0.90, 0.68, 0.15, 0.06 }; // #E5AD26 6% 用于警告日志行背景
     };
 
     // ── Content Browser ──────────────────────────────────────────────────────
     pub const content_browser = struct {
-        pub const folder_icon: IconTint = .{ 210, 180, 80, 255 };
-        pub const file_icon: IconTint = .{ 140, 145, 155, 255 };
-        pub const thumbnail_bg: Color = .{ 0.08, 0.09, 0.11, 1.0 };
-        pub const thumbnail_border: Color = .{ 0.16, 0.17, 0.20, 1.0 };
-        pub const thumbnail_selected_border: Color = .{ 0.30, 0.58, 0.92, 1.0 };
-        pub const path_bar_bg: Color = .{ 0.11, 0.12, 0.15, 1.0 };
+        pub const folder_icon: IconTint = .{ 210, 180, 80, 255 }; // #D2B450 文件夹图标颜色
+        pub const file_icon: IconTint = .{ 140, 145, 155, 255 }; // #8C919B 文件图标颜色
+        pub const thumbnail_bg: Color = .{ 0.08, 0.09, 0.11, 1.0 }; // #14161C 缩略图背景颜色
+        pub const thumbnail_border: Color = .{ 0.16, 0.17, 0.20, 1.0 }; // #292C33 缩略图边框颜色
+        pub const thumbnail_selected_border: Color = .{ 0.30, 0.58, 0.92, 1.0 }; // #4D94EB 选中缩略图边框颜色
+        pub const path_bar_bg: Color = .{ 0.11, 0.12, 0.15, 1.0 }; // #1C1F26 路径栏背景颜色
     };
 
     // ── AI / Jarvis ──────────────────────────────────────────────────────────
     pub const ai = struct {
-        pub const accent: Color = .{ 0.60, 0.34, 0.90, 1.0 };
-        pub const accent_hovered: Color = .{ 0.66, 0.42, 0.95, 1.0 };
-        pub const badge_bg: Color = .{ 0.32, 0.16, 0.50, 0.25 };
-        pub const user_msg_bg: Color = .{ 0.16, 0.17, 0.21, 1.0 };
-        pub const assistant_msg_bg: Color = .{ 0.12, 0.13, 0.16, 1.0 };
-        pub const streaming_indicator: Color = .{ 0.60, 0.34, 0.90, 1.0 };
+        pub const accent: Color = .{ 0.60, 0.34, 0.90, 1.0 }; // #9955E6 AI 高亮颜色
+        pub const accent_hovered: Color = .{ 0.66, 0.42, 0.95, 1.0 }; // #A96BF2 AI 高亮悬停颜色
+        pub const badge_bg: Color = .{ 0.32, 0.16, 0.50, 0.25 }; // #522880 25% AI 徽章背景颜色
+        pub const user_msg_bg: Color = .{ 0.16, 0.17, 0.21, 1.0 }; // #282C34 用户消息背景颜色
+        pub const assistant_msg_bg: Color = .{ 0.12, 0.13, 0.16, 1.0 }; // #1F212B 助手消息背景颜色
+        pub const streaming_indicator: Color = .{ 0.60, 0.34, 0.90, 1.0 }; // #9955E6 流媒体指示器颜色
     };
 };
 
