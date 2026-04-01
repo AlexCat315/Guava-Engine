@@ -8,6 +8,7 @@ const manipulation = @import("manipulation.zig");
 
 const EditorState = state_mod.EditorState;
 pub const MeshElementSelectionMode = state_mod.MeshElementSelectionMode;
+const MeshShortcutBinding = state_mod.MeshShortcutBinding;
 
 pub const Edge = struct {
     a: u32,
@@ -49,6 +50,8 @@ const InteractiveMeshOp = struct {
     base_indices: []u32,
     seed_edge_index: ?u32,
     amount: f32,
+    start_amount: f32,
+    start_mouse_position: [2]f32,
 };
 
 var interactive_mesh_op: ?InteractiveMeshOp = null;
@@ -219,43 +222,47 @@ pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.L
         _ = try deleteSelectedElements(state, layer_context);
         return true;
     }
-    if (input.wasKeyPressed(.e)) {
+    if (shortcutPressed(input, state.mesh_edit_shortcuts.extrude)) {
         _ = try beginInteractiveOperation(state, layer_context, .extrude);
         return true;
     }
-    if (input.wasKeyPressed(.i)) {
+    if (shortcutPressed(input, state.mesh_edit_shortcuts.inset)) {
         _ = try beginInteractiveOperation(state, layer_context, .inset);
         return true;
     }
-    if (input.wasKeyPressed(.b) and !input.modifiers.ctrl) {
+    if (shortcutPressed(input, state.mesh_edit_shortcuts.bevel)) {
         _ = try beginInteractiveOperation(state, layer_context, .bevel);
         return true;
     }
-    if (input.wasKeyPressed(.r) and input.modifiers.ctrl) {
+    if (shortcutPressed(input, state.mesh_edit_shortcuts.loop_cut)) {
         _ = try beginInteractiveOperation(state, layer_context, .loop_cut);
         return true;
     }
-    if (input.wasKeyPressed(.m)) {
+    if (shortcutPressed(input, state.mesh_edit_shortcuts.merge)) {
         _ = try mergeSelectedVertices(state, layer_context);
         return true;
     }
-    if (input.wasKeyPressed(.d) and input.modifiers.shift) {
+    if (shortcutPressed(input, state.mesh_edit_shortcuts.duplicate)) {
         _ = try duplicateSelectedElements(state, layer_context);
         return true;
     }
-    if (input.wasKeyPressed(.p)) {
+    if (shortcutPressed(input, state.mesh_edit_shortcuts.separate)) {
         _ = try separateSelectedFaces(state, layer_context);
         return true;
     }
-    if (input.wasKeyPressed(.n) and input.modifiers.shift) {
+    if (shortcutPressed(input, state.mesh_edit_shortcuts.recalc_normals)) {
         _ = try recalculateNormals(state, layer_context);
         return true;
     }
-    if (input.wasKeyPressed(.period)) {
+    if (shortcutPressed(input, state.mesh_edit_shortcuts.pivot_to_selection)) {
         _ = try pivotToSelection(state, layer_context);
         return true;
     }
     return false;
+}
+
+fn shortcutPressed(input: *const engine.core.InputState, binding: MeshShortcutBinding) bool {
+    return binding.matches(input);
 }
 
 pub fn handleViewportSelection(
@@ -1929,6 +1936,13 @@ fn beginInteractiveOperation(
     const selected = try allocator.dupe(u32, state.mesh_edit_selected_elements.items);
     errdefer allocator.free(selected);
 
+    const initial_amount: f32 = switch (kind) {
+        .extrude => 0.35,
+        .inset => 0.15,
+        .bevel => 0.2,
+        .loop_cut => 0.5,
+    };
+
     interactive_mesh_op = .{
         .kind = kind,
         .entity_id = context.entity_id,
@@ -1938,12 +1952,9 @@ fn beginInteractiveOperation(
         .base_vertices = base_vertices,
         .base_indices = base_indices,
         .seed_edge_index = if (kind == .loop_cut) state.mesh_edit_selected_elements.items[0] else null,
-        .amount = switch (kind) {
-            .extrude => 0.35,
-            .inset => 0.15,
-            .bevel => 0.2,
-            .loop_cut => 0.5,
-        },
+        .amount = initial_amount,
+        .start_amount = initial_amount,
+        .start_mouse_position = layer_context.input.mouse_position,
     };
 
     return try applyInteractivePreview(state, layer_context);
@@ -1961,20 +1972,35 @@ fn updateInteractiveOperation(state: *EditorState, layer_context: *engine.core.L
         return true;
     }
 
-    const delta = input.mouse_delta[0] - input.mouse_delta[1] * 0.4;
-    if (@abs(delta) > 0.0001) {
-        const base_sensitivity = std.math.clamp(state.mesh_modal_drag_sensitivity, 0.0005, 0.05);
-        const effective_sensitivity = if (input.modifiers.shift)
-            base_sensitivity * std.math.clamp(state.mesh_modal_fine_scale, 0.05, 1.0)
-        else
-            base_sensitivity;
-        op.amount += delta * effective_sensitivity;
-        op.amount = switch (op.kind) {
-            .extrude => std.math.clamp(op.amount, -1.5, 1.5),
-            .inset => std.math.clamp(op.amount, 0.0, 0.95),
-            .bevel => std.math.clamp(op.amount, 0.0, 0.95),
-            .loop_cut => std.math.clamp(op.amount, 0.05, 0.95),
-        };
+    const base_sensitivity = std.math.clamp(state.mesh_modal_drag_sensitivity, 0.0005, 0.05);
+    const fine_scale = std.math.clamp(state.mesh_modal_fine_scale, 0.05, 1.0);
+    const previous_amount = op.amount;
+
+    if (op.kind == .loop_cut and !input.modifiers.shift) {
+        const viewport_width = @max(state.viewport_extent[0], 1.0);
+        const local_x = input.mouse_position[0] - state.viewport_origin[0];
+        const normalized = std.math.clamp(local_x / viewport_width, 0.0, 1.0);
+        op.amount = std.math.clamp(0.05 + normalized * 0.90, 0.05, 0.95);
+        op.start_amount = op.amount;
+        op.start_mouse_position = input.mouse_position;
+    } else {
+        const delta = input.mouse_delta[0] - input.mouse_delta[1] * 0.4;
+        if (@abs(delta) > 0.0001) {
+            const effective_sensitivity = if (input.modifiers.shift)
+                base_sensitivity * fine_scale
+            else
+                base_sensitivity;
+            op.amount += delta * effective_sensitivity;
+            op.amount = switch (op.kind) {
+                .extrude => std.math.clamp(op.amount, -1.5, 1.5),
+                .inset => std.math.clamp(op.amount, 0.0, 0.95),
+                .bevel => std.math.clamp(op.amount, 0.0, 0.95),
+                .loop_cut => std.math.clamp(op.amount, 0.05, 0.95),
+            };
+        }
+    }
+
+    if (@abs(op.amount - previous_amount) > 0.00001) {
         _ = try applyInteractivePreview(state, layer_context);
     }
 
@@ -2194,7 +2220,11 @@ pub fn drawInteractiveOperationHud(state: *EditorState, layer_context: *engine.c
     const box_max = [2]f32{ box_min[0] + box_w, box_min[1] + box_h };
 
     draw_list.addRectFilled(box_min, box_max, gui.getColorU32(.{ 0.06, 0.07, 0.09, 0.88 }), 8.0, 0);
-    draw_list.addRect(box_min, box_max, gui.getColorU32(.{ 0.26, 0.42, 0.62, 0.92 }), 8.0, 0, 1.0);
+    const border_color = gui.getColorU32(.{ 0.26, 0.42, 0.62, 0.92 });
+    draw_list.addLine(.{ box_min[0], box_min[1] }, .{ box_max[0], box_min[1] }, border_color, 1.0);
+    draw_list.addLine(.{ box_max[0], box_min[1] }, .{ box_max[0], box_max[1] }, border_color, 1.0);
+    draw_list.addLine(.{ box_max[0], box_max[1] }, .{ box_min[0], box_max[1] }, border_color, 1.0);
+    draw_list.addLine(.{ box_min[0], box_max[1] }, .{ box_min[0], box_min[1] }, border_color, 1.0);
     draw_list.addText(.{ box_min[0] + pad_x, box_min[1] + pad_y + 0.0 * line_h }, gui.getColorU32(.{ 0.95, 0.97, 1.0, 1.0 }), value_text);
     draw_list.addText(.{ box_min[0] + pad_x, box_min[1] + pad_y + 1.0 * line_h }, gui.getColorU32(.{ 0.78, 0.84, 0.92, 1.0 }), step_text);
     draw_list.addText(

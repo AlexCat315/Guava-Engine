@@ -1,4 +1,5 @@
 const std = @import("std");
+const engine = @import("guava");
 const gui = @import("../ui/gui.zig");
 const i18n = @import("../i18n/mod.zig");
 const provider_support = @import("../ui/panels/ai/provider_support.zig");
@@ -7,6 +8,8 @@ const state_mod = @import("state.zig");
 const EditorState = state_mod.EditorState;
 const AiProviderType = state_mod.AiProviderType;
 const FpsDisplayMode = state_mod.FpsDisplayMode;
+const MeshShortcutBinding = state_mod.MeshShortcutBinding;
+const MeshEditShortcutConfig = state_mod.MeshEditShortcutConfig;
 const max_ai_providers = state_mod.max_ai_providers;
 
 const ai_prefs_file_name = "ai_provider_settings.json";
@@ -29,12 +32,32 @@ const PersistedPrefs = struct {
 };
 
 const PersistedEditorPrefs = struct {
-    version: u32 = 1,
+    version: u32 = 2,
     language: ?[]const u8 = null,
     fps_display_mode: ?[]const u8 = null,
     vsync_enabled: ?bool = null,
     mesh_modal_drag_sensitivity: ?f32 = null,
     mesh_modal_fine_scale: ?f32 = null,
+    mesh_edit_shortcuts: ?PersistedMeshEditShortcutConfig = null,
+};
+
+const PersistedMeshShortcutBinding = struct {
+    key: ?[]const u8 = null,
+    ctrl: ?bool = null,
+    shift: ?bool = null,
+    alt: ?bool = null,
+};
+
+const PersistedMeshEditShortcutConfig = struct {
+    extrude: ?PersistedMeshShortcutBinding = null,
+    inset: ?PersistedMeshShortcutBinding = null,
+    bevel: ?PersistedMeshShortcutBinding = null,
+    loop_cut: ?PersistedMeshShortcutBinding = null,
+    merge: ?PersistedMeshShortcutBinding = null,
+    duplicate: ?PersistedMeshShortcutBinding = null,
+    separate: ?PersistedMeshShortcutBinding = null,
+    recalc_normals: ?PersistedMeshShortcutBinding = null,
+    pivot_to_selection: ?PersistedMeshShortcutBinding = null,
 };
 
 const ProviderDefaults = struct {
@@ -388,6 +411,9 @@ fn loadEditorPreferencesFromPath(state: *EditorState, path: []const u8) !void {
     if (parsed.value.mesh_modal_fine_scale) |value| {
         state.mesh_modal_fine_scale = std.math.clamp(value, 0.05, 1.0);
     }
+    if (parsed.value.mesh_edit_shortcuts) |shortcut_config| {
+        applyMeshEditShortcutConfig(&state.mesh_edit_shortcuts, shortcut_config);
+    }
 }
 
 fn saveEditorPreferencesToPath(state: *const EditorState, path: []const u8) !void {
@@ -398,8 +424,61 @@ fn saveEditorPreferencesToPath(state: *const EditorState, path: []const u8) !voi
         .vsync_enabled = state.vsync_enabled,
         .mesh_modal_drag_sensitivity = state.mesh_modal_drag_sensitivity,
         .mesh_modal_fine_scale = state.mesh_modal_fine_scale,
+        .mesh_edit_shortcuts = toPersistedMeshEditShortcutConfig(state.mesh_edit_shortcuts),
     };
     try writeJsonFileAtomically(allocator, path, payload);
+}
+
+fn applyMeshEditShortcutConfig(target: *MeshEditShortcutConfig, persisted: PersistedMeshEditShortcutConfig) void {
+    if (persisted.extrude) |binding| applyMeshShortcutBinding(&target.extrude, binding);
+    if (persisted.inset) |binding| applyMeshShortcutBinding(&target.inset, binding);
+    if (persisted.bevel) |binding| applyMeshShortcutBinding(&target.bevel, binding);
+    if (persisted.loop_cut) |binding| applyMeshShortcutBinding(&target.loop_cut, binding);
+    if (persisted.merge) |binding| applyMeshShortcutBinding(&target.merge, binding);
+    if (persisted.duplicate) |binding| applyMeshShortcutBinding(&target.duplicate, binding);
+    if (persisted.separate) |binding| applyMeshShortcutBinding(&target.separate, binding);
+    if (persisted.recalc_normals) |binding| applyMeshShortcutBinding(&target.recalc_normals, binding);
+    if (persisted.pivot_to_selection) |binding| applyMeshShortcutBinding(&target.pivot_to_selection, binding);
+}
+
+fn applyMeshShortcutBinding(target: *MeshShortcutBinding, persisted: PersistedMeshShortcutBinding) void {
+    if (persisted.key) |key_name| {
+        if (std.meta.stringToEnum(engine.core.InputKey, key_name)) |parsed_key| {
+            target.key = parsed_key;
+        }
+    }
+    if (persisted.ctrl) |value| {
+        target.ctrl = value;
+    }
+    if (persisted.shift) |value| {
+        target.shift = value;
+    }
+    if (persisted.alt) |value| {
+        target.alt = value;
+    }
+}
+
+fn toPersistedMeshEditShortcutConfig(config: MeshEditShortcutConfig) PersistedMeshEditShortcutConfig {
+    return .{
+        .extrude = toPersistedMeshShortcutBinding(config.extrude),
+        .inset = toPersistedMeshShortcutBinding(config.inset),
+        .bevel = toPersistedMeshShortcutBinding(config.bevel),
+        .loop_cut = toPersistedMeshShortcutBinding(config.loop_cut),
+        .merge = toPersistedMeshShortcutBinding(config.merge),
+        .duplicate = toPersistedMeshShortcutBinding(config.duplicate),
+        .separate = toPersistedMeshShortcutBinding(config.separate),
+        .recalc_normals = toPersistedMeshShortcutBinding(config.recalc_normals),
+        .pivot_to_selection = toPersistedMeshShortcutBinding(config.pivot_to_selection),
+    };
+}
+
+fn toPersistedMeshShortcutBinding(binding: MeshShortcutBinding) PersistedMeshShortcutBinding {
+    return .{
+        .key = @tagName(binding.key),
+        .ctrl = binding.ctrl,
+        .shift = binding.shift,
+        .alt = binding.alt,
+    };
 }
 
 pub fn loadEditorPreferences(state: *EditorState) !void {

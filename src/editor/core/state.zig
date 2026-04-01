@@ -2,6 +2,7 @@ const std = @import("std");
 const engine = @import("guava");
 const i18n = @import("../i18n/mod.zig");
 const command_mod = @import("../actions/command.zig");
+const input_mod = engine.core;
 
 pub const autosave_path = "assets/scenes/editor_autosave.guava_scene";
 pub const entity_drag_payload = "guava.scene.entity";
@@ -92,6 +93,32 @@ pub const MeshElementSelectionMode = enum {
     vertex,
     edge,
     face,
+};
+
+pub const MeshShortcutBinding = struct {
+    key: input_mod.InputKey,
+    ctrl: bool = false,
+    shift: bool = false,
+    alt: bool = false,
+
+    pub fn matches(self: MeshShortcutBinding, input: *const input_mod.InputState) bool {
+        return input.wasKeyPressed(self.key) and
+            input.modifiers.ctrl == self.ctrl and
+            input.modifiers.shift == self.shift and
+            input.modifiers.alt == self.alt;
+    }
+};
+
+pub const MeshEditShortcutConfig = struct {
+    extrude: MeshShortcutBinding = .{ .key = .e },
+    inset: MeshShortcutBinding = .{ .key = .i },
+    bevel: MeshShortcutBinding = .{ .key = .b },
+    loop_cut: MeshShortcutBinding = .{ .key = .r, .ctrl = true },
+    merge: MeshShortcutBinding = .{ .key = .m },
+    duplicate: MeshShortcutBinding = .{ .key = .d, .shift = true },
+    separate: MeshShortcutBinding = .{ .key = .p },
+    recalc_normals: MeshShortcutBinding = .{ .key = .n, .shift = true },
+    pivot_to_selection: MeshShortcutBinding = .{ .key = .period },
 };
 
 pub const ManipulationTarget = enum {
@@ -478,6 +505,7 @@ pub const EditorState = struct {
     mesh_edit_entity: ?engine.scene.EntityId = null,
     mesh_edit_selection_mode: MeshElementSelectionMode = .face,
     mesh_edit_selected_elements: std.ArrayList(u32) = .empty,
+    mesh_edit_shortcuts: MeshEditShortcutConfig = .{},
     mesh_modal_drag_sensitivity: f32 = 0.005,
     mesh_modal_fine_scale: f32 = 0.25,
     transform_pivot_mode: TransformPivotMode = .origin,

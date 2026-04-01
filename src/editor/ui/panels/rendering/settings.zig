@@ -6,6 +6,8 @@ const EditorState = @import("../../../core/state.zig").EditorState;
 const SettingsCategory = @import("../../../core/state.zig").SettingsCategory;
 const SettingsTab = @import("../../../core/state.zig").SettingsTab;
 const FpsDisplayMode = @import("../../../core/state.zig").FpsDisplayMode;
+const MeshShortcutBinding = @import("../../../core/state.zig").MeshShortcutBinding;
+const MeshEditShortcutConfig = @import("../../../core/state.zig").MeshEditShortcutConfig;
 const preferences = @import("../../../core/preferences.zig");
 const i18n = @import("../../../i18n/mod.zig");
 const icon_cache = @import("../../icon_cache.zig");
@@ -264,6 +266,96 @@ fn drawSettingsContentCamera(_: *EditorState) void {
     gui.text("Camera settings coming soon...");
 }
 
+const mesh_shortcut_keys = [_]engine.core.InputKey{
+    .e,
+    .i,
+    .b,
+    .r,
+    .m,
+    .d,
+    .p,
+    .n,
+    .period,
+    .f,
+    .q,
+    .w,
+    .a,
+    .s,
+    .g,
+    .t,
+    .x,
+    .y,
+    .z,
+    .one,
+    .two,
+    .three,
+    .tab,
+    .delete,
+    .backspace,
+};
+
+fn shortcutKeyLabel(key: engine.core.InputKey) []const u8 {
+    return switch (key) {
+        .tab => "Tab",
+        .delete => "Delete",
+        .backspace => "Backspace",
+        .one => "1",
+        .two => "2",
+        .three => "3",
+        .period => ".",
+        else => @tagName(key),
+    };
+}
+
+fn drawShortcutBindingControl(id: []const u8, binding: *MeshShortcutBinding) bool {
+    var changed = false;
+    if (gui.beginCombo(id, shortcutKeyLabel(binding.key))) {
+        defer gui.endCombo();
+        for (mesh_shortcut_keys) |candidate| {
+            const selected = binding.key == candidate;
+            if (gui.selectable(shortcutKeyLabel(candidate), selected, false, 0.0, 0.0)) {
+                binding.key = candidate;
+                changed = true;
+            }
+        }
+    }
+    return changed;
+}
+
+fn drawShortcutModifierToggle(id: []const u8, value: *bool) bool {
+    return gui.checkbox(id, value);
+}
+
+fn drawShortcutRow(action_label: []const u8, id_suffix: []const u8, binding: *MeshShortcutBinding) bool {
+    var changed = false;
+    gui.tableNextRow();
+
+    gui.tableNextColumn();
+    gui.text(action_label);
+
+    gui.tableNextColumn();
+    var key_id_buf: [64]u8 = undefined;
+    const key_id = std.fmt.bufPrint(&key_id_buf, "##key_{s}", .{id_suffix}) catch "##key_fallback";
+    changed = drawShortcutBindingControl(key_id, binding) or changed;
+
+    gui.tableNextColumn();
+    var ctrl_id_buf: [64]u8 = undefined;
+    const ctrl_id = std.fmt.bufPrint(&ctrl_id_buf, "##ctrl_{s}", .{id_suffix}) catch "##ctrl_fallback";
+    changed = drawShortcutModifierToggle(ctrl_id, &binding.ctrl) or changed;
+
+    gui.tableNextColumn();
+    var shift_id_buf: [64]u8 = undefined;
+    const shift_id = std.fmt.bufPrint(&shift_id_buf, "##shift_{s}", .{id_suffix}) catch "##shift_fallback";
+    changed = drawShortcutModifierToggle(shift_id, &binding.shift) or changed;
+
+    gui.tableNextColumn();
+    var alt_id_buf: [64]u8 = undefined;
+    const alt_id = std.fmt.bufPrint(&alt_id_buf, "##alt_{s}", .{id_suffix}) catch "##alt_fallback";
+    changed = drawShortcutModifierToggle(alt_id, &binding.alt) or changed;
+
+    return changed;
+}
+
 fn drawSettingsContentShortcuts(state: *EditorState) void {
     gui.text("Mesh Edit Modal Controls");
     gui.dummy(0.0, 4.0);
@@ -288,22 +380,51 @@ fn drawSettingsContentShortcuts(state: *EditorState) void {
     gui.separator();
     gui.dummy(0.0, 8.0);
 
-    gui.text("Shortcut Reference");
-    gui.labelText("Tab", "Object/Edit Mode");
-    gui.labelText("1 / 2 / 3", "Vertex / Edge / Face mode");
-    gui.labelText("E", "Extrude (modal drag)");
-    gui.labelText("I", "Inset (modal drag)");
-    gui.labelText("B", "Bevel (modal drag)");
-    gui.labelText("Ctrl+R", "Loop Cut (modal drag)");
+    gui.text("Mesh Edit Shortcuts");
+    gui.textWrapped("These bindings are live. Changes are applied immediately and persisted to editor preferences.");
+    gui.dummy(0.0, 6.0);
+
+    var changed = false;
+    if (gui.beginTable("##mesh_edit_shortcuts_table", 5)) {
+        defer gui.endTable();
+        gui.tableSetupColumn("Action", true, 0.0);
+        gui.tableSetupColumn("Key", false, 120.0);
+        gui.tableSetupColumn("Ctrl", false, 56.0);
+        gui.tableSetupColumn("Shift", false, 56.0);
+        gui.tableSetupColumn("Alt", false, 56.0);
+        gui.tableHeadersRow();
+
+        changed = drawShortcutRow("Extrude", "extrude", &state.mesh_edit_shortcuts.extrude) or changed;
+        changed = drawShortcutRow("Inset", "inset", &state.mesh_edit_shortcuts.inset) or changed;
+        changed = drawShortcutRow("Bevel", "bevel", &state.mesh_edit_shortcuts.bevel) or changed;
+        changed = drawShortcutRow("Loop Cut", "loop_cut", &state.mesh_edit_shortcuts.loop_cut) or changed;
+        changed = drawShortcutRow("Merge", "merge", &state.mesh_edit_shortcuts.merge) or changed;
+        changed = drawShortcutRow("Duplicate Faces", "duplicate", &state.mesh_edit_shortcuts.duplicate) or changed;
+        changed = drawShortcutRow("Separate Faces", "separate", &state.mesh_edit_shortcuts.separate) or changed;
+        changed = drawShortcutRow("Recalculate Normals", "recalc_normals", &state.mesh_edit_shortcuts.recalc_normals) or changed;
+        changed = drawShortcutRow("Pivot To Selection", "pivot_to_selection", &state.mesh_edit_shortcuts.pivot_to_selection) or changed;
+    }
+
+    gui.dummy(0.0, 6.0);
+    if (gui.buttonEx("Reset Mesh Edit Shortcuts", 0.0, 0.0)) {
+        state.mesh_edit_shortcuts = MeshEditShortcutConfig{};
+        changed = true;
+    }
+
+    if (changed) {
+        preferences.saveEditorPreferences(state) catch |err| {
+            std.log.warn("Editor: failed to save editor preferences: {s}", .{@errorName(err)});
+        };
+    }
+
+    gui.dummy(0.0, 8.0);
+    gui.separator();
+    gui.dummy(0.0, 8.0);
+    gui.text("Modal Controls");
+    gui.labelText("Mouse", "Adjust value (Loop Cut: cursor position maps to slide factor)");
     gui.labelText("Shift", "Fine adjustment while dragging");
     gui.labelText("LMB", "Confirm modal operation");
     gui.labelText("RMB / Esc", "Cancel and revert modal operation");
-    gui.labelText("Delete", "Delete selected elements");
-    gui.labelText("M", "Merge selected vertices");
-    gui.labelText("Shift+D", "Duplicate selected faces");
-    gui.labelText("P", "Separate selected faces");
-    gui.labelText("Shift+N", "Recalculate normals");
-    gui.labelText(".", "Pivot to selection");
 }
 
 fn drawSettingsContentAssistant(_: *EditorState) void {
