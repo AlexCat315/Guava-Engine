@@ -1474,10 +1474,11 @@ pub fn handleViewportSelection(state: *EditorState, layer_context: *engine.core.
 }
 
 fn canBeginViewportSelection(state: *const EditorState, input: *const engine.core.InputState) bool {
+    const allow_alt_select = input.modifiers.alt and mesh_edit.isEditModeActive(state);
     return state.viewport_has_image and
         state.viewport_hovered and
         !state.viewport_overlay_hovered and
-        !input.modifiers.alt and
+        (!input.modifiers.alt or allow_alt_select) and
         !state.manipulation_drag_active and
         !state.manipulation_keyboard_mode;
 }

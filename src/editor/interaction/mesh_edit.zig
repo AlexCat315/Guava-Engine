@@ -202,10 +202,6 @@ pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.L
         camera.toggleCameraMode(state, layer_context);
         return true;
     }
-    if (input.wasKeyPressed(.f)) {
-        camera.focusSelection(state, layer_context);
-        return true;
-    }
     if (input.wasKeyPressed(.one)) {
         setSelectionMode(state, .vertex);
         return true;
@@ -222,7 +218,18 @@ pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.L
         _ = try deleteSelectedElements(state, layer_context);
         return true;
     }
-    if (shortcutPressed(input, state.mesh_edit_shortcuts.extrude)) {
+    if (input.wasKeyPressed(.a) and !input.modifiers.ctrl and !input.modifiers.alt) {
+        _ = try toggleSelectAllElements(state, layer_context);
+        return true;
+    }
+    if (input.wasKeyPressed(.f) and !input.modifiers.ctrl and !input.modifiers.alt and !input.modifiers.shift) {
+        if (try fillFaceFromSelection(state, layer_context)) {
+            return true;
+        }
+        camera.focusSelection(state, layer_context);
+        return true;
+    }
+    if (shortcutPressed(input, state.mesh_edit_shortcuts.extrude) or (input.wasKeyPressed(.e) and input.modifiers.alt and !input.modifiers.ctrl)) {
         _ = try beginInteractiveOperation(state, layer_context, .extrude);
         return true;
     }
@@ -230,7 +237,7 @@ pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.L
         _ = try beginInteractiveOperation(state, layer_context, .inset);
         return true;
     }
-    if (shortcutPressed(input, state.mesh_edit_shortcuts.bevel)) {
+    if (shortcutPressed(input, state.mesh_edit_shortcuts.bevel) or (input.wasKeyPressed(.b) and input.modifiers.ctrl and !input.modifiers.alt)) {
         _ = try beginInteractiveOperation(state, layer_context, .bevel);
         return true;
     }
@@ -292,7 +299,17 @@ pub fn handleViewportSelection(
         .edge => {
             const allocator = state.allocator orelse layer_context.world.allocator;
             const picked = try pickEdgeIndexOnScreen(allocator, state, layer_context, context);
-            try applyPickedSelection(state, layer_context, update_mode, if (picked) |index| &[_]u32{index} else &.{});
+            if (picked) |index| {
+                if (layer_context.input.modifiers.alt) {
+                    const loop_selection = try collectEdgeLoopSelection(allocator, context, index);
+                    defer allocator.free(loop_selection);
+                    try applyPickedSelection(state, layer_context, update_mode, loop_selection);
+                } else {
+                    try applyPickedSelection(state, layer_context, update_mode, &[_]u32{index});
+                }
+            } else {
+                try applyPickedSelection(state, layer_context, update_mode, &.{});
+            }
         },
         .face => {
             const allocator = state.allocator orelse layer_context.world.allocator;
@@ -849,6 +866,186 @@ pub fn pivotToSelection(state: *EditorState, layer_context: *engine.core.LayerCo
 
 fn clearElementSelection(state: *EditorState) void {
     state.mesh_edit_selected_elements.clearRetainingCapacity();
+}
+
+fn toggleSelectAllElements(state: *EditorState, layer_context: *engine.core.LayerContext) !bool {
+    const context = activeContext(state, layer_context) orelse return false;
+    const allocator = state.allocator orelse layer_context.world.allocator;
+
+    const total_count: usize = switch (state.mesh_edit_selection_mode) {
+        .vertex => context.mesh.vertices.len,
+        .face => context.mesh.indices.len / 3,
+        .edge => blk: {
+            const edges = try buildEdgeList(allocator, context.mesh);
+            defer allocator.free(edges);
+            break :blk edges.len;
+        },
+    };
+
+    if (state.mesh_edit_selected_elements.items.len == total_count) {
+        clearElementSelection(state);
+        return true;
+    }
+
+    clearElementSelection(state);
+    try state.mesh_edit_selected_elements.ensureTotalCapacity(allocator, total_count);
+    var i: usize = 0;
+    while (i < total_count) : (i += 1) {
+        state.mesh_edit_selected_elements.appendAssumeCapacity(@intCast(i));
+    }
+    return true;
+}
+
+fn fillFaceFromSelection(state: *EditorState, layer_context: *engine.core.LayerContext) !bool {
+    const context = activeContext(state, layer_context) orelse return false;
+    const allocator = state.allocator orelse layer_context.world.allocator;
+
+    var tri_vertices: [3]u32 = .{ 0, 0, 0 };
+    var tri_count: usize = 0;
+
+    switch (state.mesh_edit_selection_mode) {
+        .vertex => {
+            for (state.mesh_edit_selected_elements.items) |vertex_index| {
+                if (vertex_index >= context.mesh.vertices.len) continue;
+                if (!containsVertex(tri_vertices[0..tri_count], vertex_index)) {
+                    tri_vertices[tri_count] = vertex_index;
+                    tri_count += 1;
+                    if (tri_count == 3) break;
+                }
+            }
+        },
+        .edge => {
+            const edges = try buildEdgeList(allocator, context.mesh);
+            defer allocator.free(edges);
+            for (state.mesh_edit_selected_elements.items) |edge_index| {
+                if (edge_index >= edges.len) continue;
+                const edge = edges[edge_index];
+                if (!containsVertex(tri_vertices[0..tri_count], edge.a)) {
+                    tri_vertices[tri_count] = edge.a;
+                    tri_count += 1;
+                    if (tri_count == 3) break;
+                }
+                if (!containsVertex(tri_vertices[0..tri_count], edge.b)) {
+                    tri_vertices[tri_count] = edge.b;
+                    tri_count += 1;
+                    if (tri_count == 3) break;
+                }
+            }
+        },
+        .face => return false,
+    }
+
+    if (tri_count < 3) {
+        return false;
+    }
+
+    var next_indices = std.ArrayList(u32).empty;
+    defer next_indices.deinit(allocator);
+    try next_indices.appendSlice(allocator, context.mesh.indices);
+    const new_face_index: u32 = @intCast(next_indices.items.len / 3);
+    try next_indices.appendSlice(allocator, &tri_vertices);
+
+    const next_vertices = try allocator.dupe(engine.assets.MeshVertex, context.mesh.vertices);
+    defer allocator.free(next_vertices);
+    recalculateVertexNormals(next_vertices, next_indices.items);
+
+    try applyMeshMutation(state, layer_context, context.mesh_handle, next_vertices, next_indices.items);
+    clearElementSelection(state);
+    try state.mesh_edit_selected_elements.append(allocator, new_face_index);
+    try history.captureSnapshotWithLabel(state, layer_context, "Fill Face", "Fill Face", .human);
+    return true;
+}
+
+fn containsVertex(values: []const u32, needle: u32) bool {
+    for (values) |value| {
+        if (value == needle) return true;
+    }
+    return false;
+}
+
+fn collectEdgeLoopSelection(allocator: std.mem.Allocator, context: ActiveContext, seed_edge_index: u32) ![]u32 {
+    const edges = try buildEdgeList(allocator, context.mesh);
+    defer allocator.free(edges);
+    if (seed_edge_index >= edges.len) {
+        return allocator.dupe(u32, &.{});
+    }
+
+    var edge_face_count = std.AutoHashMap(u64, u32).init(allocator);
+    defer edge_face_count.deinit();
+    var triangle_offset: usize = 0;
+    while (triangle_offset + 2 < context.mesh.indices.len) : (triangle_offset += 3) {
+        const tri = [3]u32{ context.mesh.indices[triangle_offset], context.mesh.indices[triangle_offset + 1], context.mesh.indices[triangle_offset + 2] };
+        const tri_edges = [3][2]u32{
+            .{ @min(tri[0], tri[1]), @max(tri[0], tri[1]) },
+            .{ @min(tri[1], tri[2]), @max(tri[1], tri[2]) },
+            .{ @min(tri[2], tri[0]), @max(tri[2], tri[0]) },
+        };
+        for (tri_edges) |te| {
+            const key = edgeKey(te[0], te[1]);
+            const gop = try edge_face_count.getOrPut(key);
+            if (!gop.found_existing) {
+                gop.value_ptr.* = 1;
+            } else {
+                gop.value_ptr.* += 1;
+            }
+        }
+    }
+
+    var vertex_edges = try allocator.alloc(std.ArrayList(u32), context.mesh.vertices.len);
+    defer {
+        for (vertex_edges) |*list| list.deinit(allocator);
+        allocator.free(vertex_edges);
+    }
+    for (vertex_edges) |*list| list.* = .empty;
+    for (edges, 0..) |edge, idx| {
+        try vertex_edges[edge.a].append(allocator, @intCast(idx));
+        try vertex_edges[edge.b].append(allocator, @intCast(idx));
+    }
+
+    var loop_edge_keys = std.ArrayList(u64).empty;
+    defer loop_edge_keys.deinit(allocator);
+    var loop_edge_set = std.AutoHashMap(u64, void).init(allocator);
+    defer loop_edge_set.deinit();
+
+    const seed_edge = edges[seed_edge_index];
+    const seed_key = edgeKey(@min(seed_edge.a, seed_edge.b), @max(seed_edge.a, seed_edge.b));
+    try loop_edge_set.put(seed_key, {});
+    try loop_edge_keys.append(allocator, seed_key);
+
+    try extendEdgeLoop(
+        allocator,
+        context.mesh.vertices,
+        edges,
+        vertex_edges,
+        &edge_face_count,
+        seed_edge.a,
+        seed_edge.b,
+        &loop_edge_set,
+        &loop_edge_keys,
+    );
+    try extendEdgeLoop(
+        allocator,
+        context.mesh.vertices,
+        edges,
+        vertex_edges,
+        &edge_face_count,
+        seed_edge.b,
+        seed_edge.a,
+        &loop_edge_set,
+        &loop_edge_keys,
+    );
+
+    var selected = std.ArrayList(u32).empty;
+    defer selected.deinit(allocator);
+    for (loop_edge_keys.items) |key| {
+        for (edges, 0..) |edge, edge_index| {
+            if (edgeKey(@min(edge.a, edge.b), @max(edge.a, edge.b)) == key) {
+                try selected.append(allocator, @intCast(edge_index));
+                break;
+            }
+        }
+    }
+    return try selected.toOwnedSlice(allocator);
 }
 
 fn pruneSelectionToCurrentMesh(state: *EditorState, layer_context: *engine.core.LayerContext) !void {

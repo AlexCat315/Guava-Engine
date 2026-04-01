@@ -97,4 +97,15 @@ pub const PassDescriptors = struct {
             .depth = null,
         };
     }
+
+    pub fn overlayWithDepth(target: rhi_mod.ColorTarget, depth: rhi_mod.DepthAttachmentDesc) rhi_mod.RenderPassDesc {
+        return .{
+            .color = .{
+                .target = target,
+                .load_op = .load,
+                .store_op = .store,
+            },
+            .depth = depth,
+        };
+    }
 };

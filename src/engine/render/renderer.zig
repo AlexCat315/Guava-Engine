@@ -2204,7 +2204,20 @@ pub const Renderer = struct {
                 }
 
                 if (self.gizmoPassRequired(scene)) {
-                    const gizmo_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.overlay(scene_color_target));
+                    const gizmo_render_mode = effectiveViewportRenderMode(self.editor_viewport_state);
+                    const gizmo_pass_desc = if (gizmo_render_mode != .wireframe and scene_depth_target != null)
+                        PassDescriptors.overlayWithDepth(scene_color_target, .{
+                            .texture = scene_depth_target.?.texture,
+                            .clear_depth = scene_depth_target.?.clear_depth,
+                            .clear_stencil = scene_depth_target.?.clear_stencil,
+                            .load_op = .load,
+                            .store_op = .store,
+                            .stencil_load_op = scene_depth_target.?.stencil_load_op,
+                            .stencil_store_op = scene_depth_target.?.stencil_store_op,
+                        })
+                    else
+                        PassDescriptors.overlay(scene_color_target);
+                    const gizmo_pass = try self.rhi.beginRenderPassWithDesc(frame, gizmo_pass_desc);
                     const gizmo_start = std.time.nanoTimestamp();
                     var gizmo_overlay_stats = mesh_pass_mod.DrawStats{};
                     const gizmo_target_transform = if (self.editor_gizmo_transform_override) |override_transform|

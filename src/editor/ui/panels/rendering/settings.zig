@@ -266,7 +266,23 @@ fn drawSettingsContentCamera(_: *EditorState) void {
     gui.text("Camera settings coming soon...");
 }
 
+const ShortcutSlot = enum(u8) {
+    extrude,
+    inset,
+    bevel,
+    loop_cut,
+    merge,
+    duplicate,
+    separate,
+    recalc_normals,
+    pivot_to_selection,
+};
+
+var active_record_slot: ?ShortcutSlot = null;
+var last_conflict_text: [128]u8 = [_]u8{0} ** 128;
+
 const mesh_shortcut_keys = [_]engine.core.InputKey{
+    .a,
     .e,
     .i,
     .b,
@@ -279,7 +295,6 @@ const mesh_shortcut_keys = [_]engine.core.InputKey{
     .f,
     .q,
     .w,
-    .a,
     .s,
     .g,
     .t,
@@ -307,56 +322,204 @@ fn shortcutKeyLabel(key: engine.core.InputKey) []const u8 {
     };
 }
 
-fn drawShortcutBindingControl(id: []const u8, binding: *MeshShortcutBinding) bool {
+fn shortcutSlotLabel(slot: ShortcutSlot) []const u8 {
+    return switch (slot) {
+        .extrude => "Extrude",
+        .inset => "Inset",
+        .bevel => "Bevel",
+        .loop_cut => "Loop Cut",
+        .merge => "Merge",
+        .duplicate => "Duplicate Faces",
+        .separate => "Separate Faces",
+        .recalc_normals => "Recalculate Normals",
+        .pivot_to_selection => "Pivot To Selection",
+    };
+}
+
+fn shortcutSlotIdSuffix(slot: ShortcutSlot) []const u8 {
+    return switch (slot) {
+        .extrude => "extrude",
+        .inset => "inset",
+        .bevel => "bevel",
+        .loop_cut => "loop_cut",
+        .merge => "merge",
+        .duplicate => "duplicate",
+        .separate => "separate",
+        .recalc_normals => "recalc_normals",
+        .pivot_to_selection => "pivot_to_selection",
+    };
+}
+
+fn shortcutBindingPtr(state: *EditorState, slot: ShortcutSlot) *MeshShortcutBinding {
+    return switch (slot) {
+        .extrude => &state.mesh_edit_shortcuts.extrude,
+        .inset => &state.mesh_edit_shortcuts.inset,
+        .bevel => &state.mesh_edit_shortcuts.bevel,
+        .loop_cut => &state.mesh_edit_shortcuts.loop_cut,
+        .merge => &state.mesh_edit_shortcuts.merge,
+        .duplicate => &state.mesh_edit_shortcuts.duplicate,
+        .separate => &state.mesh_edit_shortcuts.separate,
+        .recalc_normals => &state.mesh_edit_shortcuts.recalc_normals,
+        .pivot_to_selection => &state.mesh_edit_shortcuts.pivot_to_selection,
+    };
+}
+
+fn shortcutsEqual(a: MeshShortcutBinding, b: MeshShortcutBinding) bool {
+    return a.key == b.key and a.ctrl == b.ctrl and a.shift == b.shift and a.alt == b.alt;
+}
+
+fn findShortcutConflict(state: *const EditorState, slot: ShortcutSlot, binding: MeshShortcutBinding) ?ShortcutSlot {
+    const total = std.meta.fields(ShortcutSlot).len;
+    var i: usize = 0;
+    while (i < total) : (i += 1) {
+        const candidate: ShortcutSlot = @enumFromInt(i);
+        if (candidate == slot) continue;
+        const candidate_binding = switch (candidate) {
+            .extrude => state.mesh_edit_shortcuts.extrude,
+            .inset => state.mesh_edit_shortcuts.inset,
+            .bevel => state.mesh_edit_shortcuts.bevel,
+            .loop_cut => state.mesh_edit_shortcuts.loop_cut,
+            .merge => state.mesh_edit_shortcuts.merge,
+            .duplicate => state.mesh_edit_shortcuts.duplicate,
+            .separate => state.mesh_edit_shortcuts.separate,
+            .recalc_normals => state.mesh_edit_shortcuts.recalc_normals,
+            .pivot_to_selection => state.mesh_edit_shortcuts.pivot_to_selection,
+        };
+        if (shortcutsEqual(binding, candidate_binding)) {
+            return candidate;
+        }
+    }
+    return null;
+}
+
+fn setConflictMessage(slot: ShortcutSlot, conflict: ShortcutSlot) void {
+    @memset(last_conflict_text[0..], 0);
+    const msg = std.fmt.bufPrint(
+        last_conflict_text[0..],
+        "Conflict: {s} duplicates {s}",
+        .{ shortcutSlotLabel(slot), shortcutSlotLabel(conflict) },
+    ) catch return;
+    _ = msg;
+}
+
+fn applyBindingWithConflictCheck(state: *EditorState, slot: ShortcutSlot, new_binding: MeshShortcutBinding) bool {
+    if (findShortcutConflict(state, slot, new_binding)) |conflict_slot| {
+        setConflictMessage(slot, conflict_slot);
+        return false;
+    }
+    shortcutBindingPtr(state, slot).* = new_binding;
+    @memset(last_conflict_text[0..], 0);
+    return true;
+}
+
+fn drawShortcutBindingControl(id: []const u8, state: *EditorState, slot: ShortcutSlot, binding: *MeshShortcutBinding) bool {
     var changed = false;
     if (gui.beginCombo(id, shortcutKeyLabel(binding.key))) {
         defer gui.endCombo();
         for (mesh_shortcut_keys) |candidate| {
             const selected = binding.key == candidate;
             if (gui.selectable(shortcutKeyLabel(candidate), selected, false, 0.0, 0.0)) {
-                binding.key = candidate;
-                changed = true;
+                var next = binding.*;
+                next.key = candidate;
+                changed = applyBindingWithConflictCheck(state, slot, next) or changed;
             }
         }
     }
     return changed;
 }
 
-fn drawShortcutModifierToggle(id: []const u8, value: *bool) bool {
-    return gui.checkbox(id, value);
+fn drawShortcutModifierToggle(id: []const u8, state: *EditorState, slot: ShortcutSlot, binding: *MeshShortcutBinding, field: enum { ctrl, shift, alt }) bool {
+    var value = switch (field) {
+        .ctrl => binding.ctrl,
+        .shift => binding.shift,
+        .alt => binding.alt,
+    };
+    if (!gui.checkbox(id, &value)) {
+        return false;
+    }
+    var next = binding.*;
+    switch (field) {
+        .ctrl => next.ctrl = value,
+        .shift => next.shift = value,
+        .alt => next.alt = value,
+    }
+    return applyBindingWithConflictCheck(state, slot, next);
 }
 
-fn drawShortcutRow(action_label: []const u8, id_suffix: []const u8, binding: *MeshShortcutBinding) bool {
+fn drawShortcutRow(state: *EditorState, slot: ShortcutSlot, binding: *MeshShortcutBinding) bool {
+    const action_label = shortcutSlotLabel(slot);
+    const id_suffix = shortcutSlotIdSuffix(slot);
     var changed = false;
+    const has_conflict = findShortcutConflict(state, slot, binding.*) != null;
     gui.tableNextRow();
 
     gui.tableNextColumn();
+    if (has_conflict) {
+        gui.pushStyleColor(.text, .{ 1.0, 0.42, 0.42, 1.0 });
+        defer gui.popStyleColor(1);
+    }
     gui.text(action_label);
 
     gui.tableNextColumn();
     var key_id_buf: [64]u8 = undefined;
     const key_id = std.fmt.bufPrint(&key_id_buf, "##key_{s}", .{id_suffix}) catch "##key_fallback";
-    changed = drawShortcutBindingControl(key_id, binding) or changed;
+    changed = drawShortcutBindingControl(key_id, state, slot, binding) or changed;
 
     gui.tableNextColumn();
     var ctrl_id_buf: [64]u8 = undefined;
     const ctrl_id = std.fmt.bufPrint(&ctrl_id_buf, "##ctrl_{s}", .{id_suffix}) catch "##ctrl_fallback";
-    changed = drawShortcutModifierToggle(ctrl_id, &binding.ctrl) or changed;
+    changed = drawShortcutModifierToggle(ctrl_id, state, slot, binding, .ctrl) or changed;
 
     gui.tableNextColumn();
     var shift_id_buf: [64]u8 = undefined;
     const shift_id = std.fmt.bufPrint(&shift_id_buf, "##shift_{s}", .{id_suffix}) catch "##shift_fallback";
-    changed = drawShortcutModifierToggle(shift_id, &binding.shift) or changed;
+    changed = drawShortcutModifierToggle(shift_id, state, slot, binding, .shift) or changed;
 
     gui.tableNextColumn();
     var alt_id_buf: [64]u8 = undefined;
     const alt_id = std.fmt.bufPrint(&alt_id_buf, "##alt_{s}", .{id_suffix}) catch "##alt_fallback";
-    changed = drawShortcutModifierToggle(alt_id, &binding.alt) or changed;
+    changed = drawShortcutModifierToggle(alt_id, state, slot, binding, .alt) or changed;
+
+    gui.tableNextColumn();
+    var rec_label_buf: [96]u8 = undefined;
+    const rec_text = if (active_record_slot == slot) "Recording..." else "Record";
+    const rec_label = std.fmt.bufPrint(&rec_label_buf, "{s}##rec_{s}", .{ rec_text, id_suffix }) catch rec_text;
+    if (gui.buttonEx(rec_label, 0.0, 0.0)) {
+        if (active_record_slot == slot) {
+            active_record_slot = null;
+        } else {
+            active_record_slot = slot;
+            @memset(last_conflict_text[0..], 0);
+        }
+    }
 
     return changed;
 }
 
-fn drawSettingsContentShortcuts(state: *EditorState) void {
+fn handleShortcutRecording(state: *EditorState, layer_context: *engine.core.LayerContext) bool {
+    const slot = active_record_slot orelse return false;
+    const input = layer_context.input;
+    if (input.wasKeyPressed(.escape)) {
+        active_record_slot = null;
+        return false;
+    }
+
+    for (mesh_shortcut_keys) |candidate| {
+        if (!input.wasKeyPressed(candidate)) continue;
+        const next = MeshShortcutBinding{
+            .key = candidate,
+            .ctrl = input.modifiers.ctrl,
+            .shift = input.modifiers.shift,
+            .alt = input.modifiers.alt,
+        };
+        const applied = applyBindingWithConflictCheck(state, slot, next);
+        active_record_slot = null;
+        return applied;
+    }
+    return false;
+}
+
+fn drawSettingsContentShortcuts(state: *EditorState, layer_context: *engine.core.LayerContext) void {
     gui.text("Mesh Edit Modal Controls");
     gui.dummy(0.0, 4.0);
 
@@ -384,30 +547,44 @@ fn drawSettingsContentShortcuts(state: *EditorState) void {
     gui.textWrapped("These bindings are live. Changes are applied immediately and persisted to editor preferences.");
     gui.dummy(0.0, 6.0);
 
-    var changed = false;
-    if (gui.beginTable("##mesh_edit_shortcuts_table", 5)) {
+    var changed = handleShortcutRecording(state, layer_context);
+    if (active_record_slot != null) {
+        gui.pushStyleColor(.text, .{ 0.95, 0.82, 0.35, 1.0 });
+        gui.text("Recording shortcut: press a key combo, Esc to cancel");
+        gui.popStyleColor(1);
+        gui.dummy(0.0, 4.0);
+    }
+    if (last_conflict_text[0] != 0) {
+        const end = std.mem.indexOfScalar(u8, last_conflict_text[0..], 0) orelse last_conflict_text.len;
+        gui.pushStyleColor(.text, .{ 1.0, 0.42, 0.42, 1.0 });
+        gui.text(last_conflict_text[0..end]);
+        gui.popStyleColor(1);
+        gui.dummy(0.0, 4.0);
+    }
+
+    if (gui.beginTable("##mesh_edit_shortcuts_table", 6)) {
         defer gui.endTable();
         gui.tableSetupColumn("Action", true, 0.0);
         gui.tableSetupColumn("Key", false, 120.0);
         gui.tableSetupColumn("Ctrl", false, 56.0);
         gui.tableSetupColumn("Shift", false, 56.0);
         gui.tableSetupColumn("Alt", false, 56.0);
+        gui.tableSetupColumn("Record", false, 110.0);
         gui.tableHeadersRow();
 
-        changed = drawShortcutRow("Extrude", "extrude", &state.mesh_edit_shortcuts.extrude) or changed;
-        changed = drawShortcutRow("Inset", "inset", &state.mesh_edit_shortcuts.inset) or changed;
-        changed = drawShortcutRow("Bevel", "bevel", &state.mesh_edit_shortcuts.bevel) or changed;
-        changed = drawShortcutRow("Loop Cut", "loop_cut", &state.mesh_edit_shortcuts.loop_cut) or changed;
-        changed = drawShortcutRow("Merge", "merge", &state.mesh_edit_shortcuts.merge) or changed;
-        changed = drawShortcutRow("Duplicate Faces", "duplicate", &state.mesh_edit_shortcuts.duplicate) or changed;
-        changed = drawShortcutRow("Separate Faces", "separate", &state.mesh_edit_shortcuts.separate) or changed;
-        changed = drawShortcutRow("Recalculate Normals", "recalc_normals", &state.mesh_edit_shortcuts.recalc_normals) or changed;
-        changed = drawShortcutRow("Pivot To Selection", "pivot_to_selection", &state.mesh_edit_shortcuts.pivot_to_selection) or changed;
+        const total = std.meta.fields(ShortcutSlot).len;
+        var i: usize = 0;
+        while (i < total) : (i += 1) {
+            const slot: ShortcutSlot = @enumFromInt(i);
+            changed = drawShortcutRow(state, slot, shortcutBindingPtr(state, slot)) or changed;
+        }
     }
 
     gui.dummy(0.0, 6.0);
     if (gui.buttonEx("Reset Mesh Edit Shortcuts", 0.0, 0.0)) {
         state.mesh_edit_shortcuts = MeshEditShortcutConfig{};
+        active_record_slot = null;
+        @memset(last_conflict_text[0..], 0);
         changed = true;
     }
 
@@ -441,7 +618,7 @@ fn drawSettingsContentForCategory(state: *EditorState, layer_context: *engine.co
         .viewport => drawSettingsContentRendering(state, layer_context),
         .rendering => drawSettingsContentRendering(state, layer_context),
         .camera => drawSettingsContentCamera(state),
-        .shortcuts => drawSettingsContentShortcuts(state),
+        .shortcuts => drawSettingsContentShortcuts(state, layer_context),
         .ai => drawSettingsContentAssistant(state),
         .assistant => drawSettingsContentAssistant(state),
         .advanced => {
@@ -502,7 +679,7 @@ pub fn drawSettingsWindow(state: *EditorState, layer_context: *engine.core.Layer
         // Shortcuts tab: direct content, no sidebar
         layout.beginSectionBody();
         defer layout.endSectionBody();
-        drawSettingsContentShortcuts(state);
+        drawSettingsContentShortcuts(state, layer_context);
         return;
     }
 

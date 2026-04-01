@@ -268,13 +268,13 @@ pub const GizmoPass = struct {
             .vertex_buffer_layouts = vertex_layouts[0..],
             .vertex_attributes = vertex_attributes[0..],
             .color_format = device.runtimeInfo().swapchain_format,
-            .depth_format = null,
+            .depth_format = .d32_float,
             .primitive_type = .line_list,
             .fill_mode = .fill,
             .cull_mode = .none,
             .front_face = .counter_clockwise,
-            .depth_compare = .always,
-            .depth_test = false,
+            .depth_compare = .less_or_equal,
+            .depth_test = true,
             .depth_write = false,
         });
 
@@ -284,13 +284,13 @@ pub const GizmoPass = struct {
             .vertex_buffer_layouts = vertex_layouts[0..],
             .vertex_attributes = vertex_attributes[0..],
             .color_format = device.runtimeInfo().swapchain_format,
-            .depth_format = null,
+            .depth_format = .d32_float,
             .primitive_type = .triangle_list,
             .fill_mode = .fill,
             .cull_mode = .none,
             .front_face = .counter_clockwise,
-            .depth_compare = .always,
-            .depth_test = false,
+            .depth_compare = .less_or_equal,
+            .depth_test = true,
             .depth_write = false,
         });
     }
