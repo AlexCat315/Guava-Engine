@@ -788,6 +788,18 @@ extern "C" void guava_imgui_draw_list_add_text(float pos_x, float pos_y,
                                       text + text_len);
 }
 
+extern "C" void guava_imgui_draw_list_add_bezier_curve(
+    float p0_x, float p0_y, float cp0_x, float cp0_y, float cp1_x,
+    float cp1_y, float p1_x, float p1_y, uint32_t color, float thickness,
+    int32_t num_segments) {
+  if (!g_imgui_initialized) {
+    return;
+  }
+  ImGui::GetWindowDrawList()->AddBezierCubic(
+      ImVec2(p0_x, p0_y), ImVec2(cp0_x, cp0_y), ImVec2(cp1_x, cp1_y),
+      ImVec2(p1_x, p1_y), color, thickness, num_segments);
+}
+
 extern "C" uint32_t guava_imgui_get_color_u32(float r, float g, float b,
                                               float a) {
   if (!g_imgui_initialized) {

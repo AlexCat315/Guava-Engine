@@ -301,6 +301,23 @@ pub const DrawList = struct {
         _ = self;
         c.guava_imgui_draw_list_add_text(pos[0], pos[1], color, value.ptr, value.len);
     }
+
+    pub fn addBezierCurve(self: DrawList, p0: [2]f32, cp0: [2]f32, cp1: [2]f32, p1: [2]f32, color: u32, thickness: f32, num_segments: i32) void {
+        _ = self;
+        c.guava_imgui_draw_list_add_bezier_curve(
+            p0[0],
+            p0[1],
+            cp0[0],
+            cp0[1],
+            cp1[0],
+            cp1[1],
+            p1[0],
+            p1[1],
+            color,
+            thickness,
+            num_segments,
+        );
+    }
 };
 
 pub fn getWindowDrawList() DrawList {

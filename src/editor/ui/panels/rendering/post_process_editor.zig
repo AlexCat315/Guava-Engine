@@ -301,6 +301,10 @@ fn drawPipelineGraph(state: *const EditorState, editor_state: *PostProcessPipeli
 
     gui.textColored(.{ 0.62, 0.66, 0.71, 1.0 }, state.text(.post_process_graph_role_hint));
 
+    const node_width: f32 = 164.0;
+    const node_height: f32 = 74.0;
+    const pin_offset_y = node_height * 0.5;
+
     for (editor_state.nodes.items, 0..) |*node, index| {
         const is_selected = editor_state.selected_node_index != null and editor_state.selected_node_index.? == index;
 
@@ -310,9 +314,6 @@ fn drawPipelineGraph(state: *const EditorState, editor_state: *PostProcessPipeli
         };
 
         gui.setCursorScreenPos(node_pos);
-
-        const node_width: f32 = 164.0;
-        const node_height: f32 = 74.0;
 
         const color = node.getColor();
         const node_bg: [4]f32 = if (is_selected)
@@ -351,6 +352,51 @@ fn drawPipelineGraph(state: *const EditorState, editor_state: *PostProcessPipeli
             node.position[0] += drag_delta[0];
             node.position[1] += drag_delta[1];
             gui.resetMouseDragDelta(.left);
+        }
+    }
+
+    drawConnectionLines(editor_state, canvas_pos, node_width, pin_offset_y);
+}
+
+fn drawConnectionLines(
+    editor_state: *PostProcessPipelineEditorState,
+    canvas_pos: [2]f32,
+    node_width: f32,
+    pin_offset_y: f32,
+) void {
+    const draw_list = gui.getWindowDrawList();
+
+    for (editor_state.nodes.items) |*from_node| {
+        if (from_node.output_connections.items.len == 0) continue;
+
+        const from_screen_x = canvas_pos[0] + from_node.position[0] + editor_state.view_pan[0] + node_width;
+        const from_screen_y = canvas_pos[1] + from_node.position[1] + editor_state.view_pan[1] + pin_offset_y;
+
+        for (from_node.output_connections.items) |to_index| {
+            if (to_index >= editor_state.nodes.items.len) continue;
+            const to_node = &editor_state.nodes.items[to_index];
+
+            const to_screen_x = canvas_pos[0] + to_node.position[0] + editor_state.view_pan[0];
+            const to_screen_y = canvas_pos[1] + to_node.position[1] + editor_state.view_pan[1] + pin_offset_y;
+
+            const p0 = [2]f32{ from_screen_x, from_screen_y };
+            const p1 = [2]f32{ to_screen_x, to_screen_y };
+
+            const dx = @max(p1[0] - p0[0], 60.0);
+            const cp0 = [2]f32{ p0[0] + dx * 0.5, p0[1] };
+            const cp1 = [2]f32{ p1[0] - dx * 0.5, p1[1] };
+
+            const from_color = from_node.getColor();
+            const line_color = gui.getColorU32(.{ from_color[0], from_color[1], from_color[2], 0.7 });
+            const thickness: f32 = 2.5;
+            const segments: i32 = 24;
+
+            draw_list.addBezierCurve(p0, cp0, cp1, p1, line_color, thickness, segments);
+
+            const pin_radius: f32 = 4.5;
+            const pin_color = gui.getColorU32(.{ from_color[0], from_color[1], from_color[2], 1.0 });
+            draw_list.addCircleFilled(p0, pin_radius, pin_color, 12);
+            draw_list.addCircleFilled(p1, pin_radius, pin_color, 12);
         }
     }
 }

@@ -202,19 +202,79 @@ pub const StyleRegistry = struct {
     /// Load a user plugin manifest from a directory path.
     /// Expects `dir_path/manifest.json` with the structure documented in R-9.
     pub fn loadUserPlugin(self: *StyleRegistry, dir_path: []const u8) !void {
-        _ = self;
-        _ = dir_path;
-        // TODO(Phase B): Parse manifest.json from dir_path, extract the
-        // "render_style" typed payload, construct StylePluginManifest,
-        // and call register(). Requires JSON parsing + directory I/O.
+        const manifest_path = try std.fs.path.join(self.allocator, &.{ dir_path, "manifest.json" });
+        defer self.allocator.free(manifest_path);
+
+        // Read and parse the manifest JSON. Content and parsed arena are
+        // intentionally kept alive (small controlled leak) so that string
+        // slices stored in the StylePluginManifest remain valid for the
+        // lifetime of the registry.
+        const content = try std.fs.cwd().readFileAlloc(self.allocator, manifest_path, 64 * 1024);
+        errdefer self.allocator.free(content);
+
+        const RenderStyleJson = struct {
+            display_name: []const u8 = "",
+            mesh_program: []const u8 = "mesh",
+            shadow_program: ?[]const u8 = null,
+            disabled_passes: []const []const u8 = &.{},
+        };
+        const ManifestJson = struct {
+            name: []const u8,
+            version: []const u8 = "1.0.0",
+            plugin_type: []const u8 = "render_style",
+            source: []const u8 = "project",
+            render_style: ?RenderStyleJson = null,
+        };
+
+        var parsed = try std.json.parseFromSlice(ManifestJson, self.allocator, content, .{ .ignore_unknown_fields = true });
+        errdefer parsed.deinit();
+
+        const m = parsed.value;
+        if (!std.mem.eql(u8, m.plugin_type, "render_style")) return error.NotRenderStylePlugin;
+
+        const rs = m.render_style orelse return error.MissingRenderStylePayload;
+
+        const source: plugin_types.PluginSource = if (std.mem.eql(u8, m.source, "project"))
+            .project
+        else if (std.mem.eql(u8, m.source, "user"))
+            .user
+        else
+            .builtin;
+
+        // Keep a long-lived copy of the directory path.
+        const path_copy = try self.allocator.dupe(u8, dir_path);
+        errdefer self.allocator.free(path_copy);
+
+        const style_manifest = StylePluginManifest{
+            .name = m.name,
+            .display_name = rs.display_name,
+            .version = m.version,
+            .source = source,
+            .path = path_copy,
+            .mesh_program = rs.mesh_program,
+            .shadow_program = rs.shadow_program,
+            .disabled_passes = rs.disabled_passes,
+        };
+
+        try self.register(style_manifest);
     }
 
     /// Scan a directory for plugin subdirectories and load each one.
     pub fn scanPluginDirectory(self: *StyleRegistry, root_path: []const u8) !void {
-        _ = self;
-        _ = root_path;
-        // TODO(Phase B): Iterate subdirectories of root_path; for each
-        // containing a manifest.json with plugin_type=="render_style",
-        // call loadUserPlugin().
+        var dir = std.fs.cwd().openDir(root_path, .{ .iterate = true }) catch |err| {
+            std.log.warn("StyleRegistry: cannot open plugin directory '{s}': {s}", .{ root_path, @errorName(err) });
+            return;
+        };
+        defer dir.close();
+
+        var it = dir.iterate();
+        while (try it.next()) |entry| {
+            if (entry.kind != .directory) continue;
+            const subdir_path = std.fs.path.join(self.allocator, &.{ root_path, entry.name }) catch continue;
+            defer self.allocator.free(subdir_path);
+            self.loadUserPlugin(subdir_path) catch |err| {
+                std.log.warn("StyleRegistry: failed to load plugin '{s}': {s}", .{ entry.name, @errorName(err) });
+            };
+        }
     }
 };

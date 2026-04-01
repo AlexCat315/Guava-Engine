@@ -195,6 +195,11 @@ pub const EditorLayer = struct {
         utils.syncInspectorNameBuffer(&self.state, layer_context);
         try history.resetSnapshotHistory(&self.state, layer_context);
         try content_browser.refreshAssetBrowser(&self.state, layer_context);
+
+        // Discover project render style plugins.
+        layer_context.renderer.styleRegistry().scanPluginDirectory("project_plugins") catch |err| {
+            std.log.warn("Editor: failed to scan project plugins: {s}", .{@errorName(err)});
+        };
     }
 
     fn onDetach(context: *anyopaque) void {

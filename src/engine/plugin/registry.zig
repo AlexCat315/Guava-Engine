@@ -82,12 +82,60 @@ pub const PluginRegistry = struct {
     }
 
     /// Discover plugins from a directory tree (engine/user/project).
+    /// Iterates subdirectories of `root_path`, reads `manifest.json` from
+    /// each, and registers a `PluginRecord` for every valid manifest.
     pub fn discover(self: *PluginRegistry, root_path: []const u8) !void {
-        _ = self;
-        _ = root_path;
-        // TODO(Phase B): Scan root_path for manifest.json files, parse
-        // common PluginManifest shell, then dispatch to type-specific
-        // loaders (StyleRegistry for render_style, etc.).
+        var dir = std.fs.cwd().openDir(root_path, .{ .iterate = true }) catch |err| {
+            std.log.warn("PluginRegistry: cannot open directory '{s}': {s}", .{ root_path, @errorName(err) });
+            return;
+        };
+        defer dir.close();
+
+        var it = dir.iterate();
+        while (try it.next()) |entry| {
+            if (entry.kind != .directory) continue;
+
+            const manifest_path = std.fs.path.join(self.allocator, &.{ root_path, entry.name, "manifest.json" }) catch continue;
+            defer self.allocator.free(manifest_path);
+
+            const content = std.fs.cwd().readFileAlloc(self.allocator, manifest_path, 64 * 1024) catch continue;
+            defer self.allocator.free(content);
+
+            const ManifestJson = struct {
+                name: []const u8,
+                version: []const u8 = "1.0.0",
+                plugin_type: []const u8 = "render_style",
+                source: []const u8 = "project",
+            };
+
+            var parsed = std.json.parseFromSlice(ManifestJson, self.allocator, content, .{ .ignore_unknown_fields = true }) catch continue;
+            defer parsed.deinit();
+
+            const m = parsed.value;
+            const plugin_type = std.meta.stringToEnum(types.PluginType, m.plugin_type) orelse continue;
+            const source = std.meta.stringToEnum(types.PluginSource, m.source) orelse .project;
+            const version = types.PluginVersion.parse(m.version) catch continue;
+
+            const name_dupe = self.allocator.dupe(u8, m.name) catch continue;
+            const path_dupe = self.allocator.dupe(u8, manifest_path) catch continue;
+
+            const record = self.allocator.create(types.PluginRecord) catch continue;
+            record.* = .{
+                .manifest = .{
+                    .name = name_dupe,
+                    .version = version,
+                    .plugin_type = plugin_type,
+                    .source = source,
+                    .path = path_dupe,
+                },
+                .lifecycle = .loaded,
+            };
+
+            self.register(record) catch {
+                self.allocator.destroy(record);
+                continue;
+            };
+        }
     }
 
     /// Transition a plugin to the enabled state.

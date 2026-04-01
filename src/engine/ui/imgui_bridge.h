@@ -103,6 +103,10 @@ void guava_imgui_draw_list_add_circle_filled(float center_x, float center_y,
                                              int32_t num_segments);
 void guava_imgui_draw_list_add_text(float pos_x, float pos_y, uint32_t color,
                                     const char *text, size_t text_len);
+void guava_imgui_draw_list_add_bezier_curve(
+    float p0_x, float p0_y, float cp0_x, float cp0_y, float cp1_x, float cp1_y,
+    float p1_x, float p1_y, uint32_t color, float thickness,
+    int32_t num_segments);
 uint32_t guava_imgui_get_color_u32(float r, float g, float b, float a);
 uint32_t guava_imgui_get_color_u32_idx(uint32_t color_idx);
 

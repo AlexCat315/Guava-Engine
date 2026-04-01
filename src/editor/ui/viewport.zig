@@ -2045,7 +2045,7 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
     gui.pushStyleVarVec2(.window_padding, .{ 4.0, 4.0 });
     defer gui.popStyleVar(1);
     gui.setNextWindowPos(overlay_pos);
-    gui.setNextWindowBgAlpha(0.0);
+    gui.setNextWindowBgAlpha(0.38);
     _ = gui.beginWindowFlags(
         "##viewport_overlay_controls",
         gui.WindowFlags.no_title_bar |
@@ -2053,10 +2053,10 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
             gui.WindowFlags.no_move |
             gui.WindowFlags.no_saved_settings |
             gui.WindowFlags.no_docking |
-            gui.WindowFlags.always_auto_resize |
-            gui.WindowFlags.no_background,
+            gui.WindowFlags.always_auto_resize,
     );
     defer gui.endWindow();
+    drawHudWindowChrome();
 
     if (gui.isWindowHovered()) {
         state.viewport_overlay_hovered = true;
@@ -2190,7 +2190,7 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
         state.viewport_origin[0] + @max((state.viewport_extent[0] - window_width) * 0.5, 18.0),
         state.viewport_origin[1] + viewportOverlayTopInset(),
     });
-    gui.setNextWindowBgAlpha(0.0);
+    gui.setNextWindowBgAlpha(0.38);
     _ = gui.beginWindowFlags(
         "##viewport_playback_overlay",
         gui.WindowFlags.no_title_bar |
@@ -2198,10 +2198,10 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
             gui.WindowFlags.no_move |
             gui.WindowFlags.no_saved_settings |
             gui.WindowFlags.no_docking |
-            gui.WindowFlags.always_auto_resize |
-            gui.WindowFlags.no_background,
+            gui.WindowFlags.always_auto_resize,
     );
     defer gui.endWindow();
+    drawHudWindowChrome();
 
     // Overlay hover should always block viewport world interactions.
     const input = layer_context.input;
@@ -2447,7 +2447,7 @@ fn drawViewportFpsOverlayWindow(state: *EditorState, layer_context: *engine.core
     defer gui.popStyleVar(1);
     gui.setNextWindowPos(.{ overlay_x, overlay_y });
     gui.setNextWindowSize(.{ overlay_width, overlay_height });
-    gui.setNextWindowBgAlpha(0.0);
+    gui.setNextWindowBgAlpha(0.45);
     _ = gui.beginWindowFlags(
         "##viewport_fps_overlay",
         gui.WindowFlags.no_title_bar |
@@ -2455,20 +2455,13 @@ fn drawViewportFpsOverlayWindow(state: *EditorState, layer_context: *engine.core
             gui.WindowFlags.no_move |
             gui.WindowFlags.no_scrollbar |
             gui.WindowFlags.no_saved_settings |
-            gui.WindowFlags.no_docking |
-            gui.WindowFlags.no_background,
+            gui.WindowFlags.no_docking,
     );
     defer gui.endWindow();
 
-    // Draw shadow + foreground text via draw list for crisp text-with-shadow effect
-    const draw_list = gui.getWindowDrawList();
-    const text_pos = gui.cursorScreenPos();
-    const shadow_color = gui.getColorU32(.{ 0.0, 0.0, 0.0, 0.85 });
-    const text_color = gui.getColorU32(.{ 0.95, 0.97, 1.0, 0.95 });
-
-    draw_list.addText(.{ text_pos[0] + 1.0, text_pos[1] + 1.0 }, shadow_color, display_text);
-    draw_list.addText(.{ text_pos[0] + 1.0, text_pos[1] + 2.0 }, shadow_color, display_text);
-    draw_list.addText(.{ text_pos[0], text_pos[1] }, text_color, display_text);
+    gui.pushStyleColor(.text, .{ 0.92, 0.94, 0.98, 1.0 });
+    defer gui.popStyleColor(1);
+    gui.text(display_text);
 }
 
 fn drawViewportViewCube(state: *EditorState, layer_context: *engine.core.LayerContext) void {
