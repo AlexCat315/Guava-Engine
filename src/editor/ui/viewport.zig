@@ -2423,56 +2423,32 @@ fn drawViewportFpsOverlayWindow(state: *EditorState, layer_context: *engine.core
         state.fps_overlay_last_sample_time = now;
     }
 
-    const overlay_width: f32 = 220.0;
-    const overlay_height: f32 = 22.0;
-    var fps_buffer: [32]u8 = undefined;
-    const fps_text = try std.fmt.bufPrint(&fps_buffer, "{d:.0}", .{state.fps_overlay_display_fps});
-    var frame_time_buffer: [32]u8 = undefined;
-    const frame_time_text = try std.fmt.bufPrint(&frame_time_buffer, "{d:.1} ms", .{state.fps_overlay_display_frame_ms});
-    var refresh_buffer: [24]u8 = undefined;
-    const refresh_text = if (state.fps_overlay_display_refresh_hz) |refresh_hz|
-        try std.fmt.bufPrint(&refresh_buffer, "{d:.0} Hz", .{refresh_hz})
+    var text_buffer: [80]u8 = undefined;
+    const display_text = if (state.fps_overlay_display_refresh_hz) |refresh_hz|
+        try std.fmt.bufPrint(&text_buffer, "{d:.0} FPS  {d:.1} ms  {d:.0} Hz", .{
+            state.fps_overlay_display_fps,
+            state.fps_overlay_display_frame_ms,
+            refresh_hz,
+        })
     else
-        "-- Hz";
-    const overlay_margin = 14.0;
-    // Position at top-right, below the view cube
-    const cube_clearance = std.math.clamp(@min(state.viewport_extent[0], state.viewport_extent[1]) * 0.13, 72.0, 92.0) + 12.0;
-    const overlay_x = state.viewport_origin[0] + state.viewport_extent[0] - overlay_width - overlay_margin;
-    const overlay_y = state.viewport_origin[1] + viewportOverlayTopInset() + cube_clearance;
+        try std.fmt.bufPrint(&text_buffer, "{d:.0} FPS  {d:.1} ms", .{
+            state.fps_overlay_display_fps,
+            state.fps_overlay_display_frame_ms,
+        });
 
-    gui.pushStyleVarVec2(.window_padding, .{ 6.0, 3.0 });
-    defer gui.popStyleVar(1);
-    gui.setNextWindowPos(.{
-        overlay_x,
-        overlay_y,
-    });
-    gui.setNextWindowSize(.{ overlay_width, overlay_height });
-    gui.setNextWindowBgAlpha(0.34);
-    _ = gui.beginWindowFlags(
-        "##viewport_fps_overlay",
-        gui.WindowFlags.no_title_bar |
-            gui.WindowFlags.no_resize |
-            gui.WindowFlags.no_move |
-            gui.WindowFlags.no_scrollbar |
-            gui.WindowFlags.no_saved_settings |
-            gui.WindowFlags.no_docking,
-    );
-    defer gui.endWindow();
-    drawHudWindowChrome();
+    const margin = 10.0;
+    const text_height = 13.0;
+    const text_x = state.viewport_origin[0] + margin;
+    const text_y = state.viewport_origin[1] + state.viewport_extent[1] - margin - text_height;
 
-    if (gui.isWindowHovered()) {
-        state.viewport_overlay_hovered = true;
-    }
+    const draw_list = gui.getWindowDrawList();
+    const shadow_color = gui.getColorU32(.{ 0.0, 0.0, 0.0, 0.50 });
+    const text_color = gui.getColorU32(.{ 0.82, 0.85, 0.90, 0.85 });
 
-    drawOverlayTitleChip(state.text(.fps));
-    gui.sameLineEx(56.0, 0.0);
-    gui.pushStyleColor(.text, .{ 0.96, 0.98, 1.0, 1.0 });
-    gui.text(fps_text);
-    gui.popStyleColor(1);
-    gui.sameLineEx(116.0, 0.0);
-    drawOverlayStatusChip(frame_time_text);
-    gui.sameLineEx(174.0, 0.0);
-    drawOverlayStatusChip(refresh_text);
+    // Shadow offset pass
+    draw_list.addText(.{ text_x + 1.0, text_y + 1.0 }, shadow_color, display_text);
+    // Foreground pass
+    draw_list.addText(.{ text_x, text_y }, text_color, display_text);
 }
 
 fn drawViewportViewCube(state: *EditorState, layer_context: *engine.core.LayerContext) void {
