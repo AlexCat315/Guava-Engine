@@ -2211,6 +2211,39 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
         }
     }
 
+    if (layer_context.scene_manager) |scene_manager| {
+        const loading_state = scene_manager.loadingState();
+        if (loading_state.active) {
+            gui.sameLine();
+            drawOverlayTitleChip("Scene");
+            gui.sameLine();
+            const phase_label = switch (loading_state.phase) {
+                .queued => "Queued",
+                .reading => "Reading",
+                .applying => "Applying",
+                .completed => "Completed",
+                .failed => "Failed",
+                .idle => "Idle",
+            };
+            drawOverlayStatusChip(phase_label);
+            gui.sameLine();
+            gui.progressBar(std.math.clamp(loading_state.progress, 0.0, 1.0), theme.Size.overlay_progress_width, 0.0, null);
+            if (gui.isItemHovered()) {
+                state.viewport_overlay_hovered = true;
+                if (loading_state.requested_scene_path) |path| {
+                    gui.setTooltip(path);
+                }
+            }
+        } else if (loading_state.phase == .failed and loading_state.error_message != null) {
+            gui.sameLine();
+            drawOverlayStatusChip("Scene Failed");
+            if (gui.isItemHovered()) {
+                state.viewport_overlay_hovered = true;
+                gui.setTooltip(loading_state.error_message.?);
+            }
+        }
+    }
+
     if (view_popup_open or display_popup_open or snap_popup_open) {
         state.viewport_overlay_hovered = true;
     }

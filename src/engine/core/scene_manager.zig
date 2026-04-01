@@ -11,6 +11,7 @@ const audio_mod = @import("../audio/mod.zig");
 pub const TransitionKind = enum {
     load,
     unload,
+    stream,
 };
 
 pub const TransitionPhase = enum {
@@ -209,6 +210,41 @@ pub const SceneManager = struct {
         self.notifyProgress();
     }
 
+    pub fn requestStreamScene(
+        self: *SceneManager,
+        job_system: *job_system_mod.JobSystem,
+        requested_path: []const u8,
+        callbacks: Callbacks,
+    ) !void {
+        if (self.isBusy()) {
+            return error.SceneTransitionInProgress;
+        }
+
+        const resolved_path = try resolveScenePathAlloc(self.allocator, requested_path);
+        errdefer self.allocator.free(resolved_path);
+
+        const shared = try AsyncReadShared.create(self.allocator, resolved_path);
+        errdefer shared.deinit();
+
+        const ctx = try self.allocator.create(AsyncReadContext);
+        errdefer self.allocator.destroy(ctx);
+        ctx.* = .{
+            .allocator = self.allocator,
+            .shared = shared,
+        };
+
+        try self.beginTransition(.stream, shared.path, callbacks);
+        errdefer self.abortTransitionSetup();
+
+        const handle = try job_system.enqueueWithCleanup(asyncReadSceneTask, ctx, asyncReadSceneCleanup, .normal);
+        self.active_job = handle;
+        self.async_read = shared;
+        self.phase = .reading;
+        self.progress = 0.15;
+        self.notifyStarted();
+        self.notifyProgress();
+    }
+
     pub fn requestUnloadScene(self: *SceneManager, callbacks: Callbacks) !void {
         if (self.isBusy()) {
             return error.SceneTransitionInProgress;
@@ -273,12 +309,62 @@ pub const SceneManager = struct {
                 defer self.allocator.free(source);
 
                 self.releaseAsyncJob();
-                try self.applySceneTransition(world, physics_state, script_runtime, command_queue, renderer, source);
+                self.phase = .applying;
+                self.progress = 0.9;
+                self.notifyProgress();
+
+                self.applySceneTransition(world, physics_state, script_runtime, command_queue, renderer, source, true) catch |err| {
+                    try self.failTransition(@errorName(err));
+                    return;
+                };
                 try self.finishLoadTransition();
             },
             .unload => {
-                try self.applySceneTransition(world, physics_state, script_runtime, command_queue, renderer, null);
+                self.phase = .applying;
+                self.progress = 0.9;
+                self.notifyProgress();
+
+                self.applySceneTransition(world, physics_state, script_runtime, command_queue, renderer, null, true) catch |err| {
+                    try self.failTransition(@errorName(err));
+                    return;
+                };
                 self.finishUnloadTransition();
+            },
+            .stream => {
+                const job_done = if (self.active_job) |handle| handle.isDone() else false;
+                if (!job_done) {
+                    return;
+                }
+
+                self.phase = .applying;
+                self.progress = 0.75;
+                self.notifyProgress();
+
+                const shared = self.async_read orelse return error.InvalidSceneTransitionState;
+                if (shared.takeError()) |message| {
+                    defer self.allocator.free(message);
+                    self.releaseAsyncJob();
+                    try self.failTransition(message);
+                    return;
+                }
+
+                const source = shared.takeSource() orelse {
+                    self.releaseAsyncJob();
+                    try self.failTransition("Scene read completed without source data");
+                    return;
+                };
+                defer self.allocator.free(source);
+
+                self.releaseAsyncJob();
+                self.phase = .applying;
+                self.progress = 0.9;
+                self.notifyProgress();
+
+                self.applySceneTransition(world, physics_state, script_runtime, command_queue, renderer, source, false) catch |err| {
+                    try self.failTransition(@errorName(err));
+                    return;
+                };
+                try self.finishLoadTransition();
             },
         }
     }
@@ -348,9 +434,18 @@ pub const SceneManager = struct {
         command_queue: *command_queue_mod.CommandQueue,
         renderer: ?*renderer_mod.Renderer,
         source: ?[]const u8,
+        clear_existing: bool,
     ) !void {
-        const persistent_snapshot = try capturePersistentEntities(self.allocator, world);
+        const recover_snapshot = if (clear_existing) try scene_io.serializeWorldAlloc(self.allocator, world) else null;
+        defer if (recover_snapshot) |snapshot| self.allocator.free(snapshot);
+        const persistent_snapshot = if (clear_existing) try capturePersistentEntities(self.allocator, world) else null;
         defer if (persistent_snapshot) |snapshot| self.allocator.free(snapshot);
+
+        errdefer {
+            if (recover_snapshot) |snapshot| {
+                scene_io.deserializeWorldFromSlice(self.allocator, world, snapshot) catch {};
+            }
+        }
 
         command_queue.clear();
         physics_state.deinitWorld(world);
@@ -362,13 +457,19 @@ pub const SceneManager = struct {
         }
 
         if (source) |scene_source| {
-            try scene_io.deserializeWorldFromSlice(self.allocator, world, scene_source);
-        } else {
+            if (clear_existing) {
+                try scene_io.deserializeWorldFromSlice(self.allocator, world, scene_source);
+            } else {
+                try scene_io.appendWorldFromSlice(self.allocator, world, scene_source);
+            }
+        } else if (clear_existing) {
             world.clear();
         }
 
-        if (persistent_snapshot) |snapshot| {
-            try scene_io.appendWorldFromSlice(self.allocator, world, snapshot);
+        if (clear_existing) {
+            if (persistent_snapshot) |snapshot| {
+                try scene_io.appendWorldFromSlice(self.allocator, world, snapshot);
+            }
         }
 
         if (script_runtime) |runtime| {

@@ -935,6 +935,7 @@ pub const Size = struct {
     pub const view_cube_margin: f32 = 20.0;
     pub const overlay_top_inset: f32 = 14.0;
     pub const overlay_icon_size: f32 = 14.0;
+    pub const overlay_progress_width: f32 = 116.0;
     pub const bottom_drawer_bar_height: f32 = 38.0;
     pub const bottom_overlay_gap: f32 = 18.0;
     pub const overlay_bg_alpha: f32 = 0.38;
