@@ -192,6 +192,38 @@ pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.L
         _ = try extrudeSelectedFaces(state, layer_context);
         return true;
     }
+    if (input.wasKeyPressed(.i)) {
+        _ = try insetSelectedFaces(state, layer_context);
+        return true;
+    }
+    if (input.wasKeyPressed(.b) and !input.modifiers.ctrl) {
+        _ = try bevelSelectedEdges(state, layer_context);
+        return true;
+    }
+    if (input.wasKeyPressed(.r) and input.modifiers.ctrl) {
+        _ = try loopCut(state, layer_context);
+        return true;
+    }
+    if (input.wasKeyPressed(.m)) {
+        _ = try mergeSelectedVertices(state, layer_context);
+        return true;
+    }
+    if (input.wasKeyPressed(.d) and input.modifiers.shift) {
+        _ = try duplicateSelectedElements(state, layer_context);
+        return true;
+    }
+    if (input.wasKeyPressed(.p)) {
+        _ = try separateSelectedFaces(state, layer_context);
+        return true;
+    }
+    if (input.wasKeyPressed(.n) and input.modifiers.shift) {
+        _ = try recalculateNormals(state, layer_context);
+        return true;
+    }
+    if (input.wasKeyPressed(.period)) {
+        _ = try pivotToSelection(state, layer_context);
+        return true;
+    }
     return false;
 }
 
@@ -348,6 +380,414 @@ pub fn extrudeSelectedFaces(state: *EditorState, layer_context: *engine.core.Lay
         layer_context,
         state.text(.mesh_edit_extrude_action),
         state.text(.mesh_edit_extrude_action),
+        .human,
+    );
+    return true;
+}
+
+pub fn insetSelectedFaces(state: *EditorState, layer_context: *engine.core.LayerContext) !bool {
+    if (state.mesh_edit_selection_mode != .face or state.mesh_edit_selected_elements.items.len == 0) {
+        return false;
+    }
+
+    const context = activeContext(state, layer_context) orelse return false;
+    const allocator = state.allocator orelse layer_context.world.allocator;
+    const result = try insetFaceRegion(
+        allocator,
+        context.mesh.vertices,
+        context.mesh.indices,
+        state.mesh_edit_selected_elements.items,
+    );
+    defer allocator.free(result.vertices);
+    defer allocator.free(result.indices);
+    defer allocator.free(result.selected_faces);
+
+    try applyMeshMutation(state, layer_context, context.mesh_handle, result.vertices, result.indices);
+    clearElementSelection(state);
+    try state.mesh_edit_selected_elements.appendSlice(allocator, result.selected_faces);
+    try history.captureSnapshotWithLabel(
+        state,
+        layer_context,
+        state.text(.mesh_edit_inset_action),
+        state.text(.mesh_edit_inset_action),
+        .human,
+    );
+    return true;
+}
+
+pub fn bevelSelectedEdges(state: *EditorState, layer_context: *engine.core.LayerContext) !bool {
+    if (state.mesh_edit_selection_mode != .edge or state.mesh_edit_selected_elements.items.len == 0) {
+        return false;
+    }
+
+    const context = activeContext(state, layer_context) orelse return false;
+    const allocator = state.allocator orelse layer_context.world.allocator;
+    const edges = try buildEdgeList(allocator, context.mesh);
+    defer allocator.free(edges);
+
+    const result = try bevelEdgeRegion(
+        allocator,
+        context.mesh.vertices,
+        context.mesh.indices,
+        edges,
+        state.mesh_edit_selected_elements.items,
+    );
+    defer allocator.free(result.vertices);
+    defer allocator.free(result.indices);
+
+    try applyMeshMutation(state, layer_context, context.mesh_handle, result.vertices, result.indices);
+    clearElementSelection(state);
+    try history.captureSnapshotWithLabel(
+        state,
+        layer_context,
+        state.text(.mesh_edit_bevel_action),
+        state.text(.mesh_edit_bevel_action),
+        .human,
+    );
+    return true;
+}
+
+pub fn loopCut(state: *EditorState, layer_context: *engine.core.LayerContext) !bool {
+    if (state.mesh_edit_selection_mode != .edge or state.mesh_edit_selected_elements.items.len == 0) {
+        return false;
+    }
+
+    const context = activeContext(state, layer_context) orelse return false;
+    const allocator = state.allocator orelse layer_context.world.allocator;
+    const edges = try buildEdgeList(allocator, context.mesh);
+    defer allocator.free(edges);
+
+    if (state.mesh_edit_selected_elements.items.len == 0) return false;
+    const seed_edge_index = state.mesh_edit_selected_elements.items[0];
+    if (seed_edge_index >= edges.len) return false;
+
+    const result = try loopCutMesh(
+        allocator,
+        context.mesh.vertices,
+        context.mesh.indices,
+        edges,
+        seed_edge_index,
+    );
+    defer allocator.free(result.vertices);
+    defer allocator.free(result.indices);
+    defer allocator.free(result.new_edge_indices);
+
+    try applyMeshMutation(state, layer_context, context.mesh_handle, result.vertices, result.indices);
+    clearElementSelection(state);
+
+    const new_edges = try buildEdgeList(allocator, layer_context.world.assets().mesh(context.mesh_handle) orelse return false);
+    defer allocator.free(new_edges);
+    for (result.new_edge_indices) |midpoint_vertex_index| {
+        for (new_edges, 0..) |edge, edge_idx| {
+            if (edge.a == midpoint_vertex_index or edge.b == midpoint_vertex_index) {
+                try state.mesh_edit_selected_elements.append(allocator, @intCast(edge_idx));
+            }
+        }
+    }
+
+    try history.captureSnapshotWithLabel(
+        state,
+        layer_context,
+        state.text(.mesh_edit_loop_cut_action),
+        state.text(.mesh_edit_loop_cut_action),
+        .human,
+    );
+    return true;
+}
+
+pub fn mergeSelectedVertices(state: *EditorState, layer_context: *engine.core.LayerContext) !bool {
+    if (state.mesh_edit_selection_mode != .vertex or state.mesh_edit_selected_elements.items.len < 2) {
+        return false;
+    }
+
+    const context = activeContext(state, layer_context) orelse return false;
+    const allocator = state.allocator orelse layer_context.world.allocator;
+
+    var center = [3]f32{ 0.0, 0.0, 0.0 };
+    for (state.mesh_edit_selected_elements.items) |vertex_index| {
+        if (vertex_index < context.mesh.vertices.len) {
+            center = add3(center, context.mesh.vertices[vertex_index].position);
+        }
+    }
+    const count_f: f32 = @floatFromInt(state.mesh_edit_selected_elements.items.len);
+    center = scale3(center, 1.0 / count_f);
+
+    var next_vertices = try allocator.dupe(engine.assets.MeshVertex, context.mesh.vertices);
+    defer allocator.free(next_vertices);
+
+    const target_index = state.mesh_edit_selected_elements.items[0];
+    if (target_index < next_vertices.len) {
+        next_vertices[target_index].position = center;
+    }
+
+    const next_indices = try allocator.dupe(u32, context.mesh.indices);
+    defer allocator.free(next_indices);
+
+    for (state.mesh_edit_selected_elements.items[1..]) |vertex_index| {
+        for (next_indices) |*index| {
+            if (index.* == vertex_index) {
+                index.* = target_index;
+            }
+        }
+    }
+
+    var degenerate_remove = try allocator.alloc(bool, next_indices.len / 3);
+    defer allocator.free(degenerate_remove);
+    @memset(degenerate_remove, false);
+    var face_index: usize = 0;
+    while (face_index < degenerate_remove.len) : (face_index += 1) {
+        const offset = face_index * 3;
+        if (next_indices[offset] == next_indices[offset + 1] or
+            next_indices[offset + 1] == next_indices[offset + 2] or
+            next_indices[offset] == next_indices[offset + 2])
+        {
+            degenerate_remove[face_index] = true;
+        }
+    }
+
+    const cleaned_indices = try filteredIndicesWithoutTriangles(allocator, next_indices, degenerate_remove);
+    defer allocator.free(cleaned_indices);
+    const rebuilt = try compactMeshData(allocator, next_vertices, cleaned_indices);
+    defer allocator.free(rebuilt.vertices);
+    defer allocator.free(rebuilt.indices);
+
+    try applyMeshMutation(state, layer_context, context.mesh_handle, rebuilt.vertices, rebuilt.indices);
+    clearElementSelection(state);
+    try history.captureSnapshotWithLabel(
+        state,
+        layer_context,
+        state.text(.mesh_edit_merge_action),
+        state.text(.mesh_edit_merge_action),
+        .human,
+    );
+    return true;
+}
+
+pub fn duplicateSelectedElements(state: *EditorState, layer_context: *engine.core.LayerContext) !bool {
+    if (state.mesh_edit_selection_mode != .face or state.mesh_edit_selected_elements.items.len == 0) {
+        return false;
+    }
+
+    const context = activeContext(state, layer_context) orelse return false;
+    const allocator = state.allocator orelse layer_context.world.allocator;
+
+    var vertex_remap = std.AutoHashMap(u32, u32).init(allocator);
+    defer vertex_remap.deinit();
+    var next_vertices = std.ArrayList(engine.assets.MeshVertex).empty;
+    defer next_vertices.deinit(allocator);
+    try next_vertices.appendSlice(allocator, context.mesh.vertices);
+
+    for (state.mesh_edit_selected_elements.items) |face_index| {
+        const triangle_offset = @as(usize, face_index) * 3;
+        if (triangle_offset + 2 >= context.mesh.indices.len) continue;
+        var local_vertex: usize = 0;
+        while (local_vertex < 3) : (local_vertex += 1) {
+            const original_vi = context.mesh.indices[triangle_offset + local_vertex];
+            const gop = try vertex_remap.getOrPut(original_vi);
+            if (!gop.found_existing) {
+                gop.value_ptr.* = @intCast(next_vertices.items.len);
+                try next_vertices.append(allocator, context.mesh.vertices[original_vi]);
+            }
+        }
+    }
+
+    var next_indices = std.ArrayList(u32).empty;
+    defer next_indices.deinit(allocator);
+    try next_indices.appendSlice(allocator, context.mesh.indices);
+
+    const new_face_start: u32 = @intCast(next_indices.items.len / 3);
+    for (state.mesh_edit_selected_elements.items) |face_index| {
+        const triangle_offset = @as(usize, face_index) * 3;
+        if (triangle_offset + 2 >= context.mesh.indices.len) continue;
+        try next_indices.append(allocator, vertex_remap.get(context.mesh.indices[triangle_offset]).?);
+        try next_indices.append(allocator, vertex_remap.get(context.mesh.indices[triangle_offset + 1]).?);
+        try next_indices.append(allocator, vertex_remap.get(context.mesh.indices[triangle_offset + 2]).?);
+    }
+
+    try applyMeshMutation(state, layer_context, context.mesh_handle, next_vertices.items, next_indices.items);
+    clearElementSelection(state);
+
+    const sel_count = @as(u32, @intCast(next_indices.items.len / 3)) - new_face_start;
+    var sel_i: u32 = 0;
+    while (sel_i < sel_count) : (sel_i += 1) {
+        try state.mesh_edit_selected_elements.append(allocator, new_face_start + sel_i);
+    }
+
+    try history.captureSnapshotWithLabel(
+        state,
+        layer_context,
+        state.text(.mesh_edit_duplicate_action),
+        state.text(.mesh_edit_duplicate_action),
+        .human,
+    );
+    return true;
+}
+
+pub fn separateSelectedFaces(state: *EditorState, layer_context: *engine.core.LayerContext) !bool {
+    if (state.mesh_edit_selection_mode != .face or state.mesh_edit_selected_elements.items.len == 0) {
+        return false;
+    }
+
+    const context = activeContext(state, layer_context) orelse return false;
+    const allocator = state.allocator orelse layer_context.world.allocator;
+    const face_count = context.mesh.indices.len / 3;
+
+    var selected_mask = try allocator.alloc(bool, face_count);
+    defer allocator.free(selected_mask);
+    @memset(selected_mask, false);
+    for (state.mesh_edit_selected_elements.items) |face_index| {
+        if (face_index < selected_mask.len) {
+            selected_mask[face_index] = true;
+        }
+    }
+
+    var remaining_indices = std.ArrayList(u32).empty;
+    defer remaining_indices.deinit(allocator);
+    var separated_indices = std.ArrayList(u32).empty;
+    defer separated_indices.deinit(allocator);
+
+    var fi: usize = 0;
+    while (fi < face_count) : (fi += 1) {
+        const offset = fi * 3;
+        if (selected_mask[fi]) {
+            try separated_indices.appendSlice(allocator, context.mesh.indices[offset .. offset + 3]);
+        } else {
+            try remaining_indices.appendSlice(allocator, context.mesh.indices[offset .. offset + 3]);
+        }
+    }
+
+    const remaining = try compactMeshData(allocator, context.mesh.vertices, remaining_indices.items);
+    defer allocator.free(remaining.vertices);
+    defer allocator.free(remaining.indices);
+
+    try applyMeshMutation(state, layer_context, context.mesh_handle, remaining.vertices, remaining.indices);
+
+    const separated = try compactMeshData(allocator, context.mesh.vertices, separated_indices.items);
+    defer allocator.free(separated.vertices);
+    defer allocator.free(separated.indices);
+
+    const source_entity = layer_context.world.getEntityConst(context.entity_id) orelse return false;
+    const new_name = try std.fmt.allocPrint(allocator, "{s}.separated", .{source_entity.name});
+    defer allocator.free(new_name);
+
+    const new_mesh_label = try std.fmt.allocPrint(allocator, "{s} Separated Mesh", .{source_entity.name});
+    defer allocator.free(new_mesh_label);
+    const new_mesh_handle = try layer_context.world.assets().createMesh(.{
+        .name = new_mesh_label,
+        .vertices = separated.vertices,
+        .indices = separated.indices,
+        .primitive_type = context.mesh.primitive_type,
+    });
+
+    const new_entity_id = try layer_context.world.createEntity(.{
+        .name = new_name,
+        .local_transform = source_entity.local_transform,
+        .mesh = .{ .handle = new_mesh_handle, .primitive = .custom },
+    });
+
+    layer_context.world.noteEntityRenderableChanged(new_entity_id);
+    layer_context.world.updateHierarchy();
+
+    clearElementSelection(state);
+    try history.captureSnapshotWithLabel(
+        state,
+        layer_context,
+        state.text(.mesh_edit_separate_action),
+        state.text(.mesh_edit_separate_action),
+        .human,
+    );
+    return true;
+}
+
+pub fn recalculateNormals(state: *EditorState, layer_context: *engine.core.LayerContext) !bool {
+    const context = activeContext(state, layer_context) orelse return false;
+    const allocator = state.allocator orelse layer_context.world.allocator;
+
+    const next_vertices = try allocator.dupe(engine.assets.MeshVertex, context.mesh.vertices);
+    defer allocator.free(next_vertices);
+    recalculateVertexNormals(next_vertices, context.mesh.indices);
+
+    try applyMeshMutation(state, layer_context, context.mesh_handle, next_vertices, context.mesh.indices);
+    try history.captureSnapshotWithLabel(
+        state,
+        layer_context,
+        state.text(.mesh_edit_recalculate_normals_action),
+        state.text(.mesh_edit_recalculate_normals_action),
+        .human,
+    );
+    return true;
+}
+
+pub fn pivotToSelection(state: *EditorState, layer_context: *engine.core.LayerContext) !bool {
+    if (state.mesh_edit_selected_elements.items.len == 0) {
+        return false;
+    }
+
+    const context = activeContext(state, layer_context) orelse return false;
+    const allocator = state.allocator orelse layer_context.world.allocator;
+
+    var center = [3]f32{ 0.0, 0.0, 0.0 };
+    var count: f32 = 0.0;
+
+    switch (state.mesh_edit_selection_mode) {
+        .vertex => {
+            for (state.mesh_edit_selected_elements.items) |vertex_index| {
+                if (vertex_index < context.mesh.vertices.len) {
+                    center = add3(center, context.mesh.vertices[vertex_index].position);
+                    count += 1.0;
+                }
+            }
+        },
+        .face => {
+            for (state.mesh_edit_selected_elements.items) |face_index| {
+                const triangle_offset = @as(usize, face_index) * 3;
+                if (triangle_offset + 2 >= context.mesh.indices.len) continue;
+                var local_vertex: usize = 0;
+                while (local_vertex < 3) : (local_vertex += 1) {
+                    const vi = context.mesh.indices[triangle_offset + local_vertex];
+                    center = add3(center, context.mesh.vertices[vi].position);
+                    count += 1.0;
+                }
+            }
+        },
+        .edge => {
+            const edges = try buildEdgeList(allocator, context.mesh);
+            defer allocator.free(edges);
+            for (state.mesh_edit_selected_elements.items) |edge_index| {
+                if (edge_index < edges.len) {
+                    center = add3(center, context.mesh.vertices[edges[edge_index].a].position);
+                    center = add3(center, context.mesh.vertices[edges[edge_index].b].position);
+                    count += 2.0;
+                }
+            }
+        },
+    }
+
+    if (count < 1.0) return false;
+    center = scale3(center, 1.0 / count);
+
+    const next_vertices = try allocator.dupe(engine.assets.MeshVertex, context.mesh.vertices);
+    defer allocator.free(next_vertices);
+    for (next_vertices) |*vertex| {
+        vertex.position = sub3(vertex.position, center);
+    }
+
+    try applyMeshMutation(state, layer_context, context.mesh_handle, next_vertices, context.mesh.indices);
+
+    const entity = layer_context.world.getEntity(context.entity_id) orelse return false;
+    const world_offset = engine.math.quat.rotateVec3(
+        entity.local_transform.rotation,
+        mul3(entity.local_transform.scale, center),
+    );
+    entity.local_transform.translation = add3(entity.local_transform.translation, world_offset);
+    layer_context.world.markDirty(context.entity_id);
+    layer_context.world.updateHierarchy();
+
+    try history.captureSnapshotWithLabel(
+        state,
+        layer_context,
+        state.text(.mesh_edit_pivot_to_selection_action),
+        state.text(.mesh_edit_pivot_to_selection_action),
         .human,
     );
     return true;
@@ -616,6 +1056,336 @@ fn filteredIndicesWithoutTriangles(
     }
 
     return try kept_indices.toOwnedSlice(allocator);
+}
+
+const InsetResult = struct {
+    vertices: []engine.assets.MeshVertex,
+    indices: []u32,
+    selected_faces: []u32,
+};
+
+fn insetFaceRegion(
+    allocator: std.mem.Allocator,
+    vertices: []const engine.assets.MeshVertex,
+    indices: []const u32,
+    selected_faces: []const u32,
+) !InsetResult {
+    const inset_amount: f32 = 0.15;
+
+    var next_vertices = std.ArrayList(engine.assets.MeshVertex).empty;
+    defer next_vertices.deinit(allocator);
+    try next_vertices.appendSlice(allocator, vertices);
+
+    var next_indices = std.ArrayList(u32).empty;
+    defer next_indices.deinit(allocator);
+    try next_indices.appendSlice(allocator, indices);
+
+    var new_face_list = std.ArrayList(u32).empty;
+    defer new_face_list.deinit(allocator);
+
+    for (selected_faces) |face_index| {
+        const triangle_offset = @as(usize, face_index) * 3;
+        if (triangle_offset + 2 >= next_indices.items.len) continue;
+
+        const vi0 = next_indices.items[triangle_offset];
+        const vi1 = next_indices.items[triangle_offset + 1];
+        const vi2 = next_indices.items[triangle_offset + 2];
+
+        const p0 = next_vertices.items[vi0].position;
+        const p1 = next_vertices.items[vi1].position;
+        const p2 = next_vertices.items[vi2].position;
+
+        const centroid = scale3(add3(add3(p0, p1), p2), 1.0 / 3.0);
+
+        var v0_inset = next_vertices.items[vi0];
+        v0_inset.position = add3(p0, scale3(sub3(centroid, p0), inset_amount));
+        const new_vi0: u32 = @intCast(next_vertices.items.len);
+        try next_vertices.append(allocator, v0_inset);
+
+        var v1_inset = next_vertices.items[vi1];
+        v1_inset.position = add3(p1, scale3(sub3(centroid, p1), inset_amount));
+        const new_vi1: u32 = @intCast(next_vertices.items.len);
+        try next_vertices.append(allocator, v1_inset);
+
+        var v2_inset = next_vertices.items[vi2];
+        v2_inset.position = add3(p2, scale3(sub3(centroid, p2), inset_amount));
+        const new_vi2: u32 = @intCast(next_vertices.items.len);
+        try next_vertices.append(allocator, v2_inset);
+
+        next_indices.items[triangle_offset] = new_vi0;
+        next_indices.items[triangle_offset + 1] = new_vi1;
+        next_indices.items[triangle_offset + 2] = new_vi2;
+
+        try next_indices.appendSlice(allocator, &[_]u32{ vi0, vi1, new_vi1, vi0, new_vi1, new_vi0 });
+        try next_indices.appendSlice(allocator, &[_]u32{ vi1, vi2, new_vi2, vi1, new_vi2, new_vi1 });
+        try next_indices.appendSlice(allocator, &[_]u32{ vi2, vi0, new_vi0, vi2, new_vi0, new_vi2 });
+
+        try new_face_list.append(allocator, face_index);
+    }
+
+    recalculateVertexNormals(next_vertices.items, next_indices.items);
+
+    return .{
+        .vertices = try next_vertices.toOwnedSlice(allocator),
+        .indices = try next_indices.toOwnedSlice(allocator),
+        .selected_faces = try new_face_list.toOwnedSlice(allocator),
+    };
+}
+
+const BevelResult = struct {
+    vertices: []engine.assets.MeshVertex,
+    indices: []u32,
+};
+
+fn bevelEdgeRegion(
+    allocator: std.mem.Allocator,
+    vertices: []const engine.assets.MeshVertex,
+    indices: []const u32,
+    edges: []const Edge,
+    selected_edge_indices: []const u32,
+) !BevelResult {
+    const bevel_offset: f32 = 0.1;
+
+    var next_vertices = std.ArrayList(engine.assets.MeshVertex).empty;
+    defer next_vertices.deinit(allocator);
+    try next_vertices.appendSlice(allocator, vertices);
+
+    var next_indices = std.ArrayList(u32).empty;
+    defer next_indices.deinit(allocator);
+    try next_indices.appendSlice(allocator, indices);
+
+    var vertex_split = std.AutoHashMap(u64, [2]u32).init(allocator);
+    defer vertex_split.deinit();
+
+    for (selected_edge_indices) |edge_index| {
+        if (edge_index >= edges.len) continue;
+        const edge = edges[edge_index];
+
+        const pa = vertices[edge.a].position;
+        const pb = vertices[edge.b].position;
+        const edge_dir = normalize3(sub3(pb, pa));
+
+        var va_new = vertices[edge.a];
+        va_new.position = add3(pa, scale3(edge_dir, bevel_offset));
+        const va_new_index: u32 = @intCast(next_vertices.items.len);
+        try next_vertices.append(allocator, va_new);
+
+        var vb_new = vertices[edge.b];
+        vb_new.position = sub3(pb, scale3(edge_dir, bevel_offset));
+        const vb_new_index: u32 = @intCast(next_vertices.items.len);
+        try next_vertices.append(allocator, vb_new);
+
+        const edge_key = (@as(u64, @min(edge.a, edge.b)) << 32) | @as(u64, @max(edge.a, edge.b));
+        try vertex_split.put(edge_key, .{ va_new_index, vb_new_index });
+
+        try next_indices.appendSlice(allocator, &[_]u32{
+            edge.a,       va_new_index,
+            vb_new_index, edge.a,
+            vb_new_index, edge.b,
+        });
+    }
+
+    recalculateVertexNormals(next_vertices.items, next_indices.items);
+
+    return .{
+        .vertices = try next_vertices.toOwnedSlice(allocator),
+        .indices = try next_indices.toOwnedSlice(allocator),
+    };
+}
+
+const LoopCutResult = struct {
+    vertices: []engine.assets.MeshVertex,
+    indices: []u32,
+    new_edge_indices: []u32,
+};
+
+fn loopCutMesh(
+    allocator: std.mem.Allocator,
+    vertices: []const engine.assets.MeshVertex,
+    indices: []const u32,
+    edges: []const Edge,
+    seed_edge_index: u32,
+) !LoopCutResult {
+    const face_count = indices.len / 3;
+    const seed_edge = edges[seed_edge_index];
+
+    var edge_to_faces = std.AutoHashMap(u64, std.ArrayList(u32)).init(allocator);
+    defer {
+        var it = edge_to_faces.valueIterator();
+        while (it.next()) |list| list.deinit(allocator);
+        edge_to_faces.deinit();
+    }
+
+    var fi: u32 = 0;
+    while (fi < face_count) : (fi += 1) {
+        const off = @as(usize, fi) * 3;
+        const tri = [3]u32{ indices[off], indices[off + 1], indices[off + 2] };
+        const tri_edges = [3][2]u32{
+            .{ @min(tri[0], tri[1]), @max(tri[0], tri[1]) },
+            .{ @min(tri[1], tri[2]), @max(tri[1], tri[2]) },
+            .{ @min(tri[2], tri[0]), @max(tri[2], tri[0]) },
+        };
+        for (tri_edges) |te| {
+            const key = (@as(u64, te[0]) << 32) | @as(u64, te[1]);
+            const gop = try edge_to_faces.getOrPut(key);
+            if (!gop.found_existing) {
+                gop.value_ptr.* = std.ArrayList(u32).empty;
+            }
+            try gop.value_ptr.append(allocator, fi);
+        }
+    }
+
+    var loop_edges = std.ArrayList([2]u32).empty;
+    defer loop_edges.deinit(allocator);
+    try loop_edges.append(allocator, .{ @min(seed_edge.a, seed_edge.b), @max(seed_edge.a, seed_edge.b) });
+
+    var visited_faces = std.AutoHashMap(u32, void).init(allocator);
+    defer visited_faces.deinit();
+    var visited_edges = std.AutoHashMap(u64, void).init(allocator);
+    defer visited_edges.deinit();
+
+    const seed_key = (@as(u64, @min(seed_edge.a, seed_edge.b)) << 32) | @as(u64, @max(seed_edge.a, seed_edge.b));
+    try visited_edges.put(seed_key, {});
+
+    var queue = std.ArrayList([2]u32).empty;
+    defer queue.deinit(allocator);
+    try queue.append(allocator, loop_edges.items[0]);
+
+    while (queue.items.len > 0) {
+        const current_edge = queue.pop().?;
+        const current_key = (@as(u64, current_edge[0]) << 32) | @as(u64, current_edge[1]);
+
+        const faces_for_edge = edge_to_faces.get(current_key) orelse continue;
+        for (faces_for_edge.items) |face_idx| {
+            if (visited_faces.contains(face_idx)) continue;
+            try visited_faces.put(face_idx, {});
+
+            const off = @as(usize, face_idx) * 3;
+            const tri = [3]u32{ indices[off], indices[off + 1], indices[off + 2] };
+            const tri_edges_raw = [3][2]u32{
+                .{ @min(tri[0], tri[1]), @max(tri[0], tri[1]) },
+                .{ @min(tri[1], tri[2]), @max(tri[1], tri[2]) },
+                .{ @min(tri[2], tri[0]), @max(tri[2], tri[0]) },
+            };
+
+            for (tri_edges_raw) |te| {
+                const te_key = (@as(u64, te[0]) << 32) | @as(u64, te[1]);
+                if (te_key == current_key) continue;
+                if (visited_edges.contains(te_key)) continue;
+
+                if (te[0] != current_edge[0] and te[0] != current_edge[1] and
+                    te[1] != current_edge[0] and te[1] != current_edge[1])
+                {
+                    try visited_edges.put(te_key, {});
+                    try loop_edges.append(allocator, te);
+                    try queue.append(allocator, te);
+                }
+            }
+        }
+    }
+
+    var midpoint_map = std.AutoHashMap(u64, u32).init(allocator);
+    defer midpoint_map.deinit();
+    var next_vertices = std.ArrayList(engine.assets.MeshVertex).empty;
+    defer next_vertices.deinit(allocator);
+    try next_vertices.appendSlice(allocator, vertices);
+
+    var new_vertex_indices = std.ArrayList(u32).empty;
+    defer new_vertex_indices.deinit(allocator);
+
+    for (loop_edges.items) |le| {
+        const key = (@as(u64, le[0]) << 32) | @as(u64, le[1]);
+        if (midpoint_map.contains(key)) continue;
+
+        var mid_vert = vertices[le[0]];
+        mid_vert.position = scale3(add3(vertices[le[0]].position, vertices[le[1]].position), 0.5);
+        mid_vert.normal = normalize3(scale3(add3(vertices[le[0]].normal, vertices[le[1]].normal), 0.5));
+        mid_vert.uv = .{
+            (vertices[le[0]].uv[0] + vertices[le[1]].uv[0]) * 0.5,
+            (vertices[le[0]].uv[1] + vertices[le[1]].uv[1]) * 0.5,
+        };
+
+        const mid_index: u32 = @intCast(next_vertices.items.len);
+        try next_vertices.append(allocator, mid_vert);
+        try midpoint_map.put(key, mid_index);
+        try new_vertex_indices.append(allocator, mid_index);
+    }
+
+    var next_indices = std.ArrayList(u32).empty;
+    defer next_indices.deinit(allocator);
+
+    fi = 0;
+    while (fi < face_count) : (fi += 1) {
+        const off = @as(usize, fi) * 3;
+        const tri = [3]u32{ indices[off], indices[off + 1], indices[off + 2] };
+
+        var split_edges_list: [3]?u32 = .{ null, null, null };
+        const edge_pairs = [3][2]u32{
+            .{ @min(tri[0], tri[1]), @max(tri[0], tri[1]) },
+            .{ @min(tri[1], tri[2]), @max(tri[1], tri[2]) },
+            .{ @min(tri[2], tri[0]), @max(tri[2], tri[0]) },
+        };
+
+        var split_count: u32 = 0;
+        for (edge_pairs, 0..) |ep, idx| {
+            const ep_key = (@as(u64, ep[0]) << 32) | @as(u64, ep[1]);
+            if (midpoint_map.get(ep_key)) |mid| {
+                split_edges_list[idx] = mid;
+                split_count += 1;
+            }
+        }
+
+        if (split_count == 0) {
+            try next_indices.appendSlice(allocator, &[_]u32{ tri[0], tri[1], tri[2] });
+        } else if (split_count == 1) {
+            var split_idx: usize = 0;
+            var mid_vi: u32 = undefined;
+            for (split_edges_list, 0..) |maybe_mid, idx| {
+                if (maybe_mid) |m| {
+                    split_idx = idx;
+                    mid_vi = m;
+                    break;
+                }
+            }
+            const a = tri[split_idx];
+            const b = tri[(split_idx + 1) % 3];
+            const c = tri[(split_idx + 2) % 3];
+            try next_indices.appendSlice(allocator, &[_]u32{ a, mid_vi, c });
+            try next_indices.appendSlice(allocator, &[_]u32{ mid_vi, b, c });
+        } else if (split_count == 2) {
+            var unsplit_idx: usize = 0;
+            for (split_edges_list, 0..) |maybe_mid, idx| {
+                if (maybe_mid == null) {
+                    unsplit_idx = idx;
+                    break;
+                }
+            }
+            const a = tri[unsplit_idx];
+            const b = tri[(unsplit_idx + 1) % 3];
+            const c = tri[(unsplit_idx + 2) % 3];
+            const mid_ab = split_edges_list[(unsplit_idx + 1) % 3].?;
+            const mid_ca = split_edges_list[(unsplit_idx + 2) % 3].?;
+            try next_indices.appendSlice(allocator, &[_]u32{ a, b, mid_ab });
+            try next_indices.appendSlice(allocator, &[_]u32{ a, mid_ab, mid_ca });
+            try next_indices.appendSlice(allocator, &[_]u32{ mid_ca, mid_ab, c });
+        } else {
+            const m01 = split_edges_list[0].?;
+            const m12 = split_edges_list[1].?;
+            const m20 = split_edges_list[2].?;
+            try next_indices.appendSlice(allocator, &[_]u32{ tri[0], m01, m20 });
+            try next_indices.appendSlice(allocator, &[_]u32{ m01, tri[1], m12 });
+            try next_indices.appendSlice(allocator, &[_]u32{ m20, m12, tri[2] });
+            try next_indices.appendSlice(allocator, &[_]u32{ m01, m12, m20 });
+        }
+    }
+
+    recalculateVertexNormals(next_vertices.items, next_indices.items);
+
+    return .{
+        .vertices = try next_vertices.toOwnedSlice(allocator),
+        .indices = try next_indices.toOwnedSlice(allocator),
+        .new_edge_indices = try new_vertex_indices.toOwnedSlice(allocator),
+    };
 }
 
 fn compactMeshData(
