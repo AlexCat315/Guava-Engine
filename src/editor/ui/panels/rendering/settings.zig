@@ -264,8 +264,46 @@ fn drawSettingsContentCamera(_: *EditorState) void {
     gui.text("Camera settings coming soon...");
 }
 
-fn drawSettingsContentShortcuts(_: *EditorState) void {
-    gui.text("Shortcuts settings coming soon...");
+fn drawSettingsContentShortcuts(state: *EditorState) void {
+    gui.text("Mesh Edit Modal Controls");
+    gui.dummy(0.0, 4.0);
+
+    var drag_sensitivity = state.mesh_modal_drag_sensitivity;
+    if (gui.sliderFloat("Mouse Drag Sensitivity", &drag_sensitivity, 0.0005, 0.05)) {
+        state.mesh_modal_drag_sensitivity = drag_sensitivity;
+        preferences.saveEditorPreferences(state) catch |err| {
+            std.log.warn("Editor: failed to save editor preferences: {s}", .{@errorName(err)});
+        };
+    }
+
+    var fine_scale = state.mesh_modal_fine_scale;
+    if (gui.sliderFloat("Shift Fine Scale", &fine_scale, 0.05, 1.0)) {
+        state.mesh_modal_fine_scale = fine_scale;
+        preferences.saveEditorPreferences(state) catch |err| {
+            std.log.warn("Editor: failed to save editor preferences: {s}", .{@errorName(err)});
+        };
+    }
+
+    gui.dummy(0.0, 8.0);
+    gui.separator();
+    gui.dummy(0.0, 8.0);
+
+    gui.text("Shortcut Reference");
+    gui.labelText("Tab", "Object/Edit Mode");
+    gui.labelText("1 / 2 / 3", "Vertex / Edge / Face mode");
+    gui.labelText("E", "Extrude (modal drag)");
+    gui.labelText("I", "Inset (modal drag)");
+    gui.labelText("B", "Bevel (modal drag)");
+    gui.labelText("Ctrl+R", "Loop Cut (modal drag)");
+    gui.labelText("Shift", "Fine adjustment while dragging");
+    gui.labelText("LMB", "Confirm modal operation");
+    gui.labelText("RMB / Esc", "Cancel and revert modal operation");
+    gui.labelText("Delete", "Delete selected elements");
+    gui.labelText("M", "Merge selected vertices");
+    gui.labelText("Shift+D", "Duplicate selected faces");
+    gui.labelText("P", "Separate selected faces");
+    gui.labelText("Shift+N", "Recalculate normals");
+    gui.labelText(".", "Pivot to selection");
 }
 
 fn drawSettingsContentAssistant(_: *EditorState) void {

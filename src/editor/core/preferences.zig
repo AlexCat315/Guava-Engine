@@ -33,6 +33,8 @@ const PersistedEditorPrefs = struct {
     language: ?[]const u8 = null,
     fps_display_mode: ?[]const u8 = null,
     vsync_enabled: ?bool = null,
+    mesh_modal_drag_sensitivity: ?f32 = null,
+    mesh_modal_fine_scale: ?f32 = null,
 };
 
 const ProviderDefaults = struct {
@@ -380,6 +382,12 @@ fn loadEditorPreferencesFromPath(state: *EditorState, path: []const u8) !void {
     if (parsed.value.vsync_enabled) |enabled| {
         state.vsync_enabled = enabled;
     }
+    if (parsed.value.mesh_modal_drag_sensitivity) |value| {
+        state.mesh_modal_drag_sensitivity = std.math.clamp(value, 0.0005, 0.05);
+    }
+    if (parsed.value.mesh_modal_fine_scale) |value| {
+        state.mesh_modal_fine_scale = std.math.clamp(value, 0.05, 1.0);
+    }
 }
 
 fn saveEditorPreferencesToPath(state: *const EditorState, path: []const u8) !void {
@@ -388,6 +396,8 @@ fn saveEditorPreferencesToPath(state: *const EditorState, path: []const u8) !voi
         .language = @tagName(state.language),
         .fps_display_mode = @tagName(state.fps_display_mode),
         .vsync_enabled = state.vsync_enabled,
+        .mesh_modal_drag_sensitivity = state.mesh_modal_drag_sensitivity,
+        .mesh_modal_fine_scale = state.mesh_modal_fine_scale,
     };
     try writeJsonFileAtomically(allocator, path, payload);
 }

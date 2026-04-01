@@ -595,6 +595,8 @@ fn drawMeshEditOverlay(state: *EditorState, layer_context: *engine.core.LayerCon
             }
         },
     }
+
+    mesh_edit.drawInteractiveOperationHud(state, layer_context);
 }
 
 fn meshEditSelectionContains(state: *const EditorState, element_index: u32) bool {

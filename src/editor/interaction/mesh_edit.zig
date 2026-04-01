@@ -36,6 +36,7 @@ const InteractiveMeshOpKind = enum {
     extrude,
     inset,
     bevel,
+    loop_cut,
 };
 
 const InteractiveMeshOp = struct {
@@ -46,6 +47,7 @@ const InteractiveMeshOp = struct {
     selected_elements: []u32,
     base_vertices: []engine.assets.MeshVertex,
     base_indices: []u32,
+    seed_edge_index: ?u32,
     amount: f32,
 };
 
@@ -230,7 +232,7 @@ pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.L
         return true;
     }
     if (input.wasKeyPressed(.r) and input.modifiers.ctrl) {
-        _ = try loopCut(state, layer_context);
+        _ = try beginInteractiveOperation(state, layer_context, .loop_cut);
         return true;
     }
     if (input.wasKeyPressed(.m)) {
@@ -507,6 +509,7 @@ pub fn loopCut(state: *EditorState, layer_context: *engine.core.LayerContext) !b
         context.mesh.indices,
         edges,
         seed_edge_index,
+        0.5,
     );
     defer allocator.free(result.vertices);
     defer allocator.free(result.indices);
@@ -1443,6 +1446,7 @@ fn loopCutMesh(
     indices: []const u32,
     edges: []const Edge,
     seed_edge_index: u32,
+    slide_factor: f32,
 ) !LoopCutResult {
     const seed_edge = edges[seed_edge_index];
     const face_count = indices.len / 3;
@@ -1529,7 +1533,11 @@ fn loopCutMesh(
         const max_v: u32 = @intCast(key & 0xffffffff);
 
         var mid_vert = vertices[min_v];
-        mid_vert.position = scale3(add3(vertices[min_v].position, vertices[max_v].position), 0.5);
+        const t = std.math.clamp(slide_factor, 0.05, 0.95);
+        mid_vert.position = add3(
+            scale3(vertices[min_v].position, 1.0 - t),
+            scale3(vertices[max_v].position, t),
+        );
         mid_vert.normal = normalize3(scale3(add3(vertices[min_v].normal, vertices[max_v].normal), 0.5));
         mid_vert.uv = .{
             (vertices[min_v].uv[0] + vertices[max_v].uv[0]) * 0.5,
@@ -1908,7 +1916,7 @@ fn beginInteractiveOperation(
 
     const required_mode: MeshElementSelectionMode = switch (kind) {
         .extrude, .inset => .face,
-        .bevel => .edge,
+        .bevel, .loop_cut => .edge,
     };
     if (state.mesh_edit_selection_mode != required_mode or state.mesh_edit_selected_elements.items.len == 0) {
         return false;
@@ -1929,10 +1937,12 @@ fn beginInteractiveOperation(
         .selected_elements = selected,
         .base_vertices = base_vertices,
         .base_indices = base_indices,
+        .seed_edge_index = if (kind == .loop_cut) state.mesh_edit_selected_elements.items[0] else null,
         .amount = switch (kind) {
             .extrude => 0.35,
             .inset => 0.15,
             .bevel => 0.2,
+            .loop_cut => 0.5,
         },
     };
 
@@ -1953,12 +1963,17 @@ fn updateInteractiveOperation(state: *EditorState, layer_context: *engine.core.L
 
     const delta = input.mouse_delta[0] - input.mouse_delta[1] * 0.4;
     if (@abs(delta) > 0.0001) {
-        const sensitivity: f32 = 0.005;
-        op.amount += delta * sensitivity;
+        const base_sensitivity = std.math.clamp(state.mesh_modal_drag_sensitivity, 0.0005, 0.05);
+        const effective_sensitivity = if (input.modifiers.shift)
+            base_sensitivity * std.math.clamp(state.mesh_modal_fine_scale, 0.05, 1.0)
+        else
+            base_sensitivity;
+        op.amount += delta * effective_sensitivity;
         op.amount = switch (op.kind) {
             .extrude => std.math.clamp(op.amount, -1.5, 1.5),
             .inset => std.math.clamp(op.amount, 0.0, 0.95),
             .bevel => std.math.clamp(op.amount, 0.0, 0.95),
+            .loop_cut => std.math.clamp(op.amount, 0.05, 0.95),
         };
         _ = try applyInteractivePreview(state, layer_context);
     }
@@ -2033,6 +2048,29 @@ fn applyInteractivePreview(state: *EditorState, layer_context: *engine.core.Laye
             }
             try applyMeshMutation(state, layer_context, op.mesh_handle, result.vertices, result.indices);
         },
+        .loop_cut => {
+            const edges = try buildEdgeListFromIndices(allocator, op.base_indices);
+            defer allocator.free(edges);
+            const seed_edge_index = op.seed_edge_index orelse return false;
+            if (seed_edge_index >= edges.len) {
+                return false;
+            }
+            const result = try loopCutMesh(
+                allocator,
+                op.base_vertices,
+                op.base_indices,
+                edges,
+                seed_edge_index,
+                op.amount,
+            );
+            defer allocator.free(result.vertices);
+            defer allocator.free(result.indices);
+            defer allocator.free(result.new_edge_indices);
+            if (!meshDataIsValid(result.vertices, result.indices)) {
+                return false;
+            }
+            try applyMeshMutation(state, layer_context, op.mesh_handle, result.vertices, result.indices);
+        },
     }
     return true;
 }
@@ -2085,6 +2123,15 @@ fn commitInteractiveOperation(state: *EditorState, layer_context: *engine.core.L
                 .human,
             );
         },
+        .loop_cut => {
+            try history.captureSnapshotWithLabel(
+                state,
+                layer_context,
+                state.text(.mesh_edit_loop_cut_action),
+                state.text(.mesh_edit_loop_cut_action),
+                .human,
+            );
+        },
     }
 
     allocator.free(op.selected_elements);
@@ -2101,6 +2148,61 @@ fn cancelInteractiveOperation(state: *EditorState, layer_context: *engine.core.L
     allocator.free(op.base_vertices);
     allocator.free(op.base_indices);
     interactive_mesh_op = null;
+}
+
+pub fn drawInteractiveOperationHud(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+    const op = interactive_mesh_op orelse return;
+    if (!state.viewport_has_image) {
+        return;
+    }
+
+    const op_label: []const u8 = switch (op.kind) {
+        .extrude => state.text(.mesh_edit_extrude_action),
+        .inset => state.text(.mesh_edit_inset_action),
+        .bevel => state.text(.mesh_edit_bevel_action),
+        .loop_cut => state.text(.mesh_edit_loop_cut_action),
+    };
+
+    var value_buf: [64]u8 = undefined;
+    const value_text = std.fmt.bufPrint(&value_buf, "{s}: {d:.3}", .{ op_label, op.amount }) catch return;
+
+    var step_buf: [64]u8 = undefined;
+    const base_sensitivity = std.math.clamp(state.mesh_modal_drag_sensitivity, 0.0005, 0.05);
+    const fine_scale = std.math.clamp(state.mesh_modal_fine_scale, 0.05, 1.0);
+    const step_text = std.fmt.bufPrint(&step_buf, "Step {d:.4}  Shift x{d:.2}", .{ base_sensitivity, fine_scale }) catch return;
+
+    var mode_buf: [64]u8 = undefined;
+    const fine_mode_text = std.fmt.bufPrint(
+        &mode_buf,
+        "Fine Adjust: {s}",
+        .{if (layer_context.input.modifiers.shift) "ON" else "OFF"},
+    ) catch return;
+
+    const tips_text = "LMB confirm  RMB/Esc cancel";
+
+    const draw_list = gui.getWindowDrawList();
+    const box_min = [2]f32{ state.viewport_origin[0] + 12.0, state.viewport_origin[1] + 12.0 };
+    const line_h: f32 = 18.0;
+    const pad_x: f32 = 10.0;
+    const pad_y: f32 = 8.0;
+    const value_size = gui.calcTextSize(value_text, false, 0.0);
+    const step_size = gui.calcTextSize(step_text, false, 0.0);
+    const mode_size = gui.calcTextSize(fine_mode_text, false, 0.0);
+    const tips_size = gui.calcTextSize(tips_text, false, 0.0);
+    const box_w = @max(@max(@max(value_size[0], step_size[0]), mode_size[0]), tips_size[0]) + pad_x * 2.0;
+    const box_h = pad_y * 2.0 + line_h * 4.0;
+    const box_max = [2]f32{ box_min[0] + box_w, box_min[1] + box_h };
+
+    draw_list.addRectFilled(box_min, box_max, gui.getColorU32(.{ 0.06, 0.07, 0.09, 0.88 }), 8.0, 0);
+    draw_list.addRect(box_min, box_max, gui.getColorU32(.{ 0.26, 0.42, 0.62, 0.92 }), 8.0, 0, 1.0);
+    draw_list.addText(.{ box_min[0] + pad_x, box_min[1] + pad_y + 0.0 * line_h }, gui.getColorU32(.{ 0.95, 0.97, 1.0, 1.0 }), value_text);
+    draw_list.addText(.{ box_min[0] + pad_x, box_min[1] + pad_y + 1.0 * line_h }, gui.getColorU32(.{ 0.78, 0.84, 0.92, 1.0 }), step_text);
+    draw_list.addText(
+        .{ box_min[0] + pad_x, box_min[1] + pad_y + 2.0 * line_h },
+        gui.getColorU32(if (layer_context.input.modifiers.shift) .{ 0.64, 0.91, 0.70, 1.0 } else .{ 0.74, 0.78, 0.84, 1.0 }),
+        fine_mode_text,
+    );
+    draw_list.addText(.{ box_min[0] + pad_x, box_min[1] + pad_y + 3.0 * line_h }, gui.getColorU32(.{ 0.72, 0.76, 0.82, 1.0 }), tips_text);
 }
 
 fn recordDirectedEdge(entries: *std.AutoHashMap(u64, EdgeEntry), a: u32, b: u32) !void {
