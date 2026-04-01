@@ -1115,7 +1115,6 @@ fn insetFaceRegion(
     selected_faces: []const u32,
     inset_amount: f32,
 ) !InsetResult {
-
     var selected_face_mask = try allocator.alloc(bool, indices.len / 3);
     defer allocator.free(selected_face_mask);
     @memset(selected_face_mask, false);
@@ -1259,7 +1258,6 @@ fn bevelEdgeRegion(
     selected_edge_indices: []const u32,
     bevel_ratio: f32,
 ) !BevelResult {
-
     var next_vertices = std.ArrayList(engine.assets.MeshVertex).empty;
     defer next_vertices.deinit(allocator);
     try next_vertices.appendSlice(allocator, vertices);
