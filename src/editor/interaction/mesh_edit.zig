@@ -1085,9 +1085,83 @@ fn insetFaceRegion(
 ) !InsetResult {
     const inset_amount: f32 = 0.15;
 
+    var selected_face_mask = try allocator.alloc(bool, indices.len / 3);
+    defer allocator.free(selected_face_mask);
+    @memset(selected_face_mask, false);
+    for (selected_faces) |face_index| {
+        if (face_index < selected_face_mask.len) {
+            selected_face_mask[face_index] = true;
+        }
+    }
+
+    var edge_counts = std.AutoHashMap(u64, u32).init(allocator);
+    defer edge_counts.deinit();
+
+    for (selected_faces) |face_index| {
+        const triangle_offset = @as(usize, face_index) * 3;
+        if (triangle_offset + 2 >= indices.len) continue;
+        const tri = [3]u32{ indices[triangle_offset], indices[triangle_offset + 1], indices[triangle_offset + 2] };
+        const tri_edges = [3][2]u32{
+            .{ @min(tri[0], tri[1]), @max(tri[0], tri[1]) },
+            .{ @min(tri[1], tri[2]), @max(tri[1], tri[2]) },
+            .{ @min(tri[2], tri[0]), @max(tri[2], tri[0]) },
+        };
+        for (tri_edges) |edge| {
+            const gop = try edge_counts.getOrPut(edgeKey(edge[0], edge[1]));
+            if (!gop.found_existing) {
+                gop.value_ptr.* = 1;
+            } else {
+                gop.value_ptr.* += 1;
+            }
+        }
+    }
+
+    const InsetAccum = struct {
+        sum: [3]f32,
+        count: u32,
+    };
+
+    var inset_accum = std.AutoHashMap(u32, InsetAccum).init(allocator);
+    defer inset_accum.deinit();
+
+    for (selected_faces) |face_index| {
+        const triangle_offset = @as(usize, face_index) * 3;
+        if (triangle_offset + 2 >= indices.len) continue;
+
+        const vi0 = indices[triangle_offset];
+        const vi1 = indices[triangle_offset + 1];
+        const vi2 = indices[triangle_offset + 2];
+        const centroid = scale3(add3(add3(vertices[vi0].position, vertices[vi1].position), vertices[vi2].position), 1.0 / 3.0);
+
+        for ([_]u32{ vi0, vi1, vi2 }) |vertex_index| {
+            const gop = try inset_accum.getOrPut(vertex_index);
+            if (!gop.found_existing) {
+                gop.value_ptr.* = .{ .sum = sub3(centroid, vertices[vertex_index].position), .count = 1 };
+            } else {
+                gop.value_ptr.sum = add3(gop.value_ptr.sum, sub3(centroid, vertices[vertex_index].position));
+                gop.value_ptr.count += 1;
+            }
+        }
+    }
+
     var next_vertices = std.ArrayList(engine.assets.MeshVertex).empty;
     defer next_vertices.deinit(allocator);
     try next_vertices.appendSlice(allocator, vertices);
+
+    var inset_vertex_map = std.AutoHashMap(u32, u32).init(allocator);
+    defer inset_vertex_map.deinit();
+
+    var accum_iter = inset_accum.iterator();
+    while (accum_iter.next()) |entry| {
+        const original_index = entry.key_ptr.*;
+        const accum = entry.value_ptr.*;
+        const direction = scale3(accum.sum, 1.0 / @as(f32, @floatFromInt(accum.count)));
+        var new_vertex = vertices[original_index];
+        new_vertex.position = add3(new_vertex.position, scale3(direction, inset_amount));
+        const new_index: u32 = @intCast(next_vertices.items.len);
+        try next_vertices.append(allocator, new_vertex);
+        try inset_vertex_map.put(original_index, new_index);
+    }
 
     var next_indices = std.ArrayList(u32).empty;
     defer next_indices.deinit(allocator);
@@ -1103,37 +1177,33 @@ fn insetFaceRegion(
         const vi0 = next_indices.items[triangle_offset];
         const vi1 = next_indices.items[triangle_offset + 1];
         const vi2 = next_indices.items[triangle_offset + 2];
-
-        const p0 = next_vertices.items[vi0].position;
-        const p1 = next_vertices.items[vi1].position;
-        const p2 = next_vertices.items[vi2].position;
-
-        const centroid = scale3(add3(add3(p0, p1), p2), 1.0 / 3.0);
-
-        var v0_inset = next_vertices.items[vi0];
-        v0_inset.position = add3(p0, scale3(sub3(centroid, p0), inset_amount));
-        const new_vi0: u32 = @intCast(next_vertices.items.len);
-        try next_vertices.append(allocator, v0_inset);
-
-        var v1_inset = next_vertices.items[vi1];
-        v1_inset.position = add3(p1, scale3(sub3(centroid, p1), inset_amount));
-        const new_vi1: u32 = @intCast(next_vertices.items.len);
-        try next_vertices.append(allocator, v1_inset);
-
-        var v2_inset = next_vertices.items[vi2];
-        v2_inset.position = add3(p2, scale3(sub3(centroid, p2), inset_amount));
-        const new_vi2: u32 = @intCast(next_vertices.items.len);
-        try next_vertices.append(allocator, v2_inset);
+        const new_vi0 = inset_vertex_map.get(vi0) orelse continue;
+        const new_vi1 = inset_vertex_map.get(vi1) orelse continue;
+        const new_vi2 = inset_vertex_map.get(vi2) orelse continue;
 
         next_indices.items[triangle_offset] = new_vi0;
         next_indices.items[triangle_offset + 1] = new_vi1;
         next_indices.items[triangle_offset + 2] = new_vi2;
 
-        try next_indices.appendSlice(allocator, &[_]u32{ vi0, vi1, new_vi1, vi0, new_vi1, new_vi0 });
-        try next_indices.appendSlice(allocator, &[_]u32{ vi1, vi2, new_vi2, vi1, new_vi2, new_vi1 });
-        try next_indices.appendSlice(allocator, &[_]u32{ vi2, vi0, new_vi0, vi2, new_vi0, new_vi2 });
-
         try new_face_list.append(allocator, face_index);
+    }
+
+    for (selected_faces) |face_index| {
+        const triangle_offset = @as(usize, face_index) * 3;
+        if (triangle_offset + 2 >= indices.len) continue;
+        const tri = [3]u32{ indices[triangle_offset], indices[triangle_offset + 1], indices[triangle_offset + 2] };
+        const tri_edges = [3][2]u32{ .{ tri[0], tri[1] }, .{ tri[1], tri[2] }, .{ tri[2], tri[0] } };
+        for (tri_edges) |edge| {
+            const min_v = @min(edge[0], edge[1]);
+            const max_v = @max(edge[0], edge[1]);
+            const count = edge_counts.get(edgeKey(min_v, max_v)) orelse 0;
+            if (count != 1) {
+                continue;
+            }
+            const a_inset = inset_vertex_map.get(edge[0]) orelse continue;
+            const b_inset = inset_vertex_map.get(edge[1]) orelse continue;
+            try next_indices.appendSlice(allocator, &[_]u32{ edge[0], edge[1], b_inset, edge[0], b_inset, a_inset });
+        }
     }
 
     recalculateVertexNormals(next_vertices.items, next_indices.items);
@@ -1233,20 +1303,79 @@ fn bevelEdgeRegion(
             }
         }
 
-        if (split_count != 1) {
+        if (split_count == 0) {
             try next_indices.appendSlice(allocator, &[_]u32{ tri[0], tri[1], tri[2] });
             continue;
         }
 
-        const a = tri_edges[split_slot][0];
-        const b = tri_edges[split_slot][1];
-        const c = tri[(split_slot + 2) % 3];
-        const a_split = splitVertexForEndpoint(a, b, split_info);
-        const b_split = splitVertexForEndpoint(b, a, split_info);
+        if (split_count == 1) {
+            const a = tri_edges[split_slot][0];
+            const b = tri_edges[split_slot][1];
+            const c = tri[(split_slot + 2) % 3];
+            const a_split = splitVertexForEndpoint(a, b, split_info);
+            const b_split = splitVertexForEndpoint(b, a, split_info);
 
-        try next_indices.appendSlice(allocator, &[_]u32{ a, a_split, c });
-        try next_indices.appendSlice(allocator, &[_]u32{ a_split, b_split, c });
-        try next_indices.appendSlice(allocator, &[_]u32{ b_split, b, c });
+            try next_indices.appendSlice(allocator, &[_]u32{ a, a_split, c });
+            try next_indices.appendSlice(allocator, &[_]u32{ a_split, b_split, c });
+            try next_indices.appendSlice(allocator, &[_]u32{ b_split, b, c });
+            continue;
+        }
+
+        // For adjacent multi-edge bevel selections on one triangle, build a stable fan
+        // around a local center to avoid topology cracks at branch transitions.
+        var ring = std.ArrayList(u32).empty;
+        defer ring.deinit(allocator);
+        try ring.append(allocator, tri[0]);
+
+        var edge_slot: usize = 0;
+        while (edge_slot < 3) : (edge_slot += 1) {
+            const a = tri_edges[edge_slot][0];
+            const b = tri_edges[edge_slot][1];
+            if (selected_edge_mask.contains(edgeKey(@min(a, b), @max(a, b)))) {
+                const key = edgeKey(@min(a, b), @max(a, b));
+                const info = split_by_edge.get(key) orelse continue;
+                try ring.append(allocator, splitVertexForEndpoint(a, b, info));
+                try ring.append(allocator, splitVertexForEndpoint(b, a, info));
+            } else {
+                try ring.append(allocator, b);
+            }
+        }
+
+        var clean_ring = std.ArrayList(u32).empty;
+        defer clean_ring.deinit(allocator);
+        for (ring.items) |vertex_index| {
+            if (clean_ring.items.len == 0 or clean_ring.items[clean_ring.items.len - 1] != vertex_index) {
+                try clean_ring.append(allocator, vertex_index);
+            }
+        }
+        if (clean_ring.items.len >= 2 and clean_ring.items[0] == clean_ring.items[clean_ring.items.len - 1]) {
+            _ = clean_ring.pop();
+        }
+        if (clean_ring.items.len < 3) {
+            try next_indices.appendSlice(allocator, &[_]u32{ tri[0], tri[1], tri[2] });
+            continue;
+        }
+
+        var center = [3]f32{ 0.0, 0.0, 0.0 };
+        var normal = [3]f32{ 0.0, 0.0, 0.0 };
+        for (clean_ring.items) |vertex_index| {
+            center = add3(center, next_vertices.items[vertex_index].position);
+            normal = add3(normal, next_vertices.items[vertex_index].normal);
+        }
+        const inv_count = 1.0 / @as(f32, @floatFromInt(clean_ring.items.len));
+        var center_vertex = vertices[tri[0]];
+        center_vertex.position = scale3(center, inv_count);
+        center_vertex.normal = normalize3(scale3(normal, inv_count));
+        const center_index: u32 = @intCast(next_vertices.items.len);
+        try next_vertices.append(allocator, center_vertex);
+
+        for (clean_ring.items, 0..) |a, idx| {
+            const b = clean_ring.items[(idx + 1) % clean_ring.items.len];
+            if (a == b or a == center_index or b == center_index) {
+                continue;
+            }
+            try next_indices.appendSlice(allocator, &[_]u32{ a, b, center_index });
+        }
     }
 
     var split_iter = split_by_edge.iterator();
@@ -1480,6 +1609,7 @@ fn extendEdgeLoop(
         var best_edge_index: ?u32 = null;
         var best_next_vertex: u32 = 0;
         var best_score: f32 = -2.0;
+        var best_key: u64 = std.math.maxInt(u64);
 
         const prev_dir = normalize3(sub3(vertices[current_vertex].position, vertices[prev_vertex].position));
         for (vertex_edges[current_vertex].items) |candidate_edge_index| {
@@ -1500,16 +1630,21 @@ fn extendEdgeLoop(
             }
 
             const cand_dir = normalize3(sub3(vertices[next_vertex].position, vertices[current_vertex].position));
-            const score = dot3(prev_dir, cand_dir);
-            if (score > best_score) {
+            const turn_score = dot3(prev_dir, cand_dir);
+            const manifold_bonus: f32 = if (face_count == 2) 0.08 else 0.0;
+            const next_valence: f32 = @floatFromInt(vertex_edges[next_vertex].items.len);
+            const valence_penalty = @abs(next_valence - 4.0) * 0.02;
+            const score = turn_score + manifold_bonus - valence_penalty;
+            if (score > best_score or (score == best_score and key < best_key)) {
                 best_score = score;
                 best_edge_index = candidate_edge_index;
                 best_next_vertex = next_vertex;
+                best_key = key;
             }
         }
 
         const chosen_edge_index = best_edge_index orelse break;
-        if (best_score < -0.1) {
+        if (best_score < -0.02) {
             break;
         }
 
@@ -1626,13 +1761,30 @@ fn extrudeFaceRegion(
     }
 
     var average_normal = [3]f32{ 0.0, 0.0, 0.0 };
+    var accumulated_edge_length: f32 = 0.0;
+    var accumulated_edge_count: u32 = 0;
     for (selected_faces) |face_index| {
         average_normal = add3(average_normal, faceNormalFromRaw(vertices, indices, face_index));
+        const triangle_offset = @as(usize, face_index) * 3;
+        if (triangle_offset + 2 >= indices.len) continue;
+        const a = indices[triangle_offset];
+        const b = indices[triangle_offset + 1];
+        const c = indices[triangle_offset + 2];
+        accumulated_edge_length += distance3(vertices[a].position, vertices[b].position);
+        accumulated_edge_length += distance3(vertices[b].position, vertices[c].position);
+        accumulated_edge_length += distance3(vertices[c].position, vertices[a].position);
+        accumulated_edge_count += 3;
     }
     average_normal = normalize3(average_normal);
     if (length3(average_normal) <= 0.0001) {
         average_normal = .{ 0.0, 1.0, 0.0 };
     }
+
+    const average_edge_length = if (accumulated_edge_count == 0)
+        0.25
+    else
+        accumulated_edge_length / @as(f32, @floatFromInt(accumulated_edge_count));
+    const extrude_distance = std.math.clamp(average_edge_length * 0.35, 0.03, 0.6);
 
     var used_vertices = std.AutoHashMap(u32, u32).init(allocator);
     defer used_vertices.deinit();
@@ -1652,7 +1804,7 @@ fn extrudeFaceRegion(
             }
 
             var extruded_vertex = vertices[vertex_index];
-            extruded_vertex.position = add3(extruded_vertex.position, scale3(average_normal, 0.5));
+            extruded_vertex.position = add3(extruded_vertex.position, scale3(average_normal, extrude_distance));
             gop.value_ptr.* = @intCast(next_vertices.items.len);
             try next_vertices.append(allocator, extruded_vertex);
         }
