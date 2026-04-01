@@ -477,6 +477,7 @@ extern "C" bool guava_imgui_init(SDL_Window* window, void* metal_bridge_ctx,
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
   io.ConfigDockingAlwaysTabBar = true;
   io.ConfigInputTextCursorBlink = true;
+  io.ConfigWindowsMoveFromTitleBarOnly = true;
 
   if (char* pref_path = SDL_GetPrefPath("Guava", "Editor")) {
     g_ini_path = std::string(pref_path) + "imgui.ini";
@@ -522,6 +523,7 @@ extern "C" bool guava_imgui_init_vulkan(SDL_Window* window,
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
   io.ConfigDockingAlwaysTabBar = true;
   io.ConfigInputTextCursorBlink = true;
+  io.ConfigWindowsMoveFromTitleBarOnly = true;
 
   if (char* pref_path = SDL_GetPrefPath("Guava", "Editor")) {
     g_ini_path = std::string(pref_path) + "imgui.ini";

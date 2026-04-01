@@ -403,14 +403,13 @@ fn drawVerticalSplitter(
     max_width: f32,
     delta_sign: f32,
 ) void {
-    _ = id;
     const draw_list = gui.getWindowDrawList();
     const splitter_height = @max(height, 1.0);
-    const item_min = gui.cursorScreenPos();
-    gui.dummy(graph_splitter_width, splitter_height);
-    const item_max = .{ item_min[0] + graph_splitter_width, item_min[1] + splitter_height };
-    const hovered = pointInRect(gui.mousePos(), item_min, item_max);
-    const active = editor_state.active_splitter == splitter_kind;
+    _ = gui.invisibleButton(id, graph_splitter_width, splitter_height);
+    const item_min = gui.getItemRectMin();
+    const item_max = gui.getItemRectMax();
+    const hovered = gui.isItemHovered();
+    const active = gui.isItemActive() or editor_state.active_splitter == splitter_kind;
 
     const mouse_x = gui.mousePos()[0];
 
@@ -730,6 +729,9 @@ fn drawPipelineNode(
 
     gui.pushIdU64(@intCast(index));
     defer gui.popId();
+
+    gui.setCursorScreenPos(.{ node_pos[0] + graph_pin_hit_size * 0.5, node_pos[1] });
+    _ = gui.invisibleButton("node_card_body", graph_node_width - graph_pin_hit_size, graph_node_height);
 
     const card_min = node_pos;
     const card_max = .{ node_pos[0] + graph_node_width, node_pos[1] + graph_node_height };
