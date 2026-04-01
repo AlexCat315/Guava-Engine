@@ -74,4 +74,101 @@ test "parse manifest basic" {
     defer manifest.deinit(allocator);
     try std.testing.expectEqualSlices(u8, "test_plugin", manifest.name);
     try std.testing.expectEqual(@as(u16, 1), manifest.version.major);
+    try std.testing.expectEqual(@as(u16, 2), manifest.version.minor);
+    try std.testing.expectEqual(@as(u16, 3), manifest.version.patch);
+    try std.testing.expectEqual(types.PluginType.render_style, manifest.plugin_type);
+    try std.testing.expectEqual(@as(usize, 2), manifest.capabilities.len);
+    try std.testing.expectEqual(types.PluginCapability.shader, manifest.capabilities[0]);
+    try std.testing.expectEqual(types.PluginCapability.render_pass, manifest.capabilities[1]);
+}
+
+test "parse manifest invalid json" {
+    const allocator = std.testing.allocator;
+    const result = parseManifest(allocator, "not json at all {{{");
+    try std.testing.expectError(ManifestParseError.InvalidJson, result);
+}
+
+test "parse manifest missing name" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{
+        \\  "version": "1.0.0",
+        \\  "plugin_type": "render_style"
+        \\}
+    ;
+    const result = parseManifest(allocator, json);
+    try std.testing.expectError(ManifestParseError.MissingField, result);
+}
+
+test "parse manifest unknown plugin_type" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{
+        \\  "name": "bad_type",
+        \\  "version": "1.0.0",
+        \\  "plugin_type": "nonexistent_type"
+        \\}
+    ;
+    const result = parseManifest(allocator, json);
+    try std.testing.expectError(ManifestParseError.InvalidPluginType, result);
+}
+
+test "parse manifest invalid version" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{
+        \\  "name": "bad_ver",
+        \\  "version": "abc",
+        \\  "plugin_type": "render_style"
+        \\}
+    ;
+    const result = parseManifest(allocator, json);
+    try std.testing.expectError(ManifestParseError.InvalidVersion, result);
+}
+
+test "parse manifest script_vm type" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{
+        \\  "name": "my_wasm_mod",
+        \\  "version": "0.1.0",
+        \\  "plugin_type": "script_vm",
+        \\  "capabilities": ["script_handler"]
+        \\}
+    ;
+    var manifest = try parseManifest(allocator, json);
+    defer manifest.deinit(allocator);
+    try std.testing.expectEqual(types.PluginType.script_vm, manifest.plugin_type);
+    try std.testing.expectEqual(@as(usize, 1), manifest.capabilities.len);
+    try std.testing.expectEqual(types.PluginCapability.script_handler, manifest.capabilities[0]);
+}
+
+test "parse manifest unknown capability" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{
+        \\  "name": "bad_cap",
+        \\  "version": "1.0.0",
+        \\  "plugin_type": "render_style",
+        \\  "capabilities": ["bogus_capability"]
+        \\}
+    ;
+    const result = parseManifest(allocator, json);
+    try std.testing.expectError(ManifestParseError.InvalidCapability, result);
+}
+
+test "parse manifest extra fields ignored" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{
+        \\  "name": "extra_fields",
+        \\  "version": "2.0.0",
+        \\  "plugin_type": "render_style",
+        \\  "render_style": { "display_name": "Foo" },
+        \\  "unknown_key": 42
+        \\}
+    ;
+    var manifest = try parseManifest(allocator, json);
+    defer manifest.deinit(allocator);
+    try std.testing.expectEqualSlices(u8, "extra_fields", manifest.name);
 }

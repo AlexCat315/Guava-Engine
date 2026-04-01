@@ -10,6 +10,7 @@ const csharp_toolchain = @import("./csharp_toolchain.zig");
 const editor_utility_runtime = @import("./editor_utility_runtime.zig");
 const script_resource_mod = @import("../assets/script_resource.zig");
 const parameter_reflection = @import("./parameter_reflection.zig");
+const script_vm_plugin_mod = @import("./script_vm_plugin.zig");
 
 pub const types_mod = types;
 pub const context_mod = context;
@@ -52,3 +53,4 @@ pub const freeEditorUtilitySnapshots = editor_utility_runtime.freeSnapshots;
 
 pub const HotReloadManager = hot_reload.HotReloadManager;
 pub const FileWatcher = hot_reload.FileWatcher;
+pub const ScriptVmPluginLoader = script_vm_plugin_mod.ScriptVmPluginLoader;

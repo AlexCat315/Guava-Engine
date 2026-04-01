@@ -345,3 +345,99 @@ pub const StyleRegistry = struct {
         }
     }
 };
+
+test "style registry init has builtins" {
+    const allocator = std.testing.allocator;
+    var registry = StyleRegistry.init(allocator);
+    defer registry.deinit();
+
+    // Should have default_pbr and unlit_flat
+    try std.testing.expectEqual(@as(usize, 2), registry.styleCount());
+    try std.testing.expect(registry.getStyle("default_pbr") != null);
+    try std.testing.expect(registry.getStyle("unlit_flat") != null);
+    try std.testing.expectEqualSlices(u8, "default_pbr", registry.active_style_name);
+}
+
+test "style registry set active and rollback" {
+    const allocator = std.testing.allocator;
+    var registry = StyleRegistry.init(allocator);
+    defer registry.deinit();
+
+    // Switch to unlit_flat
+    try std.testing.expect(registry.setActiveStyle("unlit_flat"));
+    try std.testing.expectEqualSlices(u8, "unlit_flat", registry.active_style_name);
+    try std.testing.expectEqualSlices(u8, "default_pbr", registry.previous_style_name);
+
+    // Rollback
+    registry.rollbackStyle();
+    try std.testing.expectEqualSlices(u8, "default_pbr", registry.active_style_name);
+
+    // Cannot switch to nonexistent
+    try std.testing.expect(!registry.setActiveStyle("nonexistent_style"));
+    try std.testing.expectEqualSlices(u8, "default_pbr", registry.active_style_name);
+}
+
+test "style registry register and unregister" {
+    const allocator = std.testing.allocator;
+    var registry = StyleRegistry.init(allocator);
+    defer registry.deinit();
+
+    const custom = StylePluginManifest{
+        .name = "custom_style",
+        .display_name = "Custom",
+        .version = "1.0.0",
+        .source = .project,
+        .mesh_program = "custom_mesh",
+    };
+
+    try registry.register(custom);
+    try std.testing.expectEqual(@as(usize, 3), registry.styleCount());
+    try std.testing.expect(registry.getStyle("custom_style") != null);
+
+    // Duplicate registration should fail
+    try std.testing.expectError(error.StyleAlreadyRegistered, registry.register(custom));
+
+    // Unregister
+    registry.unregister("custom_style");
+    try std.testing.expectEqual(@as(usize, 2), registry.styleCount());
+    try std.testing.expect(registry.getStyle("custom_style") == null);
+}
+
+test "style registry unregister active style falls back" {
+    const allocator = std.testing.allocator;
+    var registry = StyleRegistry.init(allocator);
+    defer registry.deinit();
+
+    const style = StylePluginManifest{
+        .name = "doomed_style",
+        .display_name = "Doomed",
+        .version = "1.0.0",
+        .source = .user,
+        .mesh_program = "mesh",
+    };
+    try registry.register(style);
+    _ = registry.setActiveStyle("doomed_style");
+    try std.testing.expectEqualSlices(u8, "doomed_style", registry.active_style_name);
+
+    // Unregister the active style
+    registry.unregister("doomed_style");
+
+    // Should fall back to default_pbr
+    try std.testing.expectEqualSlices(u8, "default_pbr", registry.active_style_name);
+    try std.testing.expect(registry.getStyle("doomed_style") == null);
+}
+
+test "style registry isPassDisabledByActiveStyle" {
+    const allocator = std.testing.allocator;
+    var registry = StyleRegistry.init(allocator);
+    defer registry.deinit();
+
+    // default_pbr has no disabled passes
+    try std.testing.expect(!registry.isPassDisabledByActiveStyle("bloom"));
+
+    // Switch to unlit_flat which disables bloom and ssr
+    _ = registry.setActiveStyle("unlit_flat");
+    try std.testing.expect(registry.isPassDisabledByActiveStyle("bloom"));
+    try std.testing.expect(registry.isPassDisabledByActiveStyle("ssr"));
+    try std.testing.expect(!registry.isPassDisabledByActiveStyle("tonemap"));
+}

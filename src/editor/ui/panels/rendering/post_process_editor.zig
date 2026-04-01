@@ -10,19 +10,26 @@ const EditorState = @import("../../../core/state.zig").EditorState;
 const EditorViewportState = engine.render.EditorViewportState;
 const EditorViewportLutPreset = engine.render.EditorViewportLutPreset;
 
-const QuickAddItem = struct {
+const effect_drag_id: u64 = 0x50504545;
+
+const EffectPaletteItem = struct {
     effect: PostProcessEffect,
     label: []const u8,
     hint: []const u8,
+    color: [4]f32,
 };
 
-const quick_add_items = [_]QuickAddItem{
-    .{ .effect = .bloom, .label = "Bloom", .hint = "Highlight glow" },
-    .{ .effect = .tonemap, .label = "Tonemap", .hint = "Exposure and LUT" },
-    .{ .effect = .taa, .label = "TAA", .hint = "Temporal resolve" },
-    .{ .effect = .ssr, .label = "SSR", .hint = "Screen-space reflections" },
-    .{ .effect = .ssgi, .label = "SSGI", .hint = "Screen-space GI" },
-    .{ .effect = .dof, .label = "DOF", .hint = "Depth of field" },
+const all_effects = [_]EffectPaletteItem{
+    .{ .effect = .bloom, .label = "Bloom", .hint = "Highlight glow", .color = .{ 1.0, 0.8, 0.2, 1.0 } },
+    .{ .effect = .tonemap, .label = "Tonemap", .hint = "Exposure and LUT", .color = .{ 1.0, 0.9, 0.5, 1.0 } },
+    .{ .effect = .taa, .label = "TAA", .hint = "Temporal resolve", .color = .{ 0.6, 0.6, 1.0, 1.0 } },
+    .{ .effect = .ssr, .label = "SSR", .hint = "Screen-space reflections", .color = .{ 0.4, 0.8, 0.8, 1.0 } },
+    .{ .effect = .ssgi, .label = "SSGI", .hint = "Screen-space GI", .color = .{ 0.9, 0.6, 0.2, 1.0 } },
+    .{ .effect = .dof, .label = "DOF", .hint = "Depth of field", .color = .{ 0.8, 0.6, 0.4, 1.0 } },
+    .{ .effect = .ssao, .label = "SSAO", .hint = "Ambient occlusion", .color = .{ 0.8, 0.4, 0.8, 1.0 } },
+    .{ .effect = .fxaa, .label = "FXAA", .hint = "Fast approximate AA", .color = .{ 0.2, 0.8, 1.0, 1.0 } },
+    .{ .effect = .color_grading, .label = "Color Grading", .hint = "Tone shaping", .color = .{ 1.0, 0.6, 0.8, 1.0 } },
+    .{ .effect = .contact_shadows, .label = "Contact Shadows", .hint = "Small-scale occlusion", .color = .{ 0.5, 0.5, 0.5, 1.0 } },
 };
 
 pub const PostProcessEffect = enum {
@@ -95,9 +102,8 @@ pub const PostProcessPipelineEditorState = struct {
     selected_node_index: ?usize = null,
     view_pan: [2]f32 = .{ 0, 0 },
     view_zoom: f32 = 1.0,
-    dragging_node: ?usize = null,
     connecting_from: ?usize = null,
-    preview_split: f32 = 0.5,
+    preview_split: f32 = 0.42,
 
     pub fn init(allocator: std.mem.Allocator) PostProcessPipelineEditorState {
         return .{
@@ -143,27 +149,35 @@ pub const PostProcessPipelineEditorState = struct {
         try self.nodes.items[to_index].input_connections.append(self.allocator, from_index);
     }
 
-    pub fn getSelectedNode(self: *PostProcessPipelineEditorState) ?*PostProcessEffectNode {
+    pub fn disconnect(self: *PostProcessPipelineEditorState, from_index: usize, to_index: usize) void {
+        if (from_index >= self.nodes.items.len or to_index >= self.nodes.items.len) return;
+        const from_node = &self.nodes.items[from_index];
+        var i: usize = 0;
+        while (i < from_node.output_connections.items.len) {
+            if (from_node.output_connections.items[i] == to_index) {
+                _ = from_node.output_connections.orderedRemove(i);
+            } else {
+                i += 1;
+            }
+        }
+        const to_node = &self.nodes.items[to_index];
+        var j: usize = 0;
+        while (j < to_node.input_connections.items.len) {
+            if (to_node.input_connections.items[j] == from_index) {
+                _ = to_node.input_connections.orderedRemove(j);
+            } else {
+                j += 1;
+            }
+        }
+    }
+
+    pub fn getSelectedNode(self: *const PostProcessPipelineEditorState) ?*PostProcessEffectNode {
         if (self.selected_node_index) |index| {
             if (index < self.nodes.items.len) {
                 return &self.nodes.items[index];
             }
         }
         return null;
-    }
-
-    pub fn autoConnectLinear(self: *PostProcessPipelineEditorState) void {
-        if (self.nodes.items.len < 2) return;
-
-        for (self.nodes.items) |*node| {
-            node.input_connections.clearRetainingCapacity();
-            node.output_connections.clearRetainingCapacity();
-        }
-
-        var i: usize = 0;
-        while (i < self.nodes.items.len - 1) : (i += 1) {
-            self.connect(i, i + 1) catch {};
-        }
     }
 
     pub fn syncGraphToViewportState(self: *const PostProcessPipelineEditorState, viewport_state: *EditorViewportState) void {
@@ -215,7 +229,6 @@ pub fn drawPostProcessPipelineEditorWindow(
 ) !void {
     _ = layer_context;
 
-    editor_state.autoConnectLinear();
     editor_state.syncGraphToViewportState(viewport_state);
 
     var title_buffer: [80]u8 = undefined;
@@ -238,16 +251,16 @@ pub fn drawPostProcessPipelineEditorWindow(
     const graph_width = if (has_nodes)
         content_region[0] * editor_state.preview_split
     else
-        content_region[0] * 0.56;
+        content_region[0] * 0.5;
 
     if (gui.beginChild("pipeline_graph", graph_width, -1.0, true)) {
-        drawPipelineGraph(editor_state_, editor_state, has_nodes);
+        try drawPipelineGraph(editor_state_, editor_state, has_nodes);
     }
     gui.endChild();
 
     gui.sameLine();
-    if (gui.beginChild("pipeline_preview", -1.0, -1.0, true)) {
-        drawPreviewPanel(editor_state_, viewport_state);
+    if (gui.beginChild("effect_palette", -1.0, -1.0, true)) {
+        drawEffectPalette(editor_state);
     }
     gui.endChild();
 
@@ -267,38 +280,6 @@ fn drawPipelineToolbar(
     editor_state: *PostProcessPipelineEditorState,
     node_count: usize,
 ) void {
-    if (gui.button(state.text(.post_process_add_effect))) {
-        gui.openPopup("add_effect_popup");
-    }
-
-    if (gui.beginPopup("add_effect_popup")) {
-        defer gui.endPopup();
-
-        const effects = [_]PostProcessEffect{
-            .bloom,
-            .fxaa,
-            .ssao,
-            .ssgi,
-            .ssr,
-            .taa,
-            .dof,
-            .color_grading,
-            .contact_shadows,
-            .tonemap,
-        };
-
-        for (effects) |effect| {
-            var name_buf: [48]u8 = undefined;
-            const name = std.fmt.bufPrint(&name_buf, "{s}", .{nodeLabel(effect)}) catch continue;
-            if (gui.selectable(name, false, false, 0, 0)) {
-                const x = @as(f32, @floatFromInt(editor_state.nodes.items.len)) * 180.0;
-                _ = addNodeAndSelect(editor_state, effect, x, 96.0);
-            }
-        }
-    }
-
-    gui.sameLine();
-
     if (gui.button(state.text(.post_process_clear_all))) {
         clearAllNodes(editor_state);
     }
@@ -323,7 +304,11 @@ fn drawPipelineToolbar(
     }
 }
 
-fn drawPipelineGraph(state: *const EditorState, editor_state: *PostProcessPipelineEditorState, has_nodes: bool) void {
+fn drawPipelineGraph(
+    state: *const EditorState,
+    editor_state: *PostProcessPipelineEditorState,
+    has_nodes: bool,
+) !void {
     const canvas_pos = gui.cursorScreenPos();
     const canvas_size = gui.contentRegionAvail();
 
@@ -331,6 +316,7 @@ fn drawPipelineGraph(state: *const EditorState, editor_state: *PostProcessPipeli
 
     if (!has_nodes) {
         drawEmptyPipelineCanvas(state, editor_state, canvas_size);
+        try handleCanvasDrop(editor_state, canvas_pos, canvas_size);
         return;
     }
 
@@ -339,6 +325,9 @@ fn drawPipelineGraph(state: *const EditorState, editor_state: *PostProcessPipeli
     const node_width: f32 = 164.0;
     const node_height: f32 = 74.0;
     const pin_offset_y = node_height * 0.5;
+    const pin_radius: f32 = 7.0;
+
+    handleCanvasPanning(editor_state, canvas_pos, canvas_size);
 
     for (editor_state.nodes.items, 0..) |*node, index| {
         const is_selected = editor_state.selected_node_index != null and editor_state.selected_node_index.? == index;
@@ -390,7 +379,159 @@ fn drawPipelineGraph(state: *const EditorState, editor_state: *PostProcessPipeli
         }
     }
 
+    drawPinHandles(editor_state, canvas_pos, node_width, pin_offset_y, pin_radius);
+
     drawConnectionLines(editor_state, canvas_pos, node_width, pin_offset_y);
+
+    handleConnectionInteraction(editor_state, canvas_pos, node_width, pin_offset_y, pin_radius, canvas_size);
+
+    try handleCanvasDrop(editor_state, canvas_pos, canvas_size);
+}
+
+fn handleCanvasPanning(
+    editor_state: *PostProcessPipelineEditorState,
+    canvas_pos: [2]f32,
+    canvas_size: [2]f32,
+) void {
+    const mouse = gui.mousePos();
+    const inside = mouse[0] >= canvas_pos[0] and mouse[0] <= canvas_pos[0] + canvas_size[0] and
+        mouse[1] >= canvas_pos[1] and mouse[1] <= canvas_pos[1] + canvas_size[1];
+
+    if (inside and gui.isMouseDragging(.middle)) {
+        const delta = gui.mouseDragDelta(.middle);
+        editor_state.view_pan[0] += delta[0];
+        editor_state.view_pan[1] += delta[1];
+        gui.resetMouseDragDelta(.middle);
+    }
+}
+
+fn handleCanvasDrop(
+    editor_state: *PostProcessPipelineEditorState,
+    canvas_pos: [2]f32,
+    canvas_size: [2]f32,
+) !void {
+    const mouse = gui.mousePos();
+    const inside = mouse[0] >= canvas_pos[0] and mouse[0] <= canvas_pos[0] + canvas_size[0] and
+        mouse[1] >= canvas_pos[1] and mouse[1] <= canvas_pos[1] + canvas_size[1];
+
+    if (!inside) return;
+
+    if (gui.beginDragDropTarget()) {
+        defer gui.endDragDropTarget();
+
+        const payload = gui.acceptDragDropPayloadU64(effect_drag_id);
+        if (payload) |effect_val| {
+            const effect: PostProcessEffect = @enumFromInt(effect_val);
+            const local_x = mouse[0] - canvas_pos[0] - editor_state.view_pan[0] - 82.0;
+            const local_y = mouse[1] - canvas_pos[1] - editor_state.view_pan[1] - 37.0;
+            const idx = try editor_state.addNode(effect, local_x, local_y);
+            editor_state.selected_node_index = idx;
+        }
+    }
+}
+
+fn drawPinHandles(
+    editor_state: *PostProcessPipelineEditorState,
+    canvas_pos: [2]f32,
+    node_width: f32,
+    pin_offset_y: f32,
+    pin_radius: f32,
+) void {
+    const draw_list = gui.getWindowDrawList();
+
+    for (editor_state.nodes.items) |*node| {
+        const cx_out = canvas_pos[0] + node.position[0] + editor_state.view_pan[0] + node_width;
+        const cy = canvas_pos[1] + node.position[1] + editor_state.view_pan[1] + pin_offset_y;
+        const cx_in = canvas_pos[0] + node.position[0] + editor_state.view_pan[0];
+
+        const col = node.getColor();
+        const out_color = gui.getColorU32(.{ col[0], col[1], col[2], 1.0 });
+        const in_color = gui.getColorU32(.{ col[0], col[1], col[2], 1.0 });
+
+        draw_list.addCircleFilled(.{ cx_out, cy }, pin_radius, out_color, 10);
+        draw_list.addCircleFilled(.{ cx_in, cy }, pin_radius, in_color, 10);
+    }
+}
+
+fn handleConnectionInteraction(
+    editor_state: *PostProcessPipelineEditorState,
+    canvas_pos: [2]f32,
+    node_width: f32,
+    pin_offset_y: f32,
+    pin_radius: f32,
+    canvas_size: [2]f32,
+) void {
+    const draw_list = gui.getWindowDrawList();
+    const mouse = gui.mousePos();
+
+    var output_pin_hovered: ?usize = null;
+    var input_pin_hovered: ?usize = null;
+
+    for (editor_state.nodes.items, 0..) |*node, index| {
+        const out_cx = canvas_pos[0] + node.position[0] + editor_state.view_pan[0] + node_width;
+        const cy = canvas_pos[1] + node.position[1] + editor_state.view_pan[1] + pin_offset_y;
+        const in_cx = canvas_pos[0] + node.position[0] + editor_state.view_pan[0];
+
+        const hit_r = pin_radius * 3.0;
+        const dx_out = mouse[0] - out_cx;
+        const dy_out = mouse[1] - cy;
+        if (dx_out * dx_out + dy_out * dy_out <= hit_r * hit_r) {
+            output_pin_hovered = index;
+        }
+
+        const dx_in = mouse[0] - in_cx;
+        const dy_in = mouse[1] - cy;
+        if (dx_in * dx_in + dy_in * dy_in <= hit_r * hit_r) {
+            input_pin_hovered = index;
+        }
+    }
+
+    if (editor_state.connecting_from) |from_idx| {
+        const from_node = &editor_state.nodes.items[from_idx];
+        const from_cx = canvas_pos[0] + from_node.position[0] + editor_state.view_pan[0] + node_width;
+        const from_cy = canvas_pos[1] + from_node.position[1] + editor_state.view_pan[1] + pin_offset_y;
+
+        const p0 = [2]f32{ from_cx, from_cy };
+        const p1 = [2]f32{ mouse[0], mouse[1] };
+
+        const dx = @max(p1[0] - p0[0], 60.0);
+        const cp0 = [2]f32{ p0[0] + dx * 0.5, p0[1] };
+        const cp1 = [2]f32{ p1[0] - dx * 0.5, p1[1] };
+
+        const col = from_node.getColor();
+        const line_color = gui.getColorU32(.{ col[0], col[1], col[2], 0.5 });
+        draw_list.addBezierCurve(p0, cp0, cp1, p1, line_color, 2.0, 16);
+
+        if (input_pin_hovered) |to_idx| {
+            if (to_idx != from_idx) {
+                var already_connected = false;
+                for (from_node.output_connections.items) |existing| {
+                    if (existing == to_idx) {
+                        already_connected = true;
+                        break;
+                    }
+                }
+                if (!already_connected) {
+                    editor_state.connect(from_idx, to_idx) catch {};
+                }
+                editor_state.connecting_from = null;
+            }
+        }
+
+        if (editor_state.connecting_from != null) {
+            const canvas_min = canvas_pos;
+            const canvas_max = [2]f32{ canvas_pos[0] + canvas_size[0], canvas_pos[1] + canvas_size[1] };
+            if (mouse[0] < canvas_min[0] or mouse[0] > canvas_max[0] or mouse[1] < canvas_min[1] or mouse[1] > canvas_max[1]) {
+                editor_state.connecting_from = null;
+            }
+        }
+    } else {
+        if (output_pin_hovered) |idx| {
+            if (gui.isMouseDoubleClicked(.left)) {
+                editor_state.connecting_from = idx;
+            }
+        }
+    }
 }
 
 fn drawConnectionLines(
@@ -444,19 +585,48 @@ fn drawEmptyPipelineCanvas(state: *const EditorState, editor_state: *PostProcess
     gui.textWrapped(state.text(.post_process_graph_empty_desc));
 
     gui.dummy(0.0, 10.0);
-    const columns = layout.responsiveButtonColumns(quick_add_items.len, 128.0);
-    const width = layout.responsiveButtonWidth(columns);
-    for (quick_add_items, 0..) |item, index| {
-        if (index > 0) {
-            layout.advanceResponsiveRow(index, columns);
+    gui.textColored(.{ 0.62, 0.66, 0.71, 1.0 }, state.text(.post_process_graph_empty_tip));
+    _ = editor_state;
+}
+
+fn drawEffectPalette(
+    editor_state: *PostProcessPipelineEditorState,
+) void {
+    _ = editor_state;
+    gui.text("Effects");
+    gui.separator();
+    gui.textColored(.{ 0.62, 0.66, 0.71, 1.0 }, "Drag effects onto the canvas");
+    gui.dummy(0.0, 8.0);
+
+    for (all_effects) |item| {
+        gui.pushStyleColor(.button, .{ item.color[0] * 0.35, item.color[1] * 0.35, item.color[2] * 0.35, 0.9 });
+        gui.pushStyleColor(.button_hovered, .{ item.color[0] * 0.5, item.color[1] * 0.5, item.color[2] * 0.5, 0.95 });
+        gui.pushStyleColor(.button_active, .{ item.color[0] * 0.25, item.color[1] * 0.25, item.color[2] * 0.25, 1.0 });
+        defer gui.popStyleColor(3);
+
+        if (gui.buttonEx(item.label, -1.0, 0.0)) {
+            const next_x: f32 = if (editor_state.nodes.items.len > 0) blk: {
+                var max_x: f32 = 0;
+                for (editor_state.nodes.items) |n| {
+                    if (n.position[0] > max_x) max_x = n.position[0];
+                }
+                break :blk max_x + 200.0;
+            } else 100.0;
+            const next_y: f32 = 100.0;
+            const idx = editor_state.addNode(item.effect, next_x, next_y) catch continue;
+            editor_state.selected_node_index = idx;
         }
-        if (drawAccentButton(item.label, width, item.hint, false)) {
-            _ = addNodeAndSelect(editor_state, item.effect, @as(f32, @floatFromInt(editor_state.nodes.items.len)) * 180.0, 96.0);
+        if (gui.isItemHovered()) {
+            gui.setTooltip(item.hint);
+        }
+
+        if (gui.beginDragDropSourceU64(effect_drag_id)) {
+            const val: u64 = @intFromEnum(item.effect);
+            gui.dragDropSourceU64(effect_drag_id, val);
+            gui.textColored(item.color, item.label);
+            gui.endDragDropSource();
         }
     }
-
-    gui.dummy(0.0, 10.0);
-    gui.textColored(.{ 0.62, 0.66, 0.71, 1.0 }, state.text(.post_process_graph_empty_tip));
 }
 
 fn drawPreviewPanel(state: *const EditorState, viewport_state: *const EditorViewportState) void {
@@ -646,43 +816,6 @@ fn drawEmptySelectionState(state: *const EditorState) void {
     gui.text(state.text(.post_process_empty_selection_title));
     gui.textWrapped(state.text(.post_process_empty_selection_desc));
 }
-fn drawAccentButton(label: []const u8, width: f32, hint: []const u8, active: bool) bool {
-    const bg: [4]f32 = if (active)
-        .{ 0.20, 0.53, 0.36, 0.92 }
-    else
-        .{ 0.17, 0.20, 0.24, 0.88 };
-    const hovered: [4]f32 = if (active)
-        .{ 0.24, 0.62, 0.42, 0.96 }
-    else
-        .{ 0.22, 0.26, 0.30, 0.96 };
-    const pressed: [4]f32 = if (active)
-        .{ 0.12, 0.42, 0.28, 1.0 }
-    else
-        .{ 0.16, 0.18, 0.21, 1.0 };
-
-    gui.pushStyleColor(.button, bg);
-    gui.pushStyleColor(.button_hovered, hovered);
-    gui.pushStyleColor(.button_active, pressed);
-    defer gui.popStyleColor(3);
-
-    const clicked = gui.buttonEx(label, width, 0.0);
-    if (gui.isItemHovered() and hint.len != 0) {
-        gui.setTooltip(hint);
-    }
-    return clicked;
-}
-
-fn addNodeAndSelect(editor_state: *PostProcessPipelineEditorState, effect: PostProcessEffect, x: f32, y: f32) bool {
-    const index = editor_state.addNode(effect, x, y) catch return false;
-    editor_state.selected_node_index = index;
-
-    if (index > 0) {
-        const prev = index - 1;
-        editor_state.connect(prev, index) catch {};
-    }
-
-    return true;
-}
 
 fn clearAllNodes(editor_state: *PostProcessPipelineEditorState) void {
     for (editor_state.nodes.items) |*node| {
@@ -691,6 +824,7 @@ fn clearAllNodes(editor_state: *PostProcessPipelineEditorState) void {
     editor_state.nodes.clearRetainingCapacity();
     editor_state.selected_node_index = null;
 }
+
 fn enabledEffectCount(viewport_state: *const EditorViewportState) usize {
     return @as(usize, @intFromBool(viewport_state.exposure_enabled)) +
         @as(usize, @intFromBool(viewport_state.bloom_enabled)) +
@@ -704,21 +838,6 @@ fn enabledEffectCount(viewport_state: *const EditorViewportState) usize {
         @as(usize, @intFromBool(viewport_state.contact_shadows_enabled)) +
         @as(usize, @intFromBool(viewport_state.rt_shadows_enabled)) +
         @as(usize, @intFromBool(viewport_state.lut_enabled));
-}
-
-fn nodeLabel(effect: PostProcessEffect) []const u8 {
-    return switch (effect) {
-        .bloom => "Bloom",
-        .fxaa => "FXAA",
-        .ssao => "SSAO",
-        .ssgi => "SSGI",
-        .ssr => "SSR",
-        .taa => "TAA",
-        .dof => "DOF",
-        .color_grading => "Color Grading",
-        .contact_shadows => "Contact Shadows",
-        .tonemap => "Tonemap",
-    };
 }
 
 fn drawLutPresetProperty(viewport_state: *EditorViewportState) void {

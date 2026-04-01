@@ -182,3 +182,137 @@ test "plugin registry init and deinit" {
 
     try std.testing.expect(registry.plugins.count() == 0);
 }
+
+test "plugin registry register and query" {
+    const allocator = std.testing.allocator;
+    var registry = try PluginRegistry.init(allocator);
+    defer registry.deinit();
+
+    const manifest = types.PluginManifest{
+        .name = @constCast("test_plugin"),
+        .version = .{ .major = 1, .minor = 0, .patch = 0 },
+        .plugin_type = .render_style,
+        .source = .project,
+    };
+
+    const record = try allocator.create(types.PluginRecord);
+    record.* = .{ .manifest = manifest, .lifecycle = .loaded };
+
+    try registry.register(record);
+
+    try std.testing.expectEqual(@as(usize, 1), registry.plugins.count());
+    try std.testing.expect(registry.isLoaded("test_plugin"));
+
+    const by_name = registry.getByName("test_plugin");
+    try std.testing.expect(by_name != null);
+    try std.testing.expectEqualSlices(u8, "test_plugin", by_name.?.getName());
+
+    const render_styles = registry.getByType(.render_style);
+    try std.testing.expectEqual(@as(usize, 1), render_styles.len);
+    try std.testing.expectEqualSlices(u8, "test_plugin", render_styles[0].getName());
+
+    // Duplicate registration should fail
+    const record2 = try allocator.create(types.PluginRecord);
+    record2.* = .{ .manifest = manifest, .lifecycle = .loaded };
+    try std.testing.expectError(error.PluginAlreadyLoaded, registry.register(record2));
+    allocator.destroy(record2);
+}
+
+test "plugin registry enable disable lifecycle" {
+    const allocator = std.testing.allocator;
+    var registry = try PluginRegistry.init(allocator);
+    defer registry.deinit();
+
+    const manifest = types.PluginManifest{
+        .name = @constCast("lifecycle_test"),
+        .version = .{ .major = 1, .minor = 0, .patch = 0 },
+        .plugin_type = .script_vm,
+        .source = .user,
+    };
+
+    const record = try allocator.create(types.PluginRecord);
+    record.* = .{ .manifest = manifest, .lifecycle = .loaded };
+    try registry.register(record);
+
+    // Start as loaded
+    try std.testing.expectEqual(types.PluginLifecycle.loaded, record.lifecycle);
+
+    // Enable
+    try registry.enable("lifecycle_test");
+    try std.testing.expectEqual(types.PluginLifecycle.enabled, record.lifecycle);
+
+    // Disable
+    try registry.disable("lifecycle_test");
+    try std.testing.expectEqual(types.PluginLifecycle.loaded, record.lifecycle);
+
+    // Cannot enable a plugin in error state
+    record.lifecycle = .load_error;
+    try std.testing.expectError(error.PluginInErrorState, registry.enable("lifecycle_test"));
+
+    // Enable/disable non-existent plugin
+    try std.testing.expectError(error.PluginNotFound, registry.enable("nope"));
+    try std.testing.expectError(error.PluginNotFound, registry.disable("nope"));
+}
+
+test "plugin registry unload removes from all indices" {
+    const allocator = std.testing.allocator;
+    var registry = try PluginRegistry.init(allocator);
+    defer registry.deinit();
+
+    const caps = try allocator.dupe(types.PluginCapability, &.{ .shader, .render_pass });
+
+    const manifest = types.PluginManifest{
+        .name = try allocator.dupe(u8, "to_unload"),
+        .version = .{ .major = 1, .minor = 0, .patch = 0 },
+        .plugin_type = .render_style,
+        .capabilities = caps,
+        .source = .project,
+    };
+
+    const record = try allocator.create(types.PluginRecord);
+    record.* = .{ .manifest = manifest, .lifecycle = .loaded };
+    try registry.register(record);
+
+    // Verify it's in all indices
+    try std.testing.expectEqual(@as(usize, 1), registry.plugins.count());
+    try std.testing.expectEqual(@as(usize, 1), registry.getByType(.render_style).len);
+    try std.testing.expectEqual(@as(usize, 1), registry.getWithCapability(.shader).len);
+    try std.testing.expectEqual(@as(usize, 1), registry.getWithCapability(.render_pass).len);
+
+    // Unload
+    try registry.unload("to_unload");
+
+    // Verify removed from all indices
+    try std.testing.expectEqual(@as(usize, 0), registry.plugins.count());
+    try std.testing.expect(!registry.isLoaded("to_unload"));
+    try std.testing.expectEqual(@as(usize, 0), registry.getByType(.render_style).len);
+    try std.testing.expectEqual(@as(usize, 0), registry.getWithCapability(.shader).len);
+    try std.testing.expectEqual(@as(usize, 0), registry.getWithCapability(.render_pass).len);
+
+    // Unload non-existent
+    try std.testing.expectError(error.PluginNotFound, registry.unload("to_unload"));
+}
+
+test "plugin record error state" {
+    const allocator = std.testing.allocator;
+    const manifest = types.PluginManifest{
+        .name = @constCast("err_test"),
+        .version = .{ .major = 1, .minor = 0, .patch = 0 },
+        .plugin_type = .render_style,
+        .source = .user,
+    };
+    var record = types.PluginRecord{ .manifest = manifest, .lifecycle = .loaded };
+
+    // Set error
+    record.setLastError(allocator, "something went wrong");
+    try std.testing.expect(record.last_error != null);
+    try std.testing.expectEqualSlices(u8, "something went wrong", record.last_error.?);
+
+    // Overwrite error
+    record.setLastError(allocator, "new error");
+    try std.testing.expectEqualSlices(u8, "new error", record.last_error.?);
+
+    // Clear error
+    record.clearLastError(allocator);
+    try std.testing.expect(record.last_error == null);
+}

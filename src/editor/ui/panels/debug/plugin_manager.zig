@@ -4,6 +4,9 @@ const gui = @import("../../gui.zig");
 const floating_window_blocker = @import("../../floating_window_blocker.zig");
 const EditorState = @import("../../../core/state.zig").EditorState;
 
+/// Deferred action to apply after iteration finishes.
+const DeferredAction = enum { none, enable, disable, unload };
+
 /// Draw the Plugin Manager panel.
 /// Shows all discovered plugins with name, source, type, lifecycle, errors,
 /// and per-plugin Enable / Disable / Unload buttons.
@@ -34,6 +37,11 @@ pub fn drawPluginManagerWindow(state: *EditorState, layer_context: *engine.core.
     const count_text = std.fmt.bufPrint(&buf, "Discovered plugins: {d}", .{plugin_reg.plugins.count()}) catch "?";
     gui.text(count_text);
     gui.separator();
+
+    // We defer mutations until after iteration to avoid HashMap invalidation.
+    var deferred_action: DeferredAction = .none;
+    var deferred_name_buf: [128]u8 = undefined;
+    var deferred_name_len: usize = 0;
 
     // ── Table ───────────────────────────────────────────────────────────
     if (gui.beginTable("plugin_table", 6)) {
@@ -72,33 +80,40 @@ pub fn drawPluginManagerWindow(state: *EditorState, layer_context: *engine.core.
                 .load_error => gui.textColored(.{ 1.0, 0.3, 0.3, 1.0 }, "error"),
             }
 
-            // Actions
+            // Actions — record deferred, don't mutate during iteration
             gui.tableNextColumn();
             const name = record.getName();
-            switch (lifecycle) {
-                .enabled => {
-                    // Action button id: "Disable##<name>"
+            if (deferred_action == .none) {
+                switch (lifecycle) {
+                    .enabled => {
+                        var id_buf: [128]u8 = undefined;
+                        const disable_id = std.fmt.bufPrint(&id_buf, "Disable##{s}", .{name}) catch "Disable";
+                        if (gui.button(disable_id)) {
+                            deferred_action = .disable;
+                            deferred_name_len = @min(name.len, deferred_name_buf.len);
+                            @memcpy(deferred_name_buf[0..deferred_name_len], name[0..deferred_name_len]);
+                        }
+                    },
+                    .loaded => {
+                        var id_buf: [128]u8 = undefined;
+                        const enable_id = std.fmt.bufPrint(&id_buf, "Enable##{s}", .{name}) catch "Enable";
+                        if (gui.button(enable_id)) {
+                            deferred_action = .enable;
+                            deferred_name_len = @min(name.len, deferred_name_buf.len);
+                            @memcpy(deferred_name_buf[0..deferred_name_len], name[0..deferred_name_len]);
+                        }
+                    },
+                    .load_error, .unloaded => {},
+                }
+                gui.sameLine();
+                {
                     var id_buf: [128]u8 = undefined;
-                    const disable_id = std.fmt.bufPrint(&id_buf, "Disable##{s}", .{name}) catch "Disable";
-                    if (gui.button(disable_id)) {
-                        renderer.disablePlugin(name);
+                    const unload_id = std.fmt.bufPrint(&id_buf, "Unload##{s}", .{name}) catch "Unload";
+                    if (gui.button(unload_id)) {
+                        deferred_action = .unload;
+                        deferred_name_len = @min(name.len, deferred_name_buf.len);
+                        @memcpy(deferred_name_buf[0..deferred_name_len], name[0..deferred_name_len]);
                     }
-                },
-                .loaded => {
-                    var id_buf: [128]u8 = undefined;
-                    const enable_id = std.fmt.bufPrint(&id_buf, "Enable##{s}", .{name}) catch "Enable";
-                    if (gui.button(enable_id)) {
-                        renderer.enablePlugin(name);
-                    }
-                },
-                .load_error, .unloaded => {},
-            }
-            gui.sameLine();
-            {
-                var id_buf: [128]u8 = undefined;
-                const unload_id = std.fmt.bufPrint(&id_buf, "Unload##{s}", .{name}) catch "Unload";
-                if (gui.button(unload_id)) {
-                    renderer.unloadPlugin(name);
                 }
             }
 
@@ -111,5 +126,16 @@ pub fn drawPluginManagerWindow(state: *EditorState, layer_context: *engine.core.
             }
         }
         gui.endTable();
+    }
+
+    // ── Apply deferred action ───────────────────────────────────────────
+    if (deferred_action != .none and deferred_name_len > 0) {
+        const target = deferred_name_buf[0..deferred_name_len];
+        switch (deferred_action) {
+            .enable => renderer.enablePlugin(target),
+            .disable => renderer.disablePlugin(target),
+            .unload => renderer.unloadPlugin(target),
+            .none => {},
+        }
     }
 }

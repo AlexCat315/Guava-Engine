@@ -70,6 +70,7 @@ const ssr_pass_mod = @import("passes/ssr_pass.zig");
 const ssr_blur_pass_mod = @import("passes/ssr_blur_pass.zig");
 const style_plugin_mod = @import("style_plugin.zig");
 const plugin_mod = @import("../plugin/plugin.zig");
+const script_vm_plugin_mod = @import("../script/script_vm_plugin.zig");
 const fullscreen_post_mod = @import("passes/fullscreen_post_pass.zig");
 const platform_mod = @import("../core/platform.zig");
 const selection_history_mod = @import("selection_history.zig");
@@ -328,6 +329,8 @@ pub const Renderer = struct {
     style_registry: style_plugin_mod.StyleRegistry,
     /// 统一插件注册表（发现 + 生命周期管理）
     plugin_registry: plugin_mod.PluginRegistry,
+    /// script_vm typed loader (validates script_vm plugins)
+    script_vm_loader: script_vm_plugin_mod.ScriptVmPluginLoader,
     /// 天空盒通道
     skybox_pass: ?skybox_pass_mod.SkyboxPass = null,
     /// 轮廓通道（选中物体高亮）
@@ -475,6 +478,7 @@ pub const Renderer = struct {
             .base_pass = undefined,
             .style_registry = undefined,
             .plugin_registry = undefined,
+            .script_vm_loader = undefined,
             .skybox_pass = undefined,
             .outline_pass = undefined,
             .gizmo_pass = undefined,
@@ -538,6 +542,8 @@ pub const Renderer = struct {
         renderer.style_registry = style_plugin_mod.StyleRegistry.init(allocator);
 
         renderer.plugin_registry = try plugin_mod.PluginRegistry.init(allocator);
+
+        renderer.script_vm_loader = script_vm_plugin_mod.ScriptVmPluginLoader.init(allocator);
 
         renderer.skybox_pass = try skybox_pass_mod.SkyboxPass.init(&renderer.rhi);
         errdefer if (renderer.skybox_pass) |*pass| {
@@ -769,6 +775,7 @@ pub const Renderer = struct {
         };
 
         self.dispatchStylePlugins();
+        self.dispatchScriptVmPlugins();
     }
 
     /// Dispatch all `render_style` PluginRecords to the typed StyleRegistry.
@@ -796,6 +803,18 @@ pub const Renderer = struct {
             // Typed loader succeeded
             record.lifecycle = .enabled;
             record.clearLastError(self.allocator);
+        }
+    }
+
+    /// Dispatch all `script_vm` PluginRecords to the ScriptVmPluginLoader
+    /// for validation.  Actual loading into ScriptRuntime happens when the
+    /// application enables the plugin.
+    fn dispatchScriptVmPlugins(self: *Renderer) void {
+        const vm_plugins = self.plugin_registry.getByType(.script_vm);
+        for (vm_plugins) |record| {
+            if (record.lifecycle == .enabled) continue;
+            if (record.lifecycle == .load_error) continue;
+            self.script_vm_loader.validate(record);
         }
     }
 
