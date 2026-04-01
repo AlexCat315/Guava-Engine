@@ -111,12 +111,12 @@ pub fn hasUsefulInheritance(info: MaterialInheritanceInfo) bool {
 
 test "cloneGraphAlloc duplicates graph arrays" {
     var source_nodes = [_]MaterialGraphNode{.{
-            .id = 1,
-            .kind = .input_parameter,
-            .output_type = .vec4,
-            .channel = .base_color,
-            .value = .{ .kind = .vec4, .vec4 = .{ 1.0, 0.5, 0.25, 1.0 } },
-        }};
+        .id = 1,
+        .kind = .input_parameter,
+        .output_type = .vec4,
+        .channel = .base_color,
+        .value = .{ .kind = .vec4, .vec4 = .{ 1.0, 0.5, 0.25, 1.0 } },
+    }};
     var source_connections = [_]MaterialGraphConnection{.{ .from_node_id = 1, .to_node_id = 2 }};
     var source_outputs = [_]MaterialGraphOutput{.{ .channel = .base_color, .source_node_id = 1 }};
     const source: MaterialGraph = .{
