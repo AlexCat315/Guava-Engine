@@ -43,7 +43,6 @@ pub const Palette = struct {
     pub const separator: Color = .{ 0.14, 0.15, 0.18, 1.0 }; // rgba(0.14, 0.15, 0.18, 1.0) #24262E
 
     // ── Background ───────────────────────────────────────────────────────────
-    // Unreal Editor 深蓝灰风格：比旧主题明显更暗、更冷
     pub const bg = struct {
         pub const dock_area: Color = .{ 0.06, 0.07, 0.09, 1.0 }; // #0F1217 深暗
         pub const panel: Color = .{ 0.09, 0.10, 0.13, 1.0 }; // #171A21 深蓝灰
@@ -58,7 +57,6 @@ pub const Palette = struct {
     };
 
     // ── Interactive ──────────────────────────────────────────────────────────
-    // UE 蓝色强调色 (旧主题是绿色 0.22, 0.62, 0.48)
     pub const interactive = struct {
         pub const button_bg: Color = .{ 0.18, 0.19, 0.23, 1.0 }; // #2E323B
         pub const button_hovered: Color = .{ 0.24, 0.25, 0.30, 1.0 }; // #3D424B
