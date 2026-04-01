@@ -2104,6 +2104,19 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
         if (gui.menuItem(state.text(.wireframe), null, shading_mode == .wireframe, true)) {
             applyViewportShadingMode(state, layer_context, .wireframe);
         }
+        gui.separator();
+        gui.text("Render Style");
+        const style_reg = layer_context.renderer.styleRegistry();
+        var style_it = style_reg.styleIterator();
+        while (style_it.next()) |entry| {
+            const active_style_name = layer_context.renderer.editor_viewport_state.activeRenderStyleName();
+            const is_active = std.mem.eql(u8, entry.key_ptr.*, active_style_name);
+            const display = if (entry.value_ptr.display_name.len > 0) entry.value_ptr.display_name else entry.key_ptr.*;
+            if (gui.menuItem(display, null, is_active, true)) {
+                layer_context.renderer.editor_viewport_state.setActiveRenderStyle(entry.key_ptr.*);
+                _ = style_reg.setActiveStyle(entry.key_ptr.*);
+            }
+        }
     }
     gui.sameLine();
     drawToolbarDivider(gui.frameHeight());
@@ -2422,16 +2435,15 @@ fn drawViewportFpsOverlayWindow(state: *EditorState, layer_context: *engine.core
     else
         "-- Hz";
     const overlay_margin = 14.0;
-    const bottom_inset = viewportBottomOverlayInset(state);
-    const overlay_y = state.viewport_origin[1] + @max(
-        state.viewport_extent[1] - overlay_height - bottom_inset,
-        viewportOverlayTopInset() + 56.0,
-    );
+    // Position at top-right, below the view cube
+    const cube_clearance = std.math.clamp(@min(state.viewport_extent[0], state.viewport_extent[1]) * 0.13, 72.0, 92.0) + 12.0;
+    const overlay_x = state.viewport_origin[0] + state.viewport_extent[0] - overlay_width - overlay_margin;
+    const overlay_y = state.viewport_origin[1] + viewportOverlayTopInset() + cube_clearance;
 
     gui.pushStyleVarVec2(.window_padding, .{ 6.0, 3.0 });
     defer gui.popStyleVar(1);
     gui.setNextWindowPos(.{
-        state.viewport_origin[0] + overlay_margin,
+        overlay_x,
         overlay_y,
     });
     gui.setNextWindowSize(.{ overlay_width, overlay_height });

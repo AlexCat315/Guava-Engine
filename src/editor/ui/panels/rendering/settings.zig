@@ -4,6 +4,7 @@ const gui = @import("../../gui.zig");
 const floating_window_blocker = @import("../../floating_window_blocker.zig");
 const EditorState = @import("../../../core/state.zig").EditorState;
 const SettingsCategory = @import("../../../core/state.zig").SettingsCategory;
+const SettingsTab = @import("../../../core/state.zig").SettingsTab;
 const FpsDisplayMode = @import("../../../core/state.zig").FpsDisplayMode;
 const preferences = @import("../../../core/preferences.zig");
 const i18n = @import("../../../i18n/mod.zig");
@@ -17,35 +18,71 @@ const debug_icon_tint = [4]u8{ 196, 224, 255, 255 };
 
 const settings_filter_buffer_size = @import("../../../core/state.zig").settings_filter_buffer_size;
 
-fn drawSettingsCategoryItem(icon_texture: *const engine.rhi.Texture, label: []const u8, is_selected: bool) bool {
-    const row_height: f32 = 28.0;
-    const rounding: f32 = 4.0;
+// ── Sidebar: Collapsible section header ──────────────────────────────
+
+fn drawSectionHeader(label: []const u8, is_open: *bool) void {
+    const row_height: f32 = 24.0;
     const draw_list = gui.getWindowDrawList();
     const cursor = gui.cursorScreenPos();
     const row_top = cursor[1];
-
     const avail = gui.contentRegionAvail();
     const row_width = @max(avail[0], 100.0);
 
     gui.dummy(row_width, row_height);
     const item_min = gui.getItemRectMin();
     const item_max = gui.getItemRectMax();
+    const hovered = gui.isItemHovered();
 
+    if (hovered) {
+        draw_list.addRectFilled(
+            .{ item_min[0], item_min[1] },
+            .{ item_max[0], item_max[1] },
+            gui.getColorU32(.{ 1.0, 1.0, 1.0, 0.04 }),
+            0.0,
+            0,
+        );
+    }
+
+    // Arrow ▼ or ▶
+    const arrow_x = item_min[0] + 8.0;
+    const arrow_y = row_top + (row_height - 12.0) * 0.5;
+    const arrow_text: []const u8 = if (is_open.*) "\xE2\x96\xBC" else "\xE2\x96\xB6";
+    const arrow_color = gui.getColorU32(.{ 0.60, 0.63, 0.68, 1.0 });
+    draw_list.addText(.{ arrow_x, arrow_y }, arrow_color, arrow_text);
+
+    // Section label (bold appearance via brighter color)
+    const text_x = arrow_x + 16.0;
+    const text_y = row_top + (row_height - 14.0) * 0.5;
+    const text_color = gui.getColorU32(.{ 0.88, 0.91, 0.95, 1.0 });
+    draw_list.addText(.{ text_x, text_y }, text_color, label);
+
+    if (hovered and gui.isItemClicked()) {
+        is_open.* = !is_open.*;
+    }
+}
+
+// ── Sidebar: Child category item (indented) ──────────────────────────
+
+fn drawCategoryChildItem(label: []const u8, is_selected: bool) bool {
+    const row_height: f32 = 26.0;
+    const rounding: f32 = 4.0;
+    const draw_list = gui.getWindowDrawList();
+    const cursor = gui.cursorScreenPos();
+    const row_top = cursor[1];
+    const avail = gui.contentRegionAvail();
+    const row_width = @max(avail[0], 100.0);
+
+    gui.dummy(row_width, row_height);
+    const item_min = gui.getItemRectMin();
+    const item_max = gui.getItemRectMax();
     const hovered = gui.isItemHovered();
 
     if (is_selected) {
         draw_list.addRectFilled(
             .{ item_min[0] + 4.0, item_min[1] + 1.0 },
             .{ item_max[0] - 4.0, item_max[1] - 1.0 },
-            gui.getColorU32(.{ 0.16, 0.31, 0.35, 0.94 }),
+            gui.getColorU32(.{ 0.17, 0.33, 0.50, 0.72 }),
             rounding,
-            0,
-        );
-        draw_list.addRectFilled(
-            .{ item_min[0] + 4.0, item_min[1] + 2.0 },
-            .{ item_min[0] + 7.0, item_max[1] - 2.0 },
-            gui.getColorU32(.{ 0.34, 0.78, 0.98, 1.0 }),
-            2.0,
             0,
         );
     } else if (hovered) {
@@ -58,62 +95,71 @@ fn drawSettingsCategoryItem(icon_texture: *const engine.rhi.Texture, label: []co
         );
     }
 
-    const icon_size: f32 = 16.0;
-    const icon_x: f32 = item_min[0] + 12.0;
-    const icon_y: f32 = row_top + (row_height - icon_size) * 0.5;
-    gui.setCursorScreenPos(.{ icon_x, icon_y });
-    gui.image(icon_texture, icon_size, icon_size);
-
-    const text_x = icon_x + icon_size + 8.0;
+    const indent: f32 = 28.0;
     const text_y = row_top + (row_height - 14.0) * 0.5;
     const text_color = if (is_selected)
         gui.getColorU32(.{ 0.94, 0.97, 1.0, 1.0 })
     else if (hovered)
-        gui.getColorU32(.{ 0.90, 0.93, 0.97, 1.0 })
+        gui.getColorU32(.{ 0.88, 0.91, 0.95, 1.0 })
     else
         gui.getColorU32(.{ 0.72, 0.76, 0.82, 1.0 });
-    draw_list.addText(.{ text_x, text_y }, text_color, label);
+    draw_list.addText(.{ item_min[0] + indent, text_y }, text_color, label);
 
     return hovered and gui.isItemClicked();
 }
 
-fn drawSettingsCategoryList(state: *EditorState, layer_context: *engine.core.LayerContext) void {
-    const general_icon = ui_icons.paths.hierarchy.object;
-    const interface_icon = ui_icons.paths.hierarchy.object;
-    const editor_icon = ui_icons.paths.hierarchy.object;
-    const viewport_icon = ui_icons.paths.hierarchy.camera;
-    const shortcuts_icon = ui_icons.paths.hierarchy.object;
-    const ai_icon = ui_icons.paths.hierarchy.vfx;
-    const icon_tint = theme.Palette.hierarchy.active_icon;
+// ── Sidebar: Full tree layout ────────────────────────────────────────
 
-    const categories = [_]struct {
-        id: SettingsCategory,
-        label: []const u8,
-        icon_path: []const u8,
-    }{
-        .{ .id = .general, .label = state.text(.settings_general), .icon_path = general_icon },
-        .{ .id = .interface, .label = state.text(.settings_interface), .icon_path = interface_icon },
-        .{ .id = .editor, .label = state.text(.settings_editor), .icon_path = editor_icon },
-        .{ .id = .viewport, .label = state.text(.settings_viewport), .icon_path = viewport_icon },
-        .{ .id = .shortcuts, .label = state.text(.settings_shortcuts), .icon_path = shortcuts_icon },
-        .{ .id = .ai, .label = state.text(.settings_ai), .icon_path = ai_icon },
-    };
+fn drawSettingsCategoryTree(state: *EditorState) void {
+    // Section: 常规 (General)
+    drawSectionHeader(state.text(.settings_section_general), &state.settings_section_general_open);
+    if (state.settings_section_general_open) {
+        if (drawCategoryChildItem(state.text(.settings_general), state.settings_category == .general)) {
+            state.settings_category = .general;
+        }
+    }
 
-    for (categories) |category| {
-        const is_selected = state.settings_category == category.id;
-        const icon_texture = icon_cache.ensureIconTexture(
-            state,
-            layer_context,
-            category.icon_path,
-            16,
-            16,
-            icon_tint,
-        ) catch continue;
-        if (drawSettingsCategoryItem(icon_texture, category.label, is_selected)) {
-            state.settings_category = category.id;
+    gui.dummy(0.0, 2.0);
+
+    // Section: 界面 (Interface)
+    drawSectionHeader(state.text(.settings_section_interface), &state.settings_section_interface_open);
+    if (state.settings_section_interface_open) {
+        if (drawCategoryChildItem(state.text(.settings_editor), state.settings_category == .editor)) {
+            state.settings_category = .editor;
+        }
+        if (drawCategoryChildItem(state.text(.settings_inspector), state.settings_category == .inspector)) {
+            state.settings_category = .inspector;
+        }
+        if (drawCategoryChildItem(state.text(.settings_theme), state.settings_category == .theme)) {
+            state.settings_category = .theme;
+        }
+    }
+
+    gui.dummy(0.0, 2.0);
+
+    // Section: 视口 (Viewport)
+    drawSectionHeader(state.text(.settings_section_viewport), &state.settings_section_viewport_open);
+    if (state.settings_section_viewport_open) {
+        if (drawCategoryChildItem(state.text(.settings_rendering), state.settings_category == .rendering)) {
+            state.settings_category = .rendering;
+        }
+        if (drawCategoryChildItem(state.text(.settings_camera), state.settings_category == .camera)) {
+            state.settings_category = .camera;
+        }
+    }
+
+    gui.dummy(0.0, 2.0);
+
+    // Section: AI
+    drawSectionHeader(state.text(.settings_section_ai), &state.settings_section_ai_open);
+    if (state.settings_section_ai_open) {
+        if (drawCategoryChildItem(state.text(.settings_assistant), state.settings_category == .assistant)) {
+            state.settings_category = .assistant;
         }
     }
 }
+
+// ── Content: per-category settings ───────────────────────────────────
 
 fn drawSettingsContentGeneral(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     gui.labelText(state.text(.language), state.languageInfo().native_name);
@@ -187,15 +233,19 @@ fn drawSettingsChoiceButton(label: []const u8, active: bool, width: f32) bool {
     return gui.buttonEx(label, width, 0.0);
 }
 
-fn drawSettingsContentInterface(_: *EditorState) void {
-    gui.text("Interface settings coming soon...");
-}
-
 fn drawSettingsContentEditor(_: *EditorState) void {
     gui.text("Editor settings coming soon...");
 }
 
-fn drawSettingsContentViewport(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+fn drawSettingsContentInspector(_: *EditorState) void {
+    gui.text("Inspector settings coming soon...");
+}
+
+fn drawSettingsContentTheme(_: *EditorState) void {
+    gui.text("Theme settings coming soon...");
+}
+
+fn drawSettingsContentRendering(state: *EditorState, layer_context: *engine.core.LayerContext) void {
     const viewport_size = layer_context.renderer.sceneViewportSize();
     var viewport_buffer: [64]u8 = undefined;
     const viewport_text = std.fmt.bufPrint(&viewport_buffer, "{d} x {d}", .{ viewport_size[0], viewport_size[1] }) catch unreachable;
@@ -210,13 +260,42 @@ fn drawSettingsContentViewport(state: *EditorState, layer_context: *engine.core.
     gui.image(debug_icon, 28.0, 28.0);
 }
 
+fn drawSettingsContentCamera(_: *EditorState) void {
+    gui.text("Camera settings coming soon...");
+}
+
 fn drawSettingsContentShortcuts(_: *EditorState) void {
     gui.text("Shortcuts settings coming soon...");
 }
 
-fn drawSettingsContentAi(_: *EditorState) void {
-    gui.text("AI settings coming soon...");
+fn drawSettingsContentAssistant(_: *EditorState) void {
+    gui.text("AI Assistant settings coming soon...");
 }
+
+fn drawSettingsContentForCategory(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    switch (state.settings_category) {
+        .general => try drawSettingsContentGeneral(state, layer_context),
+        .interface => drawSettingsContentEditor(state),
+        .editor => drawSettingsContentEditor(state),
+        .inspector => drawSettingsContentInspector(state),
+        .theme => drawSettingsContentTheme(state),
+        .viewport => drawSettingsContentRendering(state, layer_context),
+        .rendering => drawSettingsContentRendering(state, layer_context),
+        .camera => drawSettingsContentCamera(state),
+        .shortcuts => drawSettingsContentShortcuts(state),
+        .ai => drawSettingsContentAssistant(state),
+        .assistant => drawSettingsContentAssistant(state),
+        .advanced => {
+            if (state.settings_advanced_mode) {
+                gui.text("Advanced settings enabled.");
+            } else {
+                gui.text("Enable advanced mode to see more settings.");
+            }
+        },
+    }
+}
+
+// ── Main window ──────────────────────────────────────────────────────
 
 pub fn drawSettingsWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     var title_buffer: [80]u8 = undefined;
@@ -231,32 +310,57 @@ pub fn drawSettingsWindow(state: *EditorState, layer_context: *engine.core.Layer
     gui.pushStyleVarVec2(.item_spacing, .{ 8.0, 4.0 });
     defer gui.popStyleVar(2);
 
-    // ── Top bar: search + advanced toggle ────────────────────────────
-    gui.pushStyleColor(.frame_bg, .{ 0.12, 0.13, 0.15, 0.65 });
-    gui.setNextItemWidth(160.0);
-    _ = gui.inputTextWithHint("##settings_filter", state.text(.settings_filter), state.settings_filter_buffer[0..settings_filter_buffer_size]);
-    gui.popStyleColor(1);
-    gui.sameLineEx(0.0, 16.0);
-    _ = gui.checkbox(state.text(.settings_advanced), &state.settings_advanced_mode);
+    // ── Top tabs: 常规 | 快捷键 ──────────────────────────────────────
+    if (gui.beginTabBar("##settings_tabs")) {
+        defer gui.endTabBar();
 
-    gui.dummy(0.0, 4.0);
-    gui.separator();
-    gui.dummy(0.0, 4.0);
+        if (gui.beginTabItem(state.text(.settings_general))) {
+            state.settings_tab = .general;
+            gui.endTabItem();
+        }
+        if (gui.beginTabItem(state.text(.settings_shortcuts))) {
+            state.settings_tab = .shortcuts;
+            gui.endTabItem();
+        }
+    }
 
-    // ── Body: sidebar + vertical separator + content ─────────────────
+    // ── Search bar + advanced toggle (full width) ────────────────────
+    {
+        const search_avail = gui.contentRegionAvail()[0];
+        const toggle_width: f32 = 120.0;
+        const search_width = @max(search_avail - toggle_width - 16.0, 100.0);
+        gui.pushStyleColor(.frame_bg, .{ 0.12, 0.13, 0.15, 0.65 });
+        gui.setNextItemWidth(search_width);
+        _ = gui.inputTextWithHint("##settings_filter", state.text(.settings_filter), state.settings_filter_buffer[0..settings_filter_buffer_size]);
+        gui.popStyleColor(1);
+        gui.sameLineEx(0.0, 8.0);
+        _ = gui.checkbox(state.text(.settings_advanced), &state.settings_advanced_mode);
+    }
+
+    gui.dummy(0.0, 2.0);
+
+    if (state.settings_tab == .shortcuts) {
+        // Shortcuts tab: direct content, no sidebar
+        layout.beginSectionBody();
+        defer layout.endSectionBody();
+        drawSettingsContentShortcuts(state);
+        return;
+    }
+
+    // ── Body: sidebar tree + separator + content ─────────────────────
     const avail = gui.contentRegionAvail();
-    const sidebar_width: f32 = 160.0;
+    const sidebar_width: f32 = 180.0;
     const separator_width: f32 = 1.0;
     const content_width = @max(avail[0] - sidebar_width - separator_width - 16.0, 100.0);
     const body_height = @max(avail[1], 100.0);
 
-    // Left sidebar (scrollable vertical tree)
-    gui.pushStyleColor(.child_bg, .{ 0.09, 0.10, 0.11, 0.60 });
-    gui.pushStyleVarVec2(.window_padding, .{ 0.0, 6.0 });
+    // Left sidebar (scrollable collapsible tree)
+    gui.pushStyleColor(.child_bg, .{ 0.08, 0.09, 0.10, 0.70 });
+    gui.pushStyleVarVec2(.window_padding, .{ 0.0, 4.0 });
     _ = gui.beginChild("##settings_sidebar", sidebar_width, body_height, false);
     gui.popStyleVar(1);
     gui.popStyleColor(1);
-    drawSettingsCategoryList(state, layer_context);
+    drawSettingsCategoryTree(state);
     gui.endChild();
 
     gui.sameLineEx(0.0, 0.0);
@@ -281,19 +385,5 @@ pub fn drawSettingsWindow(state: *EditorState, layer_context: *engine.core.Layer
     defer layout.endSectionBody();
     defer gui.endChild();
 
-    switch (state.settings_category) {
-        .general => try drawSettingsContentGeneral(state, layer_context),
-        .interface => drawSettingsContentInterface(state),
-        .editor => drawSettingsContentEditor(state),
-        .viewport => drawSettingsContentViewport(state, layer_context),
-        .shortcuts => drawSettingsContentShortcuts(state),
-        .ai => drawSettingsContentAi(state),
-        .advanced => {
-            if (state.settings_advanced_mode) {
-                gui.text("Advanced settings enabled.");
-            } else {
-                gui.text("Enable advanced mode to see more settings.");
-            }
-        },
-    }
+    try drawSettingsContentForCategory(state, layer_context);
 }

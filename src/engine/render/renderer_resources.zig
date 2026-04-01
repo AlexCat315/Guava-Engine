@@ -12,6 +12,7 @@ pub const SceneViewportState = struct {
     velocity_texture: ?rhi_mod.Texture = null,
     ssao_texture: ?rhi_mod.Texture = null,
     ssr_texture: ?rhi_mod.Texture = null,
+    ssr_blur_texture: ?rhi_mod.Texture = null,
     ssgi_texture: ?rhi_mod.Texture = null,
     contact_shadow_texture: ?rhi_mod.Texture = null,
     rt_shadow_denoised_texture: ?rhi_mod.Texture = null,
@@ -34,6 +35,9 @@ pub const SceneViewportState = struct {
             device.releaseTexture(texture);
         }
         if (self.ssr_texture) |*texture| {
+            device.releaseTexture(texture);
+        }
+        if (self.ssr_blur_texture) |*texture| {
             device.releaseTexture(texture);
         }
         if (self.ssgi_texture) |*texture| {
@@ -67,7 +71,7 @@ pub const SceneViewportState = struct {
         }
 
         if (self.color_texture) |color_texture| {
-            if (self.depth_texture != null and self.hdr_color_texture != null and self.taa_texture != null and self.velocity_texture != null and self.ssao_texture != null and self.ssr_texture != null and self.ssgi_texture != null and self.contact_shadow_texture != null and self.rt_shadow_denoised_texture != null and self.bloom_texture != null and self.fxaa_texture != null and color_texture.desc.width == width and color_texture.desc.height == height) {
+            if (self.depth_texture != null and self.hdr_color_texture != null and self.taa_texture != null and self.velocity_texture != null and self.ssao_texture != null and self.ssr_texture != null and self.ssr_blur_texture != null and self.ssgi_texture != null and self.contact_shadow_texture != null and self.rt_shadow_denoised_texture != null and self.bloom_texture != null and self.fxaa_texture != null and color_texture.desc.width == width and color_texture.desc.height == height) {
                 self.width = width;
                 self.height = height;
                 return;
@@ -129,6 +133,17 @@ pub const SceneViewportState = struct {
         errdefer if (self.ssr_texture) |*texture| {
             device.releaseTexture(texture);
             self.ssr_texture = null;
+        };
+
+        self.ssr_blur_texture = try device.createTexture(.{
+            .width = width,
+            .height = height,
+            .format = .rgba16_float,
+            .usage = rhi_types.TextureUsage.color_target | rhi_types.TextureUsage.sampler,
+        });
+        errdefer if (self.ssr_blur_texture) |*texture| {
+            device.releaseTexture(texture);
+            self.ssr_blur_texture = null;
         };
 
         self.ssgi_texture = try device.createTexture(.{
@@ -270,6 +285,13 @@ pub const SceneViewportState = struct {
 
     pub fn ssr(self: *SceneViewportState) ?*const rhi_mod.Texture {
         if (self.ssr_texture) |*texture| {
+            return texture;
+        }
+        return null;
+    }
+
+    pub fn ssrBlur(self: *SceneViewportState) ?*const rhi_mod.Texture {
+        if (self.ssr_blur_texture) |*texture| {
             return texture;
         }
         return null;

@@ -67,6 +67,8 @@ const path_trace_denoise = @import("path_trace/path_trace_denoise.zig");
 const image_export = @import("image_export.zig");
 const dof_pass_mod = @import("passes/dof_pass.zig");
 const ssr_pass_mod = @import("passes/ssr_pass.zig");
+const ssr_blur_pass_mod = @import("passes/ssr_blur_pass.zig");
+const style_plugin_mod = @import("style_plugin.zig");
 const fullscreen_post_mod = @import("passes/fullscreen_post_pass.zig");
 const platform_mod = @import("../core/platform.zig");
 const selection_history_mod = @import("selection_history.zig");
@@ -321,6 +323,8 @@ pub const Renderer = struct {
     shadow_pass: shadow_pass_mod.ShadowPass,
     /// 基础通道（主渲染）
     base_pass: base_pass_mod.BasePass,
+    /// 渲染风格插件注册表
+    style_registry: style_plugin_mod.StyleRegistry,
     /// 天空盒通道
     skybox_pass: ?skybox_pass_mod.SkyboxPass = null,
     /// 轮廓通道（选中物体高亮）
@@ -351,6 +355,8 @@ pub const Renderer = struct {
     taa_pass: taa_pass_mod.TAAPass,
     /// SSR 屏幕空间反射通道
     ssr_pass: ssr_pass_mod.SSRPass,
+    /// SSR 粗糙度模糊通道
+    ssr_blur_pass: ssr_blur_pass_mod.SSRBlurPass,
     /// Bloom 后处理通道
     bloom_pass: bloom_pass_mod.BloomPass,
     /// Tonemap 后处理通道
@@ -464,6 +470,7 @@ pub const Renderer = struct {
             .velocity_pass = undefined,
             .shadow_pass = undefined,
             .base_pass = undefined,
+            .style_registry = undefined,
             .skybox_pass = undefined,
             .outline_pass = undefined,
             .gizmo_pass = undefined,
@@ -474,6 +481,7 @@ pub const Renderer = struct {
             .ibl_compute_pass = null,
             .taa_pass = undefined,
             .ssr_pass = undefined,
+            .ssr_blur_pass = undefined,
             .bloom_pass = undefined,
             .tonemap_pass = undefined,
             .rt_shadow_composite_pass = undefined,
@@ -523,6 +531,8 @@ pub const Renderer = struct {
         renderer.base_pass = try base_pass_mod.BasePass.init(&renderer.rhi);
         errdefer renderer.base_pass.deinit(&renderer.rhi);
 
+        renderer.style_registry = style_plugin_mod.StyleRegistry.init(allocator);
+
         renderer.skybox_pass = try skybox_pass_mod.SkyboxPass.init(&renderer.rhi);
         errdefer if (renderer.skybox_pass) |*pass| {
             pass.deinit(&renderer.rhi);
@@ -550,6 +560,9 @@ pub const Renderer = struct {
 
         renderer.ssr_pass = try ssr_pass_mod.SSRPass.init(&renderer.rhi);
         errdefer renderer.ssr_pass.deinit(&renderer.rhi);
+
+        renderer.ssr_blur_pass = try ssr_blur_pass_mod.SSRBlurPass.init(&renderer.rhi);
+        errdefer renderer.ssr_blur_pass.deinit(&renderer.rhi);
 
         renderer.bloom_pass = try bloom_pass_mod.BloomPass.init(&renderer.rhi);
         errdefer renderer.bloom_pass.deinit(&renderer.rhi);
@@ -654,6 +667,7 @@ pub const Renderer = struct {
         if (self.ibl_compute_pass) |*p| p.deinit(&self.rhi);
         self.taa_pass.deinit(&self.rhi);
         self.ssr_pass.deinit(&self.rhi);
+        self.ssr_blur_pass.deinit(&self.rhi);
         self.bloom_pass.deinit(&self.rhi);
         self.tonemap_pass.deinit(&self.rhi);
         self.rt_shadow_composite_pass.deinit(&self.rhi);
@@ -682,6 +696,7 @@ pub const Renderer = struct {
         self.gizmo_pass.deinit(&self.rhi);
         self.outline_pass.deinit(&self.rhi);
         self.base_pass.deinit(&self.rhi);
+        self.style_registry.deinit();
         self.shadow_map.deinit(&self.rhi);
         self.shadow_pass.deinit(&self.rhi);
         self.velocity_pass.deinit(&self.rhi);
@@ -724,6 +739,10 @@ pub const Renderer = struct {
 
     pub fn device(self: *Renderer) *rhi_mod.RhiDevice {
         return &self.rhi;
+    }
+
+    pub fn styleRegistry(self: *Renderer) *style_plugin_mod.StyleRegistry {
+        return &self.style_registry;
     }
 
     pub fn handleResize(self: *Renderer, width: u32, height: u32) !void {
@@ -1821,6 +1840,34 @@ pub const Renderer = struct {
                             });
                             draw_stats.add(ssr_stats);
                             self.rhi.endRenderPass(ssr_render_pass);
+
+                            // SSR roughness blur: 2-pass separable bilateral Gaussian
+                            if (self.editor_viewport_state.ssr_roughness_blur_strength > 0.001 and
+                                self.ssr_blur_pass.isReady() and
+                                self.scene_viewport.ssrBlur() != null)
+                            {
+                                const blur_strength = self.editor_viewport_state.ssr_roughness_blur_strength;
+
+                                // Horizontal pass: ssr_texture → ssr_blur_texture
+                                try self.ssr_blur_pass.syncTextures(&self.rhi, self.scene_viewport.ssr().?, self.scene_viewport.depth().?);
+                                const h_blur_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.ssrBlur().? }));
+                                _ = self.ssr_blur_pass.draw(&self.rhi, frame, h_blur_pass, .{
+                                    .direction = .{ 1.0, 0.0 },
+                                    .blur_strength = blur_strength,
+                                    .depth_threshold = 0.01,
+                                });
+                                self.rhi.endRenderPass(h_blur_pass);
+
+                                // Vertical pass: ssr_blur_texture → ssr_texture
+                                try self.ssr_blur_pass.syncTextures(&self.rhi, self.scene_viewport.ssrBlur().?, self.scene_viewport.depth().?);
+                                const v_blur_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.ssr().? }));
+                                _ = self.ssr_blur_pass.draw(&self.rhi, frame, v_blur_pass, .{
+                                    .direction = .{ 0.0, 1.0 },
+                                    .blur_strength = blur_strength,
+                                    .depth_threshold = 0.01,
+                                });
+                                self.rhi.endRenderPass(v_blur_pass);
+                            }
 
                             var ssr_composite_draw_calls: usize = 0;
                             var ssr_composite_triangles: usize = 0;

@@ -173,13 +173,23 @@ pub const FpsDisplayMode = enum {
     none,
 };
 
+pub const SettingsTab = enum {
+    general,
+    shortcuts,
+};
+
 pub const SettingsCategory = enum {
     general,
     interface,
     editor,
+    inspector,
+    theme,
     viewport,
+    rendering,
+    camera,
     shortcuts,
     ai,
+    assistant,
     advanced,
 };
 
@@ -565,6 +575,11 @@ pub const EditorState = struct {
     settings_category: SettingsCategory = .general,
     settings_filter_buffer: [settings_filter_buffer_size]u8 = [_]u8{0} ** settings_filter_buffer_size,
     settings_advanced_mode: bool = false,
+    settings_tab: SettingsTab = .general,
+    settings_section_general_open: bool = true,
+    settings_section_interface_open: bool = true,
+    settings_section_viewport_open: bool = true,
+    settings_section_ai_open: bool = true,
     render_settings_open: bool = false,
     material_editor_open: bool = false,
     editor_utilities_open: bool = false,

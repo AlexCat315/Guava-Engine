@@ -501,6 +501,7 @@ fn drawEffectParameters(
                 _ = props.float("Ray Thickness", &viewport_state.ssr_ray_thickness, 0.01, 0.01, 2.0);
                 _ = props.float("Fade Distance", &viewport_state.ssr_fade_distance, 0.1, 0.0, 100.0);
                 _ = props.float("Edge Fade", &viewport_state.ssr_edge_fade, 0.01, 0.0, 1.0);
+                _ = props.float("Roughness Blur", &viewport_state.ssr_roughness_blur_strength, 0.1, 0.0, 8.0);
             },
             .taa => {
                 _ = props.float("Blend Factor", &viewport_state.taa_blend_factor, 0.01, 0.0, 1.0);

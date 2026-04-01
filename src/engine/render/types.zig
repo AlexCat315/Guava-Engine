@@ -1,3 +1,4 @@
+const std = @import("std");
 pub const GraphicsAPI = @import("../rhi/types.zig").GraphicsAPI;
 pub const BackendSelectionPolicy = @import("../rhi/types.zig").BackendSelectionPolicy;
 pub const RuntimeInfo = @import("../rhi/types.zig").RuntimeInfo;
@@ -63,6 +64,7 @@ pub const EditorViewportState = struct {
     ssr_ray_thickness: f32 = 0.5,
     ssr_fade_distance: f32 = 10.0,
     ssr_edge_fade: f32 = 0.1,
+    ssr_roughness_blur_strength: f32 = 0.0,
 
     // SSGI 屏幕空间全局光照
     ssgi_enabled: bool = false,
@@ -111,6 +113,24 @@ pub const EditorViewportState = struct {
     lut_enabled: bool = false,
     lut_intensity: f32 = 1.0,
     lut_preset: EditorViewportLutPreset = .neutral,
+    // 渲染风格
+    active_render_style: [64]u8 = blk: {
+        var buf: [64]u8 = .{0} ** 64;
+        const name = "default_pbr";
+        @memcpy(buf[0..name.len], name);
+        break :blk buf;
+    },
+
+    pub fn activeRenderStyleName(self: *const EditorViewportState) []const u8 {
+        const len = std.mem.indexOfScalar(u8, &self.active_render_style, 0) orelse self.active_render_style.len;
+        return self.active_render_style[0..len];
+    }
+
+    pub fn setActiveRenderStyle(self: *EditorViewportState, name: []const u8) void {
+        @memset(&self.active_render_style, 0);
+        const copy_len = @min(name.len, self.active_render_style.len);
+        @memcpy(self.active_render_style[0..copy_len], name[0..copy_len]);
+    }
 };
 
 pub const SceneSnapshot = struct {
