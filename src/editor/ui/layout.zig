@@ -1,30 +1,27 @@
 const std = @import("std");
 const engine = @import("guava");
 const gui = @import("gui.zig");
+const theme = @import("theme.zig");
 const EditorState = @import("../core/state.zig").EditorState;
 const state_mod = @import("../core/state.zig");
-
-pub const default_section_padding: f32 = 14.0;
-pub const default_item_spacing: f32 = 10.0;
-pub const default_row_spacing: f32 = 8.0;
 const layout_template_extension = ".ini";
 
 pub fn beginSectionBody() void {
-    gui.indent(default_section_padding);
+    gui.indent(theme.Spacing.section_padding);
 }
 
 pub fn endSectionBody() void {
-    gui.unindent(default_section_padding);
+    gui.unindent(theme.Spacing.section_padding);
 }
 
 pub fn drawSidebarSectionDivider() void {
-    gui.dummy(0.0, 6.0);
+    gui.dummy(0.0, theme.Spacing.layout_divider_spacing);
     gui.separator();
-    gui.dummy(0.0, 6.0);
+    gui.dummy(0.0, theme.Spacing.layout_divider_spacing);
 }
 
 pub fn drawSidebarSectionGap() void {
-    gui.dummy(0.0, 6.0);
+    gui.dummy(0.0, theme.Spacing.layout_divider_spacing);
 }
 
 pub fn responsiveButtonColumns(button_count: usize, min_button_width: f32) usize {
@@ -32,7 +29,7 @@ pub fn responsiveButtonColumns(button_count: usize, min_button_width: f32) usize
     while (columns > 1) : (columns -= 1) {
         const required_width =
             min_button_width * @as(f32, @floatFromInt(columns)) +
-            default_item_spacing * @as(f32, @floatFromInt(columns - 1));
+            theme.Spacing.item_spacing * @as(f32, @floatFromInt(columns - 1));
         if (gui.contentRegionAvail()[0] >= required_width) {
             return columns;
         }
@@ -41,7 +38,7 @@ pub fn responsiveButtonColumns(button_count: usize, min_button_width: f32) usize
 }
 
 pub fn responsiveButtonWidth(columns: usize) f32 {
-    const total_spacing = default_item_spacing * @as(f32, @floatFromInt(columns -| 1));
+    const total_spacing = theme.Spacing.item_spacing * @as(f32, @floatFromInt(columns -| 1));
     return @max(
         (gui.contentRegionAvail()[0] - total_spacing) / @as(f32, @floatFromInt(columns)),
         1.0,
@@ -53,7 +50,7 @@ pub fn advanceResponsiveRow(index: usize, columns: usize) void {
         return;
     }
     if (index % columns == 0) {
-        gui.dummy(0.0, default_row_spacing);
+        gui.dummy(0.0, theme.Spacing.row_spacing);
     } else {
         gui.sameLine();
     }
@@ -61,13 +58,13 @@ pub fn advanceResponsiveRow(index: usize, columns: usize) void {
 
 pub fn drawResponsivePropertyLabel(label: []const u8, min_control_width: f32) bool {
     const total_width = gui.contentRegionAvail()[0];
-    const label_width = std.math.clamp(total_width * 0.34, 86.0, 142.0);
+    const label_width = std.math.clamp(total_width * theme.Spacing.layout_label_width_ratio, theme.Spacing.layout_label_width_min, theme.Spacing.layout_label_width_max);
     gui.alignTextToFramePadding();
     gui.text(label);
     if (total_width < label_width + min_control_width) {
         return false;
     }
-    gui.sameLineEx(label_width, default_item_spacing);
+    gui.sameLineEx(label_width, theme.Spacing.item_spacing);
     return true;
 }
 
@@ -89,7 +86,7 @@ pub fn endInspectorPropertyTable() void {
 pub fn drawInspectorPropertyRow(label: []const u8, label_color: ?[4]f32) void {
     gui.tableNextRow();
     gui.tableNextColumn();
-    const default_dimmed = [4]f32{ 0.64, 0.68, 0.74, 1.0 }; // Slightly brighter dimmed label
+    const default_dimmed = theme.Spacing.layout_property_label_dimmed; // Slightly brighter dimmed label
     if (label_color) |color| {
         gui.pushStyleColor(.text, color);
         defer gui.popStyleColor(1);

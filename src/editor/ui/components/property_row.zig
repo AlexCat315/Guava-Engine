@@ -45,7 +45,7 @@ pub fn beginGrid(id: []const u8, label_width_ratio: f32) bool {
         grid_depth += 1;
     }
 
-    const item_spacing: [2]f32 = if (mode == .table) .{ 10.0, 8.0 } else .{ 10.0, 6.0 };
+    const item_spacing: [2]f32 = if (mode == .table) theme.Spacing.inspector_item_spacing_table else theme.Spacing.inspector_item_spacing_stacked;
     gui.pushStyleVarVec2(.item_spacing, item_spacing);
     return true;
 }
@@ -81,7 +81,7 @@ pub fn drawLabel(label: []const u8, label_color: ?theme.Color) void {
         gui.alignTextToFramePadding();
         gui.text(label);
     }
-    gui.dummy(0.0, 2.0);
+    gui.dummy(0.0, theme.Spacing.property_row_dummy_after_label);
     gui.setNextItemWidth(-1.0);
 }
 

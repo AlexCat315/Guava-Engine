@@ -65,17 +65,17 @@ pub const Palette = struct {
         pub const frame_bg: Color = .{ 0.14, 0.15, 0.18, 1.0 }; // #24262E
         pub const frame_hovered: Color = .{ 0.18, 0.19, 0.23, 1.0 }; // #2E323B
         pub const frame_active: Color = .{ 0.22, 0.23, 0.28, 1.0 }; // #39404A
-        pub const accent: Color = .{ 0.30, 0.58, 0.92, 1.0 }; // #4D94EB 
+        pub const accent: Color = .{ 0.30, 0.58, 0.92, 1.0 }; // #4D94EB
         pub const accent_hovered: Color = .{ 0.36, 0.64, 0.96, 1.0 }; // #5CA3F5
         pub const accent_active: Color = .{ 0.24, 0.52, 0.88, 1.0 }; // #3D85E0
     };
 
     // ── Selection ────────────────────────────────────────────────────────────
     pub const selection = struct {
-        pub const bg: Color = .{ 0.25, 0.45, 0.75, 0.30 }; // #3F73BF 
+        pub const bg: Color = .{ 0.25, 0.45, 0.75, 0.30 }; // #3F73BF
         pub const border: Color = .{ 0.30, 0.58, 0.92, 1.0 }; // #4D94EB
         pub const text: Color = .{ 0.92, 0.94, 0.98, 1.0 }; // #EBF0FA 选中时的文本颜色
-        pub const hovered: Color = .{ 0.20, 0.30, 0.50, 0.25 }; // #334D80 
+        pub const hovered: Color = .{ 0.20, 0.30, 0.50, 0.25 }; // #334D80
     };
 
     // ── Semantic ─────────────────────────────────────────────────────────────
@@ -256,6 +256,290 @@ pub const Spacing = struct {
     // ── Indent ───────────────────────────────────────────────────────────────
     pub const tree_indent: f32 = 16.0;
     pub const group_indent: f32 = 12.0;
+
+    // ── Viewport overlay ─────────────────────────────────────────────────────
+    pub const viewport_overlay_padding: [2]f32 = .{ 4.0, 4.0 };
+    pub const viewport_overlay_item_spacing: [2]f32 = .{ 6.0, 4.0 };
+    pub const viewport_hud_window_top_alpha: f32 = 0.26;
+    pub const viewport_hud_window_bottom_alpha: f32 = 0.55;
+    pub const viewport_hud_window_side_alpha: f32 = 0.12;
+    pub const viewport_hud_window_line_thickness: f32 = 1.0;
+    pub const viewport_divider_padding_top: f32 = 3.0;
+    pub const viewport_divider_width: f32 = 8.0;
+    pub const viewport_divider_alpha: f32 = 0.22;
+    pub const viewport_toolbar_item_spacing: [2]f32 = .{ 6.0, 6.0 };
+    pub const viewport_window_padding: [2]f32 = .{ 0.0, 4.0 };
+    pub const viewport_min_extent: f32 = 8.0;
+    pub const viewport_click_threshold_sq: f32 = 16.0;
+    pub const viewport_context_drag_threshold_sq: f32 = 16.0;
+
+    // ── Viewport 3D cursor ───────────────────────────────────────────────────
+    pub const cursor_3d_ring_radius: f32 = 7.5;
+    pub const cursor_3d_ring_pulse: f32 = 2.5;
+    pub const cursor_3d_pulse_speed: f32 = 4.6;
+    pub const cursor_3d_center_dot_radius: f32 = 4.5;
+    pub const cursor_3d_tick_half_length: f32 = 6.0;
+    pub const cursor_3d_tick_gap: f32 = 12.0;
+    pub const cursor_3d_tick_thickness: f32 = 1.8;
+    pub const cursor_3d_label_offset_x: f32 = 13.0;
+    pub const cursor_3d_label_padding_x: f32 = 7.0;
+    pub const cursor_3d_label_padding_y: f32 = 4.0;
+    pub const cursor_3d_label_border_top: f32 = 2.0;
+    pub const cursor_3d_label_rounding: f32 = 7.0;
+    pub const cursor_3d_label_rounding_top: f32 = 6.0;
+    pub const cursor_3d_line_thickness: f32 = 2.0;
+    pub const cursor_3d_halo_segments: i32 = 28;
+    pub const cursor_3d_dot_segments: i32 = 20;
+
+    // ── Viewport frustum ─────────────────────────────────────────────────────
+    pub const frustum_plane_depth_factor: f32 = 1.25;
+    pub const frustum_near_clip_margin: f32 = 0.05;
+    pub const frustum_ortho_size_factor: f32 = 0.12;
+    pub const frustum_ortho_min_scale: f32 = 0.34;
+    pub const frustum_ortho_max_scale: f32 = 0.82;
+    pub const frustum_ortho_back_depth: f32 = 0.22;
+    pub const frustum_ortho_front_depth: f32 = 1.08;
+    pub const frustum_chevron_height_factor: f32 = 1.16;
+
+    // ── Viewport entity icons ────────────────────────────────────────────────
+    pub const viewport_entity_icon_size_default: f32 = 18.0;
+    pub const viewport_entity_icon_size_selected: f32 = 20.0;
+    pub const viewport_entity_icon_halo_factor: f32 = 0.72;
+    pub const viewport_entity_icon_halo_inner_shrink: f32 = 2.0;
+    pub const viewport_entity_icon_halo_selected_glow: f32 = 5.0;
+    pub const viewport_entity_icon_halo_primary_glow: f32 = 2.5;
+    pub const viewport_entity_icon_halo_hover_glow: f32 = 3.5;
+    pub const viewport_entity_icon_segments: i32 = 24;
+    pub const viewport_entity_primary_dot_radius: f32 = 3.5;
+    pub const viewport_entity_primary_dot_offset: f32 = 0.52;
+    pub const viewport_entity_primary_dot_segments: i32 = 16;
+    pub const viewport_entity_bg_alpha: f32 = 0.90;
+    pub const viewport_entity_inner_alpha: f32 = 0.92;
+
+    // ── Viewport mesh edit ───────────────────────────────────────────────────
+    pub const mesh_edit_vertex_radius_selected: f32 = 5.2;
+    pub const mesh_edit_vertex_radius_default: f32 = 3.4;
+    pub const mesh_edit_vertex_segments: i32 = 18;
+    pub const mesh_edit_edge_thickness_selected: f32 = 3.0;
+    pub const mesh_edit_edge_thickness_default: f32 = 1.2;
+    pub const mesh_edit_face_thickness_selected: f32 = 2.6;
+    pub const mesh_edit_face_thickness_default: f32 = 1.0;
+    pub const mesh_edit_face_dot_radius: f32 = 4.0;
+    pub const mesh_edit_face_dot_segments: i32 = 14;
+    pub const mesh_edit_wire_thickness_default: f32 = 1.0;
+
+    // ── Viewport playback overlay ────────────────────────────────────────────
+    pub const playback_overlay_width: f32 = 108.0;
+    pub const playback_overlay_min_margin: f32 = 18.0;
+    pub const playback_icon_size: f32 = 12.0;
+    pub const playback_icon_button_padding: [2]f32 = .{ 5.0, 3.0 };
+    pub const playback_icon_button_rounding: f32 = 3.0;
+    pub const playback_icon_tint: [4]u8 = .{ 245, 248, 252, 255 };
+
+    // ── Viewport AI overlay ──────────────────────────────────────────────────
+    pub const ai_overlay_width_default: f32 = 280.0;
+    pub const ai_overlay_width_waiting: f32 = 320.0;
+    pub const ai_overlay_padding: [2]f32 = .{ 4.0, 3.0 };
+    pub const ai_overlay_offset_y: f32 = 48.0;
+    pub const ai_overlay_detail_max_chars: usize = 44;
+    pub const ai_overlay_pulse_speed_waiting: f32 = 2.6;
+    pub const ai_overlay_pulse_speed_active: f32 = 3.2;
+    pub const ai_overlay_pulse_amplitude: f32 = 0.06;
+    pub const ai_overlay_bg_alpha_min: f32 = 0.54;
+    pub const ai_overlay_bg_alpha_max: f32 = 0.68;
+    pub const ai_overlay_bg_alpha_factor: f32 = 0.72;
+
+    // ── Viewport toolbar ─────────────────────────────────────────────────────
+    pub const viewport_toolbar_icon_size: f32 = 14.0;
+    pub const viewport_toolbar_frame_padding: [2]f32 = .{ 7.0, 5.0 };
+    pub const viewport_toolbar_frame_rounding: f32 = 4.0;
+    pub const viewport_toolbar_utility_width: f32 = 90.0;
+    pub const viewport_toolbar_accent_tint: [4]u8 = .{ 230, 236, 242, 255 };
+    pub const viewport_toolbar_idle_tint: [4]u8 = .{ 168, 174, 182, 255 };
+
+    // ── Viewport overlay buttons ─────────────────────────────────────────────
+    pub const overlay_button_min_width: f32 = 50.0;
+    pub const overlay_button_text_padding: f32 = 18.0;
+    pub const overlay_button_frame_padding: [2]f32 = .{ 7.0, 3.0 };
+    pub const overlay_button_frame_rounding: f32 = 3.0;
+
+    // ── Viewport constraints ─────────────────────────────────────────────────
+    pub const constraint_chip_min_width: f32 = 44.0;
+    pub const constraint_chip_text_padding: f32 = 18.0;
+    pub const constraint_snap_step_width: f32 = 88.0;
+    pub const constraint_popup_button_width: f32 = 96.0;
+
+    // ── Viewport camera frustum colors ───────────────────────────────────────
+    pub const frustum_selected_color: [4]f32 = .{ 0.62, 0.88, 1.0, 0.96 };
+    pub const frustum_primary_camera_color: [4]f32 = .{ 0.28, 0.92, 0.60, 0.92 };
+    pub const frustum_default_color: [4]f32 = .{ 0.47, 0.78, 1.0, 0.66 };
+    pub const frustum_thickness_selected: f32 = 2.0;
+    pub const frustum_thickness_primary: f32 = 1.8;
+    pub const frustum_thickness_default: f32 = 1.35;
+
+    // ── Viewport 3D cursor colors ────────────────────────────────────────────
+    pub const cursor_3d_x_color: [4]f32 = .{ 0.96, 0.42, 0.42, 0.95 };
+    pub const cursor_3d_y_color: [4]f32 = .{ 0.48, 0.92, 0.54, 0.95 };
+    pub const cursor_3d_z_color: [4]f32 = .{ 0.44, 0.68, 0.98, 0.95 };
+    pub const cursor_3d_center_color: [4]f32 = .{ 0.98, 0.92, 0.42, 0.98 };
+    pub const cursor_3d_halo_color: [4]f32 = .{ 0.96, 0.86, 0.34, 0.24 };
+    pub const cursor_3d_label_bg: [4]f32 = .{ 0.07, 0.08, 0.10, 0.88 };
+    pub const cursor_3d_label_border: [4]f32 = .{ 0.93, 0.84, 0.34, 0.30 };
+    pub const cursor_3d_label_text: [4]f32 = .{ 0.96, 0.95, 0.88, 0.98 };
+
+    // ── Viewport mesh edit colors ────────────────────────────────────────────
+    pub const mesh_edit_selected_color: [4]f32 = .{ 0.98, 0.84, 0.32, 0.96 };
+    pub const mesh_edit_accent_color: [4]f32 = .{ 0.42, 0.86, 0.78, 0.92 };
+    pub const mesh_edit_muted_color: [4]f32 = .{ 0.54, 0.62, 0.72, 0.34 };
+
+    // ── Viewport entity icon tints ───────────────────────────────────────────
+    pub const viewport_entity_tint_camera: [4]u8 = .{ 122, 208, 255, 255 };
+    pub const viewport_entity_tint_directional: [4]u8 = .{ 255, 212, 92, 255 };
+    pub const viewport_entity_tint_point: [4]u8 = .{ 255, 224, 116, 255 };
+    pub const viewport_entity_tint_spot: [4]u8 = .{ 132, 204, 255, 255 };
+    pub const viewport_entity_accent_camera: [4]f32 = .{ 0.34, 0.77, 1.0, 1.0 };
+    pub const viewport_entity_accent_directional: [4]f32 = .{ 1.0, 0.82, 0.36, 1.0 };
+    pub const viewport_entity_accent_point: [4]f32 = .{ 1.0, 0.90, 0.46, 1.0 };
+    pub const viewport_entity_accent_spot: [4]f32 = .{ 0.57, 0.82, 1.0, 1.0 };
+
+    // ── Viewport HUD palettes ────────────────────────────────────────────────
+    pub const hud_button_bg: [4]f32 = .{ 0.15, 0.16, 0.18, 0.90 };
+    pub const hud_button_hovered: [4]f32 = .{ 0.20, 0.22, 0.25, 0.96 };
+    pub const hud_button_active: [4]f32 = .{ 0.12, 0.14, 0.17, 1.0 };
+    pub const hud_active_button_bg: [4]f32 = .{ 0.20, 0.60, 0.45, 0.20 };
+    pub const hud_active_button_hovered: [4]f32 = .{ 0.24, 0.68, 0.52, 0.30 };
+    pub const hud_active_button_active: [4]f32 = .{ 0.16, 0.52, 0.38, 0.42 };
+
+    // ── Viewport overlay text colors ─────────────────────────────────────────
+    pub const overlay_status_chip_text: [4]f32 = .{ 0.74, 0.77, 0.82, 1.0 };
+    pub const overlay_title_chip_text: [4]f32 = .{ 0.95, 0.97, 0.99, 1.0 };
+    pub const overlay_ai_detail_text: [4]f32 = .{ 0.96, 0.97, 1.0, 1.0 };
+
+    // ── Viewport entity button ───────────────────────────────────────────────
+    pub const viewport_entity_button_padding: [2]f32 = .{ 0.0, 0.0 };
+    pub const viewport_entity_button_rounding: f32 = 0.0;
+
+    // ── Viewport placement ───────────────────────────────────────────────────
+    pub const spawn_raycast_max_distance: f32 = 2048.0;
+    pub const spawn_sweep_offset: f32 = 0.05;
+    pub const spawn_sweep_extra: f32 = 0.5;
+    pub const spawn_plane_y: f32 = 0.0;
+
+    // ── Viewport projection ──────────────────────────────────────────────────
+    pub const ndc_clip_margin: f32 = 0.15;
+    pub const ndc_clip_near_threshold: f32 = 0.00001;
+
+    // ── Inspector ────────────────────────────────────────────────────────────
+    pub const inspector_section_dummy: f32 = 4.0;
+    pub const inspector_axis_spacing: f32 = 3.0;
+    pub const inspector_axis_width_min: f32 = 22.0;
+    pub const inspector_axis_frame_rounding: f32 = 0.0;
+    pub const inspector_item_spacing_table: [2]f32 = .{ 10.0, 8.0 };
+    pub const inspector_item_spacing_stacked: [2]f32 = .{ 10.0, 6.0 };
+    pub const inspector_action_button_min_width: f32 = 80.0;
+    pub const inspector_section_gap: f32 = 6.0;
+    pub const inspector_toggle_width: f32 = 72.0;
+    pub const inspector_projection_toggle_width: f32 = 116.0;
+    pub const inspector_summary_min_width: f32 = 220.0;
+    pub const inspector_summary_min_height: f32 = 120.0;
+    pub const inspector_name_buffer_size: usize = 80;
+    pub const inspector_filter_buffer_size: usize = 32;
+    pub const inspector_entity_name_text_color: [4]f32 = .{ 0.88, 0.92, 0.98, 1.0 };
+    pub const inspector_ai_preview_text_color: [4]f32 = .{ 0.78, 0.50, 1.0, 0.80 };
+    pub const inspector_axis_x_bg: [4]f32 = .{ 0.82, 0.23, 0.23, 1.0 };
+    pub const inspector_axis_y_bg: [4]f32 = .{ 0.16, 0.59, 0.44, 1.0 };
+    pub const inspector_axis_z_bg: [4]f32 = .{ 0.20, 0.45, 0.85, 1.0 };
+    pub const inspector_axis_text: [4]f32 = .{ 1.0, 1.0, 1.0, 1.0 };
+
+    // ── Hierarchy ────────────────────────────────────────────────────────────
+    pub const hierarchy_filter_right_margin: f32 = 40.0;
+    pub const hierarchy_filter_compact_threshold: f32 = 180.0;
+    pub const hierarchy_selection_count_spacing: f32 = 8.0;
+    pub const hierarchy_window_padding: [2]f32 = .{ 0.0, 4.0 };
+    pub const hierarchy_rename_buffer_size: usize = 128;
+
+    // ── Layout ───────────────────────────────────────────────────────────────
+    pub const layout_divider_spacing: f32 = 6.0;
+    pub const layout_label_width_min: f32 = 86.0;
+    pub const layout_label_width_max: f32 = 142.0;
+    pub const layout_label_width_ratio: f32 = 0.34;
+    pub const layout_property_label_dimmed: [4]f32 = .{ 0.64, 0.68, 0.74, 1.0 };
+    pub const layout_min_button_width: f32 = 80.0;
+    pub const layout_min_button_width_small: f32 = 60.0;
+
+    // ── Menu bar ─────────────────────────────────────────────────────────────
+    pub const menu_bar_drag_region_min_width: f32 = 48.0;
+    pub const menu_bar_restore_click_offset_min: f32 = 8.0;
+    pub const menu_bar_restore_click_offset_max: f32 = 28.0;
+    pub const menu_bar_restore_click_ratio_min: f32 = 0.1;
+    pub const menu_bar_restore_click_ratio_max: f32 = 0.9;
+
+    // ── Playback ─────────────────────────────────────────────────────────────
+    pub const playback_idle_button_bg: [4]f32 = .{ 0.20, 0.22, 0.25, 0.76 };
+    pub const playback_idle_button_hovered: [4]f32 = .{ 0.24, 0.27, 0.31, 0.82 };
+    pub const playback_idle_button_active: [4]f32 = .{ 0.18, 0.20, 0.24, 0.88 };
+    pub const playback_play_button_bg: [4]f32 = .{ 0.30, 0.35, 0.34, 0.80 };
+    pub const playback_play_button_hovered: [4]f32 = .{ 0.34, 0.40, 0.38, 0.86 };
+    pub const playback_play_button_active: [4]f32 = .{ 0.28, 0.32, 0.31, 0.92 };
+    pub const playback_pause_button_bg: [4]f32 = .{ 0.32, 0.30, 0.25, 0.80 };
+    pub const playback_pause_button_hovered: [4]f32 = .{ 0.36, 0.34, 0.29, 0.86 };
+    pub const playback_pause_button_active: [4]f32 = .{ 0.29, 0.27, 0.23, 0.92 };
+    pub const playback_step_button_bg: [4]f32 = .{ 0.24, 0.26, 0.30, 0.78 };
+    pub const playback_step_button_hovered: [4]f32 = .{ 0.28, 0.31, 0.36, 0.84 };
+    pub const playback_step_button_active: [4]f32 = .{ 0.22, 0.24, 0.28, 0.90 };
+
+    // ── Segmented buttons ────────────────────────────────────────────────────
+    pub const segmented_button_rounding: f32 = 4.0;
+    pub const segmented_button_rounding_middle: f32 = 0.0;
+
+    // ── Property row ─────────────────────────────────────────────────────────
+    pub const property_row_dummy_after_label: f32 = 2.0;
+
+    // ── Toolbar ──────────────────────────────────────────────────────────────
+    pub const toolbar_playback_button_size: f32 = 28.0;
+    pub const toolbar_playback_icon_size: f32 = 20.0;
+    pub const toolbar_playback_item_spacing: f32 = 6.0;
+    pub const toolbar_playback_white_tint: [4]u8 = .{ 255, 255, 255, 255 };
+    pub const toolbar_window_control_height: f32 = 1.0;
+
+    // ── Mesh edit overlay ────────────────────────────────────────────────────
+    pub const mesh_edit_overlay_line_thickness_default: f32 = 1.0;
+
+    // ── ViewCube ─────────────────────────────────────────────────────────────
+    pub const view_cube_corner_radius: f32 = 4.0;
+    pub const view_cube_axis_label_padding: f32 = 4.0;
+    pub const view_cube_axis_label_rounding: f32 = 3.0;
+    pub const view_cube_axis_label_alpha: f32 = 0.85;
+    pub const view_cube_face_alpha: f32 = 0.40;
+    pub const view_cube_face_hovered_alpha: f32 = 0.55;
+    pub const view_cube_edge_thickness: f32 = 1.5;
+    pub const view_cube_edge_alpha: f32 = 0.30;
+    pub const view_cube_bg_alpha: f32 = 0.38;
+    pub const view_cube_bg_rounding: f32 = 6.0;
+    pub const view_cube_padding: f32 = 4.0;
+    pub const view_cube_label_font_scale: f32 = 0.85;
+    pub const view_cube_face_color: [4]f32 = .{ 0.18, 0.20, 0.24, 0.40 };
+    pub const view_cube_face_hovered_color: [4]f32 = .{ 0.22, 0.24, 0.28, 0.55 };
+    pub const view_cube_edge_color: [4]f32 = .{ 0.40, 0.44, 0.50, 0.30 };
+    pub const view_cube_bg_color: [4]f32 = .{ 0.08, 0.09, 0.12, 0.38 };
+    pub const view_cube_label_bg: [4]f32 = .{ 0.12, 0.13, 0.16, 0.85 };
+    pub const view_cube_label_text: [4]f32 = .{ 0.88, 0.90, 0.94, 1.0 };
+    pub const view_cube_axis_x: [4]f32 = .{ 0.85, 0.20, 0.20, 0.85 };
+    pub const view_cube_axis_y: [4]f32 = .{ 0.20, 0.70, 0.30, 0.85 };
+    pub const view_cube_axis_z: [4]f32 = .{ 0.25, 0.50, 0.90, 0.85 };
+
+    // ── FPS overlay ──────────────────────────────────────────────────────────
+    pub const fps_overlay_padding: [2]f32 = .{ 4.0, 3.0 };
+    pub const fps_overlay_bg_alpha: f32 = 0.38;
+    pub const fps_overlay_text_color: [4]f32 = .{ 0.74, 0.77, 0.82, 1.0 };
+    pub const fps_overlay_value_color: [4]f32 = .{ 0.90, 0.92, 0.96, 1.0 };
+    pub const fps_overlay_min_width: f32 = 120.0;
+    pub const fps_overlay_margin: f32 = 14.0;
+    pub const fps_overlay_item_spacing: [2]f32 = .{ 8.0, 2.0 };
+    pub const fps_overlay_refresh_dot_radius: f32 = 3.0;
+    pub const fps_overlay_refresh_dot_offset: f32 = 5.0;
+    pub const fps_overlay_refresh_dot_segments: i32 = 12;
+    pub const fps_overlay_refresh_dot_color: [4]f32 = .{ 0.30, 0.60, 0.90, 0.90 };
 };
 
 // ── Typography ───────────────────────────────────────────────────────────────

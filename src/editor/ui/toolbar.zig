@@ -1,5 +1,6 @@
 const engine = @import("guava");
 const gui = @import("gui.zig");
+const theme = @import("theme.zig");
 const EditorState = @import("../core/state.zig").EditorState;
 const playback_session = @import("../core/playback_session.zig");
 const ui_icons = @import("icons.zig");
@@ -16,8 +17,8 @@ fn drawPlaybackButton(
         layer_context,
         id,
         path,
-        20.0,
-        .{ 255, 255, 255, 255 },
+        theme.Spacing.toolbar_playback_icon_size,
+        theme.Spacing.toolbar_playback_white_tint,
         palette,
     );
 }
@@ -34,16 +35,16 @@ pub fn drawToolbarWindow(state: *EditorState, layer_context: *engine.core.LayerC
 
     const content_width = gui.contentRegionAvail()[0];
 
-    gui.pushStyleVarVec2(.item_spacing, .{ 6.0, 6.0 });
+    gui.pushStyleVarVec2(.item_spacing, .{ theme.Spacing.toolbar_playback_item_spacing, theme.Spacing.toolbar_playback_item_spacing });
     defer gui.popStyleVar(1);
 
     // Centered playback controls
-    const play_button_size: f32 = 28.0;
-    const spacing: f32 = 6.0;
+    const play_button_size: f32 = theme.Spacing.toolbar_playback_button_size;
+    const spacing: f32 = theme.Spacing.toolbar_playback_item_spacing;
     const total_playback_width = play_button_size * 3.0 + spacing * 2.0;
     const center_start = (content_width - total_playback_width) * 0.5;
 
-    gui.dummy(0.0, 1.0);
+    gui.dummy(0.0, theme.Spacing.toolbar_window_control_height);
     gui.sameLineEx(center_start, 0.0);
 
     const session_active = state.play_mode_active or state.playback_state != .stopped;

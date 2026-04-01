@@ -20,7 +20,7 @@ pub fn drawAssetPreviewWindow(state: *EditorState, layer_context: *engine.core.L
     if (selectedAsset(state)) |entry| {
         gui.labelText(state.text(.name), entry.name);
         gui.labelText(state.text(.type), utils.assetKindLabel(state, entry.kind));
-        gui.labelText(state.text(.path), entry.path);
+        gui.labelText(state.text(.path), entry.display_path);
 
         switch (entry.kind) {
             .texture => {

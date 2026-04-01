@@ -11,6 +11,15 @@ const EditorViewportState = engine.render.EditorViewportState;
 const EditorViewportLutPreset = engine.render.EditorViewportLutPreset;
 
 const effect_drag_type = "post_effect";
+const graph_node_width: f32 = 196.0;
+const graph_node_height: f32 = 96.0;
+const graph_node_header_height: f32 = 30.0;
+const graph_pin_radius: f32 = 7.0;
+const graph_pin_hit_size: f32 = 22.0;
+const graph_splitter_width: f32 = 8.0;
+const graph_min_palette_width: f32 = 196.0;
+const graph_min_inspector_width: f32 = 272.0;
+const graph_min_canvas_width: f32 = 360.0;
 
 const EffectPaletteItem = struct {
     effect: PostProcessEffect,
@@ -31,6 +40,19 @@ const all_effects = [_]EffectPaletteItem{
     .{ .effect = .color_grading, .label = "Color Grading", .hint = "Tone shaping", .color = .{ 1.0, 0.6, 0.8, 1.0 } },
     .{ .effect = .contact_shadows, .label = "Contact Shadows", .hint = "Small-scale occlusion", .color = .{ 0.5, 0.5, 0.5, 1.0 } },
 };
+
+fn effectPaletteItem(effect: PostProcessEffect) EffectPaletteItem {
+    for (all_effects) |item| {
+        if (item.effect == effect) return item;
+    }
+
+    return .{
+        .effect = effect,
+        .label = "Effect",
+        .hint = "",
+        .color = .{ 0.5, 0.5, 0.5, 1.0 },
+    };
+}
 
 pub const PostProcessEffect = enum {
     bloom,
@@ -104,6 +126,8 @@ pub const PostProcessPipelineEditorState = struct {
     view_zoom: f32 = 1.0,
     connecting_from: ?usize = null,
     preview_split: f32 = 0.42,
+    palette_width: f32 = 224.0,
+    inspector_width: f32 = 320.0,
 
     pub fn init(allocator: std.mem.Allocator) PostProcessPipelineEditorState {
         return .{
@@ -129,13 +153,25 @@ pub const PostProcessPipelineEditorState = struct {
 
     pub fn removeNode(self: *PostProcessPipelineEditorState, index: usize) bool {
         if (index >= self.nodes.items.len) return false;
+        self.clearConnectionsForNode(index);
         var node = self.nodes.orderedRemove(index);
         node.deinit(self.allocator);
+        for (self.nodes.items) |*other_node| {
+            shiftConnectionIndicesAfterRemoval(&other_node.input_connections, index);
+            shiftConnectionIndicesAfterRemoval(&other_node.output_connections, index);
+        }
         if (self.selected_node_index) |*si| {
             if (si.* == index) {
                 self.selected_node_index = null;
             } else if (si.* > index) {
                 si.* -= 1;
+            }
+        }
+        if (self.connecting_from) |*from_index| {
+            if (from_index.* == index) {
+                self.connecting_from = null;
+            } else if (from_index.* > index) {
+                from_index.* -= 1;
             }
         }
         return true;
@@ -144,9 +180,18 @@ pub const PostProcessPipelineEditorState = struct {
     pub fn connect(self: *PostProcessPipelineEditorState, from_index: usize, to_index: usize) !void {
         if (from_index >= self.nodes.items.len or to_index >= self.nodes.items.len) return;
         if (from_index == to_index) return;
+        if (self.hasConnection(from_index, to_index)) return;
 
         try self.nodes.items[from_index].output_connections.append(self.allocator, to_index);
         try self.nodes.items[to_index].input_connections.append(self.allocator, from_index);
+    }
+
+    pub fn hasConnection(self: *const PostProcessPipelineEditorState, from_index: usize, to_index: usize) bool {
+        if (from_index >= self.nodes.items.len or to_index >= self.nodes.items.len) return false;
+        for (self.nodes.items[from_index].output_connections.items) |existing| {
+            if (existing == to_index) return true;
+        }
+        return false;
     }
 
     pub fn disconnect(self: *PostProcessPipelineEditorState, from_index: usize, to_index: usize) void {
@@ -168,6 +213,19 @@ pub const PostProcessPipelineEditorState = struct {
             } else {
                 j += 1;
             }
+        }
+    }
+
+    pub fn clearConnectionsForNode(self: *PostProcessPipelineEditorState, index: usize) void {
+        if (index >= self.nodes.items.len) return;
+
+        while (self.nodes.items[index].output_connections.items.len > 0) {
+            const to_index = self.nodes.items[index].output_connections.items[self.nodes.items[index].output_connections.items.len - 1];
+            self.disconnect(index, to_index);
+        }
+        while (self.nodes.items[index].input_connections.items.len > 0) {
+            const from_index = self.nodes.items[index].input_connections.items[self.nodes.items[index].input_connections.items.len - 1];
+            self.disconnect(from_index, index);
         }
     }
 
@@ -221,6 +279,14 @@ pub const PostProcessPipelineEditorState = struct {
     }
 };
 
+fn shiftConnectionIndicesAfterRemoval(list: *std.ArrayList(usize), removed_index: usize) void {
+    for (list.items) |*connection_index| {
+        if (connection_index.* > removed_index) {
+            connection_index.* -= 1;
+        }
+    }
+}
+
 pub fn drawPostProcessPipelineEditorWindow(
     editor_state_: *EditorState,
     layer_context: *engine.core.LayerContext,
@@ -248,30 +314,144 @@ pub fn drawPostProcessPipelineEditorWindow(
 
     const content_region = gui.contentRegionAvail();
     const has_nodes = node_count != 0;
-    const graph_width = if (has_nodes)
-        content_region[0] * editor_state.preview_split
-    else
-        content_region[0] * 0.5;
+    clampPipelinePanelWidths(editor_state, content_region[0]);
 
+    const graph_width = @max(
+        graph_min_canvas_width,
+        content_region[0] - editor_state.palette_width - editor_state.inspector_width - graph_splitter_width * 2.0,
+    );
+
+    if (gui.beginChild("effect_palette", editor_state.palette_width, -1.0, true)) {
+        drawEffectPalette(editor_state, .{ graph_width, content_region[1] });
+    }
+    gui.endChild();
+
+    gui.sameLine();
+    drawVerticalSplitter(
+        "post_process_palette_splitter",
+        content_region[1],
+        &editor_state.palette_width,
+        graph_min_palette_width,
+        @max(graph_min_palette_width, content_region[0] - graph_min_canvas_width - editor_state.inspector_width - graph_splitter_width * 2.0),
+        1.0,
+    );
+
+    gui.sameLine();
     if (gui.beginChild("pipeline_graph", graph_width, -1.0, true)) {
         try drawPipelineGraph(editor_state_, editor_state, has_nodes);
     }
     gui.endChild();
 
     gui.sameLine();
-    if (gui.beginChild("effect_palette", -1.0, -1.0, true)) {
-        drawEffectPalette(editor_state);
+    drawVerticalSplitter(
+        "post_process_inspector_splitter",
+        content_region[1],
+        &editor_state.inspector_width,
+        graph_min_inspector_width,
+        @max(graph_min_inspector_width, content_region[0] - graph_min_canvas_width - editor_state.palette_width - graph_splitter_width * 2.0),
+        -1.0,
+    );
+
+    gui.sameLine();
+    if (gui.beginChild("effect_inspector", -1.0, -1.0, true)) {
+        drawInspectorPanel(editor_state_, editor_state, viewport_state);
     }
     gui.endChild();
+}
+
+fn clampPipelinePanelWidths(editor_state: *PostProcessPipelineEditorState, total_width: f32) void {
+    const max_palette = @max(
+        graph_min_palette_width,
+        total_width - graph_min_canvas_width - graph_min_inspector_width - graph_splitter_width * 2.0,
+    );
+    editor_state.palette_width = std.math.clamp(editor_state.palette_width, graph_min_palette_width, max_palette);
+
+    const max_inspector = @max(
+        graph_min_inspector_width,
+        total_width - graph_min_canvas_width - editor_state.palette_width - graph_splitter_width * 2.0,
+    );
+    editor_state.inspector_width = std.math.clamp(editor_state.inspector_width, graph_min_inspector_width, max_inspector);
+}
+
+fn drawVerticalSplitter(
+    id: []const u8,
+    height: f32,
+    width_value: *f32,
+    min_width: f32,
+    max_width: f32,
+    delta_sign: f32,
+) void {
+    const draw_list = gui.getWindowDrawList();
+    const splitter_height = @max(height, 1.0);
+    _ = gui.invisibleButton(id, graph_splitter_width, splitter_height);
+    const item_min = gui.getItemRectMin();
+    const item_max = gui.getItemRectMax();
+    const hovered = gui.isItemHovered();
+    const active = gui.isItemActive();
+
+    if (active and gui.isMouseDragging(.left)) {
+        const delta = gui.mouseDragDelta(.left);
+        width_value.* = std.math.clamp(width_value.* + delta[0] * delta_sign, min_width, max_width);
+        gui.resetMouseDragDelta(.left);
+    }
+
+    const bg = if (active)
+        gui.getColorU32(.{ 0.28, 0.49, 0.72, 0.45 })
+    else if (hovered)
+        gui.getColorU32(.{ 1.0, 1.0, 1.0, 0.10 })
+    else
+        gui.getColorU32(.{ 1.0, 1.0, 1.0, 0.04 });
+    draw_list.addRectFilled(item_min, item_max, bg, 3.0, 0);
+
+    const line_x = (item_min[0] + item_max[0]) * 0.5;
+    draw_list.addLine(
+        .{ line_x, item_min[1] + 8.0 },
+        .{ line_x, item_max[1] - 8.0 },
+        gui.getColorU32(.{ 0.72, 0.76, 0.82, if (hovered or active) 0.85 else 0.45 }),
+        1.0,
+    );
+}
+
+fn drawInspectorPanel(
+    state: *const EditorState,
+    editor_state: *PostProcessPipelineEditorState,
+    viewport_state: *EditorViewportState,
+) void {
+    drawPreviewPanel(state, viewport_state);
+    gui.separator();
 
     if (editor_state.selected_node_index) |selected_index| {
         if (editor_state.getSelectedNode()) |node| {
+            drawConnectionInspector(editor_state, selected_index, node);
             gui.separator();
-            drawEffectParameters(editor_state_, editor_state, viewport_state, selected_index, node);
+            drawEffectParameters(state, editor_state, viewport_state, selected_index, node);
+            return;
         }
-    } else if (node_count != 0) {
-        gui.separator();
-        drawEmptySelectionState(editor_state_);
+    }
+
+    if (editor_state.nodes.items.len != 0) {
+        drawEmptySelectionState(state);
+    } else {
+        gui.textWrapped("Add an effect from the palette, drag nodes on the canvas, and click output then input pins to wire the stack.");
+    }
+}
+
+fn drawConnectionInspector(
+    editor_state: *PostProcessPipelineEditorState,
+    selected_index: usize,
+    node: *PostProcessEffectNode,
+) void {
+    gui.text("Connections");
+    gui.textColored(.{ 0.62, 0.66, 0.71, 1.0 }, "Click an output pin, then an input pin, to create a link.");
+    var connection_buf: [64]u8 = undefined;
+    const connection_text = std.fmt.bufPrint(
+        &connection_buf,
+        "Incoming {d}  Outgoing {d}",
+        .{ node.input_connections.items.len, node.output_connections.items.len },
+    ) catch "Incoming 0  Outgoing 0";
+    gui.textColored(.{ 0.82, 0.86, 0.92, 1.0 }, connection_text);
+    if (gui.button("Clear Links")) {
+        editor_state.clearConnectionsForNode(selected_index);
     }
 }
 
@@ -282,6 +462,16 @@ fn drawPipelineToolbar(
 ) void {
     if (gui.button(state.text(.post_process_clear_all))) {
         clearAllNodes(editor_state);
+    }
+
+    gui.sameLine();
+    if (gui.button("Auto Arrange")) {
+        autoArrangeNodes(editor_state);
+    }
+
+    gui.sameLine();
+    if (gui.button("Reset View")) {
+        editor_state.view_pan = .{ 0.0, 0.0 };
     }
 
     gui.sameLine();
@@ -300,8 +490,21 @@ fn drawPipelineToolbar(
     if (node_count == 0) {
         gui.textColored(.{ 0.62, 0.66, 0.71, 1.0 }, state.text(.post_process_toolbar_empty_hint));
     } else {
-        gui.textColored(.{ 0.62, 0.66, 0.71, 1.0 }, state.text(.post_process_toolbar_reorder_hint));
+        gui.textColored(.{ 0.62, 0.66, 0.71, 1.0 }, "Drag cards freely, middle-drag the canvas, and single-click pins to connect nodes.");
     }
+}
+
+fn autoArrangeNodes(editor_state: *PostProcessPipelineEditorState) void {
+    if (editor_state.nodes.items.len == 0) return;
+
+    const column_count: usize = if (editor_state.nodes.items.len > 6) 2 else 1;
+    for (editor_state.nodes.items, 0..) |*node, index| {
+        const column = index % column_count;
+        const row = index / column_count;
+        node.position[0] = 72.0 + @as(f32, @floatFromInt(column)) * (graph_node_width + 120.0);
+        node.position[1] = 64.0 + @as(f32, @floatFromInt(row)) * (graph_node_height + 52.0);
+    }
+    editor_state.view_pan = .{ 0.0, 0.0 };
 }
 
 fn drawPipelineGraph(
@@ -309,83 +512,198 @@ fn drawPipelineGraph(
     editor_state: *PostProcessPipelineEditorState,
     has_nodes: bool,
 ) !void {
-    const canvas_pos = gui.cursorScreenPos();
     const canvas_size = gui.contentRegionAvail();
 
     _ = gui.invisibleButton("canvas", canvas_size[0], canvas_size[1]);
+    const canvas_min = gui.getItemRectMin();
+    const canvas_max = gui.getItemRectMax();
+    const canvas_clicked = gui.isItemClicked();
+
+    drawPipelineCanvasBackground(editor_state, canvas_min, canvas_max);
+    handleCanvasPanning(editor_state, canvas_min, canvas_size);
+
+    if (canvas_clicked) {
+        editor_state.selected_node_index = null;
+        editor_state.connecting_from = null;
+    }
+
+    gui.pushClipRect(canvas_min, canvas_max, true);
+    defer gui.popClipRect();
 
     if (!has_nodes) {
         drawEmptyPipelineCanvas(state, editor_state, canvas_size);
-        try handleCanvasDrop(editor_state, canvas_pos, canvas_size);
+        try handleCanvasDrop(editor_state, canvas_min, canvas_size);
         return;
     }
 
-    gui.textColored(.{ 0.62, 0.66, 0.71, 1.0 }, state.text(.post_process_graph_role_hint));
-
-    const node_width: f32 = 164.0;
-    const node_height: f32 = 74.0;
-    const pin_offset_y = node_height * 0.5;
-    const pin_radius: f32 = 7.0;
-
-    handleCanvasPanning(editor_state, canvas_pos, canvas_size);
+    drawConnectionLines(editor_state, canvas_min, graph_node_width, graph_node_height * 0.5);
+    drawPendingConnection(editor_state, canvas_min, graph_node_width, graph_node_height * 0.5);
 
     for (editor_state.nodes.items, 0..) |*node, index| {
-        const is_selected = editor_state.selected_node_index != null and editor_state.selected_node_index.? == index;
+        drawPipelineNode(editor_state, node, index, canvas_min);
+    }
 
-        const node_pos = [2]f32{
-            canvas_pos[0] + node.position[0] + editor_state.view_pan[0],
-            canvas_pos[1] + node.position[1] + editor_state.view_pan[1],
-        };
+    try handleCanvasDrop(editor_state, canvas_min, canvas_size);
+}
 
-        gui.setCursorScreenPos(node_pos);
+fn drawPipelineCanvasBackground(
+    editor_state: *const PostProcessPipelineEditorState,
+    canvas_min: [2]f32,
+    canvas_max: [2]f32,
+) void {
+    const draw_list = gui.getWindowDrawList();
+    draw_list.addRectFilled(canvas_min, canvas_max, gui.getColorU32(.{ 0.075, 0.082, 0.095, 1.0 }), 10.0, 0);
 
-        const color = node.getColor();
-        const node_bg: [4]f32 = if (is_selected)
-            .{ color[0] * 0.8, color[1] * 0.8, color[2] * 0.8, 1.0 }
-        else
-            color;
-        gui.pushStyleColor(.button, node_bg);
-        gui.pushStyleColor(.button_hovered, .{ @min(node_bg[0] + 0.08, 1.0), @min(node_bg[1] + 0.08, 1.0), @min(node_bg[2] + 0.08, 1.0), node_bg[3] });
-        gui.pushStyleColor(.button_active, .{ @max(node_bg[0] - 0.08, 0.0), @max(node_bg[1] - 0.08, 0.0), @max(node_bg[2] - 0.08, 0.0), node_bg[3] });
-        defer gui.popStyleColor(3);
+    const fine_step: f32 = 28.0;
+    const major_step = fine_step * 4.0;
+    const width = canvas_max[0] - canvas_min[0];
+    const height = canvas_max[1] - canvas_min[1];
+    const fine_offset_x = @mod(editor_state.view_pan[0], fine_step);
+    const fine_offset_y = @mod(editor_state.view_pan[1], fine_step);
 
-        var name_buf: [64]u8 = undefined;
-        const node_name = std.fmt.bufPrint(&name_buf, "{s}##node_{}", .{ node.getName(), index }) catch continue;
+    var x = canvas_min[0] + fine_offset_x;
+    while (x < canvas_min[0] + width) : (x += fine_step) {
+        const is_major = @mod(x - canvas_min[0], major_step) < 0.5 or @mod(x - canvas_min[0], major_step) > major_step - 0.5;
+        draw_list.addLine(
+            .{ x, canvas_min[1] },
+            .{ x, canvas_max[1] },
+            gui.getColorU32(if (is_major) .{ 1.0, 1.0, 1.0, 0.08 } else .{ 1.0, 1.0, 1.0, 0.035 }),
+            1.0,
+        );
+    }
 
-        if (gui.beginChild(node_name, node_width, node_height, true)) {
-            gui.text(node.getName());
-            var detail_buf: [64]u8 = undefined;
-            const detail_text = std.fmt.bufPrint(
-                &detail_buf,
-                "In {d}  Out {d}",
-                .{ node.input_connections.items.len, node.output_connections.items.len },
-            ) catch "";
-            gui.textColored(.{ 0.65, 0.68, 0.73, 1.0 }, detail_text);
-            if (is_selected) {
-                gui.textColored(.{ 0.92, 0.97, 0.80, 1.0 }, "Selected");
+    var y = canvas_min[1] + fine_offset_y;
+    while (y < canvas_min[1] + height) : (y += fine_step) {
+        const is_major = @mod(y - canvas_min[1], major_step) < 0.5 or @mod(y - canvas_min[1], major_step) > major_step - 0.5;
+        draw_list.addLine(
+            .{ canvas_min[0], y },
+            .{ canvas_max[0], y },
+            gui.getColorU32(if (is_major) .{ 1.0, 1.0, 1.0, 0.08 } else .{ 1.0, 1.0, 1.0, 0.035 }),
+            1.0,
+        );
+    }
+}
+
+fn drawPendingConnection(
+    editor_state: *const PostProcessPipelineEditorState,
+    canvas_pos: [2]f32,
+    node_width: f32,
+    pin_offset_y: f32,
+) void {
+    if (editor_state.connecting_from) |from_idx| {
+        if (from_idx >= editor_state.nodes.items.len) return;
+        const draw_list = gui.getWindowDrawList();
+        const mouse = gui.mousePos();
+        const from_node = &editor_state.nodes.items[from_idx];
+        const from_x = canvas_pos[0] + from_node.position[0] + editor_state.view_pan[0] + node_width;
+        const from_y = canvas_pos[1] + from_node.position[1] + editor_state.view_pan[1] + pin_offset_y;
+        const p0 = [2]f32{ from_x, from_y };
+        const p1 = [2]f32{ mouse[0], mouse[1] };
+        const dx = @max(p1[0] - p0[0], 72.0);
+        const cp0 = [2]f32{ p0[0] + dx * 0.45, p0[1] };
+        const cp1 = [2]f32{ p1[0] - dx * 0.45, p1[1] };
+        const color = from_node.getColor();
+        draw_list.addBezierCurve(p0, cp0, cp1, p1, gui.getColorU32(.{ color[0], color[1], color[2], 0.65 }), 2.5, 24);
+    }
+}
+
+fn drawPipelineNode(
+    editor_state: *PostProcessPipelineEditorState,
+    node: *PostProcessEffectNode,
+    index: usize,
+    canvas_pos: [2]f32,
+) void {
+    const draw_list = gui.getWindowDrawList();
+    const item = effectPaletteItem(node.effect);
+    const is_selected = editor_state.selected_node_index != null and editor_state.selected_node_index.? == index;
+    const node_pos = [2]f32{
+        canvas_pos[0] + node.position[0] + editor_state.view_pan[0],
+        canvas_pos[1] + node.position[1] + editor_state.view_pan[1],
+    };
+
+    gui.pushIdU64(@intCast(index));
+    defer gui.popId();
+
+    gui.setCursorScreenPos(node_pos);
+    _ = gui.invisibleButton("node_card", graph_node_width, graph_node_height);
+    const card_min = gui.getItemRectMin();
+    const card_max = gui.getItemRectMax();
+    const hovered = gui.isItemHovered();
+    const active = gui.isItemActive();
+
+    if (gui.isItemClicked()) {
+        editor_state.selected_node_index = index;
+    }
+    if (active and gui.isMouseDragging(.left)) {
+        const drag_delta = gui.mouseDragDelta(.left);
+        node.position[0] += drag_delta[0];
+        node.position[1] += drag_delta[1];
+        gui.resetMouseDragDelta(.left);
+    }
+
+    const card_bg: [4]f32 = if (is_selected)
+        .{ 0.13, 0.16, 0.20, 0.98 }
+    else if (hovered)
+        .{ 0.11, 0.14, 0.18, 0.96 }
+    else
+        .{ 0.09, 0.11, 0.14, 0.94 };
+    draw_list.addRectFilled(card_min, card_max, gui.getColorU32(card_bg), 12.0, 0);
+    draw_list.addRectFilled(
+        card_min,
+        .{ card_max[0], card_min[1] + graph_node_header_height },
+        gui.getColorU32(.{ item.color[0] * 0.36, item.color[1] * 0.36, item.color[2] * 0.36, 0.98 }),
+        0.0,
+        0,
+    );
+
+    draw_list.addText(.{ card_min[0] + 14.0, card_min[1] + 9.0 }, gui.getColorU32(.{ 0.96, 0.98, 1.0, 1.0 }), node.getName());
+    draw_list.addText(.{ card_min[0] + 14.0, card_min[1] + graph_node_header_height + 10.0 }, gui.getColorU32(.{ 0.68, 0.72, 0.79, 1.0 }), item.hint);
+
+    var detail_buf: [64]u8 = undefined;
+    const detail_text = std.fmt.bufPrint(
+        &detail_buf,
+        "In {d}  Out {d}",
+        .{ node.input_connections.items.len, node.output_connections.items.len },
+    ) catch "";
+    draw_list.addText(.{ card_min[0] + 14.0, card_max[1] - 24.0 }, gui.getColorU32(.{ 0.74, 0.78, 0.84, 1.0 }), detail_text);
+
+    const pin_y = card_min[1] + graph_node_height * 0.5;
+    drawNodePin(editor_state, index, true, .{ card_min[0], pin_y }, item.color);
+    drawNodePin(editor_state, index, false, .{ card_max[0], pin_y }, item.color);
+}
+
+fn drawNodePin(
+    editor_state: *PostProcessPipelineEditorState,
+    node_index: usize,
+    is_input: bool,
+    center: [2]f32,
+    color: [4]f32,
+) void {
+    const draw_list = gui.getWindowDrawList();
+    gui.setCursorScreenPos(.{ center[0] - graph_pin_hit_size * 0.5, center[1] - graph_pin_hit_size * 0.5 });
+    const clicked = gui.invisibleButton(if (is_input) "input_pin" else "output_pin", graph_pin_hit_size, graph_pin_hit_size);
+    const hovered = gui.isItemHovered();
+
+    if (clicked) {
+        if (is_input) {
+            if (editor_state.connecting_from) |from_index| {
+                if (from_index != node_index) {
+                    editor_state.connect(from_index, node_index) catch {};
+                }
+                editor_state.connecting_from = null;
             }
-        }
-        gui.endChild();
-
-        if (gui.isItemClicked()) {
-            editor_state.selected_node_index = index;
-        }
-
-        if (gui.isItemActive() and gui.isMouseDragging(.left)) {
-            const drag_delta = gui.mouseDragDelta(.left);
-            node.position[0] += drag_delta[0];
-            node.position[1] += drag_delta[1];
-            gui.resetMouseDragDelta(.left);
+        } else if (editor_state.connecting_from != null and editor_state.connecting_from.? == node_index) {
+            editor_state.connecting_from = null;
+        } else {
+            editor_state.connecting_from = node_index;
+            editor_state.selected_node_index = node_index;
         }
     }
 
-    drawPinHandles(editor_state, canvas_pos, node_width, pin_offset_y, pin_radius);
-
-    drawConnectionLines(editor_state, canvas_pos, node_width, pin_offset_y);
-
-    handleConnectionInteraction(editor_state, canvas_pos, node_width, pin_offset_y, pin_radius, canvas_size);
-
-    try handleCanvasDrop(editor_state, canvas_pos, canvas_size);
+    const alpha: f32 = if (hovered) 1.0 else 0.92;
+    const radius = if (hovered) graph_pin_radius + 1.5 else graph_pin_radius;
+    draw_list.addCircleFilled(center, radius, gui.getColorU32(.{ color[0], color[1], color[2], alpha }), 14);
+    draw_list.addCircleFilled(center, radius * 0.45, gui.getColorU32(.{ 0.06, 0.08, 0.10, 0.95 }), 10);
 }
 
 fn handleCanvasPanning(
@@ -587,10 +905,11 @@ fn drawEmptyPipelineCanvas(state: *const EditorState, editor_state: *PostProcess
 
 fn drawEffectPalette(
     editor_state: *PostProcessPipelineEditorState,
+    canvas_size: [2]f32,
 ) void {
     gui.text("Effects");
     gui.separator();
-    gui.textColored(.{ 0.62, 0.66, 0.71, 1.0 }, "Drag effects onto the canvas");
+    gui.textColored(.{ 0.62, 0.66, 0.71, 1.0 }, "Drag effects onto the canvas or click to drop them into the current view.");
     gui.dummy(0.0, 8.0);
 
     for (all_effects) |item| {
@@ -600,14 +919,8 @@ fn drawEffectPalette(
         defer gui.popStyleColor(3);
 
         if (gui.buttonEx(item.label, -1.0, 0.0)) {
-            const next_x: f32 = if (editor_state.nodes.items.len > 0) blk: {
-                var max_x: f32 = 0;
-                for (editor_state.nodes.items) |n| {
-                    if (n.position[0] > max_x) max_x = n.position[0];
-                }
-                break :blk max_x + 200.0;
-            } else 100.0;
-            const next_y: f32 = 100.0;
+            const next_x = -editor_state.view_pan[0] + canvas_size[0] * 0.5 - graph_node_width * 0.5;
+            const next_y = -editor_state.view_pan[1] + canvas_size[1] * 0.28 - graph_node_height * 0.5;
             const idx = editor_state.addNode(item.effect, next_x, next_y) catch continue;
             editor_state.selected_node_index = idx;
         }
@@ -813,6 +1126,7 @@ fn clearAllNodes(editor_state: *PostProcessPipelineEditorState) void {
     }
     editor_state.nodes.clearRetainingCapacity();
     editor_state.selected_node_index = null;
+    editor_state.connecting_from = null;
 }
 
 fn enabledEffectCount(viewport_state: *const EditorViewportState) usize {

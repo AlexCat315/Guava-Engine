@@ -82,12 +82,12 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
     // Filter bar
     layout.beginSectionBody();
     const controls_width = gui.contentRegionAvail()[0];
-    if (controls_width >= 180.0) {
+    if (controls_width >= theme.Spacing.hierarchy_filter_compact_threshold) {
         var selection_count_buffer: [32]u8 = undefined;
         const selection_count_text = try std.fmt.bufPrint(&selection_count_buffer, "{d}", .{layer_context.renderer.selectedEntities().len});
-        gui.setNextItemWidth(controls_width - 40.0);
+        gui.setNextItemWidth(controls_width - theme.Spacing.hierarchy_filter_right_margin);
         _ = gui.inputTextWithHint("##scene_filter", state.text(.scene_filter), state.scene_filter_buffer[0..]);
-        gui.sameLineEx(0.0, 8.0);
+        gui.sameLineEx(0.0, theme.Spacing.hierarchy_selection_count_spacing);
         gui.pushStyleColor(.text, theme.Palette.hierarchy.filter_text);
         gui.text(selection_count_text);
         gui.popStyleColor(1);
@@ -128,7 +128,7 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
             try root_entities.append(state.allocator orelse layer_context.world.allocator, entity.id);
         }
         for (root_entities.items, 0..) |entity_id, i| {
-            var ancestor_has_next: [32]bool = .{false} ** 32;
+            var ancestor_has_next: [theme.Size.hierarchy_max_depth]bool = .{false} ** theme.Size.hierarchy_max_depth;
             ancestor_has_next[0] = i < root_entities.items.len - 1;
             drawHierarchyNodeImpl(state, layer_context, entity_id, 0, &ancestor_has_next) catch |err| switch (err) {
                 error.HierarchyMutated => return,
@@ -142,7 +142,7 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
     };
 
     // Draw children of the scene root as depth-0 nodes
-    var ancestor_has_next: [32]bool = .{false} ** 32;
+    var ancestor_has_next: [theme.Size.hierarchy_max_depth]bool = .{false} ** theme.Size.hierarchy_max_depth;
     var root_children = std.ArrayList(engine.scene.EntityId).empty;
     defer root_children.deinit(state.allocator orelse layer_context.world.allocator);
     try collectVisibleChildren(state, layer_context, scene_root, &root_children);
@@ -160,7 +160,7 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
 }
 
 pub fn drawHierarchyNode(state: *EditorState, layer_context: *engine.core.LayerContext, entity_id: engine.scene.EntityId) anyerror!void {
-    var ancestor_has_next: [32]bool = .{false} ** 32;
+    var ancestor_has_next: [theme.Size.hierarchy_max_depth]bool = .{false} ** theme.Size.hierarchy_max_depth;
     try drawHierarchyNodeImpl(state, layer_context, entity_id, 0, &ancestor_has_next);
 }
 
@@ -169,7 +169,7 @@ fn drawHierarchyNodeImpl(
     layer_context: *engine.core.LayerContext,
     entity_id: engine.scene.EntityId,
     depth: i32,
-    ancestor_has_next: *[32]bool,
+    ancestor_has_next: *[theme.Size.hierarchy_max_depth]bool,
 ) anyerror!void {
     const entity = layer_context.world.getEntity(entity_id) orelse return;
     if (entity.editor_only) return;
@@ -351,7 +351,7 @@ fn drawHierarchyNodeImpl(
         defer visible_children.deinit(state.allocator orelse layer_context.world.allocator);
         try collectVisibleChildren(state, layer_context, entity_id, &visible_children);
         for (visible_children.items, 0..) |child_id, i| {
-            if (child_depth < 32) {
+            if (child_depth < theme.Size.hierarchy_max_depth) {
                 ancestor_has_next[@intCast(child_depth)] = i < visible_children.items.len - 1;
             }
             drawHierarchyNodeImpl(state, layer_context, child_id, child_depth, ancestor_has_next) catch |err| switch (err) {

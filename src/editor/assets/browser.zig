@@ -449,7 +449,7 @@ fn drawFolderRow(state: *EditorState, directory: []const u8) !void {
         gui.sameLine();
     }
 
-    const label_name = directoryName(directory);
+    const label_name = if (std.mem.eql(u8, directory, "/")) assetBrowserRootLabel(state) else directoryName(directory);
     var label_buffer: [320]u8 = undefined;
     const label = try std.fmt.bufPrint(&label_buffer, "{s}##dir_{s}", .{ label_name, directory });
     if (gui.selectable(label, std.mem.eql(u8, selected_directory, directory), false, 0.0, 24.0)) {
@@ -494,7 +494,7 @@ fn drawAssetGridView(state: *EditorState, layer_context: *engine.core.LayerConte
         gui.pushStyleColor(.text, .{ 0.61, 0.64, 0.68, 1.0 });
         const selected_dir = selectedDirectory(state);
         if (std.mem.eql(u8, selected_dir, "/")) {
-            gui.text("No assets in project. Add files to the assets folder.");
+            gui.text("No assets in the current project content root.");
         } else {
             gui.text("Drop assets here or use Import to add files");
         }
@@ -611,7 +611,7 @@ fn drawSelectedAssetPreview(state: *EditorState, layer_context: *engine.core.Lay
     if (selectedAsset(state)) |entry| {
         gui.labelText(state.text(.selected), entry.name);
         gui.labelText(state.text(.type), utils.assetKindLabel(state, entry.kind));
-        gui.labelText(state.text(.path), entry.path);
+        gui.labelText(state.text(.path), entry.display_path);
 
         switch (entry.kind) {
             .texture => {
@@ -661,8 +661,7 @@ fn drawProjectPanelHeader(state: *EditorState, layer_context: *engine.core.Layer
     // Left: Breadcrumb path (clickable)
     const breadcrumb_width = std.math.clamp(width * 0.35, 120.0, 280.0);
     const current = selectedDirectory(state);
-    const is_at_root = std.mem.eql(u8, current, "/");
-    const root_label = if (is_at_root) "/" else state.text(.assets_menu);
+    const root_label = assetBrowserRootLabel(state);
     if (gui.buttonEx(root_label, breadcrumb_width, 26.0)) {
         setSelectedAssetDirectory(state, "/");
     }
@@ -875,12 +874,12 @@ fn assetKindForRecordType(record_type: engine.assets.AssetType) ?AssetKind {
 
 fn selectedDirectory(state: *const EditorState) []const u8 {
     const value = utils.zeroTerminatedSlice(state.asset_directory_buffer[0..]);
-    return if (value.len == 0) "assets" else value;
+    return if (value.len == 0) "/" else value;
 }
 
 fn ensureSelectedAssetDirectory(state: *EditorState) void {
     if (selectedDirectory(state).len == 0 or state.asset_directories.items.len == 0) {
-        setSelectedAssetDirectory(state, "assets");
+        setSelectedAssetDirectory(state, "/");
         return;
     }
     for (state.asset_directories.items) |directory| {
@@ -888,7 +887,7 @@ fn ensureSelectedAssetDirectory(state: *EditorState) void {
             return;
         }
     }
-    setSelectedAssetDirectory(state, "assets");
+    setSelectedAssetDirectory(state, "/");
 }
 
 fn setSelectedAssetDirectory(state: *EditorState, path: []const u8) void {
@@ -902,21 +901,27 @@ fn assetVisibleInDirectory(state: *const EditorState, entry: AssetEntry) bool {
     if (std.mem.eql(u8, selected_dir, "/")) {
         return true;
     }
-    const directory = directoryPath(entry.path);
+    const directory = directoryPath(entry.display_path);
     return std.mem.eql(u8, selected_dir, directory);
 }
 
 fn directoryPath(path: []const u8) []const u8 {
-    const slash_index = std.mem.lastIndexOfScalar(u8, path, '/') orelse return "assets";
+    const slash_index = std.mem.lastIndexOfScalar(u8, path, '/') orelse return "/";
     return path[0..slash_index];
 }
 
 fn directoryName(path: []const u8) []const u8 {
+    if (std.mem.eql(u8, path, "/")) {
+        return "/";
+    }
     const slash_index = std.mem.lastIndexOfScalar(u8, path, '/') orelse return path;
     return path[slash_index + 1 ..];
 }
 
 fn directoryDepth(path: []const u8) usize {
+    if (std.mem.eql(u8, path, "/")) {
+        return 0;
+    }
     var depth: usize = 0;
     var index: usize = 0;
     while (index < path.len) : (index += 1) {
@@ -924,7 +929,44 @@ fn directoryDepth(path: []const u8) usize {
             depth += 1;
         }
     }
-    return depth -| 1;
+    return depth;
+}
+
+fn assetBrowserRootPath(state: *const EditorState) []const u8 {
+    const project_content_path = state.projectContentPath();
+    return if (project_content_path.len != 0) project_content_path else "assets";
+}
+
+fn assetBrowserRootLabel(state: *const EditorState) []const u8 {
+    return if (state.projectContentPath().len != 0) "Content" else state.text(.assets_menu);
+}
+
+fn assetBrowserSnapshotPathAlloc(allocator: std.mem.Allocator, state: *const EditorState) ![]u8 {
+    const project_root_path = state.projectPath();
+    if (project_root_path.len != 0) {
+        return std.fs.path.join(allocator, &.{ project_root_path, "Derived", "asset_registry.json" });
+    }
+    return allocator.dupe(u8, "assets/derived/asset_registry.json");
+}
+
+fn assetDisplayPathAlloc(allocator: std.mem.Allocator, state: *const EditorState, source_path: []const u8) ![]u8 {
+    const root_path = assetBrowserRootPath(state);
+    if (std.mem.startsWith(u8, source_path, root_path)) {
+        var relative = source_path[root_path.len..];
+        while (relative.len > 0 and (relative[0] == '/' or relative[0] == '\\')) {
+            relative = relative[1..];
+        }
+        return allocator.dupe(u8, relative);
+    }
+
+    if (std.mem.startsWith(u8, source_path, "assets/")) {
+        return allocator.dupe(u8, source_path[7..]);
+    }
+    if (std.mem.eql(u8, source_path, "assets")) {
+        return allocator.dupe(u8, "/");
+    }
+
+    return allocator.dupe(u8, source_path);
 }
 
 pub fn selectedAssetCanUseAsTexture(state: *EditorState) bool {
@@ -1096,17 +1138,24 @@ pub fn refreshAssetBrowser(state: *EditorState, _: *engine.core.LayerContext) !v
     else
         return;
 
-    try registry.refreshProject("assets");
-    registry.writeSnapshotToPath("assets/derived/asset_registry.json") catch |err| {
+    const root_path = assetBrowserRootPath(state);
+    try registry.refreshProject(root_path);
+
+    const snapshot_path = try assetBrowserSnapshotPathAlloc(allocator, state);
+    defer allocator.free(snapshot_path);
+    registry.writeSnapshotToPath(snapshot_path) catch |err| {
         std.log.warn("failed to write asset registry snapshot: {}", .{err});
     };
 
     for (registry.records.items) |record| {
         const kind = assetKindForRecordType(record.type) orelse continue;
+        const display_path = try assetDisplayPathAlloc(allocator, state, record.source_path);
+        errdefer allocator.free(display_path);
 
         try state.asset_entries.append(allocator, .{
             .id = try allocator.dupe(u8, record.id),
             .path = try allocator.dupe(u8, record.source_path),
+            .display_path = display_path,
             .name = try allocator.dupe(u8, record.metadata.display_name),
             .kind = kind,
         });
@@ -1124,13 +1173,14 @@ pub fn refreshAssetBrowser(state: *EditorState, _: *engine.core.LayerContext) !v
 
 fn rebuildAssetDirectories(state: *EditorState) !void {
     const allocator = state.allocator orelse return;
+    try appendDirectoryIfMissing(state, "/");
     for (state.asset_entries.items) |entry| {
-        try addDirectoryPath(state, directoryPath(entry.path));
+        try addDirectoryPath(state, directoryPath(entry.display_path));
     }
 
     std.sort.heap([]u8, state.asset_directories.items, {}, lessThanDirectory);
     if (state.asset_directories.items.len == 0) {
-        const root_directory = try allocator.dupe(u8, "assets");
+        const root_directory = try allocator.dupe(u8, "/");
         errdefer allocator.free(root_directory);
         try state.asset_directories.append(allocator, root_directory);
     }
@@ -1151,7 +1201,7 @@ fn addDirectoryPath(state: *EditorState, path: []const u8) !void {
     }
     try appendDirectoryIfMissing(state, path);
     if (state.asset_directories.items.len == 0) {
-        const root_directory = try allocator.dupe(u8, "assets");
+        const root_directory = try allocator.dupe(u8, "/");
         errdefer allocator.free(root_directory);
         try state.asset_directories.append(allocator, root_directory);
     }
@@ -1179,6 +1229,7 @@ pub fn clearAssetBrowser(state: *EditorState) void {
     for (state.asset_entries.items) |entry| {
         allocator.free(entry.id);
         allocator.free(entry.path);
+        allocator.free(entry.display_path);
         allocator.free(entry.name);
     }
     state.asset_entries.deinit(allocator);
@@ -1326,12 +1377,14 @@ test "applyMaterialAssetToEntity assigns loaded material assets to entities" {
     var entry = AssetEntry{
         .id = try std.testing.allocator.dupe(u8, "material://brick"),
         .path = try std.testing.allocator.dupe(u8, "assets/materials/brick.guava_material"),
+        .display_path = try std.testing.allocator.dupe(u8, "materials/brick.guava_material"),
         .name = try std.testing.allocator.dupe(u8, "Brick"),
         .kind = .material,
     };
     defer {
         std.testing.allocator.free(entry.id);
         std.testing.allocator.free(entry.path);
+        std.testing.allocator.free(entry.display_path);
         std.testing.allocator.free(entry.name);
     }
 
@@ -1380,12 +1433,14 @@ test "applyMaterialAssetToEntity rejects unloaded material assets" {
     var entry = AssetEntry{
         .id = try std.testing.allocator.dupe(u8, "material://missing"),
         .path = try std.testing.allocator.dupe(u8, "assets/materials/missing.guava_material"),
+        .display_path = try std.testing.allocator.dupe(u8, "materials/missing.guava_material"),
         .name = try std.testing.allocator.dupe(u8, "Missing"),
         .kind = .material,
     };
     defer {
         std.testing.allocator.free(entry.id);
         std.testing.allocator.free(entry.path);
+        std.testing.allocator.free(entry.display_path);
         std.testing.allocator.free(entry.name);
     }
 

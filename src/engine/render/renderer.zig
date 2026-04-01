@@ -1554,6 +1554,10 @@ pub const Renderer = struct {
                     }
 
                     const active_render_mode = effectiveViewportRenderMode(self.editor_viewport_state);
+                    const scene_clear_color = if (active_render_mode == .wireframe)
+                        [4]f32{ 0.055, 0.055, 0.060, 1.0 }
+                    else
+                        clear.color;
                     const velocity_enabled = taa_enabled and
                         scene_depth_target != null and
                         self.scene_viewport.velocity() != null and
@@ -1563,10 +1567,7 @@ pub const Renderer = struct {
                     if (run_rt_shadow_denoise) {
                         const depth_prepass_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.depthOnly(scene_depth_target.?));
                         const depth_start = std.time.nanoTimestamp();
-                        const depth_stats = if (active_render_mode != .wireframe)
-                            self.depth_prepass.draw(&self.rhi, frame, depth_prepass_pass, &prepared_scene)
-                        else
-                            mesh_pass_mod.DrawStats{};
+                        const depth_stats = self.depth_prepass.draw(&self.rhi, frame, depth_prepass_pass, &prepared_scene);
                         self.graph.recordPassStat(pass_stats, .depth_prepass, durationNs(depth_start, std.time.nanoTimestamp()), depth_stats.draw_calls, depth_stats.triangles_drawn);
                         draw_stats.add(depth_stats);
                         self.rhi.endRenderPass(depth_prepass_pass);
@@ -1633,14 +1634,14 @@ pub const Renderer = struct {
                         scene_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
                             .color = .{
                                 .target = base_pass_target,
-                                .clear_color = clear.color,
-                                .load_op = .load,
+                                .clear_color = scene_clear_color,
+                                .load_op = if (active_render_mode == .wireframe) .clear else .load,
                                 .store_op = .store,
                             },
                             .depth = loaded_depth_target,
                         });
                     } else {
-                        if (active_render_mode != .wireframe and scene_depth_target != null) {
+                        if (scene_depth_target != null) {
                             const depth_prepass_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.depthOnly(scene_depth_target.?));
                             const depth_start = std.time.nanoTimestamp();
                             const depth_stats = self.depth_prepass.draw(&self.rhi, frame, depth_prepass_pass, &prepared_scene);
@@ -1693,14 +1694,14 @@ pub const Renderer = struct {
                             scene_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
                                 .color = .{
                                     .target = base_pass_target,
-                                    .clear_color = clear.color,
+                                    .clear_color = scene_clear_color,
                                     .load_op = .clear,
                                     .store_op = .store,
                                 },
                                 .depth = loaded_depth_target,
                             });
                         } else {
-                            scene_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.colorWithDepth(base_pass_target, clear.color, scene_depth_target));
+                            scene_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.colorWithDepth(base_pass_target, scene_clear_color, scene_depth_target));
                         }
                     }
 
@@ -1715,7 +1716,7 @@ pub const Renderer = struct {
                     draw_stats.add(opaque_stats);
 
                     if (self.skybox_pass) |*skybox_pass| {
-                        if (skybox_pass.isReady() and prepared_scene.environment_map != null) {
+                        if (active_render_mode != .wireframe and skybox_pass.isReady() and prepared_scene.environment_map != null) {
                             const skybox_start = std.time.nanoTimestamp();
                             skybox_pass.draw(&self.rhi, frame, scene_pass, &prepared_scene, prepared_scene.environment_map.?);
                             self.graph.recordPassStat(pass_stats, .skybox_pass, durationNs(skybox_start, std.time.nanoTimestamp()), 1, 1);
@@ -2202,7 +2203,18 @@ pub const Renderer = struct {
                 }
 
                 if (self.gizmoPassRequired(scene)) {
-                    const gizmo_pass_desc = PassDescriptors.overlay(scene_color_target);
+                    const gizmo_pass_desc = if (scene_depth_target) |depth_target|
+                        PassDescriptors.overlayWithDepth(scene_color_target, .{
+                            .texture = depth_target.texture,
+                            .clear_depth = depth_target.clear_depth,
+                            .clear_stencil = depth_target.clear_stencil,
+                            .load_op = .load,
+                            .store_op = .store,
+                            .stencil_load_op = depth_target.stencil_load_op,
+                            .stencil_store_op = depth_target.stencil_store_op,
+                        })
+                    else
+                        PassDescriptors.overlay(scene_color_target);
                     const gizmo_pass = try self.rhi.beginRenderPassWithDesc(frame, gizmo_pass_desc);
                     const gizmo_start = std.time.nanoTimestamp();
                     var gizmo_overlay_stats = mesh_pass_mod.DrawStats{};

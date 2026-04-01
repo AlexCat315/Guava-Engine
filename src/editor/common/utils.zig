@@ -27,7 +27,46 @@ pub fn lessThanAssetEntry(_: void, lhs: AssetEntry, rhs: AssetEntry) bool {
     if (@intFromEnum(lhs.kind) != @intFromEnum(rhs.kind)) {
         return @intFromEnum(lhs.kind) < @intFromEnum(rhs.kind);
     }
-    return std.mem.lessThan(u8, lhs.path, rhs.path);
+    return std.mem.lessThan(u8, lhs.display_path, rhs.display_path);
+}
+
+fn assetKindMatchesTypeFilter(entry: AssetEntry, type_name: []const u8) bool {
+    if (std.mem.eql(u8, type_name, "scene") or std.mem.eql(u8, type_name, "scenes")) {
+        return entry.kind == .scene;
+    }
+    if (std.mem.eql(u8, type_name, "model") or std.mem.eql(u8, type_name, "models") or std.mem.eql(u8, type_name, "mesh")) {
+        return entry.kind == .model;
+    }
+    if (std.mem.eql(u8, type_name, "material") or std.mem.eql(u8, type_name, "materials") or std.mem.eql(u8, type_name, "mat")) {
+        return entry.kind == .material;
+    }
+    if (std.mem.eql(u8, type_name, "texture") or std.mem.eql(u8, type_name, "textures") or std.mem.eql(u8, type_name, "tex") or std.mem.eql(u8, type_name, "hdr")) {
+        return entry.kind == .texture;
+    }
+    if (std.mem.eql(u8, type_name, "shader") or std.mem.eql(u8, type_name, "shaders")) {
+        return entry.kind == .shader;
+    }
+    return false;
+}
+
+fn splitAssetFilter(filter: []const u8) ?struct { type_name: []const u8, remainder: []const u8 } {
+    if (std.mem.startsWith(u8, filter, "t:")) {
+        const body = filter[2..];
+        const separator = std.mem.indexOfScalar(u8, body, ' ') orelse body.len;
+        return .{
+            .type_name = std.mem.trim(u8, body[0..separator], " \t"),
+            .remainder = std.mem.trim(u8, body[@min(separator + 1, body.len)..], " \t"),
+        };
+    }
+    if (std.mem.startsWith(u8, filter, "type:")) {
+        const body = filter[5..];
+        const separator = std.mem.indexOfScalar(u8, body, ' ') orelse body.len;
+        return .{
+            .type_name = std.mem.trim(u8, body[0..separator], " \t"),
+            .remainder = std.mem.trim(u8, body[@min(separator + 1, body.len)..], " \t"),
+        };
+    }
+    return null;
 }
 
 pub fn containsAsciiInsensitive(haystack: []const u8, needle: []const u8) bool {
@@ -284,7 +323,18 @@ pub fn assetMatchesFilter(state: *const EditorState, entry: AssetEntry) bool {
     if (filter.len == 0) {
         return true;
     }
-    return containsAsciiInsensitive(entry.name, filter) or containsAsciiInsensitive(entry.path, filter);
+
+    if (splitAssetFilter(filter)) |typed_filter| {
+        if (typed_filter.type_name.len == 0 or !assetKindMatchesTypeFilter(entry, typed_filter.type_name)) {
+            return false;
+        }
+        if (typed_filter.remainder.len == 0) {
+            return true;
+        }
+        return containsAsciiInsensitive(entry.name, typed_filter.remainder) or containsAsciiInsensitive(entry.display_path, typed_filter.remainder);
+    }
+
+    return containsAsciiInsensitive(entry.name, filter) or containsAsciiInsensitive(entry.display_path, filter);
 }
 
 pub fn syncInspectorNameBuffer(state: *EditorState, layer_context: *engine.core.LayerContext) void {

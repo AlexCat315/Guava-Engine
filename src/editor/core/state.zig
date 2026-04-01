@@ -24,6 +24,8 @@ pub const asset_directory_buffer_size = 256;
 pub const layout_template_name_buffer_size = 128;
 pub const render_output_path_buffer_size = 256;
 pub const render_output_status_buffer_size = 256;
+pub const project_root_buffer_size = 512;
+pub const project_name_buffer_size = 128;
 
 pub const AssetKind = enum {
     scene,
@@ -36,6 +38,7 @@ pub const AssetKind = enum {
 pub const AssetEntry = struct {
     id: []u8,
     path: []u8,
+    display_path: []u8,
     name: []u8,
     kind: AssetKind,
 };
@@ -367,6 +370,17 @@ fn allocRenderOutputPath(
         std.fmt.allocPrint(allocator, "{s}{s}", .{ stem, extension });
 }
 
+fn writeFixedBuffer(buffer: []u8, value: []const u8) void {
+    @memset(buffer, 0);
+    const copy_len = @min(value.len, buffer.len - 1);
+    @memcpy(buffer[0..copy_len], value[0..copy_len]);
+}
+
+fn fixedBufferSlice(buffer: []const u8) []const u8 {
+    const end = std.mem.indexOfScalar(u8, buffer, 0) orelse buffer.len;
+    return buffer[0..end];
+}
+
 pub const AxisConstraint = engine.math.axis.Axis3;
 
 pub const PendingViewportDropSource = enum {
@@ -556,6 +570,10 @@ pub const EditorState = struct {
     saved_command_cursor: ?usize = null,
     history_world_snapshot: ?[]u8 = null,
     history_snapshot_needs_refresh: bool = false,
+    project_root_buffer: [project_root_buffer_size]u8 = [_]u8{0} ** project_root_buffer_size,
+    project_content_root_buffer: [project_root_buffer_size]u8 = [_]u8{0} ** project_root_buffer_size,
+    project_name_buffer: [project_name_buffer_size]u8 = [_]u8{0} ** project_name_buffer_size,
+    project_start_scene_buffer: [project_root_buffer_size]u8 = [_]u8{0} ** project_root_buffer_size,
     asset_registry: ?engine.assets.AssetRegistry = null,
     asset_entries: std.ArrayList(AssetEntry) = .empty,
     asset_directories: std.ArrayList([]u8) = .empty,
@@ -761,6 +779,47 @@ pub const EditorState = struct {
         return self.render_output_status_buffer[0..end];
     }
 
+    pub fn projectPath(self: *const EditorState) []const u8 {
+        return fixedBufferSlice(self.project_root_buffer[0..]);
+    }
+
+    pub fn projectContentPath(self: *const EditorState) []const u8 {
+        return fixedBufferSlice(self.project_content_root_buffer[0..]);
+    }
+
+    pub fn projectName(self: *const EditorState) []const u8 {
+        return fixedBufferSlice(self.project_name_buffer[0..]);
+    }
+
+    pub fn projectStartScene(self: *const EditorState) []const u8 {
+        return fixedBufferSlice(self.project_start_scene_buffer[0..]);
+    }
+
+    pub fn hasProjectContext(self: *const EditorState) bool {
+        return self.projectPath().len > 0;
+    }
+
+    pub fn setProjectContext(self: *EditorState, project_root: []const u8, project_name: []const u8, content_dir: []const u8, start_scene: ?[]const u8) void {
+        writeFixedBuffer(self.project_root_buffer[0..], project_root);
+        writeFixedBuffer(self.project_name_buffer[0..], project_name);
+
+        var content_path_buffer: [project_root_buffer_size]u8 = undefined;
+        const content_path = std.fmt.bufPrint(&content_path_buffer, "{s}/{s}", .{ project_root, content_dir }) catch project_root;
+        writeFixedBuffer(self.project_content_root_buffer[0..], content_path);
+
+        if (start_scene) |scene_path| {
+            if (std.fs.path.isAbsolute(scene_path)) {
+                writeFixedBuffer(self.project_start_scene_buffer[0..], scene_path);
+            } else {
+                var scene_buffer: [project_root_buffer_size]u8 = undefined;
+                const absolute_scene_path = std.fmt.bufPrint(&scene_buffer, "{s}/{s}", .{ project_root, scene_path }) catch scene_path;
+                writeFixedBuffer(self.project_start_scene_buffer[0..], absolute_scene_path);
+            }
+        } else {
+            @memset(self.project_start_scene_buffer[0..], 0);
+        }
+    }
+
     pub fn ensureRenderOutputDefaults(self: *EditorState) void {
         if (self.renderOutputPath().len != 0) {
             return;
@@ -943,6 +1002,7 @@ pub const EditorState = struct {
         for (self.asset_entries.items) |entry| {
             allocator.free(entry.id);
             allocator.free(entry.path);
+            allocator.free(entry.display_path);
             allocator.free(entry.name);
         }
         self.asset_entries.deinit(allocator);

@@ -1,6 +1,7 @@
 const std = @import("std");
 const engine = @import("guava");
 const gui = @import("gui.zig");
+const theme = @import("theme.zig");
 const sdl = engine.platform.sdl.c;
 const vec3 = engine.math.vec3;
 const quat = engine.math.quat;
@@ -46,13 +47,13 @@ fn drawToolbarIconButton(
     path: []const u8,
     active: bool,
 ) !bool {
-    const accent_tint = [4]u8{ 230, 236, 242, 255 };
-    const idle_tint = [4]u8{ 168, 174, 182, 255 };
+    const accent_tint = theme.Spacing.viewport_toolbar_accent_tint;
+    const idle_tint = theme.Spacing.viewport_toolbar_idle_tint;
     const texture = try ui_icons.ensureTintedIconTexture(
         state,
         layer_context,
         path,
-        14.0,
+        theme.Spacing.viewport_toolbar_icon_size,
         if (active) accent_tint else idle_tint,
     );
     const palette = if (active)
@@ -62,13 +63,13 @@ fn drawToolbarIconButton(
     gui.pushStyleColor(.button, palette.button);
     gui.pushStyleColor(.button_hovered, palette.hovered);
     gui.pushStyleColor(.button_active, palette.active);
-    gui.pushStyleVarVec2(.frame_padding, .{ 7.0, 5.0 });
-    gui.pushStyleVarFloat(.frame_rounding, 4.0);
+    gui.pushStyleVarVec2(.frame_padding, theme.Spacing.viewport_toolbar_frame_padding);
+    gui.pushStyleVarFloat(.frame_rounding, theme.Spacing.viewport_toolbar_frame_rounding);
     defer {
         gui.popStyleVar(2);
         gui.popStyleColor(3);
     }
-    const clicked = gui.imageButton(id, texture, 14.0, 14.0, .{ 0.0, 0.0, 0.0, 0.0 }, .{ 1.0, 1.0, 1.0, 1.0 });
+    const clicked = gui.imageButton(id, texture, theme.Spacing.viewport_toolbar_icon_size, theme.Spacing.viewport_toolbar_icon_size, .{ 0.0, 0.0, 0.0, 0.0 }, .{ 1.0, 1.0, 1.0, 1.0 });
     if (gui.isItemHovered()) {
         state.viewport_overlay_hovered = true;
         if (layer_context.input.wasMousePressed(.left)) {
@@ -80,17 +81,17 @@ fn drawToolbarIconButton(
 
 fn hudIdlePalette() ui_icons.ButtonPalette {
     return .{
-        .button = .{ 0.15, 0.16, 0.18, 0.90 },
-        .hovered = .{ 0.20, 0.22, 0.25, 0.96 },
-        .active = .{ 0.12, 0.14, 0.17, 1.0 },
+        .button = theme.Spacing.hud_button_bg,
+        .hovered = theme.Spacing.hud_button_hovered,
+        .active = theme.Spacing.hud_button_active,
     };
 }
 
 fn hudActivePalette() ui_icons.ButtonPalette {
     return .{
-        .button = .{ 0.20, 0.60, 0.45, 0.20 },
-        .hovered = .{ 0.24, 0.68, 0.52, 0.30 },
-        .active = .{ 0.16, 0.52, 0.38, 0.42 },
+        .button = theme.Spacing.hud_active_button_bg,
+        .hovered = theme.Spacing.hud_active_button_hovered,
+        .active = theme.Spacing.hud_active_button_active,
     };
 }
 
@@ -106,12 +107,12 @@ fn drawOverlayMenuButton(
     else
         hudIdlePalette();
     const text_width = gui.calcTextSize(label, false, 0.0)[0];
-    const button_width = @max(50.0, text_width + 18.0);
+    const button_width = @max(theme.Spacing.overlay_button_min_width, text_width + theme.Spacing.overlay_button_text_padding);
     gui.pushStyleColor(.button, palette.button);
     gui.pushStyleColor(.button_hovered, palette.hovered);
     gui.pushStyleColor(.button_active, palette.active);
-    gui.pushStyleVarVec2(.frame_padding, .{ 7.0, 3.0 });
-    gui.pushStyleVarFloat(.frame_rounding, 3.0);
+    gui.pushStyleVarVec2(.frame_padding, theme.Spacing.overlay_button_frame_padding);
+    gui.pushStyleVarFloat(.frame_rounding, theme.Spacing.overlay_button_frame_rounding);
     defer {
         gui.popStyleVar(2);
         gui.popStyleColor(3);
@@ -129,13 +130,13 @@ fn drawOverlayMenuButton(
 }
 
 fn drawOverlayStatusChip(label: []const u8) void {
-    gui.pushStyleColor(.text, .{ 0.74, 0.77, 0.82, 1.0 });
+    gui.pushStyleColor(.text, theme.Spacing.overlay_status_chip_text);
     defer gui.popStyleColor(1);
     gui.text(label);
 }
 
 fn drawOverlayTitleChip(label: []const u8) void {
-    gui.pushStyleColor(.text, .{ 0.95, 0.97, 0.99, 1.0 });
+    gui.pushStyleColor(.text, theme.Spacing.overlay_title_chip_text);
     defer gui.popStyleColor(1);
     gui.text(label);
 }
@@ -144,36 +145,36 @@ fn drawHudWindowChrome() void {
     const draw_list = gui.getWindowDrawList();
     const pos = gui.windowPos();
     const size = gui.windowSize();
-    const top_color = gui.getColorU32(.{ 0.42, 0.45, 0.50, 0.26 });
-    const bottom_color = gui.getColorU32(.{ 0.03, 0.04, 0.05, 0.55 });
-    const side_color = gui.getColorU32(.{ 0.50, 0.53, 0.58, 0.12 });
-    draw_list.addLine(pos, .{ pos[0] + size[0], pos[1] }, top_color, 1.0);
+    const top_color = gui.getColorU32(.{ 0.42, 0.45, 0.50, theme.Spacing.viewport_hud_window_top_alpha });
+    const bottom_color = gui.getColorU32(.{ 0.03, 0.04, 0.05, theme.Spacing.viewport_hud_window_bottom_alpha });
+    const side_color = gui.getColorU32(.{ 0.50, 0.53, 0.58, theme.Spacing.viewport_hud_window_side_alpha });
+    draw_list.addLine(pos, .{ pos[0] + size[0], pos[1] }, top_color, theme.Spacing.viewport_hud_window_line_thickness);
     draw_list.addLine(
         .{ pos[0], pos[1] + size[1] - 1.0 },
         .{ pos[0] + size[0], pos[1] + size[1] - 1.0 },
         bottom_color,
-        1.0,
+        theme.Spacing.viewport_hud_window_line_thickness,
     );
-    draw_list.addLine(pos, .{ pos[0], pos[1] + size[1] }, side_color, 1.0);
+    draw_list.addLine(pos, .{ pos[0], pos[1] + size[1] }, side_color, theme.Spacing.viewport_hud_window_line_thickness);
     draw_list.addLine(
         .{ pos[0] + size[0] - 1.0, pos[1] },
         .{ pos[0] + size[0] - 1.0, pos[1] + size[1] },
         side_color,
-        1.0,
+        theme.Spacing.viewport_hud_window_line_thickness,
     );
 }
 
 fn drawToolbarDivider(height: f32) void {
     const draw_list = gui.getWindowDrawList();
     const pos = gui.cursorScreenPos();
-    const x = pos[0] + 4.0;
+    const x = pos[0] + theme.Spacing.x1;
     draw_list.addLine(
-        .{ x, pos[1] + 3.0 },
-        .{ x, pos[1] + height - 3.0 },
-        gui.getColorU32(.{ 0.55, 0.59, 0.64, 0.22 }),
-        1.0,
+        .{ x, pos[1] + theme.Spacing.viewport_divider_padding_top },
+        .{ x, pos[1] + height - theme.Spacing.viewport_divider_padding_top },
+        gui.getColorU32(.{ 0.55, 0.59, 0.64, theme.Spacing.viewport_divider_alpha }),
+        theme.Spacing.viewport_hud_window_line_thickness,
     );
-    gui.dummy(8.0, height);
+    gui.dummy(theme.Spacing.viewport_divider_width, height);
 }
 
 fn syncPlaybackState(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -336,13 +337,13 @@ fn projectWorldPointToViewport(
     const projection = engine.math.mat4.projectionForCamera(camera.activeCameraComponent(state, layer_context), aspect);
     const view_projection = engine.math.mat4.mul(projection, view);
     const clip = transformPoint4(view_projection, .{ world_position[0], world_position[1], world_position[2], 1.0 });
-    if (@abs(clip[3]) <= 0.00001 or clip[3] <= 0.0) {
+    if (@abs(clip[3]) <= theme.Spacing.ndc_clip_near_threshold or clip[3] <= 0.0) {
         return null;
     }
 
     const ndc_x = clip[0] / clip[3];
     const ndc_y = clip[1] / clip[3];
-    if (ndc_x < -1.15 or ndc_x > 1.15 or ndc_y < -1.15 or ndc_y > 1.15) {
+    if (ndc_x < -theme.Spacing.ndc_clip_margin or ndc_x > theme.Spacing.ndc_clip_margin or ndc_y < -theme.Spacing.ndc_clip_margin or ndc_y > theme.Spacing.ndc_clip_margin) {
         return null;
     }
 
@@ -372,19 +373,19 @@ fn viewportEntityIconPath(kind: ViewportEntityGlyph) []const u8 {
 
 fn viewportEntityIconTint(kind: ViewportEntityGlyph) [4]u8 {
     return switch (kind) {
-        .camera => .{ 122, 208, 255, 255 },
-        .directional => .{ 255, 212, 92, 255 },
-        .point => .{ 255, 224, 116, 255 },
-        .spot => .{ 132, 204, 255, 255 },
+        .camera => theme.Spacing.viewport_entity_tint_camera,
+        .directional => theme.Spacing.viewport_entity_tint_directional,
+        .point => theme.Spacing.viewport_entity_tint_point,
+        .spot => theme.Spacing.viewport_entity_tint_spot,
     };
 }
 
 fn viewportEntityAccent(kind: ViewportEntityGlyph) [4]f32 {
     return switch (kind) {
-        .camera => .{ 0.34, 0.77, 1.0, 1.0 },
-        .directional => .{ 1.0, 0.82, 0.36, 1.0 },
-        .point => .{ 1.0, 0.90, 0.46, 1.0 },
-        .spot => .{ 0.57, 0.82, 1.0, 1.0 },
+        .camera => theme.Spacing.viewport_entity_accent_camera,
+        .directional => theme.Spacing.viewport_entity_accent_directional,
+        .point => theme.Spacing.viewport_entity_accent_point,
+        .spot => theme.Spacing.viewport_entity_accent_spot,
     };
 }
 
@@ -476,32 +477,32 @@ fn drawViewport3DCursor(state: *EditorState, layer_context: *engine.core.LayerCo
     const camera_transform = camera.activeCameraTransform(state, layer_context);
     const origin = state.transform_cursor_world_position;
     const scale = viewportCameraHelperScale(camera_transform.translation, origin) * 0.28;
-    const x_color = gui.getColorU32(.{ 0.96, 0.42, 0.42, 0.95 });
-    const y_color = gui.getColorU32(.{ 0.48, 0.92, 0.54, 0.95 });
-    const z_color = gui.getColorU32(.{ 0.44, 0.68, 0.98, 0.95 });
-    const center_color = gui.getColorU32(.{ 0.98, 0.92, 0.42, 0.98 });
-    const halo_color = gui.getColorU32(.{ 0.96, 0.86, 0.34, 0.24 });
-    const label_bg = gui.getColorU32(.{ 0.07, 0.08, 0.10, 0.88 });
-    const label_border = gui.getColorU32(.{ 0.93, 0.84, 0.34, 0.30 });
-    const label_text = gui.getColorU32(.{ 0.96, 0.95, 0.88, 0.98 });
+    const x_color = gui.getColorU32(theme.Spacing.cursor_3d_x_color);
+    const y_color = gui.getColorU32(theme.Spacing.cursor_3d_y_color);
+    const z_color = gui.getColorU32(theme.Spacing.cursor_3d_z_color);
+    const center_color = gui.getColorU32(theme.Spacing.cursor_3d_center_color);
+    const halo_color = gui.getColorU32(theme.Spacing.cursor_3d_halo_color);
+    const label_bg = gui.getColorU32(theme.Spacing.cursor_3d_label_bg);
+    const label_border = gui.getColorU32(theme.Spacing.cursor_3d_label_border);
+    const label_text = gui.getColorU32(theme.Spacing.cursor_3d_label_text);
 
-    drawProjectedWorldSegment(draw_list, state, layer_context, vec3.add(origin, .{ -scale, 0.0, 0.0 }), vec3.add(origin, .{ scale, 0.0, 0.0 }), x_color, 2.0);
-    drawProjectedWorldSegment(draw_list, state, layer_context, vec3.add(origin, .{ 0.0, -scale, 0.0 }), vec3.add(origin, .{ 0.0, scale, 0.0 }), y_color, 2.0);
-    drawProjectedWorldSegment(draw_list, state, layer_context, vec3.add(origin, .{ 0.0, 0.0, -scale }), vec3.add(origin, .{ 0.0, 0.0, scale }), z_color, 2.0);
+    drawProjectedWorldSegment(draw_list, state, layer_context, vec3.add(origin, .{ -scale, 0.0, 0.0 }), vec3.add(origin, .{ scale, 0.0, 0.0 }), x_color, theme.Spacing.cursor_3d_line_thickness);
+    drawProjectedWorldSegment(draw_list, state, layer_context, vec3.add(origin, .{ 0.0, -scale, 0.0 }), vec3.add(origin, .{ 0.0, scale, 0.0 }), y_color, theme.Spacing.cursor_3d_line_thickness);
+    drawProjectedWorldSegment(draw_list, state, layer_context, vec3.add(origin, .{ 0.0, 0.0, -scale }), vec3.add(origin, .{ 0.0, 0.0, scale }), z_color, theme.Spacing.cursor_3d_line_thickness);
 
     if (projectWorldPointToViewport(state, layer_context, origin)) |screen_pos| {
         const pulse = if (state.transform_cursor_place_mode)
-            0.75 + 0.55 * @abs(std.math.sin(gui.time() * 4.6))
+            0.75 + 0.55 * @abs(std.math.sin(gui.time() * theme.Spacing.cursor_3d_pulse_speed))
         else
             0.0;
-        const ring_radius = 7.5 + pulse * 2.5;
-        draw_list.addCircleFilled(screen_pos, ring_radius + 4.5, halo_color, 28);
-        draw_list.addCircleFilled(screen_pos, ring_radius, gui.getColorU32(.{ 0.12, 0.12, 0.12, 0.92 }), 28);
-        draw_list.addCircleFilled(screen_pos, 4.5, center_color, 20);
-        draw_list.addLine(.{ screen_pos[0] - 12.0, screen_pos[1] }, .{ screen_pos[0] - 6.0, screen_pos[1] }, center_color, 1.8);
-        draw_list.addLine(.{ screen_pos[0] + 6.0, screen_pos[1] }, .{ screen_pos[0] + 12.0, screen_pos[1] }, center_color, 1.8);
-        draw_list.addLine(.{ screen_pos[0], screen_pos[1] - 12.0 }, .{ screen_pos[0], screen_pos[1] - 6.0 }, center_color, 1.8);
-        draw_list.addLine(.{ screen_pos[0], screen_pos[1] + 6.0 }, .{ screen_pos[0], screen_pos[1] + 12.0 }, center_color, 1.8);
+        const ring_radius = theme.Spacing.cursor_3d_ring_radius + pulse * theme.Spacing.cursor_3d_ring_pulse;
+        draw_list.addCircleFilled(screen_pos, ring_radius + theme.Spacing.cursor_3d_center_dot_radius, halo_color, theme.Spacing.cursor_3d_halo_segments);
+        draw_list.addCircleFilled(screen_pos, ring_radius, gui.getColorU32(.{ 0.12, 0.12, 0.12, 0.92 }), theme.Spacing.cursor_3d_halo_segments);
+        draw_list.addCircleFilled(screen_pos, theme.Spacing.cursor_3d_center_dot_radius, center_color, theme.Spacing.cursor_3d_dot_segments);
+        draw_list.addLine(.{ screen_pos[0] - theme.Spacing.cursor_3d_tick_gap, screen_pos[1] }, .{ screen_pos[0] - theme.Spacing.cursor_3d_tick_half_length, screen_pos[1] }, center_color, theme.Spacing.cursor_3d_tick_thickness);
+        draw_list.addLine(.{ screen_pos[0] + theme.Spacing.cursor_3d_tick_half_length, screen_pos[1] }, .{ screen_pos[0] + theme.Spacing.cursor_3d_tick_gap, screen_pos[1] }, center_color, theme.Spacing.cursor_3d_tick_thickness);
+        draw_list.addLine(.{ screen_pos[0], screen_pos[1] - theme.Spacing.cursor_3d_tick_gap }, .{ screen_pos[0], screen_pos[1] - theme.Spacing.cursor_3d_tick_half_length }, center_color, theme.Spacing.cursor_3d_tick_thickness);
+        draw_list.addLine(.{ screen_pos[0], screen_pos[1] + theme.Spacing.cursor_3d_tick_half_length }, .{ screen_pos[0], screen_pos[1] + theme.Spacing.cursor_3d_tick_gap }, center_color, theme.Spacing.cursor_3d_tick_thickness);
 
         if (state.transform_pivot_mode == .cursor or state.transform_cursor_place_mode) {
             const label = if (state.transform_cursor_place_mode)
@@ -509,17 +510,17 @@ fn drawViewport3DCursor(state: *EditorState, layer_context: *engine.core.LayerCo
             else
                 state.text(.pivot_cursor);
             const label_size = gui.calcTextSize(label, false, 0.0);
-            const label_min = [2]f32{ screen_pos[0] + 13.0, screen_pos[1] - label_size[1] - 8.0 };
-            const label_max = [2]f32{ label_min[0] + label_size[0] + 14.0, label_min[1] + label_size[1] + 8.0 };
-            draw_list.addRectFilled(label_min, label_max, label_bg, 7.0, 0);
+            const label_min = [2]f32{ screen_pos[0] + theme.Spacing.cursor_3d_label_offset_x, screen_pos[1] - label_size[1] - theme.Spacing.cursor_3d_label_padding_y };
+            const label_max = [2]f32{ label_min[0] + label_size[0] + theme.Spacing.cursor_3d_label_padding_x * 2, label_min[1] + label_size[1] + theme.Spacing.cursor_3d_label_padding_y };
+            draw_list.addRectFilled(label_min, label_max, label_bg, theme.Spacing.cursor_3d_label_rounding, 0);
             draw_list.addRectFilled(
                 .{ label_min[0] + 1.0, label_min[1] + 1.0 },
-                .{ label_max[0] - 1.0, label_min[1] + 2.0 },
+                .{ label_max[0] - 1.0, label_min[1] + theme.Spacing.cursor_3d_label_border_top },
                 label_border,
-                6.0,
+                theme.Spacing.cursor_3d_label_rounding_top,
                 0,
             );
-            draw_list.addText(.{ label_min[0] + 7.0, label_min[1] + 4.0 }, label_text, label);
+            draw_list.addText(.{ label_min[0] + theme.Spacing.cursor_3d_label_padding_x, label_min[1] + theme.Spacing.cursor_3d_label_padding_y }, label_text, label);
         }
     }
 }
@@ -532,9 +533,9 @@ fn drawMeshEditOverlay(state: *EditorState, layer_context: *engine.core.LayerCon
 
     const draw_list = gui.getWindowDrawList();
     const allocator = state.allocator orelse layer_context.world.allocator;
-    const selected_color = gui.getColorU32(.{ 0.98, 0.84, 0.32, 0.96 });
-    const accent_color = gui.getColorU32(.{ 0.42, 0.86, 0.78, 0.92 });
-    const muted_color = gui.getColorU32(.{ 0.54, 0.62, 0.72, 0.34 });
+    const selected_color = gui.getColorU32(theme.Spacing.mesh_edit_selected_color);
+    const accent_color = gui.getColorU32(theme.Spacing.mesh_edit_accent_color);
+    const muted_color = gui.getColorU32(theme.Spacing.mesh_edit_muted_color);
 
     switch (state.mesh_edit_selection_mode) {
         .vertex => {
@@ -543,14 +544,14 @@ fn drawMeshEditOverlay(state: *EditorState, layer_context: *engine.core.LayerCon
             for (edges) |edge| {
                 const a = meshEditTransformPoint(context.world_transform, context.mesh.vertices[edge.a].position);
                 const b = meshEditTransformPoint(context.world_transform, context.mesh.vertices[edge.b].position);
-                drawProjectedWorldSegment(draw_list, state, layer_context, a, b, muted_color, 1.0);
+                drawProjectedWorldSegment(draw_list, state, layer_context, a, b, muted_color, theme.Spacing.mesh_edit_wire_thickness_default);
             }
 
             for (context.mesh.vertices, 0..) |vertex, index| {
                 const world_position = meshEditTransformPoint(context.world_transform, vertex.position);
                 const screen = projectWorldPointToViewport(state, layer_context, world_position) orelse continue;
                 const is_selected = meshEditSelectionContains(state, @intCast(index));
-                draw_list.addCircleFilled(screen, if (is_selected) 5.2 else 3.4, if (is_selected) selected_color else accent_color, 18);
+                draw_list.addCircleFilled(screen, if (is_selected) theme.Spacing.mesh_edit_vertex_radius_selected else theme.Spacing.mesh_edit_vertex_radius_default, if (is_selected) selected_color else accent_color, theme.Spacing.mesh_edit_vertex_segments);
             }
         },
         .edge => {
@@ -566,7 +567,7 @@ fn drawMeshEditOverlay(state: *EditorState, layer_context: *engine.core.LayerCon
                     a,
                     b,
                     if (meshEditSelectionContains(state, @intCast(index))) selected_color else accent_color,
-                    if (meshEditSelectionContains(state, @intCast(index))) 3.0 else 1.2,
+                    if (meshEditSelectionContains(state, @intCast(index))) theme.Spacing.mesh_edit_edge_thickness_selected else theme.Spacing.mesh_edit_edge_thickness_default,
                 );
             }
         },
@@ -578,9 +579,9 @@ fn drawMeshEditOverlay(state: *EditorState, layer_context: *engine.core.LayerCon
                 const b = meshEditTransformPoint(context.world_transform, context.mesh.vertices[context.mesh.indices[triangle_offset + 1]].position);
                 const c = meshEditTransformPoint(context.world_transform, context.mesh.vertices[context.mesh.indices[triangle_offset + 2]].position);
                 const is_selected = meshEditSelectionContains(state, @intCast(face_index));
-                drawProjectedWorldSegment(draw_list, state, layer_context, a, b, if (is_selected) selected_color else accent_color, if (is_selected) 2.6 else 1.0);
-                drawProjectedWorldSegment(draw_list, state, layer_context, b, c, if (is_selected) selected_color else accent_color, if (is_selected) 2.6 else 1.0);
-                drawProjectedWorldSegment(draw_list, state, layer_context, c, a, if (is_selected) selected_color else accent_color, if (is_selected) 2.6 else 1.0);
+                drawProjectedWorldSegment(draw_list, state, layer_context, a, b, if (is_selected) selected_color else accent_color, if (is_selected) theme.Spacing.mesh_edit_face_thickness_selected else theme.Spacing.mesh_edit_face_thickness_default);
+                drawProjectedWorldSegment(draw_list, state, layer_context, b, c, if (is_selected) selected_color else accent_color, if (is_selected) theme.Spacing.mesh_edit_face_thickness_selected else theme.Spacing.mesh_edit_face_thickness_default);
+                drawProjectedWorldSegment(draw_list, state, layer_context, c, a, if (is_selected) selected_color else accent_color, if (is_selected) theme.Spacing.mesh_edit_face_thickness_selected else theme.Spacing.mesh_edit_face_thickness_default);
 
                 if (is_selected) {
                     const centroid = .{
@@ -589,7 +590,7 @@ fn drawMeshEditOverlay(state: *EditorState, layer_context: *engine.core.LayerCon
                         (a[2] + b[2] + c[2]) / 3.0,
                     };
                     if (projectWorldPointToViewport(state, layer_context, centroid)) |screen| {
-                        draw_list.addCircleFilled(screen, 4.0, selected_color, 14);
+                        draw_list.addCircleFilled(screen, theme.Spacing.mesh_edit_face_dot_radius, selected_color, theme.Spacing.mesh_edit_face_dot_segments);
                     }
                 }
             }
@@ -671,7 +672,7 @@ fn drawViewportPerspectiveCameraFrustum(
     const right = quat.rotateVec3(world_transform.rotation, .{ 1.0, 0.0, 0.0 });
     const up = quat.rotateVec3(world_transform.rotation, .{ 0.0, 1.0, 0.0 });
 
-    const plane_depth = std.math.clamp(helper_scale * 1.25, projection.near_clip + 0.05, projection.far_clip);
+    const plane_depth = std.math.clamp(helper_scale * theme.Spacing.frustum_plane_depth_factor, projection.near_clip + theme.Spacing.frustum_near_clip_margin, projection.far_clip);
     const half_height = @tan(projection.fov_y_radians * 0.5) * plane_depth;
     const half_width = half_height * aspect;
     const plane_center = vec3.add(origin, vec3.scale(forward, plane_depth));
@@ -690,7 +691,7 @@ fn drawViewportPerspectiveCameraFrustum(
     drawProjectedWorldSegment(draw_list, state, layer_context, bottom_right, bottom_left, color, thickness);
     drawProjectedWorldSegment(draw_list, state, layer_context, bottom_left, top_left, color, thickness);
 
-    const plane_mid_top = vec3.add(plane_center, vec3.scale(up, half_height * 1.16));
+    const plane_mid_top = vec3.add(plane_center, vec3.scale(up, half_height * theme.Spacing.frustum_chevron_height_factor));
     drawProjectedWorldSegment(draw_list, state, layer_context, top_left, plane_mid_top, color, thickness);
     drawProjectedWorldSegment(draw_list, state, layer_context, plane_mid_top, top_right, color, thickness);
 }
@@ -711,10 +712,10 @@ fn drawViewportOrthographicCameraFrustum(
     const right = quat.rotateVec3(world_transform.rotation, .{ 1.0, 0.0, 0.0 });
     const up = quat.rotateVec3(world_transform.rotation, .{ 0.0, 1.0, 0.0 });
 
-    const half_height = std.math.clamp(projection.size * 0.12, helper_scale * 0.34, helper_scale * 0.82);
+    const half_height = std.math.clamp(projection.size * theme.Spacing.frustum_ortho_size_factor, helper_scale * theme.Spacing.frustum_ortho_min_scale, helper_scale * theme.Spacing.frustum_ortho_max_scale);
     const half_width = half_height * aspect;
-    const back_depth = helper_scale * 0.22;
-    const front_depth = helper_scale * 1.08;
+    const back_depth = helper_scale * theme.Spacing.frustum_ortho_back_depth;
+    const front_depth = helper_scale * theme.Spacing.frustum_ortho_front_depth;
     const back_center = vec3.add(origin, vec3.scale(forward, back_depth));
     const front_center = vec3.add(origin, vec3.scale(forward, front_depth));
 
@@ -772,12 +773,12 @@ fn drawViewportCameraFrustums(state: *EditorState, layer_context: *engine.core.L
 
         const is_primary_scene_camera = primary_scene_camera != null and primary_scene_camera.? == entity.id;
         const color_rgba: [4]f32 = if (is_selected)
-            .{ 0.62, 0.88, 1.0, 0.96 }
+            theme.Spacing.frustum_selected_color
         else if (is_primary_scene_camera)
-            .{ 0.28, 0.92, 0.60, 0.92 }
+            theme.Spacing.frustum_primary_camera_color
         else
-            .{ 0.47, 0.78, 1.0, 0.66 };
-        const thickness: f32 = if (is_selected) 2.0 else if (is_primary_scene_camera) 1.8 else 1.35;
+            theme.Spacing.frustum_default_color;
+        const thickness: f32 = if (is_selected) theme.Spacing.frustum_thickness_selected else if (is_primary_scene_camera) theme.Spacing.frustum_thickness_primary else theme.Spacing.frustum_thickness_default;
         const helper_scale = viewportCameraHelperScale(view_camera_transform.translation, world_transform.translation);
         const color = gui.getColorU32(color_rgba);
 
@@ -841,17 +842,17 @@ fn drawViewportSceneEntityIcons(state: *EditorState, layer_context: *engine.core
         const tint = viewportEntityIconTint(kind);
         const accent = viewportEntityAccent(kind);
         const is_primary_scene_camera = entity.camera != null and primary_scene_camera != null and primary_scene_camera.? == entity.id;
-        const icon_size: f32 = if (is_selected) 20.0 else 18.0;
-        const halo_radius = icon_size * 0.72;
+        const icon_size: f32 = if (is_selected) theme.Spacing.viewport_entity_icon_size_selected else theme.Spacing.viewport_entity_icon_size_default;
+        const halo_radius = icon_size * theme.Spacing.viewport_entity_icon_halo_factor;
 
         if (is_selected) {
-            draw_list.addCircleFilled(screen_pos, halo_radius + 5.0, gui.getColorU32(.{ accent[0], accent[1], accent[2], 0.18 }), 24);
+            draw_list.addCircleFilled(screen_pos, halo_radius + theme.Spacing.viewport_entity_icon_halo_selected_glow, gui.getColorU32(.{ accent[0], accent[1], accent[2], 0.18 }), theme.Spacing.viewport_entity_icon_segments);
         }
         if (is_primary_scene_camera) {
-            draw_list.addCircleFilled(screen_pos, halo_radius + 2.5, gui.getColorU32(.{ accent[0], accent[1], accent[2], 0.24 }), 24);
+            draw_list.addCircleFilled(screen_pos, halo_radius + theme.Spacing.viewport_entity_icon_halo_primary_glow, gui.getColorU32(.{ accent[0], accent[1], accent[2], 0.24 }), theme.Spacing.viewport_entity_icon_segments);
         }
-        draw_list.addCircleFilled(screen_pos, halo_radius, gui.getColorU32(.{ 0.05, 0.06, 0.08, 0.90 }), 24);
-        draw_list.addCircleFilled(screen_pos, halo_radius - 2.0, gui.getColorU32(.{ accent[0] * 0.22, accent[1] * 0.22, accent[2] * 0.22, 0.92 }), 24);
+        draw_list.addCircleFilled(screen_pos, halo_radius, gui.getColorU32(.{ 0.05, 0.06, 0.08, theme.Spacing.viewport_entity_bg_alpha }), theme.Spacing.viewport_entity_icon_segments);
+        draw_list.addCircleFilled(screen_pos, halo_radius - theme.Spacing.viewport_entity_icon_halo_inner_shrink, gui.getColorU32(.{ accent[0] * 0.22, accent[1] * 0.22, accent[2] * 0.22, theme.Spacing.viewport_entity_inner_alpha }), theme.Spacing.viewport_entity_icon_segments);
 
         var button_id_buffer: [64]u8 = undefined;
         const button_id = std.fmt.bufPrint(&button_id_buffer, "viewport_entity_icon##{d}", .{entity.id}) catch continue;
@@ -871,7 +872,7 @@ fn drawViewportSceneEntityIcons(state: *EditorState, layer_context: *engine.core
             if (input.wasMousePressed(.left)) {
                 state.manipulation_started_from_ui = true;
             }
-            draw_list.addCircleFilled(screen_pos, halo_radius + 3.5, gui.getColorU32(.{ 1.0, 1.0, 1.0, 0.10 }), 24);
+            draw_list.addCircleFilled(screen_pos, halo_radius + theme.Spacing.viewport_entity_icon_halo_hover_glow, gui.getColorU32(.{ 1.0, 1.0, 1.0, 0.10 }), theme.Spacing.viewport_entity_icon_segments);
             var tooltip_buffer: [320]u8 = undefined;
             const tooltip = if (entity.camera != null)
                 std.fmt.bufPrint(&tooltip_buffer, "{s}\nDouble-click to look through camera", .{entity.name}) catch entity.name
@@ -881,10 +882,10 @@ fn drawViewportSceneEntityIcons(state: *EditorState, layer_context: *engine.core
         }
         if (is_primary_scene_camera) {
             draw_list.addCircleFilled(
-                .{ screen_pos[0] + halo_radius * 0.52, screen_pos[1] + halo_radius * 0.52 },
-                3.5,
+                .{ screen_pos[0] + halo_radius * theme.Spacing.viewport_entity_primary_dot_offset, screen_pos[1] + halo_radius * theme.Spacing.viewport_entity_primary_dot_offset },
+                theme.Spacing.viewport_entity_primary_dot_radius,
                 gui.getColorU32(.{ 0.20, 0.92, 0.58, 0.98 }),
-                16,
+                theme.Spacing.viewport_entity_primary_dot_segments,
             );
         }
 
@@ -904,7 +905,7 @@ fn drawViewportSceneEntityIcons(state: *EditorState, layer_context: *engine.core
 
 fn drawViewportToolbarStrip(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const content_width = gui.contentRegionAvail()[0];
-    gui.pushStyleVarVec2(.item_spacing, .{ 6.0, 6.0 });
+    gui.pushStyleVarVec2(.item_spacing, theme.Spacing.viewport_toolbar_item_spacing);
     defer gui.popStyleVar(1);
     const strip_height = gui.frameHeight();
 
@@ -990,7 +991,7 @@ fn drawViewportToolbarStrip(state: *EditorState, layer_context: *engine.core.Lay
     drawToolbarDivider(strip_height);
     gui.sameLine();
 
-    const utility_width: f32 = 90.0;
+    const utility_width: f32 = theme.Spacing.viewport_toolbar_utility_width;
     gui.sameLineEx(@max(0.0, content_width - utility_width), 0.0);
     if (try drawToolbarIconButton(state, layer_context, "toolbar_ai_chat", ui_icons.paths.toolbar.ai_chat, state.ai_chat_open)) {
         state.ai_chat_open = !state.ai_chat_open;
@@ -1028,8 +1029,8 @@ fn drawSegmentedModeButton(label: []const u8, active: bool, width: f32, position
     else
         hudIdlePalette();
     const rounding: f32 = switch (position) {
-        .single, .first, .last => 4.0,
-        .middle => 0.0,
+        .single, .first, .last => theme.Spacing.segmented_button_rounding,
+        .middle => theme.Spacing.segmented_button_rounding_middle,
     };
     gui.pushStyleColor(.button, palette.button);
     gui.pushStyleColor(.button_hovered, palette.hovered);
@@ -1048,7 +1049,7 @@ fn drawConstraintChipButton(id: []const u8, label: []const u8, active: bool) boo
     else
         ui_icons.palettes.toolbar_idle;
     const text_width = gui.calcTextSize(label, false, 0.0)[0];
-    const button_width = @max(44.0, text_width + 18.0);
+    const button_width = @max(theme.Spacing.constraint_chip_min_width, text_width + theme.Spacing.constraint_chip_text_padding);
     gui.pushStyleColor(.button, palette.button);
     gui.pushStyleColor(.button_hovered, palette.hovered);
     gui.pushStyleColor(.button_active, palette.active);
@@ -1073,19 +1074,19 @@ fn drawTransformConstraintsPopup(state: *EditorState, layer_context: *engine.cor
     var changed = false;
 
     gui.text(state.text(.coordinate_space));
-    if (drawConstraintPopupButton(state.text(.local_space), 96.0, state.transform_space == .local)) {
+    if (drawConstraintPopupButton(state.text(.local_space), theme.Spacing.constraint_popup_button_width, state.transform_space == .local)) {
         state.transform_space = .local;
         changed = true;
     }
     gui.sameLine();
-    if (drawConstraintPopupButton(state.text(.world_space), 96.0, state.transform_space == .world)) {
+    if (drawConstraintPopupButton(state.text(.world_space), theme.Spacing.constraint_popup_button_width, state.transform_space == .world)) {
         state.transform_space = .world;
         changed = true;
     }
 
     gui.separator();
     gui.text(state.text(.pivot_point));
-    if (drawConstraintPopupButton(state.text(.pivot_origin), 96.0, state.transform_pivot_mode == .origin)) {
+    if (drawConstraintPopupButton(state.text(.pivot_origin), theme.Spacing.constraint_popup_button_width, state.transform_pivot_mode == .origin)) {
         state.transform_pivot_mode = .origin;
         changed = true;
     }
@@ -1104,7 +1105,7 @@ fn drawTransformConstraintsPopup(state: *EditorState, layer_context: *engine.cor
         changed = true;
     }
     gui.sameLine();
-    if (drawConstraintPopupButton(state.text(.pivot_cursor), 96.0, state.transform_pivot_mode == .cursor)) {
+    if (drawConstraintPopupButton(state.text(.pivot_cursor), theme.Spacing.constraint_popup_button_width, state.transform_pivot_mode == .cursor)) {
         state.transform_pivot_mode = .cursor;
         changed = true;
     }
@@ -1195,7 +1196,7 @@ fn drawSnapControlRow(
 ) void {
     _ = gui.checkbox(label, enabled);
     gui.sameLine();
-    gui.setNextItemWidth(88.0);
+    gui.setNextItemWidth(theme.Spacing.constraint_snap_step_width);
     var drag_id_buf: [64]u8 = undefined;
     const drag_id = std.fmt.bufPrint(&drag_id_buf, "##{s}_snap_step", .{id_suffix}) catch "##snap_step";
     if (gui.dragFloat(drag_id, step_value, speed, min_value, max_value)) {
@@ -1223,7 +1224,7 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
     var title_buffer: [80]u8 = undefined;
     const title = try state.windowLabel(&title_buffer, .viewport, "viewport_panel");
 
-    gui.pushStyleVarVec2(.window_padding, .{ 0.0, 4.0 });
+    gui.pushStyleVarVec2(.window_padding, theme.Spacing.viewport_window_padding);
     defer gui.popStyleVar(1);
 
     _ = gui.beginWindowFlags(
@@ -1293,8 +1294,8 @@ pub fn drawViewportWindow(state: *EditorState, layer_context: *engine.core.Layer
 
     if (layer_context.renderer.sceneViewportTexture()) |texture| {
         const image_size = .{
-            @max(state.viewport_extent[0], 8.0),
-            @max(state.viewport_extent[1], 8.0),
+            @max(state.viewport_extent[0], theme.Spacing.viewport_min_extent),
+            @max(state.viewport_extent[1], theme.Spacing.viewport_min_extent),
         };
         gui.image(texture, image_size[0], image_size[1]);
         const image_min = gui.getItemRectMin();
@@ -1440,7 +1441,7 @@ pub fn handleViewportSelection(state: *EditorState, layer_context: *engine.core.
         input.mouse_position[1] - state.viewport_selection_press_mouse[1],
     };
     const click_distance_sq = click_delta[0] * click_delta[0] + click_delta[1] * click_delta[1];
-    if (click_distance_sq > 16.0) {
+    if (click_distance_sq > theme.Spacing.viewport_click_threshold_sq) {
         viewport_log.info("selection cancelled as drag distance_sq={d:.3}", .{click_distance_sq});
         return;
     }
@@ -1510,7 +1511,7 @@ fn drawViewportContextMenu(state: *EditorState, layer_context: *engine.core.Laye
         }
         const dx = input.mouse_position[0] - state.viewport_context_menu_mouse[0];
         const dy = input.mouse_position[1] - state.viewport_context_menu_mouse[1];
-        if (dx * dx + dy * dy <= 16.0) {
+        if (dx * dx + dy * dy <= theme.Spacing.viewport_click_threshold_sq) {
             gui.openPopup(context_menu_id);
         }
     }
@@ -1735,11 +1736,11 @@ fn syncViewportState(
 }
 
 fn viewportOverlayTopInset() f32 {
-    return 14.0;
+    return theme.Size.overlay_top_inset;
 }
 
-const viewport_bottom_drawer_bar_height: f32 = 38.0;
-const viewport_bottom_overlay_gap: f32 = 18.0;
+const viewport_bottom_drawer_bar_height: f32 = theme.Size.bottom_drawer_bar_height;
+const viewport_bottom_overlay_gap: f32 = theme.Size.bottom_overlay_gap;
 
 const ViewportFpsMetrics = struct {
     fps: f32,
@@ -1786,50 +1787,50 @@ fn drawPlaybackToolbarIconButton(
         state,
         layer_context,
         path,
-        14.0,
-        .{ 245, 248, 252, 255 },
+        theme.Spacing.viewport_toolbar_icon_size,
+        theme.Spacing.playback_icon_tint,
     );
     gui.pushStyleColor(.button, palette.button);
     gui.pushStyleColor(.button_hovered, palette.hovered);
     gui.pushStyleColor(.button_active, palette.active);
-    gui.pushStyleVarVec2(.frame_padding, .{ 5.0, 3.0 });
-    gui.pushStyleVarFloat(.frame_rounding, 3.0);
+    gui.pushStyleVarVec2(.frame_padding, theme.Spacing.playback_icon_button_padding);
+    gui.pushStyleVarFloat(.frame_rounding, theme.Spacing.playback_icon_button_rounding);
     defer {
         gui.popStyleVar(2);
         gui.popStyleColor(3);
     }
-    return gui.imageButton(id, texture, 12.0, 12.0, .{ 0.0, 0.0, 0.0, 0.0 }, .{ 1.0, 1.0, 1.0, 1.0 });
+    return gui.imageButton(id, texture, theme.Spacing.playback_icon_size, theme.Spacing.playback_icon_size, .{ 0.0, 0.0, 0.0, 0.0 }, .{ 1.0, 1.0, 1.0, 1.0 });
 }
 
 fn idlePlaybackPalette() ui_icons.ButtonPalette {
     return .{
-        .button = .{ 0.20, 0.22, 0.25, 0.76 },
-        .hovered = .{ 0.24, 0.27, 0.31, 0.82 },
-        .active = .{ 0.18, 0.20, 0.24, 0.88 },
+        .button = theme.Spacing.playback_idle_button_bg,
+        .hovered = theme.Spacing.playback_idle_button_hovered,
+        .active = theme.Spacing.playback_idle_button_active,
     };
 }
 
 fn activePlayPalette() ui_icons.ButtonPalette {
     return .{
-        .button = .{ 0.30, 0.35, 0.34, 0.80 },
-        .hovered = .{ 0.34, 0.40, 0.38, 0.86 },
-        .active = .{ 0.28, 0.32, 0.31, 0.92 },
+        .button = theme.Spacing.playback_play_button_bg,
+        .hovered = theme.Spacing.playback_play_button_hovered,
+        .active = theme.Spacing.playback_play_button_active,
     };
 }
 
 fn activePausePalette() ui_icons.ButtonPalette {
     return .{
-        .button = .{ 0.32, 0.30, 0.25, 0.80 },
-        .hovered = .{ 0.36, 0.34, 0.29, 0.86 },
-        .active = .{ 0.29, 0.27, 0.23, 0.92 },
+        .button = theme.Spacing.playback_pause_button_bg,
+        .hovered = theme.Spacing.playback_pause_button_hovered,
+        .active = theme.Spacing.playback_pause_button_active,
     };
 }
 
 fn stepPlaybackPalette() ui_icons.ButtonPalette {
     return .{
-        .button = .{ 0.24, 0.26, 0.30, 0.78 },
-        .hovered = .{ 0.28, 0.31, 0.36, 0.84 },
-        .active = .{ 0.22, 0.24, 0.28, 0.90 },
+        .button = theme.Spacing.playback_step_button_bg,
+        .hovered = theme.Spacing.playback_step_button_hovered,
+        .active = theme.Spacing.playback_step_button_active,
     };
 }
 
@@ -1917,7 +1918,7 @@ fn calculateSpawnTransformFromPixel(
             if (layer_context.physics_state.raycast(layer_context.world, .{
                 .origin = ray.origin,
                 .direction = ray.direction,
-                .max_distance = 2048.0,
+                .max_distance = theme.Spacing.spawn_raycast_max_distance,
             }, .{})) |hit| {
                 return .{ .translation = hit.position };
             }
@@ -1926,7 +1927,7 @@ fn calculateSpawnTransformFromPixel(
                 return .{ .translation = hit.position };
             }
 
-            const plane_y: f32 = 0.0;
+            const plane_y: f32 = theme.Spacing.spawn_plane_y;
             if (ray.direction[1] != 0.0) {
                 const t = (plane_y - ray.origin[1]) / ray.direction[1];
                 if (t > 0.0) {
@@ -1959,11 +1960,11 @@ fn physicsAwareSpawnTransform(
     const surface_hit = layer_context.physics_state.raycast(layer_context.world, .{
         .origin = ray.origin,
         .direction = ray.direction,
-        .max_distance = 2048.0,
+        .max_distance = theme.Spacing.spawn_raycast_max_distance,
     }, .{}) orelse return null;
 
-    const sweep_start = vec3.add(ray.origin, vec3.scale(ray.direction, 0.05));
-    const sweep_distance = @max(surface_hit.distance - 0.05, 0.0) + vec3.length(half_extents) + 0.5;
+    const sweep_start = vec3.add(ray.origin, vec3.scale(ray.direction, theme.Spacing.spawn_sweep_offset));
+    const sweep_distance = @max(surface_hit.distance - theme.Spacing.spawn_sweep_offset, 0.0) + vec3.length(half_extents) + theme.Spacing.spawn_sweep_extra;
     const sweep_bounds = engine.physics.aabbFromCenterHalfExtents(sweep_start, half_extents);
     const sweep_hit = layer_context.physics_state.sweepAabb(
         layer_context.world,
@@ -2042,13 +2043,13 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
     const snap_popup_open = gui.isPopupOpen(snap_popup_id);
 
     const overlay_pos = .{
-        state.viewport_origin[0] + 14.0,
+        state.viewport_origin[0] + theme.Spacing.x1,
         state.viewport_origin[1] + viewportOverlayTopInset(),
     };
-    gui.pushStyleVarVec2(.window_padding, .{ 4.0, 4.0 });
+    gui.pushStyleVarVec2(.window_padding, theme.Spacing.viewport_overlay_padding);
     defer gui.popStyleVar(1);
     gui.setNextWindowPos(overlay_pos);
-    gui.setNextWindowBgAlpha(0.38);
+    gui.setNextWindowBgAlpha(theme.Size.overlay_bg_alpha);
     _ = gui.beginWindowFlags(
         "##viewport_overlay_controls",
         gui.WindowFlags.no_title_bar |
@@ -2065,7 +2066,7 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
         state.viewport_overlay_hovered = true;
     }
 
-    gui.pushStyleVarVec2(.item_spacing, .{ 6.0, 4.0 });
+    gui.pushStyleVarVec2(.item_spacing, theme.Spacing.viewport_overlay_item_spacing);
     defer gui.popStyleVar(1);
 
     if (try drawOverlayMenuButton(
@@ -2189,14 +2190,14 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
 }
 
 fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
-    const window_width = 108.0;
-    gui.pushStyleVarVec2(.window_padding, .{ 4.0, 4.0 });
+    const window_width = theme.Spacing.playback_overlay_width;
+    gui.pushStyleVarVec2(.window_padding, theme.Spacing.viewport_overlay_padding);
     defer gui.popStyleVar(1);
     gui.setNextWindowPos(.{
-        state.viewport_origin[0] + @max((state.viewport_extent[0] - window_width) * 0.5, 18.0),
+        state.viewport_origin[0] + @max((state.viewport_extent[0] - window_width) * 0.5, theme.Spacing.playback_overlay_min_margin),
         state.viewport_origin[1] + viewportOverlayTopInset(),
     });
-    gui.setNextWindowBgAlpha(0.38);
+    gui.setNextWindowBgAlpha(theme.Size.overlay_bg_alpha);
     _ = gui.beginWindowFlags(
         "##viewport_playback_overlay",
         gui.WindowFlags.no_title_bar |
@@ -2308,16 +2309,16 @@ fn drawViewportAiStateOverlayWindow(state: *EditorState) void {
     };
 
     // Pulse speed: faster when waiting approval to draw attention
-    const pulse_speed: f32 = if (ai_status.stage == .waiting_approval) 2.6 else 3.2;
-    const pulse = 0.06 * (std.math.sin(gui.time() * pulse_speed) + 1.0);
-    const bg_alpha = std.math.clamp(@max(0.54, base_color[3] + pulse) * 0.72, 0.0, 0.68);
+    const pulse_speed: f32 = if (ai_status.stage == .waiting_approval) theme.Spacing.ai_overlay_pulse_speed_waiting else theme.Spacing.ai_overlay_pulse_speed_active;
+    const pulse = theme.Spacing.ai_overlay_pulse_amplitude * (std.math.sin(gui.time() * pulse_speed) + 1.0);
+    const bg_alpha = std.math.clamp(@max(theme.Spacing.ai_overlay_bg_alpha_min, base_color[3] + pulse) * theme.Spacing.ai_overlay_bg_alpha_factor, 0.0, theme.Spacing.ai_overlay_bg_alpha_max);
 
-    const overlay_width: f32 = if (ai_status.stage == .waiting_approval) 320.0 else 280.0;
-    gui.pushStyleVarVec2(.window_padding, .{ 4.0, 3.0 });
+    const overlay_width: f32 = if (ai_status.stage == .waiting_approval) theme.Spacing.ai_overlay_width_waiting else theme.Spacing.ai_overlay_width_default;
+    gui.pushStyleVarVec2(.window_padding, theme.Spacing.ai_overlay_padding);
     defer gui.popStyleVar(1);
     gui.setNextWindowPos(.{
-        state.viewport_origin[0] + @max((state.viewport_extent[0] - overlay_width) * 0.5, 12.0),
-        state.viewport_origin[1] + viewportOverlayTopInset() + 48.0,
+        state.viewport_origin[0] + @max((state.viewport_extent[0] - overlay_width) * 0.5, theme.Spacing.x3),
+        state.viewport_origin[1] + viewportOverlayTopInset() + theme.Spacing.ai_overlay_offset_y,
     });
     gui.setNextWindowBgAlpha(bg_alpha);
     _ = gui.beginWindowFlags(
@@ -2347,7 +2348,7 @@ fn drawViewportAiStateOverlayWindow(state: *EditorState) void {
     if (ai_status.detail.len > 0) {
         const detail = ai_status.detail.slice();
         // Clamp detail to one line
-        const max_chars: usize = 44;
+        const max_chars: usize = theme.Spacing.ai_overlay_detail_max_chars;
         gui.pushStyleColor(.text, .{ 0.74, 0.78, 0.86, 0.90 });
         if (detail.len <= max_chars) {
             gui.text(detail);
@@ -2442,18 +2443,18 @@ fn drawViewportFpsOverlayWindow(state: *EditorState, layer_context: *engine.core
             state.fps_overlay_display_frame_ms,
         });
 
-    const margin = 10.0;
+    const margin = theme.Spacing.fps_overlay_margin;
     const overlay_height: f32 = 20.0;
     const text_size = gui.calcTextSize(display_text, false, 0.0);
-    const overlay_width = text_size[0] + 12.0;
+    const overlay_width = @max(text_size[0] + theme.Spacing.fps_overlay_padding[0] * 2, theme.Spacing.fps_overlay_min_width);
     const overlay_x = state.viewport_origin[0] + margin;
     const overlay_y = state.viewport_origin[1] + state.viewport_extent[1] - margin - overlay_height - 24.0;
 
-    gui.pushStyleVarVec2(.window_padding, .{ 6.0, 2.0 });
+    gui.pushStyleVarVec2(.window_padding, theme.Spacing.fps_overlay_padding);
     defer gui.popStyleVar(1);
     gui.setNextWindowPos(.{ overlay_x, overlay_y });
     gui.setNextWindowSize(.{ overlay_width, overlay_height });
-    gui.setNextWindowBgAlpha(0.45);
+    gui.setNextWindowBgAlpha(theme.Spacing.fps_overlay_bg_alpha);
     _ = gui.beginWindowFlags(
         "##viewport_fps_overlay",
         gui.WindowFlags.no_title_bar |
@@ -2465,7 +2466,7 @@ fn drawViewportFpsOverlayWindow(state: *EditorState, layer_context: *engine.core
     );
     defer gui.endWindow();
 
-    gui.pushStyleColor(.text, .{ 0.92, 0.94, 0.98, 1.0 });
+    gui.pushStyleColor(.text, theme.Spacing.fps_overlay_value_color);
     defer gui.popStyleColor(1);
     gui.text(display_text);
 }

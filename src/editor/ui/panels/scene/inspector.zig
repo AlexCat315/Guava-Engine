@@ -41,7 +41,7 @@ fn drawAiPreviewBadge() void {
     gui.pushStyleColor(.button, theme.Palette.inspector.ai_preview_bg);
     gui.pushStyleColor(.button_hovered, theme.Palette.inspector.ai_preview_bg);
     gui.pushStyleColor(.button_active, theme.Palette.inspector.ai_preview_bg);
-    gui.pushStyleVarFloat(.frame_rounding, 8.0);
+    gui.pushStyleVarFloat(.frame_rounding, theme.BorderRadius.badge);
     _ = gui.buttonEx("  ◆ AI Preview  ", 0.0, 0.0);
     gui.popStyleVar(1);
     gui.popStyleColor(4);
@@ -76,16 +76,16 @@ const AxisStyle = struct {
 };
 
 const axis_x_style = AxisStyle{
-    .background = .{ 0.82, 0.23, 0.23, 1.0 }, // 现代红
-    .text = .{ 1.0, 1.0, 1.0, 1.0 },
+    .background = theme.Spacing.inspector_axis_x_bg,
+    .text = theme.Spacing.inspector_axis_text,
 };
 const axis_y_style = AxisStyle{
-    .background = .{ 0.16, 0.59, 0.44, 1.0 }, // 现代绿 (翡翠绿)
-    .text = .{ 1.0, 1.0, 1.0, 1.0 },
+    .background = theme.Spacing.inspector_axis_y_bg,
+    .text = theme.Spacing.inspector_axis_text,
 };
 const axis_z_style = AxisStyle{
-    .background = .{ 0.20, 0.45, 0.85, 1.0 }, // 现代蓝
-    .text = .{ 1.0, 1.0, 1.0, 1.0 },
+    .background = theme.Spacing.inspector_axis_z_bg,
+    .text = theme.Spacing.inspector_axis_text,
 };
 
 fn inspectorFilter(state: *const EditorState) []const u8 {
@@ -162,7 +162,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
     var title_buffer: [80]u8 = undefined;
     const title = try state.windowLabel(&title_buffer, .details, "details_panel");
     // 检查器面板需要足够宽度显示属性名 + 输入控件
-    gui.setNextWindowSizeConstraints(.{ 220.0, 120.0 }, .{ std.math.floatMax(f32), std.math.floatMax(f32) });
+    gui.setNextWindowSizeConstraints(.{ theme.Spacing.inspector_summary_min_width, theme.Spacing.inspector_summary_min_height }, .{ std.math.floatMax(f32), std.math.floatMax(f32) });
     _ = gui.beginWindow(title);
     defer gui.endWindow();
 
@@ -206,7 +206,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
         drawInspectorTextRow(state.text(.selection_count), selection_count_text);
         drawInspectorTextRow(state.text(.entity_id), entity_id_text);
         // Entity name stays readable in both table and stacked fallback layouts.
-        drawInspectorPropertyLabel(entity.name, .{ 0.88, 0.92, 0.98, 1.0 });
+        drawInspectorPropertyLabel(entity.name, theme.Spacing.inspector_entity_name_text_color);
         // 在 AI preview 模式下，不允许直接重命名（改动应走 AI command path）
         if (inspector_source == .main_world) {
             _ = gui.inputTextWithHint("##inspector_entity_name", state.text(.name), state.inspector_name_buffer[0..]);
@@ -220,7 +220,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                 }
             }
         } else {
-            gui.pushStyleColor(.text, .{ 0.78, 0.50, 1.0, 0.80 });
+            gui.pushStyleColor(.text, theme.Spacing.inspector_ai_preview_text_color);
             gui.text(entity.name);
             gui.popStyleColor(1);
         }
@@ -237,7 +237,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
     if (inspectorSectionMatches(filter, state.text(.identity)) and gui.collapsingHeader(state.text(.identity), filter.len != 0)) {
         beginInspectorSectionBody();
         defer endInspectorSectionBody();
-        gui.dummy(0.0, 4.0);
+        gui.dummy(0.0, theme.Spacing.inspector_section_dummy);
         if (beginInspectorPropertyGrid("identity_properties")) {
             defer endInspectorPropertyGrid();
             if (entity.parent) |parent_id| {
@@ -262,7 +262,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
         }
 
         if (entity.parent != null) {
-            gui.pushStyleVarVec2(.item_spacing, .{ 4.0, 4.0 });
+            gui.pushStyleVarVec2(.item_spacing, .{ theme.Spacing.x1, theme.Spacing.x1 });
             defer gui.popStyleVar(1);
             if (gui.buttonEx(state.text(.unparent_selected), 0.0, 0.0)) {
                 try scene_hierarchy.unparentSelection(state, layer_context);
@@ -276,7 +276,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
         if (inspectorSectionMatches(filter, state.text(.prefab)) and gui.collapsingHeader(state.text(.prefab), filter.len != 0)) {
             beginInspectorSectionBody();
             defer endInspectorSectionBody();
-            gui.dummy(0.0, 4.0);
+            gui.dummy(0.0, theme.Spacing.inspector_section_dummy);
 
             if (try drawPrefabHeaderContextMenu(state, layer_context, selected, entity)) {
                 return;
@@ -330,10 +330,10 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                 }
             }
 
-            gui.dummy(0.0, 4.0);
+            gui.dummy(0.0, theme.Spacing.inspector_section_dummy);
 
             // Prefab 操作按钮
-            gui.pushStyleVarVec2(.item_spacing, .{ 4.0, 4.0 });
+            gui.pushStyleVarVec2(.item_spacing, .{ theme.Spacing.x1, theme.Spacing.x1 });
             defer gui.popStyleVar(1);
 
             if (entity.prefab_instance_override != null) {
@@ -363,14 +363,14 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
         if (transform_open) {
             beginInspectorSectionBody();
             defer endInspectorSectionBody();
-            gui.dummy(0.0, 4.0);
+            gui.dummy(0.0, theme.Spacing.inspector_section_dummy);
             gui.alignTextToFramePadding();
             gui.text(state.text(.coordinate_space));
             gui.sameLine();
             if (toggle_button.draw(.{
                 .label = state.text(.local_space),
                 .active = state.transform_space == .local,
-                .width = 72.0,
+                .width = theme.Spacing.inspector_toggle_width,
             })) {
                 state.transform_space = .local;
             }
@@ -378,11 +378,11 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
             if (toggle_button.draw(.{
                 .label = state.text(.world_space),
                 .active = state.transform_space == .world,
-                .width = 72.0,
+                .width = theme.Spacing.inspector_toggle_width,
             })) {
                 state.transform_space = .world;
             }
-            gui.dummy(0.0, 6.0);
+            gui.dummy(0.0, theme.Spacing.inspector_section_gap);
 
             const transform_grid_available_width = gui.contentRegionAvail()[0];
             const transform_grid_use_table = transform_grid_available_width >= theme.Size.transform_grid_min_width and gui.beginTable("transform_grid", 4);
@@ -393,16 +393,16 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                 }
             }
             if (transform_grid_use_table) {
-                gui.tableSetupColumn("##transform_label", false, 42.0);
+                gui.tableSetupColumn("##transform_label", false, theme.Size.transform_label_width);
                 gui.tableSetupColumn("##transform_x", true, 1.0);
                 gui.tableSetupColumn("##transform_y", true, 1.0);
                 gui.tableSetupColumn("##transform_z", true, 1.0);
 
-                gui.pushStyleVarVec2(.item_spacing, .{ 6.0, 4.0 });
+                gui.pushStyleVarVec2(.item_spacing, .{ theme.Spacing.x1 + theme.Spacing.x2, theme.Spacing.x1 });
                 defer gui.popStyleVar(1);
 
                 var editable_translation = if (state.transform_space == .world) world_transform.translation else entity.local_transform.translation;
-                const translation_result = try drawTransformTableRow("Pos", "translation", &editable_translation, 0.05, -500.0, 500.0);
+                const translation_result = try drawTransformTableRow("Pos", "translation", &editable_translation, theme.Size.transform_drag_speed, theme.Size.transform_drag_min, theme.Size.transform_drag_max);
                 if (translation_result.changed) {
                     if (inspector_source == .ai_preview) {
                         // 写回 preview world：通过 collaboration 路径
@@ -424,7 +424,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                 }
 
                 var editable_rotation = if (state.transform_space == .world) engine.math.quat.toEuler(world_transform.rotation) else engine.math.quat.toEuler(entity.local_transform.rotation);
-                const rotation_result = try drawTransformTableRow("Rot", "rotation", &editable_rotation, 0.01, -std.math.tau, std.math.tau);
+                const rotation_result = try drawTransformTableRow("Rot", "rotation", &editable_rotation, theme.Size.rotation_drag_speed, -std.math.tau, std.math.tau);
                 if (rotation_result.changed) {
                     if (inspector_source == .ai_preview) {
                         var updated = world_transform;
@@ -445,7 +445,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                 }
 
                 var editable_scale = if (state.transform_space == .world) world_transform.scale else entity.local_transform.scale;
-                const scale_result = try drawTransformTableRow("Scl", "scale", &editable_scale, 0.01, 0.05, 100.0);
+                const scale_result = try drawTransformTableRow("Scl", "scale", &editable_scale, theme.Size.scale_drag_speed, theme.Size.scale_drag_min, theme.Size.scale_drag_max);
                 if (scale_result.changed) {
                     editable_scale = .{
                         utils.clampScale(editable_scale[0]),
@@ -477,7 +477,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
     if (inspectorSectionMatches(filter, state.text(.components)) and gui.collapsingHeader(state.text(.components), filter.len != 0)) {
         beginInspectorSectionBody();
         defer endInspectorSectionBody();
-        gui.dummy(0.0, 4.0);
+        gui.dummy(0.0, theme.Spacing.inspector_section_dummy);
         if (entity_mut) |em| {
             if (try drawAddComponentControls(state, layer_context, selected, em)) {
                 return;
@@ -494,7 +494,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
             if (mesh_open) {
                 beginInspectorSectionBody();
                 defer endInspectorSectionBody();
-                gui.dummy(0.0, 4.0);
+                gui.dummy(0.0, theme.Spacing.inspector_section_dummy);
                 if (mesh_component.handle) |mesh_handle| {
                     if (layer_context.world.assets().mesh(mesh_handle)) |mesh_resource| {
                         if (beginInspectorPropertyGrid("mesh_properties")) {
@@ -535,7 +535,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
             if (material_open) {
                 beginInspectorSectionBody();
                 defer endInspectorSectionBody();
-                gui.dummy(0.0, 4.0);
+                gui.dummy(0.0, theme.Spacing.inspector_section_dummy);
                 var effective_shading = material_component.shading;
                 var effective_color = material_component.base_color_factor;
                 var material_usage_count: usize = 0;
@@ -568,7 +568,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                 }
 
                 if (material_component.handle == null or material_usage_count > 1) {
-                    gui.pushStyleVarVec2(.item_spacing, .{ 4.0, 4.0 });
+                    gui.pushStyleVarVec2(.item_spacing, .{ theme.Spacing.x1, theme.Spacing.x1 });
                     defer gui.popStyleVar(1);
                     if (gui.buttonEx(state.text(.make_material_instance), 0.0, 0.0)) {
                         if (entity_material_write) |em| {
@@ -583,7 +583,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                 }
 
                 if (content_browser.selectedAssetCanUseAsTexture(state)) {
-                    gui.pushStyleVarVec2(.item_spacing, .{ 4.0, 4.0 });
+                    gui.pushStyleVarVec2(.item_spacing, .{ theme.Spacing.x1, theme.Spacing.x1 });
                     defer gui.popStyleVar(1);
                     if (gui.buttonEx(state.text(.assign_selected_texture), 0.0, 0.0)) {
                         if (entity_material_write) |em| {
@@ -594,7 +594,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                     }
                     gui.sameLine();
                 } else if (material_texture_handle != null) {
-                    gui.pushStyleVarVec2(.item_spacing, .{ 4.0, 4.0 });
+                    gui.pushStyleVarVec2(.item_spacing, .{ theme.Spacing.x1, theme.Spacing.x1 });
                     defer gui.popStyleVar(1);
                     if (gui.buttonEx(state.text(.clear_texture), 0.0, 0.0)) {
                         if (entity_material_write) |em| {
@@ -691,11 +691,11 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
             if (camera_open) {
                 beginInspectorSectionBody();
                 defer endInspectorSectionBody();
-                gui.dummy(0.0, 4.0);
+                gui.dummy(0.0, theme.Spacing.inspector_section_dummy);
                 if (camera_component.is_primary) {
                     gui.text(state.text(.primary_scene_camera));
                 } else {
-                    gui.pushStyleVarVec2(.item_spacing, .{ 4.0, 4.0 });
+                    gui.pushStyleVarVec2(.item_spacing, .{ theme.Spacing.x1, theme.Spacing.x1 });
                     defer gui.popStyleVar(1);
                     if (gui.buttonEx(state.text(.make_primary_camera), 0.0, 0.0)) {
                         _ = layer_context.world.setPrimaryCamera(selected);
@@ -708,7 +708,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                     _ = camera.lookThroughCamera(state, layer_context, selected);
                 }
 
-                switch (drawActionRow2(state.text(.use_perspective), state.text(.use_orthographic), 116.0)) {
+                switch (drawActionRow2(state.text(.use_perspective), state.text(.use_orthographic), theme.Spacing.inspector_projection_toggle_width)) {
                     .first => {
                         if (entity_mut) |em| {
                             if (em.camera) |*cc| cc.projection = .{ .perspective = .{} };
@@ -810,7 +810,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
             if (light_open) {
                 beginInspectorSectionBody();
                 defer endInspectorSectionBody();
-                gui.dummy(0.0, 4.0);
+                gui.dummy(0.0, theme.Spacing.inspector_section_dummy);
                 if (beginInspectorPropertyGrid("light_properties")) {
                     defer endInspectorPropertyGrid();
                     const current_kind_label = switch (light.kind) {
@@ -885,7 +885,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
             if (vfx_open) {
                 beginInspectorSectionBody();
                 defer endInspectorSectionBody();
-                gui.dummy(0.0, 4.0);
+                gui.dummy(0.0, theme.Spacing.inspector_section_dummy);
                 const vfx_write_opt: ?*engine.scene.Vfx = if (entity_mut) |em| (if (em.vfx) |*vfx| vfx else null) else null;
                 if (beginInspectorPropertyGrid("vfx_properties")) {
                     defer endInspectorPropertyGrid();
@@ -1027,7 +1027,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
         if (inspectorSectionMatches(filter, "Script") and gui.collapsingHeader("Script", filter.len != 0)) {
             beginInspectorSectionBody();
             defer endInspectorSectionBody();
-            gui.dummy(0.0, 4.0);
+            gui.dummy(0.0, theme.Spacing.inspector_section_dummy);
 
             if (beginInspectorPropertyGrid("script_properties")) {
                 defer endInspectorPropertyGrid();
@@ -1082,7 +1082,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
         if (inspectorSectionMatches(filter, state.text(.audio_source)) and gui.collapsingHeader(state.text(.audio_source), filter.len != 0)) {
             beginInspectorSectionBody();
             defer endInspectorSectionBody();
-            gui.dummy(0.0, 4.0);
+            gui.dummy(0.0, theme.Spacing.inspector_section_dummy);
 
             if (beginInspectorPropertyGrid("audio_source_properties")) {
                 defer endInspectorPropertyGrid();
@@ -1178,7 +1178,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
         if (inspectorSectionMatches(filter, state.text(.audio_listener)) and gui.collapsingHeader(state.text(.audio_listener), filter.len != 0)) {
             beginInspectorSectionBody();
             defer endInspectorSectionBody();
-            gui.dummy(0.0, 4.0);
+            gui.dummy(0.0, theme.Spacing.inspector_section_dummy);
 
             if (beginInspectorPropertyGrid("audio_listener_properties")) {
                 defer endInspectorPropertyGrid();
@@ -1206,7 +1206,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
     if (inspectorSectionMatches(filter, state.text(.actions)) and gui.collapsingHeader(state.text(.actions), filter.len != 0)) {
         beginInspectorSectionBody();
         defer endInspectorSectionBody();
-        const action_columns = layout.responsiveButtonColumns(3, 80.0);
+        const action_columns = layout.responsiveButtonColumns(3, theme.Spacing.inspector_action_button_min_width);
         const action_button_width = layout.responsiveButtonWidth(action_columns);
 
         if (gui.buttonEx(state.text(.focus), action_button_width, 0.0)) {
@@ -1223,7 +1223,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
             return;
         }
 
-        gui.dummy(0.0, 6.0);
+        gui.dummy(0.0, theme.Spacing.inspector_section_gap);
         if (gui.buttonEx(state.text(.move), action_button_width, 0.0)) {
             try manipulation.activateTransformTool(state, layer_context, .translate);
         }
@@ -1794,18 +1794,18 @@ fn drawTransformTableRow(
     if (transform_grid_mode == .stacked) {
         gui.alignTextToFramePadding();
         gui.text(row_label);
-        gui.dummy(0.0, 3.0);
+        gui.dummy(0.0, theme.Spacing.inspector_axis_spacing);
 
         const x_result = try drawAxisDragField(id_prefix, "x", "X", &values[0], axis_x_style, speed, min_value, max_value);
         result.changed = result.changed or x_result.changed;
         result.committed = result.committed or x_result.committed;
 
-        gui.dummy(0.0, 4.0);
+        gui.dummy(0.0, theme.Spacing.inspector_section_dummy);
         const y_result = try drawAxisDragField(id_prefix, "y", "Y", &values[1], axis_y_style, speed, min_value, max_value);
         result.changed = result.changed or y_result.changed;
         result.committed = result.committed or y_result.committed;
 
-        gui.dummy(0.0, 4.0);
+        gui.dummy(0.0, theme.Spacing.inspector_section_dummy);
         const z_result = try drawAxisDragField(id_prefix, "z", "Z", &values[2], axis_z_style, speed, min_value, max_value);
         result.changed = result.changed or z_result.changed;
         result.committed = result.committed or z_result.committed;
@@ -1866,10 +1866,10 @@ fn drawAxisDragField(
     max_value: f32,
 ) !EditRowResult {
     var result = EditRowResult{};
-    const axis_width = @max(gui.frameHeight() - 4.0, 22.0);
+    const axis_width = @max(gui.frameHeight() - theme.Spacing.x1, theme.Spacing.inspector_axis_width_min);
 
     gui.pushStyleVarVec2(.item_spacing, .{ 0.0, 0.0 });
-    gui.pushStyleVarFloat(.frame_rounding, 0.0);
+    gui.pushStyleVarFloat(.frame_rounding, theme.Spacing.inspector_axis_frame_rounding);
     defer gui.popStyleVar(2);
 
     var axis_id_buffer: [48]u8 = undefined;

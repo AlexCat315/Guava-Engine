@@ -1,6 +1,7 @@
 const std = @import("std");
 const engine = @import("guava");
 const gui = @import("gui.zig");
+const theme = @import("theme.zig");
 const EditorState = @import("../core/state.zig").EditorState;
 const history = @import("../actions/history.zig");
 const camera = @import("../interaction/camera.zig");
@@ -17,9 +18,9 @@ var g_double_click_cooldown: i32 = 0;
 var g_last_top_bar_click_time: f32 = -1.0;
 var g_last_top_bar_click_mouse = [2]f32{ 0.0, 0.0 };
 
-const top_bar_double_click_interval_seconds: f32 = 0.35;
-const top_bar_double_click_max_distance: f32 = 6.0;
-const top_bar_drag_start_distance: f32 = 4.0;
+const top_bar_double_click_interval_seconds: f32 = theme.Size.menu_double_click_interval;
+const top_bar_double_click_max_distance: f32 = theme.Size.menu_double_click_max_dist;
+const top_bar_drag_start_distance: f32 = theme.Size.menu_drag_start_dist;
 
 pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     if (!gui.beginMainMenuBar()) {
@@ -217,12 +218,12 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
     const trailing_button_reserve: f32 = if (native_titlebar_controls)
         layer_context.window.titlebarTrailingInset()
     else
-        114.0;
+        theme.Size.menu_trailing_button_reserve;
     const available = gui.contentRegionAvail();
-    const drag_width = @max(available[0] - trailing_button_reserve, 48.0);
+    const drag_width = @max(available[0] - trailing_button_reserve, theme.Spacing.menu_bar_drag_region_min_width);
 
     gui.sameLine();
-    _ = gui.invisibleButton("top_bar_drag_region", drag_width, 22.0);
+    _ = gui.invisibleButton("top_bar_drag_region", drag_width, theme.Size.menu_bar_height);
     // Update double click cooldown
     if (g_double_click_cooldown > 0) {
         g_double_click_cooldown -= 1;
@@ -321,10 +322,10 @@ fn beginTopBarDrag(state: *EditorState, layer_context: *engine.core.LayerContext
         const width_before_restore = @max(layer_context.window.logical_width, 1);
         const click_ratio_x = std.math.clamp(
             layer_context.input.mouse_position[0] / @as(f32, @floatFromInt(width_before_restore)),
-            0.1,
-            0.9,
+            theme.Spacing.menu_bar_restore_click_ratio_min,
+            theme.Spacing.menu_bar_restore_click_ratio_max,
         );
-        const click_offset_y = std.math.clamp(layer_context.input.mouse_position[1], 8.0, 28.0);
+        const click_offset_y = std.math.clamp(layer_context.input.mouse_position[1], theme.Spacing.menu_bar_restore_click_offset_min, theme.Spacing.menu_bar_restore_click_offset_max);
 
         try layer_context.window.restore();
         try layer_context.window.sync();
