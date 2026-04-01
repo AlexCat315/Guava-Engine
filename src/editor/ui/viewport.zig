@@ -2045,7 +2045,7 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
     gui.pushStyleVarVec2(.window_padding, .{ 4.0, 4.0 });
     defer gui.popStyleVar(1);
     gui.setNextWindowPos(overlay_pos);
-    gui.setNextWindowBgAlpha(0.38);
+    gui.setNextWindowBgAlpha(0.0);
     _ = gui.beginWindowFlags(
         "##viewport_overlay_controls",
         gui.WindowFlags.no_title_bar |
@@ -2053,10 +2053,10 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
             gui.WindowFlags.no_move |
             gui.WindowFlags.no_saved_settings |
             gui.WindowFlags.no_docking |
-            gui.WindowFlags.always_auto_resize,
+            gui.WindowFlags.always_auto_resize |
+            gui.WindowFlags.no_background,
     );
     defer gui.endWindow();
-    drawHudWindowChrome();
 
     if (gui.isWindowHovered()) {
         state.viewport_overlay_hovered = true;
@@ -2190,7 +2190,7 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
         state.viewport_origin[0] + @max((state.viewport_extent[0] - window_width) * 0.5, 18.0),
         state.viewport_origin[1] + viewportOverlayTopInset(),
     });
-    gui.setNextWindowBgAlpha(0.38);
+    gui.setNextWindowBgAlpha(0.0);
     _ = gui.beginWindowFlags(
         "##viewport_playback_overlay",
         gui.WindowFlags.no_title_bar |
@@ -2198,10 +2198,10 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
             gui.WindowFlags.no_move |
             gui.WindowFlags.no_saved_settings |
             gui.WindowFlags.no_docking |
-            gui.WindowFlags.always_auto_resize,
+            gui.WindowFlags.always_auto_resize |
+            gui.WindowFlags.no_background,
     );
     defer gui.endWindow();
-    drawHudWindowChrome();
 
     // Overlay hover should always block viewport world interactions.
     const input = layer_context.input;
@@ -2442,10 +2442,11 @@ fn drawViewportFpsOverlayWindow(state: *EditorState, layer_context: *engine.core
     const text_y = state.viewport_origin[1] + state.viewport_extent[1] - margin - text_height;
 
     const draw_list = gui.getWindowDrawList();
-    const shadow_color = gui.getColorU32(.{ 0.0, 0.0, 0.0, 0.50 });
-    const text_color = gui.getColorU32(.{ 0.82, 0.85, 0.90, 0.85 });
+    const shadow_color = gui.getColorU32(.{ 0.0, 0.0, 0.0, 0.80 });
+    const text_color = gui.getColorU32(.{ 1, 0.97, 1.0, 0.95 });
 
-    // Shadow offset pass
+    // Double shadow for better contrast on any background
+    draw_list.addText(.{ text_x + 1.0, text_y + 2.0 }, shadow_color, display_text);
     draw_list.addText(.{ text_x + 1.0, text_y + 1.0 }, shadow_color, display_text);
     // Foreground pass
     draw_list.addText(.{ text_x, text_y }, text_color, display_text);
