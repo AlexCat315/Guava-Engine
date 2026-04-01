@@ -1191,6 +1191,14 @@ pub const Renderer = struct {
         return &self.material_editor_preview_target.color_texture;
     }
 
+    pub fn texturePreviewTexture(
+        self: *Renderer,
+        world: *const scene_mod.World,
+        handle: handles.TextureHandle,
+    ) ?*const rhi_mod.Texture {
+        return self.thumbnail_scene_cache.ensureTextureHandle(&self.rhi, world, handle) catch null;
+    }
+
     /// Renders a complete frame: processes scene data, executes render graph passes, and returns statistics.
     ///
     /// Parameters:

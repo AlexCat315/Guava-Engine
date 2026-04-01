@@ -1097,6 +1097,23 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                     }
                 }
 
+                const audio_buses = [_]engine.scene.AudioBus{ .master, .music, .sfx };
+                if (beginInspectorComboRow(state.text(.audio_bus), "##audio_bus", utils.audioBusLabel(state, audio_src.bus))) {
+                    defer gui.endCombo();
+                    for (audio_buses) |candidate_bus| {
+                        const is_selected = audio_src.bus == candidate_bus;
+                        if (gui.selectable(utils.audioBusLabel(state, candidate_bus), is_selected, false, 0.0, 0.0)) {
+                            if (entity_mut) |em| {
+                                if (em.audio_source) |*as| as.bus = candidate_bus;
+                            }
+                            try history.captureSnapshot(state, layer_context);
+                        }
+                        if (is_selected) {
+                            gui.setItemDefaultFocus();
+                        }
+                    }
+                }
+
                 var spatial = audio_src.spatial;
                 if (drawInspectorCheckboxRow(state.text(.audio_spatial), "##audio_spatial", &spatial)) {
                     if (entity_mut) |em| {
@@ -2125,6 +2142,12 @@ pub fn ensureEditableMaterialResource(
             .double_sided = source.double_sided,
             .use_ibl = source.use_ibl,
             .ibl_intensity = source.ibl_intensity,
+            .inheritance = .{
+                .parent_material_handle = material_handle,
+                .parent_material_name_hint = source.name,
+                .generation = source.inheritance.generation + 1,
+            },
+            .graph = source.graph,
         });
         material_component.handle = new_handle;
         material_component.shading = source.shading;
@@ -2149,6 +2172,7 @@ pub fn ensureEditableMaterialResource(
         .roughness_factor = material_component.roughness_factor,
         .alpha_cutoff = material_component.alpha_cutoff,
         .double_sided = material_component.double_sided,
+        .inheritance = .{},
     });
     material_component.handle = new_handle;
     return @constCast(layer_context.world.assets().material(new_handle).?);

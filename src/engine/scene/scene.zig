@@ -17,6 +17,7 @@ pub const Vfx = @import("components.zig").Vfx;
 pub const VfxKind = @import("components.zig").VfxKind;
 pub const VfxRuntimeParticle = @import("vfx_runtime.zig").VfxRuntimeParticle;
 pub const VfxRuntimeEmitter = @import("vfx_runtime.zig").VfxRuntimeEmitter;
+pub const AudioBus = @import("components.zig").AudioBus;
 pub const AudioSource = @import("components.zig").AudioSource;
 pub const AudioListener = @import("components.zig").AudioListener;
 pub const SceneRuntimeState = @import("scene_io.zig").SceneRuntimeState;

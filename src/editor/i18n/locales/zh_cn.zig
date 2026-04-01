@@ -396,6 +396,10 @@ pub const locale = blk: {
             // 音频
             .audio_source = "音频源",
             .audio_listener = "音频监听器",
+            .audio_bus = "总线",
+            .audio_bus_master = "主总线",
+            .audio_bus_music = "音乐",
+            .audio_bus_sfx = "音效",
             .audio_volume = "音量",
             .audio_spatial = "空间音效",
             .audio_looping = "循环播放",

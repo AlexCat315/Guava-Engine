@@ -245,7 +245,7 @@ pub const AudioRuntime = struct {
         volume: f32,
         loop: bool,
     ) !VoiceHandle {
-        return runtime.playClip2dForEntity(clip_id, volume, loop, null);
+        return runtime.playClip2dForEntityOnBus(clip_id, volume, loop, null, .sfx);
     }
 
     pub fn playClip2dForEntity(
@@ -254,6 +254,17 @@ pub const AudioRuntime = struct {
         volume: f32,
         loop: bool,
         entity_id: ?world_mod.EntityId,
+    ) !VoiceHandle {
+        return runtime.playClip2dForEntityOnBus(clip_id, volume, loop, entity_id, .sfx);
+    }
+
+    fn playClip2dForEntityOnBus(
+        runtime: *AudioRuntime,
+        clip_id: AudioClipHandle,
+        volume: f32,
+        loop: bool,
+        entity_id: ?world_mod.EntityId,
+        bus_id: BusId,
     ) !VoiceHandle {
         const clip = runtime.clips.get(clip_id) orelse return error.ClipNotFound;
 
@@ -267,13 +278,13 @@ pub const AudioRuntime = struct {
             volume,
             0.0, // no pan
             false,
-            @intFromEnum(BusId.sfx),
+            @intFromEnum(bus_id),
         );
 
         const instance: PlayingInstance = .{
             .voice_handle = voice,
             .clip_id = clip_id,
-            .bus_id = .sfx,
+            .bus_id = bus_id,
             .is_spatial = false,
             .looping = loop,
             .entity_id = entity_id,
@@ -291,7 +302,7 @@ pub const AudioRuntime = struct {
         volume: f32,
         loop: bool,
     ) !VoiceHandle {
-        return runtime.playClip3dForEntity(clip_id, pos, volume, loop, null);
+        return runtime.playClip3dForEntityOnBus(clip_id, pos, volume, loop, null, .sfx);
     }
 
     pub fn playClip3dForEntity(
@@ -301,6 +312,18 @@ pub const AudioRuntime = struct {
         volume: f32,
         loop: bool,
         entity_id: ?world_mod.EntityId,
+    ) !VoiceHandle {
+        return runtime.playClip3dForEntityOnBus(clip_id, pos, volume, loop, entity_id, .sfx);
+    }
+
+    fn playClip3dForEntityOnBus(
+        runtime: *AudioRuntime,
+        clip_id: AudioClipHandle,
+        pos: [3]f32,
+        volume: f32,
+        loop: bool,
+        entity_id: ?world_mod.EntityId,
+        bus_id: BusId,
     ) !VoiceHandle {
         const clip = runtime.clips.get(clip_id) orelse return error.ClipNotFound;
 
@@ -319,7 +342,7 @@ pub const AudioRuntime = struct {
             0, // velocity
             volume,
             false, // not paused
-            @intFromEnum(BusId.sfx),
+            @intFromEnum(bus_id),
         );
 
         // 配置 3D 参数
@@ -329,7 +352,7 @@ pub const AudioRuntime = struct {
         const instance: PlayingInstance = .{
             .voice_handle = voice,
             .clip_id = clip_id,
-            .bus_id = .sfx,
+            .bus_id = bus_id,
             .pos = pos,
             .is_spatial = true,
             .looping = loop,
@@ -367,6 +390,7 @@ pub const AudioRuntime = struct {
         audio_src: *components.AudioSource,
     ) !VoiceHandle {
         const clip_id = try runtime.ensureClipHandle(audio_src);
+        const bus_id = runtimeBusId(audio_src.bus);
 
         if (audio_src._voice_handle) |voice_handle| {
             if (runtime.isVoiceHandleActive(voice_handle)) {
@@ -375,9 +399,9 @@ pub const AudioRuntime = struct {
         }
 
         const voice = if (audio_src.spatial)
-            try runtime.playClip3dForEntity(clip_id, pos, audio_src.volume, audio_src.looping, entity_id)
+            try runtime.playClip3dForEntityOnBus(clip_id, pos, audio_src.volume, audio_src.looping, entity_id, bus_id)
         else
-            try runtime.playClip2dForEntity(clip_id, audio_src.volume, audio_src.looping, entity_id);
+            try runtime.playClip2dForEntityOnBus(clip_id, audio_src.volume, audio_src.looping, entity_id, bus_id);
 
         audio_src._voice_handle = voice;
         audio_src._is_playing = true;
@@ -486,6 +510,7 @@ pub const AudioRuntime = struct {
             const pos = entityAudioPosition(world, entity.id);
 
             const resolved_clip_id = runtime.ensureClipHandle(audio_src) catch null;
+            const source_bus_id = runtimeBusId(audio_src.bus);
 
             var restart_requested = false;
             if (audio_src._voice_handle) |voice_handle| {
@@ -495,6 +520,7 @@ pub const AudioRuntime = struct {
                 } else if (runtime.findPlayingInstance(voice_handle)) |instance| {
                     if (resolved_clip_id == null or
                         instance.clip_id != resolved_clip_id.? or
+                        instance.bus_id != source_bus_id or
                         instance.is_spatial != audio_src.spatial or
                         instance.looping != audio_src.looping)
                     {
@@ -520,6 +546,7 @@ pub const AudioRuntime = struct {
                 runtime.ensureTrackedInstance(
                     voice_handle,
                     resolved_clip_id orelse @intFromEnum(audio_src.clip_handle orelse continue),
+                    source_bus_id,
                     audio_src.spatial,
                     audio_src.looping,
                     entity.id,
@@ -575,6 +602,7 @@ pub const AudioRuntime = struct {
         runtime: *AudioRuntime,
         voice_handle: VoiceHandle,
         clip_id: AudioClipHandle,
+        bus_id: BusId,
         is_spatial: bool,
         looping: bool,
         entity_id: world_mod.EntityId,
@@ -582,6 +610,7 @@ pub const AudioRuntime = struct {
     ) void {
         if (runtime.findPlayingInstance(voice_handle)) |instance| {
             instance.clip_id = clip_id;
+            instance.bus_id = bus_id;
             instance.is_spatial = is_spatial;
             instance.looping = looping;
             instance.entity_id = entity_id;
@@ -592,7 +621,7 @@ pub const AudioRuntime = struct {
         runtime.playing_instances.append(runtime.allocator, .{
             .voice_handle = voice_handle,
             .clip_id = clip_id,
-            .bus_id = .sfx,
+            .bus_id = bus_id,
             .pos = pos,
             .is_spatial = is_spatial,
             .looping = looping,
@@ -712,6 +741,14 @@ fn shouldAutoStartSource(audio_src: *const components.AudioSource, clip_ready: b
         audio_src.play_on_awake and
         !audio_src._play_on_awake_consumed and
         !voice_active;
+}
+
+fn runtimeBusId(bus: components.AudioBus) BusId {
+    return switch (bus) {
+        .master => .master,
+        .music => .music,
+        .sfx => .sfx,
+    };
 }
 
 // ============ 音频剪辑 ============

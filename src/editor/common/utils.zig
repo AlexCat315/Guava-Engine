@@ -180,6 +180,14 @@ pub fn shadingLabel(state: *const EditorState, shading: engine.scene.ShadingMode
     };
 }
 
+pub fn audioBusLabel(state: *const EditorState, bus: engine.scene.AudioBus) []const u8 {
+    return switch (bus) {
+        .master => state.text(.audio_bus_master),
+        .music => state.text(.audio_bus_music),
+        .sfx => state.text(.audio_bus_sfx),
+    };
+}
+
 pub fn isEntitySelected(_: *const EditorState, layer_context: *const engine.core.LayerContext, entity_id: engine.scene.EntityId) bool {
     for (layer_context.renderer.selectedEntities()) |selected_id| {
         if (selected_id == entity_id) {

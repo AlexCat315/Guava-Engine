@@ -182,6 +182,7 @@ const ScriptComponentRecord = struct {
 
 const AudioSourceComponentRecord = struct {
     clip_asset_path: ?[]const u8 = null,
+    bus: components.AudioBus = .sfx,
     volume: f32 = 1.0,
     spatial: bool = false,
     looping: bool = false,
@@ -865,6 +866,7 @@ fn buildSceneFile(allocator: std.mem.Allocator, world: *const world_mod.World) !
             .script = script_component,
             .audio_source = if (entity.audio_source) |as| AudioSourceComponentRecord{
                 .clip_asset_path = as.clip_asset_path,
+                .bus = as.bus,
                 .volume = as.volume,
                 .spatial = as.spatial,
                 .looping = as.looping,
@@ -1286,6 +1288,7 @@ fn deserializeWorldV4FromSlice(allocator: std.mem.Allocator, world: *world_mod.W
             .audio_source = if (entity.audio_source) |as_rec|
                 .{
                     .clip_asset_path = as_rec.clip_asset_path,
+                    .bus = as_rec.bus,
                     .volume = as_rec.volume,
                     .spatial = as_rec.spatial,
                     .looping = as_rec.looping,
@@ -2953,6 +2956,7 @@ test "scene runtime snapshot round-trips audio components" {
         .local_transform = .{ .translation = .{ 3.0, 1.0, -2.0 } },
         .audio_source = .{
             .clip_asset_path = "assets/audio/test.wav",
+            .bus = .music,
             .volume = 0.35,
             .spatial = true,
             .looping = true,
@@ -2982,6 +2986,7 @@ test "scene runtime snapshot round-trips audio components" {
     const emitter = loaded.findEntityByName("AudioEmitter").?;
     const audio_source = emitter.audio_source.?;
     try std.testing.expectEqualStrings("assets/audio/test.wav", audio_source.clip_asset_path.?);
+    try std.testing.expectEqual(components.AudioBus.music, audio_source.bus);
     try std.testing.expectApproxEqAbs(@as(f32, 0.35), audio_source.volume, 0.0001);
     try std.testing.expect(audio_source.spatial);
     try std.testing.expect(audio_source.looping);

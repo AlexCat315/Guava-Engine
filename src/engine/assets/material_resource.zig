@@ -1,5 +1,6 @@
 const std = @import("std");
 const handles = @import("handles.zig");
+const material_model_mod = @import("material_model.zig");
 const components = @import("../scene/components.zig");
 
 const current_material_version: u32 = 1;
@@ -21,6 +22,8 @@ const MaterialFile = struct {
     double_sided: bool = false,
     use_ibl: bool = true,
     ibl_intensity: f32 = 1.0,
+    inheritance: ?material_model_mod.MaterialInheritanceInfo = null,
+    graph: ?material_model_mod.MaterialGraph = null,
 };
 
 pub const MaterialResource = struct {
@@ -39,9 +42,17 @@ pub const MaterialResource = struct {
     double_sided: bool = false,
     use_ibl: bool = true, // Enable IBL by default
     ibl_intensity: f32 = 1.0, // IBL intensity multiplier
+    inheritance: material_model_mod.MaterialInheritanceInfo = .{},
+    graph: ?material_model_mod.MaterialGraph = null,
 
     pub fn deinit(self: *MaterialResource, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
+        if (self.inheritance.parent_material_name_hint) |name| {
+            allocator.free(@constCast(name));
+        }
+        if (self.graph) |*graph| {
+            material_model_mod.deinitGraph(allocator, graph);
+        }
         self.* = undefined;
     }
 };
@@ -62,9 +73,17 @@ pub const MaterialResourceDesc = struct {
     double_sided: bool = false,
     use_ibl: bool = true,
     ibl_intensity: f32 = 1.0,
+    inheritance: material_model_mod.MaterialInheritanceInfo = .{},
+    graph: ?material_model_mod.MaterialGraph = null,
 };
 
 pub fn clone(allocator: std.mem.Allocator, desc: MaterialResourceDesc) !MaterialResource {
+    const inherited_name = try cloneOptionalString(allocator, desc.inheritance.parent_material_name_hint);
+    errdefer if (inherited_name) |name| allocator.free(@constCast(name));
+
+    var cloned_graph = if (desc.graph) |graph| try material_model_mod.cloneGraphAlloc(allocator, graph) else null;
+    errdefer if (cloned_graph) |*graph| material_model_mod.deinitGraph(allocator, graph);
+
     return .{
         .name = try allocator.dupe(u8, desc.name),
         .shading = desc.shading,
@@ -81,6 +100,12 @@ pub fn clone(allocator: std.mem.Allocator, desc: MaterialResourceDesc) !Material
         .double_sided = desc.double_sided,
         .use_ibl = desc.use_ibl,
         .ibl_intensity = desc.ibl_intensity,
+        .inheritance = .{
+            .parent_material_handle = desc.inheritance.parent_material_handle,
+            .parent_material_name_hint = inherited_name,
+            .generation = desc.inheritance.generation,
+        },
+        .graph = cloned_graph,
     };
 }
 
@@ -107,6 +132,8 @@ pub fn serializeAlloc(allocator: std.mem.Allocator, material: *const MaterialRes
         .double_sided = material.double_sided,
         .use_ibl = material.use_ibl,
         .ibl_intensity = material.ibl_intensity,
+        .inheritance = if (material_model_mod.hasUsefulInheritance(material.inheritance)) material.inheritance else null,
+        .graph = if (material.graph) |graph| if (!graph.isEmpty()) graph else null else null,
     }, .{ .whitespace = .indent_2 }, &adapter.new_interface);
     try adapter.new_interface.flush();
     try writer.writeByte('\n');
@@ -138,6 +165,12 @@ pub fn deserializeFromSlice(allocator: std.mem.Allocator, source: []const u8) !M
         .double_sided = parsed.value.double_sided,
         .use_ibl = parsed.value.use_ibl,
         .ibl_intensity = parsed.value.ibl_intensity,
+        .inheritance = .{
+            .parent_material_handle = if (parsed.value.inheritance) |inheritance| inheritance.parent_material_handle else null,
+            .parent_material_name_hint = if (parsed.value.inheritance) |inheritance| try cloneOptionalString(allocator, inheritance.parent_material_name_hint) else null,
+            .generation = if (parsed.value.inheritance) |inheritance| inheritance.generation else 0,
+        },
+        .graph = if (parsed.value.graph) |graph| try material_model_mod.cloneGraphAlloc(allocator, graph) else null,
     };
 }
 
@@ -171,6 +204,10 @@ fn rawToHandle(raw: ?u32) ?handles.TextureHandle {
         null;
 }
 
+fn cloneOptionalString(allocator: std.mem.Allocator, value: ?[]const u8) !?[]const u8 {
+    return if (value) |resolved| try allocator.dupe(u8, resolved) else null;
+}
+
 test "material resource save-load-resave is byte stable" {
     var temp_dir = std.testing.tmpDir(.{});
     defer temp_dir.cleanup();
@@ -197,6 +234,25 @@ test "material resource save-load-resave is byte stable" {
         .double_sided = true,
         .use_ibl = false,
         .ibl_intensity = 1.75,
+        .inheritance = .{
+            .parent_material_handle = @enumFromInt(99),
+            .parent_material_name_hint = "Master Material",
+            .generation = 2,
+        },
+        .graph = blk: {
+            var graph_nodes = [_]material_model_mod.MaterialGraphNode{.{
+                .id = 1,
+                .kind = .input_parameter,
+                .output_type = .vec4,
+                .channel = .base_color,
+                .value = .{ .kind = .vec4, .vec4 = .{ 0.18, 0.34, 0.76, 0.92 } },
+            }};
+            var graph_outputs = [_]material_model_mod.MaterialGraphOutput{.{ .channel = .base_color, .source_node_id = 1 }};
+            break :blk material_model_mod.MaterialGraph{
+                .nodes = graph_nodes[0..],
+                .outputs = graph_outputs[0..],
+            };
+        },
     });
     defer material.deinit(std.testing.allocator);
 

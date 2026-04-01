@@ -477,11 +477,22 @@ pub fn defaultVfx(kind: VfxKind) Vfx {
 /// 音频源组件
 ///
 /// 使实体成为音频播放源。支持 2D 或 3D 空间音效。
+pub const AudioBus = enum(u8) {
+    /// 主总线
+    master = 0,
+    /// 音乐总线
+    music = 1,
+    /// 音效总线
+    sfx = 2,
+};
+
 pub const AudioSource = struct {
     /// 音频剪辑资源句柄
     clip_handle: ?handles.AudioClipHandle = null,
     /// 音频剪辑资源路径（用于序列化/持久化）
     clip_asset_path: ?[]const u8 = null,
+    /// 输出总线路由
+    bus: AudioBus = .sfx,
     /// 音量（0.0 - 1.0）
     volume: f32 = 1.0,
     /// 是否启用 3D 空间音效

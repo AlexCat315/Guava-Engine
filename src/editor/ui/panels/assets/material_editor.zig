@@ -13,6 +13,7 @@ const layout = @import("../../layout.zig");
 
 const preview_texture_size_min: f32 = 168.0;
 const preview_texture_size_max: f32 = 320.0;
+const slot_thumbnail_size: f32 = 64.0;
 
 const MaterialTextureSlot = enum {
     base_color,
@@ -68,9 +69,11 @@ pub fn drawMaterialEditorWindow(state: *EditorState, layer_context: *engine.core
 
     var usage_count: usize = 0;
     var is_shared = false;
+    var current_material_resource: ?*const engine.assets.MaterialResource = null;
     if (material_component.handle) |material_handle| {
         usage_count = inspector.materialUsageCount(state, layer_context.world, material_handle);
         is_shared = usage_count > 1;
+        current_material_resource = layer_context.world.assets().material(material_handle);
     }
 
     if (material_component.handle != null) {
@@ -88,6 +91,8 @@ pub fn drawMaterialEditorWindow(state: *EditorState, layer_context: *engine.core
             try history.captureSnapshot(state, layer_context);
         }
     }
+
+    drawMaterialInheritanceSummary(layer_context, current_material_resource, usage_count, is_shared);
 
     gui.separator();
 
@@ -269,24 +274,51 @@ fn drawTextureSlot(
     entity: *engine.scene.Entity,
     slot: MaterialTextureSlot,
 ) !bool {
-    gui.text(textureSlotLabel(slot));
+    gui.pushIdU64(@intFromEnum(slot));
+    defer gui.popId();
 
+    gui.separatorText(textureSlotLabel(slot));
+
+    const material_handle = entity.material.?.handle;
+    const material_resource = if (material_handle) |handle| layer_context.world.assets().material(handle) else null;
+    const texture_handle = if (material_resource) |material| textureHandleForSlot(material, slot) else null;
     var has_texture = false;
-    var texture_slot_text: []const u8 = state.text(.embedded);
-    if (entity.material.?.handle) |material_handle| {
-        if (layer_context.world.assets().material(material_handle)) |material_resource| {
-            texture_slot_text = state.text(.none);
-            if (textureHandleForSlot(material_resource, slot)) |texture_handle| {
-                if (layer_context.world.assets().texture(texture_handle)) |texture_resource| {
-                    texture_slot_text = texture_resource.name;
-                    has_texture = true;
-                }
-            }
+    var texture_slot_text: []const u8 = state.text(.none);
+    var missing_resource = false;
+    if (texture_handle) |handle| {
+        if (layer_context.world.assets().texture(handle)) |texture_resource| {
+            texture_slot_text = texture_resource.name;
+            has_texture = true;
+        } else {
+            texture_slot_text = "Missing imported texture";
+            missing_resource = true;
         }
     }
 
+    if (has_texture) {
+        if (layer_context.renderer.texturePreviewTexture(layer_context.world, texture_handle.?)) |preview_texture| {
+            gui.image(preview_texture, slot_thumbnail_size, slot_thumbnail_size);
+        } else {
+            gui.dummy(slot_thumbnail_size, slot_thumbnail_size);
+        }
+    } else {
+        gui.dummy(slot_thumbnail_size, slot_thumbnail_size);
+    }
+    gui.sameLine();
+    gui.textWrapped(textureSlotDescription(slot));
+
+    if (missing_resource) {
+        gui.textWrapped("This slot still points to a texture handle that is no longer loaded. Reassign it or clear the slot.");
+    } else if (has_texture) {
+        gui.textWrapped(texture_slot_text);
+    } else {
+        gui.textWrapped(textureSlotFallbackHint(slot));
+    }
+
+    const assign_label = if (has_texture) "Replace With Selected Texture" else "Assign Selected Texture";
+
     var changed = false;
-    if (gui.buttonEx(texture_slot_text, -1.0, 0.0)) {
+    if (gui.buttonEx(assign_label, -1.0, 0.0)) {
         if (content_browser.selectedAssetCanUseAsTexture(state)) {
             changed = (try assignSelectedTextureToMaterialSlot(state, layer_context, entity, slot)) or changed;
         }
@@ -311,6 +343,7 @@ fn drawTextureSlot(
         }
     }
 
+    gui.textWrapped("Tip: click to use the current Content Browser texture, or drag a texture asset onto this slot.");
     gui.dummy(0.0, 6.0);
     return changed;
 }
@@ -390,6 +423,7 @@ fn materialAstFromEntity(layer_context: *engine.core.LayerContext, entity: *cons
         .roughness_factor = material_component.roughness_factor,
         .alpha_cutoff = material_component.alpha_cutoff,
         .double_sided = material_component.double_sided,
+        .inheritance = .{},
         .textures = .{},
     };
 }
@@ -402,6 +436,7 @@ fn commitAstToEditableMaterial(
 ) !bool {
     if (entity.material == null) return false;
     if (try inspector.ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
+        const allocator = state.allocator orelse layer_context.world.allocator;
         material_resource.shading = ast.shading;
         material_resource.base_color_factor = ast.base_color_factor;
         material_resource.base_color_texture = ast.textures.base_color;
@@ -416,6 +451,7 @@ fn commitAstToEditableMaterial(
         material_resource.double_sided = ast.double_sided;
         material_resource.use_ibl = ast.use_ibl;
         material_resource.ibl_intensity = ast.ibl_intensity;
+        try syncMaterialMetadataFromAst(allocator, material_resource, ast);
 
         const material_component = &entity.material.?;
         material_component.shading = ast.shading;
@@ -429,6 +465,98 @@ fn commitAstToEditableMaterial(
         return true;
     }
     return false;
+}
+
+fn syncMaterialMetadataFromAst(
+    allocator: std.mem.Allocator,
+    material_resource: *engine.assets.MaterialResource,
+    ast: *const engine.assets.MaterialAst,
+) !void {
+    const parent_name_hint = if (ast.inheritance.parent_material_name_hint) |name| try allocator.dupe(u8, name) else null;
+    errdefer if (parent_name_hint) |name| allocator.free(name);
+
+    var graph_copy = if (ast.graph) |graph|
+        try engine.assets.cloneMaterialGraphAlloc(allocator, graph)
+    else
+        try ast.canonicalGraphAlloc(allocator);
+    errdefer engine.assets.deinitMaterialGraph(allocator, &graph_copy);
+
+    if (material_resource.inheritance.parent_material_name_hint) |name| {
+        allocator.free(@constCast(name));
+    }
+    if (material_resource.graph) |*graph| {
+        engine.assets.deinitMaterialGraph(allocator, graph);
+    }
+
+    material_resource.inheritance = .{
+        .parent_material_handle = ast.inheritance.parent_material_handle,
+        .parent_material_name_hint = parent_name_hint,
+        .generation = ast.inheritance.generation,
+    };
+    material_resource.graph = graph_copy;
+}
+
+fn drawMaterialInheritanceSummary(
+    layer_context: *engine.core.LayerContext,
+    material_resource: ?*const engine.assets.MaterialResource,
+    usage_count: usize,
+    is_shared: bool,
+) void {
+    const material = material_resource orelse return;
+
+    gui.separatorText("Inheritance");
+    if (material.inheritance.generation > 0) {
+        var depth_buffer: [64]u8 = undefined;
+        const depth_text = std.fmt.bufPrint(&depth_buffer, "Instance Depth: {d}", .{material.inheritance.generation}) catch "Instance Depth: ?";
+        gui.text(depth_text);
+    } else if (is_shared) {
+        gui.textWrapped("This entity is still using a shared source material. Creating a unique instance will preserve a visible parent chain.");
+    } else {
+        gui.textWrapped("This material is currently the root editable resource for the selected entity.");
+    }
+
+    if (material.inheritance.parent_material_handle) |parent_handle| {
+        const parent_name = if (layer_context.world.assets().material(parent_handle)) |parent|
+            parent.name
+        else if (material.inheritance.parent_material_name_hint) |hint|
+            hint
+        else
+            "Unknown Parent";
+
+        var parent_buffer: [192]u8 = undefined;
+        const parent_text = std.fmt.bufPrint(&parent_buffer, "Parent Material: {s}", .{parent_name}) catch "Parent Material: ?";
+        gui.textWrapped(parent_text);
+    } else if (is_shared) {
+        var usage_buffer: [96]u8 = undefined;
+        const usage_text = std.fmt.bufPrint(&usage_buffer, "Shared by {d} entities before instancing.", .{usage_count}) catch "Shared by multiple entities before instancing.";
+        gui.textWrapped(usage_text);
+    }
+
+    if (material.graph) |graph| {
+        var graph_buffer: [128]u8 = undefined;
+        const graph_text = std.fmt.bufPrint(&graph_buffer, "Phase-2 graph seed: {d} nodes, {d} outputs.", .{ graph.nodes.len, graph.outputs.len }) catch "Phase-2 graph seed ready.";
+        gui.textWrapped(graph_text);
+    }
+}
+
+fn textureSlotDescription(slot: MaterialTextureSlot) []const u8 {
+    return switch (slot) {
+        .base_color => "Albedo and alpha source. When empty, the Base Color and Opacity sliders drive the surface.",
+        .metallic_roughness => "Packed metallic/roughness input. Use this when you want authored PBR packing to override scalar sliders.",
+        .normal => "Normal map detail for tangent-space lighting. Empty keeps the preview on mesh vertex normals.",
+        .occlusion => "Ambient occlusion multiplier used to ground creases and cavities.",
+        .emissive => "Self-illumination texture. Without it, the emissive color stays driven by the Emissive control.",
+    };
+}
+
+fn textureSlotFallbackHint(slot: MaterialTextureSlot) []const u8 {
+    return switch (slot) {
+        .base_color => "No texture assigned. Renderer falls back to the Base Color and Opacity values.",
+        .metallic_roughness => "No texture assigned. Metallic and Roughness sliders are used directly.",
+        .normal => "No normal map assigned. Surface shading uses mesh normals only.",
+        .occlusion => "No occlusion map assigned. Ambient occlusion contribution stays neutral.",
+        .emissive => "No emissive texture assigned. Only the Emissive color contributes.",
+    };
 }
 
 fn ensureMaterialPreviewCheckerTexture(layer_context: *engine.core.LayerContext) !engine.assets.TextureHandle {

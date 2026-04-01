@@ -396,6 +396,10 @@ pub const locale = blk: {
             // Audio
             .audio_source = "Audio Source",
             .audio_listener = "Audio Listener",
+            .audio_bus = "Bus",
+            .audio_bus_master = "Master",
+            .audio_bus_music = "Music",
+            .audio_bus_sfx = "SFX",
             .audio_volume = "Volume",
             .audio_spatial = "Spatial",
             .audio_looping = "Looping",

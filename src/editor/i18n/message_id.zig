@@ -387,6 +387,10 @@ pub const MessageId = enum {
     // Audio
     audio_source,
     audio_listener,
+    audio_bus,
+    audio_bus_master,
+    audio_bus_music,
+    audio_bus_sfx,
     audio_volume,
     audio_spatial,
     audio_looping,
