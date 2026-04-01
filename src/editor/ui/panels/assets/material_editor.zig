@@ -11,6 +11,14 @@ const inspector = @import("../scene/inspector.zig");
 const ui_icons = @import("../../icons.zig");
 const layout = @import("../../layout.zig");
 
+const MaterialTextureSlot = enum {
+    base_color,
+    metallic_roughness,
+    normal,
+    occlusion,
+    emissive,
+};
+
 pub fn drawMaterialEditorWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     var title_buffer: [80]u8 = undefined;
     const title = try state.windowLabel(&title_buffer, .material_editor, "material_editor_popup");
@@ -20,14 +28,11 @@ pub fn drawMaterialEditorWindow(state: *EditorState, layer_context: *engine.core
     defer gui.endWindow();
     floating_window_blocker.registerCurrentWindow("material_editor_popup");
 
-    if (!open) {
-        return;
-    }
+    if (!open) return;
 
     layout.beginSectionBody();
     defer layout.endSectionBody();
 
-    // Get selected entity with material
     const selected = layer_context.renderer.selectedEntity() orelse {
         gui.text(state.text(.no_entity_selected));
         return;
@@ -46,96 +51,166 @@ pub fn drawMaterialEditorWindow(state: *EditorState, layer_context: *engine.core
         return;
     }
 
-    // Get material info - use pointer for mutability
-    var effective_shading = entity.material.?.shading;
-    var effective_color = entity.material.?.base_color_factor;
+    const material_component = &entity.material.?;
 
-    // Material name
     gui.text(state.text(.material));
     gui.sameLine();
-    var material_name_buffer: [64]u8 = undefined;
-    if (entity.material.?.handle) |material_handle| {
+    var material_name: []const u8 = state.text(.embedded);
+    if (material_component.handle) |material_handle| {
         if (layer_context.world.assets().material(material_handle)) |material_resource| {
-            _ = std.fmt.bufPrint(&material_name_buffer, "{s}", .{material_resource.name}) catch {};
+            material_name = material_resource.name;
         }
     }
-    gui.text(material_name_buffer[0..]);
+    gui.text(material_name);
 
     gui.separator();
 
-    // Shading mode
+    var shading = material_component.shading;
     gui.text(state.text(.shading));
     gui.sameLine();
-    if (gui.beginMenu(utils.shadingLabel(state, effective_shading))) {
+    if (gui.beginMenu(utils.shadingLabel(state, shading))) {
         defer gui.endMenu();
-        if (gui.menuItem(state.text(.unlit), null, effective_shading == .unlit, true)) {
-            effective_shading = .unlit;
-        }
-        if (gui.menuItem(state.text(.lambert), null, effective_shading == .lambert, true)) {
-            effective_shading = .lambert;
-        }
-        if (gui.menuItem(state.text(.pbr), null, effective_shading == .pbr_metallic_roughness, true)) {
-            effective_shading = .pbr_metallic_roughness;
-        }
+        if (gui.menuItem(state.text(.unlit), null, shading == .unlit, true)) shading = .unlit;
+        if (gui.menuItem(state.text(.lambert), null, shading == .lambert, true)) shading = .lambert;
+        if (gui.menuItem(state.text(.pbr), null, shading == .pbr_metallic_roughness, true)) shading = .pbr_metallic_roughness;
     }
-
-    if (effective_shading != entity.material.?.shading) {
+    if (shading != material_component.shading) {
         if (try inspector.ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
-            material_resource.shading = effective_shading;
-            entity.material.?.shading = effective_shading;
-            entity.material.?.handle = inspector.materialHandleForEntity(state, entity);
+            material_resource.shading = shading;
+            material_component.shading = shading;
+            material_component.handle = inspector.materialHandleForEntity(state, entity);
         }
         try history.captureSnapshot(state, layer_context);
     }
 
     gui.dummy(0.0, 8.0);
 
-    // Base color (R/G/B)
-    var base_color: [3]f32 = .{ effective_color[0], effective_color[1], effective_color[2] };
+    var base_color = material_component.base_color_factor;
+    var base_rgb: [3]f32 = .{ base_color[0], base_color[1], base_color[2] };
     gui.text(state.text(.base_color));
     gui.setNextItemWidth(-1.0);
-    if (gui.dragFloat3("##material_base_color", &base_color, 0.01, 0.0, 1.0)) {
-        effective_color[0] = std.math.clamp(base_color[0], 0.0, 1.0);
-        effective_color[1] = std.math.clamp(base_color[1], 0.0, 1.0);
-        effective_color[2] = std.math.clamp(base_color[2], 0.0, 1.0);
-        entity.material.?.base_color_factor = effective_color;
+    if (gui.dragFloat3("##material_base_color", &base_rgb, 0.01, 0.0, 1.0)) {
+        base_color[0] = std.math.clamp(base_rgb[0], 0.0, 1.0);
+        base_color[1] = std.math.clamp(base_rgb[1], 0.0, 1.0);
+        base_color[2] = std.math.clamp(base_rgb[2], 0.0, 1.0);
+        material_component.base_color_factor = base_color;
         if (try inspector.ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
-            material_resource.base_color_factor = effective_color;
-            entity.material.?.handle = inspector.materialHandleForEntity(state, entity);
+            material_resource.base_color_factor = base_color;
+            material_component.handle = inspector.materialHandleForEntity(state, entity);
         }
     }
-    if (gui.isItemDeactivatedAfterEdit()) {
-        try history.captureSnapshot(state, layer_context);
-    }
+    if (gui.isItemDeactivatedAfterEdit()) try history.captureSnapshot(state, layer_context);
 
     gui.dummy(0.0, 8.0);
 
-    // Opacity
-    var alpha = effective_color[3];
+    var opacity = base_color[3];
     gui.text(state.text(.opacity));
     gui.setNextItemWidth(-1.0);
-    if (gui.dragFloat("##material_opacity", &alpha, 0.01, 0.0, 1.0)) {
-        effective_color[3] = std.math.clamp(alpha, 0.0, 1.0);
-        entity.material.?.base_color_factor = effective_color;
+    if (gui.dragFloat("##material_opacity", &opacity, 0.01, 0.0, 1.0)) {
+        base_color[3] = std.math.clamp(opacity, 0.0, 1.0);
+        material_component.base_color_factor = base_color;
         if (try inspector.ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
-            material_resource.base_color_factor = effective_color;
-            entity.material.?.handle = inspector.materialHandleForEntity(state, entity);
+            material_resource.base_color_factor = base_color;
+            material_component.handle = inspector.materialHandleForEntity(state, entity);
         }
     }
-    if (gui.isItemDeactivatedAfterEdit()) {
+    if (gui.isItemDeactivatedAfterEdit()) try history.captureSnapshot(state, layer_context);
+
+    gui.dummy(0.0, 8.0);
+
+    var metallic = material_component.metallic_factor;
+    gui.text("Metallic");
+    gui.setNextItemWidth(-1.0);
+    if (gui.dragFloat("##material_metallic", &metallic, 0.01, 0.0, 1.0)) {
+        const clamped = std.math.clamp(metallic, 0.0, 1.0);
+        material_component.metallic_factor = clamped;
+        if (try inspector.ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
+            material_resource.metallic_factor = clamped;
+            material_component.handle = inspector.materialHandleForEntity(state, entity);
+        }
+    }
+    if (gui.isItemDeactivatedAfterEdit()) try history.captureSnapshot(state, layer_context);
+
+    gui.dummy(0.0, 8.0);
+
+    var roughness = material_component.roughness_factor;
+    gui.text("Roughness");
+    gui.setNextItemWidth(-1.0);
+    if (gui.dragFloat("##material_roughness", &roughness, 0.01, 0.0, 1.0)) {
+        const clamped = std.math.clamp(roughness, 0.0, 1.0);
+        material_component.roughness_factor = clamped;
+        if (try inspector.ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
+            material_resource.roughness_factor = clamped;
+            material_component.handle = inspector.materialHandleForEntity(state, entity);
+        }
+    }
+    if (gui.isItemDeactivatedAfterEdit()) try history.captureSnapshot(state, layer_context);
+
+    gui.dummy(0.0, 8.0);
+
+    var emissive = material_component.emissive_factor;
+    gui.text("Emissive");
+    gui.setNextItemWidth(-1.0);
+    if (gui.colorEdit3("##material_emissive", &emissive, .{})) {
+        material_component.emissive_factor = emissive;
+        if (try inspector.ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
+            material_resource.emissive_factor = emissive;
+            material_component.handle = inspector.materialHandleForEntity(state, entity);
+        }
         try history.captureSnapshot(state, layer_context);
     }
 
     gui.dummy(0.0, 8.0);
 
-    // Texture slot
-    gui.text(state.text(.texture));
-    var texture_slot_text: []const u8 = state.text(.embedded);
+    var alpha_cutoff = material_component.alpha_cutoff;
+    gui.text("Alpha Cutoff");
+    gui.setNextItemWidth(-1.0);
+    if (gui.dragFloat("##material_alpha_cutoff", &alpha_cutoff, 0.01, 0.0, 1.0)) {
+        const clamped = std.math.clamp(alpha_cutoff, 0.0, 1.0);
+        material_component.alpha_cutoff = clamped;
+        if (try inspector.ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
+            material_resource.alpha_cutoff = clamped;
+            material_component.handle = inspector.materialHandleForEntity(state, entity);
+        }
+    }
+    if (gui.isItemDeactivatedAfterEdit()) try history.captureSnapshot(state, layer_context);
+
+    gui.dummy(0.0, 8.0);
+
+    var double_sided = material_component.double_sided;
+    if (gui.checkbox("Double Sided", &double_sided)) {
+        material_component.double_sided = double_sided;
+        if (try inspector.ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
+            material_resource.double_sided = double_sided;
+            material_component.handle = inspector.materialHandleForEntity(state, entity);
+        }
+        try history.captureSnapshot(state, layer_context);
+    }
+
+    gui.separator();
+    gui.text("Texture Slots");
+
+    if (try drawTextureSlot(state, layer_context, entity, .base_color)) try history.captureSnapshot(state, layer_context);
+    if (try drawTextureSlot(state, layer_context, entity, .metallic_roughness)) try history.captureSnapshot(state, layer_context);
+    if (try drawTextureSlot(state, layer_context, entity, .normal)) try history.captureSnapshot(state, layer_context);
+    if (try drawTextureSlot(state, layer_context, entity, .occlusion)) try history.captureSnapshot(state, layer_context);
+    if (try drawTextureSlot(state, layer_context, entity, .emissive)) try history.captureSnapshot(state, layer_context);
+}
+
+fn drawTextureSlot(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity: *engine.scene.Entity,
+    slot: MaterialTextureSlot,
+) !bool {
+    gui.text(textureSlotLabel(slot));
+
     var has_texture = false;
+    var texture_slot_text: []const u8 = state.text(.embedded);
     if (entity.material.?.handle) |material_handle| {
         if (layer_context.world.assets().material(material_handle)) |material_resource| {
             texture_slot_text = state.text(.none);
-            if (material_resource.base_color_texture) |texture_handle| {
+            if (textureHandleForSlot(material_resource, slot)) |texture_handle| {
                 if (layer_context.world.assets().texture(texture_handle)) |texture_resource| {
                     texture_slot_text = texture_resource.name;
                     has_texture = true;
@@ -144,11 +219,10 @@ pub fn drawMaterialEditorWindow(state: *EditorState, layer_context: *engine.core
         }
     }
 
+    var changed = false;
     if (gui.buttonEx(texture_slot_text, -1.0, 0.0)) {
-        if (content_browser.selectedAssetCanUseAsTexture(state) and
-            try inspector.assignSelectedTextureToMaterial(state, layer_context, entity))
-        {
-            try history.captureSnapshot(state, layer_context);
+        if (content_browser.selectedAssetCanUseAsTexture(state)) {
+            changed = (try assignSelectedTextureToMaterialSlot(state, layer_context, entity, slot)) or changed;
         }
     }
 
@@ -156,19 +230,79 @@ pub fn drawMaterialEditorWindow(state: *EditorState, layer_context: *engine.core
     if (gui.acceptDragDropPayloadU64(state_mod.asset_texture_drag_payload, &dropped_texture)) {
         const asset_index: usize = @intCast(dropped_texture);
         if (asset_index < state.asset_entries.items.len) {
-            if (try inspector.assignTextureEntryToMaterial(state, layer_context, entity, &state.asset_entries.items[asset_index])) {
-                try history.captureSnapshot(state, layer_context);
-            }
+            changed = (try assignTextureEntryToMaterialSlot(state, layer_context, entity, &state.asset_entries.items[asset_index], slot)) or changed;
         }
     }
 
     if (has_texture) {
+        gui.sameLine();
         if (gui.buttonEx(state.text(.clear_texture), 0.0, 0.0)) {
-            if (try inspector.ensureEditableMaterialResource(state, layer_context, entity)) |mat_res| {
-                mat_res.base_color_texture = null;
+            if (try inspector.ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
+                setTextureHandleForSlot(material_resource, slot, null);
                 entity.material.?.handle = inspector.materialHandleForEntity(state, entity);
-                try history.captureSnapshot(state, layer_context);
+                changed = true;
             }
         }
     }
+
+    gui.dummy(0.0, 6.0);
+    return changed;
+}
+
+fn assignSelectedTextureToMaterialSlot(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity: *engine.scene.Entity,
+    slot: MaterialTextureSlot,
+) !bool {
+    const entry = content_browser.selectedAsset(state) orelse return false;
+    return assignTextureEntryToMaterialSlot(state, layer_context, entity, entry, slot);
+}
+
+fn assignTextureEntryToMaterialSlot(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity: *engine.scene.Entity,
+    entry: *const state_mod.AssetEntry,
+    slot: MaterialTextureSlot,
+) !bool {
+    if (entry.kind != .texture) return false;
+
+    const texture_handle = try inspector.importTextureAsset(state, layer_context, entry.id, entry.path);
+    if (try inspector.ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
+        setTextureHandleForSlot(material_resource, slot, texture_handle);
+        entity.material.?.handle = inspector.materialHandleForEntity(state, entity);
+        return true;
+    }
+    return false;
+}
+
+fn textureHandleForSlot(material: *const engine.assets.MaterialResource, slot: MaterialTextureSlot) ?engine.assets.TextureHandle {
+    return switch (slot) {
+        .base_color => material.base_color_texture,
+        .metallic_roughness => material.metallic_roughness_texture,
+        .normal => material.normal_texture,
+        .occlusion => material.occlusion_texture,
+        .emissive => material.emissive_texture,
+    };
+}
+
+fn setTextureHandleForSlot(material: *engine.assets.MaterialResource, slot: MaterialTextureSlot, texture: ?engine.assets.TextureHandle) void {
+    switch (slot) {
+        .base_color => material.base_color_texture = texture,
+        .metallic_roughness => material.metallic_roughness_texture = texture,
+        .normal => material.normal_texture = texture,
+        .occlusion => material.occlusion_texture = texture,
+        .emissive => material.emissive_texture = texture,
+    }
+}
+
+fn textureSlotLabel(slot: MaterialTextureSlot) []const u8 {
+    return switch (slot) {
+        .base_color => "Base Color",
+        .metallic_roughness => "Metallic/Roughness",
+        .normal => "Normal",
+        .occlusion => "Occlusion",
+        .emissive => "Emissive",
+    };
 }

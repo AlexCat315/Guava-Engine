@@ -2114,10 +2114,26 @@ pub fn ensureEditableMaterialResource(
             .shading = source.shading,
             .base_color_factor = source.base_color_factor,
             .base_color_texture = source.base_color_texture,
+            .metallic_roughness_texture = source.metallic_roughness_texture,
+            .normal_texture = source.normal_texture,
+            .occlusion_texture = source.occlusion_texture,
+            .emissive_texture = source.emissive_texture,
+            .emissive_factor = source.emissive_factor,
+            .metallic_factor = source.metallic_factor,
+            .roughness_factor = source.roughness_factor,
+            .alpha_cutoff = source.alpha_cutoff,
+            .double_sided = source.double_sided,
+            .use_ibl = source.use_ibl,
+            .ibl_intensity = source.ibl_intensity,
         });
         material_component.handle = new_handle;
         material_component.shading = source.shading;
         material_component.base_color_factor = source.base_color_factor;
+        material_component.emissive_factor = source.emissive_factor;
+        material_component.metallic_factor = source.metallic_factor;
+        material_component.roughness_factor = source.roughness_factor;
+        material_component.alpha_cutoff = source.alpha_cutoff;
+        material_component.double_sided = source.double_sided;
         return @constCast(layer_context.world.assets().material(new_handle).?);
     }
 
@@ -2128,6 +2144,11 @@ pub fn ensureEditableMaterialResource(
         .name = instance_name,
         .shading = material_component.shading,
         .base_color_factor = material_component.base_color_factor,
+        .emissive_factor = material_component.emissive_factor,
+        .metallic_factor = material_component.metallic_factor,
+        .roughness_factor = material_component.roughness_factor,
+        .alpha_cutoff = material_component.alpha_cutoff,
+        .double_sided = material_component.double_sided,
     });
     material_component.handle = new_handle;
     return @constCast(layer_context.world.assets().material(new_handle).?);
