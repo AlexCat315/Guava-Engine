@@ -188,6 +188,26 @@ pub fn drawMaterialEditorWindow(state: *EditorState, layer_context: *engine.core
     }
 
     gui.separator();
+    gui.text("Preview");
+
+    if (gui.buttonEx("Use Sphere Preview Mesh", -1.0, 0.0)) {
+        try applyPreviewPrimitive(layer_context, entity, .sphere);
+        try history.captureSnapshot(state, layer_context);
+    }
+    if (gui.buttonEx("Use Plane Preview Mesh", -1.0, 0.0)) {
+        try applyPreviewPrimitive(layer_context, entity, .plane);
+        try history.captureSnapshot(state, layer_context);
+    }
+    if (gui.buttonEx("Apply Checker To Base Color", -1.0, 0.0)) {
+        const checker = try ensureMaterialPreviewCheckerTexture(layer_context);
+        if (try inspector.ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
+            material_resource.base_color_texture = checker;
+            entity.material.?.handle = inspector.materialHandleForEntity(state, entity);
+            try history.captureSnapshot(state, layer_context);
+        }
+    }
+
+    gui.separator();
     gui.text("Texture Slots");
 
     if (try drawTextureSlot(state, layer_context, entity, .base_color)) try history.captureSnapshot(state, layer_context);
@@ -305,4 +325,58 @@ fn textureSlotLabel(slot: MaterialTextureSlot) []const u8 {
         .occlusion => "Occlusion",
         .emissive => "Emissive",
     };
+}
+
+fn applyPreviewPrimitive(
+    layer_context: *engine.core.LayerContext,
+    entity: *engine.scene.Entity,
+    primitive: engine.scene.Primitive,
+) !void {
+    const mesh_handle = try layer_context.world.assets().ensurePrimitiveMesh(primitive);
+    if (entity.mesh) |*mesh_component| {
+        mesh_component.primitive = primitive;
+        mesh_component.handle = mesh_handle;
+    } else {
+        entity.mesh = .{
+            .primitive = primitive,
+            .handle = mesh_handle,
+        };
+    }
+}
+
+fn ensureMaterialPreviewCheckerTexture(layer_context: *engine.core.LayerContext) !engine.assets.TextureHandle {
+    const checker_name = "__material_preview_checker__";
+    for (layer_context.world.assets().textures.items, 0..) |texture, index| {
+        if (std.mem.eql(u8, texture.name, checker_name)) {
+            return @enumFromInt(index + 1);
+        }
+    }
+
+    var pixels: [16 * 16 * 4]u8 = undefined;
+    var y: usize = 0;
+    while (y < 16) : (y += 1) {
+        var x: usize = 0;
+        while (x < 16) : (x += 1) {
+            const tile = ((x / 4) + (y / 4)) % 2 == 0;
+            const idx = (y * 16 + x) * 4;
+            if (tile) {
+                pixels[idx] = 210;
+                pixels[idx + 1] = 210;
+                pixels[idx + 2] = 210;
+                pixels[idx + 3] = 255;
+            } else {
+                pixels[idx] = 56;
+                pixels[idx + 1] = 56;
+                pixels[idx + 2] = 56;
+                pixels[idx + 3] = 255;
+            }
+        }
+    }
+
+    return try layer_context.world.assets().createTexture(.{
+        .name = checker_name,
+        .width = 16,
+        .height = 16,
+        .pixels = pixels[0..],
+    });
 }
