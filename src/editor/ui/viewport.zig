@@ -2411,7 +2411,7 @@ fn drawViewportFpsOverlayWindow(state: *EditorState, layer_context: *engine.core
     }
 
     const overlay_width: f32 = 220.0;
-    const overlay_height: f32 = 30.0;
+    const overlay_height: f32 = 22.0;
     var fps_buffer: [32]u8 = undefined;
     const fps_text = try std.fmt.bufPrint(&fps_buffer, "{d:.0}", .{state.fps_overlay_display_fps});
     var frame_time_buffer: [32]u8 = undefined;
@@ -2428,7 +2428,7 @@ fn drawViewportFpsOverlayWindow(state: *EditorState, layer_context: *engine.core
         viewportOverlayTopInset() + 56.0,
     );
 
-    gui.pushStyleVarVec2(.window_padding, .{ 6.0, 5.0 });
+    gui.pushStyleVarVec2(.window_padding, .{ 6.0, 3.0 });
     defer gui.popStyleVar(1);
     gui.setNextWindowPos(.{
         state.viewport_origin[0] + overlay_margin,
@@ -2441,6 +2441,7 @@ fn drawViewportFpsOverlayWindow(state: *EditorState, layer_context: *engine.core
         gui.WindowFlags.no_title_bar |
             gui.WindowFlags.no_resize |
             gui.WindowFlags.no_move |
+            gui.WindowFlags.no_scrollbar |
             gui.WindowFlags.no_saved_settings |
             gui.WindowFlags.no_docking,
     );
@@ -2474,6 +2475,9 @@ fn drawViewportViewCube(state: *EditorState, layer_context: *engine.core.LayerCo
         (result.hovered and layer_context.input.isMouseDown(.left));
     if (capture_view_cube_input) {
         state.viewport_overlay_hovered = true;
+    }
+    if (result.dragging) {
+        camera.orbitFromViewCubeDrag(state, layer_context, result.drag_delta);
     }
     switch (result.face) {
         .front => camera.lookAlongWorldAxis(state, layer_context, .{ 0.0, 0.0, -1.0 }),

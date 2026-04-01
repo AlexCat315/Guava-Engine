@@ -602,7 +602,7 @@ extern "C" uint32_t guava_imgui_draw_view_cube(const float view[16], float x,
   }
   const uint32_t pressed_target =
       static_cast<uint32_t>(storage->GetInt(pressed_target_key, 0));
-  if (dragging && pressed_target != GUAVA_IMGUI_VIEW_CUBE_NONE) {
+  if (dragging) {
     storage->SetBool(dragged_key, true);
     if (out_drag_delta != nullptr) {
       out_drag_delta[0] = ImGui::GetIO().MouseDelta.x;
@@ -683,10 +683,10 @@ extern "C" uint32_t guava_imgui_draw_view_cube(const float view[16], float x,
   if (hovered_face != GUAVA_IMGUI_VIEW_CUBE_NONE) {
     result |= GUAVA_IMGUI_VIEW_CUBE_HOVERED;
   }
-  if (active && pressed_target != GUAVA_IMGUI_VIEW_CUBE_NONE) {
+  if (active) {
     result |= GUAVA_IMGUI_VIEW_CUBE_ACTIVE;
   }
-  if (dragging && pressed_target != GUAVA_IMGUI_VIEW_CUBE_NONE) {
+  if (dragging) {
     result |= GUAVA_IMGUI_VIEW_CUBE_DRAGGING;
   }
 
