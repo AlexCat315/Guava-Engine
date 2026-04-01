@@ -13,7 +13,7 @@ pub fn appendGridLines(
     camera_world_position: [4]f32,
 ) !void {
     const spacing: f32 = 1.0;
-    const half_cells: i32 = 80;
+    const half_cells: i32 = 160;
     const extent = @as(f32, @floatFromInt(half_cells)) * spacing;
     const center_x = @floor(camera_world_position[0] / spacing) * spacing;
     const center_z = @floor(camera_world_position[2] / spacing) * spacing;

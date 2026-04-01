@@ -273,8 +273,8 @@ pub const GizmoPass = struct {
             .fill_mode = .fill,
             .cull_mode = .none,
             .front_face = .counter_clockwise,
-            .depth_compare = .less_or_equal,
-            .depth_test = true,
+            .depth_compare = .always,
+            .depth_test = false,
             .depth_write = false,
         });
 
@@ -289,8 +289,8 @@ pub const GizmoPass = struct {
             .fill_mode = .fill,
             .cull_mode = .none,
             .front_face = .counter_clockwise,
-            .depth_compare = .less_or_equal,
-            .depth_test = true,
+            .depth_compare = .always,
+            .depth_test = false,
             .depth_write = false,
         });
     }

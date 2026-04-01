@@ -192,7 +192,7 @@ fn drawDrawerTabBar(state: *EditorState, layer_context: *engine.core.LayerContex
 
     if (state.bottom_drawer_open) {
         const grip_x = item_min[0] + (width - drawer_resize_grip_width) * 0.5;
-        const grip_y = item_min[1] - 8.0;
+        const grip_y = item_min[1] - 10.0;
         draw_list.addRectFilled(
             .{ grip_x, grip_y },
             .{ grip_x + drawer_resize_grip_width, grip_y + drawer_resize_grip_height },
@@ -201,8 +201,8 @@ fn drawDrawerTabBar(state: *EditorState, layer_context: *engine.core.LayerContex
             0,
         );
 
-        gui.setCursorScreenPos(.{ item_min[0], item_min[1] - 10.0 });
-        _ = gui.invisibleButton("##drawer_resize", width, 10.0);
+        gui.setCursorScreenPos(.{ item_min[0], item_min[1] - 18.0 });
+        _ = gui.invisibleButton("##drawer_resize", width, 20.0);
         if (gui.isItemHovered() or gui.isItemActive()) {
             state.viewport_overlay_hovered = true;
             if (layer_context.input.wasMousePressed(.left)) {

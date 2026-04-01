@@ -1,6 +1,7 @@
 const std = @import("std");
 const engine = @import("guava");
 const gui = @import("../ui/gui.zig");
+const theme = @import("../ui/theme.zig");
 const EditorState = @import("state.zig").EditorState;
 const utils = @import("../common/utils.zig");
 const ai_collaboration = @import("../ai_native/collaboration.zig");
@@ -29,84 +30,81 @@ const style_inspector = @import("../ui/panels/rendering/style_inspector.zig");
 const preferences = @import("preferences.zig");
 
 fn initEditorStyle() void {
-    // Phase 2 shell redesign:
-    // 建立统一的深色编辑器基调，并为 AI 协作态预留更明确的紫色强调层级。
-    const accent_primary = .{ 0.22, 0.62, 0.48, 1.0 };
-    const accent_hover = .{ 0.29, 0.72, 0.58, 1.0 };
-    const accent_active = .{ 0.16, 0.52, 0.38, 1.0 };
-    const accent_dimmed = .{ 0.22, 0.62, 0.48, 0.22 };
+    const p = theme.Palette;
+    const br = theme.BorderRadius;
 
-    const ai_accent = .{ 0.60, 0.34, 0.90, 1.0 };
-    const ai_accent_dimmed = .{ 0.60, 0.34, 0.90, 0.22 };
+    // ── Text ──────────────────────────────────────────────────────────────
+    gui.setStyleColor(@intFromEnum(gui.Col.text), p.text_primary);
+    gui.setStyleColor(@intFromEnum(gui.Col.text_disabled), p.text_muted);
 
-    const bg_base = .{ 0.14, 0.15, 0.16, 1.0 };
-    const bg_mid = .{ 0.11, 0.12, 0.14, 1.0 };
-    const bg_light = .{ 0.14, 0.15, 0.18, 1.0 };
-    const bg_panel = .{ 0.12, 0.13, 0.15, 1.0 };
-    const bg_frame = .{ 0.16, 0.17, 0.20, 1.0 };
-    const bg_frame_hover = .{ 0.15, 0.17, 0.20, 1.0 };
-    const bg_frame_active = .{ 0.18, 0.20, 0.24, 1.0 };
+    // ── Backgrounds ───────────────────────────────────────────────────────
+    gui.setStyleColor(@intFromEnum(gui.Col.window_bg), p.bg.panel);
+    gui.setStyleColor(@intFromEnum(gui.Col.child_bg), p.bg.child_bg);
+    gui.setStyleColor(@intFromEnum(gui.Col.popup_bg), p.bg.popup_bg);
+    gui.setStyleColor(@intFromEnum(gui.Col.modal_window_dim_bg), p.bg.modal_bg);
 
-    const text_main = .{ 0.89, 0.91, 0.94, 1.0 };
-    const text_dim = .{ 0.58, 0.62, 0.68, 1.0 };
-    const border_subtle = .{ 0.18, 0.20, 0.24, 1.0 };
+    // ── Borders & Separators ──────────────────────────────────────────────
+    gui.setStyleColor(@intFromEnum(gui.Col.border), p.bg.panel_border);
+    gui.setStyleColor(@intFromEnum(gui.Col.separator), p.separator);
+    gui.setStyleColor(@intFromEnum(gui.Col.separator_hovered), p.interactive.accent_hovered);
+    gui.setStyleColor(@intFromEnum(gui.Col.separator_active), p.interactive.accent);
 
-    gui.setStyleColor(@intFromEnum(gui.Col.text), text_main);
-    gui.setStyleColor(@intFromEnum(gui.Col.text_disabled), text_dim);
-    gui.setStyleColor(@intFromEnum(gui.Col.window_bg), bg_mid);
-    gui.setStyleColor(@intFromEnum(gui.Col.child_bg), bg_panel);
-    gui.setStyleColor(@intFromEnum(gui.Col.popup_bg), bg_light);
-    gui.setStyleColor(@intFromEnum(gui.Col.modal_window_dim_bg), .{ 0.03, 0.04, 0.05, 0.76 });
+    // ── Frames (inputs, combos, sliders) ──────────────────────────────────
+    gui.setStyleColor(@intFromEnum(gui.Col.frame_bg), p.interactive.frame_bg);
+    gui.setStyleColor(@intFromEnum(gui.Col.frame_bg_hovered), p.interactive.frame_hovered);
+    gui.setStyleColor(@intFromEnum(gui.Col.frame_bg_active), p.interactive.frame_active);
 
-    gui.setStyleColor(@intFromEnum(gui.Col.border), border_subtle);
-    // gui.setStyleColor(@intFromEnum(gui.Col.border), .{ 0.0, 0.0, 0.0, 0.0 });
-    gui.setStyleColor(@intFromEnum(gui.Col.separator), border_subtle);
-    gui.setStyleColor(@intFromEnum(gui.Col.separator_hovered), accent_hover);
-    gui.setStyleColor(@intFromEnum(gui.Col.separator_active), accent_primary);
+    // ── Title Bars ────────────────────────────────────────────────────────
+    gui.setStyleColor(@intFromEnum(gui.Col.title_bg), p.bg.title_bar);
+    gui.setStyleColor(@intFromEnum(gui.Col.title_bg_active), p.bg.title_bar);
+    gui.setStyleColor(@intFromEnum(gui.Col.title_bg_collapsed), p.bg.menu_bar);
 
-    gui.setStyleColor(@intFromEnum(gui.Col.frame_bg), bg_frame);
-    gui.setStyleColor(@intFromEnum(gui.Col.frame_bg_hovered), bg_frame_hover);
-    gui.setStyleColor(@intFromEnum(gui.Col.frame_bg_active), bg_frame_active);
+    // ── Menu Bar ──────────────────────────────────────────────────────────
+    gui.setStyleColor(@intFromEnum(gui.Col.menu_bar_bg), p.bg.menu_bar);
 
-    gui.setStyleColor(@intFromEnum(gui.Col.title_bg), bg_base);
-    gui.setStyleColor(@intFromEnum(gui.Col.title_bg_active), bg_base);
-    gui.setStyleColor(@intFromEnum(gui.Col.title_bg_collapsed), bg_base);
-
-    gui.setStyleColor(@intFromEnum(gui.Col.menu_bar_bg), bg_base);
-    gui.setStyleColor(@intFromEnum(gui.Col.scrollbar_bg), bg_base);
+    // ── Scrollbars ────────────────────────────────────────────────────────
+    gui.setStyleColor(@intFromEnum(gui.Col.scrollbar_bg), p.bg.dock_area);
     gui.setStyleColor(@intFromEnum(gui.Col.scrollbar_grab), .{ 0.22, 0.24, 0.28, 1.0 });
     gui.setStyleColor(@intFromEnum(gui.Col.scrollbar_grab_hovered), .{ 0.28, 0.31, 0.36, 1.0 });
     gui.setStyleColor(@intFromEnum(gui.Col.scrollbar_grab_active), .{ 0.34, 0.38, 0.44, 1.0 });
 
-    gui.setStyleColor(@intFromEnum(gui.Col.header), accent_dimmed);
-    gui.setStyleColor(@intFromEnum(gui.Col.header_hovered), accent_hover);
-    gui.setStyleColor(@intFromEnum(gui.Col.header_active), accent_primary);
+    // ── Headers (tree nodes, collapsing headers) ──────────────────────────
+    gui.setStyleColor(@intFromEnum(gui.Col.header), p.selection.bg);
+    gui.setStyleColor(@intFromEnum(gui.Col.header_hovered), p.selection.hovered);
+    gui.setStyleColor(@intFromEnum(gui.Col.header_active), p.selection.border);
 
-    gui.setStyleColor(@intFromEnum(gui.Col.button), .{ 0.17, 0.18, 0.21, 1.0 });
-    gui.setStyleColor(@intFromEnum(gui.Col.button_hovered), .{ 0.23, 0.25, 0.30, 1.0 });
-    gui.setStyleColor(@intFromEnum(gui.Col.button_active), accent_primary);
+    // ── Buttons ───────────────────────────────────────────────────────────
+    gui.setStyleColor(@intFromEnum(gui.Col.button), p.interactive.button_bg);
+    gui.setStyleColor(@intFromEnum(gui.Col.button_hovered), p.interactive.button_hovered);
+    gui.setStyleColor(@intFromEnum(gui.Col.button_active), p.interactive.accent);
 
+    // ── Tabs ──────────────────────────────────────────────────────────────
     gui.setStyleColor(@intFromEnum(gui.Col.tab), .{ 0.13, 0.14, 0.17, 1.0 });
     gui.setStyleColor(@intFromEnum(gui.Col.tab_hovered), .{ 0.22, 0.24, 0.30, 1.0 });
     gui.setStyleColor(@intFromEnum(gui.Col.tab_active), .{ 0.18, 0.21, 0.26, 1.0 });
     gui.setStyleColor(@intFromEnum(gui.Col.tab_unfocused), .{ 0.11, 0.12, 0.14, 1.0 });
     gui.setStyleColor(@intFromEnum(gui.Col.tab_unfocused_active), .{ 0.15, 0.17, 0.21, 1.0 });
 
-    gui.setStyleColor(@intFromEnum(gui.Col.docking_preview), accent_dimmed);
-    gui.setStyleColor(@intFromEnum(gui.Col.drag_drop_target), ai_accent);
-    gui.setStyleColor(@intFromEnum(gui.Col.nav_highlight), ai_accent);
-    gui.setStyleColor(@intFromEnum(gui.Col.text_selected_bg), ai_accent_dimmed);
+    // ── Docking & Drag-Drop ───────────────────────────────────────────────
+    gui.setStyleColor(@intFromEnum(gui.Col.docking_preview), p.selection.bg);
+    gui.setStyleColor(@intFromEnum(gui.Col.drag_drop_target), p.ai.accent);
+    gui.setStyleColor(@intFromEnum(gui.Col.nav_highlight), p.ai.accent);
+    gui.setStyleColor(@intFromEnum(gui.Col.text_selected_bg), p.selection.bg);
 
-    gui.setStyleColor(@intFromEnum(gui.Col.slider_grab), accent_primary);
-    gui.setStyleColor(@intFromEnum(gui.Col.slider_grab_active), accent_active);
-    gui.setStyleColor(@intFromEnum(gui.Col.check_mark), accent_primary);
+    // ── Widgets ───────────────────────────────────────────────────────────
+    gui.setStyleColor(@intFromEnum(gui.Col.slider_grab), p.interactive.accent);
+    gui.setStyleColor(@intFromEnum(gui.Col.slider_grab_active), p.interactive.accent_active);
+    gui.setStyleColor(@intFromEnum(gui.Col.check_mark), p.interactive.accent);
+
+    // ── Resize Grips ──────────────────────────────────────────────────────
     gui.setStyleColor(@intFromEnum(gui.Col.resize_grip), .{ 0.00, 0.00, 0.00, 0.0 });
-    gui.setStyleColor(@intFromEnum(gui.Col.resize_grip_hovered), accent_hover);
-    gui.setStyleColor(@intFromEnum(gui.Col.resize_grip_active), ai_accent);
+    gui.setStyleColor(@intFromEnum(gui.Col.resize_grip_hovered), p.interactive.accent_hovered);
+    gui.setStyleColor(@intFromEnum(gui.Col.resize_grip_active), p.ai.accent);
 
+    // ── Style Variables (UE style: tighter, squarer) ──────────────────────
     gui.setStyleVarFloat(100, 1.0); // WindowBorderSize
     gui.setStyleVarFloat(101, 1.0); // FrameBorderSize
-    gui.setStyleVarFloat(102, 5.0); // FrameRounding
+    gui.setStyleVarFloat(102, br.control); // FrameRounding
 }
 
 fn seedPostProcessViewportState(state: *const EditorState, viewport_state: *engine.render.EditorViewportState) void {

@@ -257,7 +257,6 @@ pub const BasePass = struct {
         transparent_pass: bool,
     ) !mesh_pass_mod.DrawStats {
         var stats = mesh_pass_mod.DrawStats{};
-        const is_wireframe = settings.render_mode == .wireframe;
 
         for (items) |item| {
             // 顶点阶段 uniforms：包含 VP 矩阵、模型矩阵以及蒙皮信息（若有）
@@ -277,8 +276,14 @@ pub const BasePass = struct {
 
             // 绑定顶点/索引缓冲
             device.bindVertexBuffer(pass, 0, &item.vertex_buffer, 0); // vertex slot 0
-            const draw_index_buffer = if (is_wireframe) &item.wireframe_index_buffer else &item.index_buffer; // 线框使用 wireframe 索引
-            const draw_index_count = if (is_wireframe) item.wireframe_index_count else item.index_count;
+            const draw_index_buffer = if (settings.render_mode == .wireframe)
+                &item.wireframe_index_buffer
+            else
+                &item.index_buffer;
+            const draw_index_count = if (settings.render_mode == .wireframe)
+                item.wireframe_index_count
+            else
+                item.index_count;
             device.bindIndexBuffer(pass, draw_index_buffer, .u32, 0);
             if (use_metal_combined_bindings) {
                 const shadow_texture_0 = prepared_scene.shadow_maps[0] orelse return error.TextureNotFound;
@@ -324,7 +329,10 @@ pub const BasePass = struct {
             device.drawIndexedPrimitives(pass, draw_index_count, 1, 0, 0, 0);
 
             stats.draw_calls += 1;
-            stats.triangles_drawn += item.index_count / 3;
+            stats.triangles_drawn += if (settings.render_mode == .wireframe)
+                draw_index_count / 2
+            else
+                item.index_count / 3;
         }
 
         return stats;
@@ -471,11 +479,11 @@ pub const BasePass = struct {
         errdefer if (self.transparent_fill_pipeline_ldr) |*pipeline| {
             device.releaseGraphicsPipeline(pipeline);
         };
-        self.wireframe_pipeline_hdr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .rgba16_float, .wireframe, true, true, true);
+        self.wireframe_pipeline_hdr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .rgba16_float, .wireframe, false, true, true);
         errdefer if (self.wireframe_pipeline_hdr) |*pipeline| {
             device.releaseGraphicsPipeline(pipeline);
         };
-        self.wireframe_pipeline_ldr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .bgra8_unorm_srgb, .wireframe, true, true, true);
+        self.wireframe_pipeline_ldr = try self.createPipeline(device, vertex_layouts[0..], vertex_attributes[0..], .bgra8_unorm_srgb, .wireframe, false, true, true);
     }
 
     const PipelineMode = enum {
