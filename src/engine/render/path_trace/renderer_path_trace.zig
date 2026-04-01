@@ -1,6 +1,7 @@
 const std = @import("std");
 const assets_lib = @import("../../assets/library.zig");
 const handles = @import("../../assets/handles.zig");
+const material_ast_mod = @import("../../assets/material_ast.zig");
 const material_resource_mod = @import("../../assets/material_resource.zig");
 const texture_resource_mod = @import("../../assets/texture_resource.zig");
 const texture_import_mod = @import("../../assets/texture_import.zig");
@@ -280,18 +281,19 @@ pub fn computePathTraceSceneSignature(
                 if (mat_comp.handle) |mat_handle| {
                     wyhashUpdateValue(&hasher, @intFromEnum(mat_handle));
                     if (scene.resources.material(mat_handle)) |material| {
-                        wyhashUpdateValue(&hasher, material.base_color_factor);
-                        wyhashUpdateValue(&hasher, material.emissive_factor);
-                        wyhashUpdateValue(&hasher, material.metallic_factor);
-                        wyhashUpdateValue(&hasher, material.roughness_factor);
-                        wyhashUpdateValue(&hasher, material.alpha_cutoff);
-                        wyhashUpdateValue(&hasher, material.use_ibl);
-                        wyhashUpdateValue(&hasher, material.ibl_intensity);
-                        wyhashUpdateTextureResource(&hasher, &scene.resources, material.base_color_texture);
-                        wyhashUpdateTextureResource(&hasher, &scene.resources, material.metallic_roughness_texture);
-                        wyhashUpdateTextureResource(&hasher, &scene.resources, material.normal_texture);
-                        wyhashUpdateTextureResource(&hasher, &scene.resources, material.occlusion_texture);
-                        wyhashUpdateTextureResource(&hasher, &scene.resources, material.emissive_texture);
+                        const material_ast = material_ast_mod.MaterialAst.fromResource(material);
+                        wyhashUpdateValue(&hasher, material_ast.base_color_factor);
+                        wyhashUpdateValue(&hasher, material_ast.emissive_factor);
+                        wyhashUpdateValue(&hasher, material_ast.metallic_factor);
+                        wyhashUpdateValue(&hasher, material_ast.roughness_factor);
+                        wyhashUpdateValue(&hasher, material_ast.alpha_cutoff);
+                        wyhashUpdateValue(&hasher, material_ast.use_ibl);
+                        wyhashUpdateValue(&hasher, material_ast.ibl_intensity);
+                        wyhashUpdateTextureResource(&hasher, &scene.resources, material_ast.textures.base_color);
+                        wyhashUpdateTextureResource(&hasher, &scene.resources, material_ast.textures.metallic_roughness);
+                        wyhashUpdateTextureResource(&hasher, &scene.resources, material_ast.textures.normal);
+                        wyhashUpdateTextureResource(&hasher, &scene.resources, material_ast.textures.occlusion);
+                        wyhashUpdateTextureResource(&hasher, &scene.resources, material_ast.textures.emissive);
                     }
                 }
             }
@@ -320,18 +322,19 @@ pub fn computePathTraceSceneSignature(
                 if (mat_comp.handle) |mat_handle| {
                     wyhashUpdateValue(&hasher, @intFromEnum(mat_handle));
                     if (scene.resources.material(mat_handle)) |material| {
-                        wyhashUpdateValue(&hasher, material.base_color_factor);
-                        wyhashUpdateValue(&hasher, material.emissive_factor);
-                        wyhashUpdateValue(&hasher, material.metallic_factor);
-                        wyhashUpdateValue(&hasher, material.roughness_factor);
-                        wyhashUpdateValue(&hasher, material.alpha_cutoff);
-                        wyhashUpdateValue(&hasher, material.use_ibl);
-                        wyhashUpdateValue(&hasher, material.ibl_intensity);
-                        wyhashUpdateTextureResource(&hasher, &scene.resources, material.base_color_texture);
-                        wyhashUpdateTextureResource(&hasher, &scene.resources, material.metallic_roughness_texture);
-                        wyhashUpdateTextureResource(&hasher, &scene.resources, material.normal_texture);
-                        wyhashUpdateTextureResource(&hasher, &scene.resources, material.occlusion_texture);
-                        wyhashUpdateTextureResource(&hasher, &scene.resources, material.emissive_texture);
+                        const material_ast = material_ast_mod.MaterialAst.fromResource(material);
+                        wyhashUpdateValue(&hasher, material_ast.base_color_factor);
+                        wyhashUpdateValue(&hasher, material_ast.emissive_factor);
+                        wyhashUpdateValue(&hasher, material_ast.metallic_factor);
+                        wyhashUpdateValue(&hasher, material_ast.roughness_factor);
+                        wyhashUpdateValue(&hasher, material_ast.alpha_cutoff);
+                        wyhashUpdateValue(&hasher, material_ast.use_ibl);
+                        wyhashUpdateValue(&hasher, material_ast.ibl_intensity);
+                        wyhashUpdateTextureResource(&hasher, &scene.resources, material_ast.textures.base_color);
+                        wyhashUpdateTextureResource(&hasher, &scene.resources, material_ast.textures.metallic_roughness);
+                        wyhashUpdateTextureResource(&hasher, &scene.resources, material_ast.textures.normal);
+                        wyhashUpdateTextureResource(&hasher, &scene.resources, material_ast.textures.occlusion);
+                        wyhashUpdateTextureResource(&hasher, &scene.resources, material_ast.textures.emissive);
                     }
                 }
             }
@@ -1817,24 +1820,25 @@ pub fn resolvePathTraceTextureIndices(
     has_textures: [4]u32,
 ) !PathTraceTextureIndices {
     const resolved_material = material orelse return .{};
+    const material_ast = material_ast_mod.MaterialAst.fromResource(resolved_material);
     return .{
         .base_color = if (has_textures[0] != 0)
-            try appendPathTraceTextureIndex(allocator, texture_list, texture_index_map, resources, resolved_material.base_color_texture)
+            try appendPathTraceTextureIndex(allocator, texture_list, texture_index_map, resources, material_ast.textures.base_color)
         else
             -1,
         .metallic_roughness = if (has_textures[1] != 0)
-            try appendPathTraceTextureIndex(allocator, texture_list, texture_index_map, resources, resolved_material.metallic_roughness_texture)
+            try appendPathTraceTextureIndex(allocator, texture_list, texture_index_map, resources, material_ast.textures.metallic_roughness)
         else
             -1,
         .normal = if (has_textures[2] != 0)
-            try appendPathTraceTextureIndex(allocator, texture_list, texture_index_map, resources, resolved_material.normal_texture)
+            try appendPathTraceTextureIndex(allocator, texture_list, texture_index_map, resources, material_ast.textures.normal)
         else
             -1,
         .occlusion = if (has_textures[3] != 0)
-            try appendPathTraceTextureIndex(allocator, texture_list, texture_index_map, resources, resolved_material.occlusion_texture)
+            try appendPathTraceTextureIndex(allocator, texture_list, texture_index_map, resources, material_ast.textures.occlusion)
         else
             -1,
-        .emissive = try appendPathTraceTextureIndex(allocator, texture_list, texture_index_map, resources, resolved_material.emissive_texture),
+        .emissive = try appendPathTraceTextureIndex(allocator, texture_list, texture_index_map, resources, material_ast.textures.emissive),
     };
 }
 

@@ -1,5 +1,6 @@
 const std = @import("std");
 const handles = @import("../../assets/handles.zig");
+const material_ast_mod = @import("../../assets/material_ast.zig");
 const material_mod = @import("../../assets/material_resource.zig");
 const mesh_mod = @import("../../assets/mesh_resource.zig");
 const texture_mod = @import("../../assets/texture_resource.zig");
@@ -870,38 +871,39 @@ pub const MeshSceneCache = struct {
 
         const material_handle = material_value.handle orelse return state;
         const material = scene.resources.material(material_handle) orelse return state;
+        const material_ast = material_ast_mod.MaterialAst.fromResource(material);
 
         state.base_color_factor = .{
-            material.base_color_factor[0] * material_value.base_color_factor[0],
-            material.base_color_factor[1] * material_value.base_color_factor[1],
-            material.base_color_factor[2] * material_value.base_color_factor[2],
-            material.base_color_factor[3] * material_value.base_color_factor[3],
+            material_ast.base_color_factor[0] * material_value.base_color_factor[0],
+            material_ast.base_color_factor[1] * material_value.base_color_factor[1],
+            material_ast.base_color_factor[2] * material_value.base_color_factor[2],
+            material_ast.base_color_factor[3] * material_value.base_color_factor[3],
         };
         state.emissive_factor = .{
-            material.emissive_factor[0],
-            material.emissive_factor[1],
-            material.emissive_factor[2],
+            material_ast.emissive_factor[0],
+            material_ast.emissive_factor[1],
+            material_ast.emissive_factor[2],
             1.0,
         };
-        state.pbr_factors = .{ material.metallic_factor, material.roughness_factor, material.alpha_cutoff, 0.0 };
+        state.pbr_factors = .{ material_ast.metallic_factor, material_ast.roughness_factor, material_ast.alpha_cutoff, 0.0 };
         state.has_textures = .{
-            if (material.base_color_texture != null) 1 else 0,
-            if (material.metallic_roughness_texture != null) 1 else 0,
-            if (material.normal_texture != null) 1 else 0,
-            if (material.occlusion_texture != null) 1 else 0,
+            if (material_ast.textures.base_color != null) 1 else 0,
+            if (material_ast.textures.metallic_roughness != null) 1 else 0,
+            if (material_ast.textures.normal != null) 1 else 0,
+            if (material_ast.textures.occlusion != null) 1 else 0,
         };
         state.ibl_params = .{
-            if (material.use_ibl) 1.0 else 0.0,
-            material.ibl_intensity,
+            if (material_ast.use_ibl) 1.0 else 0.0,
+            material_ast.ibl_intensity,
             0.0,
             0.0,
         };
         state.material_textures = .{
-            if (material.base_color_texture) |h| try self.ensureTexture(device, h, scene.resources.texture(h).?) else &self.fallback_texture.?,
-            if (material.metallic_roughness_texture) |h| try self.ensureTexture(device, h, scene.resources.texture(h).?) else &self.fallback_texture.?,
-            if (material.normal_texture) |h| try self.ensureTexture(device, h, scene.resources.texture(h).?) else &self.fallback_texture.?,
-            if (material.occlusion_texture) |h| try self.ensureTexture(device, h, scene.resources.texture(h).?) else &self.fallback_texture.?,
-            if (material.emissive_texture) |h| try self.ensureTexture(device, h, scene.resources.texture(h).?) else &self.fallback_texture.?,
+            if (material_ast.textures.base_color) |h| try self.ensureTexture(device, h, scene.resources.texture(h).?) else &self.fallback_texture.?,
+            if (material_ast.textures.metallic_roughness) |h| try self.ensureTexture(device, h, scene.resources.texture(h).?) else &self.fallback_texture.?,
+            if (material_ast.textures.normal) |h| try self.ensureTexture(device, h, scene.resources.texture(h).?) else &self.fallback_texture.?,
+            if (material_ast.textures.occlusion) |h| try self.ensureTexture(device, h, scene.resources.texture(h).?) else &self.fallback_texture.?,
+            if (material_ast.textures.emissive) |h| try self.ensureTexture(device, h, scene.resources.texture(h).?) else &self.fallback_texture.?,
         };
 
         if (try self.ensureMaterial(device, material_handle, material, scene)) |bind_group| {

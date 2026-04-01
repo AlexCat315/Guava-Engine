@@ -63,6 +63,29 @@ pub fn drawMaterialEditorWindow(state: *EditorState, layer_context: *engine.core
     }
     gui.text(material_name);
 
+    var usage_count: usize = 0;
+    var is_shared = false;
+    if (material_component.handle) |material_handle| {
+        usage_count = inspector.materialUsageCount(state, layer_context.world, material_handle);
+        is_shared = usage_count > 1;
+    }
+
+    if (material_component.handle != null) {
+        var usage_buffer: [96]u8 = undefined;
+        const usage_text = std.fmt.bufPrint(&usage_buffer, "Material Usage: {d}", .{usage_count}) catch "Material Usage: ?";
+        gui.text(usage_text);
+    } else {
+        gui.text("Material Usage: Embedded (entity local)");
+    }
+
+    if (is_shared) {
+        gui.text("Shared material detected. Editing will create a unique instance for this entity.");
+        if (gui.buttonEx("Make Unique Instance", -1.0, 0.0)) {
+            _ = try inspector.ensureEditableMaterialResource(state, layer_context, entity);
+            try history.captureSnapshot(state, layer_context);
+        }
+    }
+
     gui.separator();
 
     var shading = material_component.shading;
@@ -75,12 +98,13 @@ pub fn drawMaterialEditorWindow(state: *EditorState, layer_context: *engine.core
         if (gui.menuItem(state.text(.pbr), null, shading == .pbr_metallic_roughness, true)) shading = .pbr_metallic_roughness;
     }
     if (shading != material_component.shading) {
-        if (try inspector.ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
-            material_resource.shading = shading;
-            material_component.shading = shading;
-            material_component.handle = inspector.materialHandleForEntity(state, entity);
+        if (materialAstFromEntity(layer_context, entity)) |source_ast| {
+            var ast = source_ast;
+            ast.shading = shading;
+            if (try commitAstToEditableMaterial(state, layer_context, entity, &ast)) {
+                try history.captureSnapshot(state, layer_context);
+            }
         }
-        try history.captureSnapshot(state, layer_context);
     }
 
     gui.dummy(0.0, 8.0);
@@ -93,10 +117,10 @@ pub fn drawMaterialEditorWindow(state: *EditorState, layer_context: *engine.core
         base_color[0] = std.math.clamp(base_rgb[0], 0.0, 1.0);
         base_color[1] = std.math.clamp(base_rgb[1], 0.0, 1.0);
         base_color[2] = std.math.clamp(base_rgb[2], 0.0, 1.0);
-        material_component.base_color_factor = base_color;
-        if (try inspector.ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
-            material_resource.base_color_factor = base_color;
-            material_component.handle = inspector.materialHandleForEntity(state, entity);
+        if (materialAstFromEntity(layer_context, entity)) |source_ast| {
+            var ast = source_ast;
+            ast.base_color_factor = base_color;
+            _ = try commitAstToEditableMaterial(state, layer_context, entity, &ast);
         }
     }
     if (gui.isItemDeactivatedAfterEdit()) try history.captureSnapshot(state, layer_context);
@@ -108,10 +132,10 @@ pub fn drawMaterialEditorWindow(state: *EditorState, layer_context: *engine.core
     gui.setNextItemWidth(-1.0);
     if (gui.dragFloat("##material_opacity", &opacity, 0.01, 0.0, 1.0)) {
         base_color[3] = std.math.clamp(opacity, 0.0, 1.0);
-        material_component.base_color_factor = base_color;
-        if (try inspector.ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
-            material_resource.base_color_factor = base_color;
-            material_component.handle = inspector.materialHandleForEntity(state, entity);
+        if (materialAstFromEntity(layer_context, entity)) |source_ast| {
+            var ast = source_ast;
+            ast.base_color_factor = base_color;
+            _ = try commitAstToEditableMaterial(state, layer_context, entity, &ast);
         }
     }
     if (gui.isItemDeactivatedAfterEdit()) try history.captureSnapshot(state, layer_context);
@@ -123,10 +147,10 @@ pub fn drawMaterialEditorWindow(state: *EditorState, layer_context: *engine.core
     gui.setNextItemWidth(-1.0);
     if (gui.dragFloat("##material_metallic", &metallic, 0.01, 0.0, 1.0)) {
         const clamped = std.math.clamp(metallic, 0.0, 1.0);
-        material_component.metallic_factor = clamped;
-        if (try inspector.ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
-            material_resource.metallic_factor = clamped;
-            material_component.handle = inspector.materialHandleForEntity(state, entity);
+        if (materialAstFromEntity(layer_context, entity)) |source_ast| {
+            var ast = source_ast;
+            ast.metallic_factor = clamped;
+            _ = try commitAstToEditableMaterial(state, layer_context, entity, &ast);
         }
     }
     if (gui.isItemDeactivatedAfterEdit()) try history.captureSnapshot(state, layer_context);
@@ -138,10 +162,10 @@ pub fn drawMaterialEditorWindow(state: *EditorState, layer_context: *engine.core
     gui.setNextItemWidth(-1.0);
     if (gui.dragFloat("##material_roughness", &roughness, 0.01, 0.0, 1.0)) {
         const clamped = std.math.clamp(roughness, 0.0, 1.0);
-        material_component.roughness_factor = clamped;
-        if (try inspector.ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
-            material_resource.roughness_factor = clamped;
-            material_component.handle = inspector.materialHandleForEntity(state, entity);
+        if (materialAstFromEntity(layer_context, entity)) |source_ast| {
+            var ast = source_ast;
+            ast.roughness_factor = clamped;
+            _ = try commitAstToEditableMaterial(state, layer_context, entity, &ast);
         }
     }
     if (gui.isItemDeactivatedAfterEdit()) try history.captureSnapshot(state, layer_context);
@@ -152,12 +176,13 @@ pub fn drawMaterialEditorWindow(state: *EditorState, layer_context: *engine.core
     gui.text("Emissive");
     gui.setNextItemWidth(-1.0);
     if (gui.colorEdit3("##material_emissive", &emissive, .{})) {
-        material_component.emissive_factor = emissive;
-        if (try inspector.ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
-            material_resource.emissive_factor = emissive;
-            material_component.handle = inspector.materialHandleForEntity(state, entity);
+        if (materialAstFromEntity(layer_context, entity)) |source_ast| {
+            var ast = source_ast;
+            ast.emissive_factor = emissive;
+            if (try commitAstToEditableMaterial(state, layer_context, entity, &ast)) {
+                try history.captureSnapshot(state, layer_context);
+            }
         }
-        try history.captureSnapshot(state, layer_context);
     }
 
     gui.dummy(0.0, 8.0);
@@ -167,10 +192,10 @@ pub fn drawMaterialEditorWindow(state: *EditorState, layer_context: *engine.core
     gui.setNextItemWidth(-1.0);
     if (gui.dragFloat("##material_alpha_cutoff", &alpha_cutoff, 0.01, 0.0, 1.0)) {
         const clamped = std.math.clamp(alpha_cutoff, 0.0, 1.0);
-        material_component.alpha_cutoff = clamped;
-        if (try inspector.ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
-            material_resource.alpha_cutoff = clamped;
-            material_component.handle = inspector.materialHandleForEntity(state, entity);
+        if (materialAstFromEntity(layer_context, entity)) |source_ast| {
+            var ast = source_ast;
+            ast.alpha_cutoff = clamped;
+            _ = try commitAstToEditableMaterial(state, layer_context, entity, &ast);
         }
     }
     if (gui.isItemDeactivatedAfterEdit()) try history.captureSnapshot(state, layer_context);
@@ -179,12 +204,13 @@ pub fn drawMaterialEditorWindow(state: *EditorState, layer_context: *engine.core
 
     var double_sided = material_component.double_sided;
     if (gui.checkbox("Double Sided", &double_sided)) {
-        material_component.double_sided = double_sided;
-        if (try inspector.ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
-            material_resource.double_sided = double_sided;
-            material_component.handle = inspector.materialHandleForEntity(state, entity);
+        if (materialAstFromEntity(layer_context, entity)) |source_ast| {
+            var ast = source_ast;
+            ast.double_sided = double_sided;
+            if (try commitAstToEditableMaterial(state, layer_context, entity, &ast)) {
+                try history.captureSnapshot(state, layer_context);
+            }
         }
-        try history.captureSnapshot(state, layer_context);
     }
 
     gui.separator();
@@ -200,10 +226,12 @@ pub fn drawMaterialEditorWindow(state: *EditorState, layer_context: *engine.core
     }
     if (gui.buttonEx("Apply Checker To Base Color", -1.0, 0.0)) {
         const checker = try ensureMaterialPreviewCheckerTexture(layer_context);
-        if (try inspector.ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
-            material_resource.base_color_texture = checker;
-            entity.material.?.handle = inspector.materialHandleForEntity(state, entity);
-            try history.captureSnapshot(state, layer_context);
+        if (materialAstFromEntity(layer_context, entity)) |source_ast| {
+            var ast = source_ast;
+            ast.textures.base_color = checker;
+            if (try commitAstToEditableMaterial(state, layer_context, entity, &ast)) {
+                try history.captureSnapshot(state, layer_context);
+            }
         }
     }
 
@@ -257,10 +285,10 @@ fn drawTextureSlot(
     if (has_texture) {
         gui.sameLine();
         if (gui.buttonEx(state.text(.clear_texture), 0.0, 0.0)) {
-            if (try inspector.ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
-                setTextureHandleForSlot(material_resource, slot, null);
-                entity.material.?.handle = inspector.materialHandleForEntity(state, entity);
-                changed = true;
+            if (materialAstFromEntity(layer_context, entity)) |source_ast| {
+                var ast = source_ast;
+                setTextureHandleForAstSlot(&ast, slot, null);
+                changed = (try commitAstToEditableMaterial(state, layer_context, entity, &ast)) or changed;
             }
         }
     }
@@ -289,10 +317,10 @@ fn assignTextureEntryToMaterialSlot(
     if (entry.kind != .texture) return false;
 
     const texture_handle = try inspector.importTextureAsset(state, layer_context, entry.id, entry.path);
-    if (try inspector.ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
-        setTextureHandleForSlot(material_resource, slot, texture_handle);
-        entity.material.?.handle = inspector.materialHandleForEntity(state, entity);
-        return true;
+    if (materialAstFromEntity(layer_context, entity)) |source_ast| {
+        var ast = source_ast;
+        setTextureHandleForAstSlot(&ast, slot, texture_handle);
+        return try commitAstToEditableMaterial(state, layer_context, entity, &ast);
     }
     return false;
 }
@@ -307,13 +335,13 @@ fn textureHandleForSlot(material: *const engine.assets.MaterialResource, slot: M
     };
 }
 
-fn setTextureHandleForSlot(material: *engine.assets.MaterialResource, slot: MaterialTextureSlot, texture: ?engine.assets.TextureHandle) void {
+fn setTextureHandleForAstSlot(ast: *engine.assets.MaterialAst, slot: MaterialTextureSlot, texture: ?engine.assets.TextureHandle) void {
     switch (slot) {
-        .base_color => material.base_color_texture = texture,
-        .metallic_roughness => material.metallic_roughness_texture = texture,
-        .normal => material.normal_texture = texture,
-        .occlusion => material.occlusion_texture = texture,
-        .emissive => material.emissive_texture = texture,
+        .base_color => ast.textures.base_color = texture,
+        .metallic_roughness => ast.textures.metallic_roughness = texture,
+        .normal => ast.textures.normal = texture,
+        .occlusion => ast.textures.occlusion = texture,
+        .emissive => ast.textures.emissive = texture,
     }
 }
 
@@ -325,6 +353,64 @@ fn textureSlotLabel(slot: MaterialTextureSlot) []const u8 {
         .occlusion => "Occlusion",
         .emissive => "Emissive",
     };
+}
+
+fn materialAstFromEntity(layer_context: *engine.core.LayerContext, entity: *const engine.scene.Entity) ?engine.assets.MaterialAst {
+    const material_component = entity.material orelse return null;
+    if (material_component.handle) |material_handle| {
+        if (layer_context.world.assets().material(material_handle)) |material_resource| {
+            return engine.assets.MaterialAst.fromResource(material_resource);
+        }
+    }
+
+    return .{
+        .name = "Embedded Material",
+        .shading = material_component.shading,
+        .base_color_factor = material_component.base_color_factor,
+        .emissive_factor = material_component.emissive_factor,
+        .metallic_factor = material_component.metallic_factor,
+        .roughness_factor = material_component.roughness_factor,
+        .alpha_cutoff = material_component.alpha_cutoff,
+        .double_sided = material_component.double_sided,
+        .textures = .{},
+    };
+}
+
+fn commitAstToEditableMaterial(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    entity: *engine.scene.Entity,
+    ast: *const engine.assets.MaterialAst,
+) !bool {
+    if (entity.material == null) return false;
+    if (try inspector.ensureEditableMaterialResource(state, layer_context, entity)) |material_resource| {
+        material_resource.shading = ast.shading;
+        material_resource.base_color_factor = ast.base_color_factor;
+        material_resource.base_color_texture = ast.textures.base_color;
+        material_resource.metallic_roughness_texture = ast.textures.metallic_roughness;
+        material_resource.normal_texture = ast.textures.normal;
+        material_resource.occlusion_texture = ast.textures.occlusion;
+        material_resource.emissive_texture = ast.textures.emissive;
+        material_resource.emissive_factor = ast.emissive_factor;
+        material_resource.metallic_factor = ast.metallic_factor;
+        material_resource.roughness_factor = ast.roughness_factor;
+        material_resource.alpha_cutoff = ast.alpha_cutoff;
+        material_resource.double_sided = ast.double_sided;
+        material_resource.use_ibl = ast.use_ibl;
+        material_resource.ibl_intensity = ast.ibl_intensity;
+
+        const material_component = &entity.material.?;
+        material_component.shading = ast.shading;
+        material_component.base_color_factor = ast.base_color_factor;
+        material_component.emissive_factor = ast.emissive_factor;
+        material_component.metallic_factor = ast.metallic_factor;
+        material_component.roughness_factor = ast.roughness_factor;
+        material_component.alpha_cutoff = ast.alpha_cutoff;
+        material_component.double_sided = ast.double_sided;
+        material_component.handle = inspector.materialHandleForEntity(state, entity);
+        return true;
+    }
+    return false;
 }
 
 fn applyPreviewPrimitive(
