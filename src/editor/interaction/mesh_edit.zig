@@ -32,6 +32,25 @@ const EdgeSplit = struct {
     max_split: u32,
 };
 
+const InteractiveMeshOpKind = enum {
+    extrude,
+    inset,
+    bevel,
+};
+
+const InteractiveMeshOp = struct {
+    kind: InteractiveMeshOpKind,
+    entity_id: engine.scene.EntityId,
+    mesh_handle: engine.assets.MeshHandle,
+    selection_mode: MeshElementSelectionMode,
+    selected_elements: []u32,
+    base_vertices: []engine.assets.MeshVertex,
+    base_indices: []u32,
+    amount: f32,
+};
+
+var interactive_mesh_op: ?InteractiveMeshOp = null;
+
 pub fn isEditModeActive(state: *const EditorState) bool {
     return state.mesh_edit_mode == .edit and state.mesh_edit_entity != null;
 }
@@ -107,6 +126,7 @@ pub fn enterEditMode(state: *EditorState, layer_context: *engine.core.LayerConte
 }
 
 pub fn exitEditMode(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+    cancelInteractiveOperation(state, layer_context) catch {};
     clearElementSelection(state);
     state.mesh_edit_mode = .object;
     state.mesh_edit_entity = null;
@@ -169,6 +189,10 @@ pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.L
         return false;
     }
 
+    if (interactive_mesh_op != null) {
+        return try updateInteractiveOperation(state, layer_context);
+    }
+
     if (input.modifiers.shift and input.wasKeyPressed(.tab)) {
         camera.toggleCameraMode(state, layer_context);
         return true;
@@ -194,15 +218,15 @@ pub fn handleEditingShortcuts(state: *EditorState, layer_context: *engine.core.L
         return true;
     }
     if (input.wasKeyPressed(.e)) {
-        _ = try extrudeSelectedFaces(state, layer_context);
+        _ = try beginInteractiveOperation(state, layer_context, .extrude);
         return true;
     }
     if (input.wasKeyPressed(.i)) {
-        _ = try insetSelectedFaces(state, layer_context);
+        _ = try beginInteractiveOperation(state, layer_context, .inset);
         return true;
     }
     if (input.wasKeyPressed(.b) and !input.modifiers.ctrl) {
-        _ = try bevelSelectedEdges(state, layer_context);
+        _ = try beginInteractiveOperation(state, layer_context, .bevel);
         return true;
     }
     if (input.wasKeyPressed(.r) and input.modifiers.ctrl) {
@@ -238,6 +262,10 @@ pub fn handleViewportSelection(
     ray: engine.scene.Ray,
     update_mode: engine.render.SelectionUpdateMode,
 ) !bool {
+    if (interactive_mesh_op != null) {
+        return true;
+    }
+
     if (!isEditModeActive(state)) {
         return false;
     }
@@ -372,6 +400,7 @@ pub fn extrudeSelectedFaces(state: *EditorState, layer_context: *engine.core.Lay
         context.mesh.vertices,
         context.mesh.indices,
         state.mesh_edit_selected_elements.items,
+        0.35,
     );
     defer allocator.free(result.vertices);
     defer allocator.free(result.indices);
@@ -402,6 +431,7 @@ pub fn insetSelectedFaces(state: *EditorState, layer_context: *engine.core.Layer
         context.mesh.vertices,
         context.mesh.indices,
         state.mesh_edit_selected_elements.items,
+        0.15,
     );
     defer allocator.free(result.vertices);
     defer allocator.free(result.indices);
@@ -436,6 +466,7 @@ pub fn bevelSelectedEdges(state: *EditorState, layer_context: *engine.core.Layer
         context.mesh.indices,
         edges,
         state.mesh_edit_selected_elements.items,
+        0.2,
     );
     defer allocator.free(result.vertices);
     defer allocator.free(result.indices);
@@ -1082,8 +1113,8 @@ fn insetFaceRegion(
     vertices: []const engine.assets.MeshVertex,
     indices: []const u32,
     selected_faces: []const u32,
+    inset_amount: f32,
 ) !InsetResult {
-    const inset_amount: f32 = 0.15;
 
     var selected_face_mask = try allocator.alloc(bool, indices.len / 3);
     defer allocator.free(selected_face_mask);
@@ -1226,8 +1257,8 @@ fn bevelEdgeRegion(
     indices: []const u32,
     edges: []const Edge,
     selected_edge_indices: []const u32,
+    bevel_ratio: f32,
 ) !BevelResult {
-    const bevel_ratio: f32 = 0.2;
 
     var next_vertices = std.ArrayList(engine.assets.MeshVertex).empty;
     defer next_vertices.deinit(allocator);
@@ -1750,6 +1781,7 @@ fn extrudeFaceRegion(
     vertices: []const engine.assets.MeshVertex,
     indices: []const u32,
     selected_faces: []const u32,
+    distance_scale: f32,
 ) !ExtrudeResult {
     var selected_face_mask = try allocator.alloc(bool, indices.len / 3);
     defer allocator.free(selected_face_mask);
@@ -1784,7 +1816,7 @@ fn extrudeFaceRegion(
         0.25
     else
         accumulated_edge_length / @as(f32, @floatFromInt(accumulated_edge_count));
-    const extrude_distance = std.math.clamp(average_edge_length * 0.35, 0.03, 0.6);
+    const extrude_distance = std.math.clamp(average_edge_length * distance_scale, -0.9, 0.9);
 
     var used_vertices = std.AutoHashMap(u32, u32).init(allocator);
     defer used_vertices.deinit();
@@ -1862,6 +1894,215 @@ fn extrudeFaceRegion(
         .indices = try allocator.dupe(u32, next_indices.items),
         .selected_faces = next_selected_faces,
     };
+}
+
+fn beginInteractiveOperation(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    kind: InteractiveMeshOpKind,
+) !bool {
+    const context = activeContext(state, layer_context) orelse return false;
+    const allocator = state.allocator orelse layer_context.world.allocator;
+
+    if (interactive_mesh_op != null) {
+        try cancelInteractiveOperation(state, layer_context);
+    }
+
+    const required_mode: MeshElementSelectionMode = switch (kind) {
+        .extrude, .inset => .face,
+        .bevel => .edge,
+    };
+    if (state.mesh_edit_selection_mode != required_mode or state.mesh_edit_selected_elements.items.len == 0) {
+        return false;
+    }
+
+    const base_vertices = try allocator.dupe(engine.assets.MeshVertex, context.mesh.vertices);
+    errdefer allocator.free(base_vertices);
+    const base_indices = try allocator.dupe(u32, context.mesh.indices);
+    errdefer allocator.free(base_indices);
+    const selected = try allocator.dupe(u32, state.mesh_edit_selected_elements.items);
+    errdefer allocator.free(selected);
+
+    interactive_mesh_op = .{
+        .kind = kind,
+        .entity_id = context.entity_id,
+        .mesh_handle = context.mesh_handle,
+        .selection_mode = state.mesh_edit_selection_mode,
+        .selected_elements = selected,
+        .base_vertices = base_vertices,
+        .base_indices = base_indices,
+        .amount = switch (kind) {
+            .extrude => 0.35,
+            .inset => 0.15,
+            .bevel => 0.2,
+        },
+    };
+
+    return try applyInteractivePreview(state, layer_context);
+}
+
+fn updateInteractiveOperation(state: *EditorState, layer_context: *engine.core.LayerContext) !bool {
+    const input = layer_context.input;
+    const op = if (interactive_mesh_op) |*value| value else return false;
+    const context = activeContext(state, layer_context) orelse {
+        try cancelInteractiveOperation(state, layer_context);
+        return true;
+    };
+    if (context.entity_id != op.entity_id or context.mesh_handle != op.mesh_handle) {
+        try cancelInteractiveOperation(state, layer_context);
+        return true;
+    }
+
+    const delta = input.mouse_delta[0] - input.mouse_delta[1] * 0.4;
+    if (@abs(delta) > 0.0001) {
+        const sensitivity: f32 = 0.005;
+        op.amount += delta * sensitivity;
+        op.amount = switch (op.kind) {
+            .extrude => std.math.clamp(op.amount, -1.5, 1.5),
+            .inset => std.math.clamp(op.amount, 0.0, 0.95),
+            .bevel => std.math.clamp(op.amount, 0.0, 0.95),
+        };
+        _ = try applyInteractivePreview(state, layer_context);
+    }
+
+    if (input.wasMousePressed(.left)) {
+        try commitInteractiveOperation(state, layer_context);
+        return true;
+    }
+    if (input.wasMousePressed(.right) or input.wasKeyPressed(.escape)) {
+        try cancelInteractiveOperation(state, layer_context);
+        return true;
+    }
+    return true;
+}
+
+fn applyInteractivePreview(state: *EditorState, layer_context: *engine.core.LayerContext) !bool {
+    const allocator = state.allocator orelse layer_context.world.allocator;
+    const op = interactive_mesh_op orelse return false;
+    const context = activeContext(state, layer_context) orelse return false;
+    if (context.mesh_handle != op.mesh_handle) {
+        return false;
+    }
+
+    switch (op.kind) {
+        .extrude => {
+            const result = try extrudeFaceRegion(
+                allocator,
+                op.base_vertices,
+                op.base_indices,
+                op.selected_elements,
+                op.amount,
+            );
+            defer allocator.free(result.vertices);
+            defer allocator.free(result.indices);
+            defer allocator.free(result.selected_faces);
+            if (!meshDataIsValid(result.vertices, result.indices)) {
+                return false;
+            }
+            try applyMeshMutation(state, layer_context, op.mesh_handle, result.vertices, result.indices);
+        },
+        .inset => {
+            const result = try insetFaceRegion(
+                allocator,
+                op.base_vertices,
+                op.base_indices,
+                op.selected_elements,
+                op.amount,
+            );
+            defer allocator.free(result.vertices);
+            defer allocator.free(result.indices);
+            defer allocator.free(result.selected_faces);
+            if (!meshDataIsValid(result.vertices, result.indices)) {
+                return false;
+            }
+            try applyMeshMutation(state, layer_context, op.mesh_handle, result.vertices, result.indices);
+        },
+        .bevel => {
+            const edges = try buildEdgeListFromIndices(allocator, op.base_indices);
+            defer allocator.free(edges);
+            const result = try bevelEdgeRegion(
+                allocator,
+                op.base_vertices,
+                op.base_indices,
+                edges,
+                op.selected_elements,
+                op.amount,
+            );
+            defer allocator.free(result.vertices);
+            defer allocator.free(result.indices);
+            if (!meshDataIsValid(result.vertices, result.indices)) {
+                return false;
+            }
+            try applyMeshMutation(state, layer_context, op.mesh_handle, result.vertices, result.indices);
+        },
+    }
+    return true;
+}
+
+fn buildEdgeListFromIndices(allocator: std.mem.Allocator, indices: []const u32) ![]Edge {
+    var edges = std.ArrayList(Edge).empty;
+    defer edges.deinit(allocator);
+    var seen = std.AutoHashMap(u64, void).init(allocator);
+    defer seen.deinit();
+
+    var triangle_offset: usize = 0;
+    while (triangle_offset + 2 < indices.len) : (triangle_offset += 3) {
+        try appendUniqueEdge(allocator, &edges, &seen, indices[triangle_offset], indices[triangle_offset + 1]);
+        try appendUniqueEdge(allocator, &edges, &seen, indices[triangle_offset + 1], indices[triangle_offset + 2]);
+        try appendUniqueEdge(allocator, &edges, &seen, indices[triangle_offset + 2], indices[triangle_offset]);
+    }
+
+    return try edges.toOwnedSlice(allocator);
+}
+
+fn commitInteractiveOperation(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const allocator = state.allocator orelse layer_context.world.allocator;
+    const op = interactive_mesh_op orelse return;
+
+    switch (op.kind) {
+        .extrude => {
+            try history.captureSnapshotWithLabel(
+                state,
+                layer_context,
+                state.text(.mesh_edit_extrude_action),
+                state.text(.mesh_edit_extrude_action),
+                .human,
+            );
+        },
+        .inset => {
+            try history.captureSnapshotWithLabel(
+                state,
+                layer_context,
+                state.text(.mesh_edit_inset_action),
+                state.text(.mesh_edit_inset_action),
+                .human,
+            );
+        },
+        .bevel => {
+            try history.captureSnapshotWithLabel(
+                state,
+                layer_context,
+                state.text(.mesh_edit_bevel_action),
+                state.text(.mesh_edit_bevel_action),
+                .human,
+            );
+        },
+    }
+
+    allocator.free(op.selected_elements);
+    allocator.free(op.base_vertices);
+    allocator.free(op.base_indices);
+    interactive_mesh_op = null;
+}
+
+fn cancelInteractiveOperation(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const allocator = state.allocator orelse layer_context.world.allocator;
+    const op = interactive_mesh_op orelse return;
+    try applyMeshMutation(state, layer_context, op.mesh_handle, op.base_vertices, op.base_indices);
+    allocator.free(op.selected_elements);
+    allocator.free(op.base_vertices);
+    allocator.free(op.base_indices);
+    interactive_mesh_op = null;
 }
 
 fn recordDirectedEdge(entries: *std.AutoHashMap(u64, EdgeEntry), a: u32, b: u32) !void {
