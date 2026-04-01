@@ -69,6 +69,7 @@ const dof_pass_mod = @import("passes/dof_pass.zig");
 const ssr_pass_mod = @import("passes/ssr_pass.zig");
 const ssr_blur_pass_mod = @import("passes/ssr_blur_pass.zig");
 const style_plugin_mod = @import("style_plugin.zig");
+const plugin_mod = @import("../plugin/plugin.zig");
 const fullscreen_post_mod = @import("passes/fullscreen_post_pass.zig");
 const platform_mod = @import("../core/platform.zig");
 const selection_history_mod = @import("selection_history.zig");
@@ -325,6 +326,8 @@ pub const Renderer = struct {
     base_pass: base_pass_mod.BasePass,
     /// 渲染风格插件注册表
     style_registry: style_plugin_mod.StyleRegistry,
+    /// 统一插件注册表（发现 + 生命周期管理）
+    plugin_registry: plugin_mod.PluginRegistry,
     /// 天空盒通道
     skybox_pass: ?skybox_pass_mod.SkyboxPass = null,
     /// 轮廓通道（选中物体高亮）
@@ -471,6 +474,7 @@ pub const Renderer = struct {
             .shadow_pass = undefined,
             .base_pass = undefined,
             .style_registry = undefined,
+            .plugin_registry = undefined,
             .skybox_pass = undefined,
             .outline_pass = undefined,
             .gizmo_pass = undefined,
@@ -532,6 +536,8 @@ pub const Renderer = struct {
         errdefer renderer.base_pass.deinit(&renderer.rhi);
 
         renderer.style_registry = style_plugin_mod.StyleRegistry.init(allocator);
+
+        renderer.plugin_registry = try plugin_mod.PluginRegistry.init(allocator);
 
         renderer.skybox_pass = try skybox_pass_mod.SkyboxPass.init(&renderer.rhi);
         errdefer if (renderer.skybox_pass) |*pass| {
@@ -697,6 +703,7 @@ pub const Renderer = struct {
         self.outline_pass.deinit(&self.rhi);
         self.base_pass.deinit(&self.rhi);
         self.style_registry.deinit();
+        self.plugin_registry.deinit();
         self.shadow_map.deinit(&self.rhi);
         self.shadow_pass.deinit(&self.rhi);
         self.velocity_pass.deinit(&self.rhi);
@@ -743,6 +750,35 @@ pub const Renderer = struct {
 
     pub fn styleRegistry(self: *Renderer) *style_plugin_mod.StyleRegistry {
         return &self.style_registry;
+    }
+
+    pub fn pluginRegistry(self: *Renderer) *plugin_mod.PluginRegistry {
+        return &self.plugin_registry;
+    }
+
+    /// Unified plugin discovery entry point.
+    /// 1. Calls `PluginRegistry.discover(root_path)` to find and register all
+    ///    plugin manifests in `root_path`.
+    /// 2. For each discovered `render_style` plugin, dispatches to
+    ///    `StyleRegistry.loadFromDiscoveredPlugin()`.
+    pub fn discoverPlugins(self: *Renderer, root_path: []const u8) void {
+        self.plugin_registry.discover(root_path) catch |err| {
+            std.log.warn("Renderer: plugin discovery failed for '{s}': {s}", .{ root_path, @errorName(err) });
+            return;
+        };
+
+        // Dispatch render_style plugins to StyleRegistry
+        const style_plugins = self.plugin_registry.getByType(.render_style);
+        for (style_plugins) |record| {
+            if (record.manifest.path.len == 0) continue;
+            // Derive the plugin directory from the manifest.json path
+            const dir_path = std.fs.path.dirname(record.manifest.path) orelse continue;
+            // Only load if StyleRegistry doesn't already know about it
+            if (self.style_registry.getStyle(record.manifest.name) != null) continue;
+            self.style_registry.loadFromDiscoveredPlugin(dir_path) catch |err| {
+                std.log.warn("Renderer: failed to load render style '{s}': {s}", .{ record.getName(), @errorName(err) });
+            };
+        }
     }
 
     pub fn handleResize(self: *Renderer, width: u32, height: u32) !void {

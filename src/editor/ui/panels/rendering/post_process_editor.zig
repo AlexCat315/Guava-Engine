@@ -16,12 +16,6 @@ const QuickAddItem = struct {
     hint: []const u8,
 };
 
-const PreviewToggleItem = struct {
-    label: []const u8,
-    hint: []const u8,
-    value: *bool,
-};
-
 const quick_add_items = [_]QuickAddItem{
     .{ .effect = .bloom, .label = "Bloom", .hint = "Highlight glow" },
     .{ .effect = .tonemap, .label = "Tonemap", .hint = "Exposure and LUT" },
@@ -103,7 +97,6 @@ pub const PostProcessPipelineEditorState = struct {
     view_zoom: f32 = 1.0,
     dragging_node: ?usize = null,
     connecting_from: ?usize = null,
-    show_preview: bool = true,
     preview_split: f32 = 0.5,
 
     pub fn init(allocator: std.mem.Allocator) PostProcessPipelineEditorState {
@@ -158,6 +151,46 @@ pub const PostProcessPipelineEditorState = struct {
         }
         return null;
     }
+
+    pub fn syncGraphToViewportState(self: *const PostProcessPipelineEditorState, viewport_state: *EditorViewportState) void {
+        var has_bloom = false;
+        var has_tonemap = false;
+        var has_fxaa = false;
+        var has_ssao = false;
+        var has_ssgi = false;
+        var has_ssr = false;
+        var has_taa = false;
+        var has_dof = false;
+        var has_color_grading = false;
+        var has_contact_shadows = false;
+
+        for (self.nodes.items) |node| {
+            switch (node.effect) {
+                .bloom => has_bloom = true,
+                .tonemap => has_tonemap = true,
+                .fxaa => has_fxaa = true,
+                .ssao => has_ssao = true,
+                .ssgi => has_ssgi = true,
+                .ssr => has_ssr = true,
+                .taa => has_taa = true,
+                .dof => has_dof = true,
+                .color_grading => has_color_grading = true,
+                .contact_shadows => has_contact_shadows = true,
+            }
+        }
+
+        viewport_state.bloom_enabled = has_bloom;
+        viewport_state.exposure_enabled = has_tonemap;
+        viewport_state.lut_enabled = has_tonemap;
+        viewport_state.fxaa_enabled = has_fxaa;
+        viewport_state.ssao_enabled = has_ssao;
+        viewport_state.ssgi_enabled = has_ssgi;
+        viewport_state.ssr_enabled = has_ssr;
+        viewport_state.taa_enabled = has_taa;
+        viewport_state.dof_enabled = has_dof;
+        viewport_state.color_grading_enabled = has_color_grading;
+        viewport_state.contact_shadows_enabled = has_contact_shadows;
+    }
 };
 
 pub fn drawPostProcessPipelineEditorWindow(
@@ -167,6 +200,8 @@ pub fn drawPostProcessPipelineEditorWindow(
     viewport_state: *EditorViewportState,
 ) !void {
     _ = layer_context;
+
+    editor_state.syncGraphToViewportState(viewport_state);
 
     var title_buffer: [80]u8 = undefined;
     const title = try editor_state_.windowLabel(&title_buffer, .post_process_pipeline, "post_process_panel");
@@ -180,31 +215,26 @@ pub fn drawPostProcessPipelineEditorWindow(
 
     const node_count = editor_state.nodes.items.len;
 
-    drawPipelineToolbar(editor_state_, editor_state, viewport_state, node_count);
+    drawPipelineToolbar(editor_state_, editor_state, node_count);
     gui.separator();
 
     const content_region = gui.contentRegionAvail();
     const has_nodes = node_count != 0;
-    const graph_width = if (editor_state.show_preview)
-        if (has_nodes)
-            content_region[0] * editor_state.preview_split
-        else
-            content_region[0] * 0.56
+    const graph_width = if (has_nodes)
+        content_region[0] * editor_state.preview_split
     else
-        content_region[0];
+        content_region[0] * 0.56;
 
     if (gui.beginChild("pipeline_graph", graph_width, -1.0, true)) {
         drawPipelineGraph(editor_state_, editor_state, has_nodes);
     }
     gui.endChild();
 
-    if (editor_state.show_preview) {
-        gui.sameLine();
-        if (gui.beginChild("pipeline_preview", -1.0, -1.0, true)) {
-            drawPreviewPanel(editor_state_, viewport_state);
-        }
-        gui.endChild();
+    gui.sameLine();
+    if (gui.beginChild("pipeline_preview", -1.0, -1.0, true)) {
+        drawPreviewPanel(editor_state_, viewport_state);
     }
+    gui.endChild();
 
     if (editor_state.selected_node_index) |selected_index| {
         if (editor_state.getSelectedNode()) |node| {
@@ -220,7 +250,6 @@ pub fn drawPostProcessPipelineEditorWindow(
 fn drawPipelineToolbar(
     state: *const EditorState,
     editor_state: *PostProcessPipelineEditorState,
-    viewport_state: *EditorViewportState,
     node_count: usize,
 ) void {
     if (gui.button(state.text(.post_process_add_effect))) {
@@ -257,19 +286,10 @@ fn drawPipelineToolbar(
 
     if (gui.button(state.text(.post_process_clear_all))) {
         clearAllNodes(editor_state);
-        setAllPreviewEffects(viewport_state, false);
     }
 
     gui.sameLine();
     gui.text(state.text(.post_process_preview));
-    gui.sameLine();
-    var preview_toggle_buffer: [96]u8 = undefined;
-    const preview_toggle_label = std.fmt.bufPrint(
-        &preview_toggle_buffer,
-        "{s}##show_preview",
-        .{state.text(.post_process_preview)},
-    ) catch "##show_preview";
-    _ = gui.checkbox(preview_toggle_label, &editor_state.show_preview);
 
     gui.dummy(0.0, 6.0);
     var summary_buf: [128]u8 = undefined;
@@ -424,18 +444,18 @@ fn drawEmptyPipelineCanvas(state: *const EditorState, editor_state: *PostProcess
     gui.textColored(.{ 0.62, 0.66, 0.71, 1.0 }, state.text(.post_process_graph_empty_tip));
 }
 
-fn drawPreviewPanel(state: *const EditorState, viewport_state: *EditorViewportState) void {
+fn drawPreviewPanel(state: *const EditorState, viewport_state: *const EditorViewportState) void {
     gui.text(state.text(.post_process_live_preview_title));
     gui.separator();
     gui.textColored(.{ 0.62, 0.66, 0.71, 1.0 }, state.text(.post_process_live_preview_legend));
 
     gui.dummy(0.0, 6.0);
     gui.text(state.text(.post_process_core));
-    drawPreviewCoreControls(viewport_state);
+    drawPreviewCoreStatus(viewport_state);
 
     gui.dummy(0.0, 6.0);
     gui.text(state.text(.post_process_screen_space));
-    drawPreviewScreenControls(viewport_state);
+    drawPreviewScreenStatus(viewport_state);
 
     gui.dummy(0.0, 8.0);
     var status_buf: [96]u8 = undefined;
@@ -446,52 +466,63 @@ fn drawPreviewPanel(state: *const EditorState, viewport_state: *EditorViewportSt
         .{enabledEffectCount(viewport_state)},
     ) catch state.text(.post_process_live_preview_title);
     gui.textColored(.{ 0.62, 0.66, 0.71, 1.0 }, status_text);
-
-    gui.dummy(0.0, 8.0);
-    if (gui.button(state.text(.post_process_enable_all))) {
-        setAllPreviewEffects(viewport_state, true);
-    }
-    gui.sameLine();
-    if (gui.button(state.text(.post_process_disable_all))) {
-        setAllPreviewEffects(viewport_state, false);
-    }
 }
 
-fn drawPreviewCoreControls(viewport_state: *EditorViewportState) void {
-    const items = [_]PreviewToggleItem{
-        .{ .label = "Manual Exposure", .hint = "HDR preview", .value = &viewport_state.exposure_enabled },
-        .{ .label = "Bloom", .hint = "Glow pass", .value = &viewport_state.bloom_enabled },
-        .{ .label = "Color Grading", .hint = "Tone shaping", .value = &viewport_state.color_grading_enabled },
-        .{ .label = "FXAA", .hint = "Fallback AA", .value = &viewport_state.fxaa_enabled },
-        .{ .label = "TAA", .hint = "Temporal AA", .value = &viewport_state.taa_enabled },
-        .{ .label = "LUT", .hint = "Look-up table", .value = &viewport_state.lut_enabled },
+fn drawPreviewCoreStatus(viewport_state: *const EditorViewportState) void {
+    const items = [_]PreviewStatusItem{
+        .{ .label = "Manual Exposure", .hint = "HDR preview", .value = viewport_state.exposure_enabled },
+        .{ .label = "Bloom", .hint = "Glow pass", .value = viewport_state.bloom_enabled },
+        .{ .label = "Color Grading", .hint = "Tone shaping", .value = viewport_state.color_grading_enabled },
+        .{ .label = "FXAA", .hint = "Fallback AA", .value = viewport_state.fxaa_enabled },
+        .{ .label = "TAA", .hint = "Temporal AA", .value = viewport_state.taa_enabled },
+        .{ .label = "LUT", .hint = "Look-up table", .value = viewport_state.lut_enabled },
     };
-    drawPreviewToggleGrid(items[0..], 138.0);
+    drawPreviewStatusGrid(items[0..], 138.0);
 }
 
-fn drawPreviewScreenControls(viewport_state: *EditorViewportState) void {
-    const items = [_]PreviewToggleItem{
-        .{ .label = "SSAO", .hint = "Ambient occlusion", .value = &viewport_state.ssao_enabled },
-        .{ .label = "SSGI", .hint = "Global illumination", .value = &viewport_state.ssgi_enabled },
-        .{ .label = "SSR", .hint = "Screen-space reflections", .value = &viewport_state.ssr_enabled },
-        .{ .label = "DOF", .hint = "Lens blur", .value = &viewport_state.dof_enabled },
-        .{ .label = "Contact Shadows", .hint = "Small-scale occlusion", .value = &viewport_state.contact_shadows_enabled },
-        .{ .label = "RT Shadows", .hint = "Hardware shadow path", .value = &viewport_state.rt_shadows_enabled },
+fn drawPreviewScreenStatus(viewport_state: *const EditorViewportState) void {
+    const items = [_]PreviewStatusItem{
+        .{ .label = "SSAO", .hint = "Ambient occlusion", .value = viewport_state.ssao_enabled },
+        .{ .label = "SSGI", .hint = "Global illumination", .value = viewport_state.ssgi_enabled },
+        .{ .label = "SSR", .hint = "Screen-space reflections", .value = viewport_state.ssr_enabled },
+        .{ .label = "DOF", .hint = "Lens blur", .value = viewport_state.dof_enabled },
+        .{ .label = "Contact Shadows", .hint = "Small-scale occlusion", .value = viewport_state.contact_shadows_enabled },
+        .{ .label = "RT Shadows", .hint = "Hardware shadow path", .value = viewport_state.rt_shadows_enabled },
     };
-    drawPreviewToggleGrid(items[0..], 138.0);
+    drawPreviewStatusGrid(items[0..], 138.0);
 }
 
-fn drawPreviewToggleGrid(items: []const PreviewToggleItem, min_width_hint: f32) void {
+const PreviewStatusItem = struct {
+    label: []const u8,
+    hint: []const u8,
+    value: bool,
+};
+
+fn drawPreviewStatusGrid(items: []const PreviewStatusItem, min_width_hint: f32) void {
     const columns = layout.responsiveButtonColumns(items.len, min_width_hint);
     const width = layout.responsiveButtonWidth(columns);
     for (items, 0..) |item, index| {
         if (index > 0) {
             layout.advanceResponsiveRow(index, columns);
         }
-        const active = item.value.*;
-        if (drawToggleChip(item.label, width, item.hint, active)) {
-            item.value.* = !active;
-        }
+        drawStatusChip(item.label, width, item.hint, item.value);
+    }
+}
+
+fn drawStatusChip(label: []const u8, width: f32, hint: []const u8, active: bool) void {
+    const bg: [4]f32 = if (active)
+        .{ 0.20, 0.53, 0.36, 0.92 }
+    else
+        .{ 0.14, 0.16, 0.18, 0.82 };
+
+    gui.pushStyleColor(.button, bg);
+    gui.pushStyleColor(.button_hovered, bg);
+    gui.pushStyleColor(.button_active, bg);
+    defer gui.popStyleColor(3);
+
+    _ = gui.buttonEx(label, width, 0.0);
+    if (gui.isItemHovered() and hint.len != 0) {
+        gui.setTooltip(hint);
     }
 }
 
@@ -600,33 +631,6 @@ fn drawEmptySelectionState(state: *const EditorState) void {
     gui.text(state.text(.post_process_empty_selection_title));
     gui.textWrapped(state.text(.post_process_empty_selection_desc));
 }
-
-fn drawToggleChip(label: []const u8, width: f32, hint: []const u8, active: bool) bool {
-    const bg: [4]f32 = if (active)
-        .{ 0.20, 0.53, 0.36, 0.92 }
-    else
-        .{ 0.14, 0.16, 0.18, 0.82 };
-    const hovered: [4]f32 = if (active)
-        .{ 0.24, 0.62, 0.42, 0.96 }
-    else
-        .{ 0.20, 0.22, 0.25, 0.92 };
-    const pressed: [4]f32 = if (active)
-        .{ 0.12, 0.42, 0.28, 1.0 }
-    else
-        .{ 0.18, 0.20, 0.23, 1.0 };
-
-    gui.pushStyleColor(.button, bg);
-    gui.pushStyleColor(.button_hovered, hovered);
-    gui.pushStyleColor(.button_active, pressed);
-    defer gui.popStyleColor(3);
-
-    const clicked = gui.buttonEx(label, width, 0.0);
-    if (gui.isItemHovered() and hint.len != 0) {
-        gui.setTooltip(hint);
-    }
-    return clicked;
-}
-
 fn drawAccentButton(label: []const u8, width: f32, hint: []const u8, active: bool) bool {
     const bg: [4]f32 = if (active)
         .{ 0.20, 0.53, 0.36, 0.92 }
@@ -666,22 +670,6 @@ fn clearAllNodes(editor_state: *PostProcessPipelineEditorState) void {
     editor_state.nodes.clearRetainingCapacity();
     editor_state.selected_node_index = null;
 }
-
-fn setAllPreviewEffects(viewport_state: *EditorViewportState, enabled: bool) void {
-    viewport_state.exposure_enabled = enabled;
-    viewport_state.bloom_enabled = enabled;
-    viewport_state.color_grading_enabled = enabled;
-    viewport_state.fxaa_enabled = enabled;
-    viewport_state.ssao_enabled = enabled;
-    viewport_state.ssgi_enabled = enabled;
-    viewport_state.ssr_enabled = enabled;
-    viewport_state.taa_enabled = enabled;
-    viewport_state.dof_enabled = enabled;
-    viewport_state.contact_shadows_enabled = enabled;
-    viewport_state.rt_shadows_enabled = enabled;
-    viewport_state.lut_enabled = enabled;
-}
-
 fn enabledEffectCount(viewport_state: *const EditorViewportState) usize {
     return @intFromBool(viewport_state.exposure_enabled) +
         @intFromBool(viewport_state.bloom_enabled) +

@@ -2109,12 +2109,15 @@ fn drawViewportOverlayControlsWindow(state: *EditorState, layer_context: *engine
         const style_reg = layer_context.renderer.styleRegistry();
         var style_it = style_reg.styleIterator();
         while (style_it.next()) |entry| {
-            const active_style_name = layer_context.renderer.editor_viewport_state.activeRenderStyleName();
-            const is_active = std.mem.eql(u8, entry.key_ptr.*, active_style_name);
+            const is_active = std.mem.eql(u8, entry.key_ptr.*, style_reg.active_style_name);
             const display = if (entry.value_ptr.display_name.len > 0) entry.value_ptr.display_name else entry.key_ptr.*;
             if (gui.menuItem(display, null, is_active, true)) {
-                layer_context.renderer.editor_viewport_state.setActiveRenderStyle(entry.key_ptr.*);
-                _ = style_reg.setActiveStyle(entry.key_ptr.*);
+                if (style_reg.setActiveStyle(entry.key_ptr.*)) {
+                    // Persist to EditorViewportState for serialisation
+                    layer_context.renderer.editor_viewport_state.setActiveRenderStyle(entry.key_ptr.*);
+                } else {
+                    style_reg.rollbackStyle();
+                }
             }
         }
     }
@@ -2441,7 +2444,7 @@ fn drawViewportFpsOverlayWindow(state: *EditorState, layer_context: *engine.core
     const text_size = gui.calcTextSize(display_text, false, 0.0);
     const overlay_width = text_size[0] + 12.0;
     const overlay_x = state.viewport_origin[0] + margin;
-    const overlay_y = state.viewport_origin[1] + state.viewport_extent[1] - margin - overlay_height;
+    const overlay_y = state.viewport_origin[1] + state.viewport_extent[1] - margin - overlay_height - 24.0;
 
     gui.pushStyleVarVec2(.window_padding, .{ 6.0, 2.0 });
     defer gui.popStyleVar(1);

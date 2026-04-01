@@ -111,12 +111,22 @@ pub const StyleParamValues = struct {
 /// This is the typed runtime owner for `render_style` plugins.
 /// `PluginRegistry` handles discovery/lifecycle; `StyleRegistry` handles
 /// shader selection, parameters, and activation.
+///
+/// Ownership: Builtin styles use comptime string literals and are never freed.
+/// User/project styles hold allocator-owned strings (`name`, `display_name`,
+/// `path`, etc.) tracked in `owned_buffers`.  `deinit()` and `unregister()`
+/// release them.
 pub const StyleRegistry = struct {
     allocator: std.mem.Allocator,
     styles: std.StringHashMap(StylePluginManifest),
     active_style_name: []const u8,
     previous_style_name: []const u8,
     param_values: std.StringHashMap(StyleParamValues),
+    /// Raw JSON content buffers kept alive so that string slices inside
+    /// `StylePluginManifest` (parsed from JSON) remain valid.
+    owned_buffers: std.ArrayList([]u8),
+    /// Allocator-owned path strings (one per loaded user plugin).
+    owned_paths: std.ArrayList([]u8),
 
     pub fn init(allocator: std.mem.Allocator) StyleRegistry {
         var registry = StyleRegistry{
@@ -125,6 +135,8 @@ pub const StyleRegistry = struct {
             .active_style_name = "default_pbr",
             .previous_style_name = "default_pbr",
             .param_values = std.StringHashMap(StyleParamValues).init(allocator),
+            .owned_buffers = std.ArrayList([]u8).empty,
+            .owned_paths = std.ArrayList([]u8).empty,
         };
         // Always register the builtin styles
         registry.styles.put(default_pbr_style.name, default_pbr_style) catch {};
@@ -140,6 +152,10 @@ pub const StyleRegistry = struct {
         }
         self.param_values.deinit();
         self.styles.deinit();
+        for (self.owned_buffers.items) |buf| self.allocator.free(buf);
+        self.owned_buffers.deinit(self.allocator);
+        for (self.owned_paths.items) |p| self.allocator.free(p);
+        self.owned_paths.deinit(self.allocator);
     }
 
     pub fn register(self: *StyleRegistry, manifest: StylePluginManifest) !void {
@@ -201,14 +217,14 @@ pub const StyleRegistry = struct {
 
     /// Load a user plugin manifest from a directory path.
     /// Expects `dir_path/manifest.json` with the structure documented in R-9.
+    ///
+    /// Ownership: the raw JSON buffer is appended to `owned_buffers` so that
+    /// string slices parsed from it (name, display_name, …) stay valid for
+    /// the lifetime of the registry.  The dir_path copy goes to `owned_paths`.
     pub fn loadUserPlugin(self: *StyleRegistry, dir_path: []const u8) !void {
         const manifest_path = try std.fs.path.join(self.allocator, &.{ dir_path, "manifest.json" });
         defer self.allocator.free(manifest_path);
 
-        // Read and parse the manifest JSON. Content and parsed arena are
-        // intentionally kept alive (small controlled leak) so that string
-        // slices stored in the StylePluginManifest remain valid for the
-        // lifetime of the registry.
         const content = try std.fs.cwd().readFileAlloc(self.allocator, manifest_path, 64 * 1024);
         errdefer self.allocator.free(content);
 
@@ -226,8 +242,12 @@ pub const StyleRegistry = struct {
             render_style: ?RenderStyleJson = null,
         };
 
-        var parsed = try std.json.parseFromSlice(ManifestJson, self.allocator, content, .{ .ignore_unknown_fields = true });
-        errdefer parsed.deinit();
+        // parseFromSlice returns slices that point into `content`.
+        // We keep `content` alive in `owned_buffers` so those slices remain valid.
+        const parsed = std.json.parseFromSlice(ManifestJson, self.allocator, content, .{ .ignore_unknown_fields = true }) catch return error.InvalidManifest;
+        // Note: we intentionally do NOT defer parsed.deinit() — the arena
+        // backing nested slices (disabled_passes array) must stay alive.
+        // Both `content` and `parsed` are freed on registry deinit via owned_buffers.
 
         const m = parsed.value;
         if (!std.mem.eql(u8, m.plugin_type, "render_style")) return error.NotRenderStylePlugin;
@@ -241,7 +261,6 @@ pub const StyleRegistry = struct {
         else
             .builtin;
 
-        // Keep a long-lived copy of the directory path.
         const path_copy = try self.allocator.dupe(u8, dir_path);
         errdefer self.allocator.free(path_copy);
 
@@ -257,6 +276,17 @@ pub const StyleRegistry = struct {
         };
 
         try self.register(style_manifest);
+
+        // Track allocations — only after register succeeds.
+        try self.owned_buffers.append(self.allocator, content);
+        try self.owned_paths.append(self.allocator, path_copy);
+    }
+
+    /// Register a render_style directly from PluginRegistry discovery data.
+    /// `dir_path` is the plugin directory; manifest.json is re-read for the
+    /// typed render_style payload.
+    pub fn loadFromDiscoveredPlugin(self: *StyleRegistry, dir_path: []const u8) !void {
+        return self.loadUserPlugin(dir_path);
     }
 
     /// Scan a directory for plugin subdirectories and load each one.

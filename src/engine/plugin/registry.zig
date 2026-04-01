@@ -22,6 +22,7 @@ pub const PluginRegistry = struct {
     pub fn deinit(self: *PluginRegistry) void {
         var it = self.plugins.iterator();
         while (it.next()) |entry| {
+            entry.value_ptr.*.deinit(self.allocator);
             self.allocator.destroy(entry.value_ptr.*);
         }
         self.plugins.deinit();
@@ -49,17 +50,17 @@ pub const PluginRegistry = struct {
         try self.plugins.put(name, record);
 
         const plugin_type_list = self.by_type.getOrPut(record.manifest.plugin_type) catch return error.OutOfMemory;
-        if (plugin_type_list.value_ptr.items.len == 0) {
-            plugin_type_list.value_ptr.* = std.ArrayList(*types.PluginRecord).init(self.allocator);
+        if (!plugin_type_list.found_existing) {
+            plugin_type_list.value_ptr.* = .empty;
         }
-        try plugin_type_list.value_ptr.append(record);
+        try plugin_type_list.value_ptr.append(self.allocator, record);
 
         for (record.manifest.capabilities) |cap| {
             const cap_list = self.capabilities.getOrPut(cap) catch return error.OutOfMemory;
-            if (cap_list.value_ptr.items.len == 0) {
-                cap_list.value_ptr.* = std.ArrayList(*types.PluginRecord).init(self.allocator);
+            if (!cap_list.found_existing) {
+                cap_list.value_ptr.* = .empty;
             }
-            try cap_list.value_ptr.append(record);
+            try cap_list.value_ptr.append(self.allocator, record);
         }
     }
 
@@ -153,10 +154,40 @@ pub const PluginRegistry = struct {
         }
     }
 
-    /// Unload a plugin completely.
+    /// Fully unload and remove a plugin from all indices.
     pub fn unload(self: *PluginRegistry, name: []const u8) !void {
-        const record = self.plugins.get(name) orelse return error.PluginNotFound;
-        record.lifecycle = .unloaded;
+        const record_ptr = self.plugins.get(name) orelse return error.PluginNotFound;
+
+        // Remove from by_type index
+        if (self.by_type.getPtr(record_ptr.manifest.plugin_type)) |list| {
+            var i: usize = 0;
+            while (i < list.items.len) {
+                if (list.items[i] == record_ptr) {
+                    _ = list.swapRemove(i);
+                } else {
+                    i += 1;
+                }
+            }
+        }
+
+        // Remove from capability indices
+        for (record_ptr.manifest.capabilities) |cap| {
+            if (self.capabilities.getPtr(cap)) |list| {
+                var i: usize = 0;
+                while (i < list.items.len) {
+                    if (list.items[i] == record_ptr) {
+                        _ = list.swapRemove(i);
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+        }
+
+        // Remove from main map, free record
+        _ = self.plugins.remove(name);
+        record_ptr.deinit(self.allocator);
+        self.allocator.destroy(record_ptr);
     }
 };
 

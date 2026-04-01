@@ -24,6 +24,8 @@ const post_process_editor = @import("../ui/panels/rendering/post_process_editor.
 const prefab_editor = @import("../ui/panels/assets/prefab_editor.zig");
 const camera_bookmarks = @import("../ui/panels/viewport/camera_bookmarks.zig");
 const rhi_stats = @import("../ui/panels/debug/rhi_stats.zig");
+const plugin_manager = @import("../ui/panels/debug/plugin_manager.zig");
+const style_inspector = @import("../ui/panels/rendering/style_inspector.zig");
 const preferences = @import("preferences.zig");
 
 fn initEditorStyle() void {
@@ -196,10 +198,14 @@ pub const EditorLayer = struct {
         try history.resetSnapshotHistory(&self.state, layer_context);
         try content_browser.refreshAssetBrowser(&self.state, layer_context);
 
-        // Discover project render style plugins.
-        layer_context.renderer.styleRegistry().scanPluginDirectory("project_plugins") catch |err| {
-            std.log.warn("Editor: failed to scan project plugins: {s}", .{@errorName(err)});
-        };
+        // Discover project plugins via unified PluginRegistry → StyleRegistry flow.
+        layer_context.renderer.discoverPlugins("project_plugins");
+
+        // Restore persisted render style selection from EditorViewportState → StyleRegistry.
+        const persisted_style = layer_context.renderer.editor_viewport_state.activeRenderStyleName();
+        if (persisted_style.len > 0) {
+            _ = layer_context.renderer.styleRegistry().setActiveStyle(persisted_style);
+        }
     }
 
     fn onDetach(context: *anyopaque) void {
@@ -351,6 +357,12 @@ pub const EditorLayer = struct {
         }
         if (self.state.rhi_stats_open) {
             rhi_stats.drawRhiStatsWindow(&self.state, layer_context);
+        }
+        if (self.state.plugin_manager_open) {
+            plugin_manager.drawPluginManagerWindow(&self.state, layer_context);
+        }
+        if (self.state.style_inspector_open) {
+            style_inspector.drawStyleInspectorWindow(&self.state, layer_context);
         }
     }
 };

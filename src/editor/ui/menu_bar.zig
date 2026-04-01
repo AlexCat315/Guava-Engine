@@ -145,6 +145,12 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
         if (gui.menuItem("RHI Stats", null, state.rhi_stats_open, true)) {
             state.rhi_stats_open = !state.rhi_stats_open;
         }
+        if (gui.menuItem("Plugin Manager", null, state.plugin_manager_open, true)) {
+            state.plugin_manager_open = !state.plugin_manager_open;
+        }
+        if (gui.menuItem("Render Style Inspector", null, state.style_inspector_open, true)) {
+            state.style_inspector_open = !state.style_inspector_open;
+        }
         if (gui.beginMenu(state.text(.layout))) {
             defer gui.endMenu();
             if (gui.menuItem(state.text(.load_default_layout), null, false, true)) {
