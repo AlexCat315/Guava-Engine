@@ -337,18 +337,18 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
             defer gui.popStyleVar(1);
 
             if (entity.prefab_instance_override != null) {
-                if (gui.buttonEx(state.text(.update_prefab_instance), 120.0, 0.0)) {
+                if (gui.buttonEx(state.text(.update_prefab_instance), theme.Spacing.inspector_prefab_button_width, 0.0)) {
                     if (entity.prefab_instance_override) |override| {
                         _ = try layer_context.world.updateAllPrefabInstances(override.prefab_id);
                     }
                 }
                 gui.sameLine();
-                if (gui.buttonEx(state.text(.break_prefab_connection), 120.0, 0.0)) {
+                if (gui.buttonEx(state.text(.break_prefab_connection), theme.Spacing.inspector_prefab_button_width, 0.0)) {
                     try scene_hierarchy.breakPrefabConnection(state, layer_context, selected);
                     return;
                 }
             } else if (entity.prefab_entity_id != null) {
-                if (gui.buttonEx(state.text(.add_override), 120.0, 0.0)) {
+                if (gui.buttonEx(state.text(.add_override), theme.Spacing.inspector_prefab_button_width, 0.0)) {
                     try scene_hierarchy.addPrefabOverride(state, layer_context, selected);
                 }
             }
@@ -731,7 +731,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                         .perspective => |projection| {
                             var edited = projection;
                             var fov_degrees = engine.math.angle.radiansToDegrees(edited.fov_y_radians);
-                            if (drawInspectorFloatRow(state.text(.fov_y), "##camera_fov_y", &fov_degrees, 0.25, 10.0, 170.0)) {
+                            if (drawInspectorFloatRow(state.text(.fov_y), "##camera_fov_y", &fov_degrees, theme.Spacing.inspector_camera_fov_speed, theme.Spacing.inspector_camera_fov_min, theme.Spacing.inspector_camera_fov_max)) {
                                 edited.fov_y_radians = engine.math.angle.degreesToRadians(fov_degrees);
                                 if (entity_mut) |em| {
                                     if (em.camera) |*cc| cc.projection = .{ .perspective = edited };
@@ -741,8 +741,8 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                                 }
                             }
 
-                            if (drawInspectorFloatRow(state.text(.near_clip), "##camera_perspective_near_clip", &edited.near_clip, 0.01, 0.001, 100.0)) {
-                                edited.near_clip = std.math.clamp(edited.near_clip, 0.001, 100.0);
+                            if (drawInspectorFloatRow(state.text(.near_clip), "##camera_perspective_near_clip", &edited.near_clip, theme.Spacing.inspector_camera_near_speed, theme.Spacing.inspector_camera_near_min, theme.Spacing.inspector_camera_near_max)) {
+                                edited.near_clip = std.math.clamp(edited.near_clip, theme.Spacing.inspector_camera_near_min, theme.Spacing.inspector_camera_near_max);
                                 edited.far_clip = @max(edited.far_clip, edited.near_clip + 0.01);
                                 if (entity_mut) |em| {
                                     if (em.camera) |*cc| cc.projection = .{ .perspective = edited };
@@ -752,9 +752,9 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                                 }
                             }
 
-                            if (drawInspectorFloatRow(state.text(.far_clip), "##camera_perspective_far_clip", &edited.far_clip, 1.0, 0.1, 5000.0)) {
+                            if (drawInspectorFloatRow(state.text(.far_clip), "##camera_perspective_far_clip", &edited.far_clip, theme.Spacing.inspector_camera_far_speed, theme.Spacing.inspector_camera_far_min, theme.Spacing.inspector_camera_far_max)) {
                                 edited.near_clip = @min(edited.near_clip, edited.far_clip - 0.01);
-                                edited.far_clip = std.math.clamp(edited.far_clip, edited.near_clip + 0.01, 5000.0);
+                                edited.far_clip = std.math.clamp(edited.far_clip, edited.near_clip + 0.01, theme.Spacing.inspector_camera_far_max);
                                 if (entity_mut) |em| {
                                     if (em.camera) |*cc| cc.projection = .{ .perspective = edited };
                                 }
@@ -765,8 +765,8 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                         },
                         .orthographic => |projection| {
                             var edited = projection;
-                            if (drawInspectorFloatRow(state.text(.size), "##camera_orthographic_size", &edited.size, 0.1, 0.01, 500.0)) {
-                                edited.size = std.math.clamp(edited.size, 0.01, 500.0);
+                            if (drawInspectorFloatRow(state.text(.size), "##camera_orthographic_size", &edited.size, theme.Spacing.inspector_camera_ortho_speed, theme.Spacing.inspector_camera_ortho_min, theme.Spacing.inspector_camera_ortho_max)) {
+                                edited.size = std.math.clamp(edited.size, theme.Spacing.inspector_camera_ortho_min, theme.Spacing.inspector_camera_ortho_max);
                                 if (entity_mut) |em| {
                                     if (em.camera) |*cc| cc.projection = .{ .orthographic = edited };
                                 }
@@ -775,8 +775,8 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                                 }
                             }
 
-                            if (drawInspectorFloatRow(state.text(.near_clip), "##camera_orthographic_near_clip", &edited.near_clip, 0.05, -1000.0, 1000.0)) {
-                                edited.near_clip = std.math.clamp(edited.near_clip, -1000.0, edited.far_clip - 0.01);
+                            if (drawInspectorFloatRow(state.text(.near_clip), "##camera_orthographic_near_clip", &edited.near_clip, theme.Spacing.inspector_camera_ortho_clip_speed, theme.Spacing.inspector_camera_ortho_clip_min, theme.Spacing.inspector_camera_ortho_clip_max)) {
+                                edited.near_clip = std.math.clamp(edited.near_clip, theme.Spacing.inspector_camera_ortho_clip_min, edited.far_clip - 0.01);
                                 if (entity_mut) |em| {
                                     if (em.camera) |*cc| cc.projection = .{ .orthographic = edited };
                                 }
@@ -785,8 +785,8 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                                 }
                             }
 
-                            if (drawInspectorFloatRow(state.text(.far_clip), "##camera_orthographic_far_clip", &edited.far_clip, 0.05, -1000.0, 1000.0)) {
-                                edited.far_clip = std.math.clamp(edited.far_clip, edited.near_clip + 0.01, 1000.0);
+                            if (drawInspectorFloatRow(state.text(.far_clip), "##camera_orthographic_far_clip", &edited.far_clip, theme.Spacing.inspector_camera_ortho_clip_speed, theme.Spacing.inspector_camera_ortho_clip_min, theme.Spacing.inspector_camera_ortho_clip_max)) {
+                                edited.far_clip = std.math.clamp(edited.far_clip, edited.near_clip + 0.01, theme.Spacing.inspector_camera_ortho_clip_max);
                                 if (entity_mut) |em| {
                                     if (em.camera) |*cc| cc.projection = .{ .orthographic = edited };
                                 }
@@ -851,7 +851,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                     }
 
                     var intensity = light.intensity;
-                    if (drawInspectorFloatRow(state.text(.intensity), "##light_intensity", &intensity, 0.1, 0.0, 100.0)) {
+                    if (drawInspectorFloatRow(state.text(.intensity), "##light_intensity", &intensity, theme.Spacing.inspector_light_intensity_speed, theme.Spacing.inspector_light_intensity_min, theme.Spacing.inspector_light_intensity_max)) {
                         if (entity_mut) |em| {
                             if (em.light) |*l| l.intensity = intensity;
                         }
@@ -862,7 +862,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
 
                     if (light.kind != .directional) {
                         var range = light.range;
-                        if (drawInspectorFloatRow(state.text(.range), "##light_range", &range, 0.1, 0.1, 100.0)) {
+                        if (drawInspectorFloatRow(state.text(.range), "##light_range", &range, theme.Spacing.inspector_light_range_speed, theme.Spacing.inspector_light_range_min, theme.Spacing.inspector_light_range_max)) {
                             if (entity_mut) |em| {
                                 if (em.light) |*l| l.range = range;
                             }
@@ -1088,7 +1088,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                 defer endInspectorPropertyGrid();
 
                 var volume = audio_src.volume;
-                if (drawInspectorFloatRow(state.text(.audio_volume), "##audio_volume", &volume, 0.01, 0.0, 1.0)) {
+                if (drawInspectorFloatRow(state.text(.audio_volume), "##audio_volume", &volume, theme.Spacing.inspector_audio_volume_speed, theme.Spacing.inspector_audio_volume_min, theme.Spacing.inspector_audio_volume_max)) {
                     if (entity_mut) |em| {
                         if (em.audio_source) |*as| as.volume = volume;
                     }
@@ -1123,7 +1123,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
 
                 if (audio_src.spatial) {
                     var min_dist = audio_src.min_distance;
-                    if (drawInspectorFloatRow(state.text(.audio_min_distance), "##audio_min_dist", &min_dist, 0.1, 0.0, 1000.0)) {
+                    if (drawInspectorFloatRow(state.text(.audio_min_distance), "##audio_min_dist", &min_dist, theme.Spacing.inspector_audio_min_dist_speed, theme.Spacing.inspector_audio_min_dist_min, theme.Spacing.inspector_audio_min_dist_max)) {
                         if (entity_mut) |em| {
                             if (em.audio_source) |*as| as.min_distance = min_dist;
                         }
@@ -1133,7 +1133,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                     }
 
                     var max_dist = audio_src.max_distance;
-                    if (drawInspectorFloatRow(state.text(.audio_max_distance), "##audio_max_dist", &max_dist, 0.1, 0.0, 10000.0)) {
+                    if (drawInspectorFloatRow(state.text(.audio_max_distance), "##audio_max_dist", &max_dist, theme.Spacing.inspector_audio_max_dist_speed, theme.Spacing.inspector_audio_max_dist_min, theme.Spacing.inspector_audio_max_dist_max)) {
                         if (entity_mut) |em| {
                             if (em.audio_source) |*as| as.max_distance = max_dist;
                         }
@@ -1143,7 +1143,7 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                     }
 
                     var doppler = audio_src.doppler_factor;
-                    if (drawInspectorFloatRow(state.text(.audio_doppler_factor), "##audio_doppler", &doppler, 0.01, 0.0, 5.0)) {
+                    if (drawInspectorFloatRow(state.text(.audio_doppler_factor), "##audio_doppler", &doppler, theme.Spacing.inspector_audio_doppler_speed, theme.Spacing.inspector_audio_doppler_min, theme.Spacing.inspector_audio_doppler_max)) {
                         if (entity_mut) |em| {
                             if (em.audio_source) |*as| as.doppler_factor = doppler;
                         }

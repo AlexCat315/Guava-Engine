@@ -264,6 +264,7 @@ pub const Spacing = struct {
     pub const viewport_hud_window_bottom_alpha: f32 = 0.55;
     pub const viewport_hud_window_side_alpha: f32 = 0.12;
     pub const viewport_hud_window_line_thickness: f32 = 1.0;
+    pub const viewport_hud_window_line_inset: f32 = 1.0;
     pub const viewport_divider_padding_top: f32 = 3.0;
     pub const viewport_divider_width: f32 = 8.0;
     pub const viewport_divider_alpha: f32 = 0.22;
@@ -274,10 +275,12 @@ pub const Spacing = struct {
     pub const viewport_context_drag_threshold_sq: f32 = 16.0;
 
     // ── Viewport 3D cursor ───────────────────────────────────────────────────
+    pub const cursor_3d_scale_factor: f32 = 0.28;
     pub const cursor_3d_ring_radius: f32 = 7.5;
     pub const cursor_3d_ring_pulse: f32 = 2.5;
     pub const cursor_3d_pulse_speed: f32 = 4.6;
     pub const cursor_3d_center_dot_radius: f32 = 4.5;
+    pub const cursor_3d_center_ring_bg: [4]f32 = .{ 0.12, 0.12, 0.12, 0.92 };
     pub const cursor_3d_tick_half_length: f32 = 6.0;
     pub const cursor_3d_tick_gap: f32 = 12.0;
     pub const cursor_3d_tick_thickness: f32 = 1.8;
@@ -309,12 +312,19 @@ pub const Spacing = struct {
     pub const viewport_entity_icon_halo_selected_glow: f32 = 5.0;
     pub const viewport_entity_icon_halo_primary_glow: f32 = 2.5;
     pub const viewport_entity_icon_halo_hover_glow: f32 = 3.5;
+    pub const viewport_entity_icon_halo_selected_alpha: f32 = 0.18;
+    pub const viewport_entity_icon_halo_primary_alpha: f32 = 0.24;
+    pub const viewport_entity_icon_halo_hover_alpha: f32 = 0.10;
     pub const viewport_entity_icon_segments: i32 = 24;
     pub const viewport_entity_primary_dot_radius: f32 = 3.5;
     pub const viewport_entity_primary_dot_offset: f32 = 0.52;
     pub const viewport_entity_primary_dot_segments: i32 = 16;
+    pub const viewport_entity_primary_dot_color: [4]f32 = .{ 0.20, 0.92, 0.58, 0.98 };
     pub const viewport_entity_bg_alpha: f32 = 0.90;
     pub const viewport_entity_inner_alpha: f32 = 0.92;
+    pub const viewport_entity_inner_color_factor: f32 = 0.22;
+    pub const viewport_entity_bg_rgb: [3]f32 = .{ 0.05, 0.06, 0.08 };
+    pub const viewport_entity_hover_glow_color: [4]f32 = .{ 1.0, 1.0, 1.0, 0.10 };
 
     // ── Viewport mesh edit ───────────────────────────────────────────────────
     pub const mesh_edit_vertex_radius_selected: f32 = 5.2;
@@ -348,6 +358,19 @@ pub const Spacing = struct {
     pub const ai_overlay_bg_alpha_min: f32 = 0.54;
     pub const ai_overlay_bg_alpha_max: f32 = 0.68;
     pub const ai_overlay_bg_alpha_factor: f32 = 0.72;
+    pub const ai_overlay_color_ready: [4]f32 = .{ 0.20, 0.56, 0.36, 0.88 };
+    pub const ai_overlay_color_analyzing: [4]f32 = .{ 0.14, 0.38, 0.58, 0.90 };
+    pub const ai_overlay_color_compiling: [4]f32 = .{ 0.42, 0.30, 0.12, 0.90 };
+    pub const ai_overlay_color_waiting: [4]f32 = .{ 0.38, 0.18, 0.60, 0.94 };
+    pub const ai_overlay_stage_label_text: [4]f32 = .{ 0.96, 0.97, 1.0, 1.0 };
+    pub const ai_overlay_detail_text: [4]f32 = .{ 0.74, 0.78, 0.86, 0.90 };
+
+    // ── Viewport ghost highlight ─────────────────────────────────────────────
+    pub const ghost_highlight_pulse_base: f32 = 0.45;
+    pub const ghost_highlight_pulse_amplitude: f32 = 0.55;
+    pub const ghost_highlight_text_r: f32 = 0.75;
+    pub const ghost_highlight_text_g: f32 = 0.38;
+    pub const ghost_highlight_text_b: f32 = 1.0;
 
     // ── Viewport toolbar ─────────────────────────────────────────────────────
     pub const viewport_toolbar_icon_size: f32 = 14.0;
@@ -368,6 +391,29 @@ pub const Spacing = struct {
     pub const constraint_chip_text_padding: f32 = 18.0;
     pub const constraint_snap_step_width: f32 = 88.0;
     pub const constraint_popup_button_width: f32 = 96.0;
+    pub const constraint_popup_button_width_bounds_center: f32 = 120.0;
+    pub const constraint_popup_button_width_median_point: f32 = 108.0;
+    pub const constraint_popup_button_width_active_element: f32 = 120.0;
+    pub const constraint_popup_button_width_individual_origins: f32 = 126.0;
+    pub const constraint_popup_button_width_place_cursor: f32 = 164.0;
+    pub const constraint_popup_button_width_free_axis: f32 = 56.0;
+    pub const constraint_popup_button_width_axis: f32 = 40.0;
+    pub const constraint_popup_button_width_grid_snap: f32 = 72.0;
+    pub const constraint_popup_button_width_surface_snap: f32 = 84.0;
+    pub const constraint_popup_button_width_vertex_snap: f32 = 76.0;
+    pub const constraint_popup_button_width_align_rotation: f32 = 220.0;
+    pub const constraint_cursor_drag_speed: f32 = 0.1;
+    pub const constraint_cursor_drag_min: f32 = -100000.0;
+    pub const constraint_cursor_drag_max: f32 = 100000.0;
+    pub const constraint_translation_snap_speed: f32 = 0.01;
+    pub const constraint_translation_snap_min: f32 = 0.01;
+    pub const constraint_translation_snap_max: f32 = 1024.0;
+    pub const constraint_rotation_snap_speed: f32 = 1.0;
+    pub const constraint_rotation_snap_min: f32 = 1.0;
+    pub const constraint_rotation_snap_max: f32 = 180.0;
+    pub const constraint_scale_snap_speed: f32 = 0.01;
+    pub const constraint_scale_snap_min: f32 = 0.01;
+    pub const constraint_scale_snap_max: f32 = 10.0;
 
     // ── Viewport camera frustum colors ───────────────────────────────────────
     pub const frustum_selected_color: [4]f32 = .{ 0.62, 0.88, 1.0, 0.96 };
@@ -450,6 +496,40 @@ pub const Spacing = struct {
     pub const inspector_axis_y_bg: [4]f32 = .{ 0.16, 0.59, 0.44, 1.0 };
     pub const inspector_axis_z_bg: [4]f32 = .{ 0.20, 0.45, 0.85, 1.0 };
     pub const inspector_axis_text: [4]f32 = .{ 1.0, 1.0, 1.0, 1.0 };
+    pub const inspector_prefab_button_width: f32 = 120.0;
+    pub const inspector_camera_fov_speed: f32 = 0.25;
+    pub const inspector_camera_fov_min: f32 = 10.0;
+    pub const inspector_camera_fov_max: f32 = 170.0;
+    pub const inspector_camera_near_speed: f32 = 0.01;
+    pub const inspector_camera_near_min: f32 = 0.001;
+    pub const inspector_camera_near_max: f32 = 100.0;
+    pub const inspector_camera_far_speed: f32 = 1.0;
+    pub const inspector_camera_far_min: f32 = 0.1;
+    pub const inspector_camera_far_max: f32 = 5000.0;
+    pub const inspector_camera_ortho_speed: f32 = 0.1;
+    pub const inspector_camera_ortho_min: f32 = 0.01;
+    pub const inspector_camera_ortho_max: f32 = 500.0;
+    pub const inspector_camera_ortho_clip_speed: f32 = 0.05;
+    pub const inspector_camera_ortho_clip_min: f32 = -1000.0;
+    pub const inspector_camera_ortho_clip_max: f32 = 1000.0;
+    pub const inspector_light_intensity_speed: f32 = 0.1;
+    pub const inspector_light_intensity_min: f32 = 0.0;
+    pub const inspector_light_intensity_max: f32 = 100.0;
+    pub const inspector_light_range_speed: f32 = 0.1;
+    pub const inspector_light_range_min: f32 = 0.1;
+    pub const inspector_light_range_max: f32 = 100.0;
+    pub const inspector_audio_volume_speed: f32 = 0.01;
+    pub const inspector_audio_volume_min: f32 = 0.0;
+    pub const inspector_audio_volume_max: f32 = 1.0;
+    pub const inspector_audio_min_dist_speed: f32 = 0.1;
+    pub const inspector_audio_min_dist_min: f32 = 0.0;
+    pub const inspector_audio_min_dist_max: f32 = 1000.0;
+    pub const inspector_audio_max_dist_speed: f32 = 0.1;
+    pub const inspector_audio_max_dist_min: f32 = 0.0;
+    pub const inspector_audio_max_dist_max: f32 = 10000.0;
+    pub const inspector_audio_doppler_speed: f32 = 0.01;
+    pub const inspector_audio_doppler_min: f32 = 0.0;
+    pub const inspector_audio_doppler_max: f32 = 5.0;
 
     // ── Hierarchy ────────────────────────────────────────────────────────────
     pub const hierarchy_filter_right_margin: f32 = 40.0;
@@ -491,6 +571,11 @@ pub const Spacing = struct {
     // ── Segmented buttons ────────────────────────────────────────────────────
     pub const segmented_button_rounding: f32 = 4.0;
     pub const segmented_button_rounding_middle: f32 = 0.0;
+    pub const segmented_button_width_object_mode: f32 = 66.0;
+    pub const segmented_button_width_edit_mode: f32 = 58.0;
+    pub const segmented_button_width_vertex_mode: f32 = 54.0;
+    pub const segmented_button_width_edge_mode: f32 = 46.0;
+    pub const segmented_button_width_face_mode: f32 = 46.0;
 
     // ── Property row ─────────────────────────────────────────────────────────
     pub const property_row_dummy_after_label: f32 = 2.0;
@@ -540,6 +625,13 @@ pub const Spacing = struct {
     pub const fps_overlay_refresh_dot_offset: f32 = 5.0;
     pub const fps_overlay_refresh_dot_segments: i32 = 12;
     pub const fps_overlay_refresh_dot_color: [4]f32 = .{ 0.30, 0.60, 0.90, 0.90 };
+    pub const fps_overlay_sample_interval: f32 = 0.20;
+    pub const fps_overlay_height: f32 = 20.0;
+    pub const fps_overlay_bottom_offset: f32 = 24.0;
+
+    // ── ViewCube extras ──────────────────────────────────────────────────────
+    pub const view_cube_size_ratio: f32 = 0.13;
+    pub const view_cube_top_offset_extra: f32 = 6.0;
 };
 
 // ── Typography ───────────────────────────────────────────────────────────────

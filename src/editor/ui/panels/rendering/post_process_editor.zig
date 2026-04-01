@@ -15,11 +15,22 @@ const graph_node_width: f32 = 196.0;
 const graph_node_height: f32 = 96.0;
 const graph_node_header_height: f32 = 30.0;
 const graph_pin_radius: f32 = 7.0;
-const graph_pin_hit_size: f32 = 22.0;
-const graph_splitter_width: f32 = 8.0;
-const graph_min_palette_width: f32 = 196.0;
-const graph_min_inspector_width: f32 = 272.0;
-const graph_min_canvas_width: f32 = 360.0;
+const graph_pin_hit_size: f32 = 28.0;
+const graph_splitter_width: f32 = 18.0;
+const graph_min_palette_width: f32 = 152.0;
+const graph_min_inspector_width: f32 = 220.0;
+const graph_min_canvas_width: f32 = 240.0;
+
+const ActiveSplitter = enum {
+    none,
+    palette,
+    inspector,
+};
+
+const PinKind = enum {
+    input,
+    output,
+};
 
 const EffectPaletteItem = struct {
     effect: PostProcessEffect,
@@ -128,6 +139,10 @@ pub const PostProcessPipelineEditorState = struct {
     preview_split: f32 = 0.42,
     palette_width: f32 = 224.0,
     inspector_width: f32 = 320.0,
+    active_splitter: ActiveSplitter = .none,
+    splitter_drag_last_mouse_x: f32 = 0.0,
+    dragging_node_index: ?usize = null,
+    node_drag_offset: [2]f32 = .{ 0.0, 0.0 },
 
     pub fn init(allocator: std.mem.Allocator) PostProcessPipelineEditorState {
         return .{
@@ -293,8 +308,6 @@ pub fn drawPostProcessPipelineEditorWindow(
     editor_state: *PostProcessPipelineEditorState,
     viewport_state: *EditorViewportState,
 ) !void {
-    _ = layer_context;
-
     editor_state.syncGraphToViewportState(viewport_state);
 
     var title_buffer: [80]u8 = undefined;
@@ -328,7 +341,10 @@ pub fn drawPostProcessPipelineEditorWindow(
 
     gui.sameLine();
     drawVerticalSplitter(
+        layer_context.input,
         "post_process_palette_splitter",
+        editor_state,
+        .palette,
         content_region[1],
         &editor_state.palette_width,
         graph_min_palette_width,
@@ -338,13 +354,16 @@ pub fn drawPostProcessPipelineEditorWindow(
 
     gui.sameLine();
     if (gui.beginChild("pipeline_graph", graph_width, -1.0, true)) {
-        try drawPipelineGraph(editor_state_, editor_state, has_nodes);
+        try drawPipelineGraph(editor_state_, layer_context.input, editor_state, has_nodes);
     }
     gui.endChild();
 
     gui.sameLine();
     drawVerticalSplitter(
+        layer_context.input,
         "post_process_inspector_splitter",
+        editor_state,
+        .inspector,
         content_region[1],
         &editor_state.inspector_width,
         graph_min_inspector_width,
@@ -374,25 +393,39 @@ fn clampPipelinePanelWidths(editor_state: *PostProcessPipelineEditorState, total
 }
 
 fn drawVerticalSplitter(
+    input: *const engine.core.InputState,
     id: []const u8,
+    editor_state: *PostProcessPipelineEditorState,
+    splitter_kind: ActiveSplitter,
     height: f32,
     width_value: *f32,
     min_width: f32,
     max_width: f32,
     delta_sign: f32,
 ) void {
+    _ = id;
     const draw_list = gui.getWindowDrawList();
     const splitter_height = @max(height, 1.0);
-    _ = gui.invisibleButton(id, graph_splitter_width, splitter_height);
-    const item_min = gui.getItemRectMin();
-    const item_max = gui.getItemRectMax();
-    const hovered = gui.isItemHovered();
-    const active = gui.isItemActive();
+    const item_min = gui.cursorScreenPos();
+    gui.dummy(graph_splitter_width, splitter_height);
+    const item_max = .{ item_min[0] + graph_splitter_width, item_min[1] + splitter_height };
+    const hovered = pointInRect(gui.mousePos(), item_min, item_max);
+    const active = editor_state.active_splitter == splitter_kind;
 
-    if (active and gui.isMouseDragging(.left)) {
-        const delta = gui.mouseDragDelta(.left);
-        width_value.* = std.math.clamp(width_value.* + delta[0] * delta_sign, min_width, max_width);
-        gui.resetMouseDragDelta(.left);
+    const mouse_x = gui.mousePos()[0];
+
+    if (hovered and input.wasMousePressed(.left)) {
+        editor_state.active_splitter = splitter_kind;
+        editor_state.splitter_drag_last_mouse_x = mouse_x;
+    }
+    if (active) {
+        if (input.isMouseDown(.left)) {
+            const delta_x = mouse_x - editor_state.splitter_drag_last_mouse_x;
+            editor_state.splitter_drag_last_mouse_x = mouse_x;
+            width_value.* = std.math.clamp(width_value.* + delta_x * delta_sign, min_width, max_width);
+        } else {
+            editor_state.active_splitter = .none;
+        }
     }
 
     const bg = if (active)
@@ -509,22 +542,71 @@ fn autoArrangeNodes(editor_state: *PostProcessPipelineEditorState) void {
 
 fn drawPipelineGraph(
     state: *const EditorState,
+    input: *const engine.core.InputState,
     editor_state: *PostProcessPipelineEditorState,
     has_nodes: bool,
 ) !void {
     const canvas_size = gui.contentRegionAvail();
+    const canvas_min = gui.cursorScreenPos();
+    gui.dummy(canvas_size[0], canvas_size[1]);
+    const canvas_max = .{ canvas_min[0] + canvas_size[0], canvas_min[1] + canvas_size[1] };
+    const mouse = gui.mousePos();
+    const inside_canvas = pointInRect(mouse, canvas_min, canvas_max);
 
-    _ = gui.invisibleButton("canvas", canvas_size[0], canvas_size[1]);
-    const canvas_min = gui.getItemRectMin();
-    const canvas_max = gui.getItemRectMax();
-    const canvas_clicked = gui.isItemClicked();
+    const hovered_output_pin = hitTestPin(editor_state, canvas_min, mouse, .output);
+    const hovered_input_pin = hitTestPin(editor_state, canvas_min, mouse, .input);
+    const hovered_node = if (hovered_output_pin != null or hovered_input_pin != null)
+        null
+    else
+        hitTestNode(editor_state, canvas_min, mouse);
 
     drawPipelineCanvasBackground(editor_state, canvas_min, canvas_max);
-    handleCanvasPanning(editor_state, canvas_min, canvas_size);
+    handleCanvasPanning(input, editor_state, canvas_min, canvas_size);
 
-    if (canvas_clicked) {
-        editor_state.selected_node_index = null;
-        editor_state.connecting_from = null;
+    if (editor_state.dragging_node_index) |dragging_index| {
+        if (!input.isMouseDown(.left)) {
+            editor_state.dragging_node_index = null;
+        } else if (dragging_index < editor_state.nodes.items.len) {
+            editor_state.nodes.items[dragging_index].position = .{
+                mouse[0] - canvas_min[0] - editor_state.view_pan[0] - editor_state.node_drag_offset[0],
+                mouse[1] - canvas_min[1] - editor_state.view_pan[1] - editor_state.node_drag_offset[1],
+            };
+        }
+    } else if (inside_canvas and input.wasMousePressed(.left)) {
+        if (hovered_output_pin) |from_index| {
+            if (editor_state.connecting_from != null and editor_state.connecting_from.? == from_index) {
+                editor_state.connecting_from = null;
+            } else {
+                editor_state.connecting_from = from_index;
+                editor_state.selected_node_index = from_index;
+            }
+        } else if (hovered_input_pin) |to_index| {
+            if (editor_state.connecting_from) |from_index| {
+                if (from_index != to_index) {
+                    editor_state.connect(from_index, to_index) catch {};
+                }
+                editor_state.connecting_from = null;
+                editor_state.selected_node_index = to_index;
+            } else {
+                editor_state.selected_node_index = to_index;
+            }
+        } else if (hovered_node) |node_index| {
+            editor_state.selected_node_index = node_index;
+            editor_state.dragging_node_index = node_index;
+            const node_screen_min = nodeScreenMin(editor_state, canvas_min, node_index);
+            editor_state.node_drag_offset = .{
+                mouse[0] - node_screen_min[0],
+                mouse[1] - node_screen_min[1],
+            };
+            editor_state.nodes.items[node_index].position = .{
+                mouse[0] - canvas_min[0] - editor_state.view_pan[0] - editor_state.node_drag_offset[0],
+                mouse[1] - canvas_min[1] - editor_state.view_pan[1] - editor_state.node_drag_offset[1],
+            };
+            editor_state.connecting_from = null;
+        } else {
+            editor_state.selected_node_index = null;
+            editor_state.connecting_from = null;
+        }
     }
 
     gui.pushClipRect(canvas_min, canvas_max, true);
@@ -540,7 +622,29 @@ fn drawPipelineGraph(
     drawPendingConnection(editor_state, canvas_min, graph_node_width, graph_node_height * 0.5);
 
     for (editor_state.nodes.items, 0..) |*node, index| {
-        drawPipelineNode(editor_state, node, index, canvas_min);
+        if (editor_state.selected_node_index != null and editor_state.selected_node_index.? == index) continue;
+        drawPipelineNode(
+            editor_state,
+            node,
+            index,
+            canvas_min,
+            hovered_node != null and hovered_node.? == index,
+            hovered_input_pin != null and hovered_input_pin.? == index,
+            hovered_output_pin != null and hovered_output_pin.? == index,
+        );
+    }
+    if (editor_state.selected_node_index) |selected_index| {
+        if (selected_index < editor_state.nodes.items.len) {
+            drawPipelineNode(
+                editor_state,
+                &editor_state.nodes.items[selected_index],
+                selected_index,
+                canvas_min,
+                hovered_node != null and hovered_node.? == selected_index,
+                hovered_input_pin != null and hovered_input_pin.? == selected_index,
+                hovered_output_pin != null and hovered_output_pin.? == selected_index,
+            );
+        }
     }
 
     try handleCanvasDrop(editor_state, canvas_min, canvas_size);
@@ -612,6 +716,9 @@ fn drawPipelineNode(
     node: *PostProcessEffectNode,
     index: usize,
     canvas_pos: [2]f32,
+    is_hovered: bool,
+    input_pin_hovered: bool,
+    output_pin_hovered: bool,
 ) void {
     const draw_list = gui.getWindowDrawList();
     const item = effectPaletteItem(node.effect);
@@ -624,26 +731,12 @@ fn drawPipelineNode(
     gui.pushIdU64(@intCast(index));
     defer gui.popId();
 
-    gui.setCursorScreenPos(node_pos);
-    _ = gui.invisibleButton("node_card", graph_node_width, graph_node_height);
-    const card_min = gui.getItemRectMin();
-    const card_max = gui.getItemRectMax();
-    const hovered = gui.isItemHovered();
-    const active = gui.isItemActive();
-
-    if (gui.isItemClicked()) {
-        editor_state.selected_node_index = index;
-    }
-    if (active and gui.isMouseDragging(.left)) {
-        const drag_delta = gui.mouseDragDelta(.left);
-        node.position[0] += drag_delta[0];
-        node.position[1] += drag_delta[1];
-        gui.resetMouseDragDelta(.left);
-    }
+    const card_min = node_pos;
+    const card_max = .{ node_pos[0] + graph_node_width, node_pos[1] + graph_node_height };
 
     const card_bg: [4]f32 = if (is_selected)
         .{ 0.13, 0.16, 0.20, 0.98 }
-    else if (hovered)
+    else if (is_hovered)
         .{ 0.11, 0.14, 0.18, 0.96 }
     else
         .{ 0.09, 0.11, 0.14, 0.94 };
@@ -668,8 +761,8 @@ fn drawPipelineNode(
     draw_list.addText(.{ card_min[0] + 14.0, card_max[1] - 24.0 }, gui.getColorU32(.{ 0.74, 0.78, 0.84, 1.0 }), detail_text);
 
     const pin_y = card_min[1] + graph_node_height * 0.5;
-    drawNodePin(editor_state, index, true, .{ card_min[0], pin_y }, item.color);
-    drawNodePin(editor_state, index, false, .{ card_max[0], pin_y }, item.color);
+    drawNodePin(editor_state, index, true, .{ card_min[0], pin_y }, item.color, input_pin_hovered);
+    drawNodePin(editor_state, index, false, .{ card_max[0], pin_y }, item.color, output_pin_hovered);
 }
 
 fn drawNodePin(
@@ -678,28 +771,12 @@ fn drawNodePin(
     is_input: bool,
     center: [2]f32,
     color: [4]f32,
+    hovered: bool,
 ) void {
     const draw_list = gui.getWindowDrawList();
-    gui.setCursorScreenPos(.{ center[0] - graph_pin_hit_size * 0.5, center[1] - graph_pin_hit_size * 0.5 });
-    const clicked = gui.invisibleButton(if (is_input) "input_pin" else "output_pin", graph_pin_hit_size, graph_pin_hit_size);
-    const hovered = gui.isItemHovered();
-
-    if (clicked) {
-        if (is_input) {
-            if (editor_state.connecting_from) |from_index| {
-                if (from_index != node_index) {
-                    editor_state.connect(from_index, node_index) catch {};
-                }
-                editor_state.connecting_from = null;
-            }
-        } else if (editor_state.connecting_from != null and editor_state.connecting_from.? == node_index) {
-            editor_state.connecting_from = null;
-        } else {
-            editor_state.connecting_from = node_index;
-            editor_state.selected_node_index = node_index;
-        }
-    }
-
+    _ = editor_state;
+    _ = node_index;
+    _ = is_input;
     const alpha: f32 = if (hovered) 1.0 else 0.92;
     const radius = if (hovered) graph_pin_radius + 1.5 else graph_pin_radius;
     draw_list.addCircleFilled(center, radius, gui.getColorU32(.{ color[0], color[1], color[2], alpha }), 14);
@@ -707,6 +784,7 @@ fn drawNodePin(
 }
 
 fn handleCanvasPanning(
+    input: *const engine.core.InputState,
     editor_state: *PostProcessPipelineEditorState,
     canvas_pos: [2]f32,
     canvas_size: [2]f32,
@@ -715,12 +793,80 @@ fn handleCanvasPanning(
     const inside = mouse[0] >= canvas_pos[0] and mouse[0] <= canvas_pos[0] + canvas_size[0] and
         mouse[1] >= canvas_pos[1] and mouse[1] <= canvas_pos[1] + canvas_size[1];
 
-    if (inside and gui.isMouseDragging(.middle)) {
-        const delta = gui.mouseDragDelta(.middle);
-        editor_state.view_pan[0] += delta[0];
-        editor_state.view_pan[1] += delta[1];
-        gui.resetMouseDragDelta(.middle);
+    if (inside and input.isMouseDown(.middle)) {
+        editor_state.view_pan[0] += input.mouse_delta[0];
+        editor_state.view_pan[1] += input.mouse_delta[1];
     }
+}
+
+fn pointInRect(point: [2]f32, rect_min: [2]f32, rect_max: [2]f32) bool {
+    return point[0] >= rect_min[0] and point[0] <= rect_max[0] and
+        point[1] >= rect_min[1] and point[1] <= rect_max[1];
+}
+
+fn pointInCircle(point: [2]f32, center: [2]f32, radius: f32) bool {
+    const dx = point[0] - center[0];
+    const dy = point[1] - center[1];
+    return dx * dx + dy * dy <= radius * radius;
+}
+
+fn nodeScreenMin(editor_state: *const PostProcessPipelineEditorState, canvas_pos: [2]f32, index: usize) [2]f32 {
+    const node = &editor_state.nodes.items[index];
+    return .{
+        canvas_pos[0] + node.position[0] + editor_state.view_pan[0],
+        canvas_pos[1] + node.position[1] + editor_state.view_pan[1],
+    };
+}
+
+fn pinCenter(editor_state: *const PostProcessPipelineEditorState, canvas_pos: [2]f32, index: usize, kind: PinKind) [2]f32 {
+    const node_min = nodeScreenMin(editor_state, canvas_pos, index);
+    return switch (kind) {
+        .input => .{ node_min[0], node_min[1] + graph_node_height * 0.5 },
+        .output => .{ node_min[0] + graph_node_width, node_min[1] + graph_node_height * 0.5 },
+    };
+}
+
+fn hitTestPin(
+    editor_state: *const PostProcessPipelineEditorState,
+    canvas_pos: [2]f32,
+    mouse: [2]f32,
+    kind: PinKind,
+) ?usize {
+    if (editor_state.selected_node_index) |selected_index| {
+        if (selected_index < editor_state.nodes.items.len and pointInCircle(mouse, pinCenter(editor_state, canvas_pos, selected_index, kind), graph_pin_hit_size * 0.5)) {
+            return selected_index;
+        }
+    }
+
+    var index = editor_state.nodes.items.len;
+    while (index > 0) {
+        index -= 1;
+        if (editor_state.selected_node_index != null and editor_state.selected_node_index.? == index) continue;
+        if (pointInCircle(mouse, pinCenter(editor_state, canvas_pos, index, kind), graph_pin_hit_size * 0.5)) {
+            return index;
+        }
+    }
+    return null;
+}
+
+fn hitTestNode(editor_state: *const PostProcessPipelineEditorState, canvas_pos: [2]f32, mouse: [2]f32) ?usize {
+    if (editor_state.selected_node_index) |selected_index| {
+        if (selected_index < editor_state.nodes.items.len) {
+            const node_min = nodeScreenMin(editor_state, canvas_pos, selected_index);
+            const node_max = .{ node_min[0] + graph_node_width, node_min[1] + graph_node_height };
+            if (pointInRect(mouse, node_min, node_max)) return selected_index;
+        }
+    }
+
+    var index = editor_state.nodes.items.len;
+    while (index > 0) {
+        index -= 1;
+        if (editor_state.selected_node_index != null and editor_state.selected_node_index.? == index) continue;
+        const node_min = nodeScreenMin(editor_state, canvas_pos, index);
+        const node_max = .{ node_min[0] + graph_node_width, node_min[1] + graph_node_height };
+        if (pointInRect(mouse, node_min, node_max)) return index;
+    }
+    return null;
 }
 
 fn handleCanvasDrop(
@@ -737,11 +883,38 @@ fn handleCanvasDrop(
     var effect_val: u64 = 0;
     if (gui.acceptDragDropPayloadU64(effect_drag_type, &effect_val)) {
         const effect: PostProcessEffect = @enumFromInt(effect_val);
-        const local_x = mouse[0] - canvas_pos[0] - editor_state.view_pan[0] - 82.0;
-        const local_y = mouse[1] - canvas_pos[1] - editor_state.view_pan[1] - 37.0;
+        const placement = suggestNodePlacement(
+            editor_state,
+            .{
+                mouse[0] - canvas_pos[0] - editor_state.view_pan[0] - graph_node_width * 0.5,
+                mouse[1] - canvas_pos[1] - editor_state.view_pan[1] - graph_node_height * 0.5,
+            },
+        );
+        const local_x = placement[0];
+        const local_y = placement[1];
         const idx = try editor_state.addNode(effect, local_x, local_y);
         editor_state.selected_node_index = idx;
     }
+}
+
+fn suggestNodePlacement(editor_state: *const PostProcessPipelineEditorState, desired: [2]f32) [2]f32 {
+    var candidate = desired;
+    var attempt: usize = 0;
+    while (attempt < 8) : (attempt += 1) {
+        var overlaps = false;
+        for (editor_state.nodes.items) |node| {
+            if (@abs(node.position[0] - candidate[0]) < graph_node_width * 0.6 and
+                @abs(node.position[1] - candidate[1]) < graph_node_height * 0.75)
+            {
+                overlaps = true;
+                break;
+            }
+        }
+        if (!overlaps) break;
+        candidate[0] += 28.0;
+        candidate[1] += 22.0;
+    }
+    return candidate;
 }
 
 fn drawPinHandles(
@@ -919,8 +1092,15 @@ fn drawEffectPalette(
         defer gui.popStyleColor(3);
 
         if (gui.buttonEx(item.label, -1.0, 0.0)) {
-            const next_x = -editor_state.view_pan[0] + canvas_size[0] * 0.5 - graph_node_width * 0.5;
-            const next_y = -editor_state.view_pan[1] + canvas_size[1] * 0.28 - graph_node_height * 0.5;
+            const suggested = suggestNodePlacement(
+                editor_state,
+                .{
+                    -editor_state.view_pan[0] + canvas_size[0] * 0.5 - graph_node_width * 0.5,
+                    -editor_state.view_pan[1] + canvas_size[1] * 0.28 - graph_node_height * 0.5,
+                },
+            );
+            const next_x = suggested[0];
+            const next_y = suggested[1];
             const idx = editor_state.addNode(item.effect, next_x, next_y) catch continue;
             editor_state.selected_node_index = idx;
         }
