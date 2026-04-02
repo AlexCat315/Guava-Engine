@@ -57,6 +57,11 @@ pub const IconTextureEntry = struct {
     texture: engine.rhi.Texture,
 };
 
+pub const ImageThumbnailEntry = struct {
+    path: []u8,
+    texture: engine.rhi.Texture,
+};
+
 pub const ManipulationMode = enum {
     none,
     translate,
@@ -638,7 +643,7 @@ pub const EditorState = struct {
     place_actor_texture_filter_buffer: [128]u8 = [_]u8{0} ** 128,
     asset_filter_buffer: [128]u8 = [_]u8{0} ** 128,
     asset_directory_buffer: [256]u8 = [_]u8{0} ** 256,
-    asset_thumbnail_size: f32 = 72.0,
+    asset_thumbnail_size: f32 = 96.0,
     browser_view_mode: BrowserViewMode = .grid,
     // Asset type filter (null = show all)
     asset_kind_filter: ?AssetKind = null,
@@ -832,6 +837,9 @@ pub const EditorState = struct {
     preview_texture_key: ?[]u8 = null,
     preview_texture_size: [2]u32 = .{ 0, 0 },
     icon_textures: std.ArrayList(IconTextureEntry) = .empty,
+    image_thumbnail_textures: std.ArrayListUnmanaged(ImageThumbnailEntry) = .empty,
+    image_thumbnail_device: ?*engine.rhi.LegacyDevice = null,
+    image_thumbnail_failed: std.ArrayListUnmanaged([]u8) = .empty,
     frozen_entities: std.ArrayList(engine.scene.EntityId) = .empty,
     selection_locked_entities: std.ArrayList(engine.scene.EntityId) = .empty,
     view_cube_transition_active: bool = false,
@@ -1125,6 +1133,23 @@ pub const EditorState = struct {
             allocator.free(entry.path);
         }
         self.icon_textures.deinit(allocator);
+
+        // 释放 image_thumbnail_textures
+        if (self.image_thumbnail_device) |device| {
+            for (self.image_thumbnail_textures.items) |*entry| {
+                device.releaseTexture(&entry.texture);
+                allocator.free(entry.path);
+            }
+        } else {
+            for (self.image_thumbnail_textures.items) |entry| {
+                allocator.free(entry.path);
+            }
+        }
+        self.image_thumbnail_textures.deinit(allocator);
+        for (self.image_thumbnail_failed.items) |p| {
+            allocator.free(p);
+        }
+        self.image_thumbnail_failed.deinit(allocator);
 
         // 释放 frozen_entities 和 selection_locked_entities（只是 EntityId 数组，无需释放内部）
         self.frozen_entities.deinit(allocator);

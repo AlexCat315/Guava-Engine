@@ -479,75 +479,119 @@ fn drawProjectPanel(state: *EditorState, layer_context: *engine.core.LayerContex
 }
 
 fn drawFolderTree(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
-    for (state.asset_directories.items) |directory| {
-        try drawFolderRow(state, layer_context, directory);
+    // Render root "/" as the top-level tree node
+    const selected_dir = selectedDirectory(state);
+    const is_root_selected = std.mem.eql(u8, selected_dir, "/");
+    const root_label = assetBrowserRootLabel(state);
+
+    var root_label_buffer: [320]u8 = undefined;
+    const root_display = std.fmt.bufPrint(&root_label_buffer, "{s}##dir_/", .{root_label}) catch root_label;
+
+    if (is_root_selected) {
+        gui.pushStyleColor(.text, .{ 1.0, 0.88, 0.4, 1.0 });
+    }
+    const root_open = gui.treeNodeEx(root_display, is_root_selected, false, true);
+    if (is_root_selected) {
+        gui.popStyleColor(1);
+    }
+    if (gui.isItemClicked()) {
+        setSelectedAssetDirectory(state, "/");
+    }
+    try drawFolderContextMenu(state, layer_context, "/");
+
+    if (root_open) {
+        try drawFolderTreeRecursive(state, layer_context, "/");
+        gui.treePop();
     }
 }
 
-fn drawFolderRow(state: *EditorState, layer_context: *engine.core.LayerContext, directory: []const u8) !void {
-    const selected_directory = selectedDirectory(state);
-    const depth = directoryDepth(directory);
-
-    // Indentation via invisible spacer
-    if (depth > 0) {
-        gui.dummy(@as(f32, @floatFromInt(depth)) * 14.0, 1.0);
-        gui.sameLine();
+/// Check if `child` is a direct subdirectory of `parent` in the flat directory list.
+fn isDirectChildDir(child: []const u8, parent: []const u8) bool {
+    if (std.mem.eql(u8, child, parent)) return false;
+    if (std.mem.eql(u8, parent, "/")) {
+        // Direct child of root: starts with "/" and has no more "/"
+        if (child.len <= 1) return false;
+        return std.mem.indexOfScalar(u8, child[1..], '/') == null;
     }
+    if (!std.mem.startsWith(u8, child, parent)) return false;
+    if (child.len <= parent.len or child[parent.len] != '/') return false;
+    // No more "/" after parent+"/"
+    return std.mem.indexOfScalar(u8, child[parent.len + 1 ..], '/') == null;
+}
 
-    // Folder rename inline edit
-    if (state.folder_rename_active and std.mem.eql(u8, std.mem.sliceTo(state.folder_rename_original[0..], 0), directory)) {
-        gui.sameLine();
-        gui.setNextItemWidth(gui.contentRegionAvail()[0]);
-        if (state.folder_rename_focus_pending) {
-            gui.setKeyboardFocusHere(0);
-            state.folder_rename_focus_pending = false;
-        }
-        if (gui.inputTextWithHintFlags("##folder_rename", "", state.folder_rename_buffer[0..], gui.InputTextFlags.enter_returns_true)) {
-            try commitFolderRename(state, layer_context);
-        }
-        if (!gui.isItemActive() and !state.folder_rename_focus_pending) {
-            state.folder_rename_active = false;
-        }
-    } else {
-        const is_root = std.mem.eql(u8, directory, "/");
-        const label_name = if (is_root) assetBrowserRootLabel(state) else directoryName(directory);
-        const is_selected = std.mem.eql(u8, selected_directory, directory);
+fn drawFolderTreeRecursive(state: *EditorState, layer_context: *engine.core.LayerContext, parent: []const u8) !void {
+    const selected_dir = selectedDirectory(state);
 
-        // Folder label with tree-style prefix
+    // Collect direct children
+    for (state.asset_directories.items) |directory| {
+        if (!isDirectChildDir(directory, parent)) continue;
+
+        const label_name = directoryName(directory);
+        const is_selected = std.mem.eql(u8, selected_dir, directory);
+
+        // Folder rename inline edit
+        if (state.folder_rename_active and std.mem.eql(u8, std.mem.sliceTo(state.folder_rename_original[0..], 0), directory)) {
+            gui.setNextItemWidth(gui.contentRegionAvail()[0]);
+            if (state.folder_rename_focus_pending) {
+                gui.setKeyboardFocusHere(0);
+                state.folder_rename_focus_pending = false;
+            }
+            if (gui.inputTextWithHintFlags("##folder_rename", "", state.folder_rename_buffer[0..], gui.InputTextFlags.enter_returns_true)) {
+                try commitFolderRename(state, layer_context);
+            }
+            if (!gui.isItemActive() and !state.folder_rename_focus_pending) {
+                state.folder_rename_active = false;
+            }
+            continue;
+        }
+
+        // Check if has children
+        const has_children = blk: {
+            for (state.asset_directories.items) |other| {
+                if (isDirectChildDir(other, directory)) break :blk true;
+            }
+            break :blk false;
+        };
+
         var label_buffer: [320]u8 = undefined;
         const label = std.fmt.bufPrint(&label_buffer, "{s}##dir_{s}", .{ label_name, directory }) catch label_name;
 
         if (is_selected) {
             gui.pushStyleColor(.text, .{ 1.0, 0.88, 0.4, 1.0 });
         }
-        if (gui.selectable(label, is_selected, false, 0.0, 22.0)) {
-            setSelectedAssetDirectory(state, directory);
-        }
+
+        const node_open = gui.treeNodeEx(label, is_selected, !has_children, false);
+
         if (is_selected) {
             gui.popStyleColor(1);
         }
-        try drawFolderContextMenu(state, layer_context, directory);
-    }
 
-    // New folder input row (shown when pending in this directory)
-    if (state.new_folder_pending and std.mem.eql(u8, selectedDirectory(state), directory)) {
-        if (depth > 0) {
-            gui.dummy(@as(f32, @floatFromInt(depth + 1)) * 12.0, 1.0);
-            gui.sameLine();
-        } else {
-            gui.dummy(12.0, 1.0);
-            gui.sameLine();
+        if (gui.isItemClicked()) {
+            setSelectedAssetDirectory(state, directory);
         }
-        gui.setNextItemWidth(gui.contentRegionAvail()[0]);
-        if (state.new_folder_focus_pending) {
-            gui.setKeyboardFocusHere(0);
-            state.new_folder_focus_pending = false;
-        }
-        if (gui.inputTextWithHintFlags("##new_folder_name", "", state.new_folder_name_buffer[0..], gui.InputTextFlags.enter_returns_true)) {
-            try commitNewFolder(state, layer_context);
-        }
-        if (!gui.isItemActive() and !state.new_folder_focus_pending) {
-            state.new_folder_pending = false;
+
+        try drawFolderContextMenu(state, layer_context, directory);
+
+        if (node_open) {
+            // Inline new-folder input when pending in this directory
+            if (state.new_folder_pending and std.mem.eql(u8, selectedDirectory(state), directory)) {
+                gui.setNextItemWidth(gui.contentRegionAvail()[0]);
+                if (state.new_folder_focus_pending) {
+                    gui.setKeyboardFocusHere(0);
+                    state.new_folder_focus_pending = false;
+                }
+                if (gui.inputTextWithHintFlags("##new_folder_name", "", state.new_folder_name_buffer[0..], gui.InputTextFlags.enter_returns_true)) {
+                    try commitNewFolder(state, layer_context);
+                }
+                if (!gui.isItemActive() and !state.new_folder_focus_pending) {
+                    state.new_folder_pending = false;
+                }
+            }
+
+            if (has_children) {
+                try drawFolderTreeRecursive(state, layer_context, directory);
+            }
+            gui.treePop();
         }
     }
 }
@@ -724,7 +768,7 @@ fn drawAssetCard(
     }
 
     // ── Icon / thumbnail ──
-    const icon_size = tile_size * 0.65;
+    const icon_size = tile_size * 0.82;
     const icon_path = assetIconPath(entry.kind);
     const icon_tint = if (selected) [4]u8{ 34, 197, 94, 255 } else assetIconTint(entry.kind);
     const icon_texture = try ui_icons.ensureTintedIconTexture(
@@ -736,10 +780,15 @@ fn drawAssetCard(
     );
     const card_texture = if (entry.kind == .material)
         (try queueAndResolveMaterialThumbnailTexture(state, layer_context, &entry) orelse icon_texture)
+    else if (entry.kind == .texture and !entry.is_directory)
+        (ensureImageThumbnailTexture(state, layer_context, entry.path) catch null) orelse icon_texture
     else
         icon_texture;
 
-    const x_center = @max((card_width - icon_size) * 0.5, 0.0);
+    // For image thumbnails, display at tile_size to fill the card
+    const display_size = if (card_texture != icon_texture) tile_size - 2.0 else icon_size;
+
+    const x_center = @max((card_width - display_size) * 0.5, 0.0);
     gui.setCursorPos(.{ x_center, 2.0 });
 
     var button_id_buffer: [64]u8 = undefined;
@@ -752,8 +801,8 @@ fn drawAssetCard(
     if (gui.imageButton(
         button_id,
         card_texture,
-        icon_size,
-        icon_size,
+        display_size,
+        display_size,
         .{ 0.0, 0.0, 0.0, 0.0 },
         .{ 1.0, 1.0, 1.0, 1.0 },
     )) {
@@ -1322,10 +1371,10 @@ fn assetIconPath(kind: AssetKind) []const u8 {
         .scene => ui_icons.paths.hierarchy.object,
         .model => ui_icons.paths.hierarchy.mesh,
         .material => ui_icons.paths.toolbar.material,
-        .texture => ui_icons.paths.toolbar.settings,
+        .texture => ui_icons.paths.toolbar.camera,
         .shader => ui_icons.paths.toolbar.rotate,
-        .script => ui_icons.paths.toolbar.settings,
-        .directory => ui_icons.paths.hierarchy.object,
+        .script => ui_icons.paths.hierarchy.document,
+        .directory => ui_icons.paths.hierarchy.folder_filled,
         .unknown => ui_icons.paths.toolbar.settings,
     };
 }
@@ -1657,6 +1706,7 @@ fn scanFileSystemEntries(state: *EditorState, allocator: std.mem.Allocator, root
     while (try walker.next()) |entry| {
         // Skip hidden files, .meta files, and derived/ directory.
         if (std.mem.startsWith(u8, entry.path, ".")) continue;
+        if (entry.basename.len > 0 and entry.basename[0] == '.') continue;
         if (std.mem.startsWith(u8, entry.path, "derived/") or std.mem.startsWith(u8, entry.path, "Derived/")) continue;
         if (std.mem.endsWith(u8, entry.path, ".meta")) continue;
 
@@ -1753,6 +1803,110 @@ fn appendDirectoryIfMissing(state: *EditorState, path: []const u8) !void {
 
 fn lessThanDirectory(_: void, lhs: []u8, rhs: []u8) bool {
     return std.mem.lessThan(u8, lhs, rhs);
+}
+
+/// Load an image file (PNG/JPG) and cache as a GPU thumbnail texture.
+fn ensureImageThumbnailTexture(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    file_path: []const u8,
+) !*const engine.rhi.Texture {
+    // Check cache for existing thumbnail
+    for (state.image_thumbnail_textures.items) |*entry| {
+        if (std.mem.eql(u8, entry.path, file_path)) {
+            return &entry.texture;
+        }
+    }
+    // Check if this path previously failed (don't retry)
+    for (state.image_thumbnail_failed.items) |failed_path| {
+        if (std.mem.eql(u8, failed_path, file_path)) {
+            return error.ThumbnailLoadFailed;
+        }
+    }
+
+    const allocator = state.allocator orelse return error.NoAllocator;
+
+    // Read file from disk (limit to 8MB to avoid loading huge textures)
+    const encoded = std.fs.cwd().readFileAlloc(allocator, file_path, 32 * 1024 * 1024) catch |err| {
+        const owned_path = try allocator.dupe(u8, file_path);
+        try state.image_thumbnail_failed.append(allocator, owned_path);
+        return err;
+    };
+    defer allocator.free(encoded);
+
+    // Decode with stb_image
+    var decoded = engine.assets.decodeImageRgba8(allocator, encoded) catch |err| {
+        const owned_path = try allocator.dupe(u8, file_path);
+        try state.image_thumbnail_failed.append(allocator, owned_path);
+        return err;
+    };
+    defer decoded.deinit();
+
+    // Downscale to max 256px for thumbnail (simple 2x2 box filter)
+    const max_thumb_dim: u32 = 256;
+    var thumb_w = decoded.width;
+    var thumb_h = decoded.height;
+    var thumb_pixels = decoded.pixels;
+    var downscaled_buf: ?[]u8 = null;
+    defer if (downscaled_buf) |buf| allocator.free(buf);
+
+    while (thumb_w > max_thumb_dim or thumb_h > max_thumb_dim) {
+        const new_w = @max(thumb_w / 2, 1);
+        const new_h = @max(thumb_h / 2, 1);
+        if (new_w == 0 or new_h == 0) break;
+        const new_buf = try allocator.alloc(u8, new_w * new_h * 4);
+        var y: u32 = 0;
+        while (y < new_h) : (y += 1) {
+            var x: u32 = 0;
+            while (x < new_w) : (x += 1) {
+                const dst = (y * new_w + x) * 4;
+                const sy = @min(y * 2, thumb_h - 1);
+                const sx = @min(x * 2, thumb_w - 1);
+                const sy1 = @min(sy + 1, thumb_h - 1);
+                const sx1 = @min(sx + 1, thumb_w - 1);
+                const s00 = (sy * thumb_w + sx) * 4;
+                const s10 = (sy * thumb_w + sx1) * 4;
+                const s01 = (sy1 * thumb_w + sx) * 4;
+                const s11 = (sy1 * thumb_w + sx1) * 4;
+                var c: u32 = 0;
+                while (c < 4) : (c += 1) {
+                    const avg = (@as(u32, thumb_pixels[s00 + c]) +
+                        @as(u32, thumb_pixels[s10 + c]) +
+                        @as(u32, thumb_pixels[s01 + c]) +
+                        @as(u32, thumb_pixels[s11 + c]) + 2) / 4;
+                    new_buf[dst + c] = @intCast(avg);
+                }
+            }
+        }
+        if (downscaled_buf) |old| allocator.free(old);
+        downscaled_buf = new_buf;
+        thumb_pixels = new_buf;
+        thumb_w = new_w;
+        thumb_h = new_h;
+    }
+
+    // Create GPU texture
+    var texture = try layer_context.rhi().createTexture(.{
+        .width = thumb_w,
+        .height = thumb_h,
+        .format = .rgba8_unorm,
+        .usage = engine.rhi.TextureUsage.sampler,
+    });
+    errdefer layer_context.rhi().releaseTexture(&texture);
+
+    try layer_context.rhi().uploadTextureData(&texture, thumb_pixels, thumb_w, thumb_h);
+
+    // Cache it
+    const owned_path = try allocator.dupe(u8, file_path);
+    errdefer allocator.free(owned_path);
+
+    try state.image_thumbnail_textures.append(allocator, .{
+        .path = owned_path,
+        .texture = texture,
+    });
+    state.image_thumbnail_device = layer_context.rhi();
+
+    return &state.image_thumbnail_textures.items[state.image_thumbnail_textures.items.len - 1].texture;
 }
 
 pub fn clearAssetBrowser(state: *EditorState) void {
