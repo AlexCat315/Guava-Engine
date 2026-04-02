@@ -167,28 +167,33 @@ pub fn drawAnimationEditorWindow(state: *EditorState, layer_context: *engine.cor
     layout.beginSectionBody();
     defer layout.endSectionBody();
 
-    if (gui.beginChild("animation_graph_runtime_panel", -1.0, 184.0, true)) {
+    {
+        const child_visible = gui.beginChild("animation_graph_runtime_panel", -1.0, 184.0, true);
         defer gui.endChild();
-        drawGraphRuntimePanel(state, layer_context, editor_state);
+        if (child_visible) {
+            drawGraphRuntimePanel(state, layer_context, editor_state);
+        }
     }
 
-    if (gui.beginChild("animation_editor_main", -1.0, -48.0, false)) {
+    {
+        const child_visible = gui.beginChild("animation_editor_main", -1.0, -48.0, false);
         defer gui.endChild();
+        if (child_visible) {
+            if (gui.beginTable("animation_editor_layout", 2)) {
+                gui.tableSetupColumn("Tracks", true, 0.3);
+                gui.tableSetupColumn("Timeline", true, 0.7);
 
-        if (gui.beginTable("animation_editor_layout", 2)) {
-            gui.tableSetupColumn("Tracks", true, 0.3);
-            gui.tableSetupColumn("Timeline", true, 0.7);
+                gui.tableNextRow();
+                gui.tableNextColumn();
 
-            gui.tableNextRow();
-            gui.tableNextColumn();
+                drawTrackList(state, editor_state, layer_context);
 
-            drawTrackList(state, editor_state, layer_context);
+                gui.tableNextColumn();
 
-            gui.tableNextColumn();
+                drawTimeline(state, editor_state, layer_context);
 
-            drawTimeline(state, editor_state, layer_context);
-
-            gui.endTable();
+                gui.endTable();
+            }
         }
     }
 
@@ -199,9 +204,10 @@ fn drawTrackList(state: *EditorState, editor_state: *AnimationEditorState, layer
     gui.text(localText(state, .animation_tracks));
     gui.separator();
 
-    if (gui.beginChild("track_list", -1.0, -1.0, false)) {
-        defer gui.endChild();
+    const child_visible = gui.beginChild("track_list", -1.0, -1.0, false);
+    defer gui.endChild();
 
+    if (child_visible) {
         for (editor_state.tracks.items, 0..) |track, index| {
             const is_selected = editor_state.selected_track == @as(u32, @intCast(index));
 
@@ -243,133 +249,140 @@ fn drawTimeline(state: *EditorState, editor_state: *AnimationEditorState, layer_
     const duration: f32 = if (clip) |clip_resource| clip_resource.duration else 1.0;
     const pixels_per_second = 50.0 * editor_state.timeline_scale;
 
-    if (gui.beginChild("timeline_area", -1.0, -1.0, true)) {
-        defer gui.endChild();
+    const timeline_visible = gui.beginChild("timeline_area", -1.0, -1.0, true);
+    defer gui.endChild();
 
+    if (timeline_visible) {
         const track_height = 24.0;
         const track_spacing = 2.0;
 
-        if (gui.beginChild("timeline_ruler", -1.0, 24.0, false)) {
+        {
+            const ruler_visible = gui.beginChild("timeline_ruler", -1.0, 24.0, false);
             defer gui.endChild();
 
-            const canvas_width = gui.contentRegionAvail()[0];
+            if (ruler_visible) {
+                const canvas_width = gui.contentRegionAvail()[0];
 
-            var draw_list = gui.getWindowDrawList();
-            const cursor_pos = gui.cursorScreenPos();
+                var draw_list = gui.getWindowDrawList();
+                const cursor_pos = gui.cursorScreenPos();
 
-            const major_tick_height: f32 = 12.0;
-            const minor_tick_height: f32 = 6.0;
-            const time_interval: f32 = if (pixels_per_second > 30.0) 0.1 else if (pixels_per_second > 10.0) 0.5 else 1.0;
+                const major_tick_height: f32 = 12.0;
+                const minor_tick_height: f32 = 6.0;
+                const time_interval: f32 = if (pixels_per_second > 30.0) 0.1 else if (pixels_per_second > 10.0) 0.5 else 1.0;
 
-            var time: f32 = 0.0;
-            while (time <= duration) : (time += time_interval) {
-                const x = cursor_pos[0] + time * pixels_per_second - editor_state.timeline_offset;
-                if (x >= cursor_pos[0] and x <= cursor_pos[0] + canvas_width) {
-                    const is_major = @abs(@mod(time, 1.0)) < 0.01 or time == 0.0;
-                    const tick_height: f32 = if (is_major) major_tick_height else minor_tick_height;
+                var time: f32 = 0.0;
+                while (time <= duration) : (time += time_interval) {
+                    const x = cursor_pos[0] + time * pixels_per_second - editor_state.timeline_offset;
+                    if (x >= cursor_pos[0] and x <= cursor_pos[0] + canvas_width) {
+                        const is_major = @abs(@mod(time, 1.0)) < 0.01 or time == 0.0;
+                        const tick_height: f32 = if (is_major) major_tick_height else minor_tick_height;
 
-                    draw_list.addLine(.{ x, cursor_pos[1] + 2 }, .{ x, cursor_pos[1] + tick_height }, gui.getColorU32(.{ 0.7, 0.7, 0.7, 1.0 }), 1.0);
+                        draw_list.addLine(.{ x, cursor_pos[1] + 2 }, .{ x, cursor_pos[1] + tick_height }, gui.getColorU32(.{ 0.7, 0.7, 0.7, 1.0 }), 1.0);
 
-                    if (is_major and time < duration) {
-                        var time_label: [16]u8 = undefined;
-                        const label = std.fmt.bufPrint(&time_label, "{d:.1}s", .{time}) catch continue;
-                        draw_list.addText(.{ x + 2, cursor_pos[1] + 2 }, gui.getColorU32(.{ 0.8, 0.8, 0.8, 1.0 }), label);
+                        if (is_major and time < duration) {
+                            var time_label: [16]u8 = undefined;
+                            const label = std.fmt.bufPrint(&time_label, "{d:.1}s", .{time}) catch continue;
+                            draw_list.addText(.{ x + 2, cursor_pos[1] + 2 }, gui.getColorU32(.{ 0.8, 0.8, 0.8, 1.0 }), label);
+                        }
                     }
                 }
-            }
-
-            const current_time_x = cursor_pos[0] + editor_state.current_time * pixels_per_second - editor_state.timeline_offset;
-            if (current_time_x >= cursor_pos[0] and current_time_x <= cursor_pos[0] + canvas_width) {
-                draw_list.addLine(.{ current_time_x, cursor_pos[1] }, .{ current_time_x, cursor_pos[1] + 22 }, gui.getColorU32(.{ 0.9, 0.3, 0.3, 1.0 }), 2.0);
-            }
-        }
-
-        if (gui.beginChild("timeline_tracks", -1.0, -1.0, false)) {
-            defer gui.endChild();
-
-            const canvas_width = gui.contentRegionAvail()[0];
-            var draw_list = gui.getWindowDrawList();
-
-            for (editor_state.tracks.items, 0..) |track, track_index| {
-                gui.pushIdU64(track_index);
-                defer gui.popId();
-
-                const cursor_pos = gui.cursorScreenPos();
-                const is_selected = editor_state.selected_track == @as(u32, @intCast(track_index));
-                if (gui.invisibleButton("track_row", canvas_width, track_height)) {
-                    editor_state.selected_track = @intCast(track_index);
-                }
-
-                const background_color: [4]f32 = if (is_selected)
-                    .{ 0.18, 0.23, 0.30, 1.0 }
-                else
-                    .{ 0.15, 0.15, 0.15, 1.0 };
-                draw_list.addRectFilled(
-                    cursor_pos,
-                    .{ cursor_pos[0] + canvas_width, cursor_pos[1] + track_height },
-                    gui.getColorU32(background_color),
-                    0,
-                    0,
-                );
-                draw_list.addLine(
-                    .{ cursor_pos[0], cursor_pos[1] + track_height - 1.0 },
-                    .{ cursor_pos[0] + canvas_width, cursor_pos[1] + track_height - 1.0 },
-                    gui.getColorU32(.{ 0.24, 0.24, 0.24, 1.0 }),
-                    1.0,
-                );
 
                 const current_time_x = cursor_pos[0] + editor_state.current_time * pixels_per_second - editor_state.timeline_offset;
                 if (current_time_x >= cursor_pos[0] and current_time_x <= cursor_pos[0] + canvas_width) {
+                    draw_list.addLine(.{ current_time_x, cursor_pos[1] }, .{ current_time_x, cursor_pos[1] + 22 }, gui.getColorU32(.{ 0.9, 0.3, 0.3, 1.0 }), 2.0);
+                }
+            }
+        }
+
+        {
+            const tracks_visible = gui.beginChild("timeline_tracks", -1.0, -1.0, false);
+            defer gui.endChild();
+
+            if (tracks_visible) {
+                const canvas_width = gui.contentRegionAvail()[0];
+                var draw_list = gui.getWindowDrawList();
+
+                for (editor_state.tracks.items, 0..) |track, track_index| {
+                    gui.pushIdU64(track_index);
+                    defer gui.popId();
+
+                    const cursor_pos = gui.cursorScreenPos();
+                    const is_selected = editor_state.selected_track == @as(u32, @intCast(track_index));
+                    if (gui.invisibleButton("track_row", canvas_width, track_height)) {
+                        editor_state.selected_track = @intCast(track_index);
+                    }
+
+                    const background_color: [4]f32 = if (is_selected)
+                        .{ 0.18, 0.23, 0.30, 1.0 }
+                    else
+                        .{ 0.15, 0.15, 0.15, 1.0 };
+                    draw_list.addRectFilled(
+                        cursor_pos,
+                        .{ cursor_pos[0] + canvas_width, cursor_pos[1] + track_height },
+                        gui.getColorU32(background_color),
+                        0,
+                        0,
+                    );
                     draw_list.addLine(
-                        .{ current_time_x, cursor_pos[1] },
-                        .{ current_time_x, cursor_pos[1] + track_height },
-                        gui.getColorU32(.{ 0.9, 0.3, 0.3, 1.0 }),
+                        .{ cursor_pos[0], cursor_pos[1] + track_height - 1.0 },
+                        .{ cursor_pos[0] + canvas_width, cursor_pos[1] + track_height - 1.0 },
+                        gui.getColorU32(.{ 0.24, 0.24, 0.24, 1.0 }),
                         1.0,
                     );
-                }
 
-                for (track.keyframes.items, 0..) |keyframe, keyframe_index| {
-                    const x = cursor_pos[0] + keyframe.time * pixels_per_second - editor_state.timeline_offset;
-                    if (x >= cursor_pos[0] and x <= cursor_pos[0] + canvas_width) {
-                        const keyframe_color = switch (track.type) {
-                            .translation => [4]f32{ 0.2, 0.6, 0.9, 1.0 },
-                            .rotation => [4]f32{ 0.9, 0.6, 0.2, 1.0 },
-                            .scale => [4]f32{ 0.2, 0.9, 0.6, 1.0 },
-                        };
-
-                        draw_list.addCircleFilled(
-                            .{ x, cursor_pos[1] + track_height * 0.5 },
-                            4.0,
-                            gui.getColorU32(keyframe_color),
-                            8,
+                    const current_time_x = cursor_pos[0] + editor_state.current_time * pixels_per_second - editor_state.timeline_offset;
+                    if (current_time_x >= cursor_pos[0] and current_time_x <= cursor_pos[0] + canvas_width) {
+                        draw_list.addLine(
+                            .{ current_time_x, cursor_pos[1] },
+                            .{ current_time_x, cursor_pos[1] + track_height },
+                            gui.getColorU32(.{ 0.9, 0.3, 0.3, 1.0 }),
+                            1.0,
                         );
+                    }
 
-                        if (keyframe_index == 0) {
-                            draw_list.addLine(
-                                .{ cursor_pos[0], cursor_pos[1] + track_height * 0.5 },
+                    for (track.keyframes.items, 0..) |keyframe, keyframe_index| {
+                        const x = cursor_pos[0] + keyframe.time * pixels_per_second - editor_state.timeline_offset;
+                        if (x >= cursor_pos[0] and x <= cursor_pos[0] + canvas_width) {
+                            const keyframe_color = switch (track.type) {
+                                .translation => [4]f32{ 0.2, 0.6, 0.9, 1.0 },
+                                .rotation => [4]f32{ 0.9, 0.6, 0.2, 1.0 },
+                                .scale => [4]f32{ 0.2, 0.9, 0.6, 1.0 },
+                            };
+
+                            draw_list.addCircleFilled(
                                 .{ x, cursor_pos[1] + track_height * 0.5 },
+                                4.0,
                                 gui.getColorU32(keyframe_color),
-                                1.0,
+                                8,
                             );
-                        }
 
-                        if (keyframe_index < track.keyframes.items.len - 1) {
-                            const next_keyframe = track.keyframes.items[keyframe_index + 1];
-                            const next_x = cursor_pos[0] + next_keyframe.time * pixels_per_second - editor_state.timeline_offset;
-
-                            if (next_x >= cursor_pos[0] and next_x <= cursor_pos[0] + canvas_width) {
+                            if (keyframe_index == 0) {
                                 draw_list.addLine(
+                                    .{ cursor_pos[0], cursor_pos[1] + track_height * 0.5 },
                                     .{ x, cursor_pos[1] + track_height * 0.5 },
-                                    .{ next_x, cursor_pos[1] + track_height * 0.5 },
                                     gui.getColorU32(keyframe_color),
                                     1.0,
                                 );
                             }
+
+                            if (keyframe_index < track.keyframes.items.len - 1) {
+                                const next_keyframe = track.keyframes.items[keyframe_index + 1];
+                                const next_x = cursor_pos[0] + next_keyframe.time * pixels_per_second - editor_state.timeline_offset;
+
+                                if (next_x >= cursor_pos[0] and next_x <= cursor_pos[0] + canvas_width) {
+                                    draw_list.addLine(
+                                        .{ x, cursor_pos[1] + track_height * 0.5 },
+                                        .{ next_x, cursor_pos[1] + track_height * 0.5 },
+                                        gui.getColorU32(keyframe_color),
+                                        1.0,
+                                    );
+                                }
+                            }
                         }
                     }
-                }
 
-                gui.dummy(0.0, track_spacing);
+                    gui.dummy(0.0, track_spacing);
+                }
             }
         }
     }
@@ -1316,10 +1329,11 @@ fn drawGraphOverview(
         return;
     }
 
-    if (!gui.beginChild("animation_graph_overview_canvas", -1.0, 132.0, true)) {
+    const canvas_visible = gui.beginChild("animation_graph_overview_canvas", -1.0, 132.0, true);
+    defer gui.endChild();
+    if (!canvas_visible) {
         return;
     }
-    defer gui.endChild();
 
     const card_width = 150.0;
     const card_height = 44.0;
@@ -1406,18 +1420,21 @@ fn drawGraphStateEditor(
     gui.tableNextRow();
     gui.tableNextColumn();
 
-    if (gui.beginChild("animation_graph_state_list", -1.0, 180.0, true)) {
+    {
+        const list_visible = gui.beginChild("animation_graph_state_list", -1.0, 180.0, true);
         defer gui.endChild();
 
-        for (graph.states.items, 0..) |_, index| {
-            const state_index: u32 = @intCast(index);
-            const selected = editor_state.selected_graph_state != null and editor_state.selected_graph_state.? == state_index;
+        if (list_visible) {
+            for (graph.states.items, 0..) |_, index| {
+                const state_index: u32 = @intCast(index);
+                const selected = editor_state.selected_graph_state != null and editor_state.selected_graph_state.? == state_index;
 
-            var label_buffer: [192]u8 = undefined;
-            const label = stateLabel(graph, editor_state.selected_runtime, state_index, &label_buffer);
-            if (gui.selectable(label, selected, false, -1.0, 22.0)) {
-                setSelectedGraphState(editor_state, graph, state_index);
-                refreshGraphEditorData(layer_context, editor_state);
+                var label_buffer: [192]u8 = undefined;
+                const label = stateLabel(graph, editor_state.selected_runtime, state_index, &label_buffer);
+                if (gui.selectable(label, selected, false, -1.0, 22.0)) {
+                    setSelectedGraphState(editor_state, graph, state_index);
+                    refreshGraphEditorData(layer_context, editor_state);
+                }
             }
         }
     }
