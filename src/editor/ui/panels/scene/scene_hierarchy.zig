@@ -70,6 +70,8 @@ fn drawHierarchyDragPreview(state: *EditorState, entity: *const engine.scene.Ent
     gui.text(preview_text);
 }
 
+const place_actors = @import("place_actors.zig");
+
 pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     var title_buffer: [80]u8 = undefined;
     const title = try state.windowLabel(&title_buffer, .scene, "scene_panel");
@@ -77,6 +79,26 @@ pub fn drawSceneWindow(state: *EditorState, layer_context: *engine.core.LayerCon
     _ = gui.beginWindow(title);
     defer gui.endWindow();
 
+    // Tab bar: Scene / Place Actors
+    if (gui.beginTabBar("##scene_left_panel_tabs")) {
+        if (gui.beginTabItem(state.text(.scene))) {
+            state.left_panel_tab = .scene;
+            gui.endTabItem();
+        }
+        if (gui.beginTabItem(state.text(.place_actors))) {
+            state.left_panel_tab = .place_actors;
+            gui.endTabItem();
+        }
+        gui.endTabBar();
+    }
+
+    switch (state.left_panel_tab) {
+        .scene => try drawSceneContent(state, layer_context),
+        .place_actors => try place_actors.drawPlaceActorsContent(state, layer_context),
+    }
+}
+
+fn drawSceneContent(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     syncHierarchyRenameState(state, layer_context);
 
     // Filter bar

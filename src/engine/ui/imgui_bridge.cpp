@@ -214,11 +214,11 @@ void build_default_dock_layout() {
   // 4) Center: 3D Viewport fills the rest.
   ImGuiID dock_viewport = dock_main;
 
-  // Left sidebar: Scene hierarchy tab + Place Actors stacked in same node.
+  // Left sidebar: Scene hierarchy tab (with Place Actors) + Project stacked.
   ImGuiID dock_left_bottom;
   ImGuiID dock_scene = ImGui::DockBuilderSplitNode(
       dock_left, ImGuiDir_Up, 0.60f, nullptr, &dock_left_bottom);
-  ImGuiID dock_place = dock_left_bottom;
+  ImGuiID dock_project = dock_left_bottom;
 
   // Right sidebar: inspector top, Jarvis bottom.
   ImGuiID dock_right_bottom;
@@ -228,7 +228,7 @@ void build_default_dock_layout() {
 
   // Left sidebar.
   ImGui::DockBuilderDockWindow("Scene###scene_panel", dock_scene);
-  ImGui::DockBuilderDockWindow("Place Actors###place_actors_panel", dock_place);
+  ImGui::DockBuilderDockWindow("Project###project_panel", dock_project);
 
   // Right sidebar.
   ImGui::DockBuilderDockWindow("Details###details_panel", dock_inspector);
@@ -278,7 +278,7 @@ void build_animation_dock_layout() {
                                dock_timeline);
 
   ImGui::DockBuilderDockWindow("Scene###scene_panel", dock_scene);
-  ImGui::DockBuilderDockWindow("Place Actors###place_actors_panel", dock_scene);
+  ImGui::DockBuilderDockWindow("Project###project_panel", dock_scene);
 
   ImGui::DockBuilderDockWindow("Content Browser###content_browser_panel",
                                dock_assets);

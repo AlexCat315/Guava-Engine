@@ -115,10 +115,6 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
             state.bottom_workspace_tab = .command_timeline;
             state.bottom_drawer_open = true;
         }
-        if (gui.menuItem("Project Browser", null, state.bottom_workspace_tab == .project, true)) {
-            state.bottom_workspace_tab = .project;
-            state.bottom_drawer_open = true;
-        }
         if (gui.menuItem("Console", null, state.bottom_workspace_tab == .console, true)) {
             state.bottom_workspace_tab = .console;
             state.bottom_drawer_open = true;

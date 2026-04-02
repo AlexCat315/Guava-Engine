@@ -190,8 +190,12 @@ pub const LayoutTemplateEntry = struct {
     path: []u8,
 };
 
+pub const LeftPanelTab = enum {
+    scene,
+    place_actors,
+};
+
 pub const BottomWorkspaceTab = enum {
-    project,
     console,
     command_timeline,
     ai_assistant,
@@ -316,6 +320,12 @@ pub const RenderOutputJobStage = enum {
     resize_and_render,
     export_pending,
     restore_pending,
+};
+
+pub const VideoCodec = enum {
+    h264,
+    h265,
+    prores,
 };
 
 fn renderOutputFormatExtension(format: RenderOutputFormat) []const u8 {
@@ -593,7 +603,8 @@ pub const EditorState = struct {
     // Material thumbnail render queue (asset IDs pending render)
     material_thumbnail_queue: std.ArrayList([]const u8) = .empty,
 
-    bottom_workspace_tab: BottomWorkspaceTab = .project,
+    left_panel_tab: LeftPanelTab = .scene,
+    bottom_workspace_tab: BottomWorkspaceTab = .console,
     bottom_drawer_open: bool = false,
     bottom_drawer_height: f32 = 260.0,
     shell_show_left_sidebar: bool = true,
@@ -672,6 +683,14 @@ pub const EditorState = struct {
     render_output_restore_samples: u32 = 4,
     render_output_restore_bounces: u32 = 2,
     render_output_restore_resolution_scale: f32 = 0.75,
+    // Cinematic Sequence-driven render output
+    render_output_use_cinematic_sequence: bool = false,
+    render_output_cinematic_sequence_path: [256]u8 = [_]u8{0} ** 256,
+    render_output_cinematic_sequence: ?*engine.cinematic.Sequence = null,
+    render_output_cinematic_applied_frame: u32 = std.math.maxInt(u32),
+    // FFmpeg video encoding after sequence render
+    render_output_encode_video: bool = false,
+    render_output_video_codec: VideoCodec = .h264,
     viewport_view_preset: ViewportViewPreset = .perspective,
     viewport_show_grid: bool = true,
     viewport_show_bones: bool = false,

@@ -339,6 +339,48 @@ fn drawTexturedPrimitiveTexturePickerPopup(state: *EditorState, layer_context: *
     }
 }
 
+/// Draw only the place actors content (no window wrapper). Used inside the
+/// scene panel tab bar.
+pub fn drawPlaceActorsContent(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    layout.beginSectionBody();
+
+    // Category tabs
+    const available_width = gui.contentRegionAvail()[0];
+    const category_count = categories.len;
+    const tab_width = categoryTabWidth(available_width, category_count);
+
+    for (categories, 0..) |category, i| {
+        if (i > 0) {
+            gui.sameLine();
+        }
+        const label = state.text(category.label_id);
+        if (drawCategoryButton(state, category.id, label, tab_width)) {
+            state.place_actor_category = category.id;
+        }
+    }
+
+    layout.drawSidebarSectionDivider();
+
+    // Filter input
+    gui.setNextItemWidth(-1.0);
+    _ = gui.inputTextWithHint("##place_actors_filter", state.text(.search_place_actors), state.place_actor_filter_buffer[0..]);
+
+    layout.drawSidebarSectionGap();
+
+    // Actor entries
+    const entries = getEntriesForCategory(state.place_actor_category);
+    const filter_text = std.mem.sliceTo(state.place_actor_filter_buffer[0..], 0);
+    const filter_active = filter_text.len > 0;
+
+    for (entries) |entry| {
+        try drawPlaceActorEntry(state, layer_context, entry, filter_active, filter_text);
+    }
+
+    try drawTexturedPrimitiveTexturePickerPopup(state, layer_context);
+
+    layout.endSectionBody();
+}
+
 pub fn drawPlaceActorsWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     var title_buffer: [80]u8 = undefined;
     const title = try state.windowLabel(&title_buffer, .place_actors, "place_actors_panel");

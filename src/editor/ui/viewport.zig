@@ -15,7 +15,6 @@ const mesh_edit = @import("../interaction/mesh_edit.zig");
 const manipulation = @import("../interaction/manipulation.zig");
 const scene_hierarchy = @import("panels/scene/scene_hierarchy.zig");
 const inspector = @import("panels/scene/inspector.zig");
-const place_actors = @import("panels/scene/place_actors.zig");
 const content_browser = @import("../assets/browser.zig");
 const menu_bar = @import("menu_bar.zig");
 const floating_window_blocker = @import("floating_window_blocker.zig");
@@ -1609,10 +1608,10 @@ pub fn drawEditorUi(
     try menu_bar.resolvePendingTopBarDrag(state, layer_context);
 }
 
-/// Left sidebar: Scene Hierarchy + Place Actors
+/// Left sidebar: Scene Hierarchy (with Place Actors tab) + Project Browser
 fn drawLeftSidebar(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     try scene_hierarchy.drawSceneWindow(state, layer_context);
-    try place_actors.drawPlaceActorsWindow(state, layer_context);
+    try content_browser.drawProjectBrowserWindow(state, layer_context);
 }
 
 /// Right sidebar: Inspector / Details

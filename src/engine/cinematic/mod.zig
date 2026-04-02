@@ -9,6 +9,7 @@ pub const track = @import("track.zig");
 pub const camera_path = @import("camera_path.zig");
 pub const sequence = @import("sequence.zig");
 pub const evaluator = @import("evaluator.zig");
+pub const render_output_job = @import("render_output_job.zig");
 
 // Re-export commonly used types at the top level for convenience.
 pub const Sequence = sequence.Sequence;
@@ -31,6 +32,8 @@ pub const saveToPath = sequence.saveToPath;
 pub const evaluate = evaluator.evaluate;
 pub const evaluatePlayback = evaluator.evaluatePlayback;
 pub const freeEvalResult = evaluator.freeEvalResult;
+pub const SequenceRenderJob = render_output_job.SequenceRenderJob;
+pub const applyCameraResult = render_output_job.applyCameraResult;
 
 // Ensure all tests in submodules are discovered.
 comptime {
@@ -39,4 +42,5 @@ comptime {
     _ = camera_path;
     _ = sequence;
     _ = evaluator;
+    _ = render_output_job;
 }

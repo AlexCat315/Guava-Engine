@@ -27,6 +27,15 @@ const drawer_resize_grip_height: f32 = 4.0;
 const drawer_min_height: f32 = 136.0;
 const drawer_top_clearance: f32 = 72.0;
 
+pub fn drawProjectBrowserWindow(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    var title_buffer: [80]u8 = undefined;
+    const title = try state.windowLabel(&title_buffer, .project, "project_panel");
+    _ = gui.beginWindow(title);
+    defer gui.endWindow();
+
+    try drawProjectPanel(state, layer_context);
+}
+
 pub fn drawBottomDrawer(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const vp_origin = state.viewport_origin;
     const vp_extent = state.viewport_extent;
@@ -94,7 +103,6 @@ pub fn drawBottomDrawer(state: *EditorState, layer_context: *engine.core.LayerCo
         }
 
         switch (state.bottom_workspace_tab) {
-            .project => try drawProjectPanel(state, layer_context),
             .console => try console.drawConsolePanel(state),
             .command_timeline => try command_timeline.drawCommandTimelinePanel(state, layer_context),
             .ai_assistant => try drawAiAssistantTab(state),
@@ -164,7 +172,6 @@ fn drawDrawerTabBar(state: *EditorState, layer_context: *engine.core.LayerContex
     const header_padding_x: f32 = 12.0;
     const button_gap: f32 = 6.0;
     const tab_labels = [_]struct { tab: @import("../core/state.zig").BottomWorkspaceTab, label: []const u8 }{
-        .{ .tab = .project, .label = "Project" },
         .{ .tab = .console, .label = "Console" },
         .{ .tab = .command_timeline, .label = "Timeline" },
     };
@@ -172,7 +179,7 @@ fn drawDrawerTabBar(state: *EditorState, layer_context: *engine.core.LayerContex
         width - header_padding_x * 2.0,
         180.0,
     );
-    const tab_width = std.math.clamp((available_tabs_width - button_gap * 2.0) / 3.0, 56.0, 120.0);
+    const tab_width = std.math.clamp((available_tabs_width - button_gap * 1.0) / 2.0, 56.0, 120.0);
     const button_y = item_min[1] + (tab_bar_height - button_height) * 0.5;
     const tabs_start_x = item_min[0] + header_padding_x;
 
@@ -266,20 +273,12 @@ fn drawWorkspaceShellHeader(state: *EditorState) !void {
 
 fn drawBottomTabs(state: *EditorState, total_width: f32) !void {
     const available_width = total_width;
-    // 3 tabs: need at least 3*84 + 2*8 = 268 px for horizontal layout
-    const stacked = available_width < 268.0;
+    // 2 tabs: need at least 2*84 + 1*8 = 176 px for horizontal layout
+    const stacked = available_width < 176.0;
     const tab_width = if (stacked)
         available_width
     else
-        std.math.clamp((available_width - 16.0) / 3.0, 84.0, 140.0);
-    if (drawTabButton(state, .project, "Project", tab_width)) {
-        state.bottom_workspace_tab = .project;
-    }
-    if (!stacked) {
-        gui.sameLine();
-    } else {
-        gui.dummy(0.0, 4.0);
-    }
+        std.math.clamp((available_width - 8.0) / 2.0, 84.0, 140.0);
     if (drawTabButton(state, .console, "Console", tab_width)) {
         state.bottom_workspace_tab = .console;
     }
