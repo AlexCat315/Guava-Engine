@@ -68,12 +68,14 @@ const rt_shadow_denoise_pass_mod = @import("passes/rt_shadow_denoise_pass.zig");
 const path_trace_denoise = @import("path_trace/path_trace_denoise.zig");
 const image_export = @import("image_export.zig");
 const dof_pass_mod = @import("passes/dof_pass.zig");
+const dof_runtime_pass_mod = @import("passes/dof_runtime_pass.zig");
 const ssr_pass_mod = @import("passes/ssr_pass.zig");
 const ssr_blur_pass_mod = @import("passes/ssr_blur_pass.zig");
 const style_plugin_mod = @import("style_plugin.zig");
 const plugin_mod = @import("../plugin/plugin.zig");
 const loader_mod = @import("../plugin/loader.zig");
 const fullscreen_post_mod = @import("passes/fullscreen_post_pass.zig");
+const fxaa_pass_mod = @import("passes/fxaa_pass.zig");
 const platform_mod = @import("../core/platform.zig");
 const selection_history_mod = @import("selection_history.zig");
 const imgui_mod = @import("../ui/imgui.zig");
@@ -369,6 +371,10 @@ pub const Renderer = struct {
     bloom_pass: bloom_pass_mod.BloomPass,
     /// Tonemap 后处理通道
     tonemap_pass: tonemap_pass_mod.TonemapPass,
+    /// DOF 景深通道（运行时实现）
+    dof_runtime_pass: dof_runtime_pass_mod.DofRuntimePass,
+    /// FXAA 抗锯齿通道
+    fxaa_pass: fxaa_pass_mod.FxaaPass,
     /// RT 阴影合成通道
     rt_shadow_composite_pass: rt_shadow_composite_pass_mod.RtShadowCompositePass,
     /// RT 阴影双边去噪通道
@@ -509,6 +515,8 @@ pub const Renderer = struct {
             .ssr_blur_pass = undefined,
             .bloom_pass = undefined,
             .tonemap_pass = undefined,
+            .dof_runtime_pass = undefined,
+            .fxaa_pass = undefined,
             .rt_shadow_composite_pass = undefined,
             .rt_shadow_denoise_pass = undefined,
             .ssao_composite_pass = undefined,
@@ -565,7 +573,9 @@ pub const Renderer = struct {
         renderer.plugin_registry = try plugin_mod.PluginRegistry.init(allocator);
 
         renderer.typed_loader_registry = loader_mod.TypedLoaderRegistry.init(allocator);
-        renderer.typed_loader_registry.register(.render_style, renderer.style_registry.pluginLoader()) catch {};
+        renderer.typed_loader_registry.register(.render_style, renderer.style_registry.pluginLoader()) catch |err| {
+            render_log.err("failed to register render style loader: {s}", .{@errorName(err)});
+        };
 
         renderer.plugin_hot_reload = plugin_mod.PluginHotReloadManager.init(allocator);
 
@@ -605,6 +615,12 @@ pub const Renderer = struct {
 
         renderer.tonemap_pass = try tonemap_pass_mod.TonemapPass.init(&renderer.rhi);
         errdefer renderer.tonemap_pass.deinit(&renderer.rhi);
+
+        renderer.dof_runtime_pass = try dof_runtime_pass_mod.DofRuntimePass.init(&renderer.rhi);
+        errdefer renderer.dof_runtime_pass.deinit(&renderer.rhi);
+
+        renderer.fxaa_pass = try fxaa_pass_mod.FxaaPass.init(&renderer.rhi);
+        errdefer renderer.fxaa_pass.deinit(&renderer.rhi);
 
         renderer.rt_shadow_composite_pass = try rt_shadow_composite_pass_mod.RtShadowCompositePass.init(&renderer.rhi);
         errdefer renderer.rt_shadow_composite_pass.deinit(&renderer.rhi);
@@ -708,6 +724,8 @@ pub const Renderer = struct {
         self.ssr_blur_pass.deinit(&self.rhi);
         self.bloom_pass.deinit(&self.rhi);
         self.tonemap_pass.deinit(&self.rhi);
+        self.dof_runtime_pass.deinit(&self.rhi);
+        self.fxaa_pass.deinit(&self.rhi);
         self.rt_shadow_composite_pass.deinit(&self.rhi);
         self.rt_shadow_denoise_pass.deinit(&self.rhi);
         self.ssao_composite_pass.deinit(&self.rhi);
@@ -869,7 +887,9 @@ pub const Renderer = struct {
                 if (!std.mem.startsWith(u8, rec.manifest.path, root_path)) continue;
                 // Check if the manifest file still exists on disk
                 std.fs.cwd().access(rec.manifest.path, .{}) catch {
-                    stale_names.append(self.allocator, rec.manifest.name) catch {};
+                    stale_names.append(self.allocator, rec.manifest.name) catch |err| {
+                        render_log.err("failed to append stale plugin name: {s}", .{@errorName(err)});
+                    };
                     continue;
                 };
             }
@@ -1538,17 +1558,13 @@ pub const Renderer = struct {
                     self.rhi.endRenderPass(tm_render_pass);
 
                     if (fxaa_enabled) {
-                        if (self.rhi_device) |dev| {
-                            const fxaa_start = std.time.nanoTimestamp();
-                            fullscreen_post_mod.FullscreenPostPass.execute(
-                                self.allocator,
-                                dev,
-                                null,
-                                0,
-                                0,
-                            ) catch {};
-                            self.graph.recordPassStat(pass_stats, .post_process, durationNs(fxaa_start, std.time.nanoTimestamp()), 1, 1);
-                        }
+                        const fxaa_start = std.time.nanoTimestamp();
+                        try self.fxaa_pass.syncTexture(&self.rhi, self.scene_viewport.color().?);
+                        const fxaa_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.fxaa().? }));
+                        const fxaa_stats = self.fxaa_pass.draw(&self.rhi, frame, fxaa_render_pass);
+                        draw_stats.add(fxaa_stats);
+                        self.graph.recordPassStat(pass_stats, .post_process, durationNs(fxaa_start, std.time.nanoTimestamp()), fxaa_stats.draw_calls, fxaa_stats.triangles_drawn);
+                        self.rhi.endRenderPass(fxaa_render_pass);
                     }
                 } else {
                     const scene_hdr_color_target: rhi_mod.ColorTarget = if (viewport_active)
@@ -1871,7 +1887,9 @@ pub const Renderer = struct {
                                             32.0,
                                         },
                                     },
-                                ) catch {};
+                                ) catch |err| {
+                                    render_log.err("volumetric fog pass execution failed: {s}", .{@errorName(err)});
+                                };
                                 self.graph.recordPassStat(pass_stats, .post_process, durationNs(fog_start, std.time.nanoTimestamp()), 1, 1);
                             }
                         }
@@ -2147,7 +2165,7 @@ pub const Renderer = struct {
                         }
 
                         // Select input for bloom/tonemap: use TAA output if resolved, otherwise HDR scene color.
-                        const hdr_input_for_post = if (taa_resolved) self.scene_viewport.taa().? else self.scene_viewport.hdrColor().?;
+                        var hdr_input_for_post = if (taa_resolved) self.scene_viewport.taa().? else self.scene_viewport.hdrColor().?;
 
                         if (bloom_enabled) {
                             try self.bloom_pass.syncTexture(&self.rhi, hdr_input_for_post);
@@ -2166,27 +2184,74 @@ pub const Renderer = struct {
                             self.rhi.endRenderPass(bloom_render_pass);
                         }
 
-                        // DOF dispatch
-                        if (self.editor_viewport_state.dof_enabled) {
-                            if (self.rhi_device) |dev| {
+                        // DOF dispatch — 3-subpass pipeline: CoC → Blur → Composite
+                        if (self.editor_viewport_state.dof_enabled and self.dof_runtime_pass.isReady()) {
+                            if (self.scene_viewport.depth()) |depth_tex| {
                                 const dof_start = std.time.nanoTimestamp();
-                                dof_pass_mod.DOFPass.execute(
-                                    self.allocator,
-                                    dev,
-                                    null,
-                                    0,
-                                    0,
-                                    .{
-                                        .focus_distance = self.editor_viewport_state.dof_focus_distance,
-                                        .focus_range = self.editor_viewport_state.dof_focus_range,
-                                        .blur_radius = self.editor_viewport_state.dof_blur_radius,
-                                        .bokeh_radius = self.editor_viewport_state.dof_bokeh_radius,
-                                        .near_blur = self.editor_viewport_state.dof_near_blur,
-                                        .far_blur = self.editor_viewport_state.dof_far_blur,
-                                        .quality = self.editor_viewport_state.dof_quality,
-                                    },
-                                ) catch {};
-                                self.graph.recordPassStat(pass_stats, .post_process, durationNs(dof_start, std.time.nanoTimestamp()), 1, 1);
+                                const dof_w = self.scene_viewport.width;
+                                const dof_h = self.scene_viewport.height;
+
+                                const inv_proj_dof = mat4_mod.inverse(unjittered_projection) orelse mat4_mod.identity();
+                                const dof_uniforms = dof_runtime_pass_mod.DofUniforms{
+                                    .projection = unjittered_projection,
+                                    .inv_projection = inv_proj_dof,
+                                    .resolution = .{ @floatFromInt(dof_w), @floatFromInt(dof_h) },
+                                    .focus_distance = self.editor_viewport_state.dof_focus_distance,
+                                    .focus_range = self.editor_viewport_state.dof_focus_range,
+                                    .blur_radius = self.editor_viewport_state.dof_blur_radius,
+                                    .bokeh_radius = self.editor_viewport_state.dof_bokeh_radius,
+                                    .near_blur = self.editor_viewport_state.dof_near_blur,
+                                    .far_blur = self.editor_viewport_state.dof_far_blur,
+                                    .quality = self.editor_viewport_state.dof_quality,
+                                };
+
+                                self.dof_runtime_pass.ensureIntermediateTextures(&self.rhi, dof_w, dof_h) catch |err| {
+                                    render_log.err("failed to ensure DoF intermediate textures: {s}", .{@errorName(err)});
+                                };
+
+                                if (self.dof_runtime_pass.coc_texture != null and
+                                    self.dof_runtime_pass.blur_texture != null and
+                                    self.dof_runtime_pass.output_texture != null)
+                                {
+                                    var dof_total_stats = mesh_pass_mod.DrawStats{};
+
+                                    // Subpass 0: CoC generation (reads color + depth)
+                                    self.dof_runtime_pass.syncCocBindGroup(&self.rhi, hdr_input_for_post, depth_tex) catch |err| {
+                                        render_log.err("failed to sync DoF CoC bind group: {s}", .{@errorName(err)});
+                                    };
+                                    const coc_render_pass = self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = &self.dof_runtime_pass.coc_texture.? })) catch null;
+                                    if (coc_render_pass) |coc_rp| {
+                                        dof_total_stats.add(self.dof_runtime_pass.drawCoc(&self.rhi, frame, coc_rp, dof_uniforms));
+                                        self.rhi.endRenderPass(coc_rp);
+                                    }
+
+                                    // Subpass 1: Blur (reads color + CoC)
+                                    self.dof_runtime_pass.syncBlurBindGroup(&self.rhi, hdr_input_for_post) catch |err| {
+                                        render_log.err("failed to sync DoF blur bind group: {s}", .{@errorName(err)});
+                                    };
+                                    const blur_render_pass = self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = &self.dof_runtime_pass.blur_texture.? })) catch null;
+                                    if (blur_render_pass) |blur_rp| {
+                                        dof_total_stats.add(self.dof_runtime_pass.drawBlur(&self.rhi, frame, blur_rp, dof_uniforms));
+                                        self.rhi.endRenderPass(blur_rp);
+                                    }
+
+                                    // Subpass 2: Composite (reads color + blur + CoC → output)
+                                    self.dof_runtime_pass.syncCompositeBindGroup(&self.rhi, hdr_input_for_post) catch |err| {
+                                        render_log.err("failed to sync DoF composite bind group: {s}", .{@errorName(err)});
+                                    };
+                                    const composite_render_pass = self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = &self.dof_runtime_pass.output_texture.? })) catch null;
+                                    if (composite_render_pass) |comp_rp| {
+                                        dof_total_stats.add(self.dof_runtime_pass.drawComposite(&self.rhi, frame, comp_rp, dof_uniforms));
+                                        self.rhi.endRenderPass(comp_rp);
+                                    }
+
+                                    // Swap tonemap input to DOF output
+                                    if (self.dof_runtime_pass.output()) |dof_out| {
+                                        hdr_input_for_post = dof_out;
+                                    }
+
+                                    self.graph.recordPassStat(pass_stats, .post_process, durationNs(dof_start, std.time.nanoTimestamp()), dof_total_stats.draw_calls, dof_total_stats.triangles_drawn);
+                                }
                             }
                         }
 
@@ -2229,17 +2294,13 @@ pub const Renderer = struct {
                         self.rhi.endRenderPass(tm_render_pass);
 
                         if (fxaa_enabled) {
-                            if (self.rhi_device) |dev| {
-                                const fxaa_start = std.time.nanoTimestamp();
-                                fullscreen_post_mod.FullscreenPostPass.execute(
-                                    self.allocator,
-                                    dev,
-                                    null,
-                                    0,
-                                    0,
-                                ) catch {};
-                                self.graph.recordPassStat(pass_stats, .post_process, durationNs(fxaa_start, std.time.nanoTimestamp()), 1, 1);
-                            }
+                            const fxaa_start = std.time.nanoTimestamp();
+                            try self.fxaa_pass.syncTexture(&self.rhi, self.scene_viewport.color().?);
+                            const fxaa_render_pass = try self.rhi.beginRenderPassWithDesc(frame, PassDescriptors.postProcess(.{ .texture = self.scene_viewport.fxaa().? }));
+                            const fxaa_stats = self.fxaa_pass.draw(&self.rhi, frame, fxaa_render_pass);
+                            draw_stats.add(fxaa_stats);
+                            self.graph.recordPassStat(pass_stats, .post_process, durationNs(fxaa_start, std.time.nanoTimestamp()), fxaa_stats.draw_calls, fxaa_stats.triangles_drawn);
+                            self.rhi.endRenderPass(fxaa_render_pass);
                         }
                     }
                 }

@@ -647,7 +647,9 @@ pub const Store = struct {
             "id={d} commands={d} preview={d} errors={d} conflicts={d}",
             .{ stage_result.transaction_id, stage_result.command_count, stage_result.preview_count, stage_result.error_count, stage_result.base_revision_conflict_count },
         ) catch "staged transaction";
-        self.pushIntentLocked(request.source, "staged_transaction", detail, &self.staged.meta) catch {};
+        self.pushIntentLocked(request.source, "staged_transaction", detail, &self.staged.meta) catch |err| {
+            std.log.err("failed to push staged_transaction intent: {s}", .{@errorName(err)});
+        };
 
         self.appendCommandTimelineLocked(
             request.source,
@@ -655,7 +657,9 @@ pub const Store = struct {
             detail,
             "stage_transaction",
             &self.staged.meta,
-        ) catch {};
+        ) catch |err| {
+            std.log.err("failed to append stage_transaction timeline: {s}", .{@errorName(err)});
+        };
 
         return stage_result;
     }
@@ -771,7 +775,9 @@ pub const Store = struct {
             if (kept_staged) "apply_transaction_conflict" else "applied_transaction",
             detail,
             &staged_meta,
-        ) catch {};
+        ) catch |err| {
+            std.log.err("failed to push applied_transaction intent: {s}", .{@errorName(err)});
+        };
 
         self.appendCommandTimelineLocked(
             source,
@@ -779,7 +785,9 @@ pub const Store = struct {
             detail,
             if (kept_staged) "apply_conflict" else "apply_staged_transaction",
             &staged_meta,
-        ) catch {};
+        ) catch |err| {
+            std.log.err("failed to append apply_transaction timeline: {s}", .{@errorName(err)});
+        };
 
         return .{
             .had_transaction = true,
@@ -829,7 +837,9 @@ pub const Store = struct {
             "id={any} commands={d}",
             .{ result.transaction_id, result.command_count },
         ) catch "discarded staged transaction";
-        self.pushIntentLocked(source, "discarded_transaction", detail, &staged_meta) catch {};
+        self.pushIntentLocked(source, "discarded_transaction", detail, &staged_meta) catch |err| {
+            std.log.err("failed to push discarded_transaction intent: {s}", .{@errorName(err)});
+        };
 
         self.appendCommandTimelineLocked(
             source,
@@ -837,7 +847,9 @@ pub const Store = struct {
             detail,
             "discard_staged_transaction",
             &staged_meta,
-        ) catch {};
+        ) catch |err| {
+            std.log.err("failed to append discard_transaction timeline: {s}", .{@errorName(err)});
+        };
 
         return result;
     }
@@ -1029,7 +1041,9 @@ pub const Store = struct {
             "id={d} entity={d} world_transform=({d:.2},{d:.2},{d:.2})",
             .{ staged_id, entity_id, world_transform.translation[0], world_transform.translation[1], world_transform.translation[2] },
         ) catch "staged preview transform";
-        self.pushIntentLocked(source, "staged_preview_transform", detail, &self.staged.meta) catch {};
+        self.pushIntentLocked(source, "staged_preview_transform", detail, &self.staged.meta) catch |err| {
+            std.log.err("failed to push staged_preview_transform intent: {s}", .{@errorName(err)});
+        };
         return true;
     }
 

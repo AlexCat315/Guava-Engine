@@ -56,6 +56,30 @@ pub const HostApi = extern struct {
     is_gamepad_button_down: *const fn (?*anyopaque, u32) callconv(.c) u32,
     was_gamepad_button_pressed: *const fn (?*anyopaque, u32) callconv(.c) u32,
     get_gamepad_axis: *const fn (?*anyopaque, u32) callconv(.c) f32,
+    // Audio
+    audio_load_clip: *const fn (?*anyopaque, [*]const u8, usize) callconv(.c) u32,
+    audio_play_2d: *const fn (?*anyopaque, u32, f32, u32) callconv(.c) u32,
+    audio_play_3d: *const fn (?*anyopaque, u32, f32, f32, f32, f32, u32) callconv(.c) u32,
+    audio_stop: *const fn (?*anyopaque, u32) callconv(.c) void,
+    audio_set_volume: *const fn (?*anyopaque, u32, f32) callconv(.c) void,
+    audio_pause: *const fn (?*anyopaque, u32, u32) callconv(.c) void,
+    audio_is_playing: *const fn (?*anyopaque, u32) callconv(.c) u32,
+    // Animation
+    anim_play: *const fn (?*anyopaque, u64, [*]const u8, usize, f32) callconv(.c) void,
+    anim_stop: *const fn (?*anyopaque, u64) callconv(.c) void,
+    anim_set_speed: *const fn (?*anyopaque, u64, f32) callconv(.c) void,
+    anim_is_playing: *const fn (?*anyopaque, u64) callconv(.c) u32,
+    // Canvas / UI
+    canvas_clear: *const fn (?*anyopaque) callconv(.c) void,
+    canvas_add_text: *const fn (?*anyopaque, f32, f32, f32, f32, [*]const u8, usize, u8, u8, u8, u8) callconv(.c) u32,
+    canvas_add_panel: *const fn (?*anyopaque, f32, f32, f32, f32, u8, u8, u8, u8) callconv(.c) u32,
+    canvas_add_button: *const fn (?*anyopaque, f32, f32, f32, f32, [*]const u8, usize) callconv(.c) u32,
+    canvas_add_progress_bar: *const fn (?*anyopaque, f32, f32, f32, f32, f32) callconv(.c) u32,
+    canvas_set_text: *const fn (?*anyopaque, u32, [*]const u8, usize) callconv(.c) void,
+    canvas_set_progress: *const fn (?*anyopaque, u32, f32) callconv(.c) void,
+    canvas_set_visible: *const fn (?*anyopaque, u32, u32) callconv(.c) void,
+    canvas_remove_widget: *const fn (?*anyopaque, u32) callconv(.c) void,
+    canvas_was_button_clicked: *const fn (?*anyopaque, u32) callconv(.c) u32,
 };
 
 // ---------------------------------------------------------------------------
@@ -358,4 +382,126 @@ pub fn wasGamepadButtonPressed(button: GamepadButton) bool {
 /// 获取手柄轴值（-1.0 ~ 1.0，trigger 为 0.0 ~ 1.0）
 pub fn getGamepadAxis(axis: GamepadAxis) f32 {
     return api.get_gamepad_axis(ctx, @intFromEnum(axis));
+}
+
+// ---------------------------------------------------------------------------
+// Audio API
+// ---------------------------------------------------------------------------
+
+pub const AudioClipHandle = u32;
+pub const VoiceHandle = u32;
+
+/// 从文件路径加载音频片段，返回 clip handle（0 = 加载失败）
+pub fn audioLoadClip(path: []const u8) AudioClipHandle {
+    return api.audio_load_clip(ctx, path.ptr, path.len);
+}
+
+/// 播放 2D 音频（无空间化），返回 voice handle（0 = 播放失败）
+pub fn audioPlay2d(clip: AudioClipHandle, volume: f32, loop: bool) VoiceHandle {
+    return api.audio_play_2d(ctx, clip, volume, if (loop) @as(u32, 1) else @as(u32, 0));
+}
+
+/// 播放 3D 空间音频，返回 voice handle（0 = 播放失败）
+pub fn audioPlay3d(clip: AudioClipHandle, pos: Vec3, volume: f32, loop: bool) VoiceHandle {
+    return api.audio_play_3d(ctx, clip, pos[0], pos[1], pos[2], volume, if (loop) @as(u32, 1) else @as(u32, 0));
+}
+
+/// 停止播放指定 voice
+pub fn audioStop(voice: VoiceHandle) void {
+    api.audio_stop(ctx, voice);
+}
+
+/// 设置指定 voice 音量
+pub fn audioSetVolume(voice: VoiceHandle, volume: f32) void {
+    api.audio_set_volume(ctx, voice, volume);
+}
+
+/// 暂停/恢复指定 voice
+pub fn audioPause(voice: VoiceHandle, paused: bool) void {
+    api.audio_pause(ctx, voice, if (paused) @as(u32, 1) else @as(u32, 0));
+}
+
+/// 查询指定 voice 是否正在播放
+pub fn audioIsPlaying(voice: VoiceHandle) bool {
+    return api.audio_is_playing(ctx, voice) != 0;
+}
+
+// ---------------------------------------------------------------------------
+// Animation API
+// ---------------------------------------------------------------------------
+
+/// 播放动画片段（通过 asset ID），可指定混合过渡时间
+pub fn animPlay(entity_id: u64, clip_asset_id: []const u8, blend_duration: f32) void {
+    api.anim_play(ctx, entity_id, clip_asset_id.ptr, clip_asset_id.len, blend_duration);
+}
+
+/// 停止实体的动画播放
+pub fn animStop(entity_id: u64) void {
+    api.anim_stop(ctx, entity_id);
+}
+
+/// 设置动画播放速度
+pub fn animSetSpeed(entity_id: u64, speed: f32) void {
+    api.anim_set_speed(ctx, entity_id, speed);
+}
+
+/// 查询实体是否正在播放动画
+pub fn animIsPlaying(entity_id: u64) bool {
+    return api.anim_is_playing(ctx, entity_id) != 0;
+}
+
+// ---------------------------------------------------------------------------
+// Canvas / UI
+// ---------------------------------------------------------------------------
+
+pub const WidgetId = u32;
+
+/// 清空画布上所有控件
+pub fn canvasClear() void {
+    api.canvas_clear(ctx);
+}
+
+/// 添加文本控件，返回 WidgetId（0 = 失败）
+pub fn canvasAddText(x: f32, y: f32, w: f32, h: f32, text: []const u8, r: u8, g: u8, b: u8, a: u8) WidgetId {
+    return api.canvas_add_text(ctx, x, y, w, h, text.ptr, text.len, r, g, b, a);
+}
+
+/// 添加面板控件
+pub fn canvasAddPanel(x: f32, y: f32, w: f32, h: f32, r: u8, g: u8, b: u8, a: u8) WidgetId {
+    return api.canvas_add_panel(ctx, x, y, w, h, r, g, b, a);
+}
+
+/// 添加按钮控件
+pub fn canvasAddButton(x: f32, y: f32, w: f32, h: f32, label: []const u8) WidgetId {
+    return api.canvas_add_button(ctx, x, y, w, h, label.ptr, label.len);
+}
+
+/// 添加进度条控件
+pub fn canvasAddProgressBar(x: f32, y: f32, w: f32, h: f32, value: f32) WidgetId {
+    return api.canvas_add_progress_bar(ctx, x, y, w, h, value);
+}
+
+/// 更新文本内容
+pub fn canvasSetText(id: WidgetId, text: []const u8) void {
+    api.canvas_set_text(ctx, id, text.ptr, text.len);
+}
+
+/// 更新进度条值
+pub fn canvasSetProgress(id: WidgetId, value: f32) void {
+    api.canvas_set_progress(ctx, id, value);
+}
+
+/// 设置控件可见性
+pub fn canvasSetVisible(id: WidgetId, visible: bool) void {
+    api.canvas_set_visible(ctx, id, if (visible) 1 else 0);
+}
+
+/// 移除控件
+pub fn canvasRemoveWidget(id: WidgetId) void {
+    api.canvas_remove_widget(ctx, id);
+}
+
+/// 查询按钮本帧是否被点击
+pub fn canvasWasButtonClicked(id: WidgetId) bool {
+    return api.canvas_was_button_clicked(ctx, id) != 0;
 }

@@ -259,14 +259,20 @@ pub const SaveSystem = struct {
         // Delete files in the slot directory.
         const world_path = try self.worldFilePath(slot);
         defer self.allocator.free(world_path);
-        std.fs.cwd().deleteFile(world_path) catch {};
+        std.fs.cwd().deleteFile(world_path) catch |err| {
+            std.log.err("failed to delete save world file: {s}", .{@errorName(err)});
+        };
 
         const meta_path = try self.metaFilePath(slot);
         defer self.allocator.free(meta_path);
-        std.fs.cwd().deleteFile(meta_path) catch {};
+        std.fs.cwd().deleteFile(meta_path) catch |err| {
+            std.log.err("failed to delete save meta file: {s}", .{@errorName(err)});
+        };
 
         // Try to remove the directory (only succeeds if empty).
-        std.fs.cwd().deleteDir(slot_dir) catch {};
+        std.fs.cwd().deleteDir(slot_dir) catch |err| {
+            std.log.err("failed to delete save slot directory: {s}", .{@errorName(err)});
+        };
     }
 
     // -- Path helpers -------------------------------------------------------

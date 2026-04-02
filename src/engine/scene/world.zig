@@ -633,15 +633,23 @@ pub const World = struct {
         });
 
         try self.id_to_index.put(id, index);
-        self.transform_set.insert(id, desc.local_transform) catch {};
+        self.transform_set.insert(id, desc.local_transform) catch |err| {
+            std.log.err("failed to insert transform for entity {d}: {s}", .{ id, @errorName(err) });
+        };
         if (desc.rigidbody) |rb| {
-            self.rigidbody_set.insert(id, rb) catch {};
+            self.rigidbody_set.insert(id, rb) catch |err| {
+                std.log.err("failed to insert rigidbody for entity {d}: {s}", .{ id, @errorName(err) });
+            };
         }
         if (desc.box_collider) |bc| {
-            self.box_collider_set.insert(id, bc) catch {};
+            self.box_collider_set.insert(id, bc) catch |err| {
+                std.log.err("failed to insert box collider for entity {d}: {s}", .{ id, @errorName(err) });
+            };
         }
         if (desc.sphere_collider) |sc| {
-            self.sphere_collider_set.insert(id, sc) catch {};
+            self.sphere_collider_set.insert(id, sc) catch |err| {
+                std.log.err("failed to insert sphere collider for entity {d}: {s}", .{ id, @errorName(err) });
+            };
         }
 
         if (desc.parent) |parent_id| {
@@ -741,11 +749,15 @@ pub const World = struct {
             self.queueRenderableSync(id);
             if (self.dynamic_renderables.getPtr(id)) |state| {
                 state.steady_query_count = 0;
-                _ = self.dynamic_dirty_renderables.put(id, {}) catch {};
+                _ = self.dynamic_dirty_renderables.put(id, {}) catch |err| {
+                    std.log.err("failed to mark dynamic renderable dirty for entity {d}: {s}", .{ id, @errorName(err) });
+                };
                 // 不直接 markDirty() 整个 BVH，让 refitDirtyDynamicRenderables()
                 // 先尝试增量 updateItemBounds()，只在失败时才退回全量重建。
             } else if (self.promoteRenderableToDynamic(id)) {
-                _ = self.dynamic_dirty_renderables.put(id, {}) catch {};
+                _ = self.dynamic_dirty_renderables.put(id, {}) catch |err| {
+                    std.log.err("failed to mark promoted dynamic renderable dirty for entity {d}: {s}", .{ id, @errorName(err) });
+                };
                 // 新晋升的动态实体需要全量重建以插入 BVH。
                 self.dynamic_renderable_spatial_index.markDirty();
             } else {
@@ -794,8 +806,12 @@ pub const World = struct {
         }
 
         // Third pass: sync only the renderables dirtied by this hierarchy update.
-        self.syncRenderableSpatialItems() catch {};
-        self.refitDirtyDynamicRenderables() catch {};
+        self.syncRenderableSpatialItems() catch |err| {
+            std.log.err("failed to sync renderable spatial items: {s}", .{@errorName(err)});
+        };
+        self.refitDirtyDynamicRenderables() catch |err| {
+            std.log.err("failed to refit dirty dynamic renderables: {s}", .{@errorName(err)});
+        };
     }
 
     fn updateTransformRecursive(self: *World, id: EntityId, parent_world_matrix: [16]f32) void {
@@ -994,7 +1010,9 @@ pub const World = struct {
         if (self.rigidbody_set.getPtr(id)) |rb| {
             rb.* = rigidbody;
         } else {
-            self.rigidbody_set.insert(id, rigidbody) catch {};
+            self.rigidbody_set.insert(id, rigidbody) catch |err| {
+                std.log.err("failed to insert rigidbody for entity {d}: {s}", .{ id, @errorName(err) });
+            };
         }
         self.bumpSceneRevision();
         return true;
@@ -1026,7 +1044,9 @@ pub const World = struct {
         if (self.box_collider_set.getPtr(id)) |bc| {
             bc.* = box_collider;
         } else {
-            self.box_collider_set.insert(id, box_collider) catch {};
+            self.box_collider_set.insert(id, box_collider) catch |err| {
+                std.log.err("failed to insert box collider for entity {d}: {s}", .{ id, @errorName(err) });
+            };
         }
         self.bumpSceneRevision();
         return true;
@@ -1058,7 +1078,9 @@ pub const World = struct {
         if (self.sphere_collider_set.getPtr(id)) |sc| {
             sc.* = sphere_collider;
         } else {
-            self.sphere_collider_set.insert(id, sphere_collider) catch {};
+            self.sphere_collider_set.insert(id, sphere_collider) catch |err| {
+                std.log.err("failed to insert sphere collider for entity {d}: {s}", .{ id, @errorName(err) });
+            };
         }
         self.bumpSceneRevision();
         return true;
@@ -1760,7 +1782,9 @@ pub const World = struct {
 
         // Update indices in the map because orderedRemove shifts items
         for (self.entities.items[index..], index..) |shifted, i| {
-            self.id_to_index.put(shifted.id, i) catch {};
+            self.id_to_index.put(shifted.id, i) catch |err| {
+                std.log.err("failed to update entity index for id {d}: {s}", .{ shifted.id, @errorName(err) });
+            };
         }
     }
 
@@ -2224,7 +2248,9 @@ pub const World = struct {
         _ = items.swapRemove(item_index);
         _ = indices.remove(item_id);
         if (item_index < items.items.len) {
-            indices.put(moved_item.id, item_index) catch {};
+            indices.put(moved_item.id, item_index) catch |err| {
+                std.log.err("failed to update spatial index for entity {d}: {s}", .{ moved_item.id, @errorName(err) });
+            };
         }
         return true;
     }

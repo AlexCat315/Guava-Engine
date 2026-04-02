@@ -43,38 +43,29 @@ pub const SH9 = struct {
         }
     }
 
-    // Evaluate irradiance at a direction
+    // Evaluate irradiance at a direction using all 9 SH bands
+    // Cosine-lobe convolution coefficients: Aₗ = π for L=0, 2π/3 for L=1, π/4 for L=2
     pub fn evalIrradiance(self: *const SH9, direction: [3]f32) [3]f32 {
         const sh_basis = evalSHBasis(direction);
         var result = [3]f32{ 0.0, 0.0, 0.0 };
 
-        // Band 0
-        result[0] += self.coefficients[0][0] * sh_basis[0];
-        result[1] += self.coefficients[0][1] * sh_basis[0];
-        result[2] += self.coefficients[0][2] * sh_basis[0];
+        const band_scales = [_]f32{
+            3.141593, // L=0: π
+            2.094395, 2.094395, 2.094395, // L=1: 2π/3
+            0.785398, 0.785398, 0.785398, 0.785398, 0.785398, // L=2: π/4
+        };
 
-        // Band 1
-        result[0] += self.coefficients[1][0] * sh_basis[1];
-        result[1] += self.coefficients[1][1] * sh_basis[1];
-        result[2] += self.coefficients[1][2] * sh_basis[1];
+        for (0..9) |j| {
+            result[0] += self.coefficients[j][0] * sh_basis[j] * band_scales[j];
+            result[1] += self.coefficients[j][1] * sh_basis[j] * band_scales[j];
+            result[2] += self.coefficients[j][2] * sh_basis[j] * band_scales[j];
+        }
 
-        result[0] += self.coefficients[2][0] * sh_basis[2];
-        result[1] += self.coefficients[2][1] * sh_basis[2];
-        result[2] += self.coefficients[2][2] * sh_basis[2];
-
-        result[0] += self.coefficients[3][0] * sh_basis[3];
-        result[1] += self.coefficients[3][1] * sh_basis[3];
-        result[2] += self.coefficients[3][2] * sh_basis[3];
-
-        // Scale by reconstruction coefficients for irradiance
-        // These approximate the cosine lobe convolution
-        const band0_scale = 3.141593; // π
-
-        result[0] *= band0_scale;
-        result[1] *= band0_scale;
-        result[2] *= band0_scale;
-
-        return result;
+        return .{
+            @max(result[0], 0.0),
+            @max(result[1], 0.0),
+            @max(result[2], 0.0),
+        };
     }
 };
 
@@ -96,7 +87,7 @@ fn uvToDirection(uv: [2]f32) [3]f32 {
     };
 }
 
-// Evaluate Spherical Harmonics basis functions
+// Evaluate Spherical Harmonics basis functions (L0 + L1 + L2 = 9 coefficients)
 fn evalSHBasis(direction: [3]f32) [9]f32 {
     const x = direction[0];
     const y = direction[1];
@@ -104,13 +95,20 @@ fn evalSHBasis(direction: [3]f32) [9]f32 {
 
     var basis: [9]f32 = undefined;
 
-    // Band 0
+    // Band 0 (L=0)
     basis[0] = 0.282095; // 1/2 * sqrt(1/π)
 
-    // Band 1
+    // Band 1 (L=1)
     basis[1] = -0.488603 * y; // -1/2 * sqrt(3/π) * y
-    basis[2] = 0.488603 * z; // 1/2 * sqrt(3/π) * z
+    basis[2] = 0.488603 * z; //  1/2 * sqrt(3/π) * z
     basis[3] = -0.488603 * x; // -1/2 * sqrt(3/π) * x
+
+    // Band 2 (L=2)
+    basis[4] = 1.092548 * x * y; //  1/2 * sqrt(15/π) * xy
+    basis[5] = -1.092548 * y * z; // -1/2 * sqrt(15/π) * yz
+    basis[6] = 0.315392 * (3.0 * z * z - 1.0); // 1/4 * sqrt(5/π) * (3z²-1)
+    basis[7] = -1.092548 * x * z; // -1/2 * sqrt(15/π) * xz
+    basis[8] = 0.546274 * (x * x - y * y); // 1/4 * sqrt(15/π) * (x²-y²)
 
     return basis;
 }

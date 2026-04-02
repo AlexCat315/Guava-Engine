@@ -9,6 +9,8 @@ const quat = @import("../math/quat.zig");
 const vec3 = @import("../math/vec3.zig");
 const world_mod = @import("../scene/world.zig");
 const input_mod = @import("../core/input.zig");
+const audio_mod = @import("../audio/mod.zig");
+const animator_system = @import("../animation/animator_system.zig");
 
 const log = std.log.scoped(.vm);
 
@@ -373,6 +375,30 @@ const ZigDylibHostApi = extern struct {
     is_gamepad_button_down: *const fn (?*anyopaque, u32) callconv(.c) u32,
     was_gamepad_button_pressed: *const fn (?*anyopaque, u32) callconv(.c) u32,
     get_gamepad_axis: *const fn (?*anyopaque, u32) callconv(.c) f32,
+    // Audio
+    audio_load_clip: *const fn (?*anyopaque, [*]const u8, usize) callconv(.c) u32,
+    audio_play_2d: *const fn (?*anyopaque, u32, f32, u32) callconv(.c) u32,
+    audio_play_3d: *const fn (?*anyopaque, u32, f32, f32, f32, f32, u32) callconv(.c) u32,
+    audio_stop: *const fn (?*anyopaque, u32) callconv(.c) void,
+    audio_set_volume: *const fn (?*anyopaque, u32, f32) callconv(.c) void,
+    audio_pause: *const fn (?*anyopaque, u32, u32) callconv(.c) void,
+    audio_is_playing: *const fn (?*anyopaque, u32) callconv(.c) u32,
+    // Animation
+    anim_play: *const fn (?*anyopaque, u64, [*]const u8, usize, f32) callconv(.c) void,
+    anim_stop: *const fn (?*anyopaque, u64) callconv(.c) void,
+    anim_set_speed: *const fn (?*anyopaque, u64, f32) callconv(.c) void,
+    anim_is_playing: *const fn (?*anyopaque, u64) callconv(.c) u32,
+    // Canvas / UI
+    canvas_clear: *const fn (?*anyopaque) callconv(.c) void,
+    canvas_add_text: *const fn (?*anyopaque, f32, f32, f32, f32, [*]const u8, usize, u8, u8, u8, u8) callconv(.c) u32,
+    canvas_add_panel: *const fn (?*anyopaque, f32, f32, f32, f32, u8, u8, u8, u8) callconv(.c) u32,
+    canvas_add_button: *const fn (?*anyopaque, f32, f32, f32, f32, [*]const u8, usize) callconv(.c) u32,
+    canvas_add_progress_bar: *const fn (?*anyopaque, f32, f32, f32, f32, f32) callconv(.c) u32,
+    canvas_set_text: *const fn (?*anyopaque, u32, [*]const u8, usize) callconv(.c) void,
+    canvas_set_progress: *const fn (?*anyopaque, u32, f32) callconv(.c) void,
+    canvas_set_visible: *const fn (?*anyopaque, u32, u32) callconv(.c) void,
+    canvas_remove_widget: *const fn (?*anyopaque, u32) callconv(.c) void,
+    canvas_was_button_clicked: *const fn (?*anyopaque, u32) callconv(.c) u32,
 };
 
 const zig_dylib_host_api: ZigDylibHostApi = .{
@@ -405,6 +431,30 @@ const zig_dylib_host_api: ZigDylibHostApi = .{
     .is_gamepad_button_down = zigDylibHostIsGamepadButtonDown,
     .was_gamepad_button_pressed = zigDylibHostWasGamepadButtonPressed,
     .get_gamepad_axis = zigDylibHostGetGamepadAxis,
+    // Audio
+    .audio_load_clip = zigDylibHostAudioLoadClip,
+    .audio_play_2d = zigDylibHostAudioPlay2d,
+    .audio_play_3d = zigDylibHostAudioPlay3d,
+    .audio_stop = zigDylibHostAudioStop,
+    .audio_set_volume = zigDylibHostAudioSetVolume,
+    .audio_pause = zigDylibHostAudioPause,
+    .audio_is_playing = zigDylibHostAudioIsPlaying,
+    // Animation
+    .anim_play = zigDylibHostAnimPlay,
+    .anim_stop = zigDylibHostAnimStop,
+    .anim_set_speed = zigDylibHostAnimSetSpeed,
+    .anim_is_playing = zigDylibHostAnimIsPlaying,
+    // Canvas / UI
+    .canvas_clear = zigDylibHostCanvasClear,
+    .canvas_add_text = zigDylibHostCanvasAddText,
+    .canvas_add_panel = zigDylibHostCanvasAddPanel,
+    .canvas_add_button = zigDylibHostCanvasAddButton,
+    .canvas_add_progress_bar = zigDylibHostCanvasAddProgressBar,
+    .canvas_set_text = zigDylibHostCanvasSetText,
+    .canvas_set_progress = zigDylibHostCanvasSetProgress,
+    .canvas_set_visible = zigDylibHostCanvasSetVisible,
+    .canvas_remove_widget = zigDylibHostCanvasRemoveWidget,
+    .canvas_was_button_clicked = zigDylibHostCanvasWasButtonClicked,
 };
 
 const ZigDylibLibrary = struct {
@@ -631,7 +681,9 @@ pub const ZigVM = struct {
         const cache_dir = "zig-cache/guava/scripts";
 
         // 创建缓存目录
-        std.fs.cwd().makePath(cache_dir) catch {};
+        std.fs.cwd().makePath(cache_dir) catch |err| {
+            log.err("failed to create script cache directory: {s}", .{@errorName(err)});
+        };
 
         const dylib_ext = switch (@import("builtin").os.tag) {
             .macos => ".dylib",
@@ -1040,6 +1092,163 @@ fn zigDylibHostGetGamepadAxis(userdata: ?*anyopaque, axis: u32) callconv(.c) f32
     const input_state = ctx_ptr.input orelse return 0.0;
     const ax = std.meta.intToEnum(input_mod.GamepadAxis, @as(u8, @intCast(axis))) catch return 0.0;
     return input_state.getGamepadAxis(ax);
+}
+
+// ---------------------------------------------------------------------------
+// Audio host functions
+// ---------------------------------------------------------------------------
+
+fn zigDylibHostAudioLoadClip(_: ?*anyopaque, path_ptr: [*]const u8, path_len: usize) callconv(.c) u32 {
+    const runtime = audio_mod.get() catch return 0;
+    const path = path_ptr[0..path_len];
+    const handle = runtime.loadClipBySlice(path) catch return 0;
+    return handle;
+}
+
+fn zigDylibHostAudioPlay2d(_: ?*anyopaque, clip_id: u32, volume: f32, loop_flag: u32) callconv(.c) u32 {
+    const runtime = audio_mod.get() catch return 0;
+    return runtime.playClip2d(clip_id, volume, loop_flag != 0) catch return 0;
+}
+
+fn zigDylibHostAudioPlay3d(_: ?*anyopaque, clip_id: u32, x: f32, y: f32, z: f32, volume: f32, loop_flag: u32) callconv(.c) u32 {
+    const runtime = audio_mod.get() catch return 0;
+    return runtime.playClip3d(clip_id, .{ x, y, z }, volume, loop_flag != 0) catch return 0;
+}
+
+fn zigDylibHostAudioStop(_: ?*anyopaque, voice_handle: u32) callconv(.c) void {
+    const runtime = audio_mod.get() catch return;
+    runtime.stopVoice(voice_handle);
+}
+
+fn zigDylibHostAudioSetVolume(_: ?*anyopaque, voice_handle: u32, volume: f32) callconv(.c) void {
+    const runtime = audio_mod.get() catch return;
+    runtime.setVoiceVolume(voice_handle, volume);
+}
+
+fn zigDylibHostAudioPause(_: ?*anyopaque, voice_handle: u32, paused: u32) callconv(.c) void {
+    const runtime = audio_mod.get() catch return;
+    runtime.pauseVoice(voice_handle, paused != 0);
+}
+
+fn zigDylibHostAudioIsPlaying(_: ?*anyopaque, voice_handle: u32) callconv(.c) u32 {
+    const runtime = audio_mod.get() catch return 0;
+    return if (runtime.isVoiceHandleActive(voice_handle)) @as(u32, 1) else @as(u32, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Animation host functions
+// ---------------------------------------------------------------------------
+
+fn zigDylibHostAnimPlay(userdata: ?*anyopaque, entity_id: u64, clip_ptr: [*]const u8, clip_len: usize, blend_duration: f32) callconv(.c) void {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return;
+    const clip_asset_id = clip_ptr[0..clip_len];
+    const clip_handle = ctx_ptr.world.resources.animationClipHandleByAssetId(clip_asset_id) orelse return;
+    animator_system.playClip(ctx_ptr.world, entity_id, clip_handle, .{ .blend_duration_seconds = blend_duration }) catch return;
+}
+
+fn zigDylibHostAnimStop(userdata: ?*anyopaque, entity_id: u64) callconv(.c) void {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return;
+    if (ctx_ptr.world.id_to_index.get(entity_id)) |idx| {
+        var entity = &ctx_ptr.world.entities.items[idx];
+        if (entity.animator) |*anim| {
+            anim.playing = false;
+        }
+    }
+}
+
+fn zigDylibHostAnimSetSpeed(userdata: ?*anyopaque, entity_id: u64, speed: f32) callconv(.c) void {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return;
+    if (ctx_ptr.world.id_to_index.get(entity_id)) |idx| {
+        var entity = &ctx_ptr.world.entities.items[idx];
+        if (entity.animator) |*anim| {
+            anim.speed = speed;
+        }
+    }
+}
+
+fn zigDylibHostAnimIsPlaying(userdata: ?*anyopaque, entity_id: u64) callconv(.c) u32 {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return 0;
+    if (ctx_ptr.world.id_to_index.get(entity_id)) |idx| {
+        const entity = ctx_ptr.world.entities.items[idx];
+        if (entity.animator) |anim| {
+            return if (anim.playing) @as(u32, 1) else @as(u32, 0);
+        }
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Canvas / UI host functions
+// ---------------------------------------------------------------------------
+
+fn zigDylibHostCanvasClear(userdata: ?*anyopaque) callconv(.c) void {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return;
+    ctx_ptr.uiClear();
+}
+
+fn zigDylibHostCanvasAddText(userdata: ?*anyopaque, x: f32, y: f32, w: f32, h: f32, ptr: [*]const u8, len: usize, r: u8, g: u8, b: u8, a: u8) callconv(.c) u32 {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return 0;
+    const canvas = ctx_ptr.canvas orelse return 0;
+    const runtime_ui_mod = @import("../runtime_ui/mod.zig");
+    return canvas.addText(
+        .{ .x = x, .y = y, .w = w, .h = h },
+        ptr[0..len],
+        runtime_ui_mod.Color{ .r = r, .g = g, .b = b, .a = a },
+    ) catch 0;
+}
+
+fn zigDylibHostCanvasAddPanel(userdata: ?*anyopaque, x: f32, y: f32, w: f32, h: f32, r: u8, g: u8, b: u8, a: u8) callconv(.c) u32 {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return 0;
+    const canvas = ctx_ptr.canvas orelse return 0;
+    const runtime_ui_mod = @import("../runtime_ui/mod.zig");
+    return canvas.addPanel(
+        .{ .x = x, .y = y, .w = w, .h = h },
+        runtime_ui_mod.Color{ .r = r, .g = g, .b = b, .a = a },
+    ) catch 0;
+}
+
+fn zigDylibHostCanvasAddButton(userdata: ?*anyopaque, x: f32, y: f32, w: f32, h: f32, ptr: [*]const u8, len: usize) callconv(.c) u32 {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return 0;
+    const canvas = ctx_ptr.canvas orelse return 0;
+    return canvas.addButton(.{ .x = x, .y = y, .w = w, .h = h }, ptr[0..len]) catch 0;
+}
+
+fn zigDylibHostCanvasAddProgressBar(userdata: ?*anyopaque, x: f32, y: f32, w: f32, h: f32, value: f32) callconv(.c) u32 {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return 0;
+    const canvas = ctx_ptr.canvas orelse return 0;
+    return canvas.addProgressBar(.{ .x = x, .y = y, .w = w, .h = h }, value) catch 0;
+}
+
+fn zigDylibHostCanvasSetText(userdata: ?*anyopaque, widget_id: u32, ptr: [*]const u8, len: usize) callconv(.c) void {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return;
+    const canvas = ctx_ptr.canvas orelse return;
+    canvas.setText(@intCast(widget_id), ptr[0..len]) catch |err| {
+        log.err("failed to set canvas text for widget {d}: {s}", .{ widget_id, @errorName(err) });
+    };
+}
+
+fn zigDylibHostCanvasSetProgress(userdata: ?*anyopaque, widget_id: u32, value: f32) callconv(.c) void {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return;
+    const canvas = ctx_ptr.canvas orelse return;
+    canvas.setProgress(@intCast(widget_id), value);
+}
+
+fn zigDylibHostCanvasSetVisible(userdata: ?*anyopaque, widget_id: u32, visible: u32) callconv(.c) void {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return;
+    const canvas = ctx_ptr.canvas orelse return;
+    canvas.setVisible(@intCast(widget_id), visible != 0);
+}
+
+fn zigDylibHostCanvasRemoveWidget(userdata: ?*anyopaque, widget_id: u32) callconv(.c) void {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return;
+    const canvas = ctx_ptr.canvas orelse return;
+    canvas.removeWidget(@intCast(widget_id));
+}
+
+fn zigDylibHostCanvasWasButtonClicked(userdata: ?*anyopaque, widget_id: u32) callconv(.c) u32 {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return 0;
+    const canvas = ctx_ptr.canvas orelse return 0;
+    return if (canvas.wasButtonClicked(@intCast(widget_id))) @as(u32, 1) else @as(u32, 0);
 }
 
 const csharp_native_aot_api_version: u32 = 1;
