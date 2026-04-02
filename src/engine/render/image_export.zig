@@ -382,3 +382,149 @@ pub fn allocSidecarPath(allocator: std.mem.Allocator, out_path: []const u8, suff
     const resolved_extension = if (extension.len > 0) extension else ".png";
     return std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ stem, suffix, resolved_extension });
 }
+
+// ---------------------------------------------------------------------------
+// Multi-layer EXR encoding (beauty + optional AOV layers)
+// ---------------------------------------------------------------------------
+
+/// Optional AOV layers to embed alongside the beauty pass.
+pub const ExrAovLayers = struct {
+    /// RGB3 float albedo buffer (pixel_count * 3 floats).
+    albedo: ?[]const f32 = null,
+    /// RGB3 float normal buffer (pixel_count * 3 floats).
+    normal: ?[]const f32 = null,
+};
+
+/// Encode a multi-layer OpenEXR file with beauty RGB + optional AOV layers.
+/// `beauty_rgba` is RGBA32f (pixel_count * 4), same as `encodeExrRgb32fAlloc`.
+pub fn encodeExrMultiLayerAlloc(
+    allocator: std.mem.Allocator,
+    beauty_rgba: []const f32,
+    width: u32,
+    height: u32,
+    aov: ExrAovLayers,
+) ![]u8 {
+    if (width == 0 or height == 0) return error.InvalidDimensions;
+    const pixel_count = @as(usize, width) * @as(usize, height);
+    if (beauty_rgba.len < pixel_count * 4) return error.InvalidHdrData;
+
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
+
+    // Magic + version
+    try appendU32Le(&output, allocator, 20000630);
+    try appendU32Le(&output, allocator, 2);
+
+    // --- Build channel list ---
+    // OpenEXR requires channels sorted alphabetically.
+    // Our channels (sorted): B, G, R, albedo.B, albedo.G, albedo.R, normal.B, normal.G, normal.R
+    // Note: EXR convention uses layer.channel naming for sub-layers.
+    const ChannelEntry = struct {
+        name: []const u8,
+        source: enum { beauty, albedo, normal },
+        component: usize, // 0=R, 1=G, 2=B
+    };
+
+    var channel_entries = std.ArrayList(ChannelEntry).empty;
+    defer channel_entries.deinit(allocator);
+
+    // Beauty channels (B, G, R)
+    try channel_entries.append(allocator, .{ .name = "B", .source = .beauty, .component = 2 });
+    try channel_entries.append(allocator, .{ .name = "G", .source = .beauty, .component = 1 });
+    try channel_entries.append(allocator, .{ .name = "R", .source = .beauty, .component = 0 });
+
+    if (aov.albedo != null) {
+        try channel_entries.append(allocator, .{ .name = "albedo.B", .source = .albedo, .component = 2 });
+        try channel_entries.append(allocator, .{ .name = "albedo.G", .source = .albedo, .component = 1 });
+        try channel_entries.append(allocator, .{ .name = "albedo.R", .source = .albedo, .component = 0 });
+    }
+    if (aov.normal != null) {
+        try channel_entries.append(allocator, .{ .name = "normal.B", .source = .normal, .component = 2 });
+        try channel_entries.append(allocator, .{ .name = "normal.G", .source = .normal, .component = 1 });
+        try channel_entries.append(allocator, .{ .name = "normal.R", .source = .normal, .component = 0 });
+    }
+
+    // Build channel list attribute
+    var channel_list = std.ArrayList(u8).empty;
+    defer channel_list.deinit(allocator);
+    for (channel_entries.items) |entry| {
+        try appendCString(&channel_list, allocator, entry.name);
+        try appendI32Le(&channel_list, allocator, 2); // PixelType::FLOAT
+        try channel_list.append(allocator, 0); // pLinear
+        try channel_list.appendNTimes(allocator, 0, 3); // reserved
+        try appendI32Le(&channel_list, allocator, 1); // xSampling
+        try appendI32Le(&channel_list, allocator, 1); // ySampling
+    }
+    try channel_list.append(allocator, 0); // null terminator
+
+    try appendExrAttribute(&output, allocator, "channels", "chlist", channel_list.items);
+    try appendExrAttribute(&output, allocator, "compression", "compression", &[_]u8{0});
+
+    var box2i: [16]u8 = undefined;
+    writeI32Le(&box2i, 0, 0);
+    writeI32Le(&box2i, 4, 0);
+    writeI32Le(&box2i, 8, @intCast(width - 1));
+    writeI32Le(&box2i, 12, @intCast(height - 1));
+    try appendExrAttribute(&output, allocator, "dataWindow", "box2i", &box2i);
+    try appendExrAttribute(&output, allocator, "displayWindow", "box2i", &box2i);
+    try appendExrAttribute(&output, allocator, "lineOrder", "lineOrder", &[_]u8{0});
+
+    var pixel_aspect_ratio: [4]u8 = undefined;
+    writeF32Le(&pixel_aspect_ratio, 0, 1.0);
+    try appendExrAttribute(&output, allocator, "pixelAspectRatio", "float", &pixel_aspect_ratio);
+
+    var screen_window_center: [8]u8 = undefined;
+    writeF32Le(&screen_window_center, 0, 0.0);
+    writeF32Le(&screen_window_center, 4, 0.0);
+    try appendExrAttribute(&output, allocator, "screenWindowCenter", "v2f", &screen_window_center);
+
+    var screen_window_width: [4]u8 = undefined;
+    writeF32Le(&screen_window_width, 0, 1.0);
+    try appendExrAttribute(&output, allocator, "screenWindowWidth", "float", &screen_window_width);
+
+    // End of header
+    try output.append(allocator, 0);
+
+    // --- Offset table + scanline data ---
+    const num_channels = channel_entries.items.len;
+    const scanline_data_size: u32 = @intCast(width * num_channels * @sizeOf(f32));
+    const header_size = output.items.len;
+    const offset_table_size = @as(usize, height) * @sizeOf(u64);
+    var next_chunk_offset: u64 = @intCast(header_size + offset_table_size);
+    for (0..height) |_| {
+        try appendU64Le(&output, allocator, next_chunk_offset);
+        next_chunk_offset += 8 + scanline_data_size; // 4 (row) + 4 (size) + data
+    }
+
+    // --- Pixel data (scanlines) ---
+    for (0..height) |row| {
+        try appendI32Le(&output, allocator, @intCast(row));
+        try appendU32Le(&output, allocator, scanline_data_size);
+
+        // Write channels in the order they appear in channel_entries
+        for (channel_entries.items) |entry| {
+            var x: u32 = 0;
+            while (x < width) : (x += 1) {
+                const value = switch (entry.source) {
+                    .beauty => blk: {
+                        const pixel_index = (row * @as(usize, width) + @as(usize, x)) * 4;
+                        break :blk sanitizeHdrValue(beauty_rgba[pixel_index + entry.component]);
+                    },
+                    .albedo => blk: {
+                        const buf = aov.albedo.?;
+                        const pixel_index = (row * @as(usize, width) + @as(usize, x)) * 3;
+                        break :blk sanitizeHdrValue(buf[pixel_index + entry.component]);
+                    },
+                    .normal => blk: {
+                        const buf = aov.normal.?;
+                        const pixel_index = (row * @as(usize, width) + @as(usize, x)) * 3;
+                        break :blk sanitizeHdrValue(buf[pixel_index + entry.component]);
+                    },
+                };
+                try appendF32Le(&output, allocator, value);
+            }
+        }
+    }
+
+    return output.toOwnedSlice(allocator);
+}

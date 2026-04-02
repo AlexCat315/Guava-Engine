@@ -24,6 +24,11 @@ pub const PathTracePngExportOptions = struct {
     write_aov_sidecars: bool = true,
 };
 
+pub const PathTraceExrExportOptions = struct {
+    denoise: bool = true,
+    write_aov_layers: bool = true,
+};
+
 pub fn downloadFramePixelsAlloc(rhi: *rhi_mod.RhiDevice, color_texture: ?rhi_mod.Texture, allocator: std.mem.Allocator) !FramePixels {
     const texture = color_texture orelse return error.TextureNotFound;
     const width = texture.desc.width;

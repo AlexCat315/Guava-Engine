@@ -10,6 +10,7 @@ const scene_manager_mod = @import("scene_manager.zig");
 const script_runtime_mod = @import("../script/runtime.zig");
 const window_mod = @import("../platform/window.zig");
 const physics_mod = @import("../physics/system.zig");
+const nav_mod = @import("../navigation/nav_system.zig");
 
 pub const PlaybackState = enum {
     stopped,
@@ -84,6 +85,7 @@ pub const LayerContext = struct {
     time_scale: *f32,
     physics_accumulator_seconds: *f32,
     physics_state: *physics_mod.PhysicsState,
+    nav_system: ?*nav_mod.NavSystem = null,
     frame_index: usize,
     delta_seconds: f32,
 

@@ -43,6 +43,7 @@
 const std = @import("std");
 const animator_system = @import("../animation/animator_system.zig");
 const physics_system = @import("../physics/system.zig");
+const nav_system_mod = @import("../navigation/nav_system.zig");
 const editor_utility_runtime_mod = @import("../script/editor_utility_runtime.zig");
 const script_system = @import("../script/script.zig");
 const handles = @import("../assets/handles.zig");
@@ -186,6 +187,8 @@ pub const Application = struct {
     physics_accumulator_seconds: f32 = 0.0,
     /// 物理状态实例（替代全局变量）
     physics_state: physics_system.PhysicsState,
+    /// 导航系统状态
+    nav_system: nav_system_mod.NavSystem,
 
     /// 初始化应用程序
     ///
@@ -256,6 +259,7 @@ pub const Application = struct {
             .input = .{},
             .timer = timer,
             .physics_state = physics_system.PhysicsState.init(allocator),
+            .nav_system = nav_system_mod.NavSystem.init(allocator),
             .action_map = input_action_mod.ActionMap.init(allocator),
             .canvas = runtime_ui_mod.Canvas.init(allocator, .{ .reference_width = 1920, .reference_height = 1080 }),
         };
@@ -302,6 +306,7 @@ pub const Application = struct {
         self.renderer.deinit();
         self.physics_state.deinitWorld(&self.world);
         self.physics_state.deinit();
+        self.nav_system.deinit();
         self.world.deinit();
         self.command_queue.deinit();
         self.window.deinit();
@@ -415,6 +420,8 @@ pub const Application = struct {
             if (should_advance_simulation) {
                 animator_system.update(&self.world, delta_seconds);
                 self.advancePhysics(delta_seconds);
+                // 更新导航系统（crowd agent 避障和位置同步）
+                self.nav_system.update(&self.world, delta_seconds);
                 // 更新脚本系统（传递时间和输入）
                 self.updateScripts(delta_seconds);
                 try self.applyPendingCommands();
@@ -581,6 +588,7 @@ pub const Application = struct {
             .time_scale = &self.time_scale,
             .physics_accumulator_seconds = &self.physics_accumulator_seconds,
             .physics_state = &self.physics_state,
+            .nav_system = &self.nav_system,
             .frame_index = frame_index,
             .delta_seconds = delta_seconds,
         };

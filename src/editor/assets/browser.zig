@@ -421,7 +421,7 @@ fn drawProjectPanel(state: *EditorState, layer_context: *engine.core.LayerContex
     gui.tableNextColumn();
     _ = gui.beginChild("project_folders_tree", 0.0, 0.0, true);
     defer gui.endChild();
-    try drawFolderTree(state);
+    try drawFolderTree(state, layer_context);
 
     gui.tableNextColumn();
     _ = gui.beginChild("project_assets_grid", 0.0, 0.0, false);
@@ -431,13 +431,13 @@ fn drawProjectPanel(state: *EditorState, layer_context: *engine.core.LayerContex
     try drawAssetGrid(state, layer_context);
 }
 
-fn drawFolderTree(state: *EditorState) !void {
+fn drawFolderTree(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     for (state.asset_directories.items) |directory| {
-        try drawFolderRow(state, directory);
+        try drawFolderRow(state, layer_context, directory);
     }
 }
 
-fn drawFolderRow(state: *EditorState, directory: []const u8) !void {
+fn drawFolderRow(state: *EditorState, layer_context: *engine.core.LayerContext, directory: []const u8) !void {
     const selected_directory = selectedDirectory(state);
     const depth = directoryDepth(directory);
     if (depth > 0) {
@@ -445,11 +445,50 @@ fn drawFolderRow(state: *EditorState, directory: []const u8) !void {
         gui.sameLine();
     }
 
-    const label_name = if (std.mem.eql(u8, directory, "/")) assetBrowserRootLabel(state) else directoryName(directory);
-    var label_buffer: [320]u8 = undefined;
-    const label = try std.fmt.bufPrint(&label_buffer, "{s}##dir_{s}", .{ label_name, directory });
-    if (gui.selectable(label, std.mem.eql(u8, selected_directory, directory), false, 0.0, 24.0)) {
-        setSelectedAssetDirectory(state, directory);
+    // Folder rename inline edit
+    if (state.folder_rename_active and std.mem.eql(u8, std.mem.sliceTo(state.folder_rename_original[0..], 0), directory)) {
+        gui.sameLine();
+        gui.setNextItemWidth(gui.contentRegionAvail()[0]);
+        if (state.folder_rename_focus_pending) {
+            gui.setKeyboardFocusHere(0);
+            state.folder_rename_focus_pending = false;
+        }
+        if (gui.inputTextWithHintFlags("##folder_rename", "", state.folder_rename_buffer[0..], gui.InputTextFlags.enter_returns_true)) {
+            try commitFolderRename(state, layer_context);
+        }
+        if (!gui.isItemActive() and !state.folder_rename_focus_pending) {
+            state.folder_rename_active = false;
+        }
+    } else {
+        const label_name = if (std.mem.eql(u8, directory, "/")) assetBrowserRootLabel(state) else directoryName(directory);
+        var label_buffer: [320]u8 = undefined;
+        const label = try std.fmt.bufPrint(&label_buffer, "{s}##dir_{s}", .{ label_name, directory });
+        if (gui.selectable(label, std.mem.eql(u8, selected_directory, directory), false, 0.0, 24.0)) {
+            setSelectedAssetDirectory(state, directory);
+        }
+        try drawFolderContextMenu(state, layer_context, directory);
+    }
+
+    // New folder input row (shown when pending in this directory)
+    if (state.new_folder_pending and std.mem.eql(u8, selectedDirectory(state), directory)) {
+        if (depth > 0) {
+            gui.dummy(@as(f32, @floatFromInt(depth + 1)) * 12.0, 1.0);
+            gui.sameLine();
+        } else {
+            gui.dummy(12.0, 1.0);
+            gui.sameLine();
+        }
+        gui.setNextItemWidth(gui.contentRegionAvail()[0]);
+        if (state.new_folder_focus_pending) {
+            gui.setKeyboardFocusHere(0);
+            state.new_folder_focus_pending = false;
+        }
+        if (gui.inputTextWithHintFlags("##new_folder_name", "", state.new_folder_name_buffer[0..], gui.InputTextFlags.enter_returns_true)) {
+            try commitNewFolder(state, layer_context);
+        }
+        if (!gui.isItemActive() and !state.new_folder_focus_pending) {
+            state.new_folder_pending = false;
+        }
     }
 }
 
@@ -478,6 +517,9 @@ fn drawAssetGridView(state: *EditorState, layer_context: *engine.core.LayerConte
         }
         if (!utils.assetMatchesFilter(state, entry)) {
             continue;
+        }
+        if (state.asset_kind_filter) |kind_filter| {
+            if (entry.kind != kind_filter) continue;
         }
         shown += 1;
         gui.tableNextColumn();
@@ -509,6 +551,9 @@ fn drawAssetListView(state: *EditorState, layer_context: *engine.core.LayerConte
         if (!utils.assetMatchesFilter(state, entry)) {
             continue;
         }
+        if (state.asset_kind_filter) |kind_filter| {
+            if (entry.kind != kind_filter) continue;
+        }
 
         var button_id_buffer: [64]u8 = undefined;
         const button_id = try std.fmt.bufPrint(&button_id_buffer, "asset_list_{d}", .{index});
@@ -517,7 +562,7 @@ fn drawAssetListView(state: *EditorState, layer_context: *engine.core.LayerConte
         const icon_path = assetIconPath(entry.kind);
 
         // Create a selectable for the entire row
-        const selected = state.selected_asset_index == index;
+        const selected = isAssetSelected(state, index);
         const icon_tint: [4]u8 = if (selected) .{ 34, 197, 94, 255 } else assetIconTint(entry.kind);
         const icon_texture = try ui_icons.ensureTintedIconTexture(
             state,
@@ -532,9 +577,10 @@ fn drawAssetListView(state: *EditorState, layer_context: *engine.core.LayerConte
             icon_texture;
 
         if (gui.selectable(button_id, selected, false, 0.0, row_height)) {
-            state.selected_asset_index = index;
+            handleAssetSelection(state, index);
         }
         drawAssetDragSource(state, entry, index, row_texture);
+        try drawAssetContextMenu(state, layer_context, entry, index);
 
         // Draw icon on the same line
         gui.sameLine();
@@ -542,7 +588,22 @@ fn drawAssetListView(state: *EditorState, layer_context: *engine.core.LayerConte
 
         // Draw name on the same line
         gui.sameLine();
-        gui.text(entry.name);
+        if (state.asset_rename_index == index) {
+            gui.setNextItemWidth(gui.contentRegionAvail()[0]);
+            if (state.asset_rename_focus_pending) {
+                gui.setKeyboardFocusHere(0);
+                state.asset_rename_focus_pending = false;
+            }
+            if (gui.inputTextWithHintFlags("##asset_rename_list", "", state.asset_rename_buffer[0..], gui.InputTextFlags.enter_returns_true)) {
+                try commitAssetRename(state, layer_context, index);
+                state.asset_rename_index = null;
+            }
+            if (!gui.isItemActive() and !state.asset_rename_focus_pending) {
+                state.asset_rename_index = null;
+            }
+        } else {
+            gui.text(entry.name);
+        }
     }
 }
 
@@ -582,19 +643,39 @@ fn drawAssetCard(
         card_texture,
         icon_size,
         icon_size,
-        if (state.selected_asset_index == index) .{ 0.13, 0.55, 0.35, 0.88 } else .{ 0.0, 0.0, 0.0, 0.0 },
+        if (isAssetSelected(state, index)) .{ 0.13, 0.55, 0.35, 0.88 } else .{ 0.0, 0.0, 0.0, 0.0 },
         .{ 1.0, 1.0, 1.0, 1.0 },
     )) {
-        state.selected_asset_index = index;
+        handleAssetSelection(state, index);
     }
     if (gui.isItemHovered()) {
         gui.setTooltip(entry.name);
     }
     drawAssetDragSource(state, entry, index, card_texture);
+    try drawAssetContextMenu(state, layer_context, entry, index);
 
-    const label_y = icon_size + 18.0;
-    gui.setCursorPos(.{ 8.0, label_y });
-    gui.textWrapped(entry.name);
+    // Show rename input if this asset is being renamed
+    if (state.asset_rename_index == index) {
+        const label_y = icon_size + 18.0;
+        gui.setCursorPos(.{ 4.0, label_y });
+        gui.setNextItemWidth(tile_size + 2.0);
+        if (state.asset_rename_focus_pending) {
+            gui.setKeyboardFocusHere(0);
+            state.asset_rename_focus_pending = false;
+        }
+        if (gui.inputTextWithHintFlags("##asset_rename", "", state.asset_rename_buffer[0..], gui.InputTextFlags.enter_returns_true)) {
+            try commitAssetRename(state, layer_context, index);
+            state.asset_rename_index = null;
+        }
+        if (!gui.isItemActive() and !state.asset_rename_focus_pending) {
+            // Lost focus without Enter — cancel rename
+            state.asset_rename_index = null;
+        }
+    } else {
+        const label_y = icon_size + 18.0;
+        gui.setCursorPos(.{ 8.0, label_y });
+        gui.textWrapped(entry.name);
+    }
 }
 
 fn drawSelectedAssetPreview(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -651,7 +732,6 @@ fn drawSelectedAssetPreview(state: *EditorState, layer_context: *engine.core.Lay
 
 // Compressed single-line header: breadcrumbs (left), search (center), thumbnail slider (right)
 fn drawProjectPanelHeader(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
-    _ = layer_context; // Reserved for future use (e.g., context menu on breadcrumb)
     const width = gui.contentRegionAvail()[0];
 
     // Left: Breadcrumb path (clickable)
@@ -730,6 +810,62 @@ fn drawProjectPanelHeader(state: *EditorState, layer_context: *engine.core.Layer
             };
         }
         gui.popStyleColor(3);
+    }
+
+    // Import button
+    gui.sameLine();
+    if (gui.buttonEx(state.text(.import_assets), 0.0, 26.0)) {
+        importAssetsFromFinder(state, layer_context);
+    }
+
+    // Second row: Type filter + Sort mode
+    {
+        // Type filter combo
+        const filter_label = if (state.asset_kind_filter) |kind|
+            utils.assetKindLabel(state, kind)
+        else
+            state.text(.all_types);
+        gui.setNextItemWidth(110.0);
+        if (gui.beginCombo("##asset_type_filter", filter_label)) {
+            if (gui.selectable(state.text(.all_types), state.asset_kind_filter == null, false, 0.0, 0.0)) {
+                state.asset_kind_filter = null;
+            }
+            const kinds = [_]state_mod.AssetKind{ .scene, .model, .material, .texture, .shader };
+            for (kinds) |kind| {
+                const kind_label = utils.assetKindLabel(state, kind);
+                if (gui.selectable(kind_label, state.asset_kind_filter != null and state.asset_kind_filter.? == kind, false, 0.0, 0.0)) {
+                    state.asset_kind_filter = kind;
+                }
+            }
+            gui.endCombo();
+        }
+
+        gui.sameLine();
+
+        // Sort mode combo
+        const sort_label: []const u8 = switch (state.asset_sort_mode) {
+            .name_asc => state.text(.sort_name_asc),
+            .name_desc => state.text(.sort_name_desc),
+            .kind_asc => state.text(.sort_kind_asc),
+            .kind_desc => state.text(.sort_kind_desc),
+        };
+        gui.setNextItemWidth(110.0);
+        if (gui.beginCombo("##asset_sort_mode", sort_label)) {
+            const modes = [_]state_mod.AssetSortMode{ .name_asc, .name_desc, .kind_asc, .kind_desc };
+            const labels = [_][]const u8{
+                state.text(.sort_name_asc),
+                state.text(.sort_name_desc),
+                state.text(.sort_kind_asc),
+                state.text(.sort_kind_desc),
+            };
+            for (modes, labels) |mode, mode_label| {
+                if (gui.selectable(mode_label, state.asset_sort_mode == mode, false, 0.0, 0.0)) {
+                    state.asset_sort_mode = mode;
+                    sortAssetEntries(state);
+                }
+            }
+            gui.endCombo();
+        }
     }
 
     gui.separator();
@@ -835,6 +971,70 @@ fn drawBreadcrumbs(state: *EditorState) !void {
         start = next_slash + 1;
         crumb_index += 1;
     }
+}
+
+fn sortAssetEntries(state: *EditorState) void {
+    switch (state.asset_sort_mode) {
+        .name_asc => std.sort.heap(AssetEntry, state.asset_entries.items, {}, struct {
+            fn f(_: void, a: AssetEntry, b: AssetEntry) bool {
+                return std.mem.lessThan(u8, a.name, b.name);
+            }
+        }.f),
+        .name_desc => std.sort.heap(AssetEntry, state.asset_entries.items, {}, struct {
+            fn f(_: void, a: AssetEntry, b: AssetEntry) bool {
+                return std.mem.lessThan(u8, b.name, a.name);
+            }
+        }.f),
+        .kind_asc => std.sort.heap(AssetEntry, state.asset_entries.items, {}, struct {
+            fn f(_: void, a: AssetEntry, b: AssetEntry) bool {
+                if (@intFromEnum(a.kind) != @intFromEnum(b.kind))
+                    return @intFromEnum(a.kind) < @intFromEnum(b.kind);
+                return std.mem.lessThan(u8, a.name, b.name);
+            }
+        }.f),
+        .kind_desc => std.sort.heap(AssetEntry, state.asset_entries.items, {}, struct {
+            fn f(_: void, a: AssetEntry, b: AssetEntry) bool {
+                if (@intFromEnum(a.kind) != @intFromEnum(b.kind))
+                    return @intFromEnum(a.kind) > @intFromEnum(b.kind);
+                return std.mem.lessThan(u8, a.name, b.name);
+            }
+        }.f),
+    }
+}
+
+fn handleAssetSelection(state: *EditorState, index: usize) void {
+    const shift = gui.keyShift();
+    const ctrl = gui.keyCtrl(); // Cmd on macOS
+
+    if (shift and state.asset_last_selected_index != null) {
+        // Range select
+        const from = state.asset_last_selected_index.?;
+        const lo = @min(from, index);
+        const hi = @min(@max(from, index), 4095);
+        if (!ctrl) {
+            // Clear previous selection if not holding Ctrl/Cmd
+            state.asset_selected_set = std.StaticBitSet(4096).initEmpty();
+        }
+        var i: usize = lo;
+        while (i <= hi) : (i += 1) {
+            state.asset_selected_set.set(i);
+        }
+    } else if (ctrl) {
+        // Toggle individual
+        state.asset_selected_set.toggle(index);
+    } else {
+        // Plain click — select only this
+        state.asset_selected_set = std.StaticBitSet(4096).initEmpty();
+        state.asset_selected_set.set(index);
+    }
+
+    state.selected_asset_index = index;
+    state.asset_last_selected_index = index;
+}
+
+fn isAssetSelected(state: *const EditorState, index: usize) bool {
+    if (index >= 4096) return state.selected_asset_index == index;
+    return state.asset_selected_set.isSet(index);
 }
 
 fn assetIconPath(kind: AssetKind) []const u8 {
@@ -1157,7 +1357,7 @@ pub fn refreshAssetBrowser(state: *EditorState, _: *engine.core.LayerContext) !v
         });
     }
 
-    std.sort.heap(AssetEntry, state.asset_entries.items, {}, utils.lessThanAssetEntry);
+    sortAssetEntries(state);
     try rebuildAssetDirectories(state);
 
     if (state.selected_asset_index) |selected_index| {
@@ -1238,6 +1438,8 @@ pub fn clearAssetBrowser(state: *EditorState) void {
     state.asset_directories = .empty;
 
     state.selected_asset_index = null;
+    state.asset_selected_set = std.StaticBitSet(4096).initEmpty();
+    state.asset_last_selected_index = null;
 }
 
 pub fn selectedAsset(state: *EditorState) ?*const AssetEntry {
@@ -1308,6 +1510,426 @@ pub fn clearMaterialThumbnailRequestQueue(state: *EditorState) void {
     }
     state.material_thumbnail_queue.deinit(allocator);
     state.material_thumbnail_queue = .empty;
+}
+
+// ---------------------------------------------------------------------------
+// Context menus and file operations
+// ---------------------------------------------------------------------------
+
+fn drawAssetContextMenu(state: *EditorState, layer_context: *engine.core.LayerContext, entry: AssetEntry, index: usize) !void {
+    var popup_id_buffer: [64]u8 = undefined;
+    const popup_id = try std.fmt.bufPrint(&popup_id_buffer, "##asset_ctx_{d}", .{index});
+    if (gui.beginPopupContextItem(popup_id)) {
+        defer gui.endPopup();
+
+        if (gui.menuItem(state.text(.rename), null, false, true)) {
+            state.asset_rename_index = index;
+            @memset(state.asset_rename_buffer[0..], 0);
+            const name_len = @min(entry.name.len, state.asset_rename_buffer.len - 1);
+            @memcpy(state.asset_rename_buffer[0..name_len], entry.name[0..name_len]);
+            state.asset_rename_focus_pending = true;
+        }
+
+        if (gui.menuItem(state.text(.duplicate_asset), null, false, true)) {
+            duplicateAssetFile(state, layer_context, entry);
+        }
+
+        if (gui.menuItem(state.text(.delete), null, false, true)) {
+            try deleteAssetFile(state, layer_context, entry);
+        }
+
+        gui.separator();
+
+        if (gui.menuItem(state.text(.asset_copy), null, false, true)) {
+            copySelectedAssetsToClipboard(state, false);
+        }
+
+        if (gui.menuItem(state.text(.asset_cut), null, false, true)) {
+            copySelectedAssetsToClipboard(state, true);
+        }
+
+        const has_clipboard = state.asset_clipboard_paths.items.len > 0;
+        if (gui.menuItem(state.text(.asset_paste), null, false, has_clipboard)) {
+            pasteAssetsFromClipboard(state, layer_context);
+        }
+
+        gui.separator();
+
+        if (gui.menuItem(state.text(.show_in_finder), null, false, true)) {
+            revealInFinder(entry.path);
+        }
+    }
+}
+
+fn drawFolderContextMenu(state: *EditorState, layer_context: *engine.core.LayerContext, directory: []const u8) !void {
+    var popup_id_buffer: [64]u8 = undefined;
+    const popup_id = try std.fmt.bufPrint(&popup_id_buffer, "##folder_ctx_{s}", .{directory});
+    if (gui.beginPopupContextItem(popup_id)) {
+        defer gui.endPopup();
+
+        if (gui.menuItem(state.text(.new_folder), null, false, true)) {
+            state.new_folder_pending = true;
+            @memset(state.new_folder_name_buffer[0..], 0);
+            const default_name = "New Folder";
+            @memcpy(state.new_folder_name_buffer[0..default_name.len], default_name);
+            state.new_folder_focus_pending = true;
+            setSelectedAssetDirectory(state, directory);
+        }
+
+        const has_clipboard = state.asset_clipboard_paths.items.len > 0;
+        if (gui.menuItem(state.text(.paste), null, false, has_clipboard)) {
+            setSelectedAssetDirectory(state, directory);
+            pasteAssetsFromClipboard(state, layer_context);
+        }
+
+        // Only allow rename/delete on non-root directories
+        if (!std.mem.eql(u8, directory, "/")) {
+            if (gui.menuItem(state.text(.rename), null, false, true)) {
+                state.folder_rename_active = true;
+                @memset(state.folder_rename_original[0..], 0);
+                @memset(state.folder_rename_buffer[0..], 0);
+                const dir_len = @min(directory.len, state.folder_rename_original.len - 1);
+                @memcpy(state.folder_rename_original[0..dir_len], directory[0..dir_len]);
+                const name = directoryName(directory);
+                const name_len = @min(name.len, state.folder_rename_buffer.len - 1);
+                @memcpy(state.folder_rename_buffer[0..name_len], name[0..name_len]);
+                state.folder_rename_focus_pending = true;
+            }
+
+            if (gui.menuItem(state.text(.delete), null, false, true)) {
+                deleteFolderOnDisk(state, directory);
+            }
+
+            gui.separator();
+
+            if (gui.menuItem(state.text(.show_in_finder), null, false, true)) {
+                const root_path = assetBrowserRootPath(state);
+                var path_buffer: [512]u8 = undefined;
+                const full = std.fmt.bufPrint(&path_buffer, "{s}{s}", .{ root_path, directory }) catch return;
+                revealInFinder(full);
+            }
+        }
+    }
+}
+
+fn commitAssetRename(state: *EditorState, layer_context: *engine.core.LayerContext, index: usize) !void {
+    if (index >= state.asset_entries.items.len) return;
+    const entry = &state.asset_entries.items[index];
+    const new_name = std.mem.sliceTo(state.asset_rename_buffer[0..], 0);
+    if (new_name.len == 0) return;
+
+    // Build old and new filesystem paths
+    const old_path = entry.path;
+    const dir = if (std.mem.lastIndexOfScalar(u8, old_path, '/')) |idx| old_path[0..idx] else "";
+    const old_ext = if (std.mem.lastIndexOfScalar(u8, entry.name, '.')) |_|
+        (if (std.mem.lastIndexOfScalar(u8, old_path, '.')) |idx| old_path[idx..] else "")
+    else
+        (if (std.mem.lastIndexOfScalar(u8, old_path, '.')) |idx| old_path[idx..] else "");
+
+    var new_path_buffer: [512]u8 = undefined;
+    const new_path = std.fmt.bufPrint(&new_path_buffer, "{s}/{s}{s}", .{ dir, new_name, old_ext }) catch return;
+
+    // Do the filesystem rename
+    std.fs.cwd().rename(old_path, new_path) catch |err| {
+        std.log.warn("asset rename failed: {}", .{err});
+        return;
+    };
+
+    // Also rename the .meta file if it exists
+    var old_meta_buf: [520]u8 = undefined;
+    var new_meta_buf: [520]u8 = undefined;
+    const old_meta = std.fmt.bufPrint(&old_meta_buf, "{s}.meta", .{old_path}) catch return;
+    const new_meta = std.fmt.bufPrint(&new_meta_buf, "{s}.meta", .{new_path}) catch return;
+    std.fs.cwd().rename(old_meta, new_meta) catch {};
+
+    // Refresh browser to reflect changes
+    try refreshAssetBrowser(state, layer_context);
+}
+
+fn commitFolderRename(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const new_name = std.mem.sliceTo(state.folder_rename_buffer[0..], 0);
+    if (new_name.len == 0) {
+        state.folder_rename_active = false;
+        return;
+    }
+    const original = std.mem.sliceTo(state.folder_rename_original[0..], 0);
+    if (original.len == 0) {
+        state.folder_rename_active = false;
+        return;
+    }
+    // Build the old filesystem path and new path
+    const root_path = assetBrowserRootPath(state);
+    var old_fs_buf: [512]u8 = undefined;
+    const old_fs = std.fmt.bufPrint(&old_fs_buf, "{s}{s}", .{ root_path, original }) catch return;
+
+    // Parent of original directory
+    const parent = if (std.mem.lastIndexOfScalar(u8, original, '/')) |idx| original[0..idx] else "/";
+    var new_fs_buf: [512]u8 = undefined;
+    const new_fs = if (std.mem.eql(u8, parent, "/"))
+        std.fmt.bufPrint(&new_fs_buf, "{s}/{s}", .{ root_path, new_name }) catch return
+    else
+        std.fmt.bufPrint(&new_fs_buf, "{s}{s}/{s}", .{ root_path, parent, new_name }) catch return;
+
+    std.fs.cwd().rename(old_fs, new_fs) catch |err| {
+        std.log.warn("folder rename failed: {}", .{err});
+        state.folder_rename_active = false;
+        return;
+    };
+
+    state.folder_rename_active = false;
+    try refreshAssetBrowser(state, layer_context);
+}
+
+fn commitNewFolder(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const name = std.mem.sliceTo(state.new_folder_name_buffer[0..], 0);
+    if (name.len == 0) {
+        state.new_folder_pending = false;
+        return;
+    }
+    const root_path = assetBrowserRootPath(state);
+    const current_dir = selectedDirectory(state);
+    var path_buffer: [512]u8 = undefined;
+    const full_path = if (std.mem.eql(u8, current_dir, "/"))
+        std.fmt.bufPrint(&path_buffer, "{s}/{s}", .{ root_path, name }) catch return
+    else
+        std.fmt.bufPrint(&path_buffer, "{s}{s}/{s}", .{ root_path, current_dir, name }) catch return;
+
+    std.fs.cwd().makePath(full_path) catch |err| {
+        std.log.warn("create folder failed: {}", .{err});
+        state.new_folder_pending = false;
+        return;
+    };
+
+    state.new_folder_pending = false;
+    try refreshAssetBrowser(state, layer_context);
+}
+
+fn deleteAssetFile(state: *EditorState, layer_context: *engine.core.LayerContext, entry: AssetEntry) !void {
+    // Delete the asset file
+    std.fs.cwd().deleteFile(entry.path) catch |err| {
+        std.log.warn("asset delete failed: {}", .{err});
+        return;
+    };
+    // Also try to delete the .meta file
+    var meta_buf: [520]u8 = undefined;
+    const meta_path = std.fmt.bufPrint(&meta_buf, "{s}.meta", .{entry.path}) catch return;
+    std.fs.cwd().deleteFile(meta_path) catch {};
+
+    try refreshAssetBrowser(state, layer_context);
+}
+
+fn deleteFolderOnDisk(state: *EditorState, directory: []const u8) void {
+    const root_path = assetBrowserRootPath(state);
+    var path_buffer: [512]u8 = undefined;
+    const full_path = std.fmt.bufPrint(&path_buffer, "{s}{s}", .{ root_path, directory }) catch return;
+    std.fs.cwd().deleteTree(full_path) catch |err| {
+        std.log.warn("folder delete failed: {}", .{err});
+    };
+    // Note: caller should refreshAssetBrowser after
+}
+
+fn revealInFinder(path: []const u8) void {
+    // Use macOS 'open' command to reveal in Finder
+    const dir = if (std.mem.lastIndexOfScalar(u8, path, '/')) |idx| path[0..idx] else path;
+    var child = std.process.Child.init(
+        &.{ "/usr/bin/open", dir },
+        std.heap.page_allocator,
+    );
+    _ = child.spawnAndWait() catch {};
+}
+
+fn importAssetsFromFinder(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+    const allocator = state.allocator orelse return;
+
+    // Build destination directory path
+    const root_path = assetBrowserRootPath(state);
+    const current_dir = selectedDirectory(state);
+    var dest_dir_buf: [512]u8 = undefined;
+    const dest_dir = if (std.mem.eql(u8, current_dir, "/"))
+        std.fmt.bufPrint(&dest_dir_buf, "{s}", .{root_path}) catch return
+    else
+        std.fmt.bufPrint(&dest_dir_buf, "{s}{s}", .{ root_path, current_dir }) catch return;
+
+    // Use osascript to open a macOS file picker dialog (allows multiple files)
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{
+            "/usr/bin/osascript",
+            "-e",
+            "set chosenFiles to choose file with prompt \"Import Assets\" with multiple selections allowed",
+            "-e",
+            "set output to \"\"",
+            "-e",
+            "repeat with f in chosenFiles",
+            "-e",
+            "set output to output & POSIX path of f & \"\n\"",
+            "-e",
+            "end repeat",
+            "-e",
+            "return output",
+        },
+    }) catch return;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    if (result.term.Exited != 0) return; // User cancelled or error
+
+    // Parse the output: one POSIX file path per line
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    var imported: usize = 0;
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r\n");
+        if (trimmed.len == 0) continue;
+
+        // Extract filename from source path
+        const filename = if (std.mem.lastIndexOfScalar(u8, trimmed, '/')) |idx| trimmed[idx + 1 ..] else trimmed;
+        if (filename.len == 0) continue;
+
+        // Build destination path
+        var dest_path_buf: [768]u8 = undefined;
+        const dest_path = std.fmt.bufPrint(&dest_path_buf, "{s}/{s}", .{ dest_dir, filename }) catch continue;
+
+        // Copy using /bin/cp (source is absolute, dest is relative)
+        var cp = std.process.Child.init(
+            &.{ "/bin/cp", trimmed, dest_path },
+            allocator,
+        );
+        _ = cp.spawnAndWait() catch continue;
+
+        imported += 1;
+    }
+
+    if (imported > 0) {
+        refreshAssetBrowser(state, layer_context) catch {};
+    }
+}
+
+fn copySelectedAssetsToClipboard(state: *EditorState, is_cut: bool) void {
+    const allocator = state.allocator orelse return;
+
+    // Free previous clipboard entries
+    for (state.asset_clipboard_paths.items) |path| {
+        allocator.free(path);
+    }
+    state.asset_clipboard_paths.clearRetainingCapacity();
+
+    // Collect paths of all selected assets
+    const entries = state.asset_entries.items;
+    for (0..entries.len) |i| {
+        if (state.asset_selected_set.isSet(i)) {
+            const duped = allocator.dupe(u8, entries[i].path) catch continue;
+            state.asset_clipboard_paths.append(allocator, duped) catch {
+                allocator.free(duped);
+                continue;
+            };
+        }
+    }
+
+    state.asset_clipboard_is_cut = is_cut;
+}
+
+fn pasteAssetsFromClipboard(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+    const allocator = state.allocator orelse return;
+    if (state.asset_clipboard_paths.items.len == 0) return;
+
+    // Build destination directory
+    const root_path = assetBrowserRootPath(state);
+    const current_dir = selectedDirectory(state);
+    var dest_dir_buf: [512]u8 = undefined;
+    const dest_dir = if (std.mem.eql(u8, current_dir, "/"))
+        std.fmt.bufPrint(&dest_dir_buf, "{s}", .{root_path}) catch return
+    else
+        std.fmt.bufPrint(&dest_dir_buf, "{s}{s}", .{ root_path, current_dir }) catch return;
+
+    for (state.asset_clipboard_paths.items) |src_path| {
+        // Extract filename from source path
+        const filename = if (std.mem.lastIndexOfScalar(u8, src_path, '/')) |idx| src_path[idx + 1 ..] else src_path;
+        if (filename.len == 0) continue;
+
+        var dest_path_buf: [768]u8 = undefined;
+        const dest_path = std.fmt.bufPrint(&dest_path_buf, "{s}/{s}", .{ dest_dir, filename }) catch continue;
+
+        if (state.asset_clipboard_is_cut) {
+            // Move: rename source to destination
+            std.fs.cwd().rename(src_path, dest_path) catch |err| {
+                std.log.warn("paste (move) failed: {}", .{err});
+                continue;
+            };
+            // Also move .meta file if it exists
+            var src_meta_buf: [520]u8 = undefined;
+            var dest_meta_buf: [776]u8 = undefined;
+            const src_meta = std.fmt.bufPrint(&src_meta_buf, "{s}.meta", .{src_path}) catch continue;
+            const dest_meta = std.fmt.bufPrint(&dest_meta_buf, "{s}.meta", .{dest_path}) catch continue;
+            std.fs.cwd().rename(src_meta, dest_meta) catch {};
+        } else {
+            // Copy: use /bin/cp
+            var cp = std.process.Child.init(
+                &.{ "/bin/cp", src_path, dest_path },
+                allocator,
+            );
+            _ = cp.spawnAndWait() catch continue;
+            // Also copy .meta file if it exists
+            var src_meta_buf: [520]u8 = undefined;
+            var dest_meta_buf: [776]u8 = undefined;
+            const src_meta = std.fmt.bufPrint(&src_meta_buf, "{s}.meta", .{src_path}) catch continue;
+            const dest_meta = std.fmt.bufPrint(&dest_meta_buf, "{s}.meta", .{dest_path}) catch continue;
+            var cp_meta = std.process.Child.init(
+                &.{ "/bin/cp", src_meta, dest_meta },
+                allocator,
+            );
+            _ = cp_meta.spawnAndWait() catch {};
+        }
+    }
+
+    // If cut, clear clipboard after paste
+    if (state.asset_clipboard_is_cut) {
+        for (state.asset_clipboard_paths.items) |path| {
+            allocator.free(path);
+        }
+        state.asset_clipboard_paths.clearRetainingCapacity();
+        state.asset_clipboard_is_cut = false;
+    }
+
+    refreshAssetBrowser(state, layer_context) catch {};
+}
+
+fn duplicateAssetFile(state: *EditorState, layer_context: *engine.core.LayerContext, entry: AssetEntry) void {
+    const allocator = state.allocator orelse return;
+
+    // Build a new name with "_copy" inserted before the extension
+    const name = entry.name;
+    const path = entry.path;
+
+    // Find extension in name
+    const ext_start = if (std.mem.lastIndexOfScalar(u8, name, '.')) |idx| idx else name.len;
+    const base_name = name[0..ext_start];
+
+    // Find the directory part of the full path
+    const dir = if (std.mem.lastIndexOfScalar(u8, path, '/')) |idx| path[0 .. idx + 1] else "";
+    const ext = if (std.mem.lastIndexOfScalar(u8, name, '.')) |idx| name[idx..] else "";
+
+    var new_path_buf: [768]u8 = undefined;
+    const new_path = std.fmt.bufPrint(&new_path_buf, "{s}{s}_copy{s}", .{ dir, base_name, ext }) catch return;
+
+    // Copy using /bin/cp
+    var cp = std.process.Child.init(
+        &.{ "/bin/cp", path, new_path },
+        allocator,
+    );
+    _ = cp.spawnAndWait() catch return;
+
+    // Also copy .meta file if it exists
+    var src_meta_buf: [520]u8 = undefined;
+    var dest_meta_buf: [776]u8 = undefined;
+    const src_meta = std.fmt.bufPrint(&src_meta_buf, "{s}.meta", .{path}) catch return;
+    const dest_meta = std.fmt.bufPrint(&dest_meta_buf, "{s}.meta", .{new_path}) catch return;
+    var cp_meta = std.process.Child.init(
+        &.{ "/bin/cp", src_meta, dest_meta },
+        allocator,
+    );
+    _ = cp_meta.spawnAndWait() catch {};
+
+    refreshAssetBrowser(state, layer_context) catch {};
 }
 
 test "material assets map to browser visuals and kinds" {

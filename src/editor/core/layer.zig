@@ -28,6 +28,7 @@ const camera_bookmarks = @import("../ui/panels/viewport/camera_bookmarks.zig");
 const rhi_stats = @import("../ui/panels/debug/rhi_stats.zig");
 const plugin_manager = @import("../ui/panels/debug/plugin_manager.zig");
 const style_inspector = @import("../ui/panels/rendering/style_inspector.zig");
+const render_queue = @import("../ui/panels/rendering/render_queue.zig");
 const preferences = @import("preferences.zig");
 
 fn initEditorStyle() void {
@@ -134,6 +135,7 @@ pub const EditorLayer = struct {
     state: EditorState = .{},
     animation_editor_state: ?animation_editor.AnimationEditorState = null,
     sequencer_editor_state: ?sequencer_panel.SequencerEditorState = null,
+    render_queue_state: render_queue.RenderQueueState = .{},
     particle_editor_state: particle_editor.ParticleEditorState = .{},
     script_editor_state: ?script_editor.ScriptEditorState = null,
     post_process_editor_state: ?post_process_editor.PostProcessPipelineEditorState = null,
@@ -245,6 +247,9 @@ pub const EditorLayer = struct {
                 self.sequencer_editor_state = null;
             }
 
+            // Cleanup render queue state
+            self.render_queue_state.deinit(allocator);
+
             // Cleanup tool panel states
             if (self.script_editor_state) |*s| {
                 s.deinit();
@@ -331,6 +336,12 @@ pub const EditorLayer = struct {
                 try sequencer_panel.drawSequencerWindow(&self.state, layer_context, seq_state);
             }
         }
+
+        // Draw render queue window if open + tick the queue
+        if (self.state.render_queue_open) {
+            try render_queue.drawRenderQueueWindow(&self.state, layer_context, &self.render_queue_state);
+        }
+        try render_queue.tickRenderQueue(&self.state, layer_context, &self.render_queue_state);
 
         if (self.state.prefab_browser_open) {
             try prefab_browser.drawPrefabBrowserWindow(&self.state, layer_context);

@@ -523,3 +523,25 @@ pub const AudioListener = struct {
     /// 是否启用此监听器
     enabled: bool = true,
 };
+
+/// 导航代理组件
+///
+/// 标记实体参与导航寻路和避障。当 NavSystem 激活时，
+/// 拥有此组件的实体会被自动注册到 Detour Crowd 中，
+/// 每帧由 crowd simulation 更新其位置。
+pub const NavAgent = struct {
+    /// 代理半径
+    radius: f32 = 0.6,
+    /// 代理高度
+    height: f32 = 2.0,
+    /// 最大加速度
+    max_acceleration: f32 = 8.0,
+    /// 最大速度
+    max_speed: f32 = 3.5,
+    /// 移动目标位置（null = 无目标）
+    target: ?Vec3 = null,
+    /// 运行时 crowd agent 索引（不序列化）
+    _crowd_idx: ?u32 = null,
+    /// 是否已注册到 crowd（不序列化）
+    _registered: bool = false,
+};

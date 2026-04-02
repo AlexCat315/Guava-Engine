@@ -133,6 +133,9 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
         if (gui.menuItem(state.text(.sequencer), null, state.sequencer_open, true)) {
             state.sequencer_open = !state.sequencer_open;
         }
+        if (gui.menuItem(state.text(.render_queue), null, state.render_queue_open, true)) {
+            state.render_queue_open = !state.render_queue_open;
+        }
         if (gui.menuItem(state.text(.post_process_pipeline), null, state.post_process_editor_open, true)) {
             state.post_process_editor_open = !state.post_process_editor_open;
         }

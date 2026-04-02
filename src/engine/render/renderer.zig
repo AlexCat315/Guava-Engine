@@ -3600,6 +3600,7 @@ pub const Renderer = struct {
     pub const FramePixels = renderer_export.FramePixels;
     pub const HdrFramePixels = renderer_export.HdrFramePixels;
     pub const PathTracePngExportOptions = renderer_export.PathTracePngExportOptions;
+    pub const PathTraceExrExportOptions = renderer_export.PathTraceExrExportOptions;
 
     fn exportableHwRtTraceBeauty(self: *Renderer, viewport_size: [2]u32) ?struct {
         pixels: []const u8,
@@ -3732,14 +3733,14 @@ pub const Renderer = struct {
         }
     }
 
-    /// Export path-traced linear beauty to OpenEXR.
+    /// Export path-traced linear beauty to OpenEXR with optional denoise and AOV layers.
     pub fn exportPathTraceFrameExr(
         self: *Renderer,
         allocator: std.mem.Allocator,
         scene: *scene_mod.Scene,
         out_path: []const u8,
+        options: PathTraceExrExportOptions,
     ) !void {
-        _ = scene;
         const viewport_size = self.sceneViewportSize();
         if (viewport_size[0] == 0 or viewport_size[1] == 0) return error.InvalidDimensions;
 
@@ -3749,8 +3750,13 @@ pub const Renderer = struct {
         var beauty_rgb: []f32 = undefined;
         defer allocator.free(beauty_rgb);
 
+        var guides: ?PathTraceGuideBuffers = null;
+        defer if (guides) |*value| value.deinit(allocator);
+
         var beauty_width = viewport_size[0];
         var beauty_height = viewport_size[1];
+
+        const need_guides = options.denoise or options.write_aov_layers;
 
         const use_existing_cpu_path = self.path_trace_state.triangles != null and
             self.path_trace_state.trace_width == viewport_size[0] and
@@ -3770,21 +3776,72 @@ pub const Renderer = struct {
             beauty_rgb = try allocator.dupe(f32, pt.trace_linear_rgb.?);
             beauty_width = pt.trace_width;
             beauty_height = pt.trace_height;
+            if (need_guides) {
+                guides = try path_trace_denoise.captureGuideBuffersAlloc(allocator, pt, samplePathTraceGuidePixel);
+            }
         } else if (self.exportableHwRtTraceBeauty(viewport_size)) |hw_trace| {
             beauty_rgb = try copyHalfTracePixelsToRgbAlloc(allocator, hw_trace.pixels, hw_trace.width, hw_trace.height);
             beauty_width = hw_trace.width;
             beauty_height = hw_trace.height;
+            if (need_guides) {
+                var guide_pt = try self.buildOfflinePathTraceExportState(
+                    scene,
+                    hw_trace.width,
+                    hw_trace.height,
+                    samples,
+                    bounces,
+                    false,
+                );
+                defer guide_pt.deinit(self.allocator);
+                guides = try path_trace_denoise.captureGuideBuffersAlloc(allocator, &guide_pt, samplePathTraceGuidePixel);
+            }
         } else {
             const hdr = try self.downloadHdrFramePixelsAlloc(allocator);
             defer allocator.free(hdr.data);
             beauty_rgb = try image_export.copyHdrRgbaToRgbAlloc(allocator, hdr.data, hdr.width, hdr.height);
             beauty_width = hdr.width;
             beauty_height = hdr.height;
+            if (need_guides) {
+                var guide_pt = try self.buildOfflinePathTraceExportState(
+                    scene,
+                    hdr.width,
+                    hdr.height,
+                    samples,
+                    bounces,
+                    false,
+                );
+                defer guide_pt.deinit(self.allocator);
+                guides = try path_trace_denoise.captureGuideBuffersAlloc(allocator, &guide_pt, samplePathTraceGuidePixel);
+            }
         }
 
-        const beauty_rgba = try image_export.copyHdrRgbToRgbaAlloc(allocator, beauty_rgb, beauty_width, beauty_height);
+        // Optional denoise
+        var final_beauty = beauty_rgb;
+        var denoised_rgb: ?[]f32 = null;
+        defer if (denoised_rgb) |rgb| allocator.free(rgb);
+        if (options.denoise) {
+            const guide_buffers = guides orelse return error.PathTraceGuidesUnavailable;
+            const denoise_result = try path_trace_denoise.denoiseAlloc(allocator, beauty_rgb, guide_buffers.width, guide_buffers.height, guide_buffers);
+            denoised_rgb = denoise_result.rgb;
+            final_beauty = denoise_result.rgb;
+            if (denoise_result.fallback_used) {
+                render_log.warn("path trace EXR export denoise fell back to {s}", .{path_trace_denoise.backendLabel(denoise_result.backend)});
+            }
+        }
+
+        const beauty_rgba = try image_export.copyHdrRgbToRgbaAlloc(allocator, final_beauty, beauty_width, beauty_height);
         defer allocator.free(beauty_rgba);
-        const exr = try image_export.encodeExrRgb32fAlloc(allocator, beauty_rgba, beauty_width, beauty_height);
+
+        // Build AOV struct for multi-layer encoding
+        var aov = image_export.ExrAovLayers{};
+        if (options.write_aov_layers) {
+            if (guides) |g| {
+                aov.albedo = g.albedo;
+                aov.normal = g.normal;
+            }
+        }
+
+        const exr = try image_export.encodeExrMultiLayerAlloc(allocator, beauty_rgba, beauty_width, beauty_height, aov);
         defer allocator.free(exr);
         try image_export.writeFileEnsuringParent(out_path, exr);
     }

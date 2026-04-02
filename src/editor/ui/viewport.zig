@@ -254,7 +254,10 @@ fn exportPendingRenderOutput(state: *EditorState, layer_context: *engine.core.La
         else
             layer_context.renderer.exportFramePng(allocator, out_path),
         .exr => if (state.viewport_pipeline_mode == .path_trace)
-            layer_context.renderer.exportPathTraceFrameExr(allocator, layer_context.scene, out_path)
+            layer_context.renderer.exportPathTraceFrameExr(allocator, layer_context.scene, out_path, .{
+                .denoise = state.render_output_path_trace_denoise,
+                .write_aov_layers = state.render_output_path_trace_write_aovs,
+            })
         else
             layer_context.renderer.exportFrameExr(allocator, out_path),
     };

@@ -232,6 +232,13 @@ pub const BrowserViewMode = enum {
     list,
 };
 
+pub const AssetSortMode = enum {
+    name_asc,
+    name_desc,
+    kind_asc,
+    kind_desc,
+};
+
 pub const ViewportRenderMode = enum {
     textured,
     wireframe,
@@ -588,6 +595,19 @@ pub const EditorState = struct {
     asset_entries: std.ArrayList(AssetEntry) = .empty,
     asset_directories: std.ArrayList([]u8) = .empty,
     selected_asset_index: ?usize = null,
+    // Asset rename state
+    asset_rename_index: ?usize = null,
+    asset_rename_buffer: [256]u8 = [_]u8{0} ** 256,
+    asset_rename_focus_pending: bool = false,
+    // Folder rename state
+    folder_rename_active: bool = false,
+    folder_rename_original: [256]u8 = [_]u8{0} ** 256,
+    folder_rename_buffer: [256]u8 = [_]u8{0} ** 256,
+    folder_rename_focus_pending: bool = false,
+    // New folder state
+    new_folder_pending: bool = false,
+    new_folder_focus_pending: bool = false,
+    new_folder_name_buffer: [256]u8 = [_]u8{0} ** 256,
     scene_filter_buffer: [128]u8 = [_]u8{0} ** 128,
     hierarchy_filter_buffer: [128]u8 = [_]u8{0} ** 128,
     hierarchy_category: HierarchyCategory = .all,
@@ -599,6 +619,16 @@ pub const EditorState = struct {
     asset_directory_buffer: [256]u8 = [_]u8{0} ** 256,
     asset_thumbnail_size: f32 = 104.0,
     browser_view_mode: BrowserViewMode = .grid,
+    // Asset type filter (null = show all)
+    asset_kind_filter: ?AssetKind = null,
+    // Sort mode
+    asset_sort_mode: AssetSortMode = .name_asc,
+    // Multi-selection (bitset indexed by asset index; up to 4096 assets)
+    asset_selected_set: std.StaticBitSet(4096) = std.StaticBitSet(4096).initEmpty(),
+    asset_last_selected_index: ?usize = null,
+    // Clipboard for copy/cut/paste
+    asset_clipboard_paths: std.ArrayList([]u8) = .empty,
+    asset_clipboard_is_cut: bool = false,
 
     // Material thumbnail render queue (asset IDs pending render)
     material_thumbnail_queue: std.ArrayList([]const u8) = .empty,
@@ -645,6 +675,7 @@ pub const EditorState = struct {
     editor_utilities_open: bool = false,
     animation_editor_open: bool = false,
     sequencer_open: bool = false,
+    render_queue_open: bool = false,
     ai_chat_open: bool = false,
     ai_provider_settings_open: bool = false,
     ai_providers: [max_ai_providers]AiProviderConfig = [_]AiProviderConfig{.{}} ** max_ai_providers,

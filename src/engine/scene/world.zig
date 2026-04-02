@@ -182,6 +182,8 @@ pub const Entity = struct {
     audio_source: ?components.AudioSource = null,
     /// 音频监听器组件
     audio_listener: ?components.AudioListener = null,
+    /// 导航代理组件
+    nav_agent: ?components.NavAgent = null,
     /// 是否可见
     visible: bool = true,
     /// 是否仅在编辑器中显示
@@ -316,6 +318,8 @@ pub const EntityDesc = struct {
     audio_source: ?components.AudioSource = null,
     /// 音频监听器组件
     audio_listener: ?components.AudioListener = null,
+    /// 导航代理组件
+    nav_agent: ?components.NavAgent = null,
     /// 是否可见
     visible: bool = true,
     /// 是否仅在编辑器中显示
