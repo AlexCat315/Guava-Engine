@@ -61,3 +61,6 @@ pub const Breakpoint = debug_session.Breakpoint;
 pub const WatchVariable = debug_session.WatchVariable;
 pub const StepMode = debug_session.StepMode;
 pub const InstanceDebugState = debug_session.InstanceDebugState;
+
+pub const dap_adapter = @import("./dap_adapter.zig");
+pub const DapAdapter = dap_adapter.DapAdapter;

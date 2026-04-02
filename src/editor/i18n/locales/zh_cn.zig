@@ -594,6 +594,30 @@ pub const locale = blk: {
             .ai_chat_timeline_stage_transaction = "暂存了待应用的场景修改",
             .ai_chat_timeline_apply_staged_transaction = "应用了暂存的场景修改",
             .ai_chat_timeline_discard_staged_transaction = "丢弃了暂存的场景修改",
+
+            // Build Game
+            .build_game = "构建游戏",
+            .build_game_building = "构建中...",
+            .build_game_success = "构建成功",
+            .build_game_failed = "构建失败",
+            .build_game_tooltip = "打包游戏以供分发（zig build package）",
+
+            // Audio Mixer
+            .audio_mixer = "音频混音器",
+            .audio_mixer_master = "主音量",
+            .audio_mixer_music = "音乐",
+            .audio_mixer_sfx = "音效",
+            .audio_mixer_mute = "静音",
+            .audio_mixer_solo = "独奏",
+
+            // Animation State Machine
+            .anim_state_machine = "动画状态机",
+            .anim_state_machine_add_state = "添加状态",
+            .anim_state_machine_add_transition = "添加过渡",
+            .anim_state_machine_default_state = "默认状态",
+            .anim_state_machine_transition_condition = "过渡条件",
+            .anim_state_machine_blend_duration = "混合时长",
+            .anim_state_machine_any_state = "任意状态",
         }),
     };
 };

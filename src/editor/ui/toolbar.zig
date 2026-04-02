@@ -1,7 +1,9 @@
+const std = @import("std");
 const engine = @import("guava");
 const gui = @import("gui.zig");
 const theme = @import("theme.zig");
 const EditorState = @import("../core/state.zig").EditorState;
+const BuildGameStatus = @import("../core/state.zig").BuildGameStatus;
 const playback_session = @import("../core/playback_session.zig");
 const ui_icons = @import("icons.zig");
 
@@ -93,5 +95,96 @@ pub fn drawToolbarWindow(state: *EditorState, layer_context: *engine.core.LayerC
     }
     if (gui.isItemHovered()) {
         gui.setTooltip(state.text(.step));
+    }
+
+    // --- Build Game button (right-aligned) ---
+    const build_button_size: f32 = play_button_size;
+    const build_right_margin: f32 = 8.0;
+    const build_x = content_width - build_button_size - build_right_margin;
+    gui.sameLineEx(build_x, 0.0);
+
+    const is_building = state.build_game_status == .building;
+    const build_palette = switch (state.build_game_status) {
+        .building => ui_icons.palettes.toolbar_accent,
+        .success => ui_icons.palettes.toolbar_active,
+        .failed => ui_icons.palettes.toolbar_accent,
+        .idle => ui_icons.palettes.toolbar_idle,
+    };
+    if (try drawPlaybackButton(state, layer_context, "toolbar_build_game", ui_icons.paths.toolbar.build, build_palette)) {
+        if (!is_building) {
+            startBuildGame(state);
+        }
+    }
+    if (gui.isItemHovered()) {
+        const tooltip_text = switch (state.build_game_status) {
+            .building => state.text(.build_game_building),
+            .success => state.text(.build_game_success),
+            .failed => state.text(.build_game_failed),
+            .idle => state.text(.build_game_tooltip),
+        };
+        gui.setTooltip(tooltip_text);
+    }
+
+    // Show build status text next to button
+    if (state.build_game_status != .idle) {
+        gui.sameLine();
+        const status_text = switch (state.build_game_status) {
+            .building => state.text(.build_game_building),
+            .success => state.text(.build_game_success),
+            .failed => state.text(.build_game_failed),
+            .idle => "",
+        };
+        const status_color: [4]f32 = switch (state.build_game_status) {
+            .building => .{ 1.0, 0.85, 0.3, 1.0 },
+            .success => .{ 0.3, 1.0, 0.4, 1.0 },
+            .failed => .{ 1.0, 0.3, 0.3, 1.0 },
+            .idle => .{ 1.0, 1.0, 1.0, 1.0 },
+        };
+        gui.textColored(status_color, status_text);
+    }
+}
+
+pub fn startBuildGame(state: *EditorState) void {
+    if (state.build_game_status == .building) return;
+    state.build_game_status = .building;
+    state.build_game_output_len = 0;
+    @memset(&state.build_game_output, 0);
+
+    state.build_game_thread = std.Thread.spawn(.{}, buildGameWorker, .{state}) catch {
+        state.build_game_status = .failed;
+        const msg = "Failed to spawn build thread";
+        @memcpy(state.build_game_output[0..msg.len], msg);
+        state.build_game_output_len = msg.len;
+        return;
+    };
+}
+
+fn buildGameWorker(state: *EditorState) void {
+    const result = std.process.Child.run(.{
+        .allocator = std.heap.page_allocator,
+        .argv = &.{ "zig", "build", "-Doptimize=ReleaseSafe", "package" },
+        .max_output_bytes = 1024 * 1024,
+    }) catch {
+        state.build_game_status = .failed;
+        const msg = "Failed to execute zig build package";
+        @memcpy(state.build_game_output[0..msg.len], msg);
+        state.build_game_output_len = msg.len;
+        return;
+    };
+    defer std.heap.page_allocator.free(result.stdout);
+    defer std.heap.page_allocator.free(result.stderr);
+
+    const output = if (result.stderr.len > 0) result.stderr else result.stdout;
+    const copy_len = @min(output.len, state.build_game_output.len);
+    @memcpy(state.build_game_output[0..copy_len], output[0..copy_len]);
+    state.build_game_output_len = copy_len;
+
+    switch (result.term) {
+        .Exited => |code| {
+            state.build_game_status = if (code == 0) .success else .failed;
+        },
+        else => {
+            state.build_game_status = .failed;
+        },
     }
 }

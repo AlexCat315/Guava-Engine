@@ -30,6 +30,7 @@ const plugin_manager = @import("../ui/panels/debug/plugin_manager.zig");
 const script_debugger = @import("../ui/panels/debug/script_debugger.zig");
 const style_inspector = @import("../ui/panels/rendering/style_inspector.zig");
 const render_queue = @import("../ui/panels/rendering/render_queue.zig");
+const audio_mixer = @import("../ui/panels/debug/audio_mixer.zig");
 const preferences = @import("preferences.zig");
 
 fn initEditorStyle() void {
@@ -413,6 +414,9 @@ pub const EditorLayer = struct {
         }
         if (self.state.style_inspector_open) {
             style_inspector.drawStyleInspectorWindow(&self.state, layer_context);
+        }
+        if (self.state.audio_mixer_open) {
+            audio_mixer.drawAudioMixerWindow(&self.state, layer_context);
         }
     }
 };

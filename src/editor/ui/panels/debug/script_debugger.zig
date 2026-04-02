@@ -6,12 +6,27 @@ const EditorState = @import("../../../core/state.zig").EditorState;
 
 const DebugSession = engine.script.DebugSession;
 const Breakpoint = engine.script.Breakpoint;
+const DapAdapter = engine.script.DapAdapter;
+
+/// DAP server state — runs on a background thread serving one connection at a time.
+const DapServerState = enum {
+    stopped,
+    listening,
+    connected,
+    err,
+};
 
 /// Persistent state for the script debugger panel.
 pub const ScriptDebuggerState = struct {
     bp_line_buf: [16]u8 = [_]u8{0} ** 16,
     bp_handle_buf: [32]u8 = [_]u8{0} ** 32,
     selected_instance: ?u64 = null,
+    dap_server_state: DapServerState = .stopped,
+    dap_server_thread: ?std.Thread = null,
+    dap_port: u16 = 4711,
+    dap_port_buf: [8]u8 = [_]u8{'4', '7', '1', '1', 0, 0, 0, 0},
+    dap_status_msg: [128]u8 = [_]u8{0} ** 128,
+    dap_status_len: usize = 0,
 };
 
 /// Draw the Script Debugger panel.
@@ -58,6 +73,10 @@ pub fn drawScriptDebuggerWindow(
         }
         if (gui.beginTabItem("Sessions")) {
             drawSessionsTab(debug_session);
+            gui.endTabItem();
+        }
+        if (gui.beginTabItem("DAP Server")) {
+            drawDapTab(debug_session, dbg_state);
             gui.endTabItem();
         }
         gui.endTabBar();
@@ -373,4 +392,168 @@ fn drawSessionsTab(debug_session: *DebugSession) void {
 
         gui.endTable();
     }
+}
+
+// ── DAP Server tab ───────────────────────────────────────────────────────────
+
+fn drawDapTab(debug_session: *DebugSession, dbg_state: *ScriptDebuggerState) void {
+    gui.textWrapped("Connect VS Code or any DAP client to debug WASM scripts remotely.");
+    gui.spacing();
+
+    // Status indicator
+    const status_color: [4]f32 = switch (dbg_state.dap_server_state) {
+        .stopped => .{ 0.5, 0.5, 0.5, 1.0 },
+        .listening => .{ 1.0, 0.85, 0.3, 1.0 },
+        .connected => .{ 0.3, 1.0, 0.4, 1.0 },
+        .err => .{ 1.0, 0.3, 0.3, 1.0 },
+    };
+    const status_label = switch (dbg_state.dap_server_state) {
+        .stopped => "Stopped",
+        .listening => "Listening...",
+        .connected => "Client connected",
+        .err => "Error",
+    };
+    gui.textColored(status_color, status_label);
+
+    if (dbg_state.dap_status_len > 0) {
+        gui.sameLine();
+        gui.textColored(.{ 0.7, 0.7, 0.7, 1.0 }, dbg_state.dap_status_msg[0..dbg_state.dap_status_len]);
+    }
+
+    gui.spacing();
+    gui.separator();
+    gui.spacing();
+
+    // Port input
+    gui.text("Port:");
+    gui.sameLine();
+    gui.setNextItemWidth(80.0);
+    _ = gui.inputText("##dap_port", &dbg_state.dap_port_buf);
+
+    gui.sameLine();
+
+    switch (dbg_state.dap_server_state) {
+        .stopped, .err => {
+            if (gui.button("Start DAP Server")) {
+                const port_str = std.mem.sliceTo(&dbg_state.dap_port_buf, 0);
+                dbg_state.dap_port = std.fmt.parseInt(u16, port_str, 10) catch 4711;
+                startDapServer(debug_session, dbg_state);
+            }
+        },
+        .listening, .connected => {
+            if (gui.button("Stop")) {
+                // Signal stop by setting state; the thread will see it on next iteration
+                dbg_state.dap_server_state = .stopped;
+            }
+        },
+    }
+
+    gui.spacing();
+    gui.separator();
+    gui.spacing();
+
+    // Connection instructions
+    gui.textWrapped("In VS Code, add to launch.json:");
+    gui.pushStyleColor(.text, .{ 0.75, 0.85, 0.95, 1.0 });
+    var port_text_buf: [256]u8 = undefined;
+    const port_text = std.fmt.bufPrint(&port_text_buf,
+        \\{{
+        \\  "type": "guava-script",
+        \\  "request": "attach",
+        \\  "name": "Attach to Guava",
+        \\  "port": {d}
+        \\}}
+    , .{dbg_state.dap_port}) catch "{}";
+    gui.textWrapped(port_text);
+    gui.popStyleColor(1);
+}
+
+fn startDapServer(debug_session: *DebugSession, dbg_state: *ScriptDebuggerState) void {
+    if (dbg_state.dap_server_state == .listening or dbg_state.dap_server_state == .connected) return;
+
+    dbg_state.dap_server_state = .listening;
+    setDapStatus(dbg_state, "Starting...");
+
+    const Context = struct {
+        debug_session: *DebugSession,
+        dbg_state: *ScriptDebuggerState,
+    };
+    const ctx = Context{
+        .debug_session = debug_session,
+        .dbg_state = dbg_state,
+    };
+
+    dbg_state.dap_server_thread = std.Thread.spawn(.{}, struct {
+        fn worker(c: Context) void {
+            dapServerLoop(c.debug_session, c.dbg_state);
+        }
+    }.worker, .{ctx}) catch {
+        dbg_state.dap_server_state = .err;
+        setDapStatus(dbg_state, "Failed to start thread");
+        return;
+    };
+}
+
+fn dapServerLoop(debug_session: *DebugSession, dbg_state: *ScriptDebuggerState) void {
+    const address = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, dbg_state.dap_port);
+    var server = address.listen(.{
+        .reuse_address = true,
+    }) catch {
+        dbg_state.dap_server_state = .err;
+        setDapStatus(dbg_state, "Failed to bind port");
+        return;
+    };
+    defer server.deinit();
+
+    var port_buf: [32]u8 = undefined;
+    setDapStatus(dbg_state, std.fmt.bufPrint(&port_buf, "Listening on :{d}", .{dbg_state.dap_port}) catch "Listening");
+
+    while (dbg_state.dap_server_state == .listening or dbg_state.dap_server_state == .connected) {
+        // Accept one client at a time
+        const conn = server.accept() catch {
+            if (dbg_state.dap_server_state == .stopped) return;
+            continue;
+        };
+        defer conn.stream.close();
+
+        dbg_state.dap_server_state = .connected;
+        setDapStatus(dbg_state, "Client connected");
+
+        // Run DAP protocol over this connection
+        // Wrap net.Stream into GenericReader/GenericWriter to get AnyReader/AnyWriter
+        var stream_ctx = conn.stream;
+        const StreamReader = std.io.GenericReader(*std.net.Stream, std.posix.ReadError, struct {
+            fn read(ctx: *std.net.Stream, buf: []u8) std.posix.ReadError!usize {
+                return std.posix.read(ctx.handle, buf);
+            }
+        }.read);
+        const StreamWriter = std.io.GenericWriter(*std.net.Stream, std.posix.WriteError, struct {
+            fn write(ctx: *std.net.Stream, data: []const u8) std.posix.WriteError!usize {
+                return std.posix.write(ctx.handle, data);
+            }
+        }.write);
+        var stream_reader: StreamReader = .{ .context = &stream_ctx };
+        var stream_writer: StreamWriter = .{ .context = &stream_ctx };
+        var adapter = DapAdapter.init(
+            std.heap.page_allocator,
+            debug_session,
+            stream_reader.any(),
+            stream_writer.any(),
+        );
+        defer adapter.deinit();
+
+        adapter.run() catch {};
+
+        // Client disconnected — go back to listening
+        if (dbg_state.dap_server_state != .stopped) {
+            dbg_state.dap_server_state = .listening;
+            setDapStatus(dbg_state, std.fmt.bufPrint(&port_buf, "Listening on :{d}", .{dbg_state.dap_port}) catch "Listening");
+        }
+    }
+}
+
+fn setDapStatus(dbg_state: *ScriptDebuggerState, msg: []const u8) void {
+    const len = @min(msg.len, dbg_state.dap_status_msg.len);
+    @memcpy(dbg_state.dap_status_msg[0..len], msg[0..len]);
+    dbg_state.dap_status_len = len;
 }

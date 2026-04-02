@@ -29,6 +29,9 @@ pub const AssetType = enum {
         if (std.mem.endsWith(u8, path, ".glsl") or std.mem.endsWith(u8, path, ".spv")) {
             return .shader;
         }
+        if (std.mem.endsWith(u8, path, ".cs") or std.mem.endsWith(u8, path, ".zig") or std.mem.endsWith(u8, path, ".csproj")) {
+            return .script;
+        }
         return null;
     }
 

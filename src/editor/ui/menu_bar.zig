@@ -11,6 +11,7 @@ const scene_hierarchy = @import("panels/scene/scene_hierarchy.zig");
 const floating_window_blocker = @import("floating_window_blocker.zig");
 const layout = @import("layout.zig");
 const i18n = @import("../i18n/mod.zig");
+const toolbar = @import("toolbar.zig");
 
 var g_pending_top_bar_drag = false;
 var g_pending_top_bar_drag_mouse = [2]f32{ 0.0, 0.0 };
@@ -45,6 +46,11 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
         }
         if (gui.menuItem(state.text(.load_scene), "Ctrl+O", false, true)) {
             try history.loadScene(state, layer_context);
+        }
+        gui.separator();
+        const is_building = state.build_game_status == .building;
+        if (gui.menuItem(state.text(if (is_building) .build_game_building else .build_game), "Ctrl+B", false, !is_building)) {
+            toolbar.startBuildGame(state);
         }
     }
 
@@ -153,6 +159,22 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
         }
         if (gui.menuItem("Render Style Inspector", null, state.style_inspector_open, true)) {
             state.style_inspector_open = !state.style_inspector_open;
+        }
+        gui.separator();
+        if (gui.menuItem(state.text(.script_editor), null, state.script_editor_open, true)) {
+            state.script_editor_open = !state.script_editor_open;
+        }
+        if (gui.menuItem("Script Debugger", null, state.script_debugger_open, true)) {
+            state.script_debugger_open = !state.script_debugger_open;
+        }
+        if (gui.menuItem(state.text(.particle_editor), null, state.particle_editor_open, true)) {
+            state.particle_editor_open = !state.particle_editor_open;
+        }
+        if (gui.menuItem(state.text(.physics_visualization), null, state.physics_visualization_open, true)) {
+            state.physics_visualization_open = !state.physics_visualization_open;
+        }
+        if (gui.menuItem(state.text(.audio_mixer), null, state.audio_mixer_open, true)) {
+            state.audio_mixer_open = !state.audio_mixer_open;
         }
         if (gui.beginMenu(state.text(.layout))) {
             defer gui.endMenu();

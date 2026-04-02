@@ -24,6 +24,7 @@ pub const asset_directory_buffer_size = 256;
 pub const layout_template_name_buffer_size = 128;
 pub const render_output_path_buffer_size = 256;
 pub const render_output_status_buffer_size = 256;
+pub const build_game_output_buffer_size = 4096;
 pub const project_root_buffer_size = 512;
 pub const project_name_buffer_size = 128;
 
@@ -249,6 +250,13 @@ pub const ViewportRenderMode = enum {
 pub const ViewportPipelineMode = enum {
     raster,
     path_trace,
+};
+
+pub const BuildGameStatus = enum {
+    idle,
+    building,
+    success,
+    failed,
 };
 
 pub const ViewportShadingMode = enum {
@@ -779,6 +787,15 @@ pub const EditorState = struct {
     // Pending request to create a new script file (path to write, then open)
     pending_new_script_path: ?[]const u8 = null,
     pending_new_script_template: ?[]const u8 = null,
+
+    // Build Game state
+    build_game_status: BuildGameStatus = .idle,
+    build_game_output: [build_game_output_buffer_size]u8 = [_]u8{0} ** build_game_output_buffer_size,
+    build_game_output_len: usize = 0,
+    build_game_thread: ?std.Thread = null,
+
+    // Audio Mixer panel
+    audio_mixer_open: bool = false,
     selected_prefab_id: ?[]const u8 = null,
     editing_prefab_id: ?[]const u8 = null,
     prefab_browser_search_buffer: [128]u8 = [_]u8{0} ** 128,

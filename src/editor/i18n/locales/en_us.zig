@@ -594,6 +594,30 @@ pub const locale = blk: {
             .ai_chat_timeline_stage_transaction = "Staged scene changes for review",
             .ai_chat_timeline_apply_staged_transaction = "Applied staged scene changes",
             .ai_chat_timeline_discard_staged_transaction = "Discarded staged scene changes",
+
+            // Build Game
+            .build_game = "Build Game",
+            .build_game_building = "Building...",
+            .build_game_success = "Build succeeded",
+            .build_game_failed = "Build failed",
+            .build_game_tooltip = "Package game for distribution (zig build package)",
+
+            // Audio Mixer
+            .audio_mixer = "Audio Mixer",
+            .audio_mixer_master = "Master",
+            .audio_mixer_music = "Music",
+            .audio_mixer_sfx = "SFX",
+            .audio_mixer_mute = "Mute",
+            .audio_mixer_solo = "Solo",
+
+            // Animation State Machine
+            .anim_state_machine = "Animation State Machine",
+            .anim_state_machine_add_state = "Add State",
+            .anim_state_machine_add_transition = "Add Transition",
+            .anim_state_machine_default_state = "Default State",
+            .anim_state_machine_transition_condition = "Condition",
+            .anim_state_machine_blend_duration = "Blend Duration",
+            .anim_state_machine_any_state = "Any State",
         }),
     };
 };

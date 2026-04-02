@@ -585,4 +585,28 @@ pub const MessageId = enum {
     ai_chat_timeline_stage_transaction,
     ai_chat_timeline_apply_staged_transaction,
     ai_chat_timeline_discard_staged_transaction,
+
+    // Build Game
+    build_game,
+    build_game_building,
+    build_game_success,
+    build_game_failed,
+    build_game_tooltip,
+
+    // Audio Mixer
+    audio_mixer,
+    audio_mixer_master,
+    audio_mixer_music,
+    audio_mixer_sfx,
+    audio_mixer_mute,
+    audio_mixer_solo,
+
+    // Animation State Machine
+    anim_state_machine,
+    anim_state_machine_add_state,
+    anim_state_machine_add_transition,
+    anim_state_machine_default_state,
+    anim_state_machine_transition_condition,
+    anim_state_machine_blend_duration,
+    anim_state_machine_any_state,
 };

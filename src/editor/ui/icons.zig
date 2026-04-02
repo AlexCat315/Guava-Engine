@@ -32,6 +32,7 @@ pub const paths = struct {
         pub const chevron_down = "assets/ui/icons/svg/chevron-down.svg";
         pub const plus = "assets/ui/icons/svg/plus.svg";
         pub const x_mark = "assets/ui/icons/svg/delete.svg";
+        pub const build = "assets/ui/icons/svg/package.svg";
     };
 
     pub const viewport = struct {
