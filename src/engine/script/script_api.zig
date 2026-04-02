@@ -51,6 +51,11 @@ pub const HostApi = extern struct {
     add_impulse: *const fn (?*anyopaque, u64, f32, f32, f32) callconv(.c) void,
     // Scene
     load_scene: *const fn (?*anyopaque, [*]const u8, usize) callconv(.c) void,
+    // Gamepad
+    is_gamepad_connected: *const fn (?*anyopaque) callconv(.c) u32,
+    is_gamepad_button_down: *const fn (?*anyopaque, u32) callconv(.c) u32,
+    was_gamepad_button_pressed: *const fn (?*anyopaque, u32) callconv(.c) u32,
+    get_gamepad_axis: *const fn (?*anyopaque, u32) callconv(.c) f32,
 };
 
 // ---------------------------------------------------------------------------
@@ -302,4 +307,55 @@ pub fn addImpulse(entity_id: u64, impulse: Vec3) void {
 /// 加载场景
 pub fn loadScene(path: []const u8) void {
     api.load_scene(ctx, path.ptr, path.len);
+}
+
+// ---------------------------------------------------------------------------
+// Gamepad API
+// ---------------------------------------------------------------------------
+
+pub const GamepadButton = enum(u32) {
+    south = 0,
+    east = 1,
+    west = 2,
+    north = 3,
+    back = 4,
+    guide = 5,
+    start = 6,
+    left_stick = 7,
+    right_stick = 8,
+    left_shoulder = 9,
+    right_shoulder = 10,
+    dpad_up = 11,
+    dpad_down = 12,
+    dpad_left = 13,
+    dpad_right = 14,
+};
+
+pub const GamepadAxis = enum(u32) {
+    left_x = 0,
+    left_y = 1,
+    right_x = 2,
+    right_y = 3,
+    left_trigger = 4,
+    right_trigger = 5,
+};
+
+/// 检查是否有手柄连接
+pub fn isGamepadConnected() bool {
+    return api.is_gamepad_connected(ctx) != 0;
+}
+
+/// 查询手柄按钮是否按下
+pub fn isGamepadButtonDown(button: GamepadButton) bool {
+    return api.is_gamepad_button_down(ctx, @intFromEnum(button)) != 0;
+}
+
+/// 查询手柄按钮是否刚按下（本帧边沿）
+pub fn wasGamepadButtonPressed(button: GamepadButton) bool {
+    return api.was_gamepad_button_pressed(ctx, @intFromEnum(button)) != 0;
+}
+
+/// 获取手柄轴值（-1.0 ~ 1.0，trigger 为 0.0 ~ 1.0）
+pub fn getGamepadAxis(axis: GamepadAxis) f32 {
+    return api.get_gamepad_axis(ctx, @intFromEnum(axis));
 }

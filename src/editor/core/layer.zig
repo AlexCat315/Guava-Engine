@@ -299,6 +299,14 @@ pub const EditorLayer = struct {
         try utils.pruneFrozenSelection(&self.state, layer_context);
         try utils.pruneLockedSelection(&self.state, layer_context);
         utils.syncInspectorNameBuffer(&self.state, layer_context);
+        // Handle OS file drop (glTF/glb → import as model)
+        if (layer_context.pending_file_drop) |pending_ptr| {
+            if (pending_ptr.*) |dropped_path| {
+                handleFileDrop(&self.state, layer_context, dropped_path);
+                std.heap.c_allocator.free(dropped_path);
+                pending_ptr.* = null;
+            }
+        }
         gui.beginDockspace();
         if (!self.state.dock_layout_initialized) {
             std.log.info("Editor: Initializing default dock layout", .{});
@@ -417,6 +425,17 @@ pub const EditorLayer = struct {
         }
         if (self.state.audio_mixer_open) {
             audio_mixer.drawAudioMixerWindow(&self.state, layer_context);
+        }
+    }
+
+    fn handleFileDrop(state: *EditorState, layer_context: *engine.core.LayerContext, path: [:0]const u8) void {
+        const ext = std.fs.path.extension(path);
+        if (std.mem.eql(u8, ext, ".gltf") or std.mem.eql(u8, ext, ".glb")) {
+            history.importModelPath(state, layer_context, path) catch |err| {
+                std.log.err("Failed to import dropped model '{s}': {}", .{ path, err });
+            };
+        } else {
+            std.log.info("Unsupported file drop extension: '{s}' ({s})", .{ ext, path });
         }
     }
 };

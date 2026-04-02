@@ -192,6 +192,8 @@ pub const Application = struct {
     nav_system: nav_system_mod.NavSystem,
     /// 脚本调试会话
     debug_session: debug_session_mod.DebugSession,
+    /// 待处理的文件拖放路径（由 OS 文件拖放事件设置，由编辑器层消费）
+    pending_file_drop: ?[:0]const u8 = null,
 
     /// 初始化应用程序
     ///
@@ -573,6 +575,34 @@ pub const Application = struct {
                     // Already forwarded to ImGui via processEvent() above.
                     // Nothing to do in application layer.
                 },
+                .gamepad_added => {
+                    self.input.gamepad_connected = true;
+                },
+                .gamepad_removed => {
+                    self.input.gamepad_connected = false;
+                },
+                .gamepad_button_down => {
+                    if (event.gamepad_button) |btn| {
+                        self.input.setGamepadButton(btn, true);
+                    }
+                },
+                .gamepad_button_up => {
+                    if (event.gamepad_button) |btn| {
+                        self.input.setGamepadButton(btn, false);
+                    }
+                },
+                .gamepad_axis_motion => {
+                    if (event.gamepad_axis) |axis| {
+                        self.input.setGamepadAxis(axis, event.axis_value);
+                    }
+                },
+                .file_drop => {
+                    // Free previous pending drop if any
+                    if (self.pending_file_drop) |prev| {
+                        std.heap.c_allocator.free(prev);
+                    }
+                    self.pending_file_drop = event.dropped_file_path;
+                },
             }
         }
     }
@@ -598,6 +628,7 @@ pub const Application = struct {
             .physics_state = &self.physics_state,
             .nav_system = &self.nav_system,
             .script_debug_session = &self.debug_session,
+            .pending_file_drop = &self.pending_file_drop,
             .frame_index = frame_index,
             .delta_seconds = delta_seconds,
         };

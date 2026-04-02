@@ -368,6 +368,11 @@ const ZigDylibHostApi = extern struct {
     add_impulse: *const fn (?*anyopaque, u64, f32, f32, f32) callconv(.c) void,
     // Scene
     load_scene: *const fn (?*anyopaque, [*]const u8, usize) callconv(.c) void,
+    // Gamepad
+    is_gamepad_connected: *const fn (?*anyopaque) callconv(.c) u32,
+    is_gamepad_button_down: *const fn (?*anyopaque, u32) callconv(.c) u32,
+    was_gamepad_button_pressed: *const fn (?*anyopaque, u32) callconv(.c) u32,
+    get_gamepad_axis: *const fn (?*anyopaque, u32) callconv(.c) f32,
 };
 
 const zig_dylib_host_api: ZigDylibHostApi = .{
@@ -396,6 +401,10 @@ const zig_dylib_host_api: ZigDylibHostApi = .{
     .get_linear_velocity = zigDylibHostGetLinearVelocity,
     .add_impulse = zigDylibHostAddImpulse,
     .load_scene = zigDylibHostLoadScene,
+    .is_gamepad_connected = zigDylibHostIsGamepadConnected,
+    .is_gamepad_button_down = zigDylibHostIsGamepadButtonDown,
+    .was_gamepad_button_pressed = zigDylibHostWasGamepadButtonPressed,
+    .get_gamepad_axis = zigDylibHostGetGamepadAxis,
 };
 
 const ZigDylibLibrary = struct {
@@ -1004,6 +1013,33 @@ fn zigDylibHostLoadScene(userdata: ?*anyopaque, ptr: [*]const u8, len: usize) ca
     if (ctx_ptr.scene_manager_api) |scene_api| {
         scene_api.load_scene(scene_api.context, ptr[0..len]);
     }
+}
+
+fn zigDylibHostIsGamepadConnected(userdata: ?*anyopaque) callconv(.c) u32 {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return 0;
+    const input_state = ctx_ptr.input orelse return 0;
+    return if (input_state.gamepad_connected) @as(u32, 1) else @as(u32, 0);
+}
+
+fn zigDylibHostIsGamepadButtonDown(userdata: ?*anyopaque, button: u32) callconv(.c) u32 {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return 0;
+    const input_state = ctx_ptr.input orelse return 0;
+    const btn = std.meta.intToEnum(input_mod.GamepadButton, @as(u8, @intCast(button))) catch return 0;
+    return if (input_state.isGamepadButtonDown(btn)) @as(u32, 1) else @as(u32, 0);
+}
+
+fn zigDylibHostWasGamepadButtonPressed(userdata: ?*anyopaque, button: u32) callconv(.c) u32 {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return 0;
+    const input_state = ctx_ptr.input orelse return 0;
+    const btn = std.meta.intToEnum(input_mod.GamepadButton, @as(u8, @intCast(button))) catch return 0;
+    return if (input_state.wasGamepadButtonPressed(btn)) @as(u32, 1) else @as(u32, 0);
+}
+
+fn zigDylibHostGetGamepadAxis(userdata: ?*anyopaque, axis: u32) callconv(.c) f32 {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return 0.0;
+    const input_state = ctx_ptr.input orelse return 0.0;
+    const ax = std.meta.intToEnum(input_mod.GamepadAxis, @as(u8, @intCast(axis))) catch return 0.0;
+    return input_state.getGamepadAxis(ax);
 }
 
 const csharp_native_aot_api_version: u32 = 1;

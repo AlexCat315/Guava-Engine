@@ -52,6 +52,12 @@ pub const EventKind = enum {
     key_down,
     key_up,
     text_input,
+    gamepad_button_down,
+    gamepad_button_up,
+    gamepad_axis_motion,
+    gamepad_added,
+    gamepad_removed,
+    file_drop,
 };
 
 pub const Event = struct {
@@ -68,6 +74,10 @@ pub const Event = struct {
     key: ?input_mod.Key = null,
     repeat: bool = false,
     modifiers: input_mod.Modifiers = .{},
+    gamepad_button: ?input_mod.GamepadButton = null,
+    gamepad_axis: ?input_mod.GamepadAxis = null,
+    axis_value: f32 = 0.0,
+    dropped_file_path: ?[:0]const u8 = null,
 };
 
 pub const Window = struct {
@@ -91,7 +101,7 @@ pub const Window = struct {
     prev_bounds_size: [2]i32 = .{ 0, 0 },
 
     pub fn init(allocator: std.mem.Allocator, config: WindowConfig) !Window {
-        if (!sdl.SDL_Init(sdl.SDL_INIT_VIDEO)) {
+        if (!sdl.SDL_Init(sdl.SDL_INIT_VIDEO | sdl.SDL_INIT_GAMEPAD)) {
             std.log.err("SDL_Init failed: {s}", .{lastError()});
             return error.SdlInitFailed;
         }
@@ -348,20 +358,45 @@ pub const Window = struct {
                     };
                 },
                 sdl.SDL_EVENT_DROP_FILE => {
-                    // Handle file drop events (SDL3 uses 'data' and 'source' instead of 'file')
                     const c_path: [*c]const u8 = if (raw_event.drop.data != null) raw_event.drop.data else raw_event.drop.source;
-                    if (c_path == null) {
-                        // Nothing to process
-                        continue;
-                    }
+                    if (c_path == null) continue;
                     const path_slice = std.mem.sliceTo(c_path, 0);
                     const file_path = try std.heap.c_allocator.dupeZ(u8, path_slice);
-                    defer std.heap.c_allocator.free(file_path);
-                    // For now, we'll just log the dropped file path
-                    std.log.debug("File dropped: {s}", .{file_path});
-                    // We could create a custom event kind for file drops if needed
-                    // For now, we'll just return null to continue processing
-                    continue;
+                    return .{
+                        .kind = .file_drop,
+                        .raw = raw_event,
+                        .dropped_file_path = file_path,
+                    };
+                },
+                sdl.SDL_EVENT_GAMEPAD_ADDED => {
+                    const id = raw_event.gdevice.which;
+                    _ = sdl.SDL_OpenGamepad(id);
+                    return .{ .kind = .gamepad_added, .raw = raw_event };
+                },
+                sdl.SDL_EVENT_GAMEPAD_REMOVED => {
+                    return .{ .kind = .gamepad_removed, .raw = raw_event };
+                },
+                sdl.SDL_EVENT_GAMEPAD_BUTTON_DOWN => {
+                    return .{
+                        .kind = .gamepad_button_down,
+                        .raw = raw_event,
+                        .gamepad_button = gamepadButtonFromSdl(raw_event.gbutton.button),
+                    };
+                },
+                sdl.SDL_EVENT_GAMEPAD_BUTTON_UP => {
+                    return .{
+                        .kind = .gamepad_button_up,
+                        .raw = raw_event,
+                        .gamepad_button = gamepadButtonFromSdl(raw_event.gbutton.button),
+                    };
+                },
+                sdl.SDL_EVENT_GAMEPAD_AXIS_MOTION => {
+                    return .{
+                        .kind = .gamepad_axis_motion,
+                        .raw = raw_event,
+                        .gamepad_axis = gamepadAxisFromSdl(raw_event.gaxis.axis),
+                        .axis_value = @as(f32, @floatFromInt(raw_event.gaxis.value)) / 32767.0,
+                    };
                 },
                 else => {},
             }
@@ -717,6 +752,39 @@ fn keyFromScancode(scancode: c_uint) ?input_mod.Key {
         sdl.SDL_SCANCODE_F10 => .f10,
         sdl.SDL_SCANCODE_F11 => .f11,
         sdl.SDL_SCANCODE_F12 => .f12,
+        else => null,
+    };
+}
+
+fn gamepadButtonFromSdl(button: u8) ?input_mod.GamepadButton {
+    return switch (button) {
+        sdl.SDL_GAMEPAD_BUTTON_SOUTH => .south,
+        sdl.SDL_GAMEPAD_BUTTON_EAST => .east,
+        sdl.SDL_GAMEPAD_BUTTON_WEST => .west,
+        sdl.SDL_GAMEPAD_BUTTON_NORTH => .north,
+        sdl.SDL_GAMEPAD_BUTTON_BACK => .back,
+        sdl.SDL_GAMEPAD_BUTTON_GUIDE => .guide,
+        sdl.SDL_GAMEPAD_BUTTON_START => .start,
+        sdl.SDL_GAMEPAD_BUTTON_LEFT_STICK => .left_stick,
+        sdl.SDL_GAMEPAD_BUTTON_RIGHT_STICK => .right_stick,
+        sdl.SDL_GAMEPAD_BUTTON_LEFT_SHOULDER => .left_shoulder,
+        sdl.SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER => .right_shoulder,
+        sdl.SDL_GAMEPAD_BUTTON_DPAD_UP => .dpad_up,
+        sdl.SDL_GAMEPAD_BUTTON_DPAD_DOWN => .dpad_down,
+        sdl.SDL_GAMEPAD_BUTTON_DPAD_LEFT => .dpad_left,
+        sdl.SDL_GAMEPAD_BUTTON_DPAD_RIGHT => .dpad_right,
+        else => null,
+    };
+}
+
+fn gamepadAxisFromSdl(axis: u8) ?input_mod.GamepadAxis {
+    return switch (axis) {
+        sdl.SDL_GAMEPAD_AXIS_LEFTX => .left_x,
+        sdl.SDL_GAMEPAD_AXIS_LEFTY => .left_y,
+        sdl.SDL_GAMEPAD_AXIS_RIGHTX => .right_x,
+        sdl.SDL_GAMEPAD_AXIS_RIGHTY => .right_y,
+        sdl.SDL_GAMEPAD_AXIS_LEFT_TRIGGER => .left_trigger,
+        sdl.SDL_GAMEPAD_AXIS_RIGHT_TRIGGER => .right_trigger,
         else => null,
     };
 }

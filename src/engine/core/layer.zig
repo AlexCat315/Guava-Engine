@@ -88,6 +88,7 @@ pub const LayerContext = struct {
     physics_accumulator_seconds: *f32,
     physics_state: *physics_mod.PhysicsState,
     nav_system: ?*nav_mod.NavSystem = null,
+    pending_file_drop: ?*?[:0]const u8 = null,
     frame_index: usize,
     delta_seconds: f32,
 

@@ -69,6 +69,38 @@ pub const Modifiers = struct {
 const key_count = std.meta.fields(Key).len;
 const mouse_button_count = std.meta.fields(MouseButton).len;
 
+/// Gamepad 按钮（对应 SDL3 SDL_GamepadButton 布局）
+pub const GamepadButton = enum(u8) {
+    south, // A / Cross
+    east, // B / Circle
+    west, // X / Square
+    north, // Y / Triangle
+    back, // Select / Share
+    guide, // Home / PS
+    start, // Start / Options
+    left_stick,
+    right_stick,
+    left_shoulder,
+    right_shoulder,
+    dpad_up,
+    dpad_down,
+    dpad_left,
+    dpad_right,
+};
+
+/// Gamepad 轴（对应 SDL3 SDL_GamepadAxis 布局）
+pub const GamepadAxis = enum(u8) {
+    left_x,
+    left_y,
+    right_x,
+    right_y,
+    left_trigger,
+    right_trigger,
+};
+
+const gamepad_button_count = std.meta.fields(GamepadButton).len;
+const gamepad_axis_count = std.meta.fields(GamepadAxis).len;
+
 pub const InputState = struct {
     modifiers: Modifiers = .{},
     mouse_position: [2]f32 = .{ 0.0, 0.0 },
@@ -84,6 +116,12 @@ pub const InputState = struct {
     mouse_pressed: [mouse_button_count]bool = [_]bool{false} ** mouse_button_count,
     mouse_released: [mouse_button_count]bool = [_]bool{false} ** mouse_button_count,
     mouse_double_clicked: [mouse_button_count]bool = [_]bool{false} ** mouse_button_count,
+    // Gamepad
+    gamepad_connected: bool = false,
+    gamepad_button_down: [gamepad_button_count]bool = [_]bool{false} ** gamepad_button_count,
+    gamepad_button_pressed: [gamepad_button_count]bool = [_]bool{false} ** gamepad_button_count,
+    gamepad_button_released: [gamepad_button_count]bool = [_]bool{false} ** gamepad_button_count,
+    gamepad_axes: [gamepad_axis_count]f32 = [_]f32{0.0} ** gamepad_axis_count,
 
     pub fn beginFrame(self: *InputState) void {
         @memset(self.key_pressed[0..], false);
@@ -91,6 +129,8 @@ pub const InputState = struct {
         @memset(self.mouse_pressed[0..], false);
         @memset(self.mouse_released[0..], false);
         @memset(self.mouse_double_clicked[0..], false);
+        @memset(self.gamepad_button_pressed[0..], false);
+        @memset(self.gamepad_button_released[0..], false);
         self.mouse_delta = .{ 0.0, 0.0 };
         self.mouse_wheel = .{ 0.0, 0.0 };
     }
@@ -180,6 +220,39 @@ pub const InputState = struct {
         self.mouse_pressed[index] = false;
         self.mouse_released[index] = false;
         self.mouse_double_clicked[index] = false;
+    }
+
+    // ── Gamepad ──
+
+    pub fn setGamepadButton(self: *InputState, button: GamepadButton, is_down: bool) void {
+        const index = @intFromEnum(button);
+        const was_down = self.gamepad_button_down[index];
+        if (is_down) {
+            if (!was_down) self.gamepad_button_pressed[index] = true;
+        } else if (was_down) {
+            self.gamepad_button_released[index] = true;
+        }
+        self.gamepad_button_down[index] = is_down;
+    }
+
+    pub fn setGamepadAxis(self: *InputState, axis: GamepadAxis, value: f32) void {
+        self.gamepad_axes[@intFromEnum(axis)] = value;
+    }
+
+    pub fn isGamepadButtonDown(self: *const InputState, button: GamepadButton) bool {
+        return self.gamepad_button_down[@intFromEnum(button)];
+    }
+
+    pub fn wasGamepadButtonPressed(self: *const InputState, button: GamepadButton) bool {
+        return self.gamepad_button_pressed[@intFromEnum(button)];
+    }
+
+    pub fn wasGamepadButtonReleased(self: *const InputState, button: GamepadButton) bool {
+        return self.gamepad_button_released[@intFromEnum(button)];
+    }
+
+    pub fn getGamepadAxis(self: *const InputState, axis: GamepadAxis) f32 {
+        return self.gamepad_axes[@intFromEnum(axis)];
     }
 };
 
