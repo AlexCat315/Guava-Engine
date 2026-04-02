@@ -426,8 +426,6 @@ fn drawProjectPanel(state: *EditorState, layer_context: *engine.core.LayerContex
     gui.tableNextColumn();
     _ = gui.beginChild("project_assets_grid", 0.0, 0.0, false);
     defer gui.endChild();
-    try drawSelectedAssetPreview(state, layer_context);
-    gui.separator();
     try drawAssetGrid(state, layer_context);
 }
 
@@ -579,6 +577,10 @@ fn drawAssetListView(state: *EditorState, layer_context: *engine.core.LayerConte
         if (gui.selectable(button_id, selected, false, 0.0, row_height)) {
             handleAssetSelection(state, index);
         }
+        // Double-click on directory: navigate into it
+        if (entry.is_directory and gui.isItemHovered() and gui.isMouseDoubleClicked(.left)) {
+            setSelectedAssetDirectory(state, entry.display_path);
+        }
         drawAssetDragSource(state, entry, index, row_texture);
         try drawAssetContextMenu(state, layer_context, entry, index);
 
@@ -647,6 +649,10 @@ fn drawAssetCard(
         .{ 1.0, 1.0, 1.0, 1.0 },
     )) {
         handleAssetSelection(state, index);
+    }
+    // Double-click on directory: navigate into it
+    if (entry.is_directory and gui.isItemHovered() and gui.isMouseDoubleClicked(.left)) {
+        setSelectedAssetDirectory(state, entry.display_path);
     }
     if (gui.isItemHovered()) {
         gui.setTooltip(entry.name);
@@ -829,6 +835,10 @@ fn drawProjectPanelHeader(state: *EditorState, layer_context: *engine.core.Layer
     if (gui.buttonEx(state.text(.import_assets), 0.0, 26.0)) {
         importAssetsFromFinder(state, layer_context);
     }
+    gui.sameLine();
+    if (gui.buttonEx("Import Folder", 0.0, 26.0)) {
+        importFolderFromFinder(state, layer_context);
+    }
 
     // Second row: Type filter + Sort mode
     {
@@ -989,16 +999,20 @@ fn sortAssetEntries(state: *EditorState) void {
     switch (state.asset_sort_mode) {
         .name_asc => std.sort.heap(AssetEntry, state.asset_entries.items, {}, struct {
             fn f(_: void, a: AssetEntry, b: AssetEntry) bool {
+                // Directories always sort first
+                if (a.is_directory != b.is_directory) return a.is_directory;
                 return std.mem.lessThan(u8, a.name, b.name);
             }
         }.f),
         .name_desc => std.sort.heap(AssetEntry, state.asset_entries.items, {}, struct {
             fn f(_: void, a: AssetEntry, b: AssetEntry) bool {
+                if (a.is_directory != b.is_directory) return a.is_directory;
                 return std.mem.lessThan(u8, b.name, a.name);
             }
         }.f),
         .kind_asc => std.sort.heap(AssetEntry, state.asset_entries.items, {}, struct {
             fn f(_: void, a: AssetEntry, b: AssetEntry) bool {
+                if (a.is_directory != b.is_directory) return a.is_directory;
                 if (@intFromEnum(a.kind) != @intFromEnum(b.kind))
                     return @intFromEnum(a.kind) < @intFromEnum(b.kind);
                 return std.mem.lessThan(u8, a.name, b.name);
@@ -1006,6 +1020,7 @@ fn sortAssetEntries(state: *EditorState) void {
         }.f),
         .kind_desc => std.sort.heap(AssetEntry, state.asset_entries.items, {}, struct {
             fn f(_: void, a: AssetEntry, b: AssetEntry) bool {
+                if (a.is_directory != b.is_directory) return a.is_directory;
                 if (@intFromEnum(a.kind) != @intFromEnum(b.kind))
                     return @intFromEnum(a.kind) > @intFromEnum(b.kind);
                 return std.mem.lessThan(u8, a.name, b.name);
@@ -1113,11 +1128,12 @@ fn setSelectedAssetDirectory(state: *EditorState, path: []const u8) void {
 
 fn assetVisibleInDirectory(state: *const EditorState, entry: AssetEntry) bool {
     const selected_dir = selectedDirectory(state);
+    const parent_dir = directoryPath(entry.display_path);
+    // Show only direct children of the selected directory (Godot/Unity-style).
     if (std.mem.eql(u8, selected_dir, "/")) {
-        return true;
+        return parent_dir.len == 0;
     }
-    const directory = directoryPath(entry.display_path);
-    return std.mem.eql(u8, selected_dir, directory);
+    return std.mem.eql(u8, selected_dir, parent_dir);
 }
 
 fn directoryPath(path: []const u8) []const u8 {
@@ -1907,6 +1923,61 @@ fn importAssetsFromFinder(state: *EditorState, layer_context: *engine.core.Layer
     if (imported > 0) {
         refreshAssetBrowser(state, layer_context) catch {};
     }
+}
+
+fn importFolderFromFinder(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+    const allocator = state.allocator orelse return;
+
+    // Build destination directory path
+    const root_path = assetBrowserRootPath(state);
+    const current_dir = selectedDirectory(state);
+    var dest_dir_buf: [512]u8 = undefined;
+    const dest_dir = if (std.mem.eql(u8, current_dir, "/"))
+        std.fmt.bufPrint(&dest_dir_buf, "{s}", .{root_path}) catch return
+    else
+        std.fmt.bufPrint(&dest_dir_buf, "{s}{s}", .{ root_path, current_dir }) catch return;
+
+    // Use osascript to open a macOS folder picker dialog
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{
+            "/usr/bin/osascript",
+            "-e",
+            "set chosenFolder to choose folder with prompt \"Import Folder\"",
+            "-e",
+            "return POSIX path of chosenFolder",
+        },
+    }) catch return;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    if (result.term.Exited != 0) return; // User cancelled or error
+
+    const trimmed = std.mem.trim(u8, result.stdout, " \t\r\n");
+    if (trimmed.len == 0) return;
+
+    // Strip trailing slash from source
+    const source = if (trimmed.len > 1 and trimmed[trimmed.len - 1] == '/')
+        trimmed[0 .. trimmed.len - 1]
+    else
+        trimmed;
+
+    // Extract folder name from source path
+    const folder_name = if (std.mem.lastIndexOfScalar(u8, source, '/')) |idx| source[idx + 1 ..] else source;
+    if (folder_name.len == 0) return;
+
+    // Build destination: dest_dir/folder_name
+    var dest_path_buf: [768]u8 = undefined;
+    const dest_path = std.fmt.bufPrint(&dest_path_buf, "{s}/{s}", .{ dest_dir, folder_name }) catch return;
+
+    // Recursively copy using /bin/cp -R
+    var cp = std.process.Child.init(
+        &.{ "/bin/cp", "-R", source, dest_path },
+        allocator,
+    );
+    _ = cp.spawnAndWait() catch return;
+
+    refreshAssetBrowser(state, layer_context) catch {};
 }
 
 fn copySelectedAssetsToClipboard(state: *EditorState, is_cut: bool) void {
