@@ -551,7 +551,7 @@ pub const Spacing = struct {
     pub const mesh_edit_wire_thickness_default: f32 = 1.0;
 
     // ── Viewport playback overlay ────────────────────────────────────────────
-    pub const playback_overlay_width: f32 = 108.0;
+    pub const playback_overlay_width: f32 = 140.0;
     pub const playback_overlay_min_margin: f32 = 18.0;
     pub const playback_icon_size: f32 = 12.0;
     pub const playback_icon_button_padding: [2]f32 = .{ 5.0, 3.0 };

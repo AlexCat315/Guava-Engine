@@ -220,7 +220,7 @@ fn buildGameWorker(state: *EditorState) void {
     }
 }
 
-fn startLaunchGame(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+pub fn startLaunchGame(state: *EditorState, layer_context: *engine.core.LayerContext) void {
     if (state.launch_game_status == .building or state.launch_game_status == .launching) return;
 
     // Auto-save scene before launching
@@ -271,24 +271,35 @@ fn launchGameWorker(state: *EditorState) void {
     // Step 2: Launch the player as a separate process
     state.launch_game_status = .launching;
     const scene_path = @import("../core/state.zig").autosave_path;
-    var child = std.process.Child.init(.{
+    const launch_result = std.process.Child.run(.{
         .allocator = std.heap.page_allocator,
         .argv = &.{ "zig-out/bin/guava-player", "run", "--scene", scene_path },
-    }, std.heap.page_allocator);
-    child.spawn() catch {
+        .max_output_bytes = 1024 * 1024,
+    }) catch {
         state.launch_game_status = .failed;
         const msg = "Failed to spawn guava-player process";
         @memcpy(state.launch_game_output[0..msg.len], msg);
         state.launch_game_output_len = msg.len;
         return;
     };
+    defer std.heap.page_allocator.free(launch_result.stdout);
+    defer std.heap.page_allocator.free(launch_result.stderr);
 
-    state.launch_game_status = .running;
-
-    // Wait for the player to exit (non-blocking from the editor's perspective since we're in a worker thread)
-    _ = child.wait() catch {
-        state.launch_game_status = .failed;
-        return;
-    };
+    switch (launch_result.term) {
+        .Exited => |code| {
+            if (code != 0) {
+                state.launch_game_status = .failed;
+                const output = if (launch_result.stderr.len > 0) launch_result.stderr else launch_result.stdout;
+                const copy_len = @min(output.len, state.launch_game_output.len);
+                @memcpy(state.launch_game_output[0..copy_len], output[0..copy_len]);
+                state.launch_game_output_len = copy_len;
+                return;
+            }
+        },
+        else => {
+            state.launch_game_status = .failed;
+            return;
+        },
+    }
     state.launch_game_status = .idle;
 }

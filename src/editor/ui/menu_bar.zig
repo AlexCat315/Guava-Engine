@@ -44,8 +44,21 @@ pub fn drawMenuBar(state: *EditorState, layer_context: *engine.core.LayerContext
         if (gui.menuItem(state.text(.save_scene), "Ctrl+S", false, true)) {
             history.saveScene(state, layer_context);
         }
-        if (gui.menuItem(state.text(.load_scene), "Ctrl+O", false, true)) {
-            try history.loadScene(state, layer_context);
+        if (gui.beginMenu(state.text(.load_scene))) {
+            defer gui.endMenu();
+            // List all .guava_scene files from the asset browser
+            var scene_count: usize = 0;
+            for (state.asset_entries.items) |entry| {
+                if (entry.kind == .scene) {
+                    scene_count += 1;
+                    if (gui.menuItem(entry.display_path, null, false, true)) {
+                        try history.loadScenePath(state, layer_context, entry.path);
+                    }
+                }
+            }
+            if (scene_count == 0) {
+                _ = gui.menuItem(state.text(.no_asset_selected), null, false, false);
+            }
         }
         gui.separator();
         const is_building = state.build_game_status == .building;

@@ -25,6 +25,7 @@ const ai_chat = @import("panels/ai/ai_chat.zig");
 const ui_icons = @import("icons.zig");
 const layout = @import("layout.zig");
 const playback_session = @import("../core/playback_session.zig");
+const toolbar = @import("toolbar.zig");
 const viewport_log = std.log.scoped(.viewport_input);
 const ViewportShadingMode = state_mod.ViewportShadingMode;
 
@@ -2342,6 +2343,40 @@ fn drawViewportPlaybackOverlayWindow(state: *EditorState, layer_context: *engine
         stepPlaybackPalette(),
     )) {
         try playback_session.step(state, layer_context);
+    }
+    if (gui.isItemHovered() or (state.manipulation_started_from_ui and input.isMouseDown(.left))) state.viewport_overlay_hovered = true;
+
+    // --- Launch Game button ---
+    gui.sameLine();
+    drawToolbarDivider(gui.frameHeight());
+    gui.sameLine();
+
+    const is_launch_busy = state.launch_game_status == .building or state.launch_game_status == .launching;
+    const launch_palette: ui_icons.ButtonPalette = switch (state.launch_game_status) {
+        .building, .launching => activePlayPalette(),
+        .running => activePausePalette(),
+        .failed, .idle => idlePlaybackPalette(),
+    };
+    if (try drawPlaybackToolbarIconButton(
+        state,
+        layer_context,
+        "viewport_launch_game",
+        ui_icons.paths.toolbar.launch,
+        launch_palette,
+    )) {
+        if (!is_launch_busy) {
+            toolbar.startLaunchGame(state, layer_context);
+        }
+    }
+    if (gui.isItemHovered()) {
+        const launch_tip = switch (state.launch_game_status) {
+            .building => state.text(.launch_game_building),
+            .launching => state.text(.launch_game_launching),
+            .running => state.text(.launch_game_running),
+            .failed => state.text(.launch_game_failed),
+            .idle => state.text(.launch_game_tooltip),
+        };
+        gui.setTooltip(launch_tip);
     }
     if (gui.isItemHovered() or (state.manipulation_started_from_ui and input.isMouseDown(.left))) state.viewport_overlay_hovered = true;
 }
