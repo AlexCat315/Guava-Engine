@@ -201,6 +201,7 @@ pub const LeftPanelTab = enum {
 };
 
 pub const BottomWorkspaceTab = enum {
+    content_browser,
     console,
     command_timeline,
     ai_assistant,
@@ -654,9 +655,9 @@ pub const EditorState = struct {
     material_thumbnail_queue: std.ArrayList([]const u8) = .empty,
 
     left_panel_tab: LeftPanelTab = .scene,
-    bottom_workspace_tab: BottomWorkspaceTab = .console,
-    bottom_drawer_open: bool = false,
-    bottom_drawer_height: f32 = 260.0,
+    bottom_workspace_tab: BottomWorkspaceTab = .content_browser,
+    bottom_drawer_open: bool = true,
+    bottom_drawer_height: f32 = 380.0,
     shell_show_left_sidebar: bool = true,
     shell_show_right_sidebar: bool = true,
     shell_left_sidebar_width: f32 = 320.0,

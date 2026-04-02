@@ -103,6 +103,7 @@ pub fn drawBottomDrawer(state: *EditorState, layer_context: *engine.core.LayerCo
         }
 
         switch (state.bottom_workspace_tab) {
+            .content_browser => try drawProjectPanel(state, layer_context),
             .console => try console.drawConsolePanel(state),
             .command_timeline => try command_timeline.drawCommandTimelinePanel(state, layer_context),
             .ai_assistant => try drawAiAssistantTab(state),
@@ -172,6 +173,7 @@ fn drawDrawerTabBar(state: *EditorState, layer_context: *engine.core.LayerContex
     const header_padding_x: f32 = 12.0;
     const button_gap: f32 = 6.0;
     const tab_labels = [_]struct { tab: @import("../core/state.zig").BottomWorkspaceTab, label: []const u8 }{
+        .{ .tab = .content_browser, .label = "Content" },
         .{ .tab = .console, .label = "Console" },
         .{ .tab = .command_timeline, .label = "Timeline" },
     };
@@ -179,7 +181,8 @@ fn drawDrawerTabBar(state: *EditorState, layer_context: *engine.core.LayerContex
         width - header_padding_x * 2.0,
         180.0,
     );
-    const tab_width = std.math.clamp((available_tabs_width - button_gap * 1.0) / 2.0, 56.0, 120.0);
+    const tab_count: f32 = @floatFromInt(tab_labels.len);
+    const tab_width = std.math.clamp((available_tabs_width - button_gap * (tab_count - 1.0)) / tab_count, 56.0, 120.0);
     const button_y = item_min[1] + (tab_bar_height - button_height) * 0.5;
     const tabs_start_x = item_min[0] + header_padding_x;
 
@@ -438,28 +441,39 @@ fn drawProjectPanel(state: *EditorState, layer_context: *engine.core.LayerContex
 
         gui.tableNextRow();
 
-        // Column 1: Folder tree
+        // Column 1: Folder tree with subtle background
         gui.tableNextColumn();
-        _ = gui.beginChild("project_folders_tree", 0.0, 0.0, false);
-        defer gui.endChild();
-        try drawFolderTree(state, layer_context);
-
-        // Column 2: Grid/List view
-        gui.tableNextColumn();
-        _ = gui.beginChild("project_assets_grid", 0.0, 0.0, false);
-        defer gui.endChild();
-        try drawAssetGrid(state, layer_context);
-
-        // Column 3: Inspector (only when wide + asset selected)
-        if (has_selection) {
-            gui.tableNextColumn();
-            gui.pushStyleColor(.child_bg, .{ 0.09, 0.10, 0.12, 1.0 });
-            _ = gui.beginChild("project_inspector", 0.0, 0.0, true);
+        {
+            gui.pushStyleColor(.child_bg, .{ 0.08, 0.08, 0.10, 1.0 });
+            _ = gui.beginChild("project_folders_tree", 0.0, 0.0, false);
             defer {
                 gui.endChild();
                 gui.popStyleColor(1);
             }
-            try drawInspectorPanel(state, layer_context);
+            gui.spacing();
+            try drawFolderTree(state, layer_context);
+        }
+
+        // Column 2: Grid/List view
+        gui.tableNextColumn();
+        {
+            _ = gui.beginChild("project_assets_grid", 0.0, 0.0, false);
+            defer gui.endChild();
+            try drawAssetGrid(state, layer_context);
+        }
+
+        // Column 3: Inspector (only when wide + asset selected)
+        if (has_selection) {
+            gui.tableNextColumn();
+            {
+                gui.pushStyleColor(.child_bg, .{ 0.09, 0.10, 0.12, 1.0 });
+                _ = gui.beginChild("project_inspector", 0.0, 0.0, true);
+                defer {
+                    gui.endChild();
+                    gui.popStyleColor(1);
+                }
+                try drawInspectorPanel(state, layer_context);
+            }
         }
     }
 }
@@ -677,29 +691,40 @@ fn drawAssetCard(
 ) !void {
     var child_id_buffer: [64]u8 = undefined;
     const child_id = std.fmt.bufPrint(&child_id_buffer, "asset_card_{d}", .{index}) catch "card";
-    const card_padding: f32 = 4.0;
-    const card_width = tile_size + card_padding * 2;
-    const label_height: f32 = 32.0;
-    const card_height = tile_size + label_height + card_padding;
+    const card_width = tile_size + 8.0;
+    const label_height: f32 = 34.0;
+    const card_height = tile_size + label_height;
     const selected = isAssetSelected(state, index);
 
-    // Card background
+    // Minimal card background: transparent until hovered/selected
     if (selected) {
-        gui.pushStyleColor(.child_bg, .{ 0.14, 0.24, 0.16, 1.0 });
-    } else if (entry.is_directory) {
-        gui.pushStyleColor(.child_bg, .{ 0.12, 0.11, 0.09, 1.0 });
+        gui.pushStyleColor(.child_bg, .{ 0.16, 0.28, 0.18, 1.0 });
     } else {
-        gui.pushStyleColor(.child_bg, theme.Palette.content_browser.thumbnail_bg);
+        gui.pushStyleColor(.child_bg, .{ 0.0, 0.0, 0.0, 0.0 });
     }
-    gui.pushStyleColor(.border, if (selected) [4]f32{ 0.3, 0.7, 0.4, 0.8 } else [4]f32{ 0.15, 0.15, 0.15, 0.3 });
+    gui.pushStyleColor(.border, .{ 0.0, 0.0, 0.0, 0.0 });
     _ = gui.beginChild(child_id, card_width, card_height, true);
     defer {
         gui.endChild();
         gui.popStyleColor(2);
     }
 
+    // Hover background
+    const win_hovered = gui.isWindowHovered();
+    if (win_hovered and !selected) {
+        const draw_list = gui.getWindowDrawList();
+        const wmin = gui.windowPos();
+        draw_list.addRectFilled(
+            wmin,
+            .{ wmin[0] + card_width, wmin[1] + card_height },
+            gui.getColorU32(.{ 0.22, 0.22, 0.25, 0.5 }),
+            4.0,
+            0,
+        );
+    }
+
     // ── Icon / thumbnail ──
-    const icon_size = tile_size * 0.6;
+    const icon_size = tile_size * 0.65;
     const icon_path = assetIconPath(entry.kind);
     const icon_tint = if (selected) [4]u8{ 34, 197, 94, 255 } else assetIconTint(entry.kind);
     const icon_texture = try ui_icons.ensureTintedIconTexture(
@@ -715,10 +740,15 @@ fn drawAssetCard(
         icon_texture;
 
     const x_center = @max((card_width - icon_size) * 0.5, 0.0);
-    gui.setCursorPos(.{ x_center, card_padding });
+    gui.setCursorPos(.{ x_center, 2.0 });
 
     var button_id_buffer: [64]u8 = undefined;
     const button_id = std.fmt.bufPrint(&button_id_buffer, "asset_thumb_{d}", .{index}) catch "thumb";
+
+    // Transparent image button background
+    gui.pushStyleColor(.button, .{ 0.0, 0.0, 0.0, 0.0 });
+    gui.pushStyleColor(.button_hovered, .{ 0.3, 0.3, 0.35, 0.3 });
+    gui.pushStyleColor(.button_active, .{ 0.2, 0.2, 0.25, 0.4 });
     if (gui.imageButton(
         button_id,
         card_texture,
@@ -729,7 +759,9 @@ fn drawAssetCard(
     )) {
         handleAssetSelection(state, index);
     }
-    // Double-click on directory: navigate into it
+    gui.popStyleColor(3);
+
+    // Double-click on directory
     if (entry.is_directory and gui.isItemHovered() and gui.isMouseDoubleClicked(.left)) {
         setSelectedAssetDirectory(state, entry.display_path);
     }
@@ -744,8 +776,8 @@ fn drawAssetCard(
     drawAssetDragSource(state, entry, index, card_texture);
     try drawAssetContextMenu(state, layer_context, entry, index);
 
-    // ── Label ──
-    const label_y = tile_size + card_padding;
+    // ── Centered label ──
+    const label_y = tile_size + 2.0;
     if (state.asset_rename_index == index) {
         gui.setCursorPos(.{ 2.0, label_y });
         gui.setNextItemWidth(card_width - 4.0);
@@ -762,7 +794,7 @@ fn drawAssetCard(
         }
     } else {
         gui.setCursorPos(.{ 2.0, label_y });
-        gui.pushStyleColor(.text, if (entry.is_directory) [4]f32{ 0.95, 0.88, 0.5, 1.0 } else [4]f32{ 0.85, 0.85, 0.85, 1.0 });
+        gui.pushStyleColor(.text, if (selected) [4]f32{ 0.5, 1.0, 0.6, 1.0 } else if (entry.is_directory) [4]f32{ 0.90, 0.85, 0.55, 1.0 } else [4]f32{ 0.82, 0.82, 0.82, 1.0 });
         gui.textWrapped(entry.name);
         gui.popStyleColor(1);
     }
@@ -1672,6 +1704,10 @@ fn rebuildAssetDirectories(state: *EditorState) !void {
     try appendDirectoryIfMissing(state, "/");
     for (state.asset_entries.items) |entry| {
         try addDirectoryPath(state, directoryPath(entry.display_path));
+        // Also add directories themselves (not just parent paths)
+        if (entry.is_directory) {
+            try addDirectoryPath(state, entry.display_path);
+        }
     }
 
     std.sort.heap([]u8, state.asset_directories.items, {}, lessThanDirectory);

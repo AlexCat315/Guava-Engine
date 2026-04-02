@@ -1612,10 +1612,9 @@ pub fn drawEditorUi(
     try menu_bar.resolvePendingTopBarDrag(state, layer_context);
 }
 
-/// Left sidebar: Scene Hierarchy (with Place Actors tab) + Project Browser
+/// Left sidebar: Scene Hierarchy (with Place Actors tab)
 fn drawLeftSidebar(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     try scene_hierarchy.drawSceneWindow(state, layer_context);
-    try content_browser.drawProjectBrowserWindow(state, layer_context);
 }
 
 /// Right sidebar: Inspector / Details
