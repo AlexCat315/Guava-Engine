@@ -381,6 +381,68 @@ extern void guava_wasm_host_set_game_state(void *userdata, uint32_t state);
 extern float guava_wasm_host_get_time_scale(void *userdata);
 extern void guava_wasm_host_set_time_scale(void *userdata, float scale);
 
+/* ── Input / Transform / Spawn ─────────────────────── */
+extern uint32_t guava_wasm_host_is_key_down(void *userdata, uint32_t key_code);
+extern uint32_t guava_wasm_host_was_key_pressed(void *userdata, uint32_t key_code);
+extern uint32_t guava_wasm_host_was_key_released(void *userdata, uint32_t key_code);
+extern uint32_t guava_wasm_host_is_mouse_button_down(void *userdata, uint32_t button);
+extern float guava_wasm_host_get_delta_time(void *userdata);
+extern uint32_t guava_wasm_host_get_local_translation(void *userdata, uint32_t entity_id, float *out_ptr);
+extern uint32_t guava_wasm_host_get_local_rotation(void *userdata, uint32_t entity_id, float *out_ptr);
+extern uint32_t guava_wasm_host_spawn_entity(void *userdata, const uint8_t *name_ptr, uint32_t name_len);
+extern void guava_wasm_host_destroy_entity(void *userdata, uint32_t entity_id);
+extern uint32_t guava_wasm_host_get_local_scale(void *userdata, uint32_t entity_id, float *out_ptr);
+
+static uint32_t
+host_is_key_down(wasm_exec_env_t exec_env, uint32_t key_code) {
+    return guava_wasm_host_is_key_down(guava_get_userdata(exec_env), key_code);
+}
+
+static uint32_t
+host_was_key_pressed(wasm_exec_env_t exec_env, uint32_t key_code) {
+    return guava_wasm_host_was_key_pressed(guava_get_userdata(exec_env), key_code);
+}
+
+static uint32_t
+host_was_key_released(wasm_exec_env_t exec_env, uint32_t key_code) {
+    return guava_wasm_host_was_key_released(guava_get_userdata(exec_env), key_code);
+}
+
+static uint32_t
+host_is_mouse_button_down(wasm_exec_env_t exec_env, uint32_t button) {
+    return guava_wasm_host_is_mouse_button_down(guava_get_userdata(exec_env), button);
+}
+
+static float
+host_get_delta_time(wasm_exec_env_t exec_env) {
+    return guava_wasm_host_get_delta_time(guava_get_userdata(exec_env));
+}
+
+static uint32_t
+host_get_local_translation(wasm_exec_env_t exec_env, uint32_t entity_id, float *out_ptr) {
+    return guava_wasm_host_get_local_translation(guava_get_userdata(exec_env), entity_id, out_ptr);
+}
+
+static uint32_t
+host_get_local_rotation(wasm_exec_env_t exec_env, uint32_t entity_id, float *out_ptr) {
+    return guava_wasm_host_get_local_rotation(guava_get_userdata(exec_env), entity_id, out_ptr);
+}
+
+static uint32_t
+host_get_local_scale(wasm_exec_env_t exec_env, uint32_t entity_id, float *out_ptr) {
+    return guava_wasm_host_get_local_scale(guava_get_userdata(exec_env), entity_id, out_ptr);
+}
+
+static uint32_t
+host_spawn_entity(wasm_exec_env_t exec_env, const uint8_t *name_ptr, uint32_t name_len) {
+    return guava_wasm_host_spawn_entity(guava_get_userdata(exec_env), name_ptr, name_len);
+}
+
+static void
+host_destroy_entity(wasm_exec_env_t exec_env, uint32_t entity_id) {
+    guava_wasm_host_destroy_entity(guava_get_userdata(exec_env), entity_id);
+}
+
 static uint32_t
 host_audio_play(wasm_exec_env_t exec_env, uint32_t entity_id) {
     return guava_wasm_host_audio_play(guava_get_userdata(exec_env), entity_id);
@@ -458,7 +520,7 @@ host_set_time_scale(wasm_exec_env_t exec_env, float scale) {
     guava_wasm_host_set_time_scale(guava_get_userdata(exec_env), scale);
 }
 
-#define GUAVA_NATIVE_SYMBOL_COUNT 45
+#define GUAVA_NATIVE_SYMBOL_COUNT 55
 
 static NativeSymbol guava_native_symbols[GUAVA_NATIVE_SYMBOL_COUNT] = {
     EXPORT_WASM_API_WITH_SIG(host_get_entity_id, "()i"),
@@ -506,6 +568,16 @@ static NativeSymbol guava_native_symbols[GUAVA_NATIVE_SYMBOL_COUNT] = {
     EXPORT_WASM_API_WITH_SIG(host_set_game_state, "(i)"),
     EXPORT_WASM_API_WITH_SIG(host_get_time_scale, "()F"),
     EXPORT_WASM_API_WITH_SIG(host_set_time_scale, "(f)"),
+    EXPORT_WASM_API_WITH_SIG(host_is_key_down, "(i)i"),
+    EXPORT_WASM_API_WITH_SIG(host_was_key_pressed, "(i)i"),
+    EXPORT_WASM_API_WITH_SIG(host_was_key_released, "(i)i"),
+    EXPORT_WASM_API_WITH_SIG(host_is_mouse_button_down, "(i)i"),
+    EXPORT_WASM_API_WITH_SIG(host_get_delta_time, "()F"),
+    EXPORT_WASM_API_WITH_SIG(host_get_local_translation, "(i*)i"),
+    EXPORT_WASM_API_WITH_SIG(host_get_local_rotation, "(i*)i"),
+    EXPORT_WASM_API_WITH_SIG(host_get_local_scale, "(i*)i"),
+    EXPORT_WASM_API_WITH_SIG(host_spawn_entity, "(*~)i"),
+    EXPORT_WASM_API_WITH_SIG(host_destroy_entity, "(i)"),
 };
 
 NativeSymbol *

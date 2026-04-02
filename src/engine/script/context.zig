@@ -208,7 +208,7 @@ pub const ScriptContext = struct {
 
     /// 销毁实体
     pub fn destroyEntity(self: *ScriptContext, target: EntityId) void {
-        self.world.destroyEntity(target);
+        _ = self.world.destroyEntity(target);
     }
 
     /// 打印日志

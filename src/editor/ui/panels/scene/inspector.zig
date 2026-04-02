@@ -1261,10 +1261,16 @@ fn drawAddComponentControls(
     selected: engine.scene.EntityId,
     entity: *engine.scene.Entity,
 ) !bool {
-    const has_missing_component = entity.mesh == null or entity.material == null or entity.camera == null or entity.light == null or entity.vfx == null or entity.audio_source == null or entity.audio_listener == null;
+    const has_missing_component = entity.mesh == null or entity.material == null or entity.camera == null or entity.light == null or entity.vfx == null or entity.audio_source == null or entity.audio_listener == null or entity.script == null;
     if (!has_missing_component) {
         gui.text(state.text(.none));
         return false;
+    }
+
+    if (entity.script == null and gui.menuItem("Script", null, false, true)) {
+        entity.script = .{};
+        try history.captureSnapshot(state, layer_context);
+        return true;
     }
 
     if (entity.mesh == null) {

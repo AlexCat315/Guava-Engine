@@ -135,6 +135,16 @@ fn buildBehaviorWrapperSourceAlloc(allocator: std.mem.Allocator, source: []const
         \\extern "env" fn host_set_local_scale(entity_id: u32, sx: f32, sy: f32, sz: f32) u32;
         \\extern "env" fn host_set_visible(entity_id: u32, visible: u32) u32;
         \\extern "env" fn host_report_panic(ptr: [*]const u8, len: u32) void;
+        \\extern "env" fn host_is_key_down(key_code: u32) u32;
+        \\extern "env" fn host_was_key_pressed(key_code: u32) u32;
+        \\extern "env" fn host_was_key_released(key_code: u32) u32;
+        \\extern "env" fn host_is_mouse_button_down(button: u32) u32;
+        \\extern "env" fn host_get_delta_time() f32;
+        \\extern "env" fn host_get_local_translation(entity_id: u32, out_ptr: [*]f32) u32;
+        \\extern "env" fn host_get_local_rotation(entity_id: u32, out_ptr: [*]f32) u32;
+        \\extern "env" fn host_get_local_scale(entity_id: u32, out_ptr: [*]f32) u32;
+        \\extern "env" fn host_spawn_entity(name_ptr: [*]const u8, name_len: u32) u32;
+        \\extern "env" fn host_destroy_entity(entity_id: u32) void;
         \\
         \\pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, _: ?usize) noreturn {
         \\    host_report_panic(msg.ptr, @as(u32, @intCast(msg.len)));
@@ -207,6 +217,84 @@ fn buildBehaviorWrapperSourceAlloc(allocator: std.mem.Allocator, source: []const
         \\
         \\    pub fn setEntityVisible(entity_id: u32, visible: bool) bool {
         \\        return host_set_visible(entity_id, if (visible) 1 else 0) != 0;
+        \\    }
+        \\
+        \\    // ── Input ──
+        \\    pub const Key = struct {
+        \\        pub const w: u32 = 0;
+        \\        pub const a: u32 = 1;
+        \\        pub const s: u32 = 2;
+        \\        pub const d: u32 = 3;
+        \\        pub const q: u32 = 8;
+        \\        pub const e: u32 = 12;
+        \\        pub const space: u32 = 30;
+        \\        pub const shift: u32 = 27;
+        \\        pub const escape: u32 = 31;
+        \\        pub const up: u32 = 32;
+        \\        pub const down: u32 = 33;
+        \\        pub const left: u32 = 34;
+        \\        pub const right: u32 = 35;
+        \\    };
+        \\
+        \\    pub fn isKeyDown(key_code: u32) bool {
+        \\        return host_is_key_down(key_code) != 0;
+        \\    }
+        \\
+        \\    pub fn wasKeyPressed(key_code: u32) bool {
+        \\        return host_was_key_pressed(key_code) != 0;
+        \\    }
+        \\
+        \\    pub fn wasKeyReleased(key_code: u32) bool {
+        \\        return host_was_key_released(key_code) != 0;
+        \\    }
+        \\
+        \\    pub fn isMouseButtonDown(button: u32) bool {
+        \\        return host_is_mouse_button_down(button) != 0;
+        \\    }
+        \\
+        \\    pub fn getDeltaTime() f32 {
+        \\        return host_get_delta_time();
+        \\    }
+        \\
+        \\    // ── Transform Getters ──
+        \\    pub fn getPosition() [3]f32 {
+        \\        return getEntityPosition(entityId());
+        \\    }
+        \\
+        \\    pub fn getEntityPosition(entity_id: u32) [3]f32 {
+        \\        var result: [3]f32 = .{ 0, 0, 0 };
+        \\        _ = host_get_local_translation(entity_id, &result);
+        \\        return result;
+        \\    }
+        \\
+        \\    pub fn getRotation() [4]f32 {
+        \\        return getEntityRotation(entityId());
+        \\    }
+        \\
+        \\    pub fn getEntityRotation(entity_id: u32) [4]f32 {
+        \\        var result: [4]f32 = .{ 0, 0, 0, 1 };
+        \\        _ = host_get_local_rotation(entity_id, &result);
+        \\        return result;
+        \\    }
+        \\
+        \\    pub fn getScale() [3]f32 {
+        \\        return getEntityScale(entityId());
+        \\    }
+        \\
+        \\    pub fn getEntityScale(entity_id: u32) [3]f32 {
+        \\        var result: [3]f32 = .{ 1, 1, 1 };
+        \\        _ = host_get_local_scale(entity_id, &result);
+        \\        return result;
+        \\    }
+        \\
+        \\    // ── Entity Spawn/Destroy ──
+        \\    pub fn spawnEntity(name: []const u8) ?u32 {
+        \\        const id = host_spawn_entity(name.ptr, @as(u32, @intCast(name.len)));
+        \\        return if (id == 0) null else id;
+        \\    }
+        \\
+        \\    pub fn destroyEntity(entity_id: u32) void {
+        \\        host_destroy_entity(entity_id);
         \\    }
         \\};
         \\
@@ -401,6 +489,16 @@ fn buildEditorUtilityWrapperSourceAlloc(allocator: std.mem.Allocator, source: []
         \\extern "env" fn host_set_local_scale(entity_id: u32, sx: f32, sy: f32, sz: f32) u32;
         \\extern "env" fn host_set_visible(entity_id: u32, visible: u32) u32;
         \\extern "env" fn host_report_panic(ptr: [*]const u8, len: u32) void;
+        \\extern "env" fn host_is_key_down(key_code: u32) u32;
+        \\extern "env" fn host_was_key_pressed(key_code: u32) u32;
+        \\extern "env" fn host_was_key_released(key_code: u32) u32;
+        \\extern "env" fn host_is_mouse_button_down(button: u32) u32;
+        \\extern "env" fn host_get_delta_time() f32;
+        \\extern "env" fn host_get_local_translation(entity_id: u32, out_ptr: [*]f32) u32;
+        \\extern "env" fn host_get_local_rotation(entity_id: u32, out_ptr: [*]f32) u32;
+        \\extern "env" fn host_get_local_scale(entity_id: u32, out_ptr: [*]f32) u32;
+        \\extern "env" fn host_spawn_entity(name_ptr: [*]const u8, name_len: u32) u32;
+        \\extern "env" fn host_destroy_entity(entity_id: u32) void;
         \\extern "env" fn host_get_selection_count() u32;
         \\extern "env" fn host_get_selection_entity(index: u32) u32;
         \\extern "env" fn host_select_entity(entity_id: u32, additive: u32) void;
@@ -486,6 +584,84 @@ fn buildEditorUtilityWrapperSourceAlloc(allocator: std.mem.Allocator, source: []
         \\
         \\    pub fn setEntityVisible(entity_id: u32, visible: bool) bool {
         \\        return host_set_visible(entity_id, if (visible) 1 else 0) != 0;
+        \\    }
+        \\
+        \\    // ── Input ──
+        \\    pub const Key = struct {
+        \\        pub const w: u32 = 0;
+        \\        pub const a: u32 = 1;
+        \\        pub const s: u32 = 2;
+        \\        pub const d: u32 = 3;
+        \\        pub const q: u32 = 8;
+        \\        pub const e: u32 = 12;
+        \\        pub const space: u32 = 30;
+        \\        pub const shift: u32 = 27;
+        \\        pub const escape: u32 = 31;
+        \\        pub const up: u32 = 32;
+        \\        pub const down: u32 = 33;
+        \\        pub const left: u32 = 34;
+        \\        pub const right: u32 = 35;
+        \\    };
+        \\
+        \\    pub fn isKeyDown(key_code: u32) bool {
+        \\        return host_is_key_down(key_code) != 0;
+        \\    }
+        \\
+        \\    pub fn wasKeyPressed(key_code: u32) bool {
+        \\        return host_was_key_pressed(key_code) != 0;
+        \\    }
+        \\
+        \\    pub fn wasKeyReleased(key_code: u32) bool {
+        \\        return host_was_key_released(key_code) != 0;
+        \\    }
+        \\
+        \\    pub fn isMouseButtonDown(button: u32) bool {
+        \\        return host_is_mouse_button_down(button) != 0;
+        \\    }
+        \\
+        \\    pub fn getDeltaTime() f32 {
+        \\        return host_get_delta_time();
+        \\    }
+        \\
+        \\    // ── Transform Getters ──
+        \\    pub fn getPosition() [3]f32 {
+        \\        return getEntityPosition(entityId());
+        \\    }
+        \\
+        \\    pub fn getEntityPosition(entity_id: u32) [3]f32 {
+        \\        var result: [3]f32 = .{ 0, 0, 0 };
+        \\        _ = host_get_local_translation(entity_id, &result);
+        \\        return result;
+        \\    }
+        \\
+        \\    pub fn getRotation() [4]f32 {
+        \\        return getEntityRotation(entityId());
+        \\    }
+        \\
+        \\    pub fn getEntityRotation(entity_id: u32) [4]f32 {
+        \\        var result: [4]f32 = .{ 0, 0, 0, 1 };
+        \\        _ = host_get_local_rotation(entity_id, &result);
+        \\        return result;
+        \\    }
+        \\
+        \\    pub fn getScale() [3]f32 {
+        \\        return getEntityScale(entityId());
+        \\    }
+        \\
+        \\    pub fn getEntityScale(entity_id: u32) [3]f32 {
+        \\        var result: [3]f32 = .{ 1, 1, 1 };
+        \\        _ = host_get_local_scale(entity_id, &result);
+        \\        return result;
+        \\    }
+        \\
+        \\    // ── Entity Spawn/Destroy ──
+        \\    pub fn spawnEntity(name: []const u8) ?u32 {
+        \\        const id = host_spawn_entity(name.ptr, @as(u32, @intCast(name.len)));
+        \\        return if (id == 0) null else id;
+        \\    }
+        \\
+        \\    pub fn destroyEntity(entity_id: u32) void {
+        \\        host_destroy_entity(entity_id);
         \\    }
         \\};
         \\

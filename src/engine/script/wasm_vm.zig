@@ -6,6 +6,7 @@ const context = @import("./context.zig");
 const parameter_reflection = @import("./parameter_reflection.zig");
 const types = @import("./types.zig");
 const vm_interface = @import("./vm_interface.zig");
+const input_mod = @import("../core/input.zig");
 
 const c = @cImport({
     @cInclude("wasm_export.h");
@@ -1153,6 +1154,99 @@ pub export fn guava_wasm_host_set_time_scale(userdata: ?*anyopaque, scale: f32) 
     if (ctx.time_scale_ptr) |ptr| {
         ptr.* = @max(0.0, @min(10.0, scale));
     }
+}
+
+// ── Input WASM API ──
+
+/// 检测指定按键是否正在按下（持续状态）
+pub export fn guava_wasm_host_is_key_down(userdata: ?*anyopaque, key_code: u32) u32 {
+    const ctx = activeContext(userdata) orelse return 0;
+    const input_state = ctx.input orelse return 0;
+    const key = std.meta.intToEnum(input_mod.Key, @as(u8, @intCast(key_code))) catch return 0;
+    return if (input_state.isKeyDown(key)) @as(u32, 1) else @as(u32, 0);
+}
+
+/// 检测指定按键是否在本帧刚被按下
+pub export fn guava_wasm_host_was_key_pressed(userdata: ?*anyopaque, key_code: u32) u32 {
+    const ctx = activeContext(userdata) orelse return 0;
+    const input_state = ctx.input orelse return 0;
+    const key = std.meta.intToEnum(input_mod.Key, @as(u8, @intCast(key_code))) catch return 0;
+    return if (input_state.wasKeyPressed(key)) @as(u32, 1) else @as(u32, 0);
+}
+
+/// 检测指定按键是否在本帧刚被释放
+pub export fn guava_wasm_host_was_key_released(userdata: ?*anyopaque, key_code: u32) u32 {
+    const ctx = activeContext(userdata) orelse return 0;
+    const input_state = ctx.input orelse return 0;
+    const key = std.meta.intToEnum(input_mod.Key, @as(u8, @intCast(key_code))) catch return 0;
+    return if (input_state.wasKeyReleased(key)) @as(u32, 1) else @as(u32, 0);
+}
+
+/// 检测鼠标按钮是否按下
+pub export fn guava_wasm_host_is_mouse_button_down(userdata: ?*anyopaque, button: u32) u32 {
+    const ctx = activeContext(userdata) orelse return 0;
+    const input_state = ctx.input orelse return 0;
+    const mb = std.meta.intToEnum(input_mod.MouseButton, @as(u8, @intCast(button))) catch return 0;
+    return if (input_state.isMouseDown(mb)) @as(u32, 1) else @as(u32, 0);
+}
+
+/// 获取帧 delta time
+pub export fn guava_wasm_host_get_delta_time(userdata: ?*anyopaque) f32 {
+    const ctx = activeContext(userdata) orelse return 0.0;
+    return ctx.delta_time;
+}
+
+// ── Transform Getter WASM API ──
+
+/// 获取实体的局部位移。将 3 个 f32 (x,y,z) 写入 out_ptr。成功返回 1。
+pub export fn guava_wasm_host_get_local_translation(userdata: ?*anyopaque, entity_id_raw: u32, out_ptr: [*]f32) u32 {
+    const ctx = activeContext(userdata) orelse return 0;
+    const entity_id: types.EntityId = @intCast(entity_id_raw);
+    const transform = resolveLocalTransform(ctx, entity_id) orelse return 0;
+    out_ptr[0] = transform.translation[0];
+    out_ptr[1] = transform.translation[1];
+    out_ptr[2] = transform.translation[2];
+    return 1;
+}
+
+/// 获取实体的局部旋转四元数。将 4 个 f32 (x,y,z,w) 写入 out_ptr。
+pub export fn guava_wasm_host_get_local_rotation(userdata: ?*anyopaque, entity_id_raw: u32, out_ptr: [*]f32) u32 {
+    const ctx = activeContext(userdata) orelse return 0;
+    const entity_id: types.EntityId = @intCast(entity_id_raw);
+    const transform = resolveLocalTransform(ctx, entity_id) orelse return 0;
+    out_ptr[0] = transform.rotation[0];
+    out_ptr[1] = transform.rotation[1];
+    out_ptr[2] = transform.rotation[2];
+    out_ptr[3] = transform.rotation[3];
+    return 1;
+}
+
+/// 获取实体的局部缩放。将 3 个 f32 (x,y,z) 写入 out_ptr。
+pub export fn guava_wasm_host_get_local_scale(userdata: ?*anyopaque, entity_id_raw: u32, out_ptr: [*]f32) u32 {
+    const ctx = activeContext(userdata) orelse return 0;
+    const entity_id: types.EntityId = @intCast(entity_id_raw);
+    const transform = resolveLocalTransform(ctx, entity_id) orelse return 0;
+    out_ptr[0] = transform.scale[0];
+    out_ptr[1] = transform.scale[1];
+    out_ptr[2] = transform.scale[2];
+    return 1;
+}
+
+// ── Entity Spawn/Destroy WASM API ──
+
+/// 创建一个新的空实体，作为脚本实体的子对象。返回新实体 ID（0 = 失败）。
+pub export fn guava_wasm_host_spawn_entity(userdata: ?*anyopaque, name_ptr: [*]const u8, name_len: u32) u32 {
+    const ctx = activeContext(userdata) orelse return 0;
+    const name = name_ptr[0..name_len];
+    const new_id = ctx.createChild(name) catch return 0;
+    return @intCast(new_id);
+}
+
+/// 销毁指定实体。
+pub export fn guava_wasm_host_destroy_entity(userdata: ?*anyopaque, entity_id_raw: u32) void {
+    const ctx = activeContext(userdata) orelse return;
+    const entity_id: types.EntityId = @intCast(entity_id_raw);
+    ctx.destroyEntity(entity_id);
 }
 
 fn castContext(comptime T: type, context_ptr: *anyopaque) *T {

@@ -21,6 +21,7 @@ pub const ScriptEditorState = struct {
     find_buffer: [256]u8 = [_]u8{0} ** 256,
     replace_buffer: [256]u8 = [_]u8{0} ** 256,
     show_find_panel: bool = false,
+    find_cursor: usize = 0,
     show_console: bool = true,
     console_output: std.ArrayList(u8),
     breakpoints: std.ArrayList(usize),
@@ -173,6 +174,9 @@ pub fn drawScriptEditorWindow(
 
     drawScriptToolbar(state, editor_state);
 
+    // Keyboard shortcuts (Cmd+S save, Cmd+F find)
+    handleKeyboardShortcuts(state, editor_state);
+
     gui.separator();
 
     const content_region = gui.contentRegionAvail();
@@ -273,54 +277,23 @@ fn drawScriptSourceArea(editor_state: *ScriptEditorState, height: f32) void {
         gui.separator();
     }
 
-    if (gui.beginChild("source_area", -1.0, height, true)) {
-        const line_count = countLines(editor_state.source_buffer.items);
-        var line_buf: [16]u8 = undefined;
+    // Ensure buffer has room for ImGui editing (null-terminated C string)
+    const content_len = editor_state.source_buffer.items.len;
+    const buffer_size = @max(content_len + 8192, 65536);
+    editor_state.source_buffer.resize(editor_state.allocator, buffer_size) catch return;
+    // Null-terminate at content boundary for ImGui
+    editor_state.source_buffer.items[content_len] = 0;
 
-        const line_num_width: f32 = if (editor_state.show_line_numbers) 40.0 else 0.0;
-        _ = line_num_width;
+    const changed = gui.inputTextMultiline("##script_source", editor_state.source_buffer.items, -1.0, height);
 
-        for (1..line_count + 1) |line_num| {
-            const is_breakpoint = editor_state.hasBreakpoint(line_num);
-            const is_current_debug = editor_state.current_debug_line != null and editor_state.current_debug_line.? == line_num;
-
-            if (editor_state.show_line_numbers) {
-                gui.beginGroup();
-                defer gui.endGroup();
-
-                const line_str = std.fmt.bufPrint(&line_buf, "{d: >4}", .{line_num}) catch "";
-                if (is_breakpoint) {
-                    gui.pushStyleColor(.text, .{ 1.0, 0.0, 0.0, 1.0 });
-                }
-                gui.text(line_str);
-                if (is_breakpoint) {
-                    gui.popStyleColor(1);
-                }
-                gui.sameLine();
-            }
-
-            if (is_current_debug) {
-                gui.pushStyleColor(.text, .{ 0.70, 0.82, 1.0, 1.0 });
-            }
-
-            const line_text = getLine(editor_state.source_buffer.items, line_num);
-            gui.textWrapped(line_text);
-
-            if (is_current_debug) {
-                gui.popStyleColor(1);
-            }
-        }
-    }
-    gui.endChild();
-
-    if (gui.beginPopupContextWindow(null, true)) {
-        if (gui.selectable("Toggle Breakpoint", false, false, 0.0, 0.0)) {
-            editor_state.toggleBreakpoint(editor_state.cursor_line) catch {};
-        }
-        if (gui.selectable("Run to Cursor", false, false, 0.0, 0.0)) {
-            editor_state.current_debug_line = editor_state.cursor_line;
-        }
-        gui.endPopup();
+    if (changed) {
+        // Find null terminator to determine new content length
+        const new_len = std.mem.indexOfScalar(u8, editor_state.source_buffer.items, 0) orelse content_len;
+        editor_state.source_buffer.items.len = new_len;
+        editor_state.is_modified = true;
+    } else {
+        // Restore original content length
+        editor_state.source_buffer.items.len = content_len;
     }
 }
 
@@ -337,16 +310,117 @@ fn drawFindPanel(editor_state: *ScriptEditorState) void {
 
     if (gui.button("Find Next")) {
         const find_str = std.mem.sliceTo(&editor_state.find_buffer, 0);
-        if (std.mem.indexOf(u8, editor_state.source_buffer.items, find_str)) |pos| {
-            _ = pos;
+        if (find_str.len > 0) {
+            const source = editor_state.source_buffer.items;
+            const start = @min(editor_state.find_cursor, source.len);
+            if (start < source.len) {
+                if (std.mem.indexOf(u8, source[start..], find_str)) |rel| {
+                    editor_state.find_cursor = start + rel + find_str.len;
+                } else if (start > 0) {
+                    // Wrap around from beginning
+                    if (std.mem.indexOf(u8, source, find_str)) |pos| {
+                        editor_state.find_cursor = pos + find_str.len;
+                    }
+                }
+            } else {
+                // Cursor past end, wrap around
+                if (std.mem.indexOf(u8, source, find_str)) |pos| {
+                    editor_state.find_cursor = pos + find_str.len;
+                }
+            }
         }
     }
     gui.sameLine();
 
-    if (gui.button("Replace")) {}
+    if (gui.button("Replace")) {
+        const find_str = std.mem.sliceTo(&editor_state.find_buffer, 0);
+        const replace_str = std.mem.sliceTo(&editor_state.replace_buffer, 0);
+        if (find_str.len > 0) {
+            replaceInSource(editor_state, find_str, replace_str, false);
+        }
+    }
     gui.sameLine();
 
-    if (gui.button("Replace All")) {}
+    if (gui.button("Replace All")) {
+        const find_str = std.mem.sliceTo(&editor_state.find_buffer, 0);
+        const replace_str = std.mem.sliceTo(&editor_state.replace_buffer, 0);
+        if (find_str.len > 0) {
+            replaceInSource(editor_state, find_str, replace_str, true);
+        }
+    }
+}
+
+// ImGui key codes for keyboard shortcuts
+const ImGuiKey_S: i32 = 564;
+const ImGuiKey_F: i32 = 551;
+
+fn handleKeyboardShortcuts(state: *EditorState, editor_state: *ScriptEditorState) void {
+    _ = state;
+    if (gui.keyCtrl()) {
+        // Cmd+S: Save
+        if (gui.isKeyPressed(ImGuiKey_S, false)) {
+            if (editor_state.file_path == null) {
+                saveScriptWithPicker(editor_state);
+            } else {
+                editor_state.saveToFile() catch {};
+            }
+        }
+        // Cmd+F: Toggle find panel
+        if (gui.isKeyPressed(ImGuiKey_F, false)) {
+            editor_state.show_find_panel = !editor_state.show_find_panel;
+        }
+    }
+}
+
+fn replaceInSource(editor_state: *ScriptEditorState, find_str: []const u8, replace_str: []const u8, replace_all: bool) void {
+    if (find_str.len == 0) return;
+    const allocator = editor_state.allocator;
+    const source = editor_state.source_buffer.items;
+
+    var new_buf: std.ArrayList(u8) = .empty;
+    var pos: usize = 0;
+    var count: usize = 0;
+
+    while (pos < source.len) {
+        if (std.mem.indexOf(u8, source[pos..], find_str)) |rel| {
+            new_buf.appendSlice(allocator, source[pos .. pos + rel]) catch {
+                new_buf.deinit(allocator);
+                return;
+            };
+            new_buf.appendSlice(allocator, replace_str) catch {
+                new_buf.deinit(allocator);
+                return;
+            };
+            pos = pos + rel + find_str.len;
+            count += 1;
+            if (!replace_all) {
+                new_buf.appendSlice(allocator, source[pos..]) catch {
+                    new_buf.deinit(allocator);
+                    return;
+                };
+                break;
+            }
+        } else {
+            new_buf.appendSlice(allocator, source[pos..]) catch {
+                new_buf.deinit(allocator);
+                return;
+            };
+            break;
+        }
+    }
+
+    if (count > 0) {
+        editor_state.source_buffer.clearRetainingCapacity();
+        editor_state.source_buffer.appendSlice(allocator, new_buf.items) catch {
+            new_buf.deinit(allocator);
+            return;
+        };
+        new_buf.deinit(allocator);
+        editor_state.is_modified = true;
+        editor_state.find_cursor = 0;
+    } else {
+        new_buf.deinit(allocator);
+    }
 }
 
 fn drawConsolePanel(editor_state: *ScriptEditorState) void {
