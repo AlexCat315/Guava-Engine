@@ -23,6 +23,7 @@ pub const SequencerEditorState = struct {
 
     /// Selection.
     selected_track: ?u32 = null,
+    selected_keyframe: ?u32 = null,
 
     /// File path of the currently loaded sequence (for save).
     file_path_buffer: [256]u8 = [_]u8{0} ** 256,
@@ -81,6 +82,27 @@ const MessageId = enum {
     pause,
     stop_playback,
     time,
+    properties,
+    position,
+    rotation,
+    fov,
+    easing,
+    value,
+    clip_path,
+    start_time,
+    end_time,
+    volume,
+    blend_in,
+    blend_out,
+    fade_in,
+    fade_out,
+    speed,
+    event_name,
+    property_name,
+    add_keyframe,
+    delete_keyframe,
+    no_track_selected,
+    no_keyframe_selected,
 
     const en_us = .{
         .sequencer = "Sequencer",
@@ -99,6 +121,27 @@ const MessageId = enum {
         .pause = "Pause",
         .stop_playback = "Stop",
         .time = "Time",
+        .properties = "Properties",
+        .position = "Position",
+        .rotation = "Rotation",
+        .fov = "FOV",
+        .easing = "Easing",
+        .value = "Value",
+        .clip_path = "Clip",
+        .start_time = "Start",
+        .end_time = "End",
+        .volume = "Volume",
+        .blend_in = "Blend In",
+        .blend_out = "Blend Out",
+        .fade_in = "Fade In",
+        .fade_out = "Fade Out",
+        .speed = "Speed",
+        .event_name = "Event",
+        .property_name = "Property",
+        .add_keyframe = "+ Key",
+        .delete_keyframe = "- Key",
+        .no_track_selected = "Select a track",
+        .no_keyframe_selected = "Select a keyframe",
     };
 
     const zh_cn = .{
@@ -118,6 +161,27 @@ const MessageId = enum {
         .pause = "暂停",
         .stop_playback = "停止",
         .time = "时间",
+        .properties = "属性",
+        .position = "位置",
+        .rotation = "旋转",
+        .fov = "视野角",
+        .easing = "缓动",
+        .value = "值",
+        .clip_path = "片段",
+        .start_time = "开始",
+        .end_time = "结束",
+        .volume = "音量",
+        .blend_in = "混入",
+        .blend_out = "混出",
+        .fade_in = "淡入",
+        .fade_out = "淡出",
+        .speed = "速度",
+        .event_name = "事件",
+        .property_name = "属性名",
+        .add_keyframe = "+ 帧",
+        .delete_keyframe = "- 帧",
+        .no_track_selected = "请选择轨道",
+        .no_keyframe_selected = "请选择关键帧",
     };
 };
 
@@ -137,7 +201,8 @@ fn localText(state: *const EditorState, id: MessageId) []const u8 {
 // ---------------------------------------------------------------------------
 
 pub fn drawSequencerWindow(state: *EditorState, layer_context: *engine.core.LayerContext, editor_state: *SequencerEditorState) !void {
-    _ = layer_context;
+    // Update camera path 3D preview in viewport
+    updateCameraPathPreview(layer_context, editor_state);
 
     var title_buffer: [80]u8 = undefined;
     const title = try state.windowLabel(&title_buffer, .sequencer, "sequencer_panel");
@@ -162,19 +227,22 @@ pub fn drawSequencerWindow(state: *EditorState, layer_context: *engine.core.Laye
         return;
     }
 
-    // -- Main area: track list (left) + timeline (right) ---
+    // -- Main area: track list (left) + timeline (center) + properties (right) ---
     {
         const child_visible = gui.beginChild("sequencer_main", -1.0, -48.0, false);
         defer gui.endChild();
         if (child_visible) {
-            if (gui.beginTable("sequencer_layout", 2)) {
-                gui.tableSetupColumn("TrackList", true, 0.25);
-                gui.tableSetupColumn("Timeline", true, 0.75);
+            if (gui.beginTable("sequencer_layout", 3)) {
+                gui.tableSetupColumn("TrackList", true, 0.20);
+                gui.tableSetupColumn("Timeline", true, 0.55);
+                gui.tableSetupColumn("Properties", true, 0.25);
                 gui.tableNextRow();
                 gui.tableNextColumn();
                 drawTrackList(state, editor_state);
                 gui.tableNextColumn();
                 drawTimeline(state, editor_state);
+                gui.tableNextColumn();
+                drawKeyframeProperties(state, editor_state);
                 gui.endTable();
             }
         }
@@ -400,7 +468,7 @@ fn drawTimeline(state: *const EditorState, editor_state: *SequencerEditorState) 
                 drawTrackBar(draw_list, track, cursor[0], y, canvas_width, editor_state, color);
 
                 // Draw keyframe indicators
-                drawKeyframeMarkers(draw_list, track, cursor[0], y, editor_state);
+                drawKeyframeMarkers(draw_list, track, cursor[0], y, editor_state, idx);
             }
 
             // Draw playhead line across tracks
@@ -468,28 +536,49 @@ fn trackTimeRange(t: cinematic.Track) [2]f32 {
     };
 }
 
-fn drawKeyframeMarkers(draw_list: anytype, track: cinematic.Track, origin_x: f32, y: f32, editor_state: *const SequencerEditorState) void {
+fn drawKeyframeMarkers(draw_list: anytype, track: cinematic.Track, origin_x: f32, y: f32, editor_state: *SequencerEditorState, track_idx: usize) void {
     const mid_y = y + track_row_height * 0.5;
     const diamond_size: f32 = 4.0;
     const white = gui.getColorU32(.{ 1, 1, 1, 0.9 });
+    const sel_color = gui.getColorU32(.{ 1, 0.9, 0.2, 1.0 });
+    const is_sel_track = editor_state.selected_track != null and editor_state.selected_track.? == track_idx;
+
+    // Check for click-to-select keyframes (if hovering and left-clicking)
+    const can_select = gui.isWindowHovered() and gui.isMouseDoubleClicked(.left);
+    const mouse = gui.mousePos();
 
     switch (track) {
         .camera_path => |cp| {
-            for (cp.keyframes.items) |kf| {
+            for (cp.keyframes.items, 0..) |kf, ki| {
                 const x = origin_x + timeToX(kf.time, editor_state);
-                drawDiamond(draw_list, x, mid_y, diamond_size, white);
+                const is_sel = is_sel_track and editor_state.selected_keyframe != null and editor_state.selected_keyframe.? == ki;
+                drawDiamond(draw_list, x, mid_y, if (is_sel) diamond_size + 2 else diamond_size, if (is_sel) sel_color else white);
+                if (can_select and @abs(mouse[0] - x) < 8 and @abs(mouse[1] - mid_y) < 10) {
+                    editor_state.selected_track = @intCast(track_idx);
+                    editor_state.selected_keyframe = @intCast(ki);
+                }
             }
         },
         .event => |ev| {
-            for (ev.events.items) |e| {
+            for (ev.events.items, 0..) |e, ki| {
                 const x = origin_x + timeToX(e.time, editor_state);
-                drawDiamond(draw_list, x, mid_y, diamond_size, white);
+                const is_sel = is_sel_track and editor_state.selected_keyframe != null and editor_state.selected_keyframe.? == ki;
+                drawDiamond(draw_list, x, mid_y, if (is_sel) diamond_size + 2 else diamond_size, if (is_sel) sel_color else white);
+                if (can_select and @abs(mouse[0] - x) < 8 and @abs(mouse[1] - mid_y) < 10) {
+                    editor_state.selected_track = @intCast(track_idx);
+                    editor_state.selected_keyframe = @intCast(ki);
+                }
             }
         },
         .property => |p| {
-            for (p.keyframes.items) |kf| {
+            for (p.keyframes.items, 0..) |kf, ki| {
                 const x = origin_x + timeToX(kf.time, editor_state);
-                drawDiamond(draw_list, x, mid_y, diamond_size, white);
+                const is_sel = is_sel_track and editor_state.selected_keyframe != null and editor_state.selected_keyframe.? == ki;
+                drawDiamond(draw_list, x, mid_y, if (is_sel) diamond_size + 2 else diamond_size, if (is_sel) sel_color else white);
+                if (can_select and @abs(mouse[0] - x) < 8 and @abs(mouse[1] - mid_y) < 10) {
+                    editor_state.selected_track = @intCast(track_idx);
+                    editor_state.selected_keyframe = @intCast(ki);
+                }
             }
         },
         else => {},
@@ -561,4 +650,365 @@ fn drawPlaybackControls(state: *const EditorState, editor_state: *SequencerEdito
             editor_state.current_time = pb.current_time;
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Keyframe property editing panel (right column)
+// ---------------------------------------------------------------------------
+
+const easing_labels = [_][]const u8{ "Linear", "Step", "Ease In", "Ease Out", "Ease InOut" };
+
+fn drawKeyframeProperties(state: *const EditorState, editor_state: *SequencerEditorState) void {
+    const prop_visible = gui.beginChild("seq_props", -1.0, -1.0, true);
+    defer gui.endChild();
+    if (!prop_visible) return;
+
+    gui.text(localText(state, .properties));
+    gui.separator();
+
+    const seq = &(editor_state.sequence orelse return);
+    const sel_track = editor_state.selected_track orelse {
+        gui.textWrapped(localText(state, .no_track_selected));
+        return;
+    };
+    if (sel_track >= seq.tracks.items.len) return;
+
+    const track = &seq.tracks.items[sel_track];
+
+    // Add / delete keyframe buttons
+    if (gui.button(localText(state, .add_keyframe))) {
+        addKeyframeAtCurrentTime(track, editor_state.current_time, seq.allocator);
+        editor_state.selected_keyframe = null;
+    }
+    gui.sameLine();
+    if (gui.button(localText(state, .delete_keyframe))) {
+        if (editor_state.selected_keyframe) |ki| {
+            deleteKeyframe(track, ki);
+            editor_state.selected_keyframe = null;
+        }
+    }
+
+    gui.separator();
+
+    // Track-level properties (for non-keyframed tracks)
+    switch (track.*) {
+        .animation => |*a| {
+            gui.text(localText(state, .start_time));
+            gui.setNextItemWidth(-1.0);
+            _ = gui.dragFloat("##anim_start", &a.start_time, 0.01, 0.0, 3600.0);
+            gui.text(localText(state, .end_time));
+            gui.setNextItemWidth(-1.0);
+            _ = gui.dragFloat("##anim_end", &a.end_time, 0.01, 0.0, 3600.0);
+            gui.text(localText(state, .blend_in));
+            gui.setNextItemWidth(-1.0);
+            _ = gui.dragFloat("##anim_blendin", &a.blend_in, 0.01, 0.0, 10.0);
+            gui.text(localText(state, .blend_out));
+            gui.setNextItemWidth(-1.0);
+            _ = gui.dragFloat("##anim_blendout", &a.blend_out, 0.01, 0.0, 10.0);
+            gui.text(localText(state, .speed));
+            gui.setNextItemWidth(-1.0);
+            _ = gui.dragFloat("##anim_speed", &a.speed, 0.01, 0.01, 10.0);
+            return;
+        },
+        .audio => |*a| {
+            gui.text(localText(state, .start_time));
+            gui.setNextItemWidth(-1.0);
+            _ = gui.dragFloat("##aud_start", &a.start_time, 0.01, 0.0, 3600.0);
+            gui.text(localText(state, .end_time));
+            gui.setNextItemWidth(-1.0);
+            _ = gui.dragFloat("##aud_end", &a.end_time, 0.01, 0.0, 3600.0);
+            gui.text(localText(state, .volume));
+            gui.setNextItemWidth(-1.0);
+            _ = gui.dragFloat("##aud_vol", &a.volume, 0.01, 0.0, 2.0);
+            gui.text(localText(state, .fade_in));
+            gui.setNextItemWidth(-1.0);
+            _ = gui.dragFloat("##aud_fadein", &a.fade_in, 0.01, 0.0, 10.0);
+            gui.text(localText(state, .fade_out));
+            gui.setNextItemWidth(-1.0);
+            _ = gui.dragFloat("##aud_fadeout", &a.fade_out, 0.01, 0.0, 10.0);
+            return;
+        },
+        else => {},
+    }
+
+    // Keyframe-level properties
+    const sel_kf = editor_state.selected_keyframe orelse {
+        gui.textWrapped(localText(state, .no_keyframe_selected));
+        return;
+    };
+
+    switch (track.*) {
+        .camera_path => |*cp| {
+            if (sel_kf >= cp.keyframes.items.len) return;
+            var kf = &cp.keyframes.items[sel_kf];
+
+            gui.text(localText(state, .time));
+            gui.setNextItemWidth(-1.0);
+            _ = gui.dragFloat("##kf_time", &kf.time, 0.01, 0.0, 3600.0);
+
+            gui.text(localText(state, .position));
+            gui.setNextItemWidth(-1.0);
+            _ = gui.dragFloat3("##kf_pos", &kf.position, 0.1, -10000.0, 10000.0);
+
+            gui.text(localText(state, .rotation));
+            gui.setNextItemWidth(-1.0);
+            _ = gui.dragFloat4("##kf_rot", &kf.rotation, 0.01, -1.0, 1.0);
+
+            gui.text(localText(state, .fov));
+            gui.setNextItemWidth(-1.0);
+            _ = gui.dragFloat("##kf_fov", &kf.fov, 0.5, 1.0, 179.0);
+
+            drawEasingCombo("##kf_easing", state, &kf.easing);
+            gui.separator();
+            drawEasingCurve(kf.easing);
+        },
+        .event => |*ev| {
+            if (sel_kf >= ev.events.items.len) return;
+            var entry = &ev.events.items[sel_kf];
+
+            gui.text(localText(state, .time));
+            gui.setNextItemWidth(-1.0);
+            _ = gui.dragFloat("##ev_time", &entry.time, 0.01, 0.0, 3600.0);
+
+            gui.text(localText(state, .event_name));
+            gui.textWrapped(entry.name);
+        },
+        .property => |*p| {
+            if (sel_kf >= p.keyframes.items.len) return;
+            var kf = &p.keyframes.items[sel_kf];
+
+            gui.text(localText(state, .time));
+            gui.setNextItemWidth(-1.0);
+            _ = gui.dragFloat("##pk_time", &kf.time, 0.01, 0.0, 3600.0);
+
+            gui.text(localText(state, .value));
+            gui.setNextItemWidth(-1.0);
+            _ = gui.dragFloat("##pk_val", &kf.value, 0.01, -10000.0, 10000.0);
+
+            drawEasingCombo("##pk_easing", state, &kf.easing);
+            gui.separator();
+            drawEasingCurve(kf.easing);
+        },
+        else => {},
+    }
+}
+
+fn drawEasingCombo(id: []const u8, state: *const EditorState, easing: *cinematic.EasingMode) void {
+    gui.text(localText(state, .easing));
+    gui.setNextItemWidth(-1.0);
+    const current_idx = @intFromEnum(easing.*);
+    const preview = easing_labels[@min(current_idx, easing_labels.len - 1)];
+    if (gui.beginCombo(id, preview)) {
+        for (easing_labels, 0..) |label, i| {
+            const selected = current_idx == i;
+            if (gui.selectable(label, selected, false, -1.0, 0.0)) {
+                easing.* = @enumFromInt(i);
+            }
+        }
+        gui.endCombo();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Easing curve visualization
+// ---------------------------------------------------------------------------
+
+fn drawEasingCurve(easing: cinematic.EasingMode) void {
+    const curve_h: f32 = 80.0;
+    const avail = gui.getContentRegionAvail();
+    const curve_w = @max(avail.x, 40.0);
+
+    // Reserve space with an invisible button
+    _ = gui.invisibleButton("##easing_preview", curve_w, curve_h);
+
+    var draw_list = gui.getWindowDrawList();
+    const cursor = gui.cursorScreenPos();
+    // The invisible button already advanced the cursor, so the draw area is above current cursor
+    const x0 = cursor[0];
+    const y0 = cursor[1] - curve_h;
+
+    // Background
+    const bg_color = gui.getColorU32(.{ 0.15, 0.15, 0.15, 1.0 });
+    draw_list.addRectFilled(.{ x0, y0 }, .{ x0 + curve_w, y0 + curve_h }, bg_color, 2.0, 0);
+
+    // Border
+    const border_col = gui.getColorU32(.{ 0.4, 0.4, 0.4, 1.0 });
+    draw_list.addLine(.{ x0, y0 }, .{ x0 + curve_w, y0 }, border_col, 1.0);
+    draw_list.addLine(.{ x0, y0 + curve_h }, .{ x0 + curve_w, y0 + curve_h }, border_col, 1.0);
+    draw_list.addLine(.{ x0, y0 }, .{ x0, y0 + curve_h }, border_col, 1.0);
+    draw_list.addLine(.{ x0 + curve_w, y0 }, .{ x0 + curve_w, y0 + curve_h }, border_col, 1.0);
+
+    // Draw curve as a polyline
+    const curve_color = gui.getColorU32(.{ 0.4, 0.8, 1.0, 1.0 });
+    const padding: f32 = 4.0;
+    const inner_w = curve_w - padding * 2;
+    const inner_h = curve_h - padding * 2;
+    const segments: u32 = 32;
+
+    var i: u32 = 0;
+    while (i < segments) : (i += 1) {
+        const t0 = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(segments));
+        const t1 = @as(f32, @floatFromInt(i + 1)) / @as(f32, @floatFromInt(segments));
+        const v0 = easing.evaluate(t0);
+        const v1 = easing.evaluate(t1);
+        const px0 = x0 + padding + t0 * inner_w;
+        const py0 = y0 + padding + (1.0 - v0) * inner_h;
+        const px1 = x0 + padding + t1 * inner_w;
+        const py1 = y0 + padding + (1.0 - v1) * inner_h;
+        draw_list.addLine(.{ px0, py0 }, .{ px1, py1 }, curve_color, 2.0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Keyframe add / delete helpers
+// ---------------------------------------------------------------------------
+
+fn addKeyframeAtCurrentTime(track: *cinematic.Track, time: f32, allocator: std.mem.Allocator) void {
+    switch (track.*) {
+        .camera_path => |*cp| {
+            cp.keyframes.append(allocator, .{ .time = time }) catch {};
+        },
+        .event => |*ev| {
+            ev.events.append(allocator, .{ .time = time }) catch {};
+        },
+        .property => |*p| {
+            p.keyframes.append(allocator, .{ .time = time, .value = 0, .easing = .linear }) catch {};
+        },
+        else => {},
+    }
+}
+
+fn deleteKeyframe(track: *cinematic.Track, idx: u32) void {
+    switch (track.*) {
+        .camera_path => |*cp| {
+            if (idx < cp.keyframes.items.len) {
+                _ = cp.keyframes.orderedRemove(idx);
+            }
+        },
+        .event => |*ev| {
+            if (idx < ev.events.items.len) {
+                _ = ev.events.orderedRemove(idx);
+            }
+        },
+        .property => |*p| {
+            if (idx < p.keyframes.items.len) {
+                _ = p.keyframes.orderedRemove(idx);
+            }
+        },
+        else => {},
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 3D Camera Path Spline Gizmo — sends preview lines to the renderer
+// ---------------------------------------------------------------------------
+
+const spline_segments_per_span = 16;
+
+fn updateCameraPathPreview(layer_context: *engine.core.LayerContext, editor_state: *const SequencerEditorState) void {
+    const seq = editor_state.sequence orelse {
+        layer_context.renderer.setCameraPathPreview(&.{});
+        return;
+    };
+
+    // Find the first camera_path track (or the selected one if it's a camera_path).
+    var cam_track: ?*const cinematic.CameraPathTrack = null;
+    if (editor_state.selected_track) |sel| {
+        if (sel < seq.tracks.items.len) {
+            switch (seq.tracks.items[sel]) {
+                .camera_path => |*cp| {
+                    cam_track = cp;
+                },
+                else => {},
+            }
+        }
+    }
+    // Fallback: use the first camera_path track in the sequence.
+    if (cam_track == null) {
+        for (seq.tracks.items) |*t| {
+            switch (t.*) {
+                .camera_path => |*cp| {
+                    cam_track = cp;
+                    break;
+                },
+                else => {},
+            }
+        }
+    }
+
+    const cp = cam_track orelse {
+        layer_context.renderer.setCameraPathPreview(&.{});
+        return;
+    };
+
+    const kf_count = cp.keyframes.items.len;
+    if (kf_count < 2) {
+        // With fewer than 2 keyframes, just show keyframe positions as small cross markers
+        if (kf_count == 1) {
+            const pos = cp.keyframes.items[0].position;
+            const s: f32 = 0.15;
+            const marker = [_][3]f32{
+                .{ pos[0] - s, pos[1], pos[2] }, .{ pos[0] + s, pos[1], pos[2] },
+                .{ pos[0], pos[1] - s, pos[2] }, .{ pos[0], pos[1] + s, pos[2] },
+                .{ pos[0], pos[1], pos[2] - s }, .{ pos[0], pos[1], pos[2] + s },
+            };
+            layer_context.renderer.setCameraPathPreview(&marker);
+        } else {
+            layer_context.renderer.setCameraPathPreview(&.{});
+        }
+        return;
+    }
+
+    // Generate Catmull-Rom spline segments between keyframes
+    const spans = kf_count - 1;
+    const total_segments = spans * spline_segments_per_span;
+    // Each segment is 2 vertices (line pair), total = total_segments * 2
+    // Plus small cross markers at each keyframe: 6 vertices each
+    const line_count = total_segments * 2 + kf_count * 6;
+    var positions: [2048][3]f32 = undefined;
+    if (line_count > positions.len) {
+        layer_context.renderer.setCameraPathPreview(&.{});
+        return;
+    }
+
+    var idx: usize = 0;
+
+    // Spline curve
+    for (0..spans) |span_i| {
+        const kf_a = cp.keyframes.items[span_i];
+        const kf_b = cp.keyframes.items[span_i + 1];
+
+        for (0..spline_segments_per_span) |seg_i| {
+            const t0 = @as(f32, @floatFromInt(seg_i)) / @as(f32, @floatFromInt(spline_segments_per_span));
+            const t1 = @as(f32, @floatFromInt(seg_i + 1)) / @as(f32, @floatFromInt(spline_segments_per_span));
+            const time0 = kf_a.time + (kf_b.time - kf_a.time) * t0;
+            const time1 = kf_a.time + (kf_b.time - kf_a.time) * t1;
+            const eval0 = cp.evaluate(time0);
+            const eval1 = cp.evaluate(time1);
+            positions[idx] = eval0.position;
+            idx += 1;
+            positions[idx] = eval1.position;
+            idx += 1;
+        }
+    }
+
+    // Keyframe position markers (small 3D cross)
+    const marker_size: f32 = 0.2;
+    for (cp.keyframes.items) |kf| {
+        const p = kf.position;
+        positions[idx] = .{ p[0] - marker_size, p[1], p[2] };
+        idx += 1;
+        positions[idx] = .{ p[0] + marker_size, p[1], p[2] };
+        idx += 1;
+        positions[idx] = .{ p[0], p[1] - marker_size, p[2] };
+        idx += 1;
+        positions[idx] = .{ p[0], p[1] + marker_size, p[2] };
+        idx += 1;
+        positions[idx] = .{ p[0], p[1], p[2] - marker_size };
+        idx += 1;
+        positions[idx] = .{ p[0], p[1], p[2] + marker_size };
+        idx += 1;
+    }
+
+    layer_context.renderer.setCameraPathPreview(positions[0..idx]);
 }

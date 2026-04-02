@@ -401,6 +401,8 @@ pub const Renderer = struct {
     preview_entity_filter: std.ArrayList(scene_mod.EntityId) = .empty,
     /// 编辑器视口状态
     editor_viewport_state: EditorViewportState = .{},
+    /// Sequencer 相机路径预览线段（由编辑器每帧设置）
+    camera_path_preview_lines: std.ArrayListUnmanaged(gizmo_pass_mod.WorldLineVertex) = .empty,
     /// 前一帧视图矩阵（TAA 重投影用）
     prev_view_matrix: [16]f32 = mat4_mod.identity(),
     /// 前一帧未抖动的 view-projection（velocity / TAA history reproject）
@@ -693,6 +695,7 @@ pub const Renderer = struct {
         self.selection_history.deinit();
         self.prev_mesh_models.deinit();
         self.preview_entity_filter.deinit(self.allocator);
+        self.camera_path_preview_lines.deinit(self.allocator);
         self.scene_viewport.deinit(&self.rhi);
         self.releaseMaterialThumbnailRequests();
         self.releaseMaterialThumbnailCache();
@@ -1111,6 +1114,16 @@ pub const Renderer = struct {
 
     pub fn setPreviewScene(self: *Renderer, scene: ?*const scene_mod.Scene) void {
         self.preview_scene = scene;
+    }
+
+    /// 设置 Sequencer 相机路径预览线段（成对顶点表示线段）。
+    /// 传入 [3]f32 position 数组，长度必须为偶数。
+    pub fn setCameraPathPreview(self: *Renderer, positions: []const [3]f32) void {
+        self.camera_path_preview_lines.clearRetainingCapacity();
+        self.camera_path_preview_lines.ensureTotalCapacity(self.allocator, positions.len) catch return;
+        for (positions) |pos| {
+            self.camera_path_preview_lines.appendAssumeCapacity(.{ .position = pos });
+        }
     }
 
     pub fn setSceneViewportSize(self: *Renderer, width: u32, height: u32) !void {
@@ -3868,7 +3881,8 @@ pub const Renderer = struct {
             self.preview_gizmo_transform != null or
             self.editor_viewport_state.show_grid or
             self.editor_viewport_state.show_bones or
-            self.editor_viewport_state.show_collision;
+            self.editor_viewport_state.show_collision or
+            self.camera_path_preview_lines.items.len >= 2;
     }
 
     fn drawViewportDebugOverlays(
@@ -3943,6 +3957,19 @@ pub const Renderer = struct {
                 collision_stats.add(trigger_stats);
             }
             stats.add(collision_stats);
+        }
+
+        // Camera path spline preview (set by Sequencer panel)
+        if (self.camera_path_preview_lines.items.len >= 2) {
+            const path_stats = try self.gizmo_pass.drawWorldLines(
+                &self.rhi,
+                frame,
+                pass,
+                prepared_scene.view_projection,
+                self.camera_path_preview_lines.items,
+                .{ 1.0, 0.8, 0.2, 1.0 },
+            );
+            stats.add(path_stats);
         }
 
         return stats;
