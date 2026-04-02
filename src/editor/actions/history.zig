@@ -1060,6 +1060,23 @@ pub fn refreshSnapshotBaseline(state: *EditorState, world: *engine.scene.World) 
     try refreshCurrentHistorySnapshot(state, world);
 }
 
+pub fn restorePlayModeSnapshot(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const snapshot = state.history_world_snapshot orelse return;
+    manipulation.clearTransformTool(state);
+    vfx_runtime.clearAll(layer_context);
+    try engine.scene.deserializeWorldFromSlice(layer_context.world.allocator, layer_context.world, snapshot);
+    try layer_context.renderer.resetSceneState();
+    state.scene_camera = layer_context.world.primaryCameraEntity();
+    state.editor_camera = null;
+    try camera.createEditorCamera(state, layer_context);
+    if (!state.editor_camera_active) {
+        if (state.scene_camera) |scene_camera_id| {
+            _ = layer_context.world.setPrimaryCamera(scene_camera_id);
+        }
+    }
+    try refreshWindowTitle(state, layer_context);
+}
+
 fn pushCommand(state: *EditorState, command: command_mod.EditorCommand, source: command_mod.TimelineSource) !void {
     try pushCommandInternal(state, command);
     try appendTimelineFromCommand(state, command, source);

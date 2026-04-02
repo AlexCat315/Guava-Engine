@@ -56,7 +56,7 @@ pub fn sync(state: *EditorState, layer_context: *engine.core.LayerContext) !void
     if (state.play_mode_active and next_state == .stopped) {
         state.play_mode_active = false;
         state.history_snapshot_needs_refresh = false;
-        try history.refreshSnapshotBaseline(state, layer_context.world);
+        try history.restorePlayModeSnapshot(state, layer_context);
         utils.syncInspectorNameBuffer(state, layer_context);
     }
 }
