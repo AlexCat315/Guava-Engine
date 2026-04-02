@@ -506,8 +506,17 @@ pub const Application = struct {
         self.discoverScripts();
 
         var layer_context = self.makeLayerContext(0, 0.0);
+        var attached_count: usize = 0;
+        errdefer {
+            // Detach any layers that were successfully attached (reverse order)
+            while (attached_count > 0) {
+                attached_count -= 1;
+                self.layers.layers.items[attached_count].detach();
+            }
+        }
         for (self.layers.layers.items) |layer| {
             try layer.attach(&layer_context);
+            attached_count += 1;
         }
         self.initialized = true;
     }

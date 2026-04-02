@@ -545,7 +545,13 @@ fn discoverGltfDependencies(
     if (document.buffers) |buffers| {
         for (buffers) |buffer| {
             const uri = buffer.uri orelse continue;
-            const buffer_bytes = try loadUriBytesAlloc(registry.allocator, base_dir, uri);
+            const buffer_bytes = loadUriBytesAlloc(registry.allocator, base_dir, uri) catch |err| {
+                if (err == error.FileNotFound) {
+                    std.log.warn("glTF buffer not found: {s} (referenced from {s})", .{ uri, source_path });
+                    continue;
+                }
+                return err;
+            };
             defer registry.allocator.free(buffer_bytes);
             hasher.update(&.{0x01});
             hasher.update(buffer_bytes);
@@ -565,10 +571,22 @@ fn discoverGltfDependencies(
 
             const dependency_path = try std.fs.path.join(registry.allocator, &.{ base_dir, uri });
             defer registry.allocator.free(dependency_path);
-            const dependency_record = try registry.ensureProjectAsset(dependency_path);
+            const dependency_record = registry.ensureProjectAsset(dependency_path) catch |err| {
+                if (err == error.FileNotFound) {
+                    std.log.warn("glTF image not found: {s} (referenced from {s})", .{ uri, source_path });
+                    continue;
+                }
+                return err;
+            };
             try dependency_ids.append(registry.allocator, try registry.allocator.dupe(u8, dependency_record.id));
 
-            const image_bytes = try std.fs.cwd().readFileAlloc(registry.allocator, dependency_path, 128 * 1024 * 1024);
+            const image_bytes = std.fs.cwd().readFileAlloc(registry.allocator, dependency_path, 128 * 1024 * 1024) catch |err| {
+                if (err == error.FileNotFound) {
+                    std.log.warn("glTF image not found: {s} (referenced from {s})", .{ uri, source_path });
+                    continue;
+                }
+                return err;
+            };
             defer registry.allocator.free(image_bytes);
             hasher.update(&.{0x03});
             hasher.update(image_bytes);
