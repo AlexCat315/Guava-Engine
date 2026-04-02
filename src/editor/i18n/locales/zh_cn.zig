@@ -602,6 +602,14 @@ pub const locale = blk: {
             .build_game_failed = "构建失败",
             .build_game_tooltip = "打包游戏以供分发（zig build package）",
 
+            // Launch Game
+            .launch_game = "启动游戏",
+            .launch_game_building = "编译播放器...",
+            .launch_game_launching = "启动中...",
+            .launch_game_running = "游戏运行中",
+            .launch_game_failed = "启动失败",
+            .launch_game_tooltip = "保存场景，编译并启动独立游戏窗口",
+
             // Audio Mixer
             .audio_mixer = "音频混音器",
             .audio_mixer_master = "主音量",

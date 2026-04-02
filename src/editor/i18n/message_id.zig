@@ -593,6 +593,14 @@ pub const MessageId = enum {
     build_game_failed,
     build_game_tooltip,
 
+    // Launch Game
+    launch_game,
+    launch_game_building,
+    launch_game_launching,
+    launch_game_running,
+    launch_game_failed,
+    launch_game_tooltip,
+
     // Audio Mixer
     audio_mixer,
     audio_mixer_master,

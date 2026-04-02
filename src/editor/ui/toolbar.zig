@@ -4,7 +4,9 @@ const gui = @import("gui.zig");
 const theme = @import("theme.zig");
 const EditorState = @import("../core/state.zig").EditorState;
 const BuildGameStatus = @import("../core/state.zig").BuildGameStatus;
+const LaunchGameStatus = @import("../core/state.zig").LaunchGameStatus;
 const playback_session = @import("../core/playback_session.zig");
+const history = @import("../actions/history.zig");
 const ui_icons = @import("icons.zig");
 
 fn drawPlaybackButton(
@@ -97,9 +99,38 @@ pub fn drawToolbarWindow(state: *EditorState, layer_context: *engine.core.LayerC
         gui.setTooltip(state.text(.step));
     }
 
-    // --- Build Game button (right-aligned) ---
+    // --- Launch Game button (right-aligned, left of Build Game) ---
+    const launch_button_size: f32 = play_button_size;
     const build_button_size: f32 = play_button_size;
     const build_right_margin: f32 = 8.0;
+    const launch_right_margin: f32 = build_right_margin + build_button_size + spacing;
+    const launch_x = content_width - launch_button_size - launch_right_margin;
+    gui.sameLineEx(launch_x, 0.0);
+
+    const is_launch_busy = state.launch_game_status == .building or state.launch_game_status == .launching;
+    const launch_palette = switch (state.launch_game_status) {
+        .building, .launching => ui_icons.palettes.toolbar_accent,
+        .running => ui_icons.palettes.toolbar_active,
+        .failed => ui_icons.palettes.toolbar_accent,
+        .idle => ui_icons.palettes.toolbar_idle,
+    };
+    if (try drawPlaybackButton(state, layer_context, "toolbar_launch_game", ui_icons.paths.toolbar.launch, launch_palette)) {
+        if (!is_launch_busy) {
+            startLaunchGame(state, layer_context);
+        }
+    }
+    if (gui.isItemHovered()) {
+        const launch_tooltip = switch (state.launch_game_status) {
+            .building => state.text(.launch_game_building),
+            .launching => state.text(.launch_game_launching),
+            .running => state.text(.launch_game_running),
+            .failed => state.text(.launch_game_failed),
+            .idle => state.text(.launch_game_tooltip),
+        };
+        gui.setTooltip(launch_tooltip);
+    }
+
+    // --- Build Game button (right-aligned) ---
     const build_x = content_width - build_button_size - build_right_margin;
     gui.sameLineEx(build_x, 0.0);
 
@@ -187,4 +218,77 @@ fn buildGameWorker(state: *EditorState) void {
             state.build_game_status = .failed;
         },
     }
+}
+
+fn startLaunchGame(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+    if (state.launch_game_status == .building or state.launch_game_status == .launching) return;
+
+    // Auto-save scene before launching
+    history.saveScene(state, layer_context);
+
+    state.launch_game_status = .building;
+    state.launch_game_output_len = 0;
+    @memset(&state.launch_game_output, 0);
+
+    state.launch_game_thread = std.Thread.spawn(.{}, launchGameWorker, .{state}) catch {
+        state.launch_game_status = .failed;
+        const msg = "Failed to spawn launch thread";
+        @memcpy(state.launch_game_output[0..msg.len], msg);
+        state.launch_game_output_len = msg.len;
+        return;
+    };
+}
+
+fn launchGameWorker(state: *EditorState) void {
+    // Step 1: Build the player binary in debug mode (fast)
+    const build_result = std.process.Child.run(.{
+        .allocator = std.heap.page_allocator,
+        .argv = &.{ "zig", "build", "player" },
+        .max_output_bytes = 1024 * 1024,
+    }) catch {
+        state.launch_game_status = .failed;
+        const msg = "Failed to execute zig build player";
+        @memcpy(state.launch_game_output[0..msg.len], msg);
+        state.launch_game_output_len = msg.len;
+        return;
+    };
+    defer std.heap.page_allocator.free(build_result.stdout);
+    defer std.heap.page_allocator.free(build_result.stderr);
+
+    const build_exit = switch (build_result.term) {
+        .Exited => |code| code,
+        else => 1,
+    };
+    if (build_exit != 0) {
+        state.launch_game_status = .failed;
+        const output = if (build_result.stderr.len > 0) build_result.stderr else build_result.stdout;
+        const copy_len = @min(output.len, state.launch_game_output.len);
+        @memcpy(state.launch_game_output[0..copy_len], output[0..copy_len]);
+        state.launch_game_output_len = copy_len;
+        return;
+    }
+
+    // Step 2: Launch the player as a separate process
+    state.launch_game_status = .launching;
+    const scene_path = @import("../core/state.zig").autosave_path;
+    var child = std.process.Child.init(.{
+        .allocator = std.heap.page_allocator,
+        .argv = &.{ "zig-out/bin/guava-player", "run", "--scene", scene_path },
+    }, std.heap.page_allocator);
+    child.spawn() catch {
+        state.launch_game_status = .failed;
+        const msg = "Failed to spawn guava-player process";
+        @memcpy(state.launch_game_output[0..msg.len], msg);
+        state.launch_game_output_len = msg.len;
+        return;
+    };
+
+    state.launch_game_status = .running;
+
+    // Wait for the player to exit (non-blocking from the editor's perspective since we're in a worker thread)
+    _ = child.wait() catch {
+        state.launch_game_status = .failed;
+        return;
+    };
+    state.launch_game_status = .idle;
 }

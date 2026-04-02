@@ -602,6 +602,14 @@ pub const locale = blk: {
             .build_game_failed = "Build failed",
             .build_game_tooltip = "Package game for distribution (zig build package)",
 
+            // Launch Game
+            .launch_game = "Launch Game",
+            .launch_game_building = "Building player...",
+            .launch_game_launching = "Launching...",
+            .launch_game_running = "Game running",
+            .launch_game_failed = "Launch failed",
+            .launch_game_tooltip = "Save scene, build and launch standalone game window",
+
             // Audio Mixer
             .audio_mixer = "Audio Mixer",
             .audio_mixer_master = "Master",

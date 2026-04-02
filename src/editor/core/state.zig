@@ -259,6 +259,14 @@ pub const BuildGameStatus = enum {
     failed,
 };
 
+pub const LaunchGameStatus = enum {
+    idle,
+    building,
+    launching,
+    running,
+    failed,
+};
+
 pub const ViewportShadingMode = enum {
     solid,
     material,
@@ -793,6 +801,12 @@ pub const EditorState = struct {
     build_game_output: [build_game_output_buffer_size]u8 = [_]u8{0} ** build_game_output_buffer_size,
     build_game_output_len: usize = 0,
     build_game_thread: ?std.Thread = null,
+
+    // Launch Game state
+    launch_game_status: LaunchGameStatus = .idle,
+    launch_game_output: [build_game_output_buffer_size]u8 = [_]u8{0} ** build_game_output_buffer_size,
+    launch_game_output_len: usize = 0,
+    launch_game_thread: ?std.Thread = null,
 
     // Audio Mixer panel
     audio_mixer_open: bool = false,
