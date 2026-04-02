@@ -452,17 +452,20 @@ pub const Application = struct {
                 if (self.input.wasMousePressed(.left)) {
                     self.canvas.processPointerEvent(
                         .{ .kind = .down, .x = mx, .y = my },
-                        screen_w, screen_h,
+                        screen_w,
+                        screen_h,
                     );
                 } else if (self.input.wasMouseReleased(.left)) {
                     self.canvas.processPointerEvent(
                         .{ .kind = .up, .x = mx, .y = my },
-                        screen_w, screen_h,
+                        screen_w,
+                        screen_h,
                     );
                 } else {
                     self.canvas.processPointerEvent(
                         .{ .kind = .move, .x = mx, .y = my },
-                        screen_w, screen_h,
+                        screen_w,
+                        screen_h,
                     );
                 }
                 runtime_ui_mod.render.renderCanvas(&self.canvas, screen_w, screen_h);
