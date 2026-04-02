@@ -603,6 +603,260 @@ fn drawSettingsContentShortcuts(state: *EditorState, layer_context: *engine.core
     gui.labelText("Shift", "Fine adjustment while dragging");
     gui.labelText("LMB", "Confirm modal operation");
     gui.labelText("RMB / Esc", "Cancel and revert modal operation");
+
+    // ── Game Input Actions ───────────────────────────────────────────
+    gui.dummy(0.0, 12.0);
+    gui.separator();
+    gui.dummy(0.0, 8.0);
+    gui.text("Game Input Actions");
+    gui.textWrapped("Configure game action bindings (keyboard/mouse). Changes are saved to assets/input_actions.json.");
+    gui.dummy(0.0, 6.0);
+
+    drawGameInputActions(layer_context);
+}
+
+// ── Game Input Actions: rebinding panel ──────────────────────────────
+
+const input_actions_path = "assets/input_actions.json";
+const max_action_name_len = 64;
+
+/// Recording state for game action rebinding
+var action_record_target: ?[max_action_name_len]u8 = null;
+var action_record_target_len: usize = 0;
+var new_action_name_buf: [max_action_name_len]u8 = [_]u8{0} ** max_action_name_len;
+
+/// All keys available for game action binding (superset of mesh_shortcut_keys)
+const game_bindable_keys = blk: {
+    const fields = std.meta.fields(engine.core.InputKey);
+    var keys: [fields.len]engine.core.InputKey = undefined;
+    for (fields, 0..) |f, idx| {
+        keys[idx] = @enumFromInt(f.value);
+    }
+    break :blk keys;
+};
+
+fn saveActionMapToFile(action_map: *const engine.core.ActionMap) void {
+    const json = action_map.saveToJsonAlloc(std.heap.page_allocator) catch return;
+    defer std.heap.page_allocator.free(json);
+
+    const file = std.fs.cwd().createFile(input_actions_path, .{}) catch return;
+    defer file.close();
+    file.writeAll(json) catch return;
+}
+
+fn isRecordingAction(name: []const u8) bool {
+    if (action_record_target) |buf| {
+        return action_record_target_len <= name.len and
+            std.mem.eql(u8, buf[0..action_record_target_len], name[0..action_record_target_len]) and
+            action_record_target_len == name.len;
+    }
+    return false;
+}
+
+fn startRecordingAction(name: []const u8) void {
+    const len = @min(name.len, max_action_name_len);
+    var buf: [max_action_name_len]u8 = [_]u8{0} ** max_action_name_len;
+    @memcpy(buf[0..len], name[0..len]);
+    action_record_target = buf;
+    action_record_target_len = len;
+}
+
+fn stopRecordingAction() void {
+    action_record_target = null;
+    action_record_target_len = 0;
+}
+
+fn handleActionRecording(action_map: *engine.core.ActionMap, input: *const engine.core.InputState) bool {
+    if (action_record_target == null) return false;
+    const target_name = action_record_target.?[0..action_record_target_len];
+
+    if (input.wasKeyPressed(.escape)) {
+        stopRecordingAction();
+        return false;
+    }
+
+    // Check mouse buttons
+    const mouse_buttons = [_]engine.core.MouseButton{ .left, .right, .middle };
+    for (mouse_buttons) |btn| {
+        if (input.wasMousePressed(btn)) {
+            action_map.bindMouseButton(target_name, btn, 1.0) catch {};
+            stopRecordingAction();
+            return true;
+        }
+    }
+
+    // Check all keys
+    for (game_bindable_keys) |key| {
+        // Skip modifiers as standalone bindings
+        if (key == .shift or key == .ctrl or key == .alt or key == .escape) continue;
+        if (input.wasKeyPressed(key)) {
+            action_map.bindKey(target_name, key, 1.0) catch {};
+            stopRecordingAction();
+            return true;
+        }
+    }
+    return false;
+}
+
+fn bindingLabel(buf: []u8, binding: engine.core.ActionBinding) []const u8 {
+    return switch (binding.kind) {
+        .key => std.fmt.bufPrint(buf, "{s} ({d:.0})", .{
+            shortcutKeyLabel(binding.key),
+            binding.axis_scale,
+        }) catch "?",
+        .mouse_button => std.fmt.bufPrint(buf, "Mouse {s} ({d:.0})", .{
+            @tagName(binding.mouse_button),
+            binding.axis_scale,
+        }) catch "?",
+    };
+}
+
+fn drawGameInputActions(layer_context: *engine.core.LayerContext) void {
+    const action_map = layer_context.action_map orelse {
+        gui.textWrapped("ActionMap not available.");
+        return;
+    };
+
+    var dirty = handleActionRecording(action_map, layer_context.input);
+
+    if (action_record_target != null) {
+        gui.pushStyleColor(.text, theme.Palette.settings.warning_text);
+        gui.text("Recording: press a key or mouse button, Esc to cancel");
+        gui.popStyleColor(1);
+        gui.dummy(0.0, 4.0);
+    }
+
+    // ── New action registration ──────────────────────────────────────
+    gui.setNextItemWidth(200.0);
+    _ = gui.inputTextWithHint("##new_action_name", "New action name...", new_action_name_buf[0..max_action_name_len]);
+    gui.sameLineEx(0.0, 8.0);
+    if (gui.buttonEx("Add Action##add_game_action", 0.0, 0.0)) {
+        const end = std.mem.indexOfScalar(u8, new_action_name_buf[0..], 0) orelse max_action_name_len;
+        if (end > 0) {
+            action_map.registerAction(new_action_name_buf[0..end]) catch {};
+            @memset(new_action_name_buf[0..], 0);
+            dirty = true;
+        }
+    }
+    gui.dummy(0.0, 4.0);
+
+    // ── Action table ─────────────────────────────────────────────────
+    if (gui.beginTable("##game_input_actions_table", 4)) {
+        defer gui.endTable();
+        gui.tableSetupColumn("Action", true, 0.0);
+        gui.tableSetupColumn("Bindings", true, 0.0);
+        gui.tableSetupColumn("Add", false, 60.0);
+        gui.tableSetupColumn("Remove", false, 80.0);
+        gui.tableHeadersRow();
+
+        // Collect action names for stable iteration
+        var name_ptrs: [128][]const u8 = undefined;
+        var action_count: usize = 0;
+        {
+            var it = action_map.entries.iterator();
+            while (it.next()) |kv| {
+                if (action_count >= 128) break;
+                name_ptrs[action_count] = kv.key_ptr.*;
+                action_count += 1;
+            }
+        }
+
+        var remove_action: ?[]const u8 = null;
+        var remove_binding: ?struct { action: []const u8, index: usize } = null;
+
+        var idx: usize = 0;
+        while (idx < action_count) : (idx += 1) {
+            const name = name_ptrs[idx];
+            const entry = action_map.entries.getPtr(name) orelse continue;
+
+            gui.tableNextRow();
+
+            // Column: Action name
+            gui.tableNextColumn();
+            gui.text(name);
+
+            // Column: Current bindings list
+            gui.tableNextColumn();
+            if (entry.bindings.items.len == 0) {
+                gui.textColored(.{ 0.5, 0.5, 0.5, 1.0 }, "(none)");
+            } else {
+                for (entry.bindings.items, 0..) |binding, bi| {
+                    var lbl_buf: [80]u8 = undefined;
+                    const label = bindingLabel(&lbl_buf, binding);
+                    if (bi > 0) {
+                        gui.sameLineEx(0.0, 4.0);
+                        gui.text(",");
+                        gui.sameLineEx(0.0, 4.0);
+                    }
+                    gui.text(label);
+                }
+            }
+
+            // Column: Add binding button (record)
+            gui.tableNextColumn();
+            {
+                var btn_buf: [96]u8 = undefined;
+                const btn_text = if (isRecordingAction(name)) "..." else "+";
+                const btn_label = std.fmt.bufPrint(&btn_buf, "{s}##add_{s}", .{ btn_text, name }) catch btn_text;
+                if (gui.buttonEx(btn_label, 0.0, 0.0)) {
+                    if (isRecordingAction(name)) {
+                        stopRecordingAction();
+                    } else {
+                        startRecordingAction(name);
+                    }
+                }
+            }
+
+            // Column: Remove last binding / remove action
+            gui.tableNextColumn();
+            {
+                if (entry.bindings.items.len > 0) {
+                    var rm_buf: [96]u8 = undefined;
+                    const rm_label = std.fmt.bufPrint(&rm_buf, "- Last##rmlast_{s}", .{name}) catch "- Last";
+                    if (gui.buttonEx(rm_label, 0.0, 0.0)) {
+                        remove_binding = .{ .action = name, .index = entry.bindings.items.len - 1 };
+                    }
+                }
+                gui.sameLineEx(0.0, 4.0);
+                {
+                    var del_buf: [96]u8 = undefined;
+                    const del_label = std.fmt.bufPrint(&del_buf, "X##del_{s}", .{name}) catch "X";
+                    if (gui.buttonEx(del_label, 0.0, 0.0)) {
+                        remove_action = name;
+                    }
+                }
+            }
+        }
+
+        // Deferred mutations (avoid modifying hashmap during iteration)
+        if (remove_binding) |rb| {
+            if (action_map.entries.getPtr(rb.action)) |entry| {
+                _ = entry.bindings.orderedRemove(rb.index);
+                dirty = true;
+            }
+        }
+        if (remove_action) |ra| {
+            action_map.removeAction(ra);
+            dirty = true;
+        }
+    }
+
+    // ── Load / Save buttons ──────────────────────────────────────────
+    gui.dummy(0.0, 6.0);
+    if (gui.buttonEx("Save to File##save_actions", 0.0, 0.0)) {
+        saveActionMapToFile(action_map);
+    }
+    gui.sameLineEx(0.0, 8.0);
+    if (gui.buttonEx("Load from File##load_actions", 0.0, 0.0)) {
+        if (std.fs.cwd().readFileAlloc(std.heap.page_allocator, input_actions_path, 4 * 1024 * 1024)) |json| {
+            defer std.heap.page_allocator.free(json);
+            action_map.loadFromJson(json) catch {};
+        } else |_| {}
+    }
+
+    if (dirty) {
+        saveActionMapToFile(action_map);
+    }
 }
 
 fn drawSettingsContentAssistant(_: *EditorState) void {

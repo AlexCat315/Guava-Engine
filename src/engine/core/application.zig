@@ -573,6 +573,7 @@ pub const Application = struct {
             .script_runtime = &self.script_runtime,
             .editor_utility_runtime = &self.editor_utility_runtime,
             .input = &self.input,
+            .action_map = &self.action_map,
             .window = &self.window,
             .playback_controller = &self.playback_controller,
             .game_state = &self.game_state,

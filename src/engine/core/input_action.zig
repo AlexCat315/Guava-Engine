@@ -285,9 +285,9 @@ pub const ActionMap = struct {
 
     /// 将当前映射序列化为 JSON 字节（调用方负责 free）
     pub fn saveToJsonAlloc(self: *const ActionMap, allocator: std.mem.Allocator) ![]u8 {
-        var buf = std.ArrayList(u8).init(allocator);
-        errdefer buf.deinit();
-        const w = buf.writer();
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        errdefer buf.deinit(allocator);
+        const w = buf.writer(allocator);
 
         try w.writeAll("{\"actions\":[");
         var it = self.entries.iterator();
@@ -297,8 +297,7 @@ pub const ActionMap = struct {
             first_action = false;
             const entry = kv.value_ptr;
 
-            try w.print("{{\"name\":", .{});
-            try std.json.encodeJsonString(entry.name, .{}, w);
+            try w.print("{{\"name\":\"{s}\"", .{entry.name});
             try w.writeAll(",\"bindings\":[");
 
             for (entry.bindings.items, 0..) |binding, i| {
@@ -315,7 +314,7 @@ pub const ActionMap = struct {
             try w.writeAll("]}");
         }
         try w.writeAll("]}");
-        return buf.toOwnedSlice();
+        return buf.toOwnedSlice(allocator);
     }
 };
 

@@ -3,6 +3,7 @@ const scene_mod = @import("../scene/scene.zig");
 const renderer_mod = @import("../render/renderer.zig");
 const rhi_mod = @import("../rhi/device.zig");
 const input_mod = @import("input.zig");
+const input_action_mod = @import("input_action.zig");
 const command_queue_mod = @import("command_queue.zig");
 const editor_utility_runtime_mod = @import("../script/editor_utility_runtime.zig");
 const scene_manager_mod = @import("scene_manager.zig");
@@ -75,6 +76,7 @@ pub const LayerContext = struct {
     script_runtime: ?*script_runtime_mod.ScriptRuntime = null,
     editor_utility_runtime: ?*editor_utility_runtime_mod.EditorUtilityRuntime = null,
     input: *input_mod.InputState,
+    action_map: ?*input_action_mod.ActionMap = null,
     window: *window_mod.Window,
     playback_controller: *PlaybackController,
     game_state: *GameState,
