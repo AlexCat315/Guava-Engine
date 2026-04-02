@@ -411,47 +411,56 @@ fn drawProjectPanel(state: *EditorState, layer_context: *engine.core.LayerContex
     try drawProjectPanelHeader(state, layer_context);
 
     const avail = gui.contentRegionAvail();
-    const has_selection = selectedAsset(state) != null;
-    const col_count: i32 = if (has_selection) 3 else 2;
+    const panel_width = avail[0];
 
-    if (!gui.beginTable("project_browser_layout", col_count)) {
-        return;
-    }
-    defer gui.endTable();
+    // Responsive layout based on available width
+    if (panel_width < 450.0) {
+        // Narrow: single column — grid/list only, no tree sidebar
+        _ = gui.beginChild("project_assets_grid", 0.0, 0.0, false);
+        defer gui.endChild();
+        try drawAssetGrid(state, layer_context);
+    } else {
+        const has_selection = selectedAsset(state) != null and panel_width >= 720.0;
+        const col_count: i32 = if (has_selection) 3 else 2;
 
-    // Column widths
-    const tree_width = std.math.clamp(avail[0] * 0.18, 120.0, 200.0);
-    gui.tableSetupColumn("##tree", false, tree_width);
-    gui.tableSetupColumn("##grid", true, 1.0);
-    if (has_selection) {
-        const inspector_width = std.math.clamp(avail[0] * 0.26, 180.0, 320.0);
-        gui.tableSetupColumn("##inspector", false, inspector_width);
-    }
-
-    gui.tableNextRow();
-
-    // Column 1: Folder tree
-    gui.tableNextColumn();
-    _ = gui.beginChild("project_folders_tree", 0.0, 0.0, true);
-    defer gui.endChild();
-    try drawFolderTree(state, layer_context);
-
-    // Column 2: Grid/List view
-    gui.tableNextColumn();
-    _ = gui.beginChild("project_assets_grid", 0.0, 0.0, false);
-    defer gui.endChild();
-    try drawAssetGrid(state, layer_context);
-
-    // Column 3: Inspector (only when an asset is selected)
-    if (has_selection) {
-        gui.tableNextColumn();
-        gui.pushStyleColor(.child_bg, .{ 0.09, 0.10, 0.12, 1.0 });
-        _ = gui.beginChild("project_inspector", 0.0, 0.0, true);
-        defer {
-            gui.endChild();
-            gui.popStyleColor(1);
+        if (!gui.beginTable("project_browser_layout", col_count)) {
+            return;
         }
-        try drawInspectorPanel(state, layer_context);
+        defer gui.endTable();
+
+        const tree_width = std.math.clamp(panel_width * 0.22, 120.0, 220.0);
+        gui.tableSetupColumn("##tree", false, tree_width);
+        gui.tableSetupColumn("##grid", true, 1.0);
+        if (has_selection) {
+            const inspector_width = std.math.clamp(panel_width * 0.28, 200.0, 340.0);
+            gui.tableSetupColumn("##inspector", false, inspector_width);
+        }
+
+        gui.tableNextRow();
+
+        // Column 1: Folder tree
+        gui.tableNextColumn();
+        _ = gui.beginChild("project_folders_tree", 0.0, 0.0, false);
+        defer gui.endChild();
+        try drawFolderTree(state, layer_context);
+
+        // Column 2: Grid/List view
+        gui.tableNextColumn();
+        _ = gui.beginChild("project_assets_grid", 0.0, 0.0, false);
+        defer gui.endChild();
+        try drawAssetGrid(state, layer_context);
+
+        // Column 3: Inspector (only when wide + asset selected)
+        if (has_selection) {
+            gui.tableNextColumn();
+            gui.pushStyleColor(.child_bg, .{ 0.09, 0.10, 0.12, 1.0 });
+            _ = gui.beginChild("project_inspector", 0.0, 0.0, true);
+            defer {
+                gui.endChild();
+                gui.popStyleColor(1);
+            }
+            try drawInspectorPanel(state, layer_context);
+        }
     }
 }
 
@@ -464,8 +473,10 @@ fn drawFolderTree(state: *EditorState, layer_context: *engine.core.LayerContext)
 fn drawFolderRow(state: *EditorState, layer_context: *engine.core.LayerContext, directory: []const u8) !void {
     const selected_directory = selectedDirectory(state);
     const depth = directoryDepth(directory);
+
+    // Indentation via invisible spacer
     if (depth > 0) {
-        gui.dummy(@as(f32, @floatFromInt(depth)) * 12.0, 1.0);
+        gui.dummy(@as(f32, @floatFromInt(depth)) * 14.0, 1.0);
         gui.sameLine();
     }
 
@@ -486,14 +497,16 @@ fn drawFolderRow(state: *EditorState, layer_context: *engine.core.LayerContext, 
     } else {
         const is_root = std.mem.eql(u8, directory, "/");
         const label_name = if (is_root) assetBrowserRootLabel(state) else directoryName(directory);
-        const prefix = if (is_root) "" else "| ";
-        var label_buffer: [320]u8 = undefined;
-        const label = try std.fmt.bufPrint(&label_buffer, "{s}{s}##dir_{s}", .{ prefix, label_name, directory });
         const is_selected = std.mem.eql(u8, selected_directory, directory);
+
+        // Folder label with tree-style prefix
+        var label_buffer: [320]u8 = undefined;
+        const label = std.fmt.bufPrint(&label_buffer, "{s}##dir_{s}", .{ label_name, directory }) catch label_name;
+
         if (is_selected) {
-            gui.pushStyleColor(.text, .{ 1.0, 0.88, 0.4, 1.0 }); // gold text for selected folder
+            gui.pushStyleColor(.text, .{ 1.0, 0.88, 0.4, 1.0 });
         }
-        if (gui.selectable(label, is_selected, false, 0.0, 24.0)) {
+        if (gui.selectable(label, is_selected, false, 0.0, 22.0)) {
             setSelectedAssetDirectory(state, directory);
         }
         if (is_selected) {
@@ -534,8 +547,9 @@ fn drawAssetGrid(state: *EditorState, layer_context: *engine.core.LayerContext) 
 
 fn drawAssetGridView(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const available = gui.contentRegionAvail();
-    const tile_size = std.math.clamp(state.asset_thumbnail_size, 72.0, 160.0);
-    const stride = tile_size + 20.0;
+    const tile_size = std.math.clamp(state.asset_thumbnail_size, 48.0, 160.0);
+    const card_width = tile_size + 8.0;
+    const stride = card_width + 6.0;
     const column_count = @as(i32, @intFromFloat(@max(@floor(available[0] / stride), 1.0)));
 
     if (!gui.beginTable("project_assets_table", column_count)) {
@@ -662,44 +676,30 @@ fn drawAssetCard(
     tile_size: f32,
 ) !void {
     var child_id_buffer: [64]u8 = undefined;
-    const child_id = try std.fmt.bufPrint(&child_id_buffer, "asset_card_{d}", .{index});
-    const card_width = tile_size + 10.0;
-    const card_height = tile_size + 52.0;
+    const child_id = std.fmt.bufPrint(&child_id_buffer, "asset_card_{d}", .{index}) catch "card";
+    const card_padding: f32 = 4.0;
+    const card_width = tile_size + card_padding * 2;
+    const label_height: f32 = 32.0;
+    const card_height = tile_size + label_height + card_padding;
     const selected = isAssetSelected(state, index);
 
-    // Card background: folders warm-tinted, selected items highlighted
+    // Card background
     if (selected) {
-        gui.pushStyleColor(.child_bg, .{ 0.12, 0.22, 0.14, 1.0 });
+        gui.pushStyleColor(.child_bg, .{ 0.14, 0.24, 0.16, 1.0 });
     } else if (entry.is_directory) {
-        gui.pushStyleColor(.child_bg, .{ 0.13, 0.12, 0.09, 1.0 });
+        gui.pushStyleColor(.child_bg, .{ 0.12, 0.11, 0.09, 1.0 });
     } else {
         gui.pushStyleColor(.child_bg, theme.Palette.content_browser.thumbnail_bg);
     }
+    gui.pushStyleColor(.border, if (selected) [4]f32{ 0.3, 0.7, 0.4, 0.8 } else [4]f32{ 0.15, 0.15, 0.15, 0.3 });
     _ = gui.beginChild(child_id, card_width, card_height, true);
     defer {
         gui.endChild();
-        gui.popStyleColor(1);
-    }
-
-    // ── Type accent stripe (3px colored bar at top) ──
-    {
-        const tint = assetIconTint(entry.kind);
-        const bar_color: [4]f32 = .{
-            @as(f32, @floatFromInt(tint[0])) / 255.0,
-            @as(f32, @floatFromInt(tint[1])) / 255.0,
-            @as(f32, @floatFromInt(tint[2])) / 255.0,
-            if (selected) 1.0 else 0.6,
-        };
-        gui.pushStyleColor(.button, bar_color);
-        gui.pushStyleColor(.button_hovered, bar_color);
-        gui.pushStyleColor(.button_active, bar_color);
-        gui.setCursorPos(.{ 0.0, 0.0 });
-        _ = gui.buttonEx("##accent", card_width, 3.0);
-        gui.popStyleColor(3);
+        gui.popStyleColor(2);
     }
 
     // ── Icon / thumbnail ──
-    const icon_size = tile_size * 0.55;
+    const icon_size = tile_size * 0.6;
     const icon_path = assetIconPath(entry.kind);
     const icon_tint = if (selected) [4]u8{ 34, 197, 94, 255 } else assetIconTint(entry.kind);
     const icon_texture = try ui_icons.ensureTintedIconTexture(
@@ -714,11 +714,11 @@ fn drawAssetCard(
     else
         icon_texture;
 
-    const x_padding = @max((card_width - icon_size) * 0.5, 2.0);
-    gui.setCursorPos(.{ x_padding, 6.0 });
+    const x_center = @max((card_width - icon_size) * 0.5, 0.0);
+    gui.setCursorPos(.{ x_center, card_padding });
 
     var button_id_buffer: [64]u8 = undefined;
-    const button_id = try std.fmt.bufPrint(&button_id_buffer, "asset_thumb_{d}", .{index});
+    const button_id = std.fmt.bufPrint(&button_id_buffer, "asset_thumb_{d}", .{index}) catch "thumb";
     if (gui.imageButton(
         button_id,
         card_texture,
@@ -734,7 +734,6 @@ fn drawAssetCard(
         setSelectedAssetDirectory(state, entry.display_path);
     }
     if (gui.isItemHovered()) {
-        // Rich tooltip: name + type
         var tooltip_buf: [256]u8 = undefined;
         const tooltip = std.fmt.bufPrint(&tooltip_buf, "{s}\n{s}", .{
             entry.name,
@@ -745,8 +744,8 @@ fn drawAssetCard(
     drawAssetDragSource(state, entry, index, card_texture);
     try drawAssetContextMenu(state, layer_context, entry, index);
 
-    // ── Label area ──
-    const label_y = icon_size + 10.0;
+    // ── Label ──
+    const label_y = tile_size + card_padding;
     if (state.asset_rename_index == index) {
         gui.setCursorPos(.{ 2.0, label_y });
         gui.setNextItemWidth(card_width - 4.0);
@@ -762,8 +761,10 @@ fn drawAssetCard(
             state.asset_rename_index = null;
         }
     } else {
-        gui.setCursorPos(.{ 4.0, label_y });
+        gui.setCursorPos(.{ 2.0, label_y });
+        gui.pushStyleColor(.text, if (entry.is_directory) [4]f32{ 0.95, 0.88, 0.5, 1.0 } else [4]f32{ 0.85, 0.85, 0.85, 1.0 });
         gui.textWrapped(entry.name);
+        gui.popStyleColor(1);
     }
 }
 
@@ -888,91 +889,176 @@ fn drawInspectorPanel(state: *EditorState, layer_context: *engine.core.LayerCont
     }
 }
 
-// Compressed single-line header: back + breadcrumbs (left), search (center), controls (right)
+// Responsive header: adapts to panel width
 fn drawProjectPanelHeader(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
     const current = selectedDirectory(state);
+    const header_width = gui.contentRegionAvail()[0];
+    const compact = header_width < 400.0;
 
-    // ── Row 1: [← Back] [breadcrumb path] ... [Search] [Grid/List] [Import ▼] ──
+    // ── Row 1: [← Back] [breadcrumb...] [Search] [⊞/≡] [+] ──
     {
-        // Back button (disabled at root)
+        const btn_h: f32 = 24.0;
+
+        // Back button
         const at_root = std.mem.eql(u8, current, "/");
-        gui.pushStyleColor(.text, if (at_root)
-            theme.Palette.content_browser.drawer_empty_text
-        else
-            .{ 0.88, 0.91, 0.95, 1.0 });
-        if (gui.buttonEx("<", 26.0, 26.0) and !at_root) {
-            // Navigate to parent directory
+        if (at_root) {
+            gui.pushStyleColor(.text, theme.Palette.content_browser.drawer_empty_text);
+        }
+        if (gui.buttonEx("<##nav_back", 24.0, btn_h) and !at_root) {
             const parent = directoryPath(current);
             setSelectedAssetDirectory(state, if (parent.len == 0) "/" else parent);
         }
-        gui.popStyleColor(1);
+        if (at_root) gui.popStyleColor(1);
 
-        // Breadcrumb segments
+        // Breadcrumb path
         gui.sameLine();
-        const root_label = assetBrowserRootLabel(state);
         gui.pushStyleColor(.button, theme.Palette.content_browser.path_bar_bg);
-        if (gui.buttonEx(root_label, 0.0, 26.0)) {
+        defer gui.popStyleColor(1);
+
+        const root_label = assetBrowserRootLabel(state);
+        var bc_buf: [128]u8 = undefined;
+        const root_bc = std.fmt.bufPrint(&bc_buf, "{s}##bc_root", .{root_label}) catch root_label;
+        if (gui.buttonEx(root_bc, 0.0, btn_h)) {
             setSelectedAssetDirectory(state, "/");
         }
+
         var path_buffer: [256]u8 = undefined;
         var path_pos: usize = if (current.len > 0 and current[0] == '/') 1 else 0;
         while (path_pos < current.len) {
-            gui.sameLine();
-            gui.pushStyleColor(.text, theme.Palette.content_browser.breadcrumb_separator_text);
-            gui.text(">");
-            gui.popStyleColor(1);
-            gui.sameLine();
             const next_slash = std.mem.indexOfScalarPos(u8, current, path_pos, '/') orelse current.len;
             const segment = current[path_pos..next_slash];
             if (segment.len > 0) {
-                const segment_label = try std.fmt.bufPrint(&path_buffer, "{s}##bc_{d}", .{ segment, path_pos });
-                if (gui.buttonEx(segment_label, 0.0, 26.0)) {
+                gui.sameLine();
+                gui.pushStyleColor(.text, theme.Palette.content_browser.breadcrumb_separator_text);
+                gui.text("/");
+                gui.popStyleColor(1);
+                gui.sameLine();
+                const segment_label = std.fmt.bufPrint(&path_buffer, "{s}##bc_{d}", .{ segment, path_pos }) catch segment;
+                if (gui.buttonEx(segment_label, 0.0, btn_h)) {
                     setSelectedAssetDirectory(state, current[0..next_slash]);
                 }
             }
             path_pos = next_slash + 1;
         }
-        gui.popStyleColor(1); // path_bar_bg
 
-        // Search box (right-aligned section)
+        // Right-side controls: search + view toggle + import
         gui.sameLine();
-        const remaining = gui.contentRegionAvail()[0];
-        const search_width = std.math.clamp(remaining * 0.40, 100.0, 240.0);
-        gui.setNextItemWidth(search_width);
-        _ = gui.inputTextWithHint("##asset_filter", state.text(.search_assets), state.asset_filter_buffer[0..]);
+        const right_remaining = gui.contentRegionAvail()[0];
 
-        // View mode toggle
-        gui.sameLine();
-        const view_label = if (state.browser_view_mode == .grid) "Grid" else "List";
-        const view_mode_palette = if (state.browser_view_mode == .grid)
-            ui_icons.palettes.toolbar_active
-        else
-            ui_icons.palettes.toolbar_idle;
-        gui.pushStyleColor(.button, view_mode_palette.button);
-        gui.pushStyleColor(.button_hovered, view_mode_palette.hovered);
-        gui.pushStyleColor(.button_active, view_mode_palette.active);
-        if (gui.buttonEx(view_label, 0.0, 26.0)) {
-            state.browser_view_mode = switch (state.browser_view_mode) {
-                .grid => .list,
-                .list => .grid,
-            };
-        }
-        gui.popStyleColor(3);
+        if (compact) {
+            // Narrow: small search + icon-only buttons
+            const search_w = @max(right_remaining - 80.0, 40.0);
+            gui.setNextItemWidth(search_w);
+            _ = gui.inputTextWithHint("##asset_filter", "...", state.asset_filter_buffer[0..]);
+            gui.sameLine();
+            const v_icon = if (state.browser_view_mode == .grid) "G" else "L";
+            if (gui.buttonEx(v_icon, 24.0, btn_h)) {
+                state.browser_view_mode = switch (state.browser_view_mode) {
+                    .grid => .list,
+                    .list => .grid,
+                };
+            }
+            gui.sameLine();
+            if (gui.buttonEx("+##import_menu", 24.0, btn_h)) {
+                gui.openPopup("##import_popup");
+            }
+            if (gui.beginPopup("##import_popup")) {
+                if (gui.selectable(state.text(.import_assets), false, false, 0.0, 0.0)) {
+                    importAssetsFromFinder(state, layer_context);
+                }
+                if (gui.selectable("Import Folder", false, false, 0.0, 0.0)) {
+                    importFolderFromFinder(state, layer_context);
+                }
+                gui.endPopup();
+            }
+        } else {
+            // Wide: full controls
+            const search_w = std.math.clamp(right_remaining - 180.0, 80.0, 240.0);
+            gui.setNextItemWidth(search_w);
+            _ = gui.inputTextWithHint("##asset_filter", state.text(.search_assets), state.asset_filter_buffer[0..]);
 
-        // Import buttons
-        gui.sameLine();
-        if (gui.buttonEx(state.text(.import_assets), 0.0, 26.0)) {
-            importAssetsFromFinder(state, layer_context);
-        }
-        gui.sameLine();
-        if (gui.buttonEx("+ Folder", 0.0, 26.0)) {
-            importFolderFromFinder(state, layer_context);
+            gui.sameLine();
+            const view_icon = if (state.browser_view_mode == .grid) "##grid_view" else "##list_view";
+            const view_short = if (state.browser_view_mode == .grid) "G" else "L";
+            var view_buf: [32]u8 = undefined;
+            const view_label = std.fmt.bufPrint(&view_buf, "{s}{s}", .{ view_short, view_icon }) catch "V";
+            if (gui.buttonEx(view_label, 24.0, btn_h)) {
+                state.browser_view_mode = switch (state.browser_view_mode) {
+                    .grid => .list,
+                    .list => .grid,
+                };
+            }
+
+            gui.sameLine();
+            if (gui.buttonEx("+##import_btn", 24.0, btn_h)) {
+                gui.openPopup("##import_popup_wide");
+            }
+            if (gui.beginPopup("##import_popup_wide")) {
+                if (gui.selectable(state.text(.import_assets), false, false, 0.0, 0.0)) {
+                    importAssetsFromFinder(state, layer_context);
+                }
+                if (gui.selectable("Import Folder", false, false, 0.0, 0.0)) {
+                    importFolderFromFinder(state, layer_context);
+                }
+                gui.endPopup();
+            }
         }
     }
 
-    // ── Row 2: [Type filter] [Sort] [Thumbnail slider] ──
-    {
-        // Type filter combo
+    // ── Row 2: filters (collapsed into popup when narrow) ──
+    if (compact) {
+        // Narrow: single row with type filter + sort in one line
+        const filter_label = if (state.asset_kind_filter) |kind|
+            utils.assetKindLabel(state, kind)
+        else
+            "All";
+        gui.setNextItemWidth(70.0);
+        if (gui.beginCombo("##type_f", filter_label)) {
+            if (gui.selectable(state.text(.all_types), state.asset_kind_filter == null, false, 0.0, 0.0)) {
+                state.asset_kind_filter = null;
+            }
+            const kinds = [_]state_mod.AssetKind{ .scene, .model, .material, .texture, .shader, .script };
+            for (kinds) |kind| {
+                if (gui.selectable(utils.assetKindLabel(state, kind), state.asset_kind_filter != null and state.asset_kind_filter.? == kind, false, 0.0, 0.0)) {
+                    state.asset_kind_filter = kind;
+                }
+            }
+            gui.endCombo();
+        }
+
+        gui.sameLine();
+        const sort_short: []const u8 = switch (state.asset_sort_mode) {
+            .name_asc => "A-Z",
+            .name_desc => "Z-A",
+            .kind_asc => "Type",
+            .kind_desc => "Type-",
+        };
+        gui.setNextItemWidth(60.0);
+        if (gui.beginCombo("##sort_f", sort_short)) {
+            const modes = [_]state_mod.AssetSortMode{ .name_asc, .name_desc, .kind_asc, .kind_desc };
+            const labels = [_][]const u8{
+                state.text(.sort_name_asc),
+                state.text(.sort_name_desc),
+                state.text(.sort_kind_asc),
+                state.text(.sort_kind_desc),
+            };
+            for (modes, labels) |mode, mode_label| {
+                if (gui.selectable(mode_label, state.asset_sort_mode == mode, false, 0.0, 0.0)) {
+                    state.asset_sort_mode = mode;
+                    sortAssetEntries(state);
+                }
+            }
+            gui.endCombo();
+        }
+
+        gui.sameLine();
+        gui.setNextItemWidth(@max(gui.contentRegionAvail()[0] - 4.0, 30.0));
+        var thumb_int: i32 = @intFromFloat(state.asset_thumbnail_size);
+        if (gui.sliderInt("##thumb", &thumb_int, 48, 160)) {
+            state.asset_thumbnail_size = @floatFromInt(std.math.clamp(thumb_int, 48, 160));
+        }
+    } else {
+        // Wide: full filter row
         const filter_label = if (state.asset_kind_filter) |kind|
             utils.assetKindLabel(state, kind)
         else
@@ -993,8 +1079,6 @@ fn drawProjectPanelHeader(state: *EditorState, layer_context: *engine.core.Layer
         }
 
         gui.sameLine();
-
-        // Sort mode combo
         const sort_label: []const u8 = switch (state.asset_sort_mode) {
             .name_asc => state.text(.sort_name_asc),
             .name_desc => state.text(.sort_name_desc),
@@ -1019,12 +1103,11 @@ fn drawProjectPanelHeader(state: *EditorState, layer_context: *engine.core.Layer
             gui.endCombo();
         }
 
-        // Thumbnail size slider
         gui.sameLine();
         gui.setNextItemWidth(std.math.clamp(gui.contentRegionAvail()[0] - 8.0, 60.0, 120.0));
-        var thumbnail_size = state.asset_thumbnail_size;
-        if (gui.dragFloat("##asset_thumbnail_size", &thumbnail_size, 1.0, 72.0, 160.0)) {
-            state.asset_thumbnail_size = std.math.clamp(thumbnail_size, 72.0, 160.0);
+        var thumb_int: i32 = @intFromFloat(state.asset_thumbnail_size);
+        if (gui.sliderInt("##asset_thumb_size", &thumb_int, 48, 160)) {
+            state.asset_thumbnail_size = @floatFromInt(std.math.clamp(thumb_int, 48, 160));
         }
     }
 
