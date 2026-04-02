@@ -221,9 +221,18 @@ pub const DofRuntimePass = struct {
     }
 
     fn releaseBindGroups(self: *DofRuntimePass, device: *rhi_mod.RhiDevice) void {
-        if (self.coc_bind_group) |*bg| { device.releaseBindGroup(bg); self.coc_bind_group = null; }
-        if (self.blur_bind_group) |*bg| { device.releaseBindGroup(bg); self.blur_bind_group = null; }
-        if (self.composite_bind_group) |*bg| { device.releaseBindGroup(bg); self.composite_bind_group = null; }
+        if (self.coc_bind_group) |*bg| {
+            device.releaseBindGroup(bg);
+            self.coc_bind_group = null;
+        }
+        if (self.blur_bind_group) |*bg| {
+            device.releaseBindGroup(bg);
+            self.blur_bind_group = null;
+        }
+        if (self.composite_bind_group) |*bg| {
+            device.releaseBindGroup(bg);
+            self.composite_bind_group = null;
+        }
         self.coc_bound_color = 0;
         self.coc_bound_depth = 0;
         self.blur_bound_color = 0;
@@ -234,9 +243,18 @@ pub const DofRuntimePass = struct {
     }
 
     fn releaseIntermediateTextures(self: *DofRuntimePass, device: *rhi_mod.RhiDevice) void {
-        if (self.coc_texture) |*t| { device.releaseTexture(t); self.coc_texture = null; }
-        if (self.blur_texture) |*t| { device.releaseTexture(t); self.blur_texture = null; }
-        if (self.output_texture) |*t| { device.releaseTexture(t); self.output_texture = null; }
+        if (self.coc_texture) |*t| {
+            device.releaseTexture(t);
+            self.coc_texture = null;
+        }
+        if (self.blur_texture) |*t| {
+            device.releaseTexture(t);
+            self.blur_texture = null;
+        }
+        if (self.output_texture) |*t| {
+            device.releaseTexture(t);
+            self.output_texture = null;
+        }
         self.intermediate_width = 0;
         self.intermediate_height = 0;
     }
