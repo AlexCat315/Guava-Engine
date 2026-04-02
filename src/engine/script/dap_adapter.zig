@@ -206,8 +206,8 @@ pub const DapAdapter = struct {
                     if (!first) try bp_writer.writeAll(",");
                     first = false;
                     try std.fmt.format(bp_writer, "{{\"{s}\":{d},\"{s}\":{d},\"{s}\":true}}", .{
-                        "id",          bp_id,
-                        "line",        line,
+                        "id",       bp_id,
+                        "line",     line,
                         "verified",
                     });
                 }

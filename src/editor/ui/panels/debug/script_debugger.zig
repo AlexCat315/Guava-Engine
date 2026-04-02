@@ -24,7 +24,7 @@ pub const ScriptDebuggerState = struct {
     dap_server_state: DapServerState = .stopped,
     dap_server_thread: ?std.Thread = null,
     dap_port: u16 = 4711,
-    dap_port_buf: [8]u8 = [_]u8{'4', '7', '1', '1', 0, 0, 0, 0},
+    dap_port_buf: [8]u8 = [_]u8{ '4', '7', '1', '1', 0, 0, 0, 0 },
     dap_status_msg: [128]u8 = [_]u8{0} ** 128,
     dap_status_len: usize = 0,
 };
