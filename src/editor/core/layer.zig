@@ -16,6 +16,7 @@ const history = @import("../actions/history.zig");
 const vfx_runtime = @import("../runtime/vfx.zig");
 const layout = @import("../ui/layout.zig");
 const animation_editor = @import("../ui/panels/tools/animation_editor.zig");
+const sequencer_panel = @import("../ui/panels/tools/sequencer_panel.zig");
 const editor_utilities = @import("../ui/panels/debug/editor_utilities.zig");
 const prefab_browser = @import("../ui/panels/assets/prefab_browser.zig");
 const particle_editor = @import("../ui/panels/tools/particle_editor.zig");
@@ -132,6 +133,7 @@ fn seedPostProcessViewportState(state: *const EditorState, viewport_state: *engi
 pub const EditorLayer = struct {
     state: EditorState = .{},
     animation_editor_state: ?animation_editor.AnimationEditorState = null,
+    sequencer_editor_state: ?sequencer_panel.SequencerEditorState = null,
     particle_editor_state: particle_editor.ParticleEditorState = .{},
     script_editor_state: ?script_editor.ScriptEditorState = null,
     post_process_editor_state: ?post_process_editor.PostProcessPipelineEditorState = null,
@@ -184,6 +186,9 @@ pub const EditorLayer = struct {
         // Initialize animation editor state
         self.animation_editor_state = try animation_editor.createAnimationEditorState(layer_context.world.allocator);
 
+        // Initialize sequencer editor state
+        self.sequencer_editor_state = try sequencer_panel.createSequencerEditorState(layer_context.world.allocator);
+
         // Initialize tool panel states
         self.script_editor_state = script_editor.ScriptEditorState.init(layer_context.world.allocator);
         self.post_process_editor_state = post_process_editor.PostProcessPipelineEditorState.init(layer_context.world.allocator);
@@ -232,6 +237,12 @@ pub const EditorLayer = struct {
             if (self.animation_editor_state) |*editor_state| {
                 animation_editor.destroyAnimationEditorState(editor_state, allocator);
                 self.animation_editor_state = null;
+            }
+
+            // Cleanup sequencer editor state
+            if (self.sequencer_editor_state) |*seq_state| {
+                sequencer_panel.destroySequencerEditorState(seq_state, allocator);
+                self.sequencer_editor_state = null;
             }
 
             // Cleanup tool panel states
@@ -311,6 +322,13 @@ pub const EditorLayer = struct {
         if (self.state.animation_editor_open) {
             if (self.animation_editor_state) |*editor_state| {
                 try animation_editor.drawAnimationEditorWindow(&self.state, layer_context, editor_state);
+            }
+        }
+
+        // Draw sequencer window if open
+        if (self.state.sequencer_open) {
+            if (self.sequencer_editor_state) |*seq_state| {
+                try sequencer_panel.drawSequencerWindow(&self.state, layer_context, seq_state);
             }
         }
 

@@ -221,6 +221,7 @@ pub const MessageId = enum {
     settings_assistant,
     material_editor,
     animation_editor,
+    sequencer,
     editor,
     english,
     chinese,

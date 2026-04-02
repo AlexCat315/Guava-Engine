@@ -230,6 +230,7 @@ pub const locale = blk: {
             .settings_assistant = "Assistant",
             .material_editor = "Material Editor",
             .animation_editor = "Animation Editor",
+            .sequencer = "Sequencer",
             .editor = "Editor",
             .english = "English",
             .chinese = "Chinese",
