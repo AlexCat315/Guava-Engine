@@ -729,6 +729,12 @@ fn drawSelectedAssetPreview(state: *EditorState, layer_context: *engine.core.Lay
                     state.script_editor_open = true;
                 }
             },
+            .directory => {
+                gui.textWrapped("Folder");
+            },
+            .unknown => {
+                gui.textWrapped("File");
+            },
         }
         return;
     }
@@ -1051,6 +1057,8 @@ fn assetIconPath(kind: AssetKind) []const u8 {
         .texture => ui_icons.paths.toolbar.settings,
         .shader => ui_icons.paths.toolbar.rotate,
         .script => ui_icons.paths.toolbar.settings,
+        .directory => ui_icons.paths.hierarchy.object,
+        .unknown => ui_icons.paths.toolbar.settings,
     };
 }
 
@@ -1062,6 +1070,8 @@ fn assetIconTint(kind: AssetKind) [4]u8 {
         .texture => .{ 255, 214, 150, 255 },
         .shader => .{ 214, 176, 255, 255 },
         .script => .{ 255, 196, 196, 255 },
+        .directory => .{ 255, 220, 130, 255 },
+        .unknown => .{ 180, 180, 180, 255 },
     };
 }
 
@@ -1338,33 +1348,22 @@ pub fn refreshAssetBrowser(state: *EditorState, _: *engine.core.LayerContext) !v
     const allocator = state.allocator orelse return;
     clearAssetBrowser(state);
 
-    const registry = if (state.asset_registry) |*value|
-        value
-    else
-        return;
-
-    const root_path = assetBrowserRootPath(state);
-    try registry.refreshProject(root_path);
-
-    const snapshot_path = try assetBrowserSnapshotPathAlloc(allocator, state);
-    defer allocator.free(snapshot_path);
-    registry.writeSnapshotToPath(snapshot_path) catch |err| {
-        std.log.warn("failed to write asset registry snapshot: {}", .{err});
-    };
-
-    for (registry.records.items) |record| {
-        const kind = assetKindForRecordType(record.type) orelse continue;
-        const display_path = try assetDisplayPathAlloc(allocator, state, record.source_path);
-        errdefer allocator.free(display_path);
-
-        try state.asset_entries.append(allocator, .{
-            .id = try allocator.dupe(u8, record.id),
-            .path = try allocator.dupe(u8, record.source_path),
-            .display_path = display_path,
-            .name = try allocator.dupe(u8, record.metadata.display_name),
-            .kind = kind,
-        });
+    // Also refresh the asset registry in the background for cooked-model lookups.
+    if (state.asset_registry) |*registry| {
+        const root_path = assetBrowserRootPath(state);
+        registry.refreshProject(root_path) catch |err| {
+            std.log.warn("failed to refresh asset registry: {s}", .{@errorName(err)});
+        };
+        const snapshot_path = assetBrowserSnapshotPathAlloc(allocator, state) catch null;
+        if (snapshot_path) |sp| {
+            defer allocator.free(sp);
+            registry.writeSnapshotToPath(sp) catch {};
+        }
     }
+
+    // Scan actual file system for Godot/Unity-style browsing.
+    const root_path = assetBrowserRootPath(state);
+    try scanFileSystemEntries(state, allocator, root_path);
 
     sortAssetEntries(state);
     try rebuildAssetDirectories(state);
@@ -1374,6 +1373,61 @@ pub fn refreshAssetBrowser(state: *EditorState, _: *engine.core.LayerContext) !v
             state.selected_asset_index = null;
         }
     }
+}
+
+/// Scan the actual file system and populate asset_entries with ALL files and directories.
+fn scanFileSystemEntries(state: *EditorState, allocator: std.mem.Allocator, root_path: []const u8) !void {
+    var root_dir = std.fs.cwd().openDir(root_path, .{ .iterate = true }) catch |err| {
+        if (err == error.FileNotFound) return;
+        return err;
+    };
+    defer root_dir.close();
+
+    var walker = try root_dir.walk(allocator);
+    defer walker.deinit();
+    while (try walker.next()) |entry| {
+        // Skip hidden files, .meta files, and derived/ directory.
+        if (std.mem.startsWith(u8, entry.path, ".")) continue;
+        if (std.mem.startsWith(u8, entry.path, "derived/") or std.mem.startsWith(u8, entry.path, "Derived/")) continue;
+        if (std.mem.endsWith(u8, entry.path, ".meta")) continue;
+
+        const is_dir = (entry.kind == .directory);
+        const full_path = try std.fs.path.join(allocator, &.{ root_path, entry.path });
+        errdefer allocator.free(full_path);
+
+        const display_path = try std.fmt.allocPrint(allocator, "/{s}", .{entry.path});
+        errdefer allocator.free(display_path);
+
+        const name = try allocator.dupe(u8, entry.basename);
+        errdefer allocator.free(name);
+
+        const kind: state_mod.AssetKind = if (is_dir)
+            .directory
+        else
+            assetKindFromPath(entry.path);
+
+        try state.asset_entries.append(allocator, .{
+            .id = try allocator.dupe(u8, ""),
+            .path = full_path,
+            .display_path = display_path,
+            .name = name,
+            .kind = kind,
+            .is_directory = is_dir,
+        });
+    }
+}
+
+/// Classify a file path into an AssetKind based on its extension.
+fn assetKindFromPath(path: []const u8) state_mod.AssetKind {
+    const ext = std.fs.path.extension(path);
+    if (ext.len == 0) return .unknown;
+    if (std.mem.eql(u8, ext, ".gltf") or std.mem.eql(u8, ext, ".glb") or std.mem.eql(u8, ext, ".obj") or std.mem.eql(u8, ext, ".fbx")) return .model;
+    if (std.mem.eql(u8, ext, ".png") or std.mem.eql(u8, ext, ".jpg") or std.mem.eql(u8, ext, ".jpeg") or std.mem.eql(u8, ext, ".hdr") or std.mem.eql(u8, ext, ".svg") or std.mem.eql(u8, ext, ".exr")) return .texture;
+    if (std.mem.eql(u8, ext, ".guava_scene") or std.mem.eql(u8, ext, ".json")) return .scene;
+    if (std.mem.eql(u8, ext, ".glsl") or std.mem.eql(u8, ext, ".spv") or std.mem.eql(u8, ext, ".msl")) return .shader;
+    if (std.mem.eql(u8, ext, ".zig") or std.mem.eql(u8, ext, ".cs")) return .script;
+    if (std.mem.eql(u8, ext, ".guava_material")) return .material;
+    return .unknown;
 }
 
 fn rebuildAssetDirectories(state: *EditorState) !void {

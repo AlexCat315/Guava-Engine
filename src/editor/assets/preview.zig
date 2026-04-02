@@ -49,6 +49,7 @@ pub fn drawAssetPreviewWindow(state: *EditorState, layer_context: *engine.core.L
             .shader => {
                 gui.textWrapped(state.text(.shader_source_preview_is_currently_metadata_only));
             },
+            .script, .directory, .unknown => {},
         }
         return;
     }

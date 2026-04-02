@@ -35,6 +35,8 @@ pub const AssetKind = enum {
     texture,
     shader,
     script,
+    directory,
+    unknown,
 };
 
 pub const AssetEntry = struct {
@@ -43,6 +45,7 @@ pub const AssetEntry = struct {
     display_path: []u8,
     name: []u8,
     kind: AssetKind,
+    is_directory: bool = false,
 };
 
 pub const IconTextureEntry = struct {

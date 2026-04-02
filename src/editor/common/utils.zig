@@ -164,6 +164,8 @@ pub fn assetKindLabel(state: *const EditorState, kind: AssetKind) []const u8 {
         .texture => state.text(.texture),
         .shader => state.text(.shader),
         .script => state.text(.script_asset),
+        .directory => "Folder",
+        .unknown => "File",
     };
 }
 
