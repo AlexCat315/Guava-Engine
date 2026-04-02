@@ -298,7 +298,7 @@ const Server = struct {
                     .title = "Guava Engine MCP",
                     .version = "0.1.0",
                 },
-                .instructions = "Guava Engine MCP bridge with scene snapshots, component schema contracts, editor context injection, staged ghost-preview transactions, paged entity queries, writable WASM pipelines for both scene scripts and editor utilities, and viewport screenshot capture. Resources: scene://hierarchy, selection://current, entity://{id}, schema://components, editor://context, editor://intent-log, preview://staged, script://runtime-status, editor://utilities. Tools: create_entity, delete_entity, rename_entity, set_parent, set_local_transform, set_world_transform, set_visible, query_entities, compile_script, compile_editor_utility, screenshot_png, stage_transaction, apply_staged_transaction, discard_staged_transaction.",
+                .instructions = "Guava Engine MCP bridge with scene snapshots, component schema contracts, editor context injection, staged ghost-preview transactions, paged entity queries, script pipelines for both scene scripts and editor utilities, and viewport screenshot capture. Resources: scene://hierarchy, selection://current, entity://{id}, schema://components, editor://context, editor://intent-log, preview://staged, script://runtime-status, editor://utilities. Tools: create_entity, delete_entity, rename_entity, set_parent, set_local_transform, set_world_transform, set_visible, query_entities, compile_script, compile_editor_utility, screenshot_png, stage_transaction, apply_staged_transaction, discard_staged_transaction.",
             });
             return false;
         }
@@ -728,7 +728,7 @@ fn writeToolList(stdout_file: *std.fs.File, id: std.json.Value) !void {
             },
             .{
                 .name = "compile_script",
-                .description = "Compile Zig source into a WASM script, optionally update an existing script resource, and optionally attach it to an entity.",
+                .description = "Register Zig source as a script, optionally update an existing script resource, and optionally attach it to an entity.",
                 .inputSchema = .{
                     .type = "object",
                     .properties = .{
@@ -744,7 +744,7 @@ fn writeToolList(stdout_file: *std.fs.File, id: std.json.Value) !void {
             },
             .{
                 .name = "compile_editor_utility",
-                .description = "Compile Zig source into a WASM-powered editor utility panel and register it with the editor UI.",
+                .description = "Register Zig source as an editor utility panel and add it to the editor UI.",
                 .inputSchema = .{
                     .type = "object",
                     .properties = .{

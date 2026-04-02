@@ -1,7 +1,7 @@
 //! 音频系统模块
 //!
 //! 集成 SoLoud 引擎，提供完整的音频播放、3D 空间音效、
-//! 混音器控制和 WASM 脚本接口。
+//! 混音器控制和脚本接口。
 
 pub const soloud_bindings = @import("./soloud_bindings.zig");
 pub const runtime = @import("./runtime.zig");

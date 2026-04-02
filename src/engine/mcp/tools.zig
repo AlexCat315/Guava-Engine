@@ -7,7 +7,6 @@ const core = @import("../core/layer.zig");
 const script_resource_mod = @import("../assets/script_resource.zig");
 const scene_mod = @import("../scene/scene.zig");
 const components = @import("../scene/components.zig");
-const wasm_compiler = @import("../script/wasm_compiler.zig");
 const screenshot_tool = @import("screenshot_tool.zig");
 
 pub const Error = error{
@@ -660,132 +659,103 @@ fn processCompileScriptRequest(
         };
     }
 
-    var compile_result = try wasm_compiler.compileZigSourceAlloc(allocator, .{
-        .source = source_bytes,
-        .script_name = if (request.description) |description| description else "ai_script",
-    });
-    defer compile_result.deinit(allocator);
+    // Register / update the script resource
+    const handle = if (request.script_handle) |existing_handle| blk: {
+        const existing_resource = resource orelse return .{
+            .kind = .compile_script,
+            .entity_id = request.entity_id,
+            .script_handle = request.script_handle,
+            .script_error = try allocator.dupe(u8, "script_handle does not exist"),
+        };
+        existing_resource.language = .zig;
+        replaceOwnedSlice(allocator, &existing_resource.source, source_bytes) catch return error.OutOfMemory;
+        if (request.description) |description| {
+            replaceOwnedSlice(allocator, &existing_resource.description, description) catch return error.OutOfMemory;
+        }
+        if (request.source_path) |source_path| {
+            replaceOwnedSlice(allocator, &existing_resource.source_path, source_path) catch return error.OutOfMemory;
+            existing_resource.last_modified = readFileMtime(source_path) catch existing_resource.last_modified;
+        } else {
+            existing_resource.last_modified = std.time.microTimestamp();
+        }
+        break :blk existing_handle;
+    } else blk: {
+        const description = request.description orelse "AI Script";
+        const source_path = request.source_path orelse "";
+        const created_handle = try layer_context.world.resources.createScript(.{
+            .source = source_bytes,
+            .language = .zig,
+            .entry_fn = "main",
+            .description = description,
+            .source_path = source_path,
+        });
+        const created_resource = layer_context.world.resources.scriptMutable(created_handle).?;
+        created_resource.last_modified = if (source_path.len != 0)
+            readFileMtime(source_path) catch std.time.microTimestamp()
+        else
+            std.time.microTimestamp();
+        break :blk created_handle;
+    };
 
-    switch (compile_result) {
-        .compile_error => |message| {
-            runtime.recordEvent(.{
-                .script_handle = request.script_handle,
-                .entity_id = request.entity_id,
-                .phase = .compile,
-                .severity = .@"error",
-                .message = message,
-            });
+    if (request.source_path) |source_path| {
+        if (runtime.hot_reload) |*hr| {
+            try hr.registerScript(source_path, handle);
+        }
+    }
+
+    if (request.script_handle != null) {
+        runtime.reloadScript(handle) catch {
             return .{
                 .kind = .compile_script,
-                .entity_id = request.entity_id,
-                .script_handle = request.script_handle,
-                .script_error = try allocator.dupe(u8, message),
-            };
-        },
-        .success => |artifact| {
-            const handle = if (request.script_handle) |existing_handle| blk: {
-                const existing_resource = resource orelse return .{
-                    .kind = .compile_script,
-                    .entity_id = request.entity_id,
-                    .script_handle = request.script_handle,
-                    .script_error = try allocator.dupe(u8, "script_handle does not exist"),
-                };
-                existing_resource.language = .wasm;
-                replaceOwnedSlice(allocator, &existing_resource.source, source_bytes) catch return error.OutOfMemory;
-                replaceOwnedSlice(allocator, &existing_resource.bytecode, artifact.bytecode) catch return error.OutOfMemory;
-                replaceOwnedSlice(allocator, &existing_resource.user_data, artifact.parameter_schema) catch return error.OutOfMemory;
-                if (request.description) |description| {
-                    replaceOwnedSlice(allocator, &existing_resource.description, description) catch return error.OutOfMemory;
-                }
-                if (request.source_path) |source_path| {
-                    replaceOwnedSlice(allocator, &existing_resource.source_path, source_path) catch return error.OutOfMemory;
-                    existing_resource.last_modified = readFileMtime(source_path) catch existing_resource.last_modified;
-                } else {
-                    existing_resource.last_modified = std.time.microTimestamp();
-                }
-                break :blk existing_handle;
-            } else blk: {
-                const description = request.description orelse "AI Wasm Script";
-                const source_path = request.source_path orelse "";
-                const created_handle = try layer_context.world.resources.createScript(.{
-                    .source = source_bytes,
-                    .language = .wasm,
-                    .entry_fn = "guava_on_update",
-                    .description = description,
-                    .source_path = source_path,
-                });
-                const created_resource = layer_context.world.resources.scriptMutable(created_handle).?;
-                created_resource.bytecode = try allocator.dupe(u8, artifact.bytecode);
-                allocator.free(created_resource.user_data);
-                created_resource.user_data = try allocator.dupe(u8, artifact.parameter_schema);
-                created_resource.last_modified = if (source_path.len != 0)
-                    readFileMtime(source_path) catch std.time.microTimestamp()
-                else
-                    std.time.microTimestamp();
-                break :blk created_handle;
-            };
-
-            if (request.source_path) |source_path| {
-                if (runtime.hot_reload) |*hr| {
-                    try hr.registerScript(source_path, handle);
-                }
-            }
-
-            if (request.script_handle != null) {
-                runtime.reloadScript(handle) catch {
-                    return .{
-                        .kind = .compile_script,
-                        .entity_id = request.entity_id,
-                        .script_handle = handle,
-                        .compiled = true,
-                        .script_error = try allocator.dupe(u8, runtime.getVM(.wasm).?.getError()),
-                    };
-                };
-            }
-
-            var attached = false;
-            if (request.entity_id) |entity_id| {
-                if (layer_context.world.getEntity(entity_id)) |entity| {
-                    const previous_parameters = if (entity.script) |existing_script| existing_script.parameters else &.{};
-                    entity.script = .{
-                        .script_handle = handle,
-                        .language = .wasm,
-                        .instance_id = null,
-                        .enabled = request.enabled,
-                        .parameters = previous_parameters,
-                    };
-                    runtime.reconcileWorld(layer_context.world);
-                    attached = true;
-                } else {
-                    return .{
-                        .kind = .compile_script,
-                        .changed = true,
-                        .entity_id = entity_id,
-                        .script_handle = handle,
-                        .compiled = true,
-                        .script_error = try allocator.dupe(u8, "entity_id does not exist"),
-                    };
-                }
-            }
-
-            runtime.recordEvent(.{
-                .script_handle = handle,
-                .entity_id = request.entity_id,
-                .phase = .compile,
-                .severity = .info,
-                .message = "compiled wasm script",
-            });
-
-            return .{
-                .kind = .compile_script,
-                .changed = true,
                 .entity_id = request.entity_id,
                 .script_handle = handle,
                 .compiled = true,
-                .attached = attached,
+                .script_error = try allocator.dupe(u8, "reload failed"),
             };
-        },
+        };
     }
+
+    var attached = false;
+    if (request.entity_id) |entity_id| {
+        if (layer_context.world.getEntity(entity_id)) |entity| {
+            const previous_parameters = if (entity.script) |existing_script| existing_script.parameters else @as([]const u8, &.{});
+            entity.script = .{
+                .script_handle = handle,
+                .language = .zig,
+                .instance_id = null,
+                .enabled = request.enabled,
+                .parameters = previous_parameters,
+            };
+            runtime.reconcileWorld(layer_context.world);
+            attached = true;
+        } else {
+            return .{
+                .kind = .compile_script,
+                .changed = true,
+                .entity_id = entity_id,
+                .script_handle = handle,
+                .compiled = true,
+                .script_error = try allocator.dupe(u8, "entity_id does not exist"),
+            };
+        }
+    }
+
+    runtime.recordEvent(.{
+        .script_handle = handle,
+        .entity_id = request.entity_id,
+        .phase = .load,
+        .severity = .info,
+        .message = "registered zig script",
+    });
+
+    return .{
+        .kind = .compile_script,
+        .changed = true,
+        .entity_id = request.entity_id,
+        .script_handle = handle,
+        .compiled = true,
+        .attached = attached,
+    };
 }
 
 fn processCompileEditorUtilityRequest(
@@ -822,121 +792,91 @@ fn processCompileEditorUtilityRequest(
         };
     }
 
-    var compile_result = try wasm_compiler.compileZigSourceAlloc(allocator, .{
-        .source = source_bytes,
-        .script_name = if (request.utility_name) |utility_name| utility_name else "editor_utility",
-        .mode = .editor_utility,
-    });
-    defer compile_result.deinit(allocator);
+    // Register / update the editor utility script resource
+    const utility_name = try resolveEditorUtilityNameAlloc(
+        allocator,
+        request.utility_name,
+        request.description,
+        request.source_path,
+        resource,
+    );
+    defer allocator.free(utility_name);
 
-    switch (compile_result) {
-        .compile_error => |message| {
-            if (layer_context.script_runtime) |script_runtime| {
-                script_runtime.recordEvent(.{
-                    .script_handle = request.script_handle,
-                    .phase = .compile,
-                    .severity = .@"error",
-                    .message = message,
-                });
-            }
-            return .{
-                .kind = .compile_editor_utility,
-                .script_handle = request.script_handle,
-                .script_error = try allocator.dupe(u8, message),
-            };
-        },
-        .success => |artifact| {
-            const utility_name = try resolveEditorUtilityNameAlloc(
-                allocator,
-                request.utility_name,
-                request.description,
-                request.source_path,
-                resource,
-            );
-            defer allocator.free(utility_name);
+    const handle = if (request.script_handle) |existing_handle| blk: {
+        const existing_resource = resource orelse return .{
+            .kind = .compile_editor_utility,
+            .script_handle = request.script_handle,
+            .script_error = try allocator.dupe(u8, "script_handle does not exist"),
+        };
+        existing_resource.language = .zig;
+        existing_resource.entry_fn = "main";
+        replaceOwnedSlice(allocator, &existing_resource.source, source_bytes) catch return error.OutOfMemory;
+        replaceOwnedSlice(allocator, &existing_resource.description, utility_name) catch return error.OutOfMemory;
+        if (request.source_path) |source_path| {
+            replaceOwnedSlice(allocator, &existing_resource.source_path, source_path) catch return error.OutOfMemory;
+            existing_resource.last_modified = readFileMtime(source_path) catch existing_resource.last_modified;
+        } else {
+            existing_resource.last_modified = std.time.microTimestamp();
+        }
+        break :blk existing_handle;
+    } else blk: {
+        const created_handle = try layer_context.world.resources.createScript(.{
+            .source = source_bytes,
+            .language = .zig,
+            .entry_fn = "main",
+            .description = utility_name,
+            .source_path = request.source_path orelse "",
+        });
+        const created_resource = layer_context.world.resources.scriptMutable(created_handle).?;
+        created_resource.last_modified = if (request.source_path) |source_path|
+            readFileMtime(source_path) catch std.time.microTimestamp()
+        else
+            std.time.microTimestamp();
+        break :blk created_handle;
+    };
 
-            const handle = if (request.script_handle) |existing_handle| blk: {
-                const existing_resource = resource orelse return .{
-                    .kind = .compile_editor_utility,
-                    .script_handle = request.script_handle,
-                    .script_error = try allocator.dupe(u8, "script_handle does not exist"),
-                };
-                existing_resource.language = .wasm;
-                existing_resource.entry_fn = "guava_on_update";
-                replaceOwnedSlice(allocator, &existing_resource.source, source_bytes) catch return error.OutOfMemory;
-                replaceOwnedSlice(allocator, &existing_resource.bytecode, artifact.bytecode) catch return error.OutOfMemory;
-                replaceOwnedSlice(allocator, &existing_resource.user_data, artifact.parameter_schema) catch return error.OutOfMemory;
-                replaceOwnedSlice(allocator, &existing_resource.description, utility_name) catch return error.OutOfMemory;
-                if (request.source_path) |source_path| {
-                    replaceOwnedSlice(allocator, &existing_resource.source_path, source_path) catch return error.OutOfMemory;
-                    existing_resource.last_modified = readFileMtime(source_path) catch existing_resource.last_modified;
-                } else {
-                    existing_resource.last_modified = std.time.microTimestamp();
-                }
-                break :blk existing_handle;
-            } else blk: {
-                const created_handle = try layer_context.world.resources.createScript(.{
-                    .source = source_bytes,
-                    .language = .wasm,
-                    .entry_fn = "guava_on_update",
-                    .description = utility_name,
-                    .source_path = request.source_path orelse "",
-                });
-                const created_resource = layer_context.world.resources.scriptMutable(created_handle).?;
-                created_resource.bytecode = try allocator.dupe(u8, artifact.bytecode);
-                allocator.free(created_resource.user_data);
-                created_resource.user_data = try allocator.dupe(u8, artifact.parameter_schema);
-                created_resource.last_modified = if (request.source_path) |source_path|
-                    readFileMtime(source_path) catch std.time.microTimestamp()
-                else
-                    std.time.microTimestamp();
-                break :blk created_handle;
-            };
+    try utility_runtime.upsertCompiled(
+        layer_context.world,
+        layer_context.command_queue,
+        handle,
+        utility_name,
+        request.open,
+    );
 
-            try utility_runtime.upsertCompiled(
-                layer_context.world,
-                layer_context.command_queue,
-                handle,
-                utility_name,
-                request.open,
-            );
+    const registration_error = try utility_runtime.lastErrorAlloc(allocator, handle);
+    errdefer if (registration_error) |message| allocator.free(message);
 
-            const registration_error = try utility_runtime.lastErrorAlloc(allocator, handle);
-            errdefer if (registration_error) |message| allocator.free(message);
-
-            if (layer_context.script_runtime) |script_runtime| {
-                const event_message = if (registration_error) |message|
-                    message
-                else
-                    "compiled editor utility";
-                script_runtime.recordEvent(.{
-                    .script_handle = handle,
-                    .phase = .compile,
-                    .severity = if (registration_error != null) .warning else .info,
-                    .message = event_message,
-                });
-            }
-
-            if (registration_error) |message| {
-                return .{
-                    .kind = .compile_editor_utility,
-                    .changed = true,
-                    .script_handle = handle,
-                    .compiled = true,
-                    .utility_registered = false,
-                    .script_error = message,
-                };
-            }
-
-            return .{
-                .kind = .compile_editor_utility,
-                .changed = true,
-                .script_handle = handle,
-                .compiled = true,
-                .utility_registered = true,
-            };
-        },
+    if (layer_context.script_runtime) |script_runtime| {
+        const event_message = if (registration_error) |message|
+            message
+        else
+            "registered editor utility";
+        script_runtime.recordEvent(.{
+            .script_handle = handle,
+            .phase = .load,
+            .severity = if (registration_error != null) .warning else .info,
+            .message = event_message,
+        });
     }
+
+    if (registration_error) |message| {
+        return .{
+            .kind = .compile_editor_utility,
+            .changed = true,
+            .script_handle = handle,
+            .compiled = true,
+            .utility_registered = false,
+            .script_error = message,
+        };
+    }
+
+    return .{
+        .kind = .compile_editor_utility,
+        .changed = true,
+        .script_handle = handle,
+        .compiled = true,
+        .utility_registered = true,
+    };
 }
 
 fn replaceOwnedSlice(allocator: std.mem.Allocator, target: *[]const u8, next: []const u8) !void {

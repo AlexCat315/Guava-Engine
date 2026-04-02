@@ -5,12 +5,10 @@ const runtime = @import("./runtime.zig");
 const vm = @import("./vm.zig");
 const hot_reload = @import("./hot_reload.zig");
 const vm_interface = @import("./vm_interface.zig");
-const wasm_compiler = @import("./wasm_compiler.zig");
 const csharp_toolchain = @import("./csharp_toolchain.zig");
 const editor_utility_runtime = @import("./editor_utility_runtime.zig");
 const script_resource_mod = @import("../assets/script_resource.zig");
 const parameter_reflection = @import("./parameter_reflection.zig");
-const script_vm_plugin_mod = @import("./script_vm_plugin.zig");
 
 pub const types_mod = types;
 pub const context_mod = context;
@@ -37,13 +35,8 @@ pub const ScriptRuntime = runtime.ScriptRuntime;
 pub const ScriptVM = vm_interface.ScriptVM;
 pub const ZigVM = vm.ZigVM;
 pub const CSharpVM = vm.CSharpVM;
-pub const WasmVM = vm.WasmVM;
-pub const WasmHostProfile = vm.WasmHostProfile;
 pub const createGameplayVM = vm.createGameplayVM;
-pub const createPluginVM = vm.createPluginVM;
 pub const createVM = vm.createVM;
-pub const WasmCompileResult = wasm_compiler.CompileResult;
-pub const WasmCompileMode = wasm_compiler.CompileMode;
 pub const csharp_toolchain_mod = csharp_toolchain;
 pub const parameter_reflection_mod = parameter_reflection;
 pub const EditorUtilityRuntime = editor_utility_runtime.EditorUtilityRuntime;
@@ -53,7 +46,6 @@ pub const freeEditorUtilitySnapshots = editor_utility_runtime.freeSnapshots;
 
 pub const HotReloadManager = hot_reload.HotReloadManager;
 pub const FileWatcher = hot_reload.FileWatcher;
-pub const ScriptVmPluginLoader = script_vm_plugin_mod.ScriptVmPluginLoader;
 
 const debug_session = @import("./debug_session.zig");
 pub const DebugSession = debug_session.DebugSession;

@@ -1,6 +1,5 @@
 const std = @import("std");
 const types = @import("./types.zig");
-const wasm_vm_mod = @import("./wasm_vm.zig");
 
 const log = std.log.scoped(.script_debug);
 
@@ -29,10 +28,17 @@ pub const InstanceDebugState = enum {
     stepping,
 };
 
+/// Parameter kind for watch variables.
+pub const ParamKind = enum {
+    float,
+    integer,
+    boolean,
+};
+
 /// A captured variable from parameter reflection.
 pub const WatchVariable = struct {
     name: []const u8,
-    kind: wasm_vm_mod.ParamKind,
+    kind: ParamKind,
     value_float: f32 = 0,
     value_int: i32 = 0,
     value_bool: bool = false,
@@ -203,46 +209,17 @@ pub const DebugSession = struct {
         return false;
     }
 
-    /// Capture the call stack for a WASM instance.
+    /// Capture the call stack for a script instance (stub — not yet implemented for builtin VMs).
     pub fn captureCallStack(self: *DebugSession, instance: *types.ScriptInstance) ![]const u8 {
-        const session = self.sessions.getPtr(instance.id) orelse return "";
-
-        if (session.call_stack_buf.len > 0) {
-            self.allocator.free(session.call_stack_buf);
-            session.call_stack_buf = &.{};
-        }
-
-        const buf = try wasm_vm_mod.dumpCallStackAlloc(self.allocator, instance);
-        session.call_stack_buf = buf;
-        return buf;
+        _ = instance;
+        _ = self;
+        return "";
     }
 
-    /// Read reflected parameters as watch variables.
+    /// Read reflected parameters as watch variables (stub — not yet implemented for builtin VMs).
     pub fn captureVariables(_: *DebugSession, allocator: std.mem.Allocator, instance: *types.ScriptInstance) ![]WatchVariable {
-        const count = wasm_vm_mod.getParamCount(instance);
-        if (count == 0) return allocator.alloc(WatchVariable, 0);
-
-        var result: std.ArrayListUnmanaged(WatchVariable) = .empty;
-        defer result.deinit(allocator);
-
-        for (0..count) |i| {
-            const idx: u32 = @intCast(i);
-            const name = wasm_vm_mod.getParamName(instance, idx);
-            if (name.len == 0) continue;
-
-            const kind = wasm_vm_mod.getParamKind(instance, idx) orelse continue;
-            var entry: WatchVariable = .{ .name = name, .kind = kind };
-
-            switch (kind) {
-                .float => entry.value_float = wasm_vm_mod.getParamFloat(instance, idx) orelse 0,
-                .boolean => entry.value_bool = wasm_vm_mod.getParamBool(instance, idx) orelse false,
-                .integer => entry.value_int = wasm_vm_mod.getParamInt(instance, idx) orelse 0,
-            }
-
-            try result.append(allocator, entry);
-        }
-
-        return result.toOwnedSlice(allocator);
+        _ = instance;
+        return allocator.alloc(WatchVariable, 0);
     }
 
     // ── Query helpers ────────────────────────────────────────────────────

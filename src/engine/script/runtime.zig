@@ -4,8 +4,6 @@ const types = @import("./types.zig");
 const context = @import("./context.zig");
 const vm_mod = @import("./vm.zig");
 const hot_reload_mod = @import("./hot_reload.zig");
-const wasm_compiler = @import("./wasm_compiler.zig");
-const wasm_vm_mod = @import("./wasm_vm.zig");
 const csharp_toolchain = @import("./csharp_toolchain.zig");
 const handles = @import("../assets/handles.zig");
 const components = @import("../scene/components.zig");
@@ -188,10 +186,7 @@ pub const ScriptRuntime = struct {
     /// 初始化 VM
     pub fn initVMs(self: *ScriptRuntime) !void {
         for (self.config.allowed_languages) |lang| {
-            const vm = switch (types.vmRoleForLanguage(lang)) {
-                .gameplay => try vm_mod.createGameplayVM(lang, self.allocator),
-                .plugin => try vm_mod.createPluginVM(self.allocator, .plugin),
-            };
+            const vm = try vm_mod.createGameplayVM(lang, self.allocator);
             try self.vms.put(lang, vm);
         }
 
@@ -277,30 +272,11 @@ pub const ScriptRuntime = struct {
     }
 
     pub fn applyEntityScriptParameters(self: *ScriptRuntime, world: *world_mod.World, entity_id: types.EntityId) !bool {
-        const entity = world.getEntityConst(entity_id) orelse return false;
-        const script = entity.script orelse return false;
-        const instance_id = script.instance_id orelse return false;
-        if (script.language != .wasm or script.script_handle == null) {
-            return false;
-        }
-
-        const instance = self.instances.get(instance_id) orelse return false;
-        const resource = world.resources.script(script.script_handle.?) orelse return false;
-        if (resource.user_data.len == 0) {
-            return false;
-        }
-
-        const applied = wasm_vm_mod.applyParameterPayload(self.allocator, instance, resource.user_data, script.parameters) catch |err| {
-            self.recordEvent(.{
-                .script_handle = script.script_handle.?,
-                .entity_id = entity_id,
-                .phase = .update,
-                .severity = .@"error",
-                .message = @errorName(err),
-            });
-            return false;
-        };
-        return applied;
+        _ = self;
+        _ = world;
+        _ = entity_id;
+        // Parameter payload application removed; no-op for builtin VMs.
+        return false;
     }
 
     /// 重新加载脚本
@@ -324,39 +300,7 @@ pub const ScriptRuntime = struct {
             refreshed_mtime = readFileMtime(artifact_path) catch resource.last_modified;
         }
 
-        if (resource.language == .wasm) {
-            const source = if (refreshed_source) |bytes| bytes else resource.source;
-            var compile_result = try wasm_compiler.compileZigSourceAlloc(self.allocator, .{
-                .source = source,
-                .script_name = if (resource.description.len != 0) resource.description else "wasm_script",
-            });
-            defer compile_result.deinit(self.allocator);
-
-            switch (compile_result) {
-                .compile_error => |message| {
-                    self.recordEvent(.{
-                        .script_handle = handle,
-                        .phase = .compile,
-                        .severity = .@"error",
-                        .message = message,
-                    });
-                    return types.ScriptError.CompileError;
-                },
-                .success => |artifact| {
-                    if (refreshed_source) |bytes| {
-                        self.allocator.free(resource.source);
-                        resource.source = try self.allocator.dupe(u8, bytes);
-                        self.allocator.free(bytes);
-                        refreshed_source = null;
-                    }
-                    self.allocator.free(resource.bytecode);
-                    resource.bytecode = try self.allocator.dupe(u8, artifact.bytecode);
-                    self.allocator.free(resource.user_data);
-                    resource.user_data = try self.allocator.dupe(u8, artifact.parameter_schema);
-                    resource.last_modified = refreshed_mtime;
-                },
-            }
-        } else if (refreshed_source) |bytes| {
+        if (refreshed_source) |bytes| {
             self.allocator.free(resource.source);
             resource.source = bytes;
             resource.last_modified = refreshed_mtime;
@@ -376,10 +320,9 @@ pub const ScriptRuntime = struct {
         };
         self.recordEvent(.{
             .script_handle = handle,
-            .phase = if (resource.language == .wasm) .compile else .load,
+            .phase = .load,
             .severity = .info,
             .message = switch (resource.language) {
-                .wasm => "recompiled wasm plugin",
                 .csharp => if (csharp_artifact_path != null) "reloaded csharp nativeaot library" else "reloaded csharp gameplay source",
                 .zig => "reloaded zig gameplay source",
             },
@@ -614,19 +557,6 @@ pub const ScriptRuntime = struct {
         instance.script_handle = script_handle;
         instance.language = script_language;
         ctx.instance = instance;
-
-        if (script_language == .wasm and script.parameters.len != 0 and script_resource.user_data.len != 0) {
-            _ = wasm_vm_mod.applyParameterPayload(self.allocator, instance, script_resource.user_data, script.parameters) catch |err| {
-                self.recordEvent(.{
-                    .script_handle = script_handle,
-                    .entity_id = entity.id,
-                    .phase = .load,
-                    .severity = .@"error",
-                    .message = @errorName(err),
-                });
-                return;
-            };
-        }
 
         self.registerInstance(entity.id, instance) catch |err| {
             log.err("Failed to register script instance for entity {}: {}", .{ entity.id, err });

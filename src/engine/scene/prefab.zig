@@ -1010,7 +1010,7 @@ test "Prefab save-load-resave is byte stable" {
         .script_asset_id = try allocator.dupe(u8, "script://robot/patrol"),
         .script = .{
             .script_handle = null,
-            .language = .wasm,
+            .language = .zig,
             .enabled = true,
             .parameters = try allocator.dupe(u8, "{\"speed\":3.0}\n"),
         },
@@ -1047,7 +1047,7 @@ test "instantiatePrefab resolves script asset ids into live handles" {
 
     const script_handle = try world.resources.createScript(.{
         .source = "pub fn onUpdate(dt: f32) void { _ = dt; }\n",
-        .language = .wasm,
+        .language = .zig,
         .description = "Prefab Logic",
         .source_path = "assets/scripts/prefab_logic.zig",
         .bytecode = &.{ 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00 },
@@ -1079,7 +1079,7 @@ test "instantiatePrefab resolves script asset ids into live handles" {
         .script_asset_id = try allocator.dupe(u8, "script://prefab/logic"),
         .script = .{
             .script_handle = null,
-            .language = .wasm,
+            .language = .zig,
             .enabled = true,
             .parameters = try allocator.dupe(u8, "{\"speed\":5.0}\n"),
         },
@@ -1091,7 +1091,7 @@ test "instantiatePrefab resolves script asset ids into live handles" {
     const root = world.getEntityConst(root_id).?;
     try std.testing.expect(root.script != null);
     try std.testing.expectEqual(script_handle, root.script.?.script_handle.?);
-    try std.testing.expectEqual(components.ScriptLanguage.wasm, root.script.?.language);
+    try std.testing.expectEqual(components.ScriptLanguage.zig, root.script.?.language);
     try std.testing.expectEqualStrings("{\"speed\":5.0}\n", root.script.?.parameters);
 }
 

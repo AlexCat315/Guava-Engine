@@ -73,7 +73,6 @@ const ssr_blur_pass_mod = @import("passes/ssr_blur_pass.zig");
 const style_plugin_mod = @import("style_plugin.zig");
 const plugin_mod = @import("../plugin/plugin.zig");
 const loader_mod = @import("../plugin/loader.zig");
-const script_vm_plugin_mod = @import("../script/script_vm_plugin.zig");
 const fullscreen_post_mod = @import("passes/fullscreen_post_pass.zig");
 const platform_mod = @import("../core/platform.zig");
 const selection_history_mod = @import("selection_history.zig");
@@ -330,9 +329,7 @@ pub const Renderer = struct {
     style_registry: style_plugin_mod.StyleRegistry,
     /// 统一插件注册表（发现 + 生命周期管理）
     plugin_registry: plugin_mod.PluginRegistry,
-    /// script_vm typed loader (validates script_vm plugins)
-    script_vm_loader: script_vm_plugin_mod.ScriptVmPluginLoader,
-    /// Type-erased loader dispatch table (render_style, script_vm, etc.)
+    /// Type-erased loader dispatch table (render_style, etc.)
     typed_loader_registry: loader_mod.TypedLoaderRegistry,
     /// Plugin hot-reload manager (polls manifests for changes)
     plugin_hot_reload: plugin_mod.PluginHotReloadManager,
@@ -497,7 +494,6 @@ pub const Renderer = struct {
             .base_pass = undefined,
             .style_registry = undefined,
             .plugin_registry = undefined,
-            .script_vm_loader = undefined,
             .typed_loader_registry = undefined,
             .plugin_hot_reload = undefined,
             .skybox_pass = undefined,
@@ -568,11 +564,8 @@ pub const Renderer = struct {
 
         renderer.plugin_registry = try plugin_mod.PluginRegistry.init(allocator);
 
-        renderer.script_vm_loader = script_vm_plugin_mod.ScriptVmPluginLoader.init(allocator);
-
         renderer.typed_loader_registry = loader_mod.TypedLoaderRegistry.init(allocator);
         renderer.typed_loader_registry.register(.render_style, renderer.style_registry.pluginLoader()) catch {};
-        renderer.typed_loader_registry.register(.script_vm, renderer.script_vm_loader.pluginLoader()) catch {};
 
         renderer.plugin_hot_reload = plugin_mod.PluginHotReloadManager.init(allocator);
 

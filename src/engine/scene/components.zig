@@ -415,8 +415,6 @@ pub const ScriptLanguage = enum(u8) {
     zig,
     /// C# 语言
     csharp,
-    /// WebAssembly 语言
-    wasm,
 };
 
 /// 脚本组件 - 附加到实体上运行脚本逻辑

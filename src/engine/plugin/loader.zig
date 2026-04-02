@@ -11,7 +11,7 @@ const log = std.log.scoped(.plugin_loader);
 ///
 /// Loaders own the subsystem-specific interpretation of a PluginRecord:
 ///   - `onDiscover`:  Validate and prepare (parse typed payload, check assets)
-///   - `onEnable`:    Activate subsystem-side resources (register style, load WASM)
+///   - `onEnable`:    Activate subsystem-side resources (register style, load plugin)
 ///   - `onDisable`:   Deactivate without destroying (rollback active state)
 ///   - `onUnload`:    Full teardown of subsystem-side resources
 pub const PluginLoader = struct {
@@ -23,7 +23,7 @@ pub const PluginLoader = struct {
         /// Should validate the plugin and set lifecycle to .loaded or .load_error.
         on_discover: *const fn (ctx: *anyopaque, record: *types.PluginRecord) void,
         /// Called when a loaded plugin transitions to enabled.
-        /// Performs subsystem-specific activation (e.g. register style, load WASM module).
+        /// Performs subsystem-specific activation (e.g. register style, load plugin module).
         on_enable: *const fn (ctx: *anyopaque, record: *types.PluginRecord) void,
         /// Called when an enabled plugin transitions to loaded (disabled).
         /// Performs subsystem-specific deactivation without full teardown.

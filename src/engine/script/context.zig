@@ -40,7 +40,7 @@ pub const ScriptContext = struct {
     instance: *types.ScriptInstance,
     /// 分配器
     allocator: std.mem.Allocator,
-    /// 引擎级命令队列（WASM backend 使用）
+    /// 引擎级命令队列
     command_queue: ?*command_queue_mod.CommandQueue = null,
     /// 输入状态（可选）
     input: ?*const input_mod.InputState = null,

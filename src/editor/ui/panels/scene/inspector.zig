@@ -1,5 +1,6 @@
 const std = @import("std");
 const engine = @import("guava");
+const handles = engine.assets.handles;
 const gui = @import("../../gui.zig");
 const EditorState = @import("../../../core/state.zig").EditorState;
 const state_mod = @import("../../../core/state.zig");
@@ -1032,13 +1033,79 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
             if (beginInspectorPropertyGrid("script_properties")) {
                 defer endInspectorPropertyGrid();
 
-                var handle_buffer: [32]u8 = undefined;
-                const handle_text = if (script_component.script_handle) |handle|
-                    try std.fmt.bufPrint(&handle_buffer, "{d}", .{@intFromEnum(handle)})
-                else
-                    "none";
+                // ── Script selector combo ──
+                const lib = layer_context.world.assets();
+                var current_label: []const u8 = "(none)";
+                if (script_component.script_handle) |handle| {
+                    if (lib.scriptAssetId(handle)) |aid| {
+                        current_label = aid;
+                    } else if (lib.script(handle)) |res| {
+                        if (res.source_path.len > 0) {
+                            current_label = res.source_path;
+                        } else if (res.description.len > 0) {
+                            current_label = res.description;
+                        } else {
+                            current_label = "(script)";
+                        }
+                    }
+                }
+
+                if (beginInspectorComboRow("Script", "##script_select", current_label)) {
+                    defer gui.endCombo();
+
+                    // "(none)" option
+                    if (gui.menuItem("(none)", null, script_component.script_handle == null, true)) {
+                        if (entity_mut) |em| {
+                            if (em.script) |*sc| {
+                                sc.script_handle = null;
+                                sc.instance_id = null;
+                            }
+                        }
+                        if (layer_context.script_runtime) |runtime| {
+                            runtime.reconcileWorld(layer_context.world);
+                        }
+                        try history.captureSnapshot(state, layer_context);
+                    }
+
+                    // List all registered scripts
+                    for (lib.scripts.items, 0..) |script_res, idx| {
+                        const h = handles.scriptHandle(idx);
+                        var label_buf: [128]u8 = undefined;
+                        const label: []const u8 = blk: {
+                            if (lib.scriptAssetId(h)) |aid| {
+                                break :blk aid;
+                            }
+                            if (script_res.source_path.len > 0) {
+                                // Show just the filename portion
+                                const name = if (std.mem.lastIndexOfScalar(u8, script_res.source_path, '/')) |i|
+                                    script_res.source_path[i + 1 ..]
+                                else
+                                    script_res.source_path;
+                                break :blk name;
+                            }
+                            if (script_res.description.len > 0) {
+                                break :blk script_res.description;
+                            }
+                            break :blk std.fmt.bufPrint(&label_buf, "script_{d}", .{idx}) catch "(script)";
+                        };
+                        const is_selected = if (script_component.script_handle) |cur| cur == h else false;
+                        if (gui.menuItem(label, null, is_selected, true)) {
+                            if (entity_mut) |em| {
+                                if (em.script) |*sc| {
+                                    sc.script_handle = h;
+                                    sc.language = .zig;
+                                    sc.instance_id = null;
+                                }
+                            }
+                            if (layer_context.script_runtime) |runtime| {
+                                runtime.reconcileWorld(layer_context.world);
+                            }
+                            try history.captureSnapshot(state, layer_context);
+                        }
+                    }
+                }
+
                 drawInspectorTextRow("Language", scriptLanguageLabel(script_component.language));
-                drawInspectorTextRow("Handle", handle_text);
 
                 var enabled = script_component.enabled;
                 if (drawInspectorCheckboxRow("Enabled", "##script_enabled", &enabled)) {
@@ -1051,29 +1118,57 @@ pub fn drawInspectorWindow(state: *EditorState, layer_context: *engine.core.Laye
                 }
             }
 
-            if (script_component.language == .wasm) {
-                if (script_component.script_handle) |handle| {
-                    if (layer_context.world.assets().script(handle)) |resource| {
-                        if (resource.description.len != 0) {
-                            gui.textWrapped(resource.description);
+            // Browse button — load a .zig script from disk
+            if (gui.button("Browse Script...")) {
+                if (loadScriptFromFilePicker(layer_context)) |handle| {
+                    if (entity_mut) |em| {
+                        if (em.script) |*sc| {
+                            sc.script_handle = handle;
+                            sc.language = .zig;
+                            sc.instance_id = null;
                         }
-                        if (resource.user_data.len != 0) {
-                            if (entity_mut) |em| {
-                                if (em.script) |*sc| {
-                                    try drawReflectedScriptParameters(state, layer_context, selected, sc, resource.user_data);
-                                }
+                    }
+                    if (layer_context.script_runtime) |runtime| {
+                        runtime.reconcileWorld(layer_context.world);
+                    }
+                    history.captureSnapshot(state, layer_context) catch {};
+                }
+            }
+
+            if (script_component.script_handle) |_| {
+                gui.sameLine();
+                if (gui.button("Detach")) {
+                    if (entity_mut) |em| {
+                        if (em.script) |*sc| {
+                            sc.script_handle = null;
+                            sc.instance_id = null;
+                        }
+                    }
+                    if (layer_context.script_runtime) |runtime| {
+                        runtime.reconcileWorld(layer_context.world);
+                    }
+                    history.captureSnapshot(state, layer_context) catch {};
+                }
+            }
+
+            if (script_component.script_handle) |handle| {
+                if (layer_context.world.assets().script(handle)) |resource| {
+                    if (resource.source_path.len != 0) {
+                        gui.textColored(.{ 0.5, 0.8, 0.5, 1.0 }, resource.source_path);
+                    }
+                    if (resource.description.len != 0 and resource.description.len != resource.source_path.len) {
+                        gui.textWrapped(resource.description);
+                    }
+                    if (resource.user_data.len != 0) {
+                        if (entity_mut) |em| {
+                            if (em.script) |*sc| {
+                                try drawReflectedScriptParameters(state, layer_context, selected, sc, resource.user_data);
                             }
-                        } else {
-                            gui.textWrapped("This WASM script does not expose reflected public variables.");
                         }
-                    } else {
-                        gui.textWrapped("The attached script handle is stale.");
                     }
                 } else {
-                    gui.textWrapped("Attach a compiled WASM script to expose reflected public variables.");
+                    gui.textColored(.{ 1.0, 0.4, 0.4, 1.0 }, "Script handle is stale.");
                 }
-            } else {
-                gui.textWrapped("Parameter reflection is currently available for WASM scripts only.");
             }
         }
     }
@@ -1348,8 +1443,49 @@ fn scriptLanguageLabel(language: engine.scene.ScriptLanguage) []const u8 {
     return switch (language) {
         .zig => "zig",
         .csharp => "csharp",
-        .wasm => "wasm",
     };
+}
+
+/// Open a macOS file picker, read the selected script file, register it as a
+/// ScriptResource in the world's asset library, and return its handle.
+fn loadScriptFromFilePicker(layer_context: *engine.core.LayerContext) ?handles.ScriptHandle {
+    const allocator = layer_context.world.allocator;
+
+    // macOS native file dialog
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{
+            "/usr/bin/osascript",
+            "-e",
+            "POSIX path of (choose file of type {\"zig\"} with prompt \"Select Script\")",
+        },
+    }) catch return null;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    if (result.term.Exited != 0) return null;
+
+    const path = std.mem.trim(u8, result.stdout, " \t\r\n");
+    if (path.len == 0) return null;
+
+    // Check if this path is already registered
+    const lib = layer_context.world.assets();
+    for (lib.scripts.items, 0..) |res, idx| {
+        if (std.mem.eql(u8, res.source_path, path)) {
+            return handles.scriptHandle(idx);
+        }
+    }
+
+    const contents = std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024) catch return null;
+    defer allocator.free(contents);
+
+    return lib.createScript(.{
+        .source = contents,
+        .language = .zig,
+        .entry_fn = "main",
+        .description = path,
+        .source_path = path,
+    }) catch null;
 }
 
 fn drawReflectedScriptParameters(
@@ -1366,7 +1502,7 @@ fn drawReflectedScriptParameters(
     };
     defer script_parameter_reflection.deinitDefinitions(allocator, definitions);
     if (definitions.len == 0) {
-        gui.textWrapped("This WASM script does not expose reflected public variables.");
+        gui.textWrapped("This script does not expose reflected public variables.");
         return;
     }
 

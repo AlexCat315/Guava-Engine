@@ -232,7 +232,7 @@ fn drawCallStackTab(debug_session: *DebugSession, layer_context: *engine.core.La
         return;
     }
 
-    gui.text("Call stack (from WAMR dump):");
+    gui.text("Call stack:");
     gui.separator();
 
     // Show call stack for each paused session
@@ -397,7 +397,7 @@ fn drawSessionsTab(debug_session: *DebugSession) void {
 // ── DAP Server tab ───────────────────────────────────────────────────────────
 
 fn drawDapTab(debug_session: *DebugSession, dbg_state: *ScriptDebuggerState) void {
-    gui.textWrapped("Connect VS Code or any DAP client to debug WASM scripts remotely.");
+    gui.textWrapped("Connect VS Code or any DAP client to debug scripts remotely.");
     gui.spacing();
 
     // Status indicator

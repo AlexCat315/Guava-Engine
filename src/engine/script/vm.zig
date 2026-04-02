@@ -3,7 +3,6 @@ const script_resource_mod = @import("../assets/script_resource.zig");
 const types = @import("./types.zig");
 const context = @import("./context.zig");
 const vm_interface = @import("./vm_interface.zig");
-const wasm_vm_mod = @import("./wasm_vm.zig");
 const csharp_toolchain = @import("./csharp_toolchain.zig");
 const components = @import("../scene/components.zig");
 const quat = @import("../math/quat.zig");
@@ -88,8 +87,6 @@ const FpsControllerState = struct {
 };
 
 pub const ScriptVM = vm_interface.ScriptVM;
-pub const WasmVM = wasm_vm_mod.WasmVM;
-pub const WasmHostProfile = wasm_vm_mod.HostProfile;
 
 fn GameplayBuiltinVM(comptime accepted_language: types.ScriptLanguage, comptime frontend_label: []const u8) type {
     return struct {
@@ -658,20 +655,12 @@ pub fn createGameplayVM(language: types.ScriptLanguage, allocator: std.mem.Alloc
     return switch (language) {
         .zig => createWrappedVM(ZigVM, allocator, ZigVM.init(allocator)),
         .csharp => createWrappedVM(CSharpVM, allocator, CSharpVM.init(allocator)),
-        .wasm => types.ScriptError.InvalidLanguage,
     };
-}
-
-pub fn createPluginVM(allocator: std.mem.Allocator, profile: WasmHostProfile) types.ScriptError!*ScriptVM {
-    return createWrappedVM(WasmVM, allocator, try WasmVM.init(allocator, profile));
 }
 
 /// 获取指定语言的虚拟机
 pub fn createVM(language: types.ScriptLanguage, allocator: std.mem.Allocator) types.ScriptError!*ScriptVM {
-    return switch (types.vmRoleForLanguage(language)) {
-        .gameplay => createGameplayVM(language, allocator),
-        .plugin => createPluginVM(allocator, .plugin),
-    };
+    return createGameplayVM(language, allocator);
 }
 
 fn resolveCSharpNativeAotPath(resource: *const script_resource_mod.ScriptResource) ?[]const u8 {

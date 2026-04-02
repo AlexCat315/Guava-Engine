@@ -2576,7 +2576,6 @@ fn scriptSourceExtension(script: *const @import("../assets/script_resource.zig")
     return switch (script.language) {
         .zig => ".zig",
         .csharp => ".cs",
-        .wasm => ".zig",
     };
 }
 
@@ -2987,7 +2986,7 @@ test "scene save-load-resave is byte stable" {
         \\}
         \\
         ,
-        .language = .wasm,
+        .language = .zig,
         .entry_fn = "main",
         .description = "Scene Patrol",
         .source_path = "assets/scripts/scene_patrol.zig",
@@ -3000,7 +2999,7 @@ test "scene save-load-resave is byte stable" {
         .local_transform = .{ .translation = .{ 1.0, 2.0, 3.0 } },
         .script = .{
             .script_handle = script_handle,
-            .language = .wasm,
+            .language = .zig,
             .enabled = true,
             .parameters = "{\"speed\":6.5}\n",
         },
@@ -3024,7 +3023,7 @@ test "scene save-load-resave is byte stable" {
     try std.testing.expectEqualStrings("{\"speed\":6.5}\n", loaded_root.script.?.parameters);
     try std.testing.expect(loaded_root.script.?.script_handle != null);
     const loaded_script = loaded.resources.script(loaded_root.script.?.script_handle.?).?;
-    try std.testing.expectEqual(script_types.ScriptLanguage.wasm, loaded_script.language);
+    try std.testing.expectEqual(script_types.ScriptLanguage.zig, loaded_script.language);
     try std.testing.expectEqualStrings("Scene Patrol", loaded_script.description);
     try std.testing.expectEqualStrings("assets/scripts/scene_patrol.zig", loaded_script.source_path);
     try std.testing.expectEqual(@as(i128, 123456789), loaded_script.last_modified);

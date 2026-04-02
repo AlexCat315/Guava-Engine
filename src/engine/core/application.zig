@@ -761,7 +761,7 @@ pub const Application = struct {
     pub fn loadScript(self: *Application, path: []const u8) !handles.ScriptHandle {
         self.bindRuntimeContext();
         const language = inferScriptLanguageFromPath(path);
-        const is_binary_artifact = script_system.csharp_toolchain_mod.isSharedLibraryPath(path) or language == .wasm;
+        const is_binary_artifact = script_system.csharp_toolchain_mod.isSharedLibraryPath(path);
         const source_or_bytecode = if (is_binary_artifact)
             try std.fs.cwd().readFileAlloc(self.allocator, path, 16 * 1024 * 1024)
         else
@@ -769,13 +769,12 @@ pub const Application = struct {
         defer self.allocator.free(source_or_bytecode);
 
         const desc = .{
-            .source = if (is_binary_artifact) "" else source_or_bytecode,
+            .source = if (is_binary_artifact) @as([]const u8, "") else source_or_bytecode,
             .language = language,
             .entry_fn = "main",
             .description = path,
             .source_path = path,
-            .artifact_path = if (script_system.csharp_toolchain_mod.isSharedLibraryPath(path)) path else "",
-            .bytecode = if (language == .wasm) source_or_bytecode else &.{},
+            .artifact_path = if (script_system.csharp_toolchain_mod.isSharedLibraryPath(path)) path else @as([]const u8, ""),
         };
 
         const handle = try self.world.resources.createScript(desc);
@@ -791,9 +790,6 @@ pub const Application = struct {
             script_system.csharp_toolchain_mod.isSharedLibraryPath(path))
         {
             return .csharp;
-        }
-        if (std.mem.endsWith(u8, path, ".wasm")) {
-            return .wasm;
         }
         return .zig;
     }

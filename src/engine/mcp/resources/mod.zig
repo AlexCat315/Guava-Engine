@@ -719,7 +719,7 @@ fn buildComponentsSchemaJsonAlloc(allocator: std.mem.Allocator) ![]u8 {
     const shading_values = [_][]const u8{ "unlit", "lambert", "pbr_metallic_roughness" };
     const light_values = [_][]const u8{ "directional", "point", "spot" };
     const vfx_values = [_][]const u8{ "fountain", "orbit" };
-    const script_language_values = [_][]const u8{ "zig", "csharp", "wasm" };
+    const script_language_values = [_][]const u8{ "zig", "csharp" };
     const rigidbody_motion_values = [_][]const u8{ "static", "dynamic", "kinematic" };
     const constraint_values = [_][]const u8{ "point_to_point", "hinge", "slider", "distance" };
     const entity_fields = [_]FieldSchema{
@@ -971,7 +971,7 @@ fn buildSceneSchemaJsonAlloc(allocator: std.mem.Allocator) ![]u8 {
             "This resource documents the stable JSON surface, not every private helper struct in scene_io.zig.",
             "Vec2, Vec3, Vec4, and Quat values remain JSON arrays, matching schema://components.",
             "EntityRecord uses flat storage with parent indices instead of recursive children arrays.",
-            "Script bytecode is persisted as lowercase hex so scenes can reload WASM resources without recompilation.",
+            "Script bytecode is persisted as lowercase hex so scenes can reload resources without recompilation.",
         },
         .root = &scene_fields,
         .sections = &.{
@@ -1179,7 +1179,7 @@ fn buildToolsSchemaJsonAlloc(allocator: std.mem.Allocator) ![]u8 {
     const compile_script_properties = [_]PropertySchema{
         .{ .name = "entity_id", .type = "entity_id", .description = "Attach or replace the script on this entity." },
         .{ .name = "script_handle", .type = "script_handle", .description = "Optional existing script handle to replace." },
-        .{ .name = "source", .type = "string", .description = "Zig source to compile for wasm.", .required = true },
+        .{ .name = "source", .type = "string", .description = "Zig source for the script.", .required = true },
         .{ .name = "source_path", .type = "string", .description = "Optional source path label shown in diagnostics." },
         .{ .name = "description", .type = "string", .description = "Optional human label for the compile request." },
         .{ .name = "enabled", .type = "bool", .description = "Whether the resulting script starts enabled." },
@@ -1233,8 +1233,8 @@ fn buildToolsSchemaJsonAlloc(allocator: std.mem.Allocator) ![]u8 {
             .{ .name = "set_world_transform", .description = "Write world transform channels on an entity.", .properties = &transform_properties },
             .{ .name = "set_visible", .description = "Update entity visibility.", .properties = &set_visible_properties },
             .{ .name = "query_entities", .description = "Run a paged entity query with optional radius and AABB spatial filtering.", .properties = &query_entities_properties },
-            .{ .name = "compile_script", .description = "Compile Zig source to WASM and attach or reload it.", .properties = &compile_script_properties },
-            .{ .name = "compile_editor_utility", .description = "Compile Zig source to a WASM-powered editor utility panel.", .properties = &compile_editor_utility_properties },
+            .{ .name = "compile_script", .description = "Register Zig source as a script and optionally attach it to an entity.", .properties = &compile_script_properties },
+            .{ .name = "compile_editor_utility", .description = "Register Zig source as an editor utility panel.", .properties = &compile_editor_utility_properties },
             .{ .name = "stage_transaction", .description = "Preview a staged command batch without committing it to the main world.", .properties = &stage_transaction_properties },
             .{ .name = "apply_staged_transaction", .description = "Commit the current staged transaction into the main world.", .properties = &apply_preview_properties },
             .{ .name = "discard_staged_transaction", .description = "Discard the current staged transaction preview.", .properties = &discard_preview_properties },
