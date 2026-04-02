@@ -410,23 +410,49 @@ fn drawProjectPanel(state: *EditorState, layer_context: *engine.core.LayerContex
     ensureSelectedAssetDirectory(state);
     try drawProjectPanelHeader(state, layer_context);
 
-    if (!gui.beginTable("project_browser_layout", 2)) {
+    const avail = gui.contentRegionAvail();
+    const has_selection = selectedAsset(state) != null;
+    const col_count: i32 = if (has_selection) 3 else 2;
+
+    if (!gui.beginTable("project_browser_layout", col_count)) {
         return;
     }
     defer gui.endTable();
-    gui.tableSetupColumn(state.text(.folders), false, std.math.clamp(gui.contentRegionAvail()[0] * 0.24, 132.0, 220.0));
-    gui.tableSetupColumn(state.text(.project), true, 1.0);
+
+    // Column widths
+    const tree_width = std.math.clamp(avail[0] * 0.18, 120.0, 200.0);
+    gui.tableSetupColumn("##tree", false, tree_width);
+    gui.tableSetupColumn("##grid", true, 1.0);
+    if (has_selection) {
+        const inspector_width = std.math.clamp(avail[0] * 0.26, 180.0, 320.0);
+        gui.tableSetupColumn("##inspector", false, inspector_width);
+    }
 
     gui.tableNextRow();
+
+    // Column 1: Folder tree
     gui.tableNextColumn();
     _ = gui.beginChild("project_folders_tree", 0.0, 0.0, true);
     defer gui.endChild();
     try drawFolderTree(state, layer_context);
 
+    // Column 2: Grid/List view
     gui.tableNextColumn();
     _ = gui.beginChild("project_assets_grid", 0.0, 0.0, false);
     defer gui.endChild();
     try drawAssetGrid(state, layer_context);
+
+    // Column 3: Inspector (only when an asset is selected)
+    if (has_selection) {
+        gui.tableNextColumn();
+        gui.pushStyleColor(.child_bg, .{ 0.09, 0.10, 0.12, 1.0 });
+        _ = gui.beginChild("project_inspector", 0.0, 0.0, true);
+        defer {
+            gui.endChild();
+            gui.popStyleColor(1);
+        }
+        try drawInspectorPanel(state, layer_context);
+    }
 }
 
 fn drawFolderTree(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
@@ -458,11 +484,20 @@ fn drawFolderRow(state: *EditorState, layer_context: *engine.core.LayerContext, 
             state.folder_rename_active = false;
         }
     } else {
-        const label_name = if (std.mem.eql(u8, directory, "/")) assetBrowserRootLabel(state) else directoryName(directory);
+        const is_root = std.mem.eql(u8, directory, "/");
+        const label_name = if (is_root) assetBrowserRootLabel(state) else directoryName(directory);
+        const prefix = if (is_root) "" else "| ";
         var label_buffer: [320]u8 = undefined;
-        const label = try std.fmt.bufPrint(&label_buffer, "{s}##dir_{s}", .{ label_name, directory });
-        if (gui.selectable(label, std.mem.eql(u8, selected_directory, directory), false, 0.0, 24.0)) {
+        const label = try std.fmt.bufPrint(&label_buffer, "{s}{s}##dir_{s}", .{ prefix, label_name, directory });
+        const is_selected = std.mem.eql(u8, selected_directory, directory);
+        if (is_selected) {
+            gui.pushStyleColor(.text, .{ 1.0, 0.88, 0.4, 1.0 }); // gold text for selected folder
+        }
+        if (gui.selectable(label, is_selected, false, 0.0, 24.0)) {
             setSelectedAssetDirectory(state, directory);
+        }
+        if (is_selected) {
+            gui.popStyleColor(1);
         }
         try drawFolderContextMenu(state, layer_context, directory);
     }
@@ -534,6 +569,16 @@ fn drawAssetGridView(state: *EditorState, layer_context: *engine.core.LayerConte
         } else {
             gui.text("Drop assets here or use Import to add files");
         }
+        gui.popStyleColor(1);
+    }
+
+    // Status bar: item count
+    if (shown > 0) {
+        gui.separator();
+        gui.pushStyleColor(.text, theme.Palette.content_browser.drawer_empty_text);
+        var count_buffer: [64]u8 = undefined;
+        const count_text = std.fmt.bufPrint(&count_buffer, "{d} items", .{shown}) catch "items";
+        gui.text(count_text);
         gui.popStyleColor(1);
     }
 }
@@ -618,25 +663,59 @@ fn drawAssetCard(
 ) !void {
     var child_id_buffer: [64]u8 = undefined;
     const child_id = try std.fmt.bufPrint(&child_id_buffer, "asset_card_{d}", .{index});
-    const child_height = tile_size + 62.0;
-    _ = gui.beginChild(child_id, tile_size + 10.0, child_height, true);
-    defer gui.endChild();
+    const card_width = tile_size + 10.0;
+    const card_height = tile_size + 52.0;
+    const selected = isAssetSelected(state, index);
 
-    const icon_size = tile_size * 0.62;
+    // Card background: folders warm-tinted, selected items highlighted
+    if (selected) {
+        gui.pushStyleColor(.child_bg, .{ 0.12, 0.22, 0.14, 1.0 });
+    } else if (entry.is_directory) {
+        gui.pushStyleColor(.child_bg, .{ 0.13, 0.12, 0.09, 1.0 });
+    } else {
+        gui.pushStyleColor(.child_bg, theme.Palette.content_browser.thumbnail_bg);
+    }
+    _ = gui.beginChild(child_id, card_width, card_height, true);
+    defer {
+        gui.endChild();
+        gui.popStyleColor(1);
+    }
+
+    // ── Type accent stripe (3px colored bar at top) ──
+    {
+        const tint = assetIconTint(entry.kind);
+        const bar_color: [4]f32 = .{
+            @as(f32, @floatFromInt(tint[0])) / 255.0,
+            @as(f32, @floatFromInt(tint[1])) / 255.0,
+            @as(f32, @floatFromInt(tint[2])) / 255.0,
+            if (selected) 1.0 else 0.6,
+        };
+        gui.pushStyleColor(.button, bar_color);
+        gui.pushStyleColor(.button_hovered, bar_color);
+        gui.pushStyleColor(.button_active, bar_color);
+        gui.setCursorPos(.{ 0.0, 0.0 });
+        _ = gui.buttonEx("##accent", card_width, 3.0);
+        gui.popStyleColor(3);
+    }
+
+    // ── Icon / thumbnail ──
+    const icon_size = tile_size * 0.55;
     const icon_path = assetIconPath(entry.kind);
+    const icon_tint = if (selected) [4]u8{ 34, 197, 94, 255 } else assetIconTint(entry.kind);
     const icon_texture = try ui_icons.ensureTintedIconTexture(
         state,
         layer_context,
         icon_path,
         icon_size,
-        assetIconTint(entry.kind),
+        icon_tint,
     );
     const card_texture = if (entry.kind == .material)
         (try queueAndResolveMaterialThumbnailTexture(state, layer_context, &entry) orelse icon_texture)
     else
         icon_texture;
-    const x_padding = @max((tile_size + 10.0 - icon_size) * 0.5, 4.0);
-    gui.setCursorPos(.{ x_padding, 10.0 });
+
+    const x_padding = @max((card_width - icon_size) * 0.5, 2.0);
+    gui.setCursorPos(.{ x_padding, 6.0 });
 
     var button_id_buffer: [64]u8 = undefined;
     const button_id = try std.fmt.bufPrint(&button_id_buffer, "asset_thumb_{d}", .{index});
@@ -645,7 +724,7 @@ fn drawAssetCard(
         card_texture,
         icon_size,
         icon_size,
-        if (isAssetSelected(state, index)) .{ 0.13, 0.55, 0.35, 0.88 } else .{ 0.0, 0.0, 0.0, 0.0 },
+        .{ 0.0, 0.0, 0.0, 0.0 },
         .{ 1.0, 1.0, 1.0, 1.0 },
     )) {
         handleAssetSelection(state, index);
@@ -655,16 +734,22 @@ fn drawAssetCard(
         setSelectedAssetDirectory(state, entry.display_path);
     }
     if (gui.isItemHovered()) {
-        gui.setTooltip(entry.name);
+        // Rich tooltip: name + type
+        var tooltip_buf: [256]u8 = undefined;
+        const tooltip = std.fmt.bufPrint(&tooltip_buf, "{s}\n{s}", .{
+            entry.name,
+            utils.assetKindLabel(state, entry.kind),
+        }) catch entry.name;
+        gui.setTooltip(tooltip);
     }
     drawAssetDragSource(state, entry, index, card_texture);
     try drawAssetContextMenu(state, layer_context, entry, index);
 
-    // Show rename input if this asset is being renamed
+    // ── Label area ──
+    const label_y = icon_size + 10.0;
     if (state.asset_rename_index == index) {
-        const label_y = icon_size + 18.0;
-        gui.setCursorPos(.{ 4.0, label_y });
-        gui.setNextItemWidth(tile_size + 2.0);
+        gui.setCursorPos(.{ 2.0, label_y });
+        gui.setNextItemWidth(card_width - 4.0);
         if (state.asset_rename_focus_pending) {
             gui.setKeyboardFocusHere(0);
             state.asset_rename_focus_pending = false;
@@ -674,130 +759,191 @@ fn drawAssetCard(
             state.asset_rename_index = null;
         }
         if (!gui.isItemActive() and !state.asset_rename_focus_pending) {
-            // Lost focus without Enter — cancel rename
             state.asset_rename_index = null;
         }
     } else {
-        const label_y = icon_size + 18.0;
-        gui.setCursorPos(.{ 8.0, label_y });
+        gui.setCursorPos(.{ 4.0, label_y });
         gui.textWrapped(entry.name);
     }
 }
 
-fn drawSelectedAssetPreview(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
-    const preview_height = std.math.clamp(gui.contentRegionAvail()[1] * 0.32, 152.0, 220.0);
-    _ = gui.beginChild("project_asset_preview", 0.0, preview_height, true);
-    defer gui.endChild();
-    layout.beginSectionBody();
-    defer layout.endSectionBody();
+/// Inspector panel (right column): shows properties and actions for the selected asset.
+fn drawInspectorPanel(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const entry = selectedAsset(state) orelse return;
+    const full_width = gui.contentRegionAvail()[0];
 
-    if (selectedAsset(state)) |entry| {
-        gui.labelText(state.text(.selected), entry.name);
-        gui.labelText(state.text(.type), utils.assetKindLabel(state, entry.kind));
-        gui.labelText(state.text(.path), entry.display_path);
-
-        switch (entry.kind) {
-            .texture => {
-                {
-                    _ = gui.beginChild("project_thumbnail", 0.0, 96.0, true);
-                    defer gui.endChild();
-                    try asset_preview.ensurePreviewTextureForAssetPath(state, layer_context, entry.path);
-                    asset_preview.drawCurrentPreviewImage(state);
-                }
-                gui.textWrapped(state.text(.use_this_texture_from_details_gt_material));
-            },
-            .scene => {
-                if (gui.buttonEx(state.text(.load_selected_scene), gui.contentRegionAvail()[0], 0.0)) {
-                    try history.loadScenePath(state, layer_context, entry.path);
-                    return;
-                }
-                if (gui.buttonEx(state.text(.save_over_selected_scene), gui.contentRegionAvail()[0], 0.0)) {
-                    history.saveScenePath(state, layer_context, entry.path);
-                }
-                gui.textWrapped(state.text(.scenes_can_be_loaded_directly_or_overwritten_from_the_current_world));
-            },
-            .model => {
-                if (gui.buttonEx(state.text(.instantiate_selected_model), gui.contentRegionAvail()[0], 0.0)) {
-                    try history.importModelPath(state, layer_context, entry.path);
-                }
-                gui.textWrapped(state.text(.models_are_imported_as_grouped_instances_with_a_movable_root_entity));
-            },
-            .material => {
-                // Try to show material preview
-                try drawMaterialAssetPreview(state, layer_context, entry);
-            },
-            .shader => {
-                gui.textWrapped(state.text(.shader_source_preview_is_currently_metadata_only));
-            },
-            .script => {
-                if (gui.buttonEx(state.text(.open_in_script_editor), gui.contentRegionAvail()[0], 0.0)) {
-                    state.pending_script_open_path = entry.path;
-                    state.script_editor_open = true;
-                }
-            },
-            .directory => {
-                gui.textWrapped("Folder");
-            },
-            .unknown => {
-                gui.textWrapped("File");
-            },
-        }
-        return;
+    // ── Header: type badge + name ──
+    {
+        const tint = assetIconTint(entry.kind);
+        const badge_color: [4]f32 = .{
+            @as(f32, @floatFromInt(tint[0])) / 255.0,
+            @as(f32, @floatFromInt(tint[1])) / 255.0,
+            @as(f32, @floatFromInt(tint[2])) / 255.0,
+            1.0,
+        };
+        gui.pushStyleColor(.text, badge_color);
+        gui.text(utils.assetKindLabel(state, entry.kind));
+        gui.popStyleColor(1);
+        gui.sameLine();
+        gui.text(entry.name);
     }
 
-    gui.textWrapped(state.text(.no_asset_selected));
+    gui.separator();
+
+    // ── Properties section ──
+    gui.spacing();
+    gui.pushStyleColor(.text, theme.Palette.content_browser.breadcrumb_separator_text);
+    gui.text("Properties");
+    gui.popStyleColor(1);
+
+    gui.labelText("Name", entry.name);
+    gui.labelText("Path", entry.display_path);
+    gui.labelText("Type", utils.assetKindLabel(state, entry.kind));
+
+    gui.separator();
+    gui.spacing();
+
+    // ── Type-specific content ──
+    switch (entry.kind) {
+        .texture => {
+            gui.pushStyleColor(.text, theme.Palette.content_browser.breadcrumb_separator_text);
+            gui.text("Preview");
+            gui.popStyleColor(1);
+            {
+                _ = gui.beginChild("inspector_thumbnail", 0.0, 96.0, true);
+                defer gui.endChild();
+                try asset_preview.ensurePreviewTextureForAssetPath(state, layer_context, entry.path);
+                asset_preview.drawCurrentPreviewImage(state);
+            }
+            gui.spacing();
+            gui.textWrapped(state.text(.use_this_texture_from_details_gt_material));
+        },
+        .scene => {
+            gui.pushStyleColor(.text, theme.Palette.content_browser.breadcrumb_separator_text);
+            gui.text("Actions");
+            gui.popStyleColor(1);
+            if (gui.buttonEx(state.text(.load_selected_scene), full_width, 0.0)) {
+                try history.loadScenePath(state, layer_context, entry.path);
+                return;
+            }
+            if (gui.buttonEx(state.text(.save_over_selected_scene), full_width, 0.0)) {
+                history.saveScenePath(state, layer_context, entry.path);
+            }
+            gui.spacing();
+            gui.textWrapped(state.text(.scenes_can_be_loaded_directly_or_overwritten_from_the_current_world));
+        },
+        .model => {
+            gui.pushStyleColor(.text, theme.Palette.content_browser.breadcrumb_separator_text);
+            gui.text("Actions");
+            gui.popStyleColor(1);
+            if (gui.buttonEx(state.text(.instantiate_selected_model), full_width, 0.0)) {
+                try history.importModelPath(state, layer_context, entry.path);
+            }
+            gui.spacing();
+            gui.textWrapped(state.text(.models_are_imported_as_grouped_instances_with_a_movable_root_entity));
+        },
+        .material => {
+            gui.pushStyleColor(.text, theme.Palette.content_browser.breadcrumb_separator_text);
+            gui.text("Preview");
+            gui.popStyleColor(1);
+            try drawMaterialAssetPreview(state, layer_context, entry);
+        },
+        .shader => {
+            gui.textWrapped(state.text(.shader_source_preview_is_currently_metadata_only));
+        },
+        .script => {
+            gui.pushStyleColor(.text, theme.Palette.content_browser.breadcrumb_separator_text);
+            gui.text("Actions");
+            gui.popStyleColor(1);
+            if (gui.buttonEx(state.text(.open_in_script_editor), full_width, 0.0)) {
+                state.pending_script_open_path = entry.path;
+                state.script_editor_open = true;
+            }
+        },
+        .directory => {
+            gui.pushStyleColor(.text, theme.Palette.content_browser.breadcrumb_separator_text);
+            gui.text("Folder");
+            gui.popStyleColor(1);
+            if (gui.buttonEx("Open", full_width, 0.0)) {
+                setSelectedAssetDirectory(state, entry.display_path);
+            }
+        },
+        .unknown => {
+            gui.pushStyleColor(.text, theme.Palette.content_browser.breadcrumb_separator_text);
+            gui.text("File");
+            gui.popStyleColor(1);
+            gui.textWrapped("Unknown file type. Will be included when packaging.");
+        },
+    }
+
+    gui.separator();
+    gui.spacing();
+
+    // ── Common actions ──
+    gui.pushStyleColor(.text, theme.Palette.content_browser.breadcrumb_separator_text);
+    gui.text("Quick Actions");
+    gui.popStyleColor(1);
+    if (gui.buttonEx("Show in Finder", full_width, 0.0)) {
+        revealInFinder(entry.path);
+    }
 }
 
-// Compressed single-line header: breadcrumbs (left), search (center), thumbnail slider (right)
+// Compressed single-line header: back + breadcrumbs (left), search (center), controls (right)
 fn drawProjectPanelHeader(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
-    const width = gui.contentRegionAvail()[0];
-
-    // Left: Breadcrumb path (clickable)
-    const breadcrumb_width = std.math.clamp(width * 0.35, 120.0, 280.0);
     const current = selectedDirectory(state);
-    const root_label = assetBrowserRootLabel(state);
-    if (gui.buttonEx(root_label, breadcrumb_width, 26.0)) {
-        setSelectedAssetDirectory(state, "/");
-    }
 
-    // Show sub-path buttons if there's more content
-    var path_buffer: [256]u8 = undefined;
-    // Skip leading slash if present
-    var path_pos: usize = if (current.len > 0 and current[0] == '/') 1 else 0;
-    while (path_pos < current.len) {
+    // ── Row 1: [← Back] [breadcrumb path] ... [Search] [Grid/List] [Import ▼] ──
+    {
+        // Back button (disabled at root)
+        const at_root = std.mem.eql(u8, current, "/");
+        gui.pushStyleColor(.text, if (at_root)
+            theme.Palette.content_browser.drawer_empty_text
+        else
+            .{ 0.88, 0.91, 0.95, 1.0 });
+        if (gui.buttonEx("<", 26.0, 26.0) and !at_root) {
+            // Navigate to parent directory
+            const parent = directoryPath(current);
+            setSelectedAssetDirectory(state, if (parent.len == 0) "/" else parent);
+        }
+        gui.popStyleColor(1);
+
+        // Breadcrumb segments
         gui.sameLine();
-        const next_slash = std.mem.indexOfScalarPos(u8, current, path_pos, '/') orelse current.len;
-        const segment = current[path_pos..next_slash];
-        if (segment.len > 0) {
-            const segment_label = try std.fmt.bufPrint(&path_buffer, "/{s}", .{segment});
-            if (gui.buttonEx(segment_label, 0.0, 26.0)) {
-                setSelectedAssetDirectory(state, current[0..next_slash]);
+        const root_label = assetBrowserRootLabel(state);
+        gui.pushStyleColor(.button, theme.Palette.content_browser.path_bar_bg);
+        if (gui.buttonEx(root_label, 0.0, 26.0)) {
+            setSelectedAssetDirectory(state, "/");
+        }
+        var path_buffer: [256]u8 = undefined;
+        var path_pos: usize = if (current.len > 0 and current[0] == '/') 1 else 0;
+        while (path_pos < current.len) {
+            gui.sameLine();
+            gui.pushStyleColor(.text, theme.Palette.content_browser.breadcrumb_separator_text);
+            gui.text(">");
+            gui.popStyleColor(1);
+            gui.sameLine();
+            const next_slash = std.mem.indexOfScalarPos(u8, current, path_pos, '/') orelse current.len;
+            const segment = current[path_pos..next_slash];
+            if (segment.len > 0) {
+                const segment_label = try std.fmt.bufPrint(&path_buffer, "{s}##bc_{d}", .{ segment, path_pos });
+                if (gui.buttonEx(segment_label, 0.0, 26.0)) {
+                    setSelectedAssetDirectory(state, current[0..next_slash]);
+                }
             }
+            path_pos = next_slash + 1;
         }
-        path_pos = next_slash + 1;
-    }
+        gui.popStyleColor(1); // path_bar_bg
 
-    // Center: Search box
-    const search_width = std.math.clamp(width * 0.30, 140.0, 260.0);
-    gui.sameLine();
-    gui.setNextItemWidth(search_width);
-    _ = gui.inputTextWithHint("##asset_filter", state.text(.search_assets), state.asset_filter_buffer[0..]);
-
-    // Right: Thumbnail size slider + view mode toggle
-    const controls_start = breadcrumb_width + search_width + 32.0;
-    const controls_width = width - controls_start;
-
-    gui.sameLine();
-    if (controls_width >= 180.0) {
-        // Full controls
-        gui.setNextItemWidth(controls_width * 0.45);
-        var thumbnail_size = state.asset_thumbnail_size;
-        if (gui.dragFloat("##asset_thumbnail_size", &thumbnail_size, 1.0, 72.0, 160.0)) {
-            state.asset_thumbnail_size = std.math.clamp(thumbnail_size, 72.0, 160.0);
-        }
+        // Search box (right-aligned section)
         gui.sameLine();
+        const remaining = gui.contentRegionAvail()[0];
+        const search_width = std.math.clamp(remaining * 0.40, 100.0, 240.0);
+        gui.setNextItemWidth(search_width);
+        _ = gui.inputTextWithHint("##asset_filter", state.text(.search_assets), state.asset_filter_buffer[0..]);
 
         // View mode toggle
+        gui.sameLine();
+        const view_label = if (state.browser_view_mode == .grid) "Grid" else "List";
         const view_mode_palette = if (state.browser_view_mode == .grid)
             ui_icons.palettes.toolbar_active
         else
@@ -805,49 +951,33 @@ fn drawProjectPanelHeader(state: *EditorState, layer_context: *engine.core.Layer
         gui.pushStyleColor(.button, view_mode_palette.button);
         gui.pushStyleColor(.button_hovered, view_mode_palette.hovered);
         gui.pushStyleColor(.button_active, view_mode_palette.active);
-        if (gui.buttonEx(if (state.browser_view_mode == .grid) " Grid " else " List ", 0.0, 26.0)) {
+        if (gui.buttonEx(view_label, 0.0, 26.0)) {
             state.browser_view_mode = switch (state.browser_view_mode) {
                 .grid => .list,
                 .list => .grid,
             };
         }
         gui.popStyleColor(3);
-    } else if (controls_width >= 80.0) {
-        // Compact - just view mode
-        const view_mode_palette = if (state.browser_view_mode == .grid)
-            ui_icons.palettes.toolbar_active
-        else
-            ui_icons.palettes.toolbar_idle;
-        gui.pushStyleColor(.button, view_mode_palette.button);
-        gui.pushStyleColor(.button_hovered, view_mode_palette.hovered);
-        gui.pushStyleColor(.button_active, view_mode_palette.active);
-        if (gui.buttonEx(if (state.browser_view_mode == .grid) "Grid" else "List", 0.0, 26.0)) {
-            state.browser_view_mode = switch (state.browser_view_mode) {
-                .grid => .list,
-                .list => .grid,
-            };
+
+        // Import buttons
+        gui.sameLine();
+        if (gui.buttonEx(state.text(.import_assets), 0.0, 26.0)) {
+            importAssetsFromFinder(state, layer_context);
         }
-        gui.popStyleColor(3);
+        gui.sameLine();
+        if (gui.buttonEx("+ Folder", 0.0, 26.0)) {
+            importFolderFromFinder(state, layer_context);
+        }
     }
 
-    // Import button
-    gui.sameLine();
-    if (gui.buttonEx(state.text(.import_assets), 0.0, 26.0)) {
-        importAssetsFromFinder(state, layer_context);
-    }
-    gui.sameLine();
-    if (gui.buttonEx("Import Folder", 0.0, 26.0)) {
-        importFolderFromFinder(state, layer_context);
-    }
-
-    // Second row: Type filter + Sort mode
+    // ── Row 2: [Type filter] [Sort] [Thumbnail slider] ──
     {
         // Type filter combo
         const filter_label = if (state.asset_kind_filter) |kind|
             utils.assetKindLabel(state, kind)
         else
             state.text(.all_types);
-        gui.setNextItemWidth(110.0);
+        gui.setNextItemWidth(100.0);
         if (gui.beginCombo("##asset_type_filter", filter_label)) {
             if (gui.selectable(state.text(.all_types), state.asset_kind_filter == null, false, 0.0, 0.0)) {
                 state.asset_kind_filter = null;
@@ -871,7 +1001,7 @@ fn drawProjectPanelHeader(state: *EditorState, layer_context: *engine.core.Layer
             .kind_asc => state.text(.sort_kind_asc),
             .kind_desc => state.text(.sort_kind_desc),
         };
-        gui.setNextItemWidth(110.0);
+        gui.setNextItemWidth(100.0);
         if (gui.beginCombo("##asset_sort_mode", sort_label)) {
             const modes = [_]state_mod.AssetSortMode{ .name_asc, .name_desc, .kind_asc, .kind_desc };
             const labels = [_][]const u8{
@@ -887,6 +1017,14 @@ fn drawProjectPanelHeader(state: *EditorState, layer_context: *engine.core.Layer
                 }
             }
             gui.endCombo();
+        }
+
+        // Thumbnail size slider
+        gui.sameLine();
+        gui.setNextItemWidth(std.math.clamp(gui.contentRegionAvail()[0] - 8.0, 60.0, 120.0));
+        var thumbnail_size = state.asset_thumbnail_size;
+        if (gui.dragFloat("##asset_thumbnail_size", &thumbnail_size, 1.0, 72.0, 160.0)) {
+            state.asset_thumbnail_size = std.math.clamp(thumbnail_size, 72.0, 160.0);
         }
     }
 
@@ -1601,7 +1739,7 @@ fn drawAssetContextMenu(state: *EditorState, layer_context: *engine.core.LayerCo
     if (gui.beginPopupContextItem(popup_id)) {
         defer gui.endPopup();
 
-        // Open script files in the Script Editor
+        // Open actions based on type
         if (entry.kind == .script) {
             if (gui.menuItem(state.text(.open_in_script_editor), null, false, true)) {
                 state.pending_script_open_path = entry.path;
@@ -1609,6 +1747,34 @@ fn drawAssetContextMenu(state: *EditorState, layer_context: *engine.core.LayerCo
             }
             gui.separator();
         }
+        if (entry.is_directory) {
+            if (gui.menuItem("Open Folder", null, false, true)) {
+                setSelectedAssetDirectory(state, entry.display_path);
+            }
+            gui.separator();
+        }
+
+        // Create submenu
+        if (gui.beginMenu("Create")) {
+            defer gui.endMenu();
+            const current_dir = selectedDirectory(state);
+            if (gui.menuItem(state.text(.new_folder), null, false, true)) {
+                state.new_folder_pending = true;
+                @memset(state.new_folder_name_buffer[0..], 0);
+                const default_name = "New Folder";
+                @memcpy(state.new_folder_name_buffer[0..default_name.len], default_name);
+                state.new_folder_focus_pending = true;
+            }
+            gui.separator();
+            if (gui.menuItem("Script (.zig)", null, false, true)) {
+                createNewScriptInDirectory(state, current_dir, ".zig");
+            }
+            if (gui.menuItem("Script (.cs)", null, false, true)) {
+                createNewScriptInDirectory(state, current_dir, ".cs");
+            }
+        }
+
+        gui.separator();
 
         if (gui.menuItem(state.text(.rename), null, false, true)) {
             state.asset_rename_index = index;
@@ -1618,7 +1784,7 @@ fn drawAssetContextMenu(state: *EditorState, layer_context: *engine.core.LayerCo
             state.asset_rename_focus_pending = true;
         }
 
-        if (gui.menuItem(state.text(.duplicate_asset), null, false, true)) {
+        if (gui.menuItem(state.text(.duplicate_asset), null, false, !entry.is_directory)) {
             duplicateAssetFile(state, layer_context, entry);
         }
 
