@@ -810,6 +810,23 @@ extern "C" uint32_t guava_imgui_get_color_u32(float r, float g, float b,
   return ImGui::GetColorU32(ImVec4(r, g, b, a));
 }
 
+// 游戏内 UI 前景绘制列表 (GR-7)
+extern "C" void guava_imgui_fg_draw_list_add_rect_filled(
+    float p_min_x, float p_min_y, float p_max_x, float p_max_y,
+    uint32_t color, float rounding) {
+  if (!g_imgui_initialized) return;
+  ImGui::GetForegroundDrawList()->AddRectFilled(
+      ImVec2(p_min_x, p_min_y), ImVec2(p_max_x, p_max_y), color, rounding);
+}
+
+extern "C" void guava_imgui_fg_draw_list_add_text(
+    float pos_x, float pos_y, uint32_t color,
+    const char *text, size_t text_len) {
+  if (!g_imgui_initialized) return;
+  ImGui::GetForegroundDrawList()->AddText(
+      ImVec2(pos_x, pos_y), color, text, text + text_len);
+}
+
 extern "C" uint32_t guava_imgui_get_color_u32_idx(uint32_t color_idx) {
   if (!g_imgui_initialized) {
     return 0;

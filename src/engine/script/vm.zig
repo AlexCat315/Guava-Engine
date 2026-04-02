@@ -258,9 +258,37 @@ fn GameplayBuiltinVM(comptime accepted_language: types.ScriptLanguage, comptime 
             .callInit = callInitBridge,
             .callUpdate = callUpdateBridge,
             .callDestroy = callDestroyBridge,
+            .callTriggerEnter = callTriggerEnterBridge,
+            .callTriggerExit = callTriggerExitBridge,
+            .callCollisionEnter = callCollisionEnterBridge,
+            .callCollisionExit = callCollisionExitBridge,
             .getError = getErrorBridge,
             .destroy = destroyContext,
         };
+
+        fn callTriggerEnterBridge(context_ptr: *anyopaque, instance: *types.ScriptInstance, ctx: *context.ScriptContext, other: types.EntityId) void {
+            _ = castContext(Self, context_ptr);
+            ctx.instance = instance;
+            if (instance.vtable.onTriggerEnter) |fn_ptr| fn_ptr(ctx, other);
+        }
+
+        fn callTriggerExitBridge(context_ptr: *anyopaque, instance: *types.ScriptInstance, ctx: *context.ScriptContext, other: types.EntityId) void {
+            _ = castContext(Self, context_ptr);
+            ctx.instance = instance;
+            if (instance.vtable.onTriggerExit) |fn_ptr| fn_ptr(ctx, other);
+        }
+
+        fn callCollisionEnterBridge(context_ptr: *anyopaque, instance: *types.ScriptInstance, ctx: *context.ScriptContext, other: types.EntityId) void {
+            _ = castContext(Self, context_ptr);
+            ctx.instance = instance;
+            if (instance.vtable.onCollisionEnter) |fn_ptr| fn_ptr(ctx, other);
+        }
+
+        fn callCollisionExitBridge(context_ptr: *anyopaque, instance: *types.ScriptInstance, ctx: *context.ScriptContext, other: types.EntityId) void {
+            _ = castContext(Self, context_ptr);
+            ctx.instance = instance;
+            if (instance.vtable.onCollisionExit) |fn_ptr| fn_ptr(ctx, other);
+        }
 
         fn loadBridge(context_ptr: *anyopaque, resource: *const script_resource_mod.ScriptResource) types.ScriptError!void {
             return Self.load(castContext(Self, context_ptr), resource);

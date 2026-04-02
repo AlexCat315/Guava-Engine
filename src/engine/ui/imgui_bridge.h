@@ -110,6 +110,13 @@ void guava_imgui_draw_list_add_bezier_curve(
 uint32_t guava_imgui_get_color_u32(float r, float g, float b, float a);
 uint32_t guava_imgui_get_color_u32_idx(uint32_t color_idx);
 
+// 游戏内 UI 前景绘图列表 (GR-7)
+void guava_imgui_fg_draw_list_add_rect_filled(float p_min_x, float p_min_y,
+                                              float p_max_x, float p_max_y,
+                                              uint32_t color, float rounding);
+void guava_imgui_fg_draw_list_add_text(float pos_x, float pos_y, uint32_t color,
+                                       const char *text, size_t text_len);
+
 bool guava_imgui_begin_window(const char *name, size_t name_len);
 bool guava_imgui_begin_window_flags(const char *name, size_t name_len,
                                     uint32_t flags);

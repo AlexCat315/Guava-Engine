@@ -324,6 +324,21 @@ pub fn getWindowDrawList() DrawList {
     return .{};
 }
 
+/// 游戏内 UI 专用前景绘制列表（始终渲染在最顶层，GR-7）
+pub const ForegroundDrawList = struct {
+    pub fn addRectFilled(_: ForegroundDrawList, p_min: [2]f32, p_max: [2]f32, color: u32, rounding: f32) void {
+        c.guava_imgui_fg_draw_list_add_rect_filled(p_min[0], p_min[1], p_max[0], p_max[1], color, rounding);
+    }
+
+    pub fn addText(_: ForegroundDrawList, pos: [2]f32, color: u32, value: []const u8) void {
+        c.guava_imgui_fg_draw_list_add_text(pos[0], pos[1], color, value.ptr, value.len);
+    }
+};
+
+pub fn getForegroundDrawList() ForegroundDrawList {
+    return .{};
+}
+
 pub fn beginWindow(name: []const u8) bool {
     return c.guava_imgui_begin_window(name.ptr, name.len);
 }

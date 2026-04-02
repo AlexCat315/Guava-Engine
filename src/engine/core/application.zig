@@ -49,6 +49,7 @@ const handles = @import("../assets/handles.zig");
 const layer_mod = @import("layer.zig");
 const layer_stack_mod = @import("layer_stack.zig");
 const input_mod = @import("input.zig");
+const input_action_mod = @import("input_action.zig");
 const command_queue_mod = @import("command_queue.zig");
 const scene_manager_mod = @import("scene_manager.zig");
 const platform_mod = @import("platform.zig");
@@ -59,6 +60,7 @@ const window_mod = @import("../platform/window.zig");
 const scene_mod = @import("../scene/scene.zig");
 const job_system_mod = @import("job_system.zig");
 const audio_mod = @import("../audio/mod.zig");
+const runtime_ui_mod = @import("../runtime_ui/mod.zig");
 
 /// 应用程序配置
 ///
@@ -176,6 +178,10 @@ pub const Application = struct {
     game_state: layer_mod.GameState = .game_start,
     /// 播放模式快照（用于 Play/Stop 回滚）
     play_mode_snapshot: ?PlayModeSnapshot = null,
+    /// 输入动作映射（GR-6）
+    action_map: input_action_mod.ActionMap,
+    /// 游戏内 UI Canvas（GR-7）
+    canvas: runtime_ui_mod.Canvas,
     /// 物理时间累积器
     physics_accumulator_seconds: f32 = 0.0,
     /// 物理状态实例（替代全局变量）
@@ -250,6 +256,8 @@ pub const Application = struct {
             .input = .{},
             .timer = timer,
             .physics_state = physics_system.PhysicsState.init(allocator),
+            .action_map = input_action_mod.ActionMap.init(allocator),
+            .canvas = runtime_ui_mod.Canvas.init(allocator, .{ .reference_width = 1920, .reference_height = 1080 }),
         };
     }
 
@@ -286,6 +294,8 @@ pub const Application = struct {
         self.scene_manager.deinit();
         self.editor_utility_runtime.deinit();
         self.script_runtime.deinit();
+        self.action_map.deinit();
+        self.canvas.deinit();
         if (audio_mod.get() catch null) |audio_runtime| {
             audio_runtime.deinit();
         }
@@ -364,6 +374,9 @@ pub const Application = struct {
             try self.pumpEvents();
             imgui_mod.newFrame();
 
+            // 每帧刷新输入动作映射状态（GR-6）
+            self.action_map.update(&self.input);
+
             const elapsed_ns = self.timer.lap();
             var delta_seconds = @as(f32, @floatFromInt(elapsed_ns)) / @as(f32, @floatFromInt(std.time.ns_per_s));
             delta_seconds = @min(delta_seconds, 0.1); // 最大帧间隔锁定为 0.1 秒
@@ -427,6 +440,32 @@ pub const Application = struct {
             }
             if (should_advance_simulation) {
                 self.playback_controller.consumeAdvance();
+            }
+
+            // 渲染游戏内 UI Canvas（GR-7）
+            if (should_advance_simulation) {
+                const screen_w: f32 = @floatFromInt(self.window.drawable_width);
+                const screen_h: f32 = @floatFromInt(self.window.drawable_height);
+                const mx = self.input.mouse_position[0];
+                const my = self.input.mouse_position[1];
+                // 处理鼠标指针事件（down / up / move）
+                if (self.input.wasMousePressed(.left)) {
+                    self.canvas.processPointerEvent(
+                        .{ .kind = .down, .x = mx, .y = my },
+                        screen_w, screen_h,
+                    );
+                } else if (self.input.wasMouseReleased(.left)) {
+                    self.canvas.processPointerEvent(
+                        .{ .kind = .up, .x = mx, .y = my },
+                        screen_w, screen_h,
+                    );
+                } else {
+                    self.canvas.processPointerEvent(
+                        .{ .kind = .move, .x = mx, .y = my },
+                        screen_w, screen_h,
+                    );
+                }
+                runtime_ui_mod.render.renderCanvas(&self.canvas, screen_w, screen_h);
             }
 
             last_frame = try self.renderer.drawFrame(&self.world, &self.physics_state);
@@ -607,11 +646,13 @@ pub const Application = struct {
                     .input = &self.input,
                     .physics_state = &self.physics_state,
                     .time = self.global_time,
-                    .delta_time = delta_seconds,
+                    .delta_time = delta_seconds * self.time_scale,
                     .time_scale = self.time_scale,
                     .game_state = @intFromEnum(self.game_state),
                     .time_scale_ptr = &self.time_scale,
                     .game_state_ptr = @ptrCast(&self.game_state),
+                    .action_map = &self.action_map,
+                    .canvas = &self.canvas,
                     .scene_manager_api = .{
                         .context = self,
                         .load_scene = scriptLoadScene,
@@ -633,6 +674,59 @@ pub const Application = struct {
                     instance.state = .failed;
                 };
             }
+        }
+
+        // 派发物理触发器与碰撞事件到脚本 (GR-4)
+        self.dispatchPhysicsEvents();
+    }
+
+    /// 将物理触发器/碰撞事件派发给相关脚本实例
+    fn dispatchPhysicsEvents(self: *Application) void {
+        const trigger_events = self.physics_state.pollTriggerEvents();
+        if (trigger_events.len == 0) {
+            return;
+        }
+
+        for (trigger_events) |event| {
+            // 向事件双方各自派发（A→B, B→A）
+            self.dispatchTriggerToEntity(event.entity_a, event.entity_b, event.kind);
+            self.dispatchTriggerToEntity(event.entity_b, event.entity_a, event.kind);
+        }
+
+        self.physics_state.clearTriggerEvents();
+    }
+
+    fn dispatchTriggerToEntity(
+        self: *Application,
+        self_id: scene_mod.EntityId,
+        other_id: scene_mod.EntityId,
+        kind: physics_system.TriggerEventKind,
+    ) void {
+        const entity = self.world.getEntityConst(self_id) orelse return;
+        const script = entity.script orelse return;
+        const instance_id = script.instance_id orelse return;
+        const instance = self.script_runtime.instances.get(instance_id) orelse return;
+        if (!script.enabled or instance.state != .running) return;
+
+        const script_language: script_system.ScriptLanguage = @enumFromInt(@intFromEnum(script.language));
+        const vm = self.script_runtime.getVM(script_language) orelse return;
+
+        var ctx = script_system.ScriptContext{
+            .entity = self_id,
+            .world = &self.world,
+            .instance = instance,
+            .allocator = self.allocator,
+            .physics_state = &self.physics_state,
+            .time = self.global_time,
+            .delta_time = 0.0,
+            .time_scale = self.time_scale,
+            .action_map = &self.action_map,
+        };
+
+        switch (kind) {
+            .enter => vm.callTriggerEnter(instance, &ctx, other_id),
+            .exit => vm.callTriggerExit(instance, &ctx, other_id),
+            .stay => {}, // stay 事件不转发（可按需添加）
         }
     }
 

@@ -16,6 +16,10 @@ pub const ScriptVM = struct {
         callInit: *const fn (vm_context: *anyopaque, instance: *types.ScriptInstance, ctx: *context.ScriptContext) types.ScriptError!void,
         callUpdate: *const fn (vm_context: *anyopaque, instance: *types.ScriptInstance, ctx: *context.ScriptContext, dt: f32) types.ScriptError!void,
         callDestroy: *const fn (vm_context: *anyopaque, instance: *types.ScriptInstance, ctx: *context.ScriptContext) types.ScriptError!void,
+        callTriggerEnter: ?*const fn (vm_context: *anyopaque, instance: *types.ScriptInstance, ctx: *context.ScriptContext, other: types.EntityId) void = null,
+        callTriggerExit: ?*const fn (vm_context: *anyopaque, instance: *types.ScriptInstance, ctx: *context.ScriptContext, other: types.EntityId) void = null,
+        callCollisionEnter: ?*const fn (vm_context: *anyopaque, instance: *types.ScriptInstance, ctx: *context.ScriptContext, other: types.EntityId) void = null,
+        callCollisionExit: ?*const fn (vm_context: *anyopaque, instance: *types.ScriptInstance, ctx: *context.ScriptContext, other: types.EntityId) void = null,
         getError: *const fn (vm_context: *anyopaque) []const u8,
         destroy: *const fn (vm_context: *anyopaque, allocator: std.mem.Allocator) void,
     };
@@ -46,6 +50,30 @@ pub const ScriptVM = struct {
 
     pub fn callDestroy(self: *ScriptVM, instance: *types.ScriptInstance, ctx: *context.ScriptContext) types.ScriptError!void {
         return self.vtable.callDestroy(self.context, instance, ctx);
+    }
+
+    pub fn callTriggerEnter(self: *ScriptVM, instance: *types.ScriptInstance, ctx: *context.ScriptContext, other: types.EntityId) void {
+        if (self.vtable.callTriggerEnter) |fn_ptr| {
+            fn_ptr(self.context, instance, ctx, other);
+        }
+    }
+
+    pub fn callTriggerExit(self: *ScriptVM, instance: *types.ScriptInstance, ctx: *context.ScriptContext, other: types.EntityId) void {
+        if (self.vtable.callTriggerExit) |fn_ptr| {
+            fn_ptr(self.context, instance, ctx, other);
+        }
+    }
+
+    pub fn callCollisionEnter(self: *ScriptVM, instance: *types.ScriptInstance, ctx: *context.ScriptContext, other: types.EntityId) void {
+        if (self.vtable.callCollisionEnter) |fn_ptr| {
+            fn_ptr(self.context, instance, ctx, other);
+        }
+    }
+
+    pub fn callCollisionExit(self: *ScriptVM, instance: *types.ScriptInstance, ctx: *context.ScriptContext, other: types.EntityId) void {
+        if (self.vtable.callCollisionExit) |fn_ptr| {
+            fn_ptr(self.context, instance, ctx, other);
+        }
     }
 
     pub fn getError(self: *ScriptVM) []const u8 {
