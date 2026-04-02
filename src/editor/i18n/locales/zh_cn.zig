@@ -455,6 +455,18 @@ pub const locale = blk: {
             .prefab_editor = "预制体编辑器",
             .camera_bookmarks = "相机书签",
             .script_editor = "脚本编辑器",
+            .script_asset = "脚本",
+            .new_script = "新建脚本",
+            .new_cs_script = "新建 C# 脚本",
+            .new_zig_script = "新建 Zig 脚本",
+            .open_script = "打开...",
+            .save_script = "保存",
+            .build_script = "构建",
+            .script_saved = "脚本已保存。",
+            .script_build_success = "构建成功。",
+            .script_build_failed = "构建失败。",
+            .script_untitled = "未命名",
+            .open_in_script_editor = "在脚本编辑器中打开",
 
             // AI 对话
             .ai_chat = "AI 助手",

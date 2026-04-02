@@ -662,6 +662,7 @@ fn assetKindLabel(kind: state_mod.AssetKind) []const u8 {
         .material => "material",
         .texture => "texture",
         .shader => "shader",
+        .script => "script",
     };
 }
 

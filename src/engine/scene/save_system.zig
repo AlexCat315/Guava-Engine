@@ -196,8 +196,8 @@ pub const SaveSystem = struct {
     // -- Metadata queries ---------------------------------------------------
 
     /// Read metadata for a specific slot.
-    /// The returned SaveMeta contains arena-allocated strings that live
-    /// until the next call to readMeta or until `freeMeta` is called.
+    /// The returned SaveMeta owns all string memory and must be released
+    /// with `freeMeta`.
     pub fn readMeta(self: *SaveSystem, slot: u32) !SaveMeta {
         const meta_path = try self.metaFilePath(slot);
         defer self.allocator.free(meta_path);
@@ -210,19 +210,24 @@ pub const SaveSystem = struct {
             .allocate = .alloc_always,
             .ignore_unknown_fields = true,
         }) catch return error.InvalidMetadata;
-        // Note: parsed.value contains slices pointing into parsed arena.
-        // We copy the essential fields to return a stand-alone struct.
-        // Caller must be aware this is a snapshot; strings are valid
-        // as long as parsed is alive. We keep it simple: leak the parse
-        // result since SaveMeta is small and typically short-lived.
-        return parsed.value;
+        defer parsed.deinit();
+
+        return try cloneSaveMetaAlloc(self.allocator, parsed.value);
+    }
+
+    /// Free a metadata snapshot returned by `readMeta` / `listSlots`.
+    pub fn freeMeta(self: *SaveSystem, meta: *SaveMeta) void {
+        freeSaveMetaOwned(self.allocator, meta);
     }
 
     /// List all populated save slots (returns owned slice of SaveMeta).
-    /// Caller must free each meta's parsed memory and the slice.
+    /// Caller must call `freeMeta` for each entry, then free the returned slice.
     pub fn listSlots(self: *SaveSystem) ![]SaveMeta {
         var result: std.ArrayListUnmanaged(SaveMeta) = .empty;
-        errdefer result.deinit(self.allocator);
+        errdefer {
+            for (result.items) |*meta| self.freeMeta(meta);
+            result.deinit(self.allocator);
+        }
 
         // Scan for slot directories: quicksave + slot_1..slot_N
         const max_slot: u32 = 100; // scan up to 100 slots
@@ -315,6 +320,48 @@ fn serializeMetaAlloc(allocator: std.mem.Allocator, meta: SaveMeta) ![]u8 {
     return output.toOwnedSlice(allocator);
 }
 
+fn cloneSaveMetaAlloc(allocator: std.mem.Allocator, src: SaveMeta) !SaveMeta {
+    var tags: []const []const u8 = &.{};
+    if (src.tags.len > 0) {
+        tags = try allocator.alloc([]const u8, src.tags.len);
+        var i: usize = 0;
+        errdefer {
+            while (i > 0) : (i -= 1) {
+                if (tags[i - 1].len > 0) allocator.free(tags[i - 1]);
+            }
+            allocator.free(tags);
+        }
+        for (src.tags, 0..) |tag, idx| {
+            tags[idx] = if (tag.len > 0) try allocator.dupe(u8, tag) else &.{};
+            i += 1;
+        }
+    }
+
+    return .{
+        .version = src.version,
+        .slot = src.slot,
+        .display_name = if (src.display_name.len > 0) try allocator.dupe(u8, src.display_name) else &.{},
+        .timestamp = if (src.timestamp.len > 0) try allocator.dupe(u8, src.timestamp) else &.{},
+        .play_time_seconds = src.play_time_seconds,
+        .scene_name = if (src.scene_name.len > 0) try allocator.dupe(u8, src.scene_name) else &.{},
+        .entity_count = src.entity_count,
+        .tags = tags,
+    };
+}
+
+fn freeSaveMetaOwned(allocator: std.mem.Allocator, meta: *SaveMeta) void {
+    if (meta.display_name.len > 0) allocator.free(meta.display_name);
+    if (meta.timestamp.len > 0) allocator.free(meta.timestamp);
+    if (meta.scene_name.len > 0) allocator.free(meta.scene_name);
+    if (meta.tags.len > 0) {
+        for (meta.tags) |tag| {
+            if (tag.len > 0) allocator.free(tag);
+        }
+        allocator.free(meta.tags);
+    }
+    meta.* = .{};
+}
+
 // ---------------------------------------------------------------------------
 // Timestamp helper
 // ---------------------------------------------------------------------------
@@ -363,4 +410,27 @@ test "timestampNow format" {
     try std.testing.expect(ts.len >= 19);
     try std.testing.expectEqual(@as(u8, '-'), ts[4]);
     try std.testing.expectEqual(@as(u8, 'T'), ts[10]);
+}
+
+test "clone/free SaveMeta owned snapshot" {
+    const allocator = std.testing.allocator;
+    const src = SaveMeta{
+        .version = 1,
+        .slot = 2,
+        .display_name = "Before boss",
+        .timestamp = "2026-01-01T00:00:00",
+        .play_time_seconds = 42.5,
+        .scene_name = "chapter_3",
+        .entity_count = 123,
+        .tags = &.{ "chapter_3", "boss_gate" },
+    };
+
+    var cloned = try cloneSaveMetaAlloc(allocator, src);
+    defer freeSaveMetaOwned(allocator, &cloned);
+
+    try std.testing.expectEqual(@as(u32, 2), cloned.slot);
+    try std.testing.expectEqualStrings("Before boss", cloned.display_name);
+    try std.testing.expectEqualStrings("chapter_3", cloned.scene_name);
+    try std.testing.expectEqual(@as(usize, 2), cloned.tags.len);
+    try std.testing.expectEqualStrings("boss_gate", cloned.tags[1]);
 }

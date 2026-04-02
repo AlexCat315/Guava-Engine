@@ -27,6 +27,7 @@ const prefab_editor = @import("../ui/panels/assets/prefab_editor.zig");
 const camera_bookmarks = @import("../ui/panels/viewport/camera_bookmarks.zig");
 const rhi_stats = @import("../ui/panels/debug/rhi_stats.zig");
 const plugin_manager = @import("../ui/panels/debug/plugin_manager.zig");
+const script_debugger = @import("../ui/panels/debug/script_debugger.zig");
 const style_inspector = @import("../ui/panels/rendering/style_inspector.zig");
 const render_queue = @import("../ui/panels/rendering/render_queue.zig");
 const preferences = @import("preferences.zig");
@@ -138,6 +139,7 @@ pub const EditorLayer = struct {
     render_queue_state: render_queue.RenderQueueState = .{},
     particle_editor_state: particle_editor.ParticleEditorState = .{},
     script_editor_state: ?script_editor.ScriptEditorState = null,
+    script_debugger_state: script_debugger.ScriptDebuggerState = .{},
     post_process_editor_state: ?post_process_editor.PostProcessPipelineEditorState = null,
     post_process_viewport_state: engine.render.EditorViewportState = .{},
     prefab_editor_state: prefab_editor.PrefabEditorState = .{},
@@ -363,6 +365,24 @@ pub const EditorLayer = struct {
         }
         if (self.state.script_editor_open) {
             if (self.script_editor_state) |*es| {
+                // Handle pending open/create requests from the asset browser
+                if (self.state.pending_new_script_path) |new_path| {
+                    if (self.state.pending_new_script_template) |template| {
+                        // Write template to file, then open
+                        if (std.fs.cwd().createFile(new_path, .{})) |file| {
+                            file.writeAll(template) catch {};
+                            file.close();
+                            es.loadFromFile(new_path) catch {};
+                            content_browser.refreshAssetBrowser(&self.state, layer_context) catch {};
+                        } else |_| {}
+                    }
+                    self.state.pending_new_script_path = null;
+                    self.state.pending_new_script_template = null;
+                }
+                if (self.state.pending_script_open_path) |open_path| {
+                    es.loadFromFile(open_path) catch {};
+                    self.state.pending_script_open_path = null;
+                }
                 try script_editor.drawScriptEditorWindow(&self.state, layer_context, es);
             }
         }
@@ -387,6 +407,9 @@ pub const EditorLayer = struct {
         }
         if (self.state.plugin_manager_open) {
             plugin_manager.drawPluginManagerWindow(&self.state, layer_context);
+        }
+        if (self.state.script_debugger_open) {
+            try script_debugger.drawScriptDebuggerWindow(&self.state, layer_context, &self.script_debugger_state);
         }
         if (self.state.style_inspector_open) {
             style_inspector.drawStyleInspectorWindow(&self.state, layer_context);

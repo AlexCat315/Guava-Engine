@@ -44,6 +44,7 @@ const std = @import("std");
 const animator_system = @import("../animation/animator_system.zig");
 const physics_system = @import("../physics/system.zig");
 const nav_system_mod = @import("../navigation/nav_system.zig");
+const debug_session_mod = @import("../script/debug_session.zig");
 const editor_utility_runtime_mod = @import("../script/editor_utility_runtime.zig");
 const script_system = @import("../script/script.zig");
 const handles = @import("../assets/handles.zig");
@@ -189,6 +190,8 @@ pub const Application = struct {
     physics_state: physics_system.PhysicsState,
     /// 导航系统状态
     nav_system: nav_system_mod.NavSystem,
+    /// 脚本调试会话
+    debug_session: debug_session_mod.DebugSession,
 
     /// 初始化应用程序
     ///
@@ -260,6 +263,7 @@ pub const Application = struct {
             .timer = timer,
             .physics_state = physics_system.PhysicsState.init(allocator),
             .nav_system = nav_system_mod.NavSystem.init(allocator),
+            .debug_session = debug_session_mod.DebugSession.init(allocator),
             .action_map = input_action_mod.ActionMap.init(allocator),
             .canvas = runtime_ui_mod.Canvas.init(allocator, .{ .reference_width = 1920, .reference_height = 1080 }),
         };
@@ -307,6 +311,7 @@ pub const Application = struct {
         self.physics_state.deinitWorld(&self.world);
         self.physics_state.deinit();
         self.nav_system.deinit();
+        self.debug_session.deinit();
         self.world.deinit();
         self.command_queue.deinit();
         self.window.deinit();
@@ -589,6 +594,7 @@ pub const Application = struct {
             .physics_accumulator_seconds = &self.physics_accumulator_seconds,
             .physics_state = &self.physics_state,
             .nav_system = &self.nav_system,
+            .script_debug_session = &self.debug_session,
             .frame_index = frame_index,
             .delta_seconds = delta_seconds,
         };

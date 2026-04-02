@@ -446,6 +446,18 @@ pub const MessageId = enum {
     prefab_editor,
     camera_bookmarks,
     script_editor,
+    script_asset,
+    new_script,
+    new_cs_script,
+    new_zig_script,
+    open_script,
+    save_script,
+    build_script,
+    script_saved,
+    script_build_success,
+    script_build_failed,
+    script_untitled,
+    open_in_script_editor,
 
     // AI Chat
     ai_chat,

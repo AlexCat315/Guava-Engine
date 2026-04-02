@@ -723,6 +723,12 @@ fn drawSelectedAssetPreview(state: *EditorState, layer_context: *engine.core.Lay
             .shader => {
                 gui.textWrapped(state.text(.shader_source_preview_is_currently_metadata_only));
             },
+            .script => {
+                if (gui.buttonEx(state.text(.open_in_script_editor), gui.contentRegionAvail()[0], 0.0)) {
+                    state.pending_script_open_path = entry.path;
+                    state.script_editor_open = true;
+                }
+            },
         }
         return;
     }
@@ -830,7 +836,7 @@ fn drawProjectPanelHeader(state: *EditorState, layer_context: *engine.core.Layer
             if (gui.selectable(state.text(.all_types), state.asset_kind_filter == null, false, 0.0, 0.0)) {
                 state.asset_kind_filter = null;
             }
-            const kinds = [_]state_mod.AssetKind{ .scene, .model, .material, .texture, .shader };
+            const kinds = [_]state_mod.AssetKind{ .scene, .model, .material, .texture, .shader, .script };
             for (kinds) |kind| {
                 const kind_label = utils.assetKindLabel(state, kind);
                 if (gui.selectable(kind_label, state.asset_kind_filter != null and state.asset_kind_filter.? == kind, false, 0.0, 0.0)) {
@@ -1044,6 +1050,7 @@ fn assetIconPath(kind: AssetKind) []const u8 {
         .material => ui_icons.paths.toolbar.material,
         .texture => ui_icons.paths.toolbar.settings,
         .shader => ui_icons.paths.toolbar.rotate,
+        .script => ui_icons.paths.toolbar.settings,
     };
 }
 
@@ -1054,6 +1061,7 @@ fn assetIconTint(kind: AssetKind) [4]u8 {
         .material => .{ 186, 228, 196, 255 },
         .texture => .{ 255, 214, 150, 255 },
         .shader => .{ 214, 176, 255, 255 },
+        .script => .{ 255, 196, 196, 255 },
     };
 }
 
@@ -1064,6 +1072,7 @@ fn assetKindForRecordType(record_type: engine.assets.AssetType) ?AssetKind {
         .material => .material,
         .texture => .texture,
         .shader => .shader,
+        .script => .script,
         else => null,
     };
 }
@@ -1522,6 +1531,15 @@ fn drawAssetContextMenu(state: *EditorState, layer_context: *engine.core.LayerCo
     if (gui.beginPopupContextItem(popup_id)) {
         defer gui.endPopup();
 
+        // Open script files in the Script Editor
+        if (entry.kind == .script) {
+            if (gui.menuItem(state.text(.open_in_script_editor), null, false, true)) {
+                state.pending_script_open_path = entry.path;
+                state.script_editor_open = true;
+            }
+            gui.separator();
+        }
+
         if (gui.menuItem(state.text(.rename), null, false, true)) {
             state.asset_rename_index = index;
             @memset(state.asset_rename_buffer[0..], 0);
@@ -1575,6 +1593,16 @@ fn drawFolderContextMenu(state: *EditorState, layer_context: *engine.core.LayerC
             state.new_folder_focus_pending = true;
             setSelectedAssetDirectory(state, directory);
         }
+
+        // New Script sub-items
+        if (gui.menuItem(state.text(.new_cs_script), null, false, true)) {
+            createNewScriptInDirectory(state, directory, ".cs");
+        }
+        if (gui.menuItem(state.text(.new_zig_script), null, false, true)) {
+            createNewScriptInDirectory(state, directory, ".zig");
+        }
+
+        gui.separator();
 
         const has_clipboard = state.asset_clipboard_paths.items.len > 0;
         if (gui.menuItem(state.text(.paste), null, false, has_clipboard)) {
@@ -1736,6 +1764,29 @@ fn revealInFinder(path: []const u8) void {
         std.heap.page_allocator,
     );
     _ = child.spawnAndWait() catch {};
+}
+
+fn createNewScriptInDirectory(state: *EditorState, directory: []const u8, ext: []const u8) void {
+    const root_path = assetBrowserRootPath(state);
+    var dir_buf: [512]u8 = undefined;
+    const full_dir = if (std.mem.eql(u8, directory, "/"))
+        std.fmt.bufPrint(&dir_buf, "{s}", .{root_path}) catch return
+    else
+        std.fmt.bufPrint(&dir_buf, "{s}{s}", .{ root_path, directory }) catch return;
+
+    const filename = if (std.mem.eql(u8, ext, ".cs")) "NewScript.cs" else "new_script.zig";
+    const template = if (std.mem.eql(u8, ext, ".cs"))
+        "using System;\n\nnamespace Game\n{\n    public class NewScript\n    {\n        public void Update(float deltaTime)\n        {\n        }\n    }\n}\n"
+    else
+        "const std = @import(\"std\");\nconst engine = @import(\"guava\");\n\npub fn update(delta_time: f32) void {\n    _ = delta_time;\n}\n";
+
+    var path_buf: [768]u8 = undefined;
+    const full_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ full_dir, filename }) catch return;
+
+    // Set pending fields – the layer will create the file and open it in the Script Editor
+    state.pending_new_script_path = full_path;
+    state.pending_new_script_template = template;
+    state.script_editor_open = true;
 }
 
 fn importAssetsFromFinder(state: *EditorState, layer_context: *engine.core.LayerContext) void {

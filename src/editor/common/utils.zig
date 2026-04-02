@@ -20,6 +20,9 @@ pub fn assetKindForPath(path: []const u8) ?AssetKind {
     if (std.mem.endsWith(u8, path, ".glsl") or std.mem.endsWith(u8, path, ".spv") or std.mem.endsWith(u8, path, ".json")) {
         return .shader;
     }
+    if (std.mem.endsWith(u8, path, ".cs") or std.mem.endsWith(u8, path, ".zig") or std.mem.endsWith(u8, path, ".csproj")) {
+        return .script;
+    }
     return null;
 }
 
@@ -160,6 +163,7 @@ pub fn assetKindLabel(state: *const EditorState, kind: AssetKind) []const u8 {
         .material => state.text(.material_asset),
         .texture => state.text(.texture),
         .shader => state.text(.shader),
+        .script => state.text(.script_asset),
     };
 }
 

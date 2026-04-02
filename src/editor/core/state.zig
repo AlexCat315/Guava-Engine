@@ -33,6 +33,7 @@ pub const AssetKind = enum {
     material,
     texture,
     shader,
+    script,
 };
 
 pub const AssetEntry = struct {
@@ -772,6 +773,12 @@ pub const EditorState = struct {
     prefab_editor_open: bool = false,
     camera_bookmarks_open: bool = false,
     script_editor_open: bool = false,
+    script_debugger_open: bool = false,
+    // Pending request to open a script file in the Script Editor (set by browser, consumed by layer)
+    pending_script_open_path: ?[]const u8 = null,
+    // Pending request to create a new script file (path to write, then open)
+    pending_new_script_path: ?[]const u8 = null,
+    pending_new_script_template: ?[]const u8 = null,
     selected_prefab_id: ?[]const u8 = null,
     editing_prefab_id: ?[]const u8 = null,
     prefab_browser_search_buffer: [128]u8 = [_]u8{0} ** 128,

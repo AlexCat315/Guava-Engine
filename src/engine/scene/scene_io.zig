@@ -196,6 +196,14 @@ const AudioListenerComponentRecord = struct {
     enabled: bool = true,
 };
 
+const NavAgentComponentRecord = struct {
+    radius: f32 = 0.6,
+    height: f32 = 2.0,
+    max_acceleration: f32 = 8.0,
+    max_speed: f32 = 3.5,
+    target: ?[3]f32 = null,
+};
+
 const AnimatorComponentRecord = struct {
     skeleton_asset_id: ?[]const u8 = null,
     default_clip_asset_id: ?[]const u8 = null,
@@ -345,6 +353,7 @@ const EntityRecord = struct {
     script: ?ScriptComponentRecord = null,
     audio_source: ?AudioSourceComponentRecord = null,
     audio_listener: ?AudioListenerComponentRecord = null,
+    nav_agent: ?NavAgentComponentRecord = null,
     visible: bool = true,
     editor_only: bool = false,
     dont_destroy_on_load: bool = false,
@@ -925,6 +934,13 @@ fn buildSceneFileFiltered(
             .audio_listener = if (entity.audio_listener) |al| AudioListenerComponentRecord{
                 .enabled = al.enabled,
             } else null,
+            .nav_agent = if (entity.nav_agent) |agent| NavAgentComponentRecord{
+                .radius = agent.radius,
+                .height = agent.height,
+                .max_acceleration = agent.max_acceleration,
+                .max_speed = agent.max_speed,
+                .target = agent.target,
+            } else null,
             .visible = entity.visible,
             .editor_only = entity.editor_only,
             .dont_destroy_on_load = entity.dont_destroy_on_load,
@@ -1398,6 +1414,18 @@ fn applySceneFileToWorld(
             .audio_listener = if (entity.audio_listener) |al_rec|
                 .{
                     .enabled = al_rec.enabled,
+                }
+            else
+                null,
+            .nav_agent = if (entity.nav_agent) |agent_rec|
+                .{
+                    .radius = agent_rec.radius,
+                    .height = agent_rec.height,
+                    .max_acceleration = agent_rec.max_acceleration,
+                    .max_speed = agent_rec.max_speed,
+                    .target = agent_rec.target,
+                    ._crowd_idx = null,
+                    ._registered = false,
                 }
             else
                 null,

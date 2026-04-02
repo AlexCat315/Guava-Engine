@@ -30,6 +30,10 @@ pub const ScriptEditorState = struct {
     tab_size: usize = 4,
     show_line_numbers: bool = true,
     word_wrap: bool = false,
+    // File path currently open (owned, allocated by self.allocator)
+    file_path: ?[]u8 = null,
+    // Whether a build is currently running
+    is_building: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) ScriptEditorState {
         return .{
@@ -47,6 +51,9 @@ pub const ScriptEditorState = struct {
         if (self.original_source.len > 0) {
             self.allocator.free(self.original_source);
         }
+        if (self.file_path) |fp| {
+            self.allocator.free(fp);
+        }
         self.* = undefined;
     }
 
@@ -60,6 +67,53 @@ pub const ScriptEditorState = struct {
         self.is_modified = false;
         self.cursor_line = 1;
         self.cursor_column = 1;
+    }
+
+    pub fn loadFromFile(self: *ScriptEditorState, path: []const u8) !void {
+        const file = try std.fs.cwd().openFile(path, .{});
+        defer file.close();
+        const stat = try file.stat();
+        const size = stat.size;
+        try self.source_buffer.resize(self.allocator, size);
+        const read = try file.readAll(self.source_buffer.items);
+        try self.source_buffer.resize(self.allocator, read);
+        if (self.original_source.len > 0) {
+            self.allocator.free(self.original_source);
+        }
+        self.original_source = try self.allocator.dupe(u8, self.source_buffer.items);
+        if (self.file_path) |fp| self.allocator.free(fp);
+        self.file_path = try self.allocator.dupe(u8, path);
+        self.is_modified = false;
+        self.cursor_line = 1;
+        self.cursor_column = 1;
+        self.breakpoints.clearRetainingCapacity();
+    }
+
+    pub fn saveToFile(self: *ScriptEditorState) !void {
+        const path = self.file_path orelse return error.NoFilePath;
+        const file = try std.fs.cwd().createFile(path, .{});
+        defer file.close();
+        try file.writeAll(self.source_buffer.items);
+        if (self.original_source.len > 0) {
+            self.allocator.free(self.original_source);
+        }
+        self.original_source = try self.allocator.dupe(u8, self.source_buffer.items);
+        self.is_modified = false;
+    }
+
+    pub fn newFile(self: *ScriptEditorState, path: ?[]const u8, template: []const u8) !void {
+        self.source_buffer.clearRetainingCapacity();
+        try self.source_buffer.appendSlice(self.allocator, template);
+        if (self.original_source.len > 0) {
+            self.allocator.free(self.original_source);
+            self.original_source = "";
+        }
+        if (self.file_path) |fp| self.allocator.free(fp);
+        self.file_path = if (path) |p| try self.allocator.dupe(u8, p) else null;
+        self.is_modified = path != null;
+        self.cursor_line = 1;
+        self.cursor_column = 1;
+        self.breakpoints.clearRetainingCapacity();
     }
 
     pub fn getSource(self: *const ScriptEditorState) []const u8 {
@@ -117,7 +171,7 @@ pub fn drawScriptEditorWindow(
     defer gui.endWindow();
     floating_window_blocker.registerCurrentWindow("script_editor_panel");
 
-    drawScriptToolbar(editor_state);
+    drawScriptToolbar(state, editor_state);
 
     gui.separator();
 
@@ -132,32 +186,70 @@ pub fn drawScriptEditorWindow(
     }
 }
 
-fn drawScriptToolbar(editor_state: *ScriptEditorState) void {
-    if (gui.button("New")) {
-        editor_state.source_buffer.clearRetainingCapacity();
-        editor_state.is_modified = false;
+fn drawScriptToolbar(state: *EditorState, editor_state: *ScriptEditorState) void {
+    // New button with sub-menu for C# / Zig
+    if (gui.button(state.text(.new_script))) {
+        gui.openPopup("##new_script_popup");
+    }
+    if (gui.beginPopup("##new_script_popup")) {
+        if (gui.selectable(state.text(.new_cs_script), false, false, 0.0, 0.0)) {
+            const cs_template = "using System;\n\nnamespace Game\n{\n    public class NewScript\n    {\n        public void Update(float deltaTime)\n        {\n        }\n    }\n}\n";
+            editor_state.newFile(null, cs_template) catch {};
+        }
+        if (gui.selectable(state.text(.new_zig_script), false, false, 0.0, 0.0)) {
+            const zig_template = "const std = @import(\"std\");\nconst engine = @import(\"guava\");\n\npub fn update(delta_time: f32) void {\n    _ = delta_time;\n}\n";
+            editor_state.newFile(null, zig_template) catch {};
+        }
+        gui.endPopup();
     }
     gui.sameLine();
 
-    if (gui.button("Open")) {}
-    gui.sameLine();
-
-    if (gui.button("Save")) {
-        editor_state.is_modified = false;
+    // Open button — use macOS native file picker
+    if (gui.button(state.text(.open_script))) {
+        openScriptFilePicker(editor_state);
     }
     gui.sameLine();
 
+    // Save button — write to file
+    if (gui.button(state.text(.save_script))) {
+        if (editor_state.file_path == null) {
+            // No file path yet — use Save As dialog
+            saveScriptWithPicker(editor_state);
+        } else {
+            editor_state.saveToFile() catch |err| {
+                const msg = std.fmt.allocPrint(editor_state.allocator, "Save failed: {}", .{err}) catch return;
+                defer editor_state.allocator.free(msg);
+                editor_state.appendConsole(msg) catch {};
+            };
+        }
+    }
+    gui.sameLine();
+
+    // Modified indicator
     if (editor_state.is_modified) {
         gui.textColored(.{ 1.0, 0.5, 0.0, 1.0 }, "*");
         gui.sameLine();
     }
 
-    gui.text("Language:");
-    gui.sameLine();
-    gui.text("Zig");
+    // File name display
+    if (editor_state.file_path) |fp| {
+        const name = if (std.mem.lastIndexOfScalar(u8, fp, '/')) |idx| fp[idx + 1 ..] else fp;
+        gui.text(name);
+    } else {
+        gui.text(state.text(.script_untitled));
+    }
 
     gui.sameLine();
     gui.dummy(20.0, 1.0);
+    gui.sameLine();
+
+    // Build button (for .cs files with .csproj in same directory)
+    if (gui.button(state.text(.build_script))) {
+        buildCurrentScript(state, editor_state);
+    }
+
+    gui.sameLine();
+    gui.dummy(10.0, 1.0);
     gui.sameLine();
 
     if (gui.button("Find")) {
@@ -309,4 +401,147 @@ fn getLine(text: []const u8, line_num: usize) []const u8 {
     }
 
     return text[line_start..];
+}
+
+fn openScriptFilePicker(editor_state: *ScriptEditorState) void {
+    const result = std.process.Child.run(.{
+        .allocator = editor_state.allocator,
+        .argv = &.{
+            "/usr/bin/osascript",
+            "-e",
+            "POSIX path of (choose file of type {\"cs\", \"zig\", \"csproj\"} with prompt \"Open Script\")",
+        },
+    }) catch return;
+    defer editor_state.allocator.free(result.stdout);
+    defer editor_state.allocator.free(result.stderr);
+
+    if (result.term.Exited != 0) return;
+
+    const trimmed = std.mem.trim(u8, result.stdout, " \t\r\n");
+    if (trimmed.len == 0) return;
+
+    editor_state.loadFromFile(trimmed) catch |err| {
+        const msg = std.fmt.allocPrint(editor_state.allocator, "Open failed: {}", .{err}) catch return;
+        defer editor_state.allocator.free(msg);
+        editor_state.appendConsole(msg) catch {};
+    };
+}
+
+fn saveScriptWithPicker(editor_state: *ScriptEditorState) void {
+    const result = std.process.Child.run(.{
+        .allocator = editor_state.allocator,
+        .argv = &.{
+            "/usr/bin/osascript",
+            "-e",
+            "POSIX path of (choose file name with prompt \"Save Script\" default name \"NewScript.cs\")",
+        },
+    }) catch return;
+    defer editor_state.allocator.free(result.stdout);
+    defer editor_state.allocator.free(result.stderr);
+
+    if (result.term.Exited != 0) return;
+
+    const trimmed = std.mem.trim(u8, result.stdout, " \t\r\n");
+    if (trimmed.len == 0) return;
+
+    if (editor_state.file_path) |fp| editor_state.allocator.free(fp);
+    editor_state.file_path = editor_state.allocator.dupe(u8, trimmed) catch return;
+    editor_state.saveToFile() catch |err| {
+        const msg = std.fmt.allocPrint(editor_state.allocator, "Save failed: {}", .{err}) catch return;
+        defer editor_state.allocator.free(msg);
+        editor_state.appendConsole(msg) catch {};
+    };
+}
+
+fn buildCurrentScript(state: *EditorState, editor_state: *ScriptEditorState) void {
+    const fp = editor_state.file_path orelse {
+        editor_state.appendConsole("No file open to build.") catch {};
+        return;
+    };
+
+    // Auto-save before build
+    if (editor_state.is_modified) {
+        editor_state.saveToFile() catch |err| {
+            const msg = std.fmt.allocPrint(editor_state.allocator, "Auto-save before build failed: {}", .{err}) catch return;
+            defer editor_state.allocator.free(msg);
+            editor_state.appendConsole(msg) catch {};
+            return;
+        };
+    }
+
+    // Find .csproj in the same directory (for C# files)
+    if (std.mem.endsWith(u8, fp, ".cs")) {
+        const dir = if (std.mem.lastIndexOfScalar(u8, fp, '/')) |idx| fp[0..idx] else ".";
+        editor_state.appendConsole("Building C# project...") catch {};
+        editor_state.is_building = true;
+
+        const dotnet_result = std.process.Child.run(.{
+            .allocator = editor_state.allocator,
+            .argv = &.{ "dotnet", "publish", "-c", "Release", "-o", "bin/publish" },
+            .cwd = dir,
+        }) catch |err| {
+            editor_state.is_building = false;
+            const msg = std.fmt.allocPrint(editor_state.allocator, "dotnet publish failed to start: {}", .{err}) catch return;
+            defer editor_state.allocator.free(msg);
+            editor_state.appendConsole(msg) catch {};
+            return;
+        };
+        defer editor_state.allocator.free(dotnet_result.stdout);
+        defer editor_state.allocator.free(dotnet_result.stderr);
+        editor_state.is_building = false;
+
+        if (dotnet_result.stdout.len > 0) {
+            editor_state.appendConsole(dotnet_result.stdout) catch {};
+        }
+        if (dotnet_result.stderr.len > 0) {
+            editor_state.appendConsole(dotnet_result.stderr) catch {};
+        }
+
+        if (dotnet_result.term.Exited == 0) {
+            editor_state.appendConsole(state.text(.script_build_success)) catch {};
+        } else {
+            editor_state.appendConsole(state.text(.script_build_failed)) catch {};
+        }
+    } else if (std.mem.endsWith(u8, fp, ".zig")) {
+        editor_state.appendConsole("Building Zig script...") catch {};
+        editor_state.is_building = true;
+
+        const zig_result = std.process.Child.run(.{
+            .allocator = editor_state.allocator,
+            .argv = &.{ "zig", "build" },
+            .cwd = if (std.mem.lastIndexOfScalar(u8, fp, '/')) |idx| fp[0..idx] else ".",
+        }) catch |err| {
+            editor_state.is_building = false;
+            const msg = std.fmt.allocPrint(editor_state.allocator, "zig build failed to start: {}", .{err}) catch return;
+            defer editor_state.allocator.free(msg);
+            editor_state.appendConsole(msg) catch {};
+            return;
+        };
+        defer editor_state.allocator.free(zig_result.stdout);
+        defer editor_state.allocator.free(zig_result.stderr);
+        editor_state.is_building = false;
+
+        if (zig_result.stdout.len > 0) {
+            editor_state.appendConsole(zig_result.stdout) catch {};
+        }
+        if (zig_result.stderr.len > 0) {
+            editor_state.appendConsole(zig_result.stderr) catch {};
+        }
+
+        if (zig_result.term.Exited == 0) {
+            editor_state.appendConsole(state.text(.script_build_success)) catch {};
+        } else {
+            editor_state.appendConsole(state.text(.script_build_failed)) catch {};
+        }
+    } else {
+        editor_state.appendConsole("Build not supported for this file type.") catch {};
+    }
+}
+
+pub fn openFileInEditor(editor_state: *ScriptEditorState, path: []const u8) void {
+    editor_state.loadFromFile(path) catch |err| {
+        const msg = std.fmt.allocPrint(editor_state.allocator, "Failed to open: {}", .{err}) catch return;
+        defer editor_state.allocator.free(msg);
+        editor_state.appendConsole(msg) catch {};
+    };
 }

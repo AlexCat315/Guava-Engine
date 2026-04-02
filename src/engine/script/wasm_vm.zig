@@ -1212,3 +1212,115 @@ fn setOwnedMessage(allocator: std.mem.Allocator, slot: *[]u8, message: []const u
         clearOwnedBytes(allocator, slot);
     };
 }
+
+// ── Debug helpers (public, used by debug_session.zig) ────────────────
+
+/// Get the WAMR exec_env from a script instance.
+pub fn getExecEnv(instance: *types.ScriptInstance) ?c.wasm_exec_env_t {
+    const state = getInstanceState(instance) orelse return null;
+    return state.exec_env;
+}
+
+/// Get the WAMR module_inst from a script instance.
+pub fn getModuleInst(instance: *types.ScriptInstance) ?c.wasm_module_inst_t {
+    const state = getInstanceState(instance) orelse return null;
+    return state.module_inst;
+}
+
+/// Dump the call stack to an allocated buffer.
+pub fn dumpCallStackAlloc(allocator: std.mem.Allocator, instance: *types.ScriptInstance) ![]u8 {
+    const state = getInstanceState(instance) orelse return allocator.alloc(u8, 0);
+    if (state.exec_env == null) return allocator.alloc(u8, 0);
+
+    const buf_size = c.wasm_runtime_get_call_stack_buf_size(state.exec_env);
+    if (buf_size == 0) return allocator.alloc(u8, 0);
+
+    const buf = try allocator.alloc(u8, buf_size);
+    const written = c.wasm_runtime_dump_call_stack_to_buf(state.exec_env, buf.ptr, @intCast(buf.len));
+    if (written == 0) {
+        allocator.free(buf);
+        return allocator.alloc(u8, 0);
+    }
+
+    return buf[0..written];
+}
+
+/// Read parameter count from a WASM instance (for variable inspection).
+pub fn getParamCount(instance: *types.ScriptInstance) u32 {
+    const state = getInstanceState(instance) orelse return 0;
+    const func = state.param_count_fn orelse return 0;
+    if (state.exec_env == null) return 0;
+    c.wasm_runtime_clear_exception(state.module_inst);
+    var argv = [_]u32{0};
+    if (!c.wasm_runtime_call_wasm(state.exec_env, func, 0, &argv)) return 0;
+    return argv[0];
+}
+
+/// Read a parameter name by index from a WASM instance.
+pub fn getParamName(instance: *types.ScriptInstance, index: u32) []const u8 {
+    const state = getInstanceState(instance) orelse return "";
+    const ptr_fn = state.param_name_ptr_fn orelse return "";
+    const len_fn = state.param_name_len_fn orelse return "";
+    if (state.exec_env == null or state.module_inst == null) return "";
+
+    c.wasm_runtime_clear_exception(state.module_inst);
+    var ptr_argv = [_]u32{ 0, index };
+    if (!c.wasm_runtime_call_wasm(state.exec_env, ptr_fn, 2, &ptr_argv)) return "";
+    var len_argv = [_]u32{ 0, index };
+    if (!c.wasm_runtime_call_wasm(state.exec_env, len_fn, 2, &len_argv)) return "";
+
+    const app_offset = ptr_argv[0];
+    const name_len = len_argv[0];
+    if (name_len == 0) return "";
+    if (!c.wasm_runtime_validate_app_addr(state.module_inst, app_offset, name_len)) return "";
+    const native = c.wasm_runtime_addr_app_to_native(state.module_inst, app_offset) orelse return "";
+    const bytes: [*]const u8 = @ptrCast(native);
+    return bytes[0..name_len];
+}
+
+/// Parameter kind enum matching the reflection protocol.
+pub const ParamKind = enum(u8) { float = 0, boolean = 1, integer = 2 };
+
+/// Read a parameter's kind by index.
+pub fn getParamKind(instance: *types.ScriptInstance, index: u32) ?ParamKind {
+    const state = getInstanceState(instance) orelse return null;
+    const func = state.param_kind_fn orelse return null;
+    if (state.exec_env == null) return null;
+    c.wasm_runtime_clear_exception(state.module_inst);
+    var argv = [_]u32{ 0, index };
+    if (!c.wasm_runtime_call_wasm(state.exec_env, func, 2, &argv)) return null;
+    return std.meta.intToEnum(ParamKind, @as(u8, @intCast(argv[0]))) catch null;
+}
+
+/// Read a float parameter value by index.
+pub fn getParamFloat(instance: *types.ScriptInstance, index: u32) ?f32 {
+    const state = getInstanceState(instance) orelse return null;
+    const func = state.param_get_f32_fn orelse return null;
+    if (state.exec_env == null) return null;
+    c.wasm_runtime_clear_exception(state.module_inst);
+    var argv = [_]u32{ 0, index };
+    if (!c.wasm_runtime_call_wasm(state.exec_env, func, 2, &argv)) return null;
+    return @bitCast(argv[0]);
+}
+
+/// Read a boolean parameter value by index.
+pub fn getParamBool(instance: *types.ScriptInstance, index: u32) ?bool {
+    const state = getInstanceState(instance) orelse return null;
+    const func = state.param_get_bool_fn orelse return null;
+    if (state.exec_env == null) return null;
+    c.wasm_runtime_clear_exception(state.module_inst);
+    var argv = [_]u32{ 0, index };
+    if (!c.wasm_runtime_call_wasm(state.exec_env, func, 2, &argv)) return null;
+    return argv[0] != 0;
+}
+
+/// Read an integer parameter value by index.
+pub fn getParamInt(instance: *types.ScriptInstance, index: u32) ?i32 {
+    const state = getInstanceState(instance) orelse return null;
+    const func = state.param_get_i32_fn orelse return null;
+    if (state.exec_env == null) return null;
+    c.wasm_runtime_clear_exception(state.module_inst);
+    var argv = [_]u32{ 0, index };
+    if (!c.wasm_runtime_call_wasm(state.exec_env, func, 2, &argv)) return null;
+    return @bitCast(argv[0]);
+}

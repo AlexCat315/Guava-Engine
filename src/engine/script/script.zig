@@ -54,3 +54,10 @@ pub const freeEditorUtilitySnapshots = editor_utility_runtime.freeSnapshots;
 pub const HotReloadManager = hot_reload.HotReloadManager;
 pub const FileWatcher = hot_reload.FileWatcher;
 pub const ScriptVmPluginLoader = script_vm_plugin_mod.ScriptVmPluginLoader;
+
+const debug_session = @import("./debug_session.zig");
+pub const DebugSession = debug_session.DebugSession;
+pub const Breakpoint = debug_session.Breakpoint;
+pub const WatchVariable = debug_session.WatchVariable;
+pub const StepMode = debug_session.StepMode;
+pub const InstanceDebugState = debug_session.InstanceDebugState;

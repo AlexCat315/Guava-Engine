@@ -67,8 +67,29 @@ pub const NavSystem = struct {
         self.crowd = try self.navmesh.?.createCrowdExt(128, params.agent_radius);
     }
 
+    /// Bake a navmesh from the current world's static mesh geometry.
+    pub fn bakeFromWorld(self: *NavSystem, world: *World, params: NavMeshParams) !void {
+        const geom = try collectSceneGeometry(self.allocator, world);
+        defer self.allocator.free(geom.verts);
+        defer self.allocator.free(geom.tris);
+        if (geom.verts.len == 0 or geom.tris.len == 0) return error.NoBakeGeometry;
+        try self.bake(geom.verts, geom.tris, params);
+    }
+
     pub fn hasNavMesh(self: *const NavSystem) bool {
         return self.navmesh != null;
+    }
+
+    pub fn setDebugDrawEnabled(self: *NavSystem, enabled: bool) void {
+        self.debug_draw_enabled = enabled;
+    }
+
+    pub fn debugDrawEnabled(self: *const NavSystem) bool {
+        return self.debug_draw_enabled;
+    }
+
+    pub fn debugMesh(self: *const NavSystem) ?NavMesh.DebugMesh {
+        return self.debug_mesh;
     }
 
     // -- Crowd / agent management ------------------------------------------
@@ -90,24 +111,27 @@ pub const NavSystem = struct {
     /// Unregister an entity's NavAgent from the crowd.
     pub fn unregisterAgent(self: *NavSystem, entity_id: EntityId) void {
         var crowd = self.crowd orelse return;
-        for (self.agent_map.items, 0..) |mapping, i| {
-            if (mapping.entity_id == entity_id) {
-                crowd.removeAgent(mapping.crowd_idx);
-                _ = self.agent_map.swapRemove(i);
-                return;
-            }
+        if (self.findAgentMappingIndex(entity_id)) |i| {
+            crowd.removeAgent(self.agent_map.items[i].crowd_idx);
+            _ = self.agent_map.swapRemove(i);
+            return;
         }
     }
 
     /// Set the move target for an entity's agent.
     pub fn setAgentTarget(self: *NavSystem, entity_id: EntityId, target: [3]f32) void {
         var crowd = self.crowd orelse return;
-        for (self.agent_map.items) |mapping| {
-            if (mapping.entity_id == entity_id) {
-                crowd.setTarget(mapping.crowd_idx, target);
-                return;
-            }
+        if (self.findAgentMappingIndex(entity_id)) |i| {
+            crowd.setTarget(self.agent_map.items[i].crowd_idx, target);
+            return;
         }
+    }
+
+    fn findAgentMappingIndex(self: *const NavSystem, entity_id: EntityId) ?usize {
+        for (self.agent_map.items, 0..) |mapping, i| {
+            if (mapping.entity_id == entity_id) return i;
+        }
+        return null;
     }
 
     // -- Pathfinding queries (convenience) ---------------------------------
@@ -127,6 +151,42 @@ pub const NavSystem = struct {
     /// Advance the crowd and write agent positions back to entities.
     pub fn update(self: *NavSystem, world: *World, dt: f32) void {
         var crowd = self.crowd orelse return;
+
+        // 1) Auto-register/unregister entities with NavAgent components.
+        for (world.entities.items) |*entity| {
+            if (entity.nav_agent) |*agent| {
+                if (!agent._registered) {
+                    const params = AgentParams{
+                        .radius = agent.radius,
+                        .height = agent.height,
+                        .max_accel = agent.max_acceleration,
+                        .max_speed = agent.max_speed,
+                    };
+                    const idx = self.registerAgent(entity.id, entity.local_transform.translation, params) catch continue;
+                    agent._crowd_idx = idx;
+                    agent._registered = true;
+                }
+
+                if (agent.target) |target| {
+                    self.setAgentTarget(entity.id, target);
+                }
+            } else if (self.findAgentMappingIndex(entity.id) != null) {
+                // Component removed at runtime: remove from crowd.
+                self.unregisterAgent(entity.id);
+            }
+        }
+
+        // Remove stale mappings for deleted entities.
+        var i: usize = 0;
+        while (i < self.agent_map.items.len) {
+            const mapping = self.agent_map.items[i];
+            if (!world.hasEntity(mapping.entity_id)) {
+                crowd.removeAgent(mapping.crowd_idx);
+                _ = self.agent_map.swapRemove(i);
+                continue;
+            }
+            i += 1;
+        }
 
         // Step crowd simulation.
         crowd.update(dt);
@@ -162,9 +222,10 @@ pub const NavSystem = struct {
             if (entity.rigidbody) |rb| {
                 if (rb.motion_type == .dynamic) continue;
             }
-            // Must have a mesh.
+            // Must have a mesh resource handle.
             const mesh_comp = entity.mesh orelse continue;
-            const mesh_res = world.resources.mesh(mesh_comp.handle) orelse continue;
+            const mesh_handle = mesh_comp.handle orelse continue;
+            const mesh_res = world.resources.mesh(mesh_handle) orelse continue;
 
             // Transform vertices by the entity's world matrix.
             const mat = entity.world_matrix_cache;

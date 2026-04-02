@@ -455,6 +455,18 @@ pub const locale = blk: {
             .prefab_editor = "Prefab Editor",
             .camera_bookmarks = "Camera Bookmarks",
             .script_editor = "Script Editor",
+            .script_asset = "Script",
+            .new_script = "New Script",
+            .new_cs_script = "New C# Script",
+            .new_zig_script = "New Zig Script",
+            .open_script = "Open...",
+            .save_script = "Save",
+            .build_script = "Build",
+            .script_saved = "Script saved.",
+            .script_build_success = "Build succeeded.",
+            .script_build_failed = "Build failed.",
+            .script_untitled = "Untitled",
+            .open_in_script_editor = "Open in Script Editor",
 
             // AI Chat
             .ai_chat = "AI Assistant",

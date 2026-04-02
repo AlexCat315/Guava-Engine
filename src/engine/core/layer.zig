@@ -8,6 +8,7 @@ const command_queue_mod = @import("command_queue.zig");
 const editor_utility_runtime_mod = @import("../script/editor_utility_runtime.zig");
 const scene_manager_mod = @import("scene_manager.zig");
 const script_runtime_mod = @import("../script/runtime.zig");
+const debug_session_mod = @import("../script/debug_session.zig");
 const window_mod = @import("../platform/window.zig");
 const physics_mod = @import("../physics/system.zig");
 const nav_mod = @import("../navigation/nav_system.zig");
@@ -75,6 +76,7 @@ pub const LayerContext = struct {
     scene_manager: ?*scene_manager_mod.SceneManager = null,
     command_queue: ?*command_queue_mod.CommandQueue = null,
     script_runtime: ?*script_runtime_mod.ScriptRuntime = null,
+    script_debug_session: ?*debug_session_mod.DebugSession = null,
     editor_utility_runtime: ?*editor_utility_runtime_mod.EditorUtilityRuntime = null,
     input: *input_mod.InputState,
     action_map: ?*input_action_mod.ActionMap = null,
