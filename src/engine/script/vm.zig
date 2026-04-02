@@ -321,8 +321,619 @@ fn GameplayBuiltinVM(comptime accepted_language: types.ScriptLanguage, comptime 
     };
 }
 
-pub const ZigVM = GameplayBuiltinVM(.zig, "ZigVM");
+const ZigBuiltinVM = GameplayBuiltinVM(.zig, "ZigVM");
 const CSharpBuiltinVM = GameplayBuiltinVM(.csharp, "CSharpVM");
+
+// ---------------------------------------------------------------------------
+// Zig Dylib Host API — 布局必须与 src/engine/script/script_api.zig HostApi 完全一致
+// ---------------------------------------------------------------------------
+
+const zig_dylib_api_version: u32 = 1;
+const zig_dylib_user_data_tag: u32 = 0x5A444C42; // "ZDLB"
+
+const ZigDylibHostContext = struct {
+    active_context: ?*context.ScriptContext = null,
+};
+
+const ZigDylibHostApi = extern struct {
+    // Logging
+    log_fn: *const fn (?*anyopaque, [*]const u8, usize) callconv(.c) void,
+    // Entity
+    get_entity_id: *const fn (?*anyopaque) callconv(.c) u64,
+    find_entity_by_name: *const fn (?*anyopaque, [*]const u8, usize) callconv(.c) u64,
+    spawn_entity: *const fn (?*anyopaque) callconv(.c) u64,
+    destroy_entity: *const fn (?*anyopaque, u64) callconv(.c) void,
+    // Transform
+    get_position: *const fn (?*anyopaque, *f32, *f32, *f32) callconv(.c) void,
+    set_position: *const fn (?*anyopaque, f32, f32, f32) callconv(.c) void,
+    get_rotation: *const fn (?*anyopaque, *f32, *f32, *f32, *f32) callconv(.c) void,
+    set_rotation: *const fn (?*anyopaque, f32, f32, f32, f32) callconv(.c) void,
+    get_scale: *const fn (?*anyopaque, *f32, *f32, *f32) callconv(.c) void,
+    set_scale: *const fn (?*anyopaque, f32, f32, f32) callconv(.c) void,
+    // Input
+    is_key_down: *const fn (?*anyopaque, u32) callconv(.c) u32,
+    was_key_pressed: *const fn (?*anyopaque, u32) callconv(.c) u32,
+    was_key_released: *const fn (?*anyopaque, u32) callconv(.c) u32,
+    is_mouse_button_down: *const fn (?*anyopaque, u32) callconv(.c) u32,
+    get_mouse_position: *const fn (?*anyopaque, *f32, *f32) callconv(.c) void,
+    // Time
+    get_delta_time: *const fn (?*anyopaque) callconv(.c) f32,
+    get_time: *const fn (?*anyopaque) callconv(.c) f32,
+    // Scene
+    load_scene: *const fn (?*anyopaque, [*]const u8, usize) callconv(.c) void,
+};
+
+const zig_dylib_host_api: ZigDylibHostApi = .{
+    .log_fn = zigDylibHostLog,
+    .get_entity_id = zigDylibHostGetEntityId,
+    .find_entity_by_name = zigDylibHostFindEntityByName,
+    .spawn_entity = zigDylibHostSpawnEntity,
+    .destroy_entity = zigDylibHostDestroyEntity,
+    .get_position = zigDylibHostGetPosition,
+    .set_position = zigDylibHostSetPosition,
+    .get_rotation = zigDylibHostGetRotation,
+    .set_rotation = zigDylibHostSetRotation,
+    .get_scale = zigDylibHostGetScale,
+    .set_scale = zigDylibHostSetScale,
+    .is_key_down = zigDylibHostIsKeyDown,
+    .was_key_pressed = zigDylibHostWasKeyPressed,
+    .was_key_released = zigDylibHostWasKeyReleased,
+    .is_mouse_button_down = zigDylibHostIsMouseButtonDown,
+    .get_mouse_position = zigDylibHostGetMousePosition,
+    .get_delta_time = zigDylibHostGetDeltaTime,
+    .get_time = zigDylibHostGetTime,
+    .load_scene = zigDylibHostLoadScene,
+};
+
+const ZigDylibLibrary = struct {
+    path: []u8,
+    lib: std.DynLib,
+    bind: *const fn (*const ZigDylibHostApi, ?*anyopaque, u64) callconv(.c) void,
+    on_init: ?*const fn () callconv(.c) void,
+    on_update: ?*const fn (f32) callconv(.c) void,
+    on_destroy: ?*const fn () callconv(.c) void,
+    on_collision_enter: ?*const fn (u64) callconv(.c) void,
+    on_collision_exit: ?*const fn (u64) callconv(.c) void,
+    on_trigger_enter: ?*const fn (u64) callconv(.c) void,
+    on_trigger_exit: ?*const fn (u64) callconv(.c) void,
+};
+
+const ZigDylibInstanceState = struct {
+    library: *ZigDylibLibrary,
+    host_context: ZigDylibHostContext = .{},
+};
+
+// ---------------------------------------------------------------------------
+// ZigVM — 复合 VM：内建行为 + Zig Dylib 动态脚本
+// ---------------------------------------------------------------------------
+
+pub const ZigVM = struct {
+    allocator: std.mem.Allocator,
+    builtin: ZigBuiltinVM,
+    loaded_dylibs: std.ArrayList(*ZigDylibLibrary) = .empty,
+    current_dylib: ?*ZigDylibLibrary = null,
+    error_msg: []u8 = &.{},
+    mode: enum { none, builtin, dylib } = .none,
+
+    const Self = @This();
+
+    pub fn init(allocator: std.mem.Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .builtin = ZigBuiltinVM.init(allocator),
+        };
+    }
+
+    pub fn load(vm: *Self, resource: *const script_resource_mod.ScriptResource) types.ScriptError!void {
+        if (resource.language != .zig) {
+            setOwnedMessage(vm.allocator, &vm.error_msg, "script language does not match ZigVM");
+            return types.ScriptError.InvalidLanguage;
+        }
+
+        vm.current_dylib = null;
+        vm.mode = .none;
+        clearOwnedMessage(vm.allocator, &vm.error_msg);
+        vm.builtin.unload();
+
+        // 1) 如果 source_path 或 artifact_path 直接指向 .dylib/.so/.dll，直接加载
+        if (resolveZigDylibPath(resource)) |dylib_path| {
+            vm.current_dylib = vm.ensureDylibLoaded(dylib_path) catch |err| {
+                _ = err;
+                return types.ScriptError.LoadError;
+            };
+            vm.mode = .dylib;
+            log.info("Zig dylib gameplay script loaded path={s}", .{dylib_path});
+            return;
+        }
+
+        // 2) 尝试 builtin 指令解析
+        vm.builtin.load(resource) catch |err| switch (err) {
+            types.ScriptError.CompileError => {
+                // 检查是否是 "不支持的内建" → 尝试编译为 dylib
+                if (vm.builtin.definition.kind == .none) {
+                    vm.current_dylib = vm.compileToDylib(resource) catch |compile_err| {
+                        _ = compile_err;
+                        return types.ScriptError.CompileError;
+                    };
+                    vm.mode = .dylib;
+                    return;
+                }
+                setOwnedMessage(vm.allocator, &vm.error_msg, vm.builtin.getError());
+                return err;
+            },
+            else => {
+                setOwnedMessage(vm.allocator, &vm.error_msg, vm.builtin.getError());
+                return err;
+            },
+        };
+        vm.mode = .builtin;
+    }
+
+    pub fn unload(vm: *Self) void {
+        vm.current_dylib = null;
+        vm.mode = .none;
+        vm.builtin.unload();
+        clearOwnedMessage(vm.allocator, &vm.error_msg);
+    }
+
+    pub fn deinit(vm: *Self) void {
+        vm.unload();
+        vm.freeCachedDylibs();
+    }
+
+    pub fn createInstance(vm: *Self, ctx: *context.ScriptContext) types.ScriptError!*types.ScriptInstance {
+        if (vm.mode == .dylib) {
+            if (vm.current_dylib) |library| {
+                const instance = vm.allocator.create(types.ScriptInstance) catch return types.ScriptError.LoadError;
+                errdefer vm.allocator.destroy(instance);
+
+                const state = vm.allocator.create(ZigDylibInstanceState) catch return types.ScriptError.LoadError;
+                errdefer vm.allocator.destroy(state);
+                state.* = .{ .library = library };
+
+                instance.* = .{
+                    .id = 0,
+                    .entity_id = ctx.entity,
+                    .script_handle = undefined,
+                    .language = .zig,
+                    .vtable = .{},
+                    .user_data = state,
+                    .user_data_size = @sizeOf(ZigDylibInstanceState),
+                    .user_data_tag = zig_dylib_user_data_tag,
+                    .state = .ready,
+                };
+                return instance;
+            }
+            setOwnedMessage(vm.allocator, &vm.error_msg, "no zig dylib loaded");
+            return types.ScriptError.NotFound;
+        }
+        return vm.builtin.createInstance(ctx);
+    }
+
+    pub fn destroyInstance(vm: *Self, instance: *types.ScriptInstance) void {
+        if (instance.user_data_tag == zig_dylib_user_data_tag) {
+            if (instance.user_data) |data| {
+                vm.allocator.destroy(castUserData(ZigDylibInstanceState, data));
+            }
+            vm.allocator.destroy(instance);
+            return;
+        }
+        vm.builtin.destroyInstance(instance);
+    }
+
+    pub fn callInit(vm: *Self, instance: *types.ScriptInstance, ctx: *context.ScriptContext) types.ScriptError!void {
+        if (instance.user_data_tag == zig_dylib_user_data_tag) {
+            return vm.callDylibLifecycle(instance, ctx, .init, 0.0);
+        }
+        return vm.builtin.callInit(instance, ctx);
+    }
+
+    pub fn callUpdate(vm: *Self, instance: *types.ScriptInstance, ctx: *context.ScriptContext, dt: f32) types.ScriptError!void {
+        if (instance.user_data_tag == zig_dylib_user_data_tag) {
+            return vm.callDylibLifecycle(instance, ctx, .update, dt);
+        }
+        return vm.builtin.callUpdate(instance, ctx, dt);
+    }
+
+    pub fn callDestroy(vm: *Self, instance: *types.ScriptInstance, ctx: *context.ScriptContext) types.ScriptError!void {
+        if (instance.user_data_tag == zig_dylib_user_data_tag) {
+            return vm.callDylibLifecycle(instance, ctx, .destroy, 0.0);
+        }
+        return vm.builtin.callDestroy(instance, ctx);
+    }
+
+    pub fn getError(vm: *Self) []const u8 {
+        if (vm.error_msg.len != 0) return vm.error_msg;
+        return vm.builtin.getError();
+    }
+
+    fn callDylibLifecycle(
+        _: *Self,
+        instance: *types.ScriptInstance,
+        ctx: *context.ScriptContext,
+        comptime phase: enum { init, update, destroy },
+        dt: f32,
+    ) types.ScriptError!void {
+        const state = castUserData(ZigDylibInstanceState, instance.user_data orelse return types.ScriptError.NotFound);
+        state.host_context.active_context = ctx;
+        defer state.host_context.active_context = null;
+
+        // bind API + context into dylib
+        state.library.bind(&zig_dylib_host_api, &state.host_context, ctx.entity);
+
+        switch (phase) {
+            .init => if (state.library.on_init) |cb| cb(),
+            .update => if (state.library.on_update) |cb| cb(dt),
+            .destroy => if (state.library.on_destroy) |cb| cb(),
+        }
+    }
+
+    fn callDylibCollisionEnter(instance: *types.ScriptInstance, ctx: *context.ScriptContext, other: types.EntityId) void {
+        const state = castUserData(ZigDylibInstanceState, instance.user_data orelse return);
+        state.host_context.active_context = ctx;
+        defer state.host_context.active_context = null;
+        state.library.bind(&zig_dylib_host_api, &state.host_context, ctx.entity);
+        if (state.library.on_collision_enter) |cb| cb(other);
+    }
+
+    fn callDylibCollisionExit(instance: *types.ScriptInstance, ctx: *context.ScriptContext, other: types.EntityId) void {
+        const state = castUserData(ZigDylibInstanceState, instance.user_data orelse return);
+        state.host_context.active_context = ctx;
+        defer state.host_context.active_context = null;
+        state.library.bind(&zig_dylib_host_api, &state.host_context, ctx.entity);
+        if (state.library.on_collision_exit) |cb| cb(other);
+    }
+
+    fn callDylibTriggerEnter(instance: *types.ScriptInstance, ctx: *context.ScriptContext, other: types.EntityId) void {
+        const state = castUserData(ZigDylibInstanceState, instance.user_data orelse return);
+        state.host_context.active_context = ctx;
+        defer state.host_context.active_context = null;
+        state.library.bind(&zig_dylib_host_api, &state.host_context, ctx.entity);
+        if (state.library.on_trigger_enter) |cb| cb(other);
+    }
+
+    fn callDylibTriggerExit(instance: *types.ScriptInstance, ctx: *context.ScriptContext, other: types.EntityId) void {
+        const state = castUserData(ZigDylibInstanceState, instance.user_data orelse return);
+        state.host_context.active_context = ctx;
+        defer state.host_context.active_context = null;
+        state.library.bind(&zig_dylib_host_api, &state.host_context, ctx.entity);
+        if (state.library.on_trigger_exit) |cb| cb(other);
+    }
+
+    fn compileToDylib(vm: *Self, resource: *const script_resource_mod.ScriptResource) !*ZigDylibLibrary {
+        const source_path = if (resource.source_path.len != 0) resource.source_path else {
+            setOwnedMessage(vm.allocator, &vm.error_msg, "no source path for zig dylib compilation");
+            return error.CompileError;
+        };
+
+        // 确定输出路径: zig-cache/guava/scripts/<basename>.dylib
+        const basename = std.fs.path.stem(source_path);
+        const cache_dir = "zig-cache/guava/scripts";
+
+        // 创建缓存目录
+        std.fs.cwd().makePath(cache_dir) catch {};
+
+        const dylib_ext = switch (@import("builtin").os.tag) {
+            .macos => ".dylib",
+            .windows => ".dll",
+            else => ".so",
+        };
+
+        const output_path = std.fmt.allocPrint(vm.allocator, "{s}/{s}{s}", .{ cache_dir, basename, dylib_ext }) catch return error.CompileError;
+        defer vm.allocator.free(output_path);
+
+        // 构建参数字符串
+        const emit_arg = std.fmt.allocPrint(vm.allocator, "-femit-bin={s}", .{output_path}) catch return error.CompileError;
+        defer vm.allocator.free(emit_arg);
+
+        const root_mod_arg = std.fmt.allocPrint(vm.allocator, "-Mroot={s}", .{source_path}) catch return error.CompileError;
+        defer vm.allocator.free(root_mod_arg);
+
+        log.info("compiling zig dylib: {s} -> {s}", .{ source_path, output_path });
+
+        const result = std.process.Child.run(.{
+            .allocator = std.heap.page_allocator,
+            .argv = &.{
+                "zig",
+                "build-lib",
+                "-dynamic",
+                "-OReleaseFast",
+                "--dep",
+                "guava",
+                root_mod_arg,
+                "-Mguava=src/engine/script/script_api.zig",
+                emit_arg,
+            },
+            .max_output_bytes = 1024 * 1024,
+        }) catch {
+            setOwnedMessage(vm.allocator, &vm.error_msg, "failed to execute zig build-lib");
+            return error.CompileError;
+        };
+        defer std.heap.page_allocator.free(result.stdout);
+        defer std.heap.page_allocator.free(result.stderr);
+
+        const exit_code = switch (result.term) {
+            .Exited => |code| code,
+            else => 1,
+        };
+        if (exit_code != 0) {
+            const output = if (result.stderr.len > 0) result.stderr else result.stdout;
+            setOwnedMessage(vm.allocator, &vm.error_msg, output);
+            log.err("zig dylib compilation failed:\n{s}", .{output});
+            return error.CompileError;
+        }
+
+        log.info("zig dylib compiled successfully: {s}", .{output_path});
+        return vm.ensureDylibLoaded(output_path);
+    }
+
+    fn ensureDylibLoaded(vm: *Self, path: []const u8) !*ZigDylibLibrary {
+        // 检查已加载
+        for (vm.loaded_dylibs.items) |existing| {
+            if (std.mem.eql(u8, existing.path, path)) {
+                return existing;
+            }
+        }
+
+        const path_z = vm.allocator.dupeZ(u8, path) catch return error.CompileError;
+        defer vm.allocator.free(path_z);
+
+        var lib = std.DynLib.open(path_z) catch {
+            setOwnedMessage(vm.allocator, &vm.error_msg, "failed to open zig dylib");
+            return error.CompileError;
+        };
+
+        const bind_fn = lib.lookup(*const fn (*const ZigDylibHostApi, ?*anyopaque, u64) callconv(.c) void, "guava_bind") orelse {
+            setOwnedMessage(vm.allocator, &vm.error_msg, "missing guava_bind export in dylib");
+            lib.close();
+            return error.CompileError;
+        };
+
+        const library = vm.allocator.create(ZigDylibLibrary) catch return error.CompileError;
+        errdefer vm.allocator.destroy(library);
+
+        const owned_path = vm.allocator.dupe(u8, path) catch return error.CompileError;
+        errdefer vm.allocator.free(owned_path);
+
+        library.* = .{
+            .path = owned_path,
+            .lib = lib,
+            .bind = bind_fn,
+            .on_init = lib.lookup(*const fn () callconv(.c) void, "guava_on_init"),
+            .on_update = lib.lookup(*const fn (f32) callconv(.c) void, "guava_on_update"),
+            .on_destroy = lib.lookup(*const fn () callconv(.c) void, "guava_on_destroy"),
+            .on_collision_enter = lib.lookup(*const fn (u64) callconv(.c) void, "guava_on_collision_enter"),
+            .on_collision_exit = lib.lookup(*const fn (u64) callconv(.c) void, "guava_on_collision_exit"),
+            .on_trigger_enter = lib.lookup(*const fn (u64) callconv(.c) void, "guava_on_trigger_enter"),
+            .on_trigger_exit = lib.lookup(*const fn (u64) callconv(.c) void, "guava_on_trigger_exit"),
+        };
+
+        vm.loaded_dylibs.append(vm.allocator, library) catch return error.CompileError;
+        return library;
+    }
+
+    fn freeCachedDylibs(vm: *Self) void {
+        for (vm.loaded_dylibs.items) |library| {
+            library.lib.close();
+            vm.allocator.free(library.path);
+            vm.allocator.destroy(library);
+        }
+        vm.loaded_dylibs.deinit(vm.allocator);
+    }
+
+    fn destroyContext(context_ptr: *anyopaque, allocator: std.mem.Allocator) void {
+        const vm = castContext(Self, context_ptr);
+        vm.deinit();
+        allocator.destroy(vm);
+    }
+
+    pub const script_vm_vtable: ScriptVM.VTable = .{
+        .load = loadBridge,
+        .unload = unloadBridge,
+        .createInstance = createInstanceBridge,
+        .destroyInstance = destroyInstanceBridge,
+        .callInit = callInitBridge,
+        .callUpdate = callUpdateBridge,
+        .callDestroy = callDestroyBridge,
+        .callTriggerEnter = callTriggerEnterBridge,
+        .callTriggerExit = callTriggerExitBridge,
+        .callCollisionEnter = callCollisionEnterBridge,
+        .callCollisionExit = callCollisionExitBridge,
+        .getError = getErrorBridge,
+        .destroy = destroyContext,
+    };
+
+    fn loadBridge(context_ptr: *anyopaque, resource: *const script_resource_mod.ScriptResource) types.ScriptError!void {
+        return Self.load(castContext(Self, context_ptr), resource);
+    }
+    fn unloadBridge(context_ptr: *anyopaque) void {
+        Self.unload(castContext(Self, context_ptr));
+    }
+    fn createInstanceBridge(context_ptr: *anyopaque, ctx: *context.ScriptContext) types.ScriptError!*types.ScriptInstance {
+        return Self.createInstance(castContext(Self, context_ptr), ctx);
+    }
+    fn destroyInstanceBridge(context_ptr: *anyopaque, instance: *types.ScriptInstance) void {
+        Self.destroyInstance(castContext(Self, context_ptr), instance);
+    }
+    fn callInitBridge(context_ptr: *anyopaque, instance: *types.ScriptInstance, ctx: *context.ScriptContext) types.ScriptError!void {
+        return Self.callInit(castContext(Self, context_ptr), instance, ctx);
+    }
+    fn callUpdateBridge(context_ptr: *anyopaque, instance: *types.ScriptInstance, ctx: *context.ScriptContext, dt: f32) types.ScriptError!void {
+        return Self.callUpdate(castContext(Self, context_ptr), instance, ctx, dt);
+    }
+    fn callDestroyBridge(context_ptr: *anyopaque, instance: *types.ScriptInstance, ctx: *context.ScriptContext) types.ScriptError!void {
+        return Self.callDestroy(castContext(Self, context_ptr), instance, ctx);
+    }
+    fn callTriggerEnterBridge(context_ptr: *anyopaque, instance: *types.ScriptInstance, ctx: *context.ScriptContext, other: types.EntityId) void {
+        _ = castContext(Self, context_ptr);
+        if (instance.user_data_tag == zig_dylib_user_data_tag) {
+            callDylibTriggerEnter(instance, ctx, other);
+            return;
+        }
+        if (instance.vtable.onTriggerEnter) |fn_ptr| fn_ptr(ctx, other);
+    }
+    fn callTriggerExitBridge(context_ptr: *anyopaque, instance: *types.ScriptInstance, ctx: *context.ScriptContext, other: types.EntityId) void {
+        _ = castContext(Self, context_ptr);
+        if (instance.user_data_tag == zig_dylib_user_data_tag) {
+            callDylibTriggerExit(instance, ctx, other);
+            return;
+        }
+        if (instance.vtable.onTriggerExit) |fn_ptr| fn_ptr(ctx, other);
+    }
+    fn callCollisionEnterBridge(context_ptr: *anyopaque, instance: *types.ScriptInstance, ctx: *context.ScriptContext, other: types.EntityId) void {
+        _ = castContext(Self, context_ptr);
+        if (instance.user_data_tag == zig_dylib_user_data_tag) {
+            callDylibCollisionEnter(instance, ctx, other);
+            return;
+        }
+        if (instance.vtable.onCollisionEnter) |fn_ptr| fn_ptr(ctx, other);
+    }
+    fn callCollisionExitBridge(context_ptr: *anyopaque, instance: *types.ScriptInstance, ctx: *context.ScriptContext, other: types.EntityId) void {
+        _ = castContext(Self, context_ptr);
+        if (instance.user_data_tag == zig_dylib_user_data_tag) {
+            callDylibCollisionExit(instance, ctx, other);
+            return;
+        }
+        if (instance.vtable.onCollisionExit) |fn_ptr| fn_ptr(ctx, other);
+    }
+    fn getErrorBridge(context_ptr: *anyopaque) []const u8 {
+        return Self.getError(castContext(Self, context_ptr));
+    }
+};
+
+fn resolveZigDylibPath(resource: *const script_resource_mod.ScriptResource) ?[]const u8 {
+    if (resource.artifact_path.len != 0 and isSharedLibraryPath(resource.artifact_path)) {
+        return resource.artifact_path;
+    }
+    if (isSharedLibraryPath(resource.source_path)) {
+        return resource.source_path;
+    }
+    return null;
+}
+
+// ---------------------------------------------------------------------------
+// Zig Dylib Host API 实现
+// ---------------------------------------------------------------------------
+
+fn zigDylibActiveContext(userdata: ?*anyopaque) ?*context.ScriptContext {
+    const host_context: *ZigDylibHostContext = @ptrCast(@alignCast(userdata orelse return null));
+    return host_context.active_context;
+}
+
+fn zigDylibHostLog(userdata: ?*anyopaque, ptr: [*]const u8, len: usize) callconv(.c) void {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return;
+    std.log.info("[ZigScript:{d}] {s}", .{ ctx_ptr.entity, ptr[0..len] });
+}
+
+fn zigDylibHostGetEntityId(userdata: ?*anyopaque) callconv(.c) u64 {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return 0;
+    return ctx_ptr.entity;
+}
+
+fn zigDylibHostFindEntityByName(userdata: ?*anyopaque, ptr: [*]const u8, len: usize) callconv(.c) u64 {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return 0;
+    return ctx_ptr.findEntityByName(ptr[0..len]) orelse 0;
+}
+
+fn zigDylibHostSpawnEntity(userdata: ?*anyopaque) callconv(.c) u64 {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return 0;
+    const child_id = ctx_ptr.createChild("spawned") catch return 0;
+    return child_id;
+}
+
+fn zigDylibHostDestroyEntity(userdata: ?*anyopaque, target: u64) callconv(.c) void {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return;
+    ctx_ptr.destroyEntity(target);
+}
+
+fn zigDylibHostGetPosition(userdata: ?*anyopaque, x: *f32, y: *f32, z: *f32) callconv(.c) void {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return;
+    const pos = ctx_ptr.getPosition() orelse return;
+    x.* = pos[0];
+    y.* = pos[1];
+    z.* = pos[2];
+}
+
+fn zigDylibHostSetPosition(userdata: ?*anyopaque, x: f32, y: f32, z: f32) callconv(.c) void {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return;
+    ctx_ptr.setPosition(.{ x, y, z });
+}
+
+fn zigDylibHostGetRotation(userdata: ?*anyopaque, x: *f32, y: *f32, z: *f32, w: *f32) callconv(.c) void {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return;
+    const rot = ctx_ptr.getRotation() orelse return;
+    x.* = rot[0];
+    y.* = rot[1];
+    z.* = rot[2];
+    w.* = rot[3];
+}
+
+fn zigDylibHostSetRotation(userdata: ?*anyopaque, x: f32, y: f32, z: f32, w: f32) callconv(.c) void {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return;
+    ctx_ptr.setRotation(.{ x, y, z, w });
+}
+
+fn zigDylibHostGetScale(userdata: ?*anyopaque, x: *f32, y: *f32, z: *f32) callconv(.c) void {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return;
+    const s = ctx_ptr.getScale() orelse return;
+    x.* = s[0];
+    y.* = s[1];
+    z.* = s[2];
+}
+
+fn zigDylibHostSetScale(userdata: ?*anyopaque, x: f32, y: f32, z: f32) callconv(.c) void {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return;
+    ctx_ptr.setScale(.{ x, y, z });
+}
+
+fn zigDylibHostIsKeyDown(userdata: ?*anyopaque, key_raw: u32) callconv(.c) u32 {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return 0;
+    const key = std.meta.intToEnum(input_mod.Key, @as(u8, @intCast(key_raw))) catch return 0;
+    return if (ctx_ptr.isKeyDown(key)) 1 else 0;
+}
+
+fn zigDylibHostWasKeyPressed(userdata: ?*anyopaque, key_raw: u32) callconv(.c) u32 {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return 0;
+    const key = std.meta.intToEnum(input_mod.Key, @as(u8, @intCast(key_raw))) catch return 0;
+    return if (ctx_ptr.wasKeyPressed(key)) 1 else 0;
+}
+
+fn zigDylibHostWasKeyReleased(userdata: ?*anyopaque, key_raw: u32) callconv(.c) u32 {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return 0;
+    const key = std.meta.intToEnum(input_mod.Key, @as(u8, @intCast(key_raw))) catch return 0;
+    return if (ctx_ptr.wasKeyReleased(key)) 1 else 0;
+}
+
+fn zigDylibHostIsMouseButtonDown(userdata: ?*anyopaque, btn_raw: u32) callconv(.c) u32 {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return 0;
+    const input_state = ctx_ptr.input orelse return 0;
+    const btn = std.meta.intToEnum(input_mod.MouseButton, @as(u8, @intCast(btn_raw))) catch return 0;
+    return if (input_state.isMouseDown(btn)) 1 else 0;
+}
+
+fn zigDylibHostGetMousePosition(userdata: ?*anyopaque, x: *f32, y: *f32) callconv(.c) void {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return;
+    const mouse = ctx_ptr.getMousePosition() orelse return;
+    x.* = mouse[0];
+    y.* = mouse[1];
+}
+
+fn zigDylibHostGetDeltaTime(userdata: ?*anyopaque) callconv(.c) f32 {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return 0.0;
+    return ctx_ptr.delta_time;
+}
+
+fn zigDylibHostGetTime(userdata: ?*anyopaque) callconv(.c) f32 {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return 0.0;
+    return ctx_ptr.time;
+}
+
+fn zigDylibHostLoadScene(userdata: ?*anyopaque, ptr: [*]const u8, len: usize) callconv(.c) void {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return;
+    if (ctx_ptr.scene_manager_api) |scene_api| {
+        scene_api.load_scene(scene_api.context, ptr[0..len]);
+    }
+}
 
 const csharp_native_aot_api_version: u32 = 1;
 const csharp_native_aot_user_data_tag: u32 = 0x43534E41;
