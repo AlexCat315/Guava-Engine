@@ -177,8 +177,8 @@ pub const NavMesh = struct {
         pub fn free(self: *DebugMesh) void {
             if (self.verts.len > 0) {
                 c.guava_nav_free_debug_mesh(
-                    @constCast(@ptrCast(self.verts.ptr)),
-                    @constCast(@ptrCast(self.tris.ptr)),
+                    @ptrCast(@constCast(self.verts.ptr)),
+                    @ptrCast(@constCast(self.tris.ptr)),
                 );
             }
             self.* = undefined;
