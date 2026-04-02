@@ -356,9 +356,16 @@ const ZigDylibHostApi = extern struct {
     was_key_released: *const fn (?*anyopaque, u32) callconv(.c) u32,
     is_mouse_button_down: *const fn (?*anyopaque, u32) callconv(.c) u32,
     get_mouse_position: *const fn (?*anyopaque, *f32, *f32) callconv(.c) void,
+    get_mouse_delta: *const fn (?*anyopaque, *f32, *f32) callconv(.c) void,
+    get_mouse_wheel: *const fn (?*anyopaque, *f32, *f32) callconv(.c) void,
     // Time
     get_delta_time: *const fn (?*anyopaque) callconv(.c) f32,
     get_time: *const fn (?*anyopaque) callconv(.c) f32,
+    // Physics
+    raycast: *const fn (?*anyopaque, f32, f32, f32, f32, f32, f32, f32, *f32, *f32, *f32, *f32, *u64) callconv(.c) u32,
+    set_linear_velocity: *const fn (?*anyopaque, u64, f32, f32, f32) callconv(.c) void,
+    get_linear_velocity: *const fn (?*anyopaque, u64, *f32, *f32, *f32) callconv(.c) void,
+    add_impulse: *const fn (?*anyopaque, u64, f32, f32, f32) callconv(.c) void,
     // Scene
     load_scene: *const fn (?*anyopaque, [*]const u8, usize) callconv(.c) void,
 };
@@ -380,8 +387,14 @@ const zig_dylib_host_api: ZigDylibHostApi = .{
     .was_key_released = zigDylibHostWasKeyReleased,
     .is_mouse_button_down = zigDylibHostIsMouseButtonDown,
     .get_mouse_position = zigDylibHostGetMousePosition,
+    .get_mouse_delta = zigDylibHostGetMouseDelta,
+    .get_mouse_wheel = zigDylibHostGetMouseWheel,
     .get_delta_time = zigDylibHostGetDeltaTime,
     .get_time = zigDylibHostGetTime,
+    .raycast = zigDylibHostRaycast,
+    .set_linear_velocity = zigDylibHostSetLinearVelocity,
+    .get_linear_velocity = zigDylibHostGetLinearVelocity,
+    .add_impulse = zigDylibHostAddImpulse,
     .load_scene = zigDylibHostLoadScene,
 };
 
@@ -437,8 +450,7 @@ pub const ZigVM = struct {
 
         // 1) 如果 source_path 或 artifact_path 直接指向 .dylib/.so/.dll，直接加载
         if (resolveZigDylibPath(resource)) |dylib_path| {
-            vm.current_dylib = vm.ensureDylibLoaded(dylib_path) catch |err| {
-                _ = err;
+            vm.current_dylib = vm.ensureDylibLoaded(dylib_path) catch {
                 return types.ScriptError.LoadError;
             };
             vm.mode = .dylib;
@@ -451,8 +463,7 @@ pub const ZigVM = struct {
             types.ScriptError.CompileError => {
                 // 检查是否是 "不支持的内建" → 尝试编译为 dylib
                 if (vm.builtin.definition.kind == .none) {
-                    vm.current_dylib = vm.compileToDylib(resource) catch |compile_err| {
-                        _ = compile_err;
+                    vm.current_dylib = vm.compileToDylib(resource) catch {
                         return types.ScriptError.CompileError;
                     };
                     vm.mode = .dylib;
@@ -918,6 +929,20 @@ fn zigDylibHostGetMousePosition(userdata: ?*anyopaque, x: *f32, y: *f32) callcon
     y.* = mouse[1];
 }
 
+fn zigDylibHostGetMouseDelta(userdata: ?*anyopaque, x: *f32, y: *f32) callconv(.c) void {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return;
+    const delta = ctx_ptr.getMouseDelta() orelse return;
+    x.* = delta[0];
+    y.* = delta[1];
+}
+
+fn zigDylibHostGetMouseWheel(userdata: ?*anyopaque, x: *f32, y: *f32) callconv(.c) void {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return;
+    const wheel = ctx_ptr.getMouseWheel() orelse return;
+    x.* = wheel[0];
+    y.* = wheel[1];
+}
+
 fn zigDylibHostGetDeltaTime(userdata: ?*anyopaque) callconv(.c) f32 {
     const ctx_ptr = zigDylibActiveContext(userdata) orelse return 0.0;
     return ctx_ptr.delta_time;
@@ -926,6 +951,52 @@ fn zigDylibHostGetDeltaTime(userdata: ?*anyopaque) callconv(.c) f32 {
 fn zigDylibHostGetTime(userdata: ?*anyopaque) callconv(.c) f32 {
     const ctx_ptr = zigDylibActiveContext(userdata) orelse return 0.0;
     return ctx_ptr.time;
+}
+
+fn zigDylibHostRaycast(
+    userdata: ?*anyopaque,
+    ox: f32,
+    oy: f32,
+    oz: f32,
+    dx: f32,
+    dy: f32,
+    dz: f32,
+    max_dist: f32,
+    hit_x: *f32,
+    hit_y: *f32,
+    hit_z: *f32,
+    hit_dist: *f32,
+    hit_entity: *u64,
+) callconv(.c) u32 {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return 0;
+    const hit = ctx_ptr.physicsRaycast(.{ ox, oy, oz }, .{ dx, dy, dz }, max_dist) orelse return 0;
+    hit_x.* = hit.position[0];
+    hit_y.* = hit.position[1];
+    hit_z.* = hit.position[2];
+    hit_dist.* = hit.distance;
+    hit_entity.* = hit.entity_id;
+    return 1;
+}
+
+fn zigDylibHostSetLinearVelocity(userdata: ?*anyopaque, target: u64, vx: f32, vy: f32, vz: f32) callconv(.c) void {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return;
+    const ps = ctx_ptr.physics_state orelse return;
+    ps.setBodyLinearVelocity(ctx_ptr.world, target, .{ vx, vy, vz });
+}
+
+fn zigDylibHostGetLinearVelocity(userdata: ?*anyopaque, target: u64, vx: *f32, vy: *f32, vz: *f32) callconv(.c) void {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return;
+    const ps = ctx_ptr.physics_state orelse return;
+    const vel = ps.getBodyLinearVelocity(ctx_ptr.world, target) orelse return;
+    vx.* = vel[0];
+    vy.* = vel[1];
+    vz.* = vel[2];
+}
+
+fn zigDylibHostAddImpulse(userdata: ?*anyopaque, target: u64, ix: f32, iy: f32, iz: f32) callconv(.c) void {
+    const ctx_ptr = zigDylibActiveContext(userdata) orelse return;
+    const ps = ctx_ptr.physics_state orelse return;
+    ps.addBodyImpulse(ctx_ptr.world, target, .{ ix, iy, iz });
 }
 
 fn zigDylibHostLoadScene(userdata: ?*anyopaque, ptr: [*]const u8, len: usize) callconv(.c) void {

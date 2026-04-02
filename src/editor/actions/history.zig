@@ -1074,6 +1074,10 @@ pub fn restorePlayModeSnapshot(state: *EditorState, layer_context: *engine.core.
             _ = layer_context.world.setPrimaryCamera(scene_camera_id);
         }
     }
+    // Refresh baseline snapshot to match the restored world (including new
+    // editor camera) so subsequent undo/redo operations have a consistent
+    // baseline.  The undo/redo command stacks are intentionally preserved.
+    try refreshCurrentHistorySnapshot(state, layer_context.world);
     try refreshWindowTitle(state, layer_context);
 }
 

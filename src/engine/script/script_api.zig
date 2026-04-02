@@ -39,9 +39,16 @@ pub const HostApi = extern struct {
     was_key_released: *const fn (?*anyopaque, u32) callconv(.c) u32,
     is_mouse_button_down: *const fn (?*anyopaque, u32) callconv(.c) u32,
     get_mouse_position: *const fn (?*anyopaque, *f32, *f32) callconv(.c) void,
+    get_mouse_delta: *const fn (?*anyopaque, *f32, *f32) callconv(.c) void,
+    get_mouse_wheel: *const fn (?*anyopaque, *f32, *f32) callconv(.c) void,
     // Time
     get_delta_time: *const fn (?*anyopaque) callconv(.c) f32,
     get_time: *const fn (?*anyopaque) callconv(.c) f32,
+    // Physics
+    raycast: *const fn (?*anyopaque, f32, f32, f32, f32, f32, f32, f32, *f32, *f32, *f32, *f32, *u64) callconv(.c) u32,
+    set_linear_velocity: *const fn (?*anyopaque, u64, f32, f32, f32) callconv(.c) void,
+    get_linear_velocity: *const fn (?*anyopaque, u64, *f32, *f32, *f32) callconv(.c) void,
+    add_impulse: *const fn (?*anyopaque, u64, f32, f32, f32) callconv(.c) void,
     // Scene
     load_scene: *const fn (?*anyopaque, [*]const u8, usize) callconv(.c) void,
 };
@@ -225,6 +232,22 @@ pub fn getMousePosition() [2]f32 {
     return .{ x, y };
 }
 
+/// 获取鼠标本帧移动量
+pub fn getMouseDelta() [2]f32 {
+    var x: f32 = 0;
+    var y: f32 = 0;
+    api.get_mouse_delta(ctx, &x, &y);
+    return .{ x, y };
+}
+
+/// 获取鼠标滚轮值
+pub fn getMouseWheel() [2]f32 {
+    var x: f32 = 0;
+    var y: f32 = 0;
+    api.get_mouse_wheel(ctx, &x, &y);
+    return .{ x, y };
+}
+
 /// 获取帧间隔时间（秒）
 pub fn deltaTime() f32 {
     return api.get_delta_time(ctx);
@@ -233,6 +256,47 @@ pub fn deltaTime() f32 {
 /// 获取游戏运行总时间（秒）
 pub fn time() f32 {
     return api.get_time(ctx);
+}
+
+// ---------------------------------------------------------------------------
+// 物理查询 API
+// ---------------------------------------------------------------------------
+
+pub const RaycastHit = struct {
+    position: Vec3,
+    distance: f32,
+    entity_id: u64,
+};
+
+/// 射线检测，返回最近的碰撞点
+pub fn raycast(origin: Vec3, direction: Vec3, max_distance: f32) ?RaycastHit {
+    var hx: f32 = 0;
+    var hy: f32 = 0;
+    var hz: f32 = 0;
+    var dist: f32 = 0;
+    var eid: u64 = 0;
+    const hit = api.raycast(ctx, origin[0], origin[1], origin[2], direction[0], direction[1], direction[2], max_distance, &hx, &hy, &hz, &dist, &eid);
+    if (hit == 0) return null;
+    return .{ .position = .{ hx, hy, hz }, .distance = dist, .entity_id = eid };
+}
+
+/// 设置刚体线速度
+pub fn setLinearVelocity(entity_id: u64, velocity: Vec3) void {
+    api.set_linear_velocity(ctx, entity_id, velocity[0], velocity[1], velocity[2]);
+}
+
+/// 获取刚体线速度
+pub fn getLinearVelocity(entity_id: u64) Vec3 {
+    var x: f32 = 0;
+    var y: f32 = 0;
+    var z: f32 = 0;
+    api.get_linear_velocity(ctx, entity_id, &x, &y, &z);
+    return .{ x, y, z };
+}
+
+/// 对刚体施加冲量
+pub fn addImpulse(entity_id: u64, impulse: Vec3) void {
+    api.add_impulse(ctx, entity_id, impulse[0], impulse[1], impulse[2]);
 }
 
 /// 加载场景

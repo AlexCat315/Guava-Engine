@@ -22,6 +22,17 @@ pub const TriggerEventKind = enum(u8) {
     exit,
 };
 
+pub const CollisionEvent = struct {
+    entity_a: EntityId,
+    entity_b: EntityId,
+    kind: CollisionEventKind,
+};
+
+pub const CollisionEventKind = enum(u8) {
+    enter,
+    exit,
+};
+
 pub const DebugShape = union(enum) {
     box: DebugBox,
     sphere: DebugSphere,
@@ -74,6 +85,10 @@ pub const PhysicsState = struct {
     trigger_mutex: std.Thread.Mutex = .{},
     trigger_callback: ?*const fn (TriggerEvent) void = null,
 
+    /// Collision events from Jolt callback (non-sensor rigid body contacts)
+    collision_queue: std.ArrayListUnmanaged(CollisionEvent) = .empty,
+    collision_mutex: std.Thread.Mutex = .{},
+
     /// Log deduplication flags
     logged_config: bool = false,
     logged_jolt_backend: bool = false,
@@ -100,6 +115,10 @@ pub const PhysicsState = struct {
         self.trigger_mutex.lock();
         defer self.trigger_mutex.unlock();
         self.trigger_queue.deinit(self.allocator);
+
+        self.collision_mutex.lock();
+        defer self.collision_mutex.unlock();
+        self.collision_queue.deinit(self.allocator);
 
         self.jolt_world_states_mutex.lock();
         defer self.jolt_world_states_mutex.unlock();
@@ -131,6 +150,18 @@ pub const PhysicsState = struct {
         self.trigger_mutex.lock();
         defer self.trigger_mutex.unlock();
         self.trigger_queue.clearRetainingCapacity();
+    }
+
+    pub fn pollCollisionEvents(self: *PhysicsState) []const CollisionEvent {
+        self.collision_mutex.lock();
+        defer self.collision_mutex.unlock();
+        return self.collision_queue.items;
+    }
+
+    pub fn clearCollisionEvents(self: *PhysicsState) void {
+        self.collision_mutex.lock();
+        defer self.collision_mutex.unlock();
+        self.collision_queue.clearRetainingCapacity();
     }
 
     pub fn collectDebugShapes(self: *PhysicsState, world: *scene_mod.World, allocator: std.mem.Allocator) ![]PhysicsDebugInfo {
@@ -273,6 +304,42 @@ pub const PhysicsState = struct {
         }
 
         return sweepAabbBuiltin(world, query_bounds, translation, travel_distance, filter);
+    }
+
+    // ── Body manipulation API (used by script runtime) ──
+
+    pub fn setBodyLinearVelocity(self: *PhysicsState, world: *scene_mod.World, entity_id: u64, velocity: components.Vec3) void {
+        _ = self;
+        if (world.id_to_index.get(entity_id)) |idx| {
+            var entity = &world.entities.items[idx];
+            if (entity.rigidbody) |*rb| {
+                rb.linear_velocity = velocity;
+            }
+        }
+    }
+
+    pub fn getBodyLinearVelocity(self: *PhysicsState, world: *scene_mod.World, entity_id: u64) ?components.Vec3 {
+        _ = self;
+        if (world.id_to_index.get(entity_id)) |idx| {
+            const entity = &world.entities.items[idx];
+            if (entity.rigidbody) |rb| {
+                return rb.linear_velocity;
+            }
+        }
+        return null;
+    }
+
+    pub fn addBodyImpulse(self: *PhysicsState, world: *scene_mod.World, entity_id: u64, impulse: components.Vec3) void {
+        _ = self;
+        if (world.id_to_index.get(entity_id)) |idx| {
+            var entity = &world.entities.items[idx];
+            if (entity.rigidbody) |*rb| {
+                if (rb.mass > 0.0) {
+                    const inv_mass = 1.0 / rb.mass;
+                    rb.linear_velocity = vec3.add(rb.linear_velocity, vec3.scale(impulse, inv_mass));
+                }
+            }
+        }
     }
 
     // ── Internal methods (prefixed with ps- to distinguish from free helpers) ──
@@ -956,6 +1023,24 @@ export fn GuavaJoltEnqueueTriggerEvent(event: *const extern struct {
     if (state.trigger_callback) |callback| {
         callback(trigger_event);
     }
+}
+
+export fn GuavaJoltEnqueueCollisionEvent(event: *const extern struct {
+    entity_a: u64,
+    entity_b: u64,
+    kind: u8,
+}) void {
+    const state = g_active_state orelse return;
+    state.collision_mutex.lock();
+    defer state.collision_mutex.unlock();
+
+    const collision_event = CollisionEvent{
+        .entity_a = event.entity_a,
+        .entity_b = event.entity_b,
+        .kind = @enumFromInt(event.kind),
+    };
+
+    state.collision_queue.append(state.allocator, collision_event) catch return;
 }
 
 pub const Backend = enum {

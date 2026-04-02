@@ -500,6 +500,9 @@ pub const Application = struct {
 
     /// 附加所有层
     fn attachLayers(self: *Application) !void {
+        // Auto-discover scripts in assets/scripts/ before initializing layers
+        self.discoverScripts();
+
         var layer_context = self.makeLayerContext(0, 0.0);
         for (self.layers.layers.items) |layer| {
             try layer.attach(&layer_context);
@@ -701,17 +704,19 @@ pub const Application = struct {
     /// 将物理触发器/碰撞事件派发给相关脚本实例
     fn dispatchPhysicsEvents(self: *Application) void {
         const trigger_events = self.physics_state.pollTriggerEvents();
-        if (trigger_events.len == 0) {
-            return;
-        }
-
         for (trigger_events) |event| {
             // 向事件双方各自派发（A→B, B→A）
             self.dispatchTriggerToEntity(event.entity_a, event.entity_b, event.kind);
             self.dispatchTriggerToEntity(event.entity_b, event.entity_a, event.kind);
         }
-
         self.physics_state.clearTriggerEvents();
+
+        const collision_events = self.physics_state.pollCollisionEvents();
+        for (collision_events) |event| {
+            self.dispatchCollisionToEntity(event.entity_a, event.entity_b, event.kind);
+            self.dispatchCollisionToEntity(event.entity_b, event.entity_a, event.kind);
+        }
+        self.physics_state.clearCollisionEvents();
     }
 
     fn dispatchTriggerToEntity(
@@ -734,17 +739,66 @@ pub const Application = struct {
             .world = &self.world,
             .instance = instance,
             .allocator = self.allocator,
+            .input = &self.input,
             .physics_state = &self.physics_state,
             .time = self.global_time,
             .delta_time = 0.0,
             .time_scale = self.time_scale,
             .action_map = &self.action_map,
+            .scene_manager_api = .{
+                .context = self,
+                .load_scene = scriptLoadScene,
+                .unload_scene = scriptUnloadScene,
+                .set_dont_destroy_on_load = scriptSetDontDestroyOnLoad,
+                .is_loading = scriptIsSceneLoading,
+            },
         };
 
         switch (kind) {
             .enter => vm.callTriggerEnter(instance, &ctx, other_id),
             .exit => vm.callTriggerExit(instance, &ctx, other_id),
             .stay => {}, // stay 事件不转发（可按需添加）
+        }
+    }
+
+    fn dispatchCollisionToEntity(
+        self: *Application,
+        self_id: scene_mod.EntityId,
+        other_id: scene_mod.EntityId,
+        kind: physics_system.CollisionEventKind,
+    ) void {
+        const entity = self.world.getEntityConst(self_id) orelse return;
+        const script = entity.script orelse return;
+        const instance_id = script.instance_id orelse return;
+        const instance = self.script_runtime.instances.get(instance_id) orelse return;
+        if (!script.enabled or instance.state != .running) return;
+
+        const script_language: script_system.ScriptLanguage = @enumFromInt(@intFromEnum(script.language));
+        const vm = self.script_runtime.getVM(script_language) orelse return;
+
+        var ctx = script_system.ScriptContext{
+            .entity = self_id,
+            .world = &self.world,
+            .instance = instance,
+            .allocator = self.allocator,
+            .input = &self.input,
+            .physics_state = &self.physics_state,
+            .time = self.global_time,
+            .delta_time = 0.0,
+            .time_scale = self.time_scale,
+            .action_map = &self.action_map,
+            .scene_manager_api = .{
+                .context = self,
+                .load_scene = scriptLoadScene,
+                .unload_scene = scriptUnloadScene,
+                .set_dont_destroy_on_load = scriptSetDontDestroyOnLoad,
+                .is_loading = scriptIsSceneLoading,
+            },
+        };
+
+        switch (kind) {
+            .enter => vm.callCollisionEnter(instance, &ctx, other_id),
+            .exit => vm.callCollisionExit(instance, &ctx, other_id),
         }
     }
 
@@ -768,7 +822,8 @@ pub const Application = struct {
             try std.fs.cwd().readFileAlloc(self.allocator, path, 1024 * 1024);
         defer self.allocator.free(source_or_bytecode);
 
-        const desc = .{
+        const script_resource = @import("../assets/script_resource.zig");
+        const desc: script_resource.ScriptResourceDesc = .{
             .source = if (is_binary_artifact) @as([]const u8, "") else source_or_bytecode,
             .language = language,
             .entry_fn = "main",
@@ -792,6 +847,36 @@ pub const Application = struct {
             return .csharp;
         }
         return .zig;
+    }
+
+    /// Scan assets/scripts/ directory and auto-register any .zig/.cs scripts
+    /// that are not already loaded in the resource library.
+    fn discoverScripts(self: *Application) void {
+        const scripts_dir = "assets/scripts";
+        var dir = std.fs.cwd().openDir(scripts_dir, .{ .iterate = true }) catch return;
+        defer dir.close();
+
+        var walker = dir.walk(self.allocator) catch return;
+        defer walker.deinit();
+
+        while (walker.next() catch null) |entry| {
+            if (entry.kind != .file) continue;
+            const is_zig = std.mem.endsWith(u8, entry.path, ".zig");
+            const is_cs = std.mem.endsWith(u8, entry.path, ".cs");
+            if (!is_zig and !is_cs) continue;
+
+            const full_path = std.fs.path.join(self.allocator, &.{ scripts_dir, entry.path }) catch continue;
+            defer self.allocator.free(full_path);
+
+            // Skip if already registered by asset ID
+            if (self.world.resources.script_handles_by_asset_id.get(full_path) != null) continue;
+
+            _ = self.loadScript(full_path) catch |err| {
+                std.log.warn("Failed to auto-discover script '{s}': {}", .{ full_path, err });
+                continue;
+            };
+            std.log.info("Auto-discovered script: {s}", .{full_path});
+        }
     }
 
     fn scriptLoadScene(context: *anyopaque, path: []const u8) void {

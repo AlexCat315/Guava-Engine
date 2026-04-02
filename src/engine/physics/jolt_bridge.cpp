@@ -131,6 +131,7 @@ struct GuavaTriggerEvent {
 };
 
 extern "C" void GuavaJoltEnqueueTriggerEvent(const GuavaTriggerEvent *event);
+extern "C" void GuavaJoltEnqueueCollisionEvent(const GuavaTriggerEvent *event);
 
 class GuavaContactListener final : public JPH::ContactListener {
 public:
@@ -150,6 +151,12 @@ public:
       event.entity_b = body2.GetUserData();
       event.kind = 0;
       GuavaJoltEnqueueTriggerEvent(&event);
+    } else {
+      GuavaTriggerEvent event{};
+      event.entity_a = body1.GetUserData();
+      event.entity_b = body2.GetUserData();
+      event.kind = 0; // enter
+      GuavaJoltEnqueueCollisionEvent(&event);
     }
   }
 
@@ -170,17 +177,24 @@ public:
 
   void OnContactRemoved(const JPH::SubShapeIDPair &pair) override {
     GuavaTriggerEvent event{};
+    bool is_sensor = false;
     if (physics_system != nullptr) {
       const JPH::Body *body1 = physics_system->GetBodyLockInterface().TryGetBody(pair.GetBody1ID());
       const JPH::Body *body2 = physics_system->GetBodyLockInterface().TryGetBody(pair.GetBody2ID());
       event.entity_a = body1 ? body1->GetUserData() : 0;
       event.entity_b = body2 ? body2->GetUserData() : 0;
+      is_sensor = (body1 && body1->IsSensor()) || (body2 && body2->IsSensor());
     } else {
       event.entity_a = 0;
       event.entity_b = 0;
     }
-    event.kind = 2;
-    GuavaJoltEnqueueTriggerEvent(&event);
+    event.kind = 2; // exit
+    if (is_sensor) {
+      GuavaJoltEnqueueTriggerEvent(&event);
+    } else {
+      event.kind = 1; // collision exit
+      GuavaJoltEnqueueCollisionEvent(&event);
+    }
   }
 
   void Reset() { m_contact_count = 0; }
