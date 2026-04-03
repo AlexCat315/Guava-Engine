@@ -1,70 +1,290 @@
-///! RPC method dispatch — maps JSON-RPC method names to engine operations.
+///! RPC method dispatch framework with comptime auto-discovery.
 ///!
-///! All methods run on the main thread (called from Server.processPending),
-///! so they have safe access to World, Renderer, and EditorState.
+///! **Adding a new RPC method: just add a `pub fn` to `handlers`.**
+///! Everything else (dispatch, capabilities, error handling) is generated.
 ///!
-///! Adding a new method:
-///!   1. Add a variant to the `Method` enum
-///!   2. Add a case in the `execute` switch — the compiler enforces exhaustiveness
-///!   That's it. The capabilities list is auto-generated from the enum.
+///!   // Example: adding a new method "editor.clearLogs"
+///!   pub fn @"editor.clearLogs"(ctx: *Ctx) !void {
+///!       ctx.layer.console.clear();
+///!       try ctx.reply(.{});
+///!   }
+///!
+///! That's it. No enum, no switch, no capabilities list update.
 const std = @import("std");
 const core = @import("../core/layer.zig");
 const world_mod = @import("../scene/world.zig");
-const components = @import("../scene/components.zig");
 
 const World = world_mod.World;
 const Entity = world_mod.Entity;
 const EntityId = world_mod.EntityId;
 
-const log = std.log.scoped(.editor_rpc_methods);
+const log = std.log.scoped(.editor_rpc);
 
-// ── Method Registry ─────────────────────────────────────────────────
-// Zig's comptime enum + exhaustive switch guarantees every method is
-// handled. `std.meta.stringToEnum` provides O(1) name → enum dispatch.
+// ═══════════════════════════════════════════════════════════════════
+//  RPC Call Context — passed to every handler
+// ═══════════════════════════════════════════════════════════════════
 
-const Method = enum {
-    @"editor.ping",
-    @"editor.getCapabilities",
-    @"scene.getHierarchy",
-    @"scene.createEntity",
-    @"scene.deleteEntity",
-    @"entity.getTransform",
-    @"entity.setTransform",
-    @"entity.setName",
-    @"entity.getComponents",
-    @"editor.setSelection",
-    @"editor.undo",
-    @"editor.redo",
-    @"playback.play",
-    @"playback.pause",
-    @"playback.stop",
+pub const Ctx = struct {
+    allocator: std.mem.Allocator,
+    params: ?std.json.Value,
+    layer: *core.LayerContext,
+    _result: ?[]u8 = null,
+
+    /// Read a required parameter by key, auto-coercing JSON type.
+    pub fn param(self: *Ctx, comptime T: type, key: []const u8) !T {
+        const p = self.params orelse return error.InvalidArguments;
+        const val = p.object.get(key) orelse return error.InvalidArguments;
+        return coerce(T, val);
+    }
+
+    /// Read an optional parameter by key. Returns null if missing.
+    pub fn paramOpt(self: *Ctx, comptime T: type, key: []const u8) !?T {
+        const p = self.params orelse return null;
+        const val = p.object.get(key) orelse return null;
+        return try coerce(T, val);
+    }
+
+    /// Read a required JSON array parameter.
+    pub fn paramArray(self: *Ctx, key: []const u8) !std.json.Array {
+        const p = self.params orelse return error.InvalidArguments;
+        const val = p.object.get(key) orelse return error.InvalidArguments;
+        return switch (val) {
+            .array => |a| a,
+            else => error.InvalidArguments,
+        };
+    }
+
+    /// Read a required JSON object parameter.
+    pub fn paramObj(self: *Ctx, key: []const u8) !std.json.ObjectMap {
+        const p = self.params orelse return error.InvalidArguments;
+        const val = p.object.get(key) orelse return error.InvalidArguments;
+        return switch (val) {
+            .object => |o| o,
+            else => error.InvalidArguments,
+        };
+    }
+
+    /// Send the result back. Call once per handler.
+    pub fn reply(self: *Ctx, value: anytype) !void {
+        self._result = try json(self.allocator, value);
+    }
+
+    fn coerce(comptime T: type, val: std.json.Value) !T {
+        return switch (T) {
+            u64 => switch (val) {
+                .integer => |i| @intCast(i),
+                .float => |f| @intFromFloat(f),
+                else => error.InvalidArguments,
+            },
+            i64 => switch (val) {
+                .integer => |i| i,
+                .float => |f| @intFromFloat(f),
+                else => error.InvalidArguments,
+            },
+            f32 => switch (val) {
+                .float => |f| @floatCast(f),
+                .integer => |i| @floatFromInt(i),
+                else => error.InvalidArguments,
+            },
+            f64 => switch (val) {
+                .float => |f| f,
+                .integer => |i| @floatFromInt(i),
+                else => error.InvalidArguments,
+            },
+            bool => switch (val) {
+                .bool => |b| b,
+                else => error.InvalidArguments,
+            },
+            []const u8 => switch (val) {
+                .string => |s| s,
+                else => error.InvalidArguments,
+            },
+            else => @compileError("Unsupported param type: " ++ @typeName(T)),
+        };
+    }
 };
+
+// ═══════════════════════════════════════════════════════════════════
+//  Handler Definitions — THIS IS THE ONLY PLACE YOU EDIT
+// ═══════════════════════════════════════════════════════════════════
+
+const handlers = struct {
+    pub fn @"editor.ping"(ctx: *Ctx) !void {
+        try ctx.reply(.{ .pong = true });
+    }
+
+    pub fn @"editor.getCapabilities"(ctx: *Ctx) !void {
+        try ctx.reply(.{
+            .version = "0.1.0",
+            .methods = &method_names,
+            .subscriptions = &subscription_names,
+        });
+    }
+
+    pub fn @"scene.getHierarchy"(ctx: *Ctx) !void {
+        const world = ctx.layer.world;
+        var roots = std.ArrayList(EntityNodeJson).empty;
+        defer {
+            for (roots.items) |*node| freeEntityNode(ctx.allocator, node);
+            roots.deinit(ctx.allocator);
+        }
+
+        for (world.entities.items) |entity| {
+            if (entity.parent == null) {
+                const node = buildEntityNode(ctx.allocator, world, entity.id) catch continue;
+                try roots.append(ctx.allocator, node);
+            }
+        }
+        try ctx.reply(.{ .roots = roots.items });
+    }
+
+    pub fn @"scene.createEntity"(ctx: *Ctx) !void {
+        const name_str = (try ctx.paramOpt([]const u8, "name")) orelse "New Entity";
+        const owned = try ctx.layer.world.allocator.dupe(u8, name_str);
+        const eid = try ctx.layer.world.createEntity(.{ .name = owned });
+        try ctx.reply(.{ .entityId = eid });
+    }
+
+    pub fn @"scene.deleteEntity"(ctx: *Ctx) !void {
+        const eid = try ctx.param(u64, "entityId");
+        _ = ctx.layer.world.destroyEntity(eid);
+        try ctx.reply(.{});
+    }
+
+    pub fn @"entity.getTransform"(ctx: *Ctx) !void {
+        const eid = try ctx.param(u64, "entityId");
+        const entity = ctx.layer.world.getEntityConst(eid) orelse return error.EntityNotFound;
+        const t = entity.local_transform;
+        try ctx.reply(.{
+            .position = .{ .x = t.translation[0], .y = t.translation[1], .z = t.translation[2] },
+            .rotation = .{ .x = t.rotation[0], .y = t.rotation[1], .z = t.rotation[2], .w = t.rotation[3] },
+            .scale = .{ .x = t.scale[0], .y = t.scale[1], .z = t.scale[2] },
+        });
+    }
+
+    pub fn @"entity.setTransform"(ctx: *Ctx) !void {
+        const eid = try ctx.param(u64, "entityId");
+        const entity = ctx.layer.world.getEntity(eid) orelse return error.EntityNotFound;
+
+        const t_obj = try ctx.paramObj("transform");
+        if (t_obj.get("position")) |pos| {
+            if (readVec3(pos)) |v| entity.local_transform.translation = v;
+        }
+        if (t_obj.get("rotation")) |rot| {
+            if (readQuat(rot)) |q| entity.local_transform.rotation = q;
+        }
+        if (t_obj.get("scale")) |scale| {
+            if (readVec3(scale)) |v| entity.local_transform.scale = v;
+        }
+        ctx.layer.world.markDirty(eid);
+        try ctx.reply(.{});
+    }
+
+    pub fn @"entity.setName"(ctx: *Ctx) !void {
+        const eid = try ctx.param(u64, "entityId");
+        const name = try ctx.param([]const u8, "name");
+        const entity = ctx.layer.world.getEntity(eid) orelse return error.EntityNotFound;
+
+        ctx.layer.world.allocator.free(entity.name);
+        entity.name = try ctx.layer.world.allocator.dupe(u8, name);
+        ctx.layer.world.markSceneChanged();
+        try ctx.reply(.{});
+    }
+
+    pub fn @"entity.getComponents"(ctx: *Ctx) !void {
+        const eid = try ctx.param(u64, "entityId");
+        const entity = ctx.layer.world.getEntityConst(eid) orelse return error.EntityNotFound;
+
+        const Entry = struct { type: []const u8 };
+        var list = std.ArrayList(Entry).empty;
+        defer list.deinit(ctx.allocator);
+
+        inline for (component_fields) |field| {
+            if (@field(entity, field.name) != null) {
+                try list.append(ctx.allocator, .{ .type = field.display_name });
+            }
+        }
+        try ctx.reply(.{ .components = list.items });
+    }
+
+    pub fn @"editor.setSelection"(ctx: *Ctx) !void {
+        const arr = try ctx.paramArray("entityIds");
+        var ids = std.ArrayList(EntityId).empty;
+        defer ids.deinit(ctx.allocator);
+
+        for (arr.items) |item| {
+            const id: EntityId = switch (item) {
+                .integer => |i| @intCast(i),
+                .float => |f| @intFromFloat(f),
+                else => continue,
+            };
+            try ids.append(ctx.allocator, id);
+        }
+        _ = try ctx.layer.renderer.selection_history.replaceSelection(ids.items);
+        try ctx.reply(.{});
+    }
+
+    pub fn @"editor.undo"(ctx: *Ctx) !void {
+        // TODO: wire to history.undo()
+        try ctx.reply(.{});
+    }
+
+    pub fn @"editor.redo"(ctx: *Ctx) !void {
+        // TODO: wire to history.redo()
+        try ctx.reply(.{});
+    }
+
+    pub fn @"playback.play"(ctx: *Ctx) !void {
+        ctx.layer.playback_controller.setState(.playing);
+        try ctx.reply(.{});
+    }
+
+    pub fn @"playback.pause"(ctx: *Ctx) !void {
+        ctx.layer.playback_controller.setState(.paused);
+        try ctx.reply(.{});
+    }
+
+    pub fn @"playback.stop"(ctx: *Ctx) !void {
+        ctx.layer.playback_controller.setState(.stopped);
+        try ctx.reply(.{});
+    }
+};
+
+// Also declare subscriptions (just names — detection logic is in subscriptions.zig)
+const subscriptions = [_][]const u8{
+    "on:scene.changed",
+    "on:selection.changed",
+    "on:console.log",
+    "on:viewport.metrics",
+};
+
+// ═══════════════════════════════════════════════════════════════════
+//  Comptime-generated dispatch — DO NOT EDIT MANUALLY
+// ═══════════════════════════════════════════════════════════════════
+
+const handler_decls = @typeInfo(handlers).@"struct".decls;
 
 const method_names = blk: {
-    const fields = @typeInfo(Method).@"enum".fields;
-    var result: [fields.len][]const u8 = undefined;
-    for (fields, 0..) |f, i| result[i] = f.name;
+    var result: [handler_decls.len][]const u8 = undefined;
+    for (handler_decls, 0..) |d, i| result[i] = d.name;
     break :blk result;
 };
 
-const Subscription = enum {
-    @"on:scene.changed",
-    @"on:selection.changed",
-    @"on:console.log",
-    @"on:viewport.metrics",
-};
+const subscription_names = subscriptions;
 
-const subscription_names = blk: {
-    const fields = @typeInfo(Subscription).@"enum".fields;
-    var result: [fields.len][]const u8 = undefined;
-    for (fields, 0..) |f, i| result[i] = f.name;
-    break :blk result;
-};
+fn dispatchToHandler(method_str: []const u8, ctx: *Ctx) !void {
+    inline for (handler_decls) |decl| {
+        if (std.mem.eql(u8, method_str, decl.name)) {
+            return @field(handlers, decl.name)(ctx);
+        }
+    }
+    return error.MethodNotFound;
+}
 
-// ── Public API ──────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+//  Public API — called from server.zig
+// ═══════════════════════════════════════════════════════════════════
 
-/// Dispatch a raw JSON-RPC request payload. Returns the JSON response
-/// string to send back (caller owns the memory), or null for notifications.
 pub fn dispatch(allocator: std.mem.Allocator, payload: []const u8, layer_context: *core.LayerContext) !?[]u8 {
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, payload, .{}) catch {
         return try errorResponse(allocator, null, -32700, "Parse error");
@@ -77,8 +297,7 @@ pub fn dispatch(allocator: std.mem.Allocator, payload: []const u8, layer_context
         else => return try errorResponse(allocator, null, -32600, "Invalid Request"),
     };
 
-    const method_val = obj.get("method") orelse return try errorResponse(allocator, null, -32600, "Missing method");
-    const method_str = switch (method_val) {
+    const method_str = switch (obj.get("method") orelse return try errorResponse(allocator, null, -32600, "Missing method")) {
         .string => |s| s,
         else => return try errorResponse(allocator, null, -32600, "Method must be string"),
     };
@@ -88,191 +307,26 @@ pub fn dispatch(allocator: std.mem.Allocator, payload: []const u8, layer_context
 
     // Notifications (no id) — fire-and-forget
     if (id_val == null) {
-        log.debug("Received notification: {s}", .{method_str});
+        log.debug("Notification: {s}", .{method_str});
         return null;
     }
 
-    // Look up method
-    const method = std.meta.stringToEnum(Method, method_str) orelse {
-        return try errorResponse(allocator, id_val, -32601, "MethodNotFound");
+    var ctx = Ctx{
+        .allocator = allocator,
+        .params = params,
+        .layer = layer_context,
     };
 
-    const result_json = execute(method, allocator, params, layer_context) catch |err| {
-        return try errorResponse(allocator, id_val, -32603, @errorName(err));
+    dispatchToHandler(method_str, &ctx) catch |err| {
+        return try errorResponse(allocator, id_val, if (err == error.MethodNotFound) @as(i64, -32601) else -32603, @errorName(err));
     };
 
-    return try successResponse(allocator, id_val, result_json);
+    return try successResponse(allocator, id_val, ctx._result orelse try json(allocator, .{}));
 }
 
-// ── Method Dispatch (exhaustive switch) ─────────────────────────────
-
-fn execute(method: Method, allocator: std.mem.Allocator, params: ?std.json.Value, ctx: *core.LayerContext) ![]u8 {
-    return switch (method) {
-        .@"editor.ping" => try json(allocator, .{ .pong = true }),
-        .@"editor.getCapabilities" => try json(allocator, .{
-            .version = "0.1.0",
-            .methods = &method_names,
-            .subscriptions = &subscription_names,
-        }),
-        .@"scene.getHierarchy" => try sceneGetHierarchy(allocator, ctx),
-        .@"scene.createEntity" => try sceneCreateEntity(allocator, params, ctx),
-        .@"scene.deleteEntity" => try sceneDeleteEntity(allocator, params, ctx),
-        .@"entity.getTransform" => try entityGetTransform(allocator, params, ctx),
-        .@"entity.setTransform" => try entitySetTransform(allocator, params, ctx),
-        .@"entity.setName" => try entitySetName(allocator, params, ctx),
-        .@"entity.getComponents" => try entityGetComponents(allocator, params, ctx),
-        .@"editor.setSelection" => try editorSetSelection(allocator, params, ctx),
-        .@"editor.undo" => json(allocator, .{}), // TODO: wire to history.undo()
-        .@"editor.redo" => json(allocator, .{}), // TODO: wire to history.redo()
-        .@"playback.play" => blk: {
-            ctx.playback_controller.setState(.playing);
-            break :blk try json(allocator, .{});
-        },
-        .@"playback.pause" => blk: {
-            ctx.playback_controller.setState(.paused);
-            break :blk try json(allocator, .{});
-        },
-        .@"playback.stop" => blk: {
-            ctx.playback_controller.setState(.stopped);
-            break :blk try json(allocator, .{});
-        },
-    };
-}
-
-// ── Handler Implementations ─────────────────────────────────────────
-
-fn sceneGetHierarchy(allocator: std.mem.Allocator, ctx: *core.LayerContext) ![]u8 {
-    const world = ctx.world;
-    var roots = std.ArrayList(EntityNodeJson).empty;
-    defer {
-        for (roots.items) |*node| freeEntityNode(allocator, node);
-        roots.deinit(allocator);
-    }
-
-    for (world.entities.items) |entity| {
-        if (entity.parent == null) {
-            const node = buildEntityNode(allocator, world, entity.id) catch continue;
-            try roots.append(allocator, node);
-        }
-    }
-
-    return try json(allocator, .{ .roots = roots.items });
-}
-
-fn sceneCreateEntity(allocator: std.mem.Allocator, params: ?std.json.Value, ctx: *core.LayerContext) ![]u8 {
-    const name_str = if (params) |p| (if (p.object.get("name")) |n| switch (n) {
-        .string => |s| s,
-        else => "New Entity",
-    } else "New Entity") else "New Entity";
-
-    const owned_name = try ctx.world.allocator.dupe(u8, name_str);
-    const entity_id = try ctx.world.createEntity(.{ .name = owned_name });
-    return try json(allocator, .{ .entityId = entity_id });
-}
-
-fn sceneDeleteEntity(allocator: std.mem.Allocator, params: ?std.json.Value, ctx: *core.LayerContext) ![]u8 {
-    const entity_id = try getEntityIdParam(params);
-    _ = ctx.world.destroyEntity(entity_id);
-    return try json(allocator, .{});
-}
-
-fn entityGetTransform(allocator: std.mem.Allocator, params: ?std.json.Value, ctx: *core.LayerContext) ![]u8 {
-    const entity_id = try getEntityIdParam(params);
-    const entity = ctx.world.getEntityConst(entity_id) orelse return error.EntityNotFound;
-
-    const t = entity.local_transform;
-    return try json(allocator, .{
-        .position = .{ .x = t.translation[0], .y = t.translation[1], .z = t.translation[2] },
-        .rotation = .{ .x = t.rotation[0], .y = t.rotation[1], .z = t.rotation[2], .w = t.rotation[3] },
-        .scale = .{ .x = t.scale[0], .y = t.scale[1], .z = t.scale[2] },
-    });
-}
-
-fn entitySetTransform(allocator: std.mem.Allocator, params: ?std.json.Value, ctx: *core.LayerContext) ![]u8 {
-    const eid = try getEntityIdParam(params);
-    const p = params orelse return error.InvalidArguments;
-    const entity = ctx.world.getEntity(eid) orelse return error.EntityNotFound;
-
-    if (p.object.get("transform")) |t_val| {
-        const t_obj = switch (t_val) {
-            .object => |o| o,
-            else => return error.InvalidArguments,
-        };
-        if (t_obj.get("position")) |pos| {
-            if (readVec3(pos)) |v| entity.local_transform.translation = v;
-        }
-        if (t_obj.get("rotation")) |rot| {
-            if (readQuat(rot)) |q| entity.local_transform.rotation = q;
-        }
-        if (t_obj.get("scale")) |scale| {
-            if (readVec3(scale)) |v| entity.local_transform.scale = v;
-        }
-        ctx.world.markDirty(eid);
-    }
-
-    return try json(allocator, .{});
-}
-
-fn entitySetName(allocator: std.mem.Allocator, params: ?std.json.Value, ctx: *core.LayerContext) ![]u8 {
-    const eid = try getEntityIdParam(params);
-    const p = params orelse return error.InvalidArguments;
-
-    const name = switch (p.object.get("name") orelse return error.InvalidArguments) {
-        .string => |s| s,
-        else => return error.InvalidArguments,
-    };
-
-    const entity = ctx.world.getEntity(eid) orelse return error.EntityNotFound;
-    ctx.world.allocator.free(entity.name);
-    entity.name = try ctx.world.allocator.dupe(u8, name);
-    ctx.world.markSceneChanged();
-
-    return try json(allocator, .{});
-}
-
-fn entityGetComponents(allocator: std.mem.Allocator, params: ?std.json.Value, ctx: *core.LayerContext) ![]u8 {
-    const entity_id = try getEntityIdParam(params);
-    const entity = ctx.world.getEntityConst(entity_id) orelse return error.EntityNotFound;
-
-    // Comptime iteration over all optional component fields
-    const ComponentEntry = struct { type: []const u8 };
-    var list = std.ArrayList(ComponentEntry).empty;
-    defer list.deinit(allocator);
-
-    inline for (component_fields) |field| {
-        if (@field(entity, field.name) != null) {
-            try list.append(allocator, .{ .type = field.display_name });
-        }
-    }
-
-    return try json(allocator, .{ .components = list.items });
-}
-
-fn editorSetSelection(allocator: std.mem.Allocator, params: ?std.json.Value, ctx: *core.LayerContext) ![]u8 {
-    const p = params orelse return try json(allocator, .{});
-    const ids_val = p.object.get("entityIds") orelse return try json(allocator, .{});
-    const ids_arr = switch (ids_val) {
-        .array => |a| a,
-        else => return try json(allocator, .{}),
-    };
-
-    var ids = std.ArrayList(EntityId).empty;
-    defer ids.deinit(allocator);
-
-    for (ids_arr.items) |item| {
-        const id: EntityId = switch (item) {
-            .integer => |i| @intCast(i),
-            .float => |f| @intFromFloat(f),
-            else => continue,
-        };
-        try ids.append(allocator, id);
-    }
-
-    _ = try ctx.renderer.selection_history.replaceSelection(ids.items);
-    return try json(allocator, .{});
-}
-
-// ── Entity Tree ─────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+//  Internal helpers
+// ═══════════════════════════════════════════════════════════════════
 
 const EntityNodeJson = struct {
     id: u64,
@@ -288,7 +342,6 @@ fn freeEntityNode(allocator: std.mem.Allocator, node: *EntityNodeJson) void {
 
 fn buildEntityNode(allocator: std.mem.Allocator, world: *World, entity_id: EntityId) !EntityNodeJson {
     const entity = world.getEntityConst(entity_id) orelse return error.EntityNotFound;
-
     var children_list = std.ArrayList(EntityNodeJson).empty;
     defer children_list.deinit(allocator);
 
@@ -304,10 +357,6 @@ fn buildEntityNode(allocator: std.mem.Allocator, world: *World, entity_id: Entit
         .children = try children_list.toOwnedSlice(allocator),
     };
 }
-
-// ── Component Field Table (comptime) ────────────────────────────────
-// Maps Entity struct fields to display names. Adding a component to
-// Entity automatically gets picked up here — just add to this table.
 
 const ComponentField = struct { name: []const u8, display_name: []const u8 };
 const component_fields = [_]ComponentField{
@@ -329,23 +378,8 @@ const component_fields = [_]ComponentField{
     .{ .name = "nav_agent", .display_name = "NavAgent" },
 };
 
-// ── Helpers ─────────────────────────────────────────────────────────
-
-fn getEntityIdParam(params: ?std.json.Value) !EntityId {
-    const p = params orelse return error.InvalidArguments;
-    const id_val = p.object.get("entityId") orelse return error.InvalidArguments;
-    return switch (id_val) {
-        .integer => |i| @intCast(i),
-        .float => |f| @intFromFloat(f),
-        else => error.InvalidArguments,
-    };
-}
-
 fn readVec3(val: std.json.Value) ?[3]f32 {
-    const obj = switch (val) {
-        .object => |o| o,
-        else => return null,
-    };
+    const obj = switch (val) { .object => |o| o, else => return null };
     return .{
         jsonFloat(obj.get("x") orelse return null),
         jsonFloat(obj.get("y") orelse return null),
@@ -354,10 +388,7 @@ fn readVec3(val: std.json.Value) ?[3]f32 {
 }
 
 fn readQuat(val: std.json.Value) ?[4]f32 {
-    const obj = switch (val) {
-        .object => |o| o,
-        else => return null,
-    };
+    const obj = switch (val) { .object => |o| o, else => return null };
     return .{
         jsonFloat(obj.get("x") orelse return null),
         jsonFloat(obj.get("y") orelse return null),
@@ -374,11 +405,9 @@ fn jsonFloat(val: std.json.Value) f32 {
     };
 }
 
-/// Serialize any comptime-known struct to JSON.
 fn json(allocator: std.mem.Allocator, value: anytype) ![]u8 {
     var output = std.ArrayList(u8).empty;
     defer output.deinit(allocator);
-
     var writer = output.writer(allocator);
     var buf: [4096]u8 = undefined;
     var adapter = writer.adaptToNewApi(&buf);
@@ -390,7 +419,6 @@ fn json(allocator: std.mem.Allocator, value: anytype) ![]u8 {
 
 fn successResponse(allocator: std.mem.Allocator, id: ?std.json.Value, result_json: []u8) ![]u8 {
     defer allocator.free(result_json);
-
     var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
     var writer = buf.writer(allocator);
@@ -405,7 +433,6 @@ fn successResponse(allocator: std.mem.Allocator, id: ?std.json.Value, result_jso
     try w.writeAll("}");
     try w.flush();
     if (adapter.err) |err| return err;
-
     return try buf.toOwnedSlice(allocator);
 }
 
@@ -422,7 +449,6 @@ fn errorResponse(allocator: std.mem.Allocator, id: ?std.json.Value, code: i64, m
     try w.print(",\"error\":{{\"code\":{d},\"message\":\"{s}\"}}}}", .{ code, message });
     try w.flush();
     if (adapter.err) |err| return err;
-
     return try buf.toOwnedSlice(allocator);
 }
 
