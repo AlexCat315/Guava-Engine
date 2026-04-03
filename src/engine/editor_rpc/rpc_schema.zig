@@ -266,6 +266,62 @@ pub const Methods = struct {
         pub const Result = struct {};
     };
 
+    pub const @"viewport.getRenderSettings" = struct {
+        pub const Params = struct {};
+        pub const Result = struct {
+            shadingMode: []const u8,
+            showGrid: bool,
+            showBones: bool,
+            showCollision: bool,
+            bloomEnabled: bool,
+            bloomThreshold: f32,
+            bloomIntensity: f32,
+            exposureEnabled: bool,
+            exposure: f32,
+            ssaoEnabled: bool,
+            ssaoRadius: f32,
+            ssaoIntensity: f32,
+            fxaaEnabled: bool,
+            taaEnabled: bool,
+            contactShadowsEnabled: bool,
+            colorGradingEnabled: bool,
+            colorGradingSaturation: f32,
+            colorGradingContrast: f32,
+            colorGradingGamma: f32,
+            dofEnabled: bool,
+            dofFocusDistance: f32,
+            dofFocusRange: f32,
+        };
+    };
+
+    pub const @"viewport.setRenderSettings" = struct {
+        pub const Params = struct {
+            shadingMode: ?[]const u8 = null,
+            showGrid: ?bool = null,
+            showBones: ?bool = null,
+            showCollision: ?bool = null,
+            bloomEnabled: ?bool = null,
+            bloomThreshold: ?f32 = null,
+            bloomIntensity: ?f32 = null,
+            exposureEnabled: ?bool = null,
+            exposure: ?f32 = null,
+            ssaoEnabled: ?bool = null,
+            ssaoRadius: ?f32 = null,
+            ssaoIntensity: ?f32 = null,
+            fxaaEnabled: ?bool = null,
+            taaEnabled: ?bool = null,
+            contactShadowsEnabled: ?bool = null,
+            colorGradingEnabled: ?bool = null,
+            colorGradingSaturation: ?f32 = null,
+            colorGradingContrast: ?f32 = null,
+            colorGradingGamma: ?f32 = null,
+            dofEnabled: ?bool = null,
+            dofFocusDistance: ?f32 = null,
+            dofFocusRange: ?f32 = null,
+        };
+        pub const Result = struct {};
+    };
+
     // ── console namespace ────────────────────────────────────────
 
     pub const @"console.clear" = struct {

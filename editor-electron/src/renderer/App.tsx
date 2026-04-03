@@ -5,6 +5,7 @@ import { Inspector } from "./panels/Inspector";
 import { Console } from "./panels/Console";
 import { Toolbar } from "./panels/Toolbar";
 import { Viewport } from "./panels/Viewport";
+import { RenderSettingsPanel } from "./panels/RenderSettings";
 import type { EntityNode, LogEntry, GizmoMode } from "../shared/rpc-types";
 
 declare global {
@@ -150,6 +151,7 @@ export function App() {
         </div>
         <div style={styles.rightPanel}>
           <Inspector entityId={selectedEntity} />
+          <RenderSettingsPanel connected={connected} />
         </div>
       </div>
       <div style={styles.bottomPanel}>
