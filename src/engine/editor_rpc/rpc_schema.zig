@@ -443,6 +443,23 @@ pub const Methods = struct {
         pub const Result = struct {};
     };
 
+    pub const @"viewport.sendInput" = struct {
+        pub const Params = struct {
+            type: []const u8,
+            x: ?f64 = null,
+            y: ?f64 = null,
+            deltaX: ?f64 = null,
+            deltaY: ?f64 = null,
+            button: ?[]const u8 = null,
+            clicks: ?u64 = null,
+            key: ?[]const u8 = null,
+            shift: ?bool = null,
+            ctrl: ?bool = null,
+            alt: ?bool = null,
+        };
+        pub const Result = struct {};
+    };
+
     // ── console namespace ────────────────────────────────────────
 
     pub const @"console.clear" = struct {

@@ -198,7 +198,7 @@ function Vec3Input({
   onChange: (v: Vec3) => void;
 }) {
   const [local, setLocal] = useState(value);
-  const commitTimer = useRef<ReturnType<typeof setTimeout>>();
+  const commitTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   // Sync with external value when entity changes
   useEffect(() => {
@@ -249,7 +249,7 @@ function FieldEditor({
   field: ComponentField;
   onFieldChanged: () => void;
 }) {
-  const commitTimer = useRef<ReturnType<typeof setTimeout>>();
+  const commitTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const commitField = useCallback(
     (value: unknown) => {

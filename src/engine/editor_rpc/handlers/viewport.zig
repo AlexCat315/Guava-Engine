@@ -5,8 +5,28 @@ const Ctx = ctx_mod.Ctx;
 const sdl = @import("../../platform/sdl.zig").c;
 
 pub fn setGizmoMode(ctx: *Ctx) !void {
-    // TODO: wire to EditorState.manipulation_mode when bridge is available
-    _ = try ctx.param([]const u8, "mode");
+    const mode_str = try ctx.param([]const u8, "mode");
+    const gizmo_pass = @import("../../render/passes/gizmo_pass.zig");
+    var state = ctx.layer.renderer.editor_gizmo_state;
+    if (std.mem.eql(u8, mode_str, "translate")) {
+        state.mode = .translate;
+    } else if (std.mem.eql(u8, mode_str, "rotate")) {
+        state.mode = .rotate;
+    } else if (std.mem.eql(u8, mode_str, "scale")) {
+        state.mode = .scale;
+    } else {
+        state.mode = .idle;
+    }
+    // Also update space if provided
+    if (try ctx.paramOpt([]const u8, "space")) |space_str| {
+        if (std.mem.eql(u8, space_str, "world")) {
+            state.space = .world;
+        } else {
+            state.space = .local;
+        }
+    }
+    ctx.layer.renderer.setEditorGizmoState(state);
+    _ = gizmo_pass;
     try ctx.reply(.{});
 }
 
@@ -35,10 +55,11 @@ pub fn setRect(ctx: *Ctx) !void {
     }
     try win.refreshSizes();
 
-    // Ensure scene viewport textures are created / resized (triggers IOSurface creation
-    // in editor-server mode when use_iosurface is true).
-    const w: u32 = @intCast(width);
-    const h: u32 = @intCast(height);
+    // Use the physical (drawable) pixel size for the render target, not the
+    // logical (CSS) size, so Retina/HiDPI displays get full-resolution
+    // rendering.
+    const w: u32 = if (win.drawable_width > 0) win.drawable_width else @intCast(width);
+    const h: u32 = if (win.drawable_height > 0) win.drawable_height else @intCast(height);
     try ctx.layer.renderer.setSceneViewportSize(w, h);
 
     try ctx.reply(.{});
@@ -311,5 +332,107 @@ pub fn setRenderSettings(ctx: *Ctx) !void {
     if (try ctx.paramOpt(f64, "rtShadowResolutionScale")) |v| state.rt_shadow_resolution_scale = @floatCast(v);
 
     ctx.layer.renderer.setEditorViewportState(state);
+    try ctx.reply(.{});
+}
+
+// ── Input forwarding ─────────────────────────────────────────────
+
+const input_mod = @import("../../core/input.zig");
+
+fn mapKey(name: []const u8) ?input_mod.Key {
+    const map = .{
+        .{ "w", .w },           .{ "a", .a },           .{ "s", .s },
+        .{ "d", .d },           .{ "b", .b },           .{ "i", .i },
+        .{ "m", .m },           .{ "q", .q },           .{ "e", .e },
+        .{ "f", .f },           .{ "g", .g },           .{ "r", .r },
+        .{ "t", .t },           .{ "n", .n },           .{ "l", .l },
+        .{ "o", .o },           .{ "p", .p },           .{ "x", .x },
+        .{ "y", .y },           .{ "z", .z },
+        .{ "tab", .tab },       .{ "delete", .delete },
+        .{ "backspace", .backspace },
+        .{ "1", .one },         .{ "2", .two },         .{ "3", .three },
+        .{ "shift", .shift },   .{ "ctrl", .ctrl },     .{ "alt", .alt },
+        .{ "space", .space },   .{ "escape", .escape }, .{ "period", .period },
+        .{ "up", .up },         .{ "down", .down },
+        .{ "left", .left },     .{ "right", .right },
+        .{ "f1", .f1 },         .{ "f2", .f2 },         .{ "f3", .f3 },
+        .{ "f4", .f4 },         .{ "f5", .f5 },         .{ "f6", .f6 },
+        .{ "f7", .f7 },         .{ "f8", .f8 },         .{ "f9", .f9 },
+        .{ "f10", .f10 },       .{ "f11", .f11 },       .{ "f12", .f12 },
+    };
+    inline for (map) |entry| {
+        if (std.mem.eql(u8, name, entry[0])) return entry[1];
+    }
+    return null;
+}
+
+fn mapMouseButton(name: []const u8) ?input_mod.MouseButton {
+    if (std.mem.eql(u8, name, "left")) return .left;
+    if (std.mem.eql(u8, name, "right")) return .right;
+    if (std.mem.eql(u8, name, "middle")) return .middle;
+    return null;
+}
+
+/// Forward a mouse/keyboard event from Electron to the engine input system.
+/// Params:
+///   type: "mousemove" | "mousedown" | "mouseup" | "wheel" | "keydown" | "keyup"
+///   x, y: f64          — mouse position (viewport-relative, physical pixels)
+///   button: string      — "left" | "right" | "middle" (for mouse button events)
+///   clicks: u64         — click count (for double-click detection)
+///   deltaX, deltaY: f64 — wheel delta
+///   key: string         — key name (for keyboard events)
+///   shift, ctrl, alt: bool — modifier state
+pub fn sendInput(ctx: *Ctx) !void {
+    const input = ctx.layer.input;
+    const event_type = try ctx.param([]const u8, "type");
+
+    // Update modifiers
+    if (try ctx.paramOpt(bool, "shift")) |v| input.modifiers.shift = v;
+    if (try ctx.paramOpt(bool, "ctrl")) |v| input.modifiers.ctrl = v;
+    if (try ctx.paramOpt(bool, "alt")) |v| input.modifiers.alt = v;
+
+    if (std.mem.eql(u8, event_type, "mousemove")) {
+        const x: f32 = @floatCast(try ctx.param(f64, "x"));
+        const y: f32 = @floatCast(try ctx.param(f64, "y"));
+        const dx: f32 = @floatCast((try ctx.paramOpt(f64, "deltaX")) orelse 0);
+        const dy: f32 = @floatCast((try ctx.paramOpt(f64, "deltaY")) orelse 0);
+        input.addMouseDelta(x, y, dx, dy);
+    } else if (std.mem.eql(u8, event_type, "mousedown")) {
+        const x: f32 = @floatCast(try ctx.param(f64, "x"));
+        const y: f32 = @floatCast(try ctx.param(f64, "y"));
+        input.updateMousePosition(x, y);
+        if (try ctx.paramOpt([]const u8, "button")) |btn| {
+            if (mapMouseButton(btn)) |mb| {
+                const clicks: u8 = @intCast((try ctx.paramOpt(u64, "clicks")) orelse 1);
+                input.setMouseButton(mb, true, clicks);
+            }
+        }
+    } else if (std.mem.eql(u8, event_type, "mouseup")) {
+        const x: f32 = @floatCast(try ctx.param(f64, "x"));
+        const y: f32 = @floatCast(try ctx.param(f64, "y"));
+        input.updateMousePosition(x, y);
+        if (try ctx.paramOpt([]const u8, "button")) |btn| {
+            if (mapMouseButton(btn)) |mb| {
+                input.setMouseButton(mb, false, 0);
+            }
+        }
+    } else if (std.mem.eql(u8, event_type, "wheel")) {
+        const wx: f32 = @floatCast((try ctx.paramOpt(f64, "deltaX")) orelse 0);
+        const wy: f32 = @floatCast((try ctx.paramOpt(f64, "deltaY")) orelse 0);
+        input.addMouseWheel(wx, wy);
+    } else if (std.mem.eql(u8, event_type, "keydown")) {
+        if (try ctx.paramOpt([]const u8, "key")) |key_name| {
+            if (mapKey(key_name)) |key| {
+                input.setKey(key, true);
+            }
+        }
+    } else if (std.mem.eql(u8, event_type, "keyup")) {
+        if (try ctx.paramOpt([]const u8, "key")) |key_name| {
+            if (mapKey(key_name)) |key| {
+                input.setKey(key, false);
+            }
+        }
+    }
+
     try ctx.reply(.{});
 }

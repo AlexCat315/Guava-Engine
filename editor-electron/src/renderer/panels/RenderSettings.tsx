@@ -30,7 +30,7 @@ export function RenderSettingsPanel({ connected }: RenderSettingsProps) {
   const [pathTrace, setPathTrace] = useState<PathTraceState>({ samples: 256, bounces: 8, resolutionScale: 1.0 });
   const [renderOutput, setRenderOutput] = useState<RenderOutputState>({ preset: "1080p", width: 1920, height: 1080, format: "png", path: "render_output" });
   const [transformSpace, setTransformSpace] = useState<"local" | "world">("local");
-  const commitTimer = useRef<ReturnType<typeof setTimeout>>();
+  const commitTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const fetchSettings = useCallback(async () => {
     if (!connected) return;

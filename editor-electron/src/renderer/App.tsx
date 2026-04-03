@@ -1,4 +1,8 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
+import { Layout, Model, Actions, type IJsonModel, type TabNode } from "flexlayout-react";
+import "flexlayout-react/style/light.css";
+import "./flexlayout-dark.css";
+
 import type { GuavaEngineAPI } from "../preload/preload";
 import { SceneHierarchy } from "./panels/SceneHierarchy";
 import { Inspector } from "./panels/Inspector";
@@ -30,6 +34,112 @@ declare global {
   }
 }
 
+// ── Layout storage key ──────────────────────────────────
+const LAYOUT_STORAGE_KEY = "guava-editor-layout-v1";
+
+// ── Default docking layout ──────────────────────────────
+// Structure:  Toolbar (top bar, outside dock)
+//   ┌──────────┬────────────────────┬───────────┐
+//   │ Hierarchy│     Viewport       │ Inspector │
+//   │          │                    │ Material  │
+//   │          │                    │ RenderSet │
+//   ├──────────┴────────────────────┴───────────┤
+//   │  Console | Assets | Timeline | ...tabs    │
+//   └───────────────────────────────────────────┘
+//   ViewportStatus (bottom bar, outside dock)
+
+const defaultLayout: IJsonModel = {
+  global: {
+    tabEnableClose: true,
+    tabEnableRename: false,
+    tabSetEnableMaximize: true,
+    tabSetEnableDeleteWhenEmpty: false,
+    splitterSize: 4,
+    splitterExtra: 4,
+    tabSetMinHeight: 100,
+    tabSetMinWidth: 100,
+  },
+  borders: [],
+  layout: {
+    type: "row",
+    weight: 100,
+    children: [
+      {
+        // Vertical split: [top area | bottom panels]
+        type: "row",
+        weight: 100,
+        children: [
+          {
+            // Top area: [left | center | right]
+            type: "row",
+            weight: 70,
+            children: [
+              {
+                // Left: Scene Hierarchy
+                type: "tabset",
+                weight: 15,
+                children: [
+                  { type: "tab", name: "Scene Hierarchy", component: "hierarchy", enableClose: false },
+                  { type: "tab", name: "Place Actors", component: "placeactors" },
+                ],
+              },
+              {
+                // Center: Viewport (the main attraction)
+                type: "tabset",
+                weight: 55,
+                id: "viewport-tabset",
+                children: [
+                  { type: "tab", name: "Viewport", component: "viewport", enableClose: false, enableDrag: false },
+                ],
+              },
+              {
+                // Right: Inspector + Material + Render Settings
+                type: "tabset",
+                weight: 20,
+                children: [
+                  { type: "tab", name: "Inspector", component: "inspector", enableClose: false },
+                  { type: "tab", name: "Material", component: "material" },
+                  { type: "tab", name: "Render Settings", component: "rendersettings" },
+                ],
+              },
+            ],
+          },
+          {
+            // Bottom: Console, Assets, and other tool tabs
+            type: "tabset",
+            weight: 30,
+            children: [
+              { type: "tab", name: "Console", component: "console", enableClose: false },
+              { type: "tab", name: "Assets", component: "assets" },
+              { type: "tab", name: "Timeline", component: "timeline" },
+              { type: "tab", name: "AI Utilities", component: "utilities" },
+              { type: "tab", name: "Camera", component: "camera" },
+              { type: "tab", name: "RHI Stats", component: "rhistats" },
+              { type: "tab", name: "Audio", component: "audio" },
+              { type: "tab", name: "Plugins", component: "plugins" },
+              { type: "tab", name: "Style", component: "style" },
+              { type: "tab", name: "Render Queue", component: "renderqueue" },
+              { type: "tab", name: "Physics", component: "physicsviz" },
+              { type: "tab", name: "Post-FX", component: "postprocess" },
+              { type: "tab", name: "Sequencer", component: "sequencer" },
+            ],
+          },
+        ],
+      },
+    ],
+  },
+};
+
+function loadSavedLayout(): IJsonModel {
+  try {
+    const saved = localStorage.getItem(LAYOUT_STORAGE_KEY);
+    if (saved) return JSON.parse(saved);
+  } catch {
+    // Corrupted — fall back to default.
+  }
+  return defaultLayout;
+}
+
 export function App() {
   const { t } = useI18n();
   const [connected, setConnected] = useState(false);
@@ -38,7 +148,20 @@ export function App() {
   const [selectedEntity, setSelectedEntity] = useState<number | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [gizmoMode, setGizmoMode] = useState<GizmoMode>("translate");
-  const [bottomTab, setBottomTab] = useState<"console" | "assets" | "timeline" | "utilities" | "camera" | "rhistats" | "audio" | "plugins" | "style" | "placeactors" | "renderqueue" | "physicsviz" | "postprocess" | "sequencer">("console");
+  const modelRef = useRef<Model>(Model.fromJson(loadSavedLayout()));
+
+  // Persist layout on every model change (debounced).
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const handleModelChange = useCallback(() => {
+    clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      try {
+        localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(modelRef.current.toJson()));
+      } catch {
+        // Storage full — silently ignore.
+      }
+    }, 500);
+  }, []);
 
   useEffect(() => {
     const cleanupConnected = window.guavaEngine.onConnected(() => {
@@ -147,6 +270,68 @@ export function App() {
     window.guavaEngine.call("console.clear", {}).catch(() => {});
   }, []);
 
+  // Reset layout to default
+  const handleResetLayout = useCallback(() => {
+    localStorage.removeItem(LAYOUT_STORAGE_KEY);
+    modelRef.current = Model.fromJson(defaultLayout);
+    // Force re-render
+    setLogs((prev) => [...prev]);
+  }, []);
+
+  // ── Panel factory: maps component id → React element ──
+  const factory = useCallback((node: TabNode) => {
+    const component = node.getComponent();
+    switch (component) {
+      case "viewport":
+        return <Viewport connected={connected} />;
+      case "hierarchy":
+        return (
+          <SceneHierarchy
+            roots={hierarchy}
+            selectedId={selectedEntity}
+            onSelect={handleSelectEntity}
+            onRefresh={refreshHierarchy}
+          />
+        );
+      case "inspector":
+        return <Inspector entityId={selectedEntity} />;
+      case "material":
+        return <MaterialEditor entityId={selectedEntity} />;
+      case "rendersettings":
+        return <RenderSettingsPanel connected={connected} />;
+      case "console":
+        return <Console logs={logs} onClear={handleClearLogs} />;
+      case "assets":
+        return <AssetBrowser connected={connected} />;
+      case "timeline":
+        return <CommandTimeline connected={connected} />;
+      case "utilities":
+        return <EditorUtilities connected={connected} />;
+      case "camera":
+        return <CameraBookmarks connected={connected} />;
+      case "rhistats":
+        return <RhiStats connected={connected} />;
+      case "audio":
+        return <AudioMixer connected={connected} />;
+      case "plugins":
+        return <PluginManager connected={connected} />;
+      case "style":
+        return <StyleInspector connected={connected} />;
+      case "placeactors":
+        return <PlaceActors connected={connected} />;
+      case "renderqueue":
+        return <RenderQueue connected={connected} />;
+      case "physicsviz":
+        return <PhysicsVisualization connected={connected} />;
+      case "postprocess":
+        return <PostProcessEditor connected={connected} />;
+      case "sequencer":
+        return <SequencerPanel connected={connected} />;
+      default:
+        return <div style={{ padding: 12, color: "#6c7086" }}>Unknown panel: {component}</div>;
+    }
+  }, [connected, hierarchy, selectedEntity, logs, handleSelectEntity, refreshHierarchy, handleClearLogs]);
+
   if (error) {
     return (
       <div style={styles.errorContainer}>
@@ -170,143 +355,19 @@ export function App() {
 
   return (
     <div style={styles.root}>
-      <Toolbar gizmoMode={gizmoMode} onGizmoModeChange={handleGizmoChange} onRefreshHierarchy={refreshHierarchy} />
-      <div style={styles.mainContent}>
-        <div style={styles.leftPanel}>
-          <SceneHierarchy
-            roots={hierarchy}
-            selectedId={selectedEntity}
-            onSelect={handleSelectEntity}
-            onRefresh={refreshHierarchy}
-          />
-        </div>
-        <div style={styles.viewport}>
-          <Viewport connected={connected} />
-        </div>
-        <div style={styles.rightPanel}>
-          <Inspector entityId={selectedEntity} />
-          <MaterialEditor entityId={selectedEntity} />
-          <RenderSettingsPanel connected={connected} />
-        </div>
-      </div>
-      <div style={styles.bottomPanel}>
-        <div style={styles.bottomTabs}>
-          <button
-            style={{ ...styles.tab, ...(bottomTab === "console" ? styles.tabActive : {}) }}
-            onClick={() => setBottomTab("console")}
-          >
-            {t.app.tabConsole}
-          </button>
-          <button
-            style={{ ...styles.tab, ...(bottomTab === "assets" ? styles.tabActive : {}) }}
-            onClick={() => setBottomTab("assets")}
-          >
-            {t.app.tabAssets}
-          </button>
-          <button
-            style={{ ...styles.tab, ...(bottomTab === "timeline" ? styles.tabActive : {}) }}
-            onClick={() => setBottomTab("timeline")}
-          >
-            {t.app.tabTimeline}
-          </button>
-          <button
-            style={{ ...styles.tab, ...(bottomTab === "utilities" ? styles.tabActive : {}) }}
-            onClick={() => setBottomTab("utilities")}
-          >
-            {t.app.tabUtilities}
-          </button>
-          <button
-            style={{ ...styles.tab, ...(bottomTab === "camera" ? styles.tabActive : {}) }}
-            onClick={() => setBottomTab("camera")}
-          >
-            Camera
-          </button>
-          <button
-            style={{ ...styles.tab, ...(bottomTab === "rhistats" ? styles.tabActive : {}) }}
-            onClick={() => setBottomTab("rhistats")}
-          >
-            RHI Stats
-          </button>
-          <button
-            style={{ ...styles.tab, ...(bottomTab === "audio" ? styles.tabActive : {}) }}
-            onClick={() => setBottomTab("audio")}
-          >
-            Audio
-          </button>
-          <button
-            style={{ ...styles.tab, ...(bottomTab === "plugins" ? styles.tabActive : {}) }}
-            onClick={() => setBottomTab("plugins")}
-          >
-            Plugins
-          </button>
-          <button
-            style={{ ...styles.tab, ...(bottomTab === "style" ? styles.tabActive : {}) }}
-            onClick={() => setBottomTab("style")}
-          >
-            Style
-          </button>
-          <button
-            style={{ ...styles.tab, ...(bottomTab === "placeactors" ? styles.tabActive : {}) }}
-            onClick={() => setBottomTab("placeactors")}
-          >
-            Place
-          </button>
-          <button
-            style={{ ...styles.tab, ...(bottomTab === "renderqueue" ? styles.tabActive : {}) }}
-            onClick={() => setBottomTab("renderqueue")}
-          >
-            Render Q
-          </button>
-          <button
-            style={{ ...styles.tab, ...(bottomTab === "physicsviz" ? styles.tabActive : {}) }}
-            onClick={() => setBottomTab("physicsviz")}
-          >
-            Physics
-          </button>
-          <button
-            style={{ ...styles.tab, ...(bottomTab === "postprocess" ? styles.tabActive : {}) }}
-            onClick={() => setBottomTab("postprocess")}
-          >
-            Post-FX
-          </button>
-          <button
-            style={{ ...styles.tab, ...(bottomTab === "sequencer" ? styles.tabActive : {}) }}
-            onClick={() => setBottomTab("sequencer")}
-          >
-            Sequencer
-          </button>
-        </div>
-        <div style={styles.bottomContent}>
-          {bottomTab === "console" ? (
-            <Console logs={logs} onClear={handleClearLogs} />
-          ) : bottomTab === "assets" ? (
-            <AssetBrowser connected={connected} />
-          ) : bottomTab === "utilities" ? (
-            <EditorUtilities connected={connected} />
-          ) : bottomTab === "camera" ? (
-            <CameraBookmarks connected={connected} />
-          ) : bottomTab === "rhistats" ? (
-            <RhiStats connected={connected} />
-          ) : bottomTab === "audio" ? (
-            <AudioMixer connected={connected} />
-          ) : bottomTab === "plugins" ? (
-            <PluginManager connected={connected} />
-          ) : bottomTab === "style" ? (
-            <StyleInspector connected={connected} />
-          ) : bottomTab === "placeactors" ? (
-            <PlaceActors connected={connected} />
-          ) : bottomTab === "renderqueue" ? (
-            <RenderQueue connected={connected} />
-          ) : bottomTab === "physicsviz" ? (
-            <PhysicsVisualization connected={connected} />
-          ) : bottomTab === "postprocess" ? (
-            <PostProcessEditor connected={connected} />
-          ) : bottomTab === "sequencer" ? (
-            <SequencerPanel connected={connected} />
-          ) : (
-            <CommandTimeline connected={connected} />
-          )}
-        </div>
+      <Toolbar
+        gizmoMode={gizmoMode}
+        onGizmoModeChange={handleGizmoChange}
+        onRefreshHierarchy={refreshHierarchy}
+        onResetLayout={handleResetLayout}
+      />
+      <div style={styles.dockArea}>
+        <Layout
+          model={modelRef.current}
+          factory={factory}
+          onModelChange={handleModelChange}
+          realtimeResize
+        />
       </div>
       <ViewportStatus connected={connected} />
     </div>
@@ -320,56 +381,9 @@ const styles: Record<string, React.CSSProperties> = {
     height: "100vh",
     background: "#1e1e2e",
   },
-  mainContent: {
-    display: "flex",
+  dockArea: {
     flex: 1,
-    overflow: "hidden",
-  },
-  leftPanel: {
-    width: 260,
-    minWidth: 200,
-    borderRight: "1px solid #313244",
-    overflow: "auto",
-  },
-  viewport: {
-    flex: 1,
-    background: "transparent",
     position: "relative",
-  },
-  rightPanel: {
-    width: 320,
-    minWidth: 250,
-    borderLeft: "1px solid #313244",
-    overflow: "auto",
-  },
-  bottomPanel: {
-    height: 200,
-    borderTop: "1px solid #313244",
-    display: "flex",
-    flexDirection: "column" as const,
-  },
-  bottomTabs: {
-    display: "flex",
-    background: "#181825",
-    borderBottom: "1px solid #313244",
-    gap: 0,
-  },
-  tab: {
-    padding: "6px 16px",
-    background: "transparent",
-    border: "none",
-    borderBottom: "2px solid transparent",
-    color: "#6c7086",
-    fontSize: 12,
-    cursor: "pointer",
-    fontWeight: 500,
-  },
-  tabActive: {
-    color: "#cdd6f4",
-    borderBottomColor: "#89b4fa",
-  },
-  bottomContent: {
-    flex: 1,
     overflow: "hidden",
   },
   loadingContainer: {

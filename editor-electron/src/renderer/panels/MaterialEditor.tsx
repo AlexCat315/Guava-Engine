@@ -86,7 +86,7 @@ export function MaterialEditor({ entityId }: MaterialEditorProps) {
   const [state, setState] = useState<MaterialState | null>(null);
   const [textures, setTextures] = useState<TextureEntry[]>([]);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-  const commitTimer = useRef<ReturnType<typeof setTimeout>>();
+  const commitTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const fetchState = useCallback(async (eid: number) => {
     try {

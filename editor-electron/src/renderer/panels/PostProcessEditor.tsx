@@ -91,7 +91,7 @@ const LUT_PRESETS = ["neutral", "warm", "cool", "filmic"];
 export function PostProcessEditor({ connected }: PostProcessEditorProps) {
   const [state, setState] = useState<PPState | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-  const commitTimer = useRef<ReturnType<typeof setTimeout>>();
+  const commitTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const fetchState = useCallback(async () => {
     if (!connected) return;

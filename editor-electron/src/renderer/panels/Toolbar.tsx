@@ -11,9 +11,10 @@ interface ToolbarProps {
   gizmoMode: GizmoMode;
   onGizmoModeChange: (mode: GizmoMode) => void;
   onRefreshHierarchy?: () => void;
+  onResetLayout?: () => void;
 }
 
-export function Toolbar({ gizmoMode, onGizmoModeChange, onRefreshHierarchy }: ToolbarProps) {
+export function Toolbar({ gizmoMode, onGizmoModeChange, onRefreshHierarchy, onResetLayout }: ToolbarProps) {
   const { t } = useI18n();
   const [sceneMenuOpen, setSceneMenuOpen] = useState(false);
   const [scenes, setScenes] = useState<string[]>([]);
@@ -116,6 +117,13 @@ export function Toolbar({ gizmoMode, onGizmoModeChange, onRefreshHierarchy }: To
       </div>
       <div style={{ flex: 1 }} />
       <div style={styles.section}>
+        {onResetLayout && (
+          <ToolButton
+            icon={<span style={{ fontSize: 12 }}>⊞</span>}
+            tooltip="Reset Layout"
+            onClick={onResetLayout}
+          />
+        )}
         <span style={styles.brand}>{t.toolbar.brand}</span>
       </div>
     </div>

@@ -1,6 +1,15 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { useI18n } from "../i18n";
 
+type ShadingMode = "solid" | "material" | "rendered" | "wireframe";
+
+const SHADING_ICONS: Record<ShadingMode, string> = {
+  solid: "◻",
+  material: "◼",
+  rendered: "◉",
+  wireframe: "▦",
+};
+
 interface ViewportProps {
   connected: boolean;
 }
@@ -27,6 +36,81 @@ export function Viewport({ connected }: ViewportProps) {
   const surfaceIdRef = useRef(0);
   const shmNameRef = useRef<string | undefined>(undefined);
   const lastBoundsRef = useRef({ x: 0, y: 0, w: 0, h: 0 });
+  const [shadingMode, setShadingMode] = useState<ShadingMode>("material");
+
+  // Fetch current shading mode on connect
+  useEffect(() => {
+    if (!connected) return;
+    window.guavaEngine.call("viewport.getRenderSettings", {})
+      .then((res) => { if (res.shadingMode) setShadingMode(res.shadingMode as ShadingMode); })
+      .catch(() => {});
+  }, [connected]);
+
+  const handleShadingChange = useCallback((mode: ShadingMode) => {
+    setShadingMode(mode);
+    window.guavaEngine.call("viewport.setRenderSettings", { shadingMode: mode } as never).catch(() => {});
+  }, []);
+
+  // ── Input forwarding to the engine ─────────────────────────────
+  const dpr = window.devicePixelRatio || 1;
+
+  const toViewportCoords = useCallback((e: React.MouseEvent) => {
+    const el = ref.current;
+    if (!el) return { x: 0, y: 0 };
+    const rect = el.getBoundingClientRect();
+    return { x: (e.clientX - rect.left) * dpr, y: (e.clientY - rect.top) * dpr };
+  }, [dpr]);
+
+  const sendInput = useCallback((params: Record<string, unknown>) => {
+    window.guavaEngine.call("viewport.sendInput", params as never).catch(() => {});
+  }, []);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    const { x, y } = toViewportCoords(e);
+    const btn = e.button === 0 ? "left" : e.button === 2 ? "right" : e.button === 1 ? "middle" : null;
+    if (!btn) return;
+    sendInput({ type: "mousedown", x, y, button: btn, clicks: e.detail, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, alt: e.altKey });
+  }, [toViewportCoords, sendInput]);
+
+  const handleMouseUp = useCallback((e: React.MouseEvent) => {
+    const { x, y } = toViewportCoords(e);
+    const btn = e.button === 0 ? "left" : e.button === 2 ? "right" : e.button === 1 ? "middle" : null;
+    if (!btn) return;
+    sendInput({ type: "mouseup", x, y, button: btn, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, alt: e.altKey });
+  }, [toViewportCoords, sendInput]);
+
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    const { x, y } = toViewportCoords(e);
+    sendInput({ type: "mousemove", x, y, deltaX: e.movementX * dpr, deltaY: e.movementY * dpr, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, alt: e.altKey });
+  }, [toViewportCoords, sendInput, dpr]);
+
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    sendInput({ type: "wheel", deltaX: -e.deltaX / 120, deltaY: -e.deltaY / 120, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, alt: e.altKey });
+  }, [sendInput]);
+
+  const handleContextMenu = useCallback((e: React.MouseEvent) => { e.preventDefault(); }, []);
+
+  const mapKeyFn = (e: React.KeyboardEvent): string | null => {
+    const k = e.key.toLowerCase();
+    const m: Record<string, string> = { arrowup: "up", arrowdown: "down", arrowleft: "left", arrowright: "right", " ": "space", ".": "period" };
+    if (m[k]) return m[k];
+    if (/^[a-z0-9]$/.test(k)) return k;
+    if (/^f([1-9]|1[0-2])$/.test(k)) return k;
+    if (["tab", "delete", "backspace", "shift", "control", "alt", "escape"].includes(k)) return k === "control" ? "ctrl" : k;
+    return null;
+  };
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    const key = mapKeyFn(e);
+    if (!key) return;
+    sendInput({ type: "keydown", key, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, alt: e.altKey });
+  }, [sendInput]);
+
+  const handleKeyUp = useCallback((e: React.KeyboardEvent) => {
+    const key = mapKeyFn(e);
+    if (!key) return;
+    sendInput({ type: "keyup", key, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, alt: e.altKey });
+  }, [sendInput]);
 
   // Compute element bounds relative to the window's content origin (points).
   const getBounds = useCallback(() => {
@@ -214,8 +298,37 @@ export function Viewport({ connected }: ViewportProps) {
   }, [attached]);
 
   return (
-    <div ref={ref} style={styles.container}>
+    <div
+      ref={ref}
+      style={styles.container}
+      tabIndex={0}
+      onMouseDown={handleMouseDown}
+      onMouseUp={handleMouseUp}
+      onMouseMove={handleMouseMove}
+      onWheel={handleWheel}
+      onContextMenu={handleContextMenu}
+      onKeyDown={handleKeyDown}
+      onKeyUp={handleKeyUp}
+    >
       <canvas ref={canvasRef} style={styles.canvas} />
+      {/* Shading mode toolbar overlay */}
+      {connected && (
+        <div style={styles.shadingBar}>
+          {(["solid", "material", "rendered", "wireframe"] as ShadingMode[]).map((mode) => (
+            <button
+              key={mode}
+              title={mode.charAt(0).toUpperCase() + mode.slice(1)}
+              style={{
+                ...styles.shadingButton,
+                ...(shadingMode === mode ? styles.shadingButtonActive : {}),
+              }}
+              onClick={() => handleShadingChange(mode)}
+            >
+              {SHADING_ICONS[mode]}
+            </button>
+          ))}
+        </div>
+      )}
       {!attached && (
         <div style={styles.placeholder}>
           <p style={{ margin: 0, fontSize: 14 }}>{t.viewport.title}</p>
@@ -242,6 +355,37 @@ const styles: Record<string, React.CSSProperties> = {
     width: "100%",
     height: "100%",
     imageRendering: "pixelated",
+  },
+  shadingBar: {
+    position: "absolute",
+    top: 8,
+    right: 8,
+    display: "flex",
+    gap: 2,
+    background: "rgba(24,24,37,0.85)",
+    borderRadius: 6,
+    padding: 3,
+    zIndex: 10,
+    backdropFilter: "blur(8px)",
+    border: "1px solid #313244",
+  },
+  shadingButton: {
+    background: "transparent",
+    border: "1px solid transparent",
+    borderRadius: 4,
+    color: "#a6adc8",
+    cursor: "pointer",
+    padding: "4px 8px",
+    fontSize: 13,
+    lineHeight: "1",
+    minWidth: 28,
+    textAlign: "center" as const,
+    transition: "all 0.1s",
+  },
+  shadingButtonActive: {
+    background: "#45475a",
+    borderColor: "#89b4fa",
+    color: "#89b4fa",
   },
   placeholder: {
     position: "absolute",
