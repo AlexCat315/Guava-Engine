@@ -441,14 +441,15 @@ fn drawProjectPanel(state: *EditorState, layer_context: *engine.core.LayerContex
 
         gui.tableNextRow();
 
-        // Column 1: Folder tree with subtle background
+        // Column 1: Folder tree
         gui.tableNextColumn();
         {
-            gui.pushStyleColor(.child_bg, .{ 0.08, 0.08, 0.10, 1.0 });
+            gui.pushStyleColor(.child_bg, .{ 0.10, 0.11, 0.13, 1.0 });
+            gui.pushStyleColor(.text, theme.Palette.text_primary);
             _ = gui.beginChild("project_folders_tree", 0.0, 0.0, false);
             defer {
                 gui.endChild();
-                gui.popStyleColor(1);
+                gui.popStyleColor(2);
             }
             gui.spacing();
             try drawFolderTree(state, layer_context);
@@ -479,7 +480,6 @@ fn drawProjectPanel(state: *EditorState, layer_context: *engine.core.LayerContex
 }
 
 fn drawFolderTree(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
-    // Render root "/" as the top-level tree node
     const selected_dir = selectedDirectory(state);
     const is_root_selected = std.mem.eql(u8, selected_dir, "/");
     const root_label = assetBrowserRootLabel(state);
@@ -488,7 +488,7 @@ fn drawFolderTree(state: *EditorState, layer_context: *engine.core.LayerContext)
     const root_display = std.fmt.bufPrint(&root_label_buffer, "{s}##dir_/", .{root_label}) catch root_label;
 
     if (is_root_selected) {
-        gui.pushStyleColor(.text, .{ 1.0, 0.88, 0.4, 1.0 });
+        gui.pushStyleColor(.text, .{ 0.55, 0.78, 1.0, 1.0 });
     }
     const root_open = gui.treeNodeEx(root_display, is_root_selected, false, true);
     if (is_root_selected) {
@@ -557,7 +557,7 @@ fn drawFolderTreeRecursive(state: *EditorState, layer_context: *engine.core.Laye
         const label = std.fmt.bufPrint(&label_buffer, "{s}##dir_{s}", .{ label_name, directory }) catch label_name;
 
         if (is_selected) {
-            gui.pushStyleColor(.text, .{ 1.0, 0.88, 0.4, 1.0 });
+            gui.pushStyleColor(.text, .{ 0.55, 0.78, 1.0, 1.0 });
         }
 
         const node_open = gui.treeNodeEx(label, is_selected, !has_children, false);
@@ -656,8 +656,7 @@ fn drawAssetGridView(state: *EditorState, layer_context: *engine.core.LayerConte
 }
 
 fn drawAssetListView(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
-    // List view: icon + type badge + name in a single row
-    const row_height: f32 = 28.0;
+    const row_height: f32 = 26.0;
 
     for (state.asset_entries.items, 0..) |entry, index| {
         if (!assetVisibleInDirectory(state, entry)) {
@@ -673,11 +672,11 @@ fn drawAssetListView(state: *EditorState, layer_context: *engine.core.LayerConte
         var button_id_buffer: [64]u8 = undefined;
         const button_id = try std.fmt.bufPrint(&button_id_buffer, "asset_list_{d}", .{index});
 
-        const icon_size: f32 = 20.0;
+        const icon_size: f32 = 18.0;
         const icon_path = assetIconPath(entry.kind);
 
         const selected = isAssetSelected(state, index);
-        const icon_tint: [4]u8 = if (selected) .{ 100, 180, 255, 255 } else assetIconTint(entry.kind);
+        const icon_tint: [4]u8 = assetIconTint(entry.kind);
         const icon_texture = try ui_icons.ensureTintedIconTexture(
             state,
             layer_context,
@@ -703,23 +702,6 @@ fn drawAssetListView(state: *EditorState, layer_context: *engine.core.LayerConte
         gui.sameLine();
         gui.image(row_texture, icon_size, icon_size);
 
-        // Type badge (colored short label)
-        gui.sameLine();
-        {
-            const tint = assetIconTint(entry.kind);
-            const badge_color: [4]f32 = .{
-                @as(f32, @floatFromInt(tint[0])) / 255.0,
-                @as(f32, @floatFromInt(tint[1])) / 255.0,
-                @as(f32, @floatFromInt(tint[2])) / 255.0,
-                0.7,
-            };
-            gui.pushStyleColor(.text, badge_color);
-            var badge_buf: [16]u8 = undefined;
-            const badge_text = std.fmt.bufPrint(&badge_buf, "[{s}]", .{assetKindShortLabel(entry.kind)}) catch "";
-            gui.text(badge_text);
-            gui.popStyleColor(1);
-        }
-
         // Name
         gui.sameLine();
         if (state.asset_rename_index == index) {
@@ -736,7 +718,13 @@ fn drawAssetListView(state: *EditorState, layer_context: *engine.core.LayerConte
                 state.asset_rename_index = null;
             }
         } else {
+            if (selected) {
+                gui.pushStyleColor(.text, .{ 1.0, 1.0, 1.0, 1.0 });
+            }
             gui.text(entry.name);
+            if (selected) {
+                gui.popStyleColor(1);
+            }
         }
     }
 }
@@ -750,19 +738,17 @@ fn drawAssetCard(
 ) !void {
     var child_id_buffer: [64]u8 = undefined;
     const child_id = std.fmt.bufPrint(&child_id_buffer, "asset_card_{d}", .{index}) catch "card";
-    const card_width = tile_size + 8.0;
-    const badge_row_height: f32 = 18.0;
-    const label_height: f32 = 34.0;
-    const card_height = tile_size + badge_row_height + label_height;
+    const card_padding: f32 = 4.0;
+    const card_width = tile_size + card_padding * 2.0;
+    const name_height: f32 = 22.0;
+    const card_height = tile_size + name_height + card_padding;
     const selected = isAssetSelected(state, index);
 
-    // Card background with subtle fill
-    if (selected) {
-        gui.pushStyleColor(.child_bg, .{ 0.12, 0.22, 0.32, 1.0 });
-    } else {
-        gui.pushStyleColor(.child_bg, .{ 0.10, 0.11, 0.13, 0.6 });
-    }
-    gui.pushStyleColor(.border, if (selected) [4]f32{ 0.35, 0.65, 0.95, 0.9 } else [4]f32{ 0.18, 0.19, 0.22, 0.4 });
+    // ── Card background ──
+    const card_bg: [4]f32 = if (selected) .{ 0.18, 0.30, 0.48, 1.0 } else .{ 0.0, 0.0, 0.0, 0.0 };
+    const card_border: [4]f32 = if (selected) .{ 0.35, 0.60, 0.92, 0.85 } else .{ 0.0, 0.0, 0.0, 0.0 };
+    gui.pushStyleColor(.child_bg, card_bg);
+    gui.pushStyleColor(.border, card_border);
     _ = gui.beginChild(child_id, card_width, card_height, true);
     defer {
         gui.endChild();
@@ -772,44 +758,33 @@ fn drawAssetCard(
     const draw_list = gui.getWindowDrawList();
     const wmin = gui.windowPos();
 
-    // Hover highlight
+    // ── Hover effect ──
     const win_hovered = gui.isWindowHovered();
     if (win_hovered and !selected) {
         draw_list.addRectFilled(
             wmin,
             .{ wmin[0] + card_width, wmin[1] + card_height },
-            gui.getColorU32(.{ 0.24, 0.26, 0.30, 0.45 }),
+            gui.getColorU32(.{ 0.22, 0.24, 0.28, 0.55 }),
             4.0,
             0,
         );
     }
 
-    // Selection glow border
-    if (selected) {
-        draw_list.addRectFilled(
-            wmin,
-            .{ wmin[0] + card_width, wmin[1] + card_height },
-            gui.getColorU32(.{ 0.20, 0.40, 0.65, 0.15 }),
-            4.0,
-            0,
-        );
-    }
-
-    // ── Thumbnail area ──
-    const thumb_bg_y = wmin[1] + 1.0;
-    const thumb_bg_h = tile_size;
+    // ── Thumbnail square ──
+    const thumb_x = wmin[0] + card_padding;
+    const thumb_y = wmin[1] + 2.0;
     draw_list.addRectFilled(
-        .{ wmin[0] + 1.0, thumb_bg_y },
-        .{ wmin[0] + card_width - 1.0, thumb_bg_y + thumb_bg_h },
-        gui.getColorU32(theme.Palette.content_browser.thumbnail_bg),
+        .{ thumb_x, thumb_y },
+        .{ thumb_x + tile_size, thumb_y + tile_size },
+        gui.getColorU32(.{ 0.12, 0.13, 0.15, 1.0 }),
         3.0,
         0,
     );
 
-    // ── Icon / thumbnail ──
-    const icon_size = tile_size * 0.72;
+    // ── Resolve texture ──
+    const icon_size = tile_size * 0.58;
     const icon_path = assetIconPath(entry.kind);
-    const icon_tint = if (selected) [4]u8{ 100, 180, 255, 255 } else assetIconTint(entry.kind);
+    const icon_tint = assetIconTint(entry.kind);
     const icon_texture = try ui_icons.ensureTintedIconTexture(
         state,
         layer_context,
@@ -827,18 +802,17 @@ fn drawAssetCard(
         icon_texture;
 
     const has_thumbnail = card_texture != icon_texture;
-    const display_size = if (has_thumbnail) tile_size - 2.0 else icon_size;
-
-    const x_center = @max((card_width - display_size) * 0.5, 0.0);
-    const y_center = if (has_thumbnail) 1.0 else @max((tile_size - display_size) * 0.5, 0.0);
-    gui.setCursorPos(.{ x_center, y_center });
+    const display_size = if (has_thumbnail) tile_size else icon_size;
+    const img_x = card_padding + @max((tile_size - display_size) * 0.5, 0.0);
+    const img_y = 2.0 + @max((tile_size - display_size) * 0.5, 0.0);
+    gui.setCursorPos(.{ img_x, img_y });
 
     var button_id_buffer: [64]u8 = undefined;
     const button_id = std.fmt.bufPrint(&button_id_buffer, "asset_thumb_{d}", .{index}) catch "thumb";
 
     gui.pushStyleColor(.button, .{ 0.0, 0.0, 0.0, 0.0 });
-    gui.pushStyleColor(.button_hovered, .{ 0.3, 0.3, 0.35, 0.25 });
-    gui.pushStyleColor(.button_active, .{ 0.2, 0.2, 0.25, 0.35 });
+    gui.pushStyleColor(.button_hovered, .{ 0.0, 0.0, 0.0, 0.0 });
+    gui.pushStyleColor(.button_active, .{ 0.0, 0.0, 0.0, 0.0 });
     if (gui.imageButton(
         button_id,
         card_texture,
@@ -856,48 +830,34 @@ fn drawAssetCard(
     }
     if (gui.isItemHovered()) {
         var tooltip_buf: [256]u8 = undefined;
-        const tooltip = std.fmt.bufPrint(&tooltip_buf, "{s}\n{s}", .{
+        const tooltip = std.fmt.bufPrint(&tooltip_buf, "{s}  ({s})", .{
             entry.name,
-            utils.assetKindLabel(state, entry.kind),
+            assetKindShortLabel(entry.kind),
         }) catch entry.name;
         gui.setTooltip(tooltip);
     }
     drawAssetDragSource(state, entry, index, card_texture);
     try drawAssetContextMenu(state, layer_context, entry, index);
 
-    // ── Type badge row ──
-    {
-        const badge_y = tile_size + 1.0;
-        gui.setCursorPos(.{ 0.0, badge_y });
+    // ── Small type color dot in bottom-right of thumbnail area ──
+    if (!entry.is_directory and !has_thumbnail) {
         const tint = assetIconTint(entry.kind);
-        const badge_color: [4]f32 = .{
+        const dot_color = gui.getColorU32(.{
             @as(f32, @floatFromInt(tint[0])) / 255.0,
             @as(f32, @floatFromInt(tint[1])) / 255.0,
             @as(f32, @floatFromInt(tint[2])) / 255.0,
-            1.0,
-        };
-        // Colored accent line at top of badge row
-        const accent_y = wmin[1] + tile_size;
-        draw_list.addRectFilled(
-            .{ wmin[0] + 2.0, accent_y },
-            .{ wmin[0] + card_width - 2.0, accent_y + 2.0 },
-            gui.getColorU32(.{ badge_color[0], badge_color[1], badge_color[2], 0.6 }),
-            0.0,
-            0,
-        );
-        // Type label
-        gui.setCursorPos(.{ 3.0, badge_y + 3.0 });
-        gui.pushStyleColor(.text, .{ badge_color[0], badge_color[1], badge_color[2], 0.85 });
-        const kind_label = assetKindShortLabel(entry.kind);
-        gui.text(kind_label);
-        gui.popStyleColor(1);
+            0.8,
+        });
+        const dot_x = thumb_x + tile_size - 8.0;
+        const dot_y = thumb_y + tile_size - 8.0;
+        draw_list.addCircleFilled(.{ dot_x, dot_y }, 4.0, dot_color, 12);
     }
 
-    // ── Asset name label ──
-    const label_y = tile_size + badge_row_height + 1.0;
+    // ── Name label (centered) ──
+    const label_y = tile_size + 4.0;
     if (state.asset_rename_index == index) {
-        gui.setCursorPos(.{ 2.0, label_y });
-        gui.setNextItemWidth(card_width - 4.0);
+        gui.setCursorPos(.{ card_padding, label_y });
+        gui.setNextItemWidth(tile_size);
         if (state.asset_rename_focus_pending) {
             gui.setKeyboardFocusHere(0);
             state.asset_rename_focus_pending = false;
@@ -910,13 +870,11 @@ fn drawAssetCard(
             state.asset_rename_index = null;
         }
     } else {
-        gui.setCursorPos(.{ 3.0, label_y });
+        gui.setCursorPos(.{ card_padding, label_y });
         const name_color: [4]f32 = if (selected)
-            .{ 0.70, 0.88, 1.0, 1.0 }
-        else if (entry.is_directory)
-            .{ 0.90, 0.85, 0.55, 1.0 }
+            .{ 1.0, 1.0, 1.0, 1.0 }
         else
-            .{ 0.82, 0.84, 0.86, 1.0 };
+            .{ 0.78, 0.80, 0.84, 1.0 };
         gui.pushStyleColor(.text, name_color);
         gui.textWrapped(entry.name);
         gui.popStyleColor(1);
