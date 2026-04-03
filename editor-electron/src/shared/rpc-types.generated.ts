@@ -1,0 +1,118 @@
+// ╔═══════════════════════════════════════════════════════════╗
+// ║  AUTO-GENERATED — do not edit manually.                  ║
+// ║  Source of truth: src/engine/editor_rpc/rpc_schema.zig   ║
+// ║  Regenerate:                                             ║
+// ║    zig run tools/gen_rpc_types.zig \                     ║
+// ║      > editor-electron/src/shared/rpc-types.generated.ts ║
+// ╚═══════════════════════════════════════════════════════════╝
+
+// ── Data Types ─────────────────────────────────────────────
+
+export interface Vec3 {
+  x: number;
+  y: number;
+  z: number;
+}
+
+export interface Quat {
+  x: number;
+  y: number;
+  z: number;
+  w: number;
+}
+
+export interface Transform {
+  position: Vec3;
+  rotation: Quat;
+  scale: Vec3;
+}
+
+export interface TransformPartial {
+  position?: Vec3;
+  rotation?: Quat;
+  scale?: Vec3;
+}
+
+export interface EntityNode {
+  id: number;
+  name: string;
+  visible: boolean;
+  children: EntityNode[];
+}
+
+export interface ComponentInfo {
+  type: string;
+}
+
+export interface LogEntry {
+  level: string;
+  message: string;
+  timestamp: number;
+  source?: string;
+}
+
+export interface AssetEntry {
+  name: string;
+  path: string;
+  isDirectory: boolean;
+  assetType?: string;
+  size?: number;
+}
+
+// ── RPC Method Signatures ──────────────────────────────────
+
+export interface RpcMethods {
+  "editor.ping": { params: Record<string, never>; result: { pong: boolean } };
+  "editor.getCapabilities": { params: Record<string, never>; result: { version: string; methods: string[]; subscriptions: string[] } };
+  "editor.setSelection": { params: { entityIds: number[] }; result: Record<string, never> };
+  "editor.undo": { params: Record<string, never>; result: Record<string, never> };
+  "editor.redo": { params: Record<string, never>; result: Record<string, never> };
+  "scene.getHierarchy": { params: Record<string, never>; result: { roots: EntityNode[] } };
+  "scene.createEntity": { params: { name?: string; parentId?: number }; result: { entityId: number } };
+  "scene.deleteEntity": { params: { entityId: number }; result: Record<string, never> };
+  "scene.duplicateEntity": { params: { entityId: number }; result: { entityId: number } };
+  "entity.getTransform": { params: { entityId: number }; result: Transform };
+  "entity.setTransform": { params: { entityId: number; transform: TransformPartial }; result: Record<string, never> };
+  "entity.setName": { params: { entityId: number; name: string }; result: Record<string, never> };
+  "entity.getComponents": { params: { entityId: number }; result: { components: ComponentInfo[] } };
+  "playback.play": { params: Record<string, never>; result: Record<string, never> };
+  "playback.pause": { params: Record<string, never>; result: Record<string, never> };
+  "playback.stop": { params: Record<string, never>; result: Record<string, never> };
+  "viewport.setGizmoMode": { params: { mode: string }; result: Record<string, never> };
+  "console.clear": { params: Record<string, never>; result: Record<string, never> };
+}
+
+// ── Subscription Events ───────────────────────────────────
+
+export interface SubscriptionEvents {
+  "on:scene.changed": { revision: number; entityIds: number[] };
+  "on:selection.changed": { entityIds: number[] };
+  "on:console.log": LogEntry;
+  "on:viewport.metrics": { fps: number; drawCalls: number; triangles: number };
+  "on:playback.stateChanged": { state: string };
+  "on:asset.changed": { assetId: string; changeType: string };
+}
+
+// ── Convenience Aliases ───────────────────────────────────
+
+export type RpcMethodName = keyof RpcMethods;
+export type SubscriptionName = keyof SubscriptionEvents;
+
+export type RpcParams<M extends RpcMethodName> = RpcMethods[M]["params"];
+export type RpcResult<M extends RpcMethodName> = RpcMethods[M]["result"];
+
+// ── JSON-RPC 2.0 Wire Format ─────────────────────────────
+
+export interface JsonRpcRequest {
+  jsonrpc: "2.0";
+  id: number | string;
+  method: string;
+  params?: Record<string, unknown>;
+}
+
+export interface JsonRpcResponse {
+  jsonrpc: "2.0";
+  id: number | string;
+  result?: unknown;
+  error?: { code: number; message: string; data?: unknown };
+}

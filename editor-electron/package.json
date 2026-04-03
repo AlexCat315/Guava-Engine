@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "start": "electron dist/main/index.js",
+    "codegen": "cd .. && zig run src/engine/editor_rpc/gen_types.zig 2> editor-electron/src/shared/rpc-types.generated.ts",
     "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.json --noEmit",
     "lint": "eslint src/"
   },

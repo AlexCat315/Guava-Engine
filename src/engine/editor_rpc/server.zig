@@ -8,7 +8,7 @@
 ///! processing pending requests each frame on the main thread.
 const std = @import("std");
 const ws = @import("websocket.zig");
-const methods = @import("methods.zig");
+const methods = @import("dispatch.zig");
 const subscriptions = @import("subscriptions.zig");
 const core = @import("../core/layer.zig");
 
