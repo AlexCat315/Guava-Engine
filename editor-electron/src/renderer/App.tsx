@@ -4,6 +4,7 @@ import { SceneHierarchy } from "./panels/SceneHierarchy";
 import { Inspector } from "./panels/Inspector";
 import { Console } from "./panels/Console";
 import { Toolbar } from "./panels/Toolbar";
+import { Viewport } from "./panels/Viewport";
 import type { EntityNode, LogEntry, GizmoMode } from "../shared/rpc-types";
 
 declare global {
@@ -145,12 +146,7 @@ export function App() {
           />
         </div>
         <div style={styles.viewport}>
-          <div style={styles.viewportPlaceholder}>
-            <p>Viewport</p>
-            <p style={{ fontSize: 12, opacity: 0.5 }}>
-              Engine rendering window will be embedded here
-            </p>
-          </div>
+          <Viewport connected={connected} />
         </div>
         <div style={styles.rightPanel}>
           <Inspector entityId={selectedEntity} />
@@ -183,14 +179,8 @@ const styles: Record<string, React.CSSProperties> = {
   },
   viewport: {
     flex: 1,
-    background: "#11111b",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  viewportPlaceholder: {
-    textAlign: "center" as const,
-    opacity: 0.3,
+    background: "transparent",
+    position: "relative",
   },
   rightPanel: {
     width: 320,

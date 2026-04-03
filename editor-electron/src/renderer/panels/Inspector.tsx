@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
-import type { Transform, ComponentInfo, ComponentField, Vec3 } from "../../shared/rpc-types";
+import type { Transform, ComponentInfo, Vec3 } from "../../shared/rpc-types";
+import type { ComponentField } from "../../shared/rpc-types";
 
 interface InspectorProps {
   entityId: number | null;
@@ -104,11 +105,11 @@ export function Inspector({ entityId }: InspectorProps) {
           />
           <Vec3Input
             label="Rotation"
-            value={transform.rotation}
+            value={transform.rotation as unknown as Vec3}
             step={1}
             onChange={(v) => {
-              setTransform((t) => t && { ...t, rotation: v });
-              commitTransform({ rotation: v });
+              setTransform((t) => t && { ...t, rotation: { ...v, w: t.rotation.w } });
+              commitTransform({ rotation: { ...v, w: transform.rotation.w } });
             }}
           />
           <Vec3Input
@@ -139,7 +140,7 @@ export function Inspector({ entityId }: InspectorProps) {
                 key={field.name}
                 entityId={entityId}
                 componentType={comp.type}
-                field={field}
+                field={field as ComponentField}
                 onFieldChanged={() => fetchEntityData(entityId)}
               />
             ))

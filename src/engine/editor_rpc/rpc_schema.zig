@@ -232,6 +232,40 @@ pub const Methods = struct {
         pub const Result = struct {};
     };
 
+    pub const @"viewport.setRect" = struct {
+        pub const Params = struct {
+            x: i64,
+            y: i64,
+            width: i64,
+            height: i64,
+        };
+        pub const Result = struct {};
+    };
+
+    pub const @"viewport.getWindowInfo" = struct {
+        pub const Params = struct {};
+        pub const Result = struct {
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+            drawableWidth: u32,
+            drawableHeight: u32,
+            nativeHandle: u64,
+            platform: []const u8,
+        };
+    };
+
+    pub const @"viewport.attachToParent" = struct {
+        pub const Params = struct { parentHandle: u64 };
+        pub const Result = struct {};
+    };
+
+    pub const @"viewport.detachFromParent" = struct {
+        pub const Params = struct {};
+        pub const Result = struct {};
+    };
+
     // ── console namespace ────────────────────────────────────────
 
     pub const @"console.clear" = struct {

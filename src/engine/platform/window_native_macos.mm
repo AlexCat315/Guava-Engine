@@ -129,3 +129,56 @@ extern "C" bool guava_window_begin_macos_native_drag(SDL_Window* window) {
         return true;
     }
 }
+
+extern "C" bool guava_window_attach_to_parent_nsview(void* child_sdl_window, void* parent_nsview_ptr) {
+    @autoreleasepool {
+        if (child_sdl_window == nullptr || parent_nsview_ptr == nullptr) {
+            return false;
+        }
+
+        NSWindow* child_window = guava_ns_window_from_sdl(static_cast<SDL_Window*>(child_sdl_window));
+        if (child_window == nil) {
+            return false;
+        }
+
+        NSView* parent_view = (__bridge NSView*)parent_nsview_ptr;
+        NSWindow* parent_window = [parent_view window];
+        if (parent_window == nil) {
+            return false;
+        }
+
+        // Remove from previous parent if any
+        NSWindow* current_parent = [child_window parentWindow];
+        if (current_parent != nil) {
+            [current_parent removeChildWindow:child_window];
+        }
+
+        // Attach as child — child moves with parent, stays on top
+        [parent_window addChildWindow:child_window ordered:NSWindowAbove];
+
+        // Make child window borderless and non-activating
+        child_window.styleMask = NSWindowStyleMaskBorderless;
+        child_window.level = parent_window.level;
+
+        return true;
+    }
+}
+
+extern "C" bool guava_window_detach_from_parent(void* child_sdl_window) {
+    @autoreleasepool {
+        if (child_sdl_window == nullptr) {
+            return false;
+        }
+
+        NSWindow* child_window = guava_ns_window_from_sdl(static_cast<SDL_Window*>(child_sdl_window));
+        if (child_window == nil) {
+            return false;
+        }
+
+        NSWindow* parent = [child_window parentWindow];
+        if (parent != nil) {
+            [parent removeChildWindow:child_window];
+        }
+        return true;
+    }
+}

@@ -53,9 +53,6 @@ export interface ComponentField {
   max?: number;
   step?: number;
 }
-  max?: number;
-  step?: number;
-}
 
 export type AssetType =
   | "model"

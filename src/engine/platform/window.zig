@@ -13,6 +13,8 @@ extern fn guava_window_create_metal_layer_binding(window_handle: *anyopaque, out
 extern fn guava_window_destroy_metal_layer_binding(binding: MetalLayerBinding) void;
 extern fn guava_window_get_native_win32_hwnd(window_handle: *anyopaque) ?*anyopaque;
 extern fn guava_window_get_native_cocoa_window(window_handle: *anyopaque) ?*anyopaque;
+extern fn guava_window_attach_to_parent_nsview(child_sdl_window: *anyopaque, parent_nsview: *anyopaque) bool;
+extern fn guava_window_detach_from_parent(child_sdl_window: *anyopaque) bool;
 
 pub const Rect = struct {
     x: i32,
@@ -582,6 +584,24 @@ pub const Window = struct {
         return switch (builtin.os.tag) {
             .macos => guava_window_get_native_cocoa_window(@ptrCast(self.handle)),
             else => null,
+        };
+    }
+
+    /// Attach this window as a child of the given parent (identified by native view handle).
+    /// On macOS, parent_handle should be an NSView*. The child moves with the parent
+    /// and stays above it in z-order.
+    pub fn attachToParent(self: *Window, parent_handle: *anyopaque) bool {
+        return switch (builtin.os.tag) {
+            .macos => guava_window_attach_to_parent_nsview(@ptrCast(self.handle), parent_handle),
+            else => false,
+        };
+    }
+
+    /// Detach this window from its parent, making it an independent top-level window again.
+    pub fn detachFromParent(self: *Window) bool {
+        return switch (builtin.os.tag) {
+            .macos => guava_window_detach_from_parent(@ptrCast(self.handle)),
+            else => false,
         };
     }
 

@@ -129,6 +129,27 @@ function setupSubscriptionForwarding(): void {
   }
 }
 
+// ── Native Window Parenting ──────────────────────────────────────
+
+async function attachEngineViewport(): Promise<void> {
+  if (!engineClient?.connected || !mainWindow) return;
+
+  try {
+    // Get Electron window's native handle (NSView* on macOS)
+    const nativeHandle = mainWindow.getNativeWindowHandle();
+    // Read as 64-bit unsigned integer (pointer value)
+    const handleValue = nativeHandle.readBigUInt64LE();
+
+    // Tell the engine to attach its SDL window as a child of ours
+    await engineClient.call("viewport.attachToParent" as never, {
+      parentHandle: Number(handleValue),
+    });
+    console.log("[Main] Engine viewport attached as child window");
+  } catch (err) {
+    console.warn("[Main] Failed to attach engine viewport:", err);
+  }
+}
+
 // ── App Lifecycle ────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
@@ -137,6 +158,7 @@ app.whenReady().then(async () => {
   try {
     await startEngine();
     setupSubscriptionForwarding();
+    await attachEngineViewport();
     mainWindow.webContents.send("engine:connected");
   } catch (err) {
     console.error("[Main] Failed to start engine:", err);

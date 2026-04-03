@@ -93,6 +93,10 @@ export interface RpcMethods {
   "playback.pause": { params: Record<string, never>; result: Record<string, never> };
   "playback.stop": { params: Record<string, never>; result: Record<string, never> };
   "viewport.setGizmoMode": { params: { mode: string }; result: Record<string, never> };
+  "viewport.setRect": { params: { x: number; y: number; width: number; height: number }; result: Record<string, never> };
+  "viewport.getWindowInfo": { params: Record<string, never>; result: { x: number; y: number; width: number; height: number; drawableWidth: number; drawableHeight: number; nativeHandle: number; platform: string } };
+  "viewport.attachToParent": { params: { parentHandle: number }; result: Record<string, never> };
+  "viewport.detachFromParent": { params: Record<string, never>; result: Record<string, never> };
   "console.clear": { params: Record<string, never>; result: Record<string, never> };
 }
 
