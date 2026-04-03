@@ -298,20 +298,8 @@ export function Viewport({ connected }: ViewportProps) {
   }, [attached]);
 
   return (
-    <div
-      ref={ref}
-      style={styles.container}
-      tabIndex={0}
-      onMouseDown={handleMouseDown}
-      onMouseUp={handleMouseUp}
-      onMouseMove={handleMouseMove}
-      onWheel={handleWheel}
-      onContextMenu={handleContextMenu}
-      onKeyDown={handleKeyDown}
-      onKeyUp={handleKeyUp}
-    >
-      <canvas ref={canvasRef} style={styles.canvas} />
-      {/* Shading mode toolbar overlay */}
+    <div style={styles.outerContainer}>
+      {/* Shading mode toolbar — outside the IOSurface area so it's not occluded */}
       {connected && (
         <div style={styles.shadingBar}>
           {(["solid", "material", "rendered", "wireframe"] as ShadingMode[]).map((mode) => (
@@ -329,22 +317,44 @@ export function Viewport({ connected }: ViewportProps) {
           ))}
         </div>
       )}
-      {!attached && (
-        <div style={styles.placeholder}>
-          <p style={{ margin: 0, fontSize: 14 }}>{t.viewport.title}</p>
-          <p style={{ margin: "4px 0 0", fontSize: 12, opacity: 0.5 }}>
-            {connected ? t.viewport.syncingEngine : t.viewport.waitingForEngine}
-          </p>
-        </div>
-      )}
+      {/* Viewport rendering area — IOSurface/canvas is positioned here */}
+      <div
+        ref={ref}
+        style={styles.container}
+        tabIndex={0}
+        onMouseDown={handleMouseDown}
+        onMouseUp={handleMouseUp}
+        onMouseMove={handleMouseMove}
+        onWheel={handleWheel}
+        onContextMenu={handleContextMenu}
+        onKeyDown={handleKeyDown}
+        onKeyUp={handleKeyUp}
+      >
+        <canvas ref={canvasRef} style={styles.canvas} />
+        {!attached && (
+          <div style={styles.placeholder}>
+            <p style={{ margin: 0, fontSize: 14 }}>{t.viewport.title}</p>
+            <p style={{ margin: "4px 0 0", fontSize: 12, opacity: 0.5 }}>
+              {connected ? t.viewport.syncingEngine : t.viewport.waitingForEngine}
+            </p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  container: {
+  outerContainer: {
     width: "100%",
     height: "100%",
+    display: "flex",
+    flexDirection: "column",
+    background: "transparent",
+    overflow: "hidden",
+  },
+  container: {
+    flex: 1,
     background: "transparent",
     position: "relative",
     overflow: "hidden",
@@ -357,17 +367,11 @@ const styles: Record<string, React.CSSProperties> = {
     imageRendering: "pixelated",
   },
   shadingBar: {
-    position: "absolute",
-    top: 8,
-    right: 8,
     display: "flex",
     gap: 2,
-    background: "rgba(24,24,37,0.85)",
-    borderRadius: 6,
-    padding: 3,
-    zIndex: 10,
-    backdropFilter: "blur(8px)",
-    border: "1px solid #313244",
+    background: "#181825",
+    padding: "3px 6px",
+    borderBottom: "1px solid #313244",
   },
   shadingButton: {
     background: "transparent",
