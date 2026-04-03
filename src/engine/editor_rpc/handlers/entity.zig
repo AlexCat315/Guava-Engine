@@ -93,6 +93,46 @@ pub fn setComponentField(ctx: *Ctx) !void {
     try ctx.reply(.{});
 }
 
+pub fn addComponent(ctx: *Ctx) !void {
+    const eid = try ctx.param(u64, "entityId");
+    const comp_type = try ctx.param([]const u8, "componentType");
+    const entity = ctx.layer.world.getEntity(eid) orelse return error.EntityNotFound;
+
+    var found = false;
+    inline for (ctx_mod.component_fields) |cf| {
+        if (std.ascii.eqlIgnoreCase(comp_type, cf.display_name)) {
+            const FT = @TypeOf(@field(entity.*, cf.name));
+            // FT is ?ComponentType — inner type must be default-initializable
+            if (comptime canDefaultInit(@typeInfo(FT).optional.child)) {
+                @field(entity, cf.name) = .{};
+                found = true;
+            }
+        }
+    }
+
+    if (!found) return error.InvalidArguments;
+    ctx.layer.world.markSceneChanged();
+    try ctx.reply(.{});
+}
+
+pub fn removeComponent(ctx: *Ctx) !void {
+    const eid = try ctx.param(u64, "entityId");
+    const comp_type = try ctx.param([]const u8, "componentType");
+    const entity = ctx.layer.world.getEntity(eid) orelse return error.EntityNotFound;
+
+    var found = false;
+    inline for (ctx_mod.component_fields) |cf| {
+        if (std.ascii.eqlIgnoreCase(comp_type, cf.display_name)) {
+            @field(entity, cf.name) = null;
+            found = true;
+        }
+    }
+
+    if (!found) return error.InvalidArguments;
+    ctx.layer.world.markSceneChanged();
+    try ctx.reply(.{});
+}
+
 // ═══════════════════════════════════════════════════════════════════
 //  Component field serialization — comptime inspects struct fields
 // ═══════════════════════════════════════════════════════════════════
@@ -212,5 +252,18 @@ fn jsonToFloat(val: std.json.Value) f32 {
         .float => |f| @floatCast(f),
         .integer => |i| @floatFromInt(i),
         else => 0.0,
+    };
+}
+
+fn canDefaultInit(comptime T: type) bool {
+    const info = @typeInfo(T);
+    return switch (info) {
+        .@"struct" => |s| {
+            for (s.fields) |field| {
+                if (field.default_value_ptr == null) return false;
+            }
+            return true;
+        },
+        else => false,
     };
 }

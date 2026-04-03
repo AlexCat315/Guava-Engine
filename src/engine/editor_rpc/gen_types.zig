@@ -38,6 +38,7 @@ fn generate() []const u8 {
     // ── Shared data types ────────────────────────────────────────
     r = r ++ "// ── Data Types ─────────────────────────────────────────────\n\n";
     for (@typeInfo(schema.SharedTypes).@"struct".decls) |decl| {
+        if (comptime std.mem.eql(u8, decl.name, "JsonValue")) continue;
         r = r ++ emitInterface(decl.name, @field(schema.SharedTypes, decl.name));
     }
 
@@ -94,6 +95,9 @@ fn generate() []const u8 {
 // ═══════════════════════════════════════════════════════════════════
 
 fn typeToTs(comptime T: type) []const u8 {
+    // Opaque sentinel → unknown
+    if (T == schema.SharedTypes.JsonValue) return "unknown";
+
     // Named shared type?
     for (@typeInfo(schema.SharedTypes).@"struct".decls) |decl| {
         if (T == @field(schema.SharedTypes, decl.name)) return decl.name;

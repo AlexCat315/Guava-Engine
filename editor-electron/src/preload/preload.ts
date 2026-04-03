@@ -46,7 +46,10 @@ contextBridge.exposeInMainWorld("guavaEngine", {
 
 /** Type declaration for the exposed API (used in renderer) */
 export interface GuavaEngineAPI {
-  call(method: string, params: unknown): Promise<unknown>;
+  call<M extends import("../shared/rpc-types").RpcMethodName>(
+    method: M,
+    params: import("../shared/rpc-types").RpcParams<M>,
+  ): Promise<import("../shared/rpc-types").RpcResult<M>>;
   getStatus(): Promise<{ engineRunning: boolean; rpcConnected: boolean }>;
   onEvent(callback: (event: string, data: unknown) => void): () => void;
   onConnected(callback: () => void): () => void;

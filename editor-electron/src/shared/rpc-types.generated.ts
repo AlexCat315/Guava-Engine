@@ -2,8 +2,8 @@
 // ║  AUTO-GENERATED — do not edit manually.                  ║
 // ║  Source of truth: src/engine/editor_rpc/rpc_schema.zig   ║
 // ║  Regenerate:                                             ║
-// ║    zig run tools/gen_rpc_types.zig \                     ║
-// ║      > editor-electron/src/shared/rpc-types.generated.ts ║
+// ║    zig run src/engine/editor_rpc/gen_types.zig \        ║
+// ║      2> editor-electron/src/shared/rpc-types.generated.ts ║
 // ╚═══════════════════════════════════════════════════════════╝
 
 // ── Data Types ─────────────────────────────────────────────
@@ -42,6 +42,14 @@ export interface EntityNode {
 
 export interface ComponentInfo {
   type: string;
+  fields: ComponentField[];
+}
+
+export interface ComponentField {
+  name: string;
+  fieldType: string;
+  value: unknown;
+  options?: string[];
 }
 
 export interface LogEntry {
@@ -71,10 +79,16 @@ export interface RpcMethods {
   "scene.createEntity": { params: { name?: string; parentId?: number }; result: { entityId: number } };
   "scene.deleteEntity": { params: { entityId: number }; result: Record<string, never> };
   "scene.duplicateEntity": { params: { entityId: number }; result: { entityId: number } };
+  "scene.save": { params: { path?: string }; result: { path: string } };
+  "scene.load": { params: { path: string }; result: { path: string } };
+  "scene.listScenes": { params: Record<string, never>; result: { scenes: string[] } };
   "entity.getTransform": { params: { entityId: number }; result: Transform };
   "entity.setTransform": { params: { entityId: number; transform: TransformPartial }; result: Record<string, never> };
   "entity.setName": { params: { entityId: number; name: string }; result: Record<string, never> };
   "entity.getComponents": { params: { entityId: number }; result: { components: ComponentInfo[] } };
+  "entity.setComponentField": { params: { entityId: number; componentType: string; fieldName: string; value: unknown }; result: Record<string, never> };
+  "entity.addComponent": { params: { entityId: number; componentType: string }; result: Record<string, never> };
+  "entity.removeComponent": { params: { entityId: number; componentType: string }; result: Record<string, never> };
   "playback.play": { params: Record<string, never>; result: Record<string, never> };
   "playback.pause": { params: Record<string, never>; result: Record<string, never> };
   "playback.stop": { params: Record<string, never>; result: Record<string, never> };

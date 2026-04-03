@@ -139,6 +139,21 @@ pub const Methods = struct {
         pub const Result = struct { entityId: u64 };
     };
 
+    pub const @"scene.save" = struct {
+        pub const Params = struct { path: ?[]const u8 = null };
+        pub const Result = struct { path: []const u8 };
+    };
+
+    pub const @"scene.load" = struct {
+        pub const Params = struct { path: []const u8 };
+        pub const Result = struct { path: []const u8 };
+    };
+
+    pub const @"scene.listScenes" = struct {
+        pub const Params = struct {};
+        pub const Result = struct { scenes: []const []const u8 };
+    };
+
     // ── entity namespace ─────────────────────────────────────────
 
     pub const @"entity.getTransform" = struct {
@@ -173,6 +188,22 @@ pub const Methods = struct {
             componentType: []const u8,
             fieldName: []const u8,
             value: SharedTypes.JsonValue,
+        };
+        pub const Result = struct {};
+    };
+
+    pub const @"entity.addComponent" = struct {
+        pub const Params = struct {
+            entityId: u64,
+            componentType: []const u8,
+        };
+        pub const Result = struct {};
+    };
+
+    pub const @"entity.removeComponent" = struct {
+        pub const Params = struct {
+            entityId: u64,
+            componentType: []const u8,
         };
         pub const Result = struct {};
     };

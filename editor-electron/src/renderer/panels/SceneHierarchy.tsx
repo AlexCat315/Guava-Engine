@@ -28,10 +28,10 @@ export function SceneHierarchy({ roots, selectedId, onSelect, onRefresh }: Scene
 
   const createEntity = useCallback(async (parentId?: number) => {
     try {
-      const result = (await window.guavaEngine.call("scene.createEntity", {
+      const result = await window.guavaEngine.call("scene.createEntity", {
         name: "New Entity",
         ...(parentId != null && { parentId }),
-      })) as { entityId: number };
+      });
       onRefresh();
       onSelect(result.entityId);
     } catch (e) {

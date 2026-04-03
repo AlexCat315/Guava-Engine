@@ -1,6 +1,7 @@
 ///! handlers/scene.zig — scene hierarchy & entity lifecycle.
 const std = @import("std");
 const ctx_mod = @import("../ctx.zig");
+const scene_io = @import("../../scene/scene_io.zig");
 const Ctx = ctx_mod.Ctx;
 const World = ctx_mod.World;
 const EntityId = ctx_mod.EntityId;
@@ -49,6 +50,51 @@ pub fn duplicateEntity(ctx: *Ctx) !void {
         .local_transform = entity.local_transform,
     });
     try ctx.reply(.{ .entityId = new_id });
+}
+
+const default_scene_path = "assets/scenes/editor_autosave.guava_scene";
+
+pub fn save(ctx: *Ctx) !void {
+    const path = (try ctx.paramOpt([]const u8, "path")) orelse default_scene_path;
+    scene_io.saveWorldToPath(ctx.allocator, ctx.layer.world, path) catch |e| {
+        std.log.err("scene.save failed: {}", .{e});
+        return error.InternalError;
+    };
+    try ctx.reply(.{ .path = path });
+}
+
+pub fn load(ctx: *Ctx) !void {
+    const path = try ctx.param([]const u8, "path");
+    scene_io.loadWorldFromPath(ctx.allocator, ctx.layer.world, path) catch |e| {
+        std.log.err("scene.load failed: {}", .{e});
+        return error.InternalError;
+    };
+    ctx.layer.world.markSceneChanged();
+    try ctx.reply(.{ .path = path });
+}
+
+pub fn listScenes(ctx: *Ctx) !void {
+    var names = std.ArrayList([]const u8).empty;
+    defer names.deinit(ctx.allocator);
+
+    const scenes_dir = std.fs.cwd().openDir("assets/scenes", .{ .iterate = true }) catch {
+        try ctx.reply(.{ .scenes = @as([]const []const u8, &.{}) });
+        return;
+    };
+
+    var iter = scenes_dir.iterate();
+    while (try iter.next()) |entry| {
+        if (entry.kind != .file) continue;
+        if (std.mem.endsWith(u8, entry.name, ".guava_scene") or
+            std.mem.endsWith(u8, entry.name, ".json"))
+        {
+            const owned = try ctx.allocator.dupe(u8, entry.name);
+            try names.append(ctx.allocator, owned);
+        }
+    }
+
+    try ctx.reply(.{ .scenes = names.items });
+    for (names.items) |n| ctx.allocator.free(n);
 }
 
 // ── Helpers (scene-domain only) ─────────────────────────────────

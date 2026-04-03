@@ -13,7 +13,8 @@ export type {
   Transform,
   TransformPartial,
   EntityNode,
-  ComponentInfo as ComponentInfoBase,
+  ComponentInfo,
+  ComponentField as ComponentFieldBase,
   LogEntry,
   AssetEntry,
   RpcMethods,
@@ -51,12 +52,6 @@ export interface ComponentField {
   min?: number;
   max?: number;
   step?: number;
-}
-
-/** Extended ComponentInfo — includes field data from the engine. */
-export interface ComponentInfo {
-  type: string;
-  fields: ComponentField[];
 }
   max?: number;
   step?: number;

@@ -14,8 +14,8 @@ export function Inspector({ entityId }: InspectorProps) {
   const fetchEntityData = useCallback(async (eid: number) => {
     try {
       const [t, c] = await Promise.all([
-        window.guavaEngine.call("entity.getTransform", { entityId: eid }) as Promise<Transform>,
-        window.guavaEngine.call("entity.getComponents", { entityId: eid }) as Promise<{ components: ComponentInfo[] }>,
+        window.guavaEngine.call("entity.getTransform", { entityId: eid }),
+        window.guavaEngine.call("entity.getComponents", { entityId: eid }),
       ]);
       setTransform(t);
       setComponents(c.components);

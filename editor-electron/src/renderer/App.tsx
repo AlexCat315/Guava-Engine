@@ -83,10 +83,7 @@ export function App() {
 
   const refreshHierarchy = useCallback(async () => {
     try {
-      const result = (await window.guavaEngine.call(
-        "scene.getHierarchy",
-        {},
-      )) as { roots: EntityNode[] };
+      const result = await window.guavaEngine.call("scene.getHierarchy", {});
       setHierarchy(result.roots);
     } catch (e) {
       console.error("Failed to fetch hierarchy:", e);
