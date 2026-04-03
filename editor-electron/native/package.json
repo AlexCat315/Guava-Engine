@@ -3,7 +3,6 @@
   "version": "0.1.0",
   "private": true,
   "main": "build/Release/iosurface_view.node",
-  "gypfile": true,
   "dependencies": {
     "node-addon-api": "^8.0.0"
   }
