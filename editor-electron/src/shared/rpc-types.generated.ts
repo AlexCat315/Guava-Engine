@@ -67,6 +67,12 @@ export interface AssetEntry {
   size?: number;
 }
 
+export interface SequencerTrack {
+  index: number;
+  kind: string;
+  target: string;
+}
+
 // ── RPC Method Signatures ──────────────────────────────────
 
 export interface RpcMethods {
@@ -155,6 +161,23 @@ export interface RpcMethods {
   "material.getTextureInfo": { params: { textureHandle: number }; result: { found: boolean; name?: string; width?: number; height?: number; format?: string } };
   "material.listTextures": { params: Record<string, never>; result: { textures: { handle: number; name: string; width: number; height: number }[] } };
   "material.setPreviewPrimitive": { params: { primitive: string }; result: Record<string, never> };
+  "sequencer.getState": { params: Record<string, never>; result: { loaded: boolean; name?: string; fps?: number; duration?: number; currentTime: number; isPlaying: boolean; speed: number; filePath?: string; tracks?: SequencerTrack[] } };
+  "sequencer.create": { params: { name?: string; fps?: number }; result: { ok: boolean } };
+  "sequencer.load": { params: { path: string }; result: { ok: boolean; error?: string } };
+  "sequencer.save": { params: { path?: string }; result: { ok: boolean; error?: string } };
+  "sequencer.setProperties": { params: { name?: string; fps?: number; duration?: number }; result: Record<string, never> };
+  "sequencer.addTrack": { params: { kind: string; target: string }; result: { index: number } };
+  "sequencer.removeTrack": { params: { index: number }; result: Record<string, never> };
+  "sequencer.updateTrack": { params: { index: number; clipPath?: string; startTime?: number; endTime?: number; blendIn?: number; blendOut?: number; speed?: number; volume?: number; fadeIn?: number; fadeOut?: number; property?: string }; result: Record<string, never> };
+  "sequencer.addKeyframe": { params: { trackIndex: number; time: number; position?: unknown /* [3]f64 */; rotation?: unknown /* [4]f64 */; fov?: number; easing?: string; value?: number; name?: string }; result: { count?: number; error?: string } };
+  "sequencer.removeKeyframe": { params: { trackIndex: number; keyframeIndex: number }; result: { error?: string } };
+  "sequencer.updateKeyframe": { params: { trackIndex: number; keyframeIndex: number; time?: number; position?: unknown /* [3]f64 */; rotation?: unknown /* [4]f64 */; fov?: number; easing?: string; value?: number; name?: string }; result: Record<string, never> };
+  "sequencer.play": { params: Record<string, never>; result: Record<string, never> };
+  "sequencer.pause": { params: Record<string, never>; result: Record<string, never> };
+  "sequencer.stop": { params: Record<string, never>; result: Record<string, never> };
+  "sequencer.seek": { params: { time: number }; result: Record<string, never> };
+  "sequencer.setSpeed": { params: { speed: number }; result: Record<string, never> };
+  "sequencer.recomputeDuration": { params: Record<string, never>; result: { duration: number } };
 }
 
 // ── Subscription Events ───────────────────────────────────

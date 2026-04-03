@@ -76,6 +76,12 @@ pub const SharedTypes = struct {
         assetType: ?[]const u8 = null,
         size: ?u64 = null,
     };
+
+    pub const SequencerTrack = struct {
+        index: u64,
+        kind: []const u8,
+        target: []const u8,
+    };
 };
 
 // ═══════════════════════════════════════════════════════════════════
@@ -951,6 +957,134 @@ pub const Methods = struct {
     pub const @"material.setPreviewPrimitive" = struct {
         pub const Params = struct { primitive: []const u8 };
         pub const Result = struct {};
+    };
+
+    // ── sequencer ───────────────────────────────────────────────
+
+    pub const @"sequencer.getState" = struct {
+        pub const Params = struct {};
+        pub const Result = struct {
+            loaded: bool,
+            name: ?[]const u8 = null,
+            fps: ?f64 = null,
+            duration: ?f64 = null,
+            currentTime: f64,
+            isPlaying: bool,
+            speed: f64,
+            filePath: ?[]const u8 = null,
+            tracks: ?[]const SharedTypes.SequencerTrack = null,
+        };
+    };
+
+    pub const @"sequencer.create" = struct {
+        pub const Params = struct { name: ?[]const u8 = null, fps: ?f64 = null };
+        pub const Result = struct { ok: bool };
+    };
+
+    pub const @"sequencer.load" = struct {
+        pub const Params = struct { path: []const u8 };
+        pub const Result = struct { ok: bool, @"error": ?[]const u8 = null };
+    };
+
+    pub const @"sequencer.save" = struct {
+        pub const Params = struct { path: ?[]const u8 = null };
+        pub const Result = struct { ok: bool, @"error": ?[]const u8 = null };
+    };
+
+    pub const @"sequencer.setProperties" = struct {
+        pub const Params = struct { name: ?[]const u8 = null, fps: ?f64 = null, duration: ?f64 = null };
+        pub const Result = struct {};
+    };
+
+    pub const @"sequencer.addTrack" = struct {
+        pub const Params = struct { kind: []const u8, target: []const u8 };
+        pub const Result = struct { index: u64 };
+    };
+
+    pub const @"sequencer.removeTrack" = struct {
+        pub const Params = struct { index: u64 };
+        pub const Result = struct {};
+    };
+
+    pub const @"sequencer.updateTrack" = struct {
+        pub const Params = struct {
+            index: u64,
+            clipPath: ?[]const u8 = null,
+            startTime: ?f64 = null,
+            endTime: ?f64 = null,
+            blendIn: ?f64 = null,
+            blendOut: ?f64 = null,
+            speed: ?f64 = null,
+            volume: ?f64 = null,
+            fadeIn: ?f64 = null,
+            fadeOut: ?f64 = null,
+            property: ?[]const u8 = null,
+        };
+        pub const Result = struct {};
+    };
+
+    pub const @"sequencer.addKeyframe" = struct {
+        pub const Params = struct {
+            trackIndex: u64,
+            time: f64,
+            position: ?[3]f64 = null,
+            rotation: ?[4]f64 = null,
+            fov: ?f64 = null,
+            easing: ?[]const u8 = null,
+            value: ?f64 = null,
+            name: ?[]const u8 = null,
+        };
+        pub const Result = struct { count: ?u64 = null, @"error": ?[]const u8 = null };
+    };
+
+    pub const @"sequencer.removeKeyframe" = struct {
+        pub const Params = struct { trackIndex: u64, keyframeIndex: u64 };
+        pub const Result = struct { @"error": ?[]const u8 = null };
+    };
+
+    pub const @"sequencer.updateKeyframe" = struct {
+        pub const Params = struct {
+            trackIndex: u64,
+            keyframeIndex: u64,
+            time: ?f64 = null,
+            position: ?[3]f64 = null,
+            rotation: ?[4]f64 = null,
+            fov: ?f64 = null,
+            easing: ?[]const u8 = null,
+            value: ?f64 = null,
+            name: ?[]const u8 = null,
+        };
+        pub const Result = struct {};
+    };
+
+    pub const @"sequencer.play" = struct {
+        pub const Params = struct {};
+        pub const Result = struct {};
+    };
+
+    pub const @"sequencer.pause" = struct {
+        pub const Params = struct {};
+        pub const Result = struct {};
+    };
+
+    pub const @"sequencer.stop" = struct {
+        pub const Params = struct {};
+        pub const Result = struct {};
+    };
+
+    pub const @"sequencer.seek" = struct {
+        pub const Params = struct { time: f64 };
+        pub const Result = struct {};
+    };
+
+    pub const @"sequencer.setSpeed" = struct {
+        pub const Params = struct { speed: f64 };
+        pub const Result = struct {};
+    };
+
+    pub const @"sequencer.recomputeDuration" = struct {
+        pub const Params = struct {};
+        pub const Result = struct { duration: f64 };
     };
 };
 

@@ -20,6 +20,7 @@ import { PlaceActors } from "./panels/PlaceActors";
 import { RenderQueue } from "./panels/RenderQueue";
 import { PhysicsVisualization } from "./panels/PhysicsVisualization";
 import { PostProcessEditor } from "./panels/PostProcessEditor";
+import { SequencerPanel } from "./panels/SequencerPanel";
 import { useI18n } from "./i18n";
 import type { EntityNode, LogEntry, GizmoMode } from "../shared/rpc-types";
 
@@ -37,7 +38,7 @@ export function App() {
   const [selectedEntity, setSelectedEntity] = useState<number | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [gizmoMode, setGizmoMode] = useState<GizmoMode>("translate");
-  const [bottomTab, setBottomTab] = useState<"console" | "assets" | "timeline" | "utilities" | "camera" | "rhistats" | "audio" | "plugins" | "style" | "placeactors" | "renderqueue" | "physicsviz" | "postprocess">("console");
+  const [bottomTab, setBottomTab] = useState<"console" | "assets" | "timeline" | "utilities" | "camera" | "rhistats" | "audio" | "plugins" | "style" | "placeactors" | "renderqueue" | "physicsviz" | "postprocess" | "sequencer">("console");
 
   useEffect(() => {
     const cleanupConnected = window.guavaEngine.onConnected(() => {
@@ -268,6 +269,12 @@ export function App() {
           >
             Post-FX
           </button>
+          <button
+            style={{ ...styles.tab, ...(bottomTab === "sequencer" ? styles.tabActive : {}) }}
+            onClick={() => setBottomTab("sequencer")}
+          >
+            Sequencer
+          </button>
         </div>
         <div style={styles.bottomContent}>
           {bottomTab === "console" ? (
@@ -294,6 +301,8 @@ export function App() {
             <PhysicsVisualization connected={connected} />
           ) : bottomTab === "postprocess" ? (
             <PostProcessEditor connected={connected} />
+          ) : bottomTab === "sequencer" ? (
+            <SequencerPanel connected={connected} />
           ) : (
             <CommandTimeline connected={connected} />
           )}
