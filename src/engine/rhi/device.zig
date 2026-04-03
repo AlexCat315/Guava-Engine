@@ -1050,6 +1050,61 @@ pub const RhiDevice = struct {
         };
     }
 
+    /// Platform-agnostic cross-process shared texture.
+    /// - macOS Metal: IOSurface (zero-copy, identified by surface_id)
+    /// - Linux Vulkan: POSIX shm + GPU readback (identified by shm_name)
+    pub const SharedTextureResult = struct {
+        texture: Texture,
+        /// macOS: IOSurface ID for cross-process lookup
+        iosurface_id: u32 = 0,
+        /// Linux: POSIX shared memory name (e.g. "/guava-vp-12345-7")
+        shm_name: [64]u8 = [_]u8{0} ** 64,
+    };
+
+    pub fn createSharedTexture(self: *RhiDevice, desc: types.TextureDesc) Error!SharedTextureResult {
+        // macOS Metal → IOSurface
+        if (self.owned_metal_device) |md| {
+            const result = md.createIOSurfaceTexture(
+                desc.width,
+                desc.height,
+                @intFromEnum(desc.format),
+                desc.usage,
+                if (desc.label) |l| @ptrCast(l.ptr) else null,
+            );
+            if (result.texture_id == 0) return error.OutOfMemory;
+            return .{
+                .texture = .{ .id = result.texture_id, .desc = desc },
+                .iosurface_id = result.surface_id,
+            };
+        }
+        // Linux Vulkan → POSIX shm + readback
+        if (self.owned_vulkan_device) |vk| {
+            const result = vk.createSharedTexture(
+                desc.width,
+                desc.height,
+                @intFromEnum(desc.format),
+                desc.usage,
+                if (desc.label) |l| @ptrCast(l.ptr) else null,
+            );
+            if (result.texture_id == 0) return error.DeviceCreateFailed;
+            return .{
+                .texture = .{ .id = result.texture_id, .desc = desc },
+                .shm_name = result.shm_name,
+            };
+        }
+        return error.DeviceCreateFailed;
+    }
+
+    /// Blit a shared texture's content to the associated shared memory region.
+    /// On macOS this is a no-op (IOSurface is zero-copy). On Linux Vulkan this
+    /// performs a GPU→CPU readback into the POSIX shm segment.
+    pub fn blitSharedTexture(self: *RhiDevice, texture: Texture) void {
+        if (self.owned_vulkan_device) |vk| {
+            _ = vk.blitSharedTexture(texture.id);
+        }
+        // macOS Metal: no-op — GPU writes directly to IOSurface.
+    }
+
     pub fn releaseTexture(self: *RhiDevice, texture: *Texture) void {
         self.device.vtable.destroy_texture(self.device.ctx, .{ .id = texture.id });
         texture.* = undefined;

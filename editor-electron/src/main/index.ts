@@ -9,24 +9,25 @@ let mainWindow: BrowserWindow | null = null;
 let engineProcess: EngineProcess | null = null;
 let engineClient: EngineClient | null = null;
 
-// ── Native IOSurface addon (macOS only) ──────────────────────────
+// ── Native viewport addon (platform-specific) ───────────────────
 
-interface IOSurfaceAddon {
+interface ViewportAddon {
   attach(handle: Buffer, surfaceId: number, x: number, y: number, w: number, h: number): void;
   updateFrame(x: number, y: number, w: number, h: number): void;
-  updateSurface(surfaceId: number): void;
+  updateSurface(surfaceId: number, shmName?: string, width?: number, height?: number): void;
   detach(): void;
-  refresh(): void;
+  refresh(): { pixels: Buffer; width: number; height: number } | void;
 }
 
-let ioSurfaceView: IOSurfaceAddon | null = null;
+let ioSurfaceView: ViewportAddon | null = null;
+const isMac = process.platform === "darwin";
 try {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   ioSurfaceView = require(
     path.join(__dirname, "../../native/build/Release/iosurface_view.node"),
-  ) as IOSurfaceAddon;
+  ) as ViewportAddon;
 } catch (err) {
-  console.warn("[Main] IOSurface native addon not available:", err);
+  console.warn("[Main] Viewport native addon not available:", err);
 }
 
 function getEngineBinaryPath(): string {
@@ -160,21 +161,40 @@ function setupSubscriptionForwarding(): void {
   }
 }
 
-// ── IOSurface viewport integration ───────────────────────────────
+// ── Viewport integration (cross-platform) ────────────────────────
 
 let surfaceRefreshTimer: ReturnType<typeof setInterval> | null = null;
 
 // Renderer calls this with viewport bounds; main process manages the native layer.
 ipcMain.handle(
   "viewport:attachSurface",
-  async (_event, surfaceId: number, x: number, y: number, w: number, h: number) => {
+  async (_event, surfaceId: number, x: number, y: number, w: number, h: number, shmName?: string) => {
     if (!ioSurfaceView || !mainWindow) return false;
     const handle = mainWindow.getNativeWindowHandle();
-    ioSurfaceView.attach(handle, surfaceId, x, y, w, h);
+
+    if (isMac) {
+      // macOS: attach CALayer overlay backed by IOSurface
+      ioSurfaceView.attach(handle, surfaceId, x, y, w, h);
+    } else if (shmName) {
+      // Linux: set up shm mapping for pixel readback
+      ioSurfaceView.updateSurface(0, shmName, w, h);
+    }
 
     // Start a refresh timer to pick up new frames (~60 fps).
     if (surfaceRefreshTimer) clearInterval(surfaceRefreshTimer);
-    surfaceRefreshTimer = setInterval(() => ioSurfaceView?.refresh(), 16);
+    surfaceRefreshTimer = setInterval(() => {
+      if (!ioSurfaceView) return;
+      if (isMac) {
+        // macOS: tell CALayer to re-composite the IOSurface content
+        ioSurfaceView.refresh();
+      } else {
+        // Linux: read pixels from shm and push to renderer
+        const result = ioSurfaceView.refresh();
+        if (result && result.pixels) {
+          mainWindow?.webContents.send("viewport:pixels", result.pixels, result.width, result.height);
+        }
+      }
+    }, 16);
 
     return true;
   },
@@ -187,8 +207,12 @@ ipcMain.handle(
   },
 );
 
-ipcMain.handle("viewport:updateSurface", async (_event, surfaceId: number) => {
-  ioSurfaceView?.updateSurface(surfaceId);
+ipcMain.handle("viewport:updateSurface", async (_event, surfaceId: number, shmName?: string, width?: number, height?: number) => {
+  if (isMac) {
+    ioSurfaceView?.updateSurface(surfaceId);
+  } else if (shmName && width && height) {
+    ioSurfaceView?.updateSurface(0, shmName, width, height);
+  }
 });
 
 ipcMain.handle("viewport:detach", async () => {

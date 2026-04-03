@@ -6,21 +6,26 @@ interface ViewportProps {
 }
 
 /**
- * Viewport panel — uses IOSurface texture sharing to display the engine's
- * rendered frame directly as a CALayer inside the Electron window (macOS).
+ * Viewport panel — cross-platform engine viewport display.
+ *
+ * macOS: Uses IOSurface texture sharing (native CALayer behind Electron window).
+ * Linux: Uses POSIX shared memory + canvas pixel rendering.
  *
  * Flow:
  *  1. On connect, tell the engine the desired viewport size (viewport.setRect).
- *  2. Poll viewport.getSurfaceId to get the IOSurface id.
+ *  2. Poll viewport.getSurfaceId to get the surfaceId (and optional shmName).
  *  3. Pass the surface id + element bounds to the main process via IPC.
- *  4. Main process creates a CALayer backed by the IOSurface.
- *  5. On resize /  position change, update the layer frame via IPC.
+ *  4. macOS: main process creates a CALayer backed by IOSurface.
+ *     Linux: main process opens shm, pushes pixel data via "viewport:pixels" IPC.
+ *  5. On resize / position change, update the layer frame via IPC.
  */
 export function Viewport({ connected }: ViewportProps) {
   const { t } = useI18n();
   const ref = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const [attached, setAttached] = useState(false);
   const surfaceIdRef = useRef(0);
+  const shmNameRef = useRef<string | undefined>(undefined);
   const lastBoundsRef = useRef({ x: 0, y: 0, w: 0, h: 0 });
 
   // Compute element bounds relative to the window's content origin (points).
@@ -86,12 +91,14 @@ export function Viewport({ connected }: ViewportProps) {
           const res = await window.guavaEngine.call("viewport.getSurfaceId", {});
           if (res.surfaceId && res.surfaceId > 0) {
             surfaceIdRef.current = res.surfaceId;
+            shmNameRef.current = res.shmName ?? undefined;
             const ok = await window.guavaEngine.viewportAttachSurface(
               res.surfaceId,
               bounds.x,
               bounds.y,
               bounds.w,
               bounds.h,
+              res.shmName ?? undefined,
             );
             if (ok) {
               lastBoundsRef.current = bounds;
@@ -149,7 +156,13 @@ export function Viewport({ connected }: ViewportProps) {
                   const res = await window.guavaEngine.call("viewport.getSurfaceId", {});
                   if (res.surfaceId && res.surfaceId !== surfaceIdRef.current) {
                     surfaceIdRef.current = res.surfaceId;
-                    window.guavaEngine.viewportUpdateSurface(res.surfaceId);
+                    shmNameRef.current = res.shmName ?? undefined;
+                    window.guavaEngine.viewportUpdateSurface(
+                      res.surfaceId,
+                      res.shmName ?? undefined,
+                      res.width,
+                      res.height,
+                    );
                   }
                 } catch {
                   // Best-effort.
@@ -173,8 +186,36 @@ export function Viewport({ connected }: ViewportProps) {
     };
   }, []);
 
+  // Linux pixel rendering: subscribe to viewport:pixels from main process.
+  useEffect(() => {
+    if (!attached) return;
+    const unsub = window.guavaEngine.onViewportPixels((pixels, width, height) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      // pixels is BGRA from Vulkan readback — convert to RGBA for ImageData.
+      const src = new Uint8Array(pixels.buffer, pixels.byteOffset, pixels.byteLength);
+      const rgba = new Uint8ClampedArray(src.length);
+      for (let i = 0; i < src.length; i += 4) {
+        rgba[i] = src[i + 2];     // R ← B
+        rgba[i + 1] = src[i + 1]; // G
+        rgba[i + 2] = src[i];     // B ← R
+        rgba[i + 3] = src[i + 3]; // A
+      }
+      const img = new ImageData(rgba, width, height);
+      ctx.putImageData(img, 0, 0);
+    });
+    return unsub;
+  }, [attached]);
+
   return (
     <div ref={ref} style={styles.container}>
+      <canvas ref={canvasRef} style={styles.canvas} />
       {!attached && (
         <div style={styles.placeholder}>
           <p style={{ margin: 0, fontSize: 14 }}>{t.viewport.title}</p>
@@ -194,6 +235,13 @@ const styles: Record<string, React.CSSProperties> = {
     background: "transparent",
     position: "relative",
     overflow: "hidden",
+  },
+  canvas: {
+    position: "absolute",
+    inset: 0,
+    width: "100%",
+    height: "100%",
+    imageRendering: "pixelated",
   },
   placeholder: {
     position: "absolute",

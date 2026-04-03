@@ -50,6 +50,10 @@ pub const VulkanDevice = struct {
         extern fn guava_vk_rhi_present(ctx: *anyopaque, swapchain_id: u32) bool;
         // Debug
         extern fn guava_vk_rhi_get_device_name(ctx: *anyopaque) ?[*:0]const u8;
+        // Shared texture (cross-process viewport)
+        extern fn guava_vk_rhi_create_shared_texture(ctx: *anyopaque, width: u32, height: u32, format: u32, usage_bits: u32, label: ?[*:0]const u8) SharedTextureResultC;
+        extern fn guava_vk_rhi_blit_shared_texture(ctx: *anyopaque, texture_id: u32) bool;
+        extern fn guava_vk_rhi_destroy_shared_texture(ctx: *anyopaque, texture_id: u32) void;
     };
 
     // ── FFI-compatible packed structs ──────────────────────────────────
@@ -126,6 +130,11 @@ pub const VulkanDevice = struct {
         signal_count: u32,
     };
 
+    const SharedTextureResultC = extern struct {
+        texture_id: u32,
+        shm_name: [64]u8,
+    };
+
     const MarshaledSubmitDesc = struct {
         wait_semaphores: []TimelineSemaphoreC = &.{},
         signal_semaphores: []TimelineSemaphoreC = &.{},
@@ -180,6 +189,33 @@ pub const VulkanDevice = struct {
     pub fn getDeviceName(self: *const VulkanDevice) []const u8 {
         const name = bridge.guava_vk_rhi_get_device_name(self.bridge_ctx) orelse return "Unknown Vulkan Device";
         return std.mem.sliceTo(name, 0);
+    }
+
+    // ── Shared texture (Linux cross-process viewport) ─────────────────
+
+    pub const SharedTextureResult = struct { texture_id: u32, shm_name: [64]u8 };
+
+    pub fn createSharedTexture(
+        self: *VulkanDevice,
+        width: u32,
+        height: u32,
+        format: u32,
+        usage_bits: u32,
+        label: ?[*:0]const u8,
+    ) SharedTextureResult {
+        const c_result = bridge.guava_vk_rhi_create_shared_texture(
+            self.bridge_ctx,
+            width,
+            height,
+            format,
+            usage_bits,
+            label,
+        );
+        return .{ .texture_id = c_result.texture_id, .shm_name = c_result.shm_name };
+    }
+
+    pub fn blitSharedTexture(self: *VulkanDevice, texture_id: u32) bool {
+        return bridge.guava_vk_rhi_blit_shared_texture(self.bridge_ctx, texture_id);
     }
 
     /// Register a binding set with the Vulkan bridge so it knows what resources

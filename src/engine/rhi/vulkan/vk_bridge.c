@@ -15,6 +15,13 @@
 #include <string.h>
 #include <assert.h>
 
+// POSIX shared memory (Linux shared texture support)
+#if defined(__linux__)
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
 // Vulkan headers — SDK must be installed; build.zig links libvulkan
 #include <vulkan/vulkan.h>
 
@@ -161,6 +168,21 @@ typedef struct {
     uint32_t width, height;
 } FramebufferCacheEntry;
 
+// Shared texture entry — tracks staging buffer + shm for cross-process readback
+typedef struct {
+    uint32_t texture_id;          // the GPU texture this is associated with
+    VkBuffer staging_buffer;
+    VkDeviceMemory staging_memory;
+    uint32_t width, height;
+    uint32_t bytes_per_pixel;
+    uint64_t buffer_size;
+    char shm_name[64];
+#if defined(__linux__)
+    int shm_fd;
+    void* shm_ptr;                // mmap'd shared memory pointer
+#endif
+} SharedTextureEntry;
+
 // ---------------------------------------------------------------------------
 // Main bridge context — owns all Vulkan objects
 // ---------------------------------------------------------------------------
@@ -240,6 +262,10 @@ typedef struct {
     // Framebuffer cache
     FramebufferCacheEntry fb_cache[1024];
     uint32_t fb_cache_count;
+
+    // Shared textures (cross-process viewport readback)
+    SharedTextureEntry shared_textures[16]; // small — only a few viewports
+    uint32_t shared_texture_count;
 } GuavaVkContext;
 
 // ---------------------------------------------------------------------------
@@ -2619,4 +2645,240 @@ void* guava_vk_rhi_get_swapchain_render_pass(void* raw) {
     VkFormat color_fmt = ctx->swapchain_format ? ctx->swapchain_format : VK_FORMAT_B8G8R8A8_SRGB;
     VkRenderPass rp = find_or_create_render_pass(ctx, color_fmt, VK_FORMAT_UNDEFINED, 0);
     return (void*)(uintptr_t)rp;
+}
+
+// ===========================================================================
+// Shared texture (cross-process viewport readback via POSIX shm)
+// ===========================================================================
+
+static SharedTextureEntry* find_shared_texture(GuavaVkContext* ctx, uint32_t texture_id) {
+    for (uint32_t i = 0; i < ctx->shared_texture_count; i++)
+        if (ctx->shared_textures[i].texture_id == texture_id) return &ctx->shared_textures[i];
+    return NULL;
+}
+
+GuavaVkSharedTextureResult guava_vk_rhi_create_shared_texture(
+        void* raw, uint32_t width, uint32_t height,
+        uint32_t format, uint32_t usage_bits, const char* label) {
+    GuavaVkSharedTextureResult result = {0};
+#if defined(__linux__)
+    GuavaVkContext* ctx = (GuavaVkContext*)raw;
+
+    // 1. Create the normal GPU texture for rendering (same as createTexture).
+    GuavaVkTextureDesc desc = {
+        .width = width,
+        .height = height,
+        .depth = 1,
+        .layers = 1,
+        .mip_levels = 1,
+        .sample_count = 1,
+        .format = format,
+        .usage_bits = usage_bits,
+        .dimension = 0, // 2D
+    };
+    uint32_t tex_id = guava_vk_rhi_create_texture(raw, &desc, label);
+    if (tex_id == 0) return result;
+
+    // 2. Determine bytes-per-pixel from the format.
+    VkFormat vk_fmt = map_texture_format(format);
+    uint32_t bpp = 4;
+    switch (vk_fmt) {
+        case VK_FORMAT_R8_UNORM:         bpp = 1; break;
+        case VK_FORMAT_R16_SFLOAT:       bpp = 2; break;
+        case VK_FORMAT_R8G8B8A8_UNORM:
+        case VK_FORMAT_R8G8B8A8_SRGB:
+        case VK_FORMAT_B8G8R8A8_UNORM:
+        case VK_FORMAT_B8G8R8A8_SRGB:   bpp = 4; break;
+        case VK_FORMAT_R16G16B16A16_SFLOAT: bpp = 8; break;
+        case VK_FORMAT_R32G32B32A32_SFLOAT: bpp = 16; break;
+        default: bpp = 4; break;
+    }
+    uint64_t buf_size = (uint64_t)width * height * bpp;
+
+    // 3. Create a HOST_VISIBLE staging buffer for readback.
+    VkBufferCreateInfo buf_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = buf_size,
+        .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    VkBuffer staging;
+    if (vkCreateBuffer(ctx->device, &buf_info, NULL, &staging) != VK_SUCCESS) {
+        guava_vk_rhi_destroy_texture(raw, tex_id);
+        return result;
+    }
+
+    VkMemoryRequirements mem_reqs;
+    vkGetBufferMemoryRequirements(ctx->device, staging, &mem_reqs);
+
+    VkMemoryAllocateInfo alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = mem_reqs.size,
+        .memoryTypeIndex = find_memory_type(ctx, mem_reqs.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+    };
+    VkDeviceMemory staging_mem;
+    if (vkAllocateMemory(ctx->device, &alloc_info, NULL, &staging_mem) != VK_SUCCESS) {
+        vkDestroyBuffer(ctx->device, staging, NULL);
+        guava_vk_rhi_destroy_texture(raw, tex_id);
+        return result;
+    }
+    vkBindBufferMemory(ctx->device, staging, staging_mem, 0);
+
+    // 4. Create POSIX shared memory.
+    char shm_name[64];
+    snprintf(shm_name, sizeof(shm_name), "/guava-vp-%d-%u", (int)getpid(), tex_id);
+
+    int shm_fd = shm_open(shm_name, O_CREAT | O_RDWR, 0600);
+    if (shm_fd < 0) {
+        fprintf(stderr, "[Guava VK] shm_open(\"%s\") failed\n", shm_name);
+        vkDestroyBuffer(ctx->device, staging, NULL);
+        vkFreeMemory(ctx->device, staging_mem, NULL);
+        guava_vk_rhi_destroy_texture(raw, tex_id);
+        return result;
+    }
+    if (ftruncate(shm_fd, (off_t)buf_size) != 0) {
+        fprintf(stderr, "[Guava VK] ftruncate shm failed\n");
+        close(shm_fd);
+        shm_unlink(shm_name);
+        vkDestroyBuffer(ctx->device, staging, NULL);
+        vkFreeMemory(ctx->device, staging_mem, NULL);
+        guava_vk_rhi_destroy_texture(raw, tex_id);
+        return result;
+    }
+    void* shm_ptr = mmap(NULL, (size_t)buf_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    if (shm_ptr == MAP_FAILED) {
+        fprintf(stderr, "[Guava VK] mmap shm failed\n");
+        close(shm_fd);
+        shm_unlink(shm_name);
+        vkDestroyBuffer(ctx->device, staging, NULL);
+        vkFreeMemory(ctx->device, staging_mem, NULL);
+        guava_vk_rhi_destroy_texture(raw, tex_id);
+        return result;
+    }
+
+    // 5. Register the shared texture entry.
+    if (ctx->shared_texture_count < 16) {
+        ctx->shared_textures[ctx->shared_texture_count++] = (SharedTextureEntry){
+            .texture_id = tex_id,
+            .staging_buffer = staging,
+            .staging_memory = staging_mem,
+            .width = width,
+            .height = height,
+            .bytes_per_pixel = bpp,
+            .buffer_size = buf_size,
+            .shm_fd = shm_fd,
+            .shm_ptr = shm_ptr,
+        };
+        strncpy(ctx->shared_textures[ctx->shared_texture_count - 1].shm_name,
+                shm_name, sizeof(ctx->shared_textures[0].shm_name) - 1);
+    }
+
+    result.texture_id = tex_id;
+    strncpy(result.shm_name, shm_name, sizeof(result.shm_name) - 1);
+    fprintf(stderr, "[Guava VK] shared texture: tex_id=%u shm=%s size=%ux%u\n",
+            tex_id, shm_name, width, height);
+    return result;
+#else
+    (void)raw; (void)width; (void)height; (void)format; (void)usage_bits; (void)label;
+    fprintf(stderr, "[Guava VK] shared texture not supported on this platform\n");
+    return result;
+#endif
+}
+
+bool guava_vk_rhi_blit_shared_texture(void* raw, uint32_t texture_id) {
+#if defined(__linux__)
+    GuavaVkContext* ctx = (GuavaVkContext*)raw;
+    SharedTextureEntry* st = find_shared_texture(ctx, texture_id);
+    if (!st) return false;
+
+    TextureEntry* tex = find_texture(ctx, texture_id);
+    if (!tex) return false;
+
+    // Record and submit a one-shot command buffer for the blit.
+    VkCommandBufferAllocateInfo cmd_alloc = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = ctx->graphics_cmd_pool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+    VkCommandBuffer cmd;
+    vkAllocateCommandBuffers(ctx->device, &cmd_alloc, &cmd);
+
+    VkCommandBufferBeginInfo begin = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    vkBeginCommandBuffer(cmd, &begin);
+
+    // Transition image to TRANSFER_SRC.
+    transition_image_layout(ctx, cmd, tex->image, tex->current_layout,
+                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                            VK_IMAGE_ASPECT_COLOR_BIT);
+
+    VkBufferImageCopy region = {
+        .bufferOffset = 0,
+        .bufferRowLength = st->width,
+        .bufferImageHeight = 0,
+        .imageSubresource = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .mipLevel = 0,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+        },
+        .imageOffset = { 0, 0, 0 },
+        .imageExtent = { st->width, st->height, 1 },
+    };
+    vkCmdCopyImageToBuffer(cmd, tex->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           st->staging_buffer, 1, &region);
+
+    vkEndCommandBuffer(cmd);
+
+    VkSubmitInfo submit = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &cmd,
+    };
+    vkQueueSubmit(ctx->graphics_queue, 1, &submit, VK_NULL_HANDLE);
+    vkQueueWaitIdle(ctx->graphics_queue);
+
+    // Map staging buffer and copy to shared memory.
+    void* mapped;
+    vkMapMemory(ctx->device, st->staging_memory, 0, st->buffer_size, 0, &mapped);
+    memcpy(st->shm_ptr, mapped, (size_t)st->buffer_size);
+    vkUnmapMemory(ctx->device, st->staging_memory);
+
+    vkFreeCommandBuffers(ctx->device, ctx->graphics_cmd_pool, 1, &cmd);
+    return true;
+#else
+    (void)raw; (void)texture_id;
+    return false;
+#endif
+}
+
+void guava_vk_rhi_destroy_shared_texture(void* raw, uint32_t texture_id) {
+#if defined(__linux__)
+    GuavaVkContext* ctx = (GuavaVkContext*)raw;
+    for (uint32_t i = 0; i < ctx->shared_texture_count; i++) {
+        if (ctx->shared_textures[i].texture_id == texture_id) {
+            SharedTextureEntry* st = &ctx->shared_textures[i];
+            // Unmap and unlink shared memory.
+            if (st->shm_ptr && st->shm_ptr != MAP_FAILED)
+                munmap(st->shm_ptr, (size_t)st->buffer_size);
+            if (st->shm_fd >= 0)
+                close(st->shm_fd);
+            shm_unlink(st->shm_name);
+            // Destroy Vulkan staging resources.
+            vkDestroyBuffer(ctx->device, st->staging_buffer, NULL);
+            vkFreeMemory(ctx->device, st->staging_memory, NULL);
+            // Destroy the GPU texture.
+            guava_vk_rhi_destroy_texture(raw, texture_id);
+            // Compact the array.
+            ctx->shared_textures[i] = ctx->shared_textures[--ctx->shared_texture_count];
+            return;
+        }
+    }
+#else
+    (void)raw; (void)texture_id;
+#endif
 }

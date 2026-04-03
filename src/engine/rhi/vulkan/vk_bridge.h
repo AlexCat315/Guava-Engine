@@ -160,6 +160,27 @@ bool guava_vk_rhi_present(void* ctx, uint32_t swapchain_id);
 // ── Debug ─────────────────────────────────────────────────────────────────
 const char* guava_vk_rhi_get_device_name(void* ctx);
 
+// ── Shared texture (cross-process viewport) ───────────────────────────────
+// Creates a normal VkImage for GPU rendering, plus a staging buffer and a
+// POSIX shared-memory region for CPU readback.  Returns texture_id on success
+// (0 on failure) and writes the shm name used to *out_shm_name.
+// After each frame the caller must invoke the blit function to update shm.
+typedef struct {
+    uint32_t texture_id;
+    char     shm_name[64];   // e.g. "/guava-vp-12345-7"
+} GuavaVkSharedTextureResult;
+
+GuavaVkSharedTextureResult guava_vk_rhi_create_shared_texture(
+    void* ctx, uint32_t width, uint32_t height,
+    uint32_t format, uint32_t usage_bits, const char* label);
+
+// Blit the shared texture from GPU memory to the shared-memory region so the
+// editor process can read the pixels.  This is a synchronous GPU operation.
+bool guava_vk_rhi_blit_shared_texture(void* ctx, uint32_t texture_id);
+
+// Destroy a shared texture and its associated staging buffer / shm.
+void guava_vk_rhi_destroy_shared_texture(void* ctx, uint32_t texture_id);
+
 // ── Vulkan handle getters (for ImGui Vulkan backend) ──────────────────────
 void*    guava_vk_rhi_get_instance(void* ctx);
 void*    guava_vk_rhi_get_physical_device(void* ctx);

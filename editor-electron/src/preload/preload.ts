@@ -43,28 +43,43 @@ contextBridge.exposeInMainWorld("guavaEngine", {
     return () => ipcRenderer.removeListener("engine:error", handler);
   },
 
-  // ── IOSurface viewport (macOS) ─────────────────────────────────
+  // ── Viewport (cross-platform) ───────────────────────────────────
 
-  /** Attach an IOSurface layer to the Electron window at the given rect */
+  /** Attach a viewport surface to the Electron window at the given rect */
   viewportAttachSurface: (
     surfaceId: number,
     x: number,
     y: number,
     w: number,
     h: number,
+    shmName?: string,
   ): Promise<boolean> =>
-    ipcRenderer.invoke("viewport:attachSurface", surfaceId, x, y, w, h),
+    ipcRenderer.invoke("viewport:attachSurface", surfaceId, x, y, w, h, shmName),
 
-  /** Update the IOSurface layer's position/size */
+  /** Update the viewport layer's position/size */
   viewportUpdateFrame: (x: number, y: number, w: number, h: number): Promise<void> =>
     ipcRenderer.invoke("viewport:updateFrame", x, y, w, h),
 
-  /** Replace the IOSurface (e.g. after engine-side resize) */
-  viewportUpdateSurface: (surfaceId: number): Promise<void> =>
-    ipcRenderer.invoke("viewport:updateSurface", surfaceId),
+  /** Replace the surface (e.g. after engine-side resize) */
+  viewportUpdateSurface: (surfaceId: number, shmName?: string, width?: number, height?: number): Promise<void> =>
+    ipcRenderer.invoke("viewport:updateSurface", surfaceId, shmName, width, height),
 
-  /** Remove the IOSurface layer */
+  /** Remove the viewport surface */
   viewportDetach: (): Promise<void> => ipcRenderer.invoke("viewport:detach"),
+
+  /** Subscribe to pixel data pushed from main process (Linux shm path) */
+  onViewportPixels: (
+    callback: (pixels: Buffer, width: number, height: number) => void,
+  ): (() => void) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      pixels: Buffer,
+      width: number,
+      height: number,
+    ) => callback(pixels, width, height);
+    ipcRenderer.on("viewport:pixels", handler);
+    return () => ipcRenderer.removeListener("viewport:pixels", handler);
+  },
 });
 
 /** Type declaration for the exposed API (used in renderer) */
@@ -77,8 +92,9 @@ export interface GuavaEngineAPI {
   onEvent(callback: (event: string, data: unknown) => void): () => void;
   onConnected(callback: () => void): () => void;
   onError(callback: (error: string) => void): () => void;
-  viewportAttachSurface(surfaceId: number, x: number, y: number, w: number, h: number): Promise<boolean>;
+  viewportAttachSurface(surfaceId: number, x: number, y: number, w: number, h: number, shmName?: string): Promise<boolean>;
   viewportUpdateFrame(x: number, y: number, w: number, h: number): Promise<void>;
-  viewportUpdateSurface(surfaceId: number): Promise<void>;
+  viewportUpdateSurface(surfaceId: number, shmName?: string, width?: number, height?: number): Promise<void>;
   viewportDetach(): Promise<void>;
+  onViewportPixels(callback: (pixels: Buffer, width: number, height: number) => void): () => void;
 }

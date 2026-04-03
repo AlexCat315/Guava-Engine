@@ -2451,6 +2451,14 @@ pub const Renderer = struct {
             }
             try self.resolveSelectionReadbacks();
 
+            // On Vulkan, blit the shared viewport texture to POSIX shm so
+            // the Electron editor process can read the pixels.
+            if (viewport_active and self.scene_viewport.use_iosurface) {
+                if (self.scene_viewport.color_texture) |tex| {
+                    self.rhi.blitSharedTexture(tex);
+                }
+            }
+
             // Collect RHI stats
             var cache_hits: u64 = 0;
             var cache_misses: u64 = 0;

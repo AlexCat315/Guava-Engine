@@ -98,12 +98,15 @@ pub fn detachFromParent(ctx: *Ctx) !void {
     try ctx.reply(.{});
 }
 
-/// Return the IOSurface id for the viewport's color texture.
-/// Electron uses IOSurfaceLookup() with this id to display the rendered frame.
+/// Return the shared surface handle for the viewport's color texture.
+/// - macOS: surfaceId is an IOSurface ID for IOSurfaceLookup()
+/// - Linux: shmName is a POSIX shared memory path ("/guava-vp-...")
 pub fn getSurfaceId(ctx: *Ctx) !void {
     const sv = &ctx.layer.renderer.scene_viewport;
+    const shm_slice = std.mem.sliceTo(&sv.shm_name, 0);
     try ctx.reply(.{
         .surfaceId = sv.iosurface_id,
+        .shmName = if (shm_slice.len > 0) shm_slice else null,
         .width = sv.width,
         .height = sv.height,
     });

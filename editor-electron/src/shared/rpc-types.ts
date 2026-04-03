@@ -17,7 +17,6 @@ export type {
   ComponentField as ComponentFieldBase,
   LogEntry,
   AssetEntry,
-  HistoryEntry,
   RpcMethods,
   SubscriptionEvents,
   RpcMethodName,
@@ -27,6 +26,11 @@ export type {
   JsonRpcRequest,
   JsonRpcResponse,
 } from "./rpc-types.generated";
+
+import type { RpcResult } from "./rpc-types.generated";
+
+/** History entry — extracted from the getHistory result shape. */
+export type HistoryEntry = RpcResult<"editor.getHistory">["entries"][number];
 
 // JSON-RPC 2.0 Notification (server push, no id field)
 export interface JsonRpcNotification {

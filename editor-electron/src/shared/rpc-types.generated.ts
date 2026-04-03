@@ -67,14 +67,6 @@ export interface AssetEntry {
   size?: number;
 }
 
-export interface HistoryEntry {
-  sequence: number;
-  label: string;
-  source: string;
-  detail?: string;
-  timestampMs: number;
-}
-
 // ── RPC Method Signatures ──────────────────────────────────
 
 export interface RpcMethods {
@@ -83,7 +75,7 @@ export interface RpcMethods {
   "editor.setSelection": { params: { entityIds: number[] }; result: Record<string, never> };
   "editor.undo": { params: Record<string, never>; result: Record<string, never> };
   "editor.redo": { params: Record<string, never>; result: Record<string, never> };
-  "editor.getHistory": { params: Record<string, never>; result: { cursor: number; entries: HistoryEntry[] } };
+  "editor.getHistory": { params: Record<string, never>; result: { cursor: number; entries: { sequence: number; label: string; source: string; detail?: string; timestampMs: number }[] } };
   "editor.timeTravel": { params: { targetSequence: number }; result: Record<string, never> };
   "scene.getHierarchy": { params: Record<string, never>; result: { roots: EntityNode[] } };
   "scene.createEntity": { params: { name?: string; parentId?: number }; result: { entityId: number } };
@@ -107,7 +99,7 @@ export interface RpcMethods {
   "viewport.getWindowInfo": { params: Record<string, never>; result: { x: number; y: number; width: number; height: number; drawableWidth: number; drawableHeight: number; nativeHandle: number; platform: string } };
   "viewport.attachToParent": { params: { parentHandle: number }; result: Record<string, never> };
   "viewport.detachFromParent": { params: Record<string, never>; result: Record<string, never> };
-  "viewport.getSurfaceId": { params: Record<string, never>; result: { surfaceId: number; width: number; height: number } };
+  "viewport.getSurfaceId": { params: Record<string, never>; result: { surfaceId: number; width: number; height: number; shmName?: string } };
   "viewport.getRenderSettings": { params: Record<string, never>; result: { shadingMode: string; showGrid: boolean; showBones: boolean; showCollision: boolean; bloomEnabled: boolean; bloomThreshold: number; bloomIntensity: number; exposureEnabled: boolean; exposure: number; ssaoEnabled: boolean; ssaoRadius: number; ssaoIntensity: number; fxaaEnabled: boolean; taaEnabled: boolean; contactShadowsEnabled: boolean; colorGradingEnabled: boolean; colorGradingSaturation: number; colorGradingContrast: number; colorGradingGamma: number; dofEnabled: boolean; dofFocusDistance: number; dofFocusRange: number } };
   "viewport.setRenderSettings": { params: { shadingMode?: string; showGrid?: boolean; showBones?: boolean; showCollision?: boolean; bloomEnabled?: boolean; bloomThreshold?: number; bloomIntensity?: number; exposureEnabled?: boolean; exposure?: number; ssaoEnabled?: boolean; ssaoRadius?: number; ssaoIntensity?: number; fxaaEnabled?: boolean; taaEnabled?: boolean; contactShadowsEnabled?: boolean; colorGradingEnabled?: boolean; colorGradingSaturation?: number; colorGradingContrast?: number; colorGradingGamma?: number; dofEnabled?: boolean; dofFocusDistance?: number; dofFocusRange?: number }; result: Record<string, never> };
   "console.clear": { params: Record<string, never>; result: Record<string, never> };

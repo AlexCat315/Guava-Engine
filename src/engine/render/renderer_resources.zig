@@ -23,7 +23,9 @@ pub const SceneViewportState = struct {
 
     /// IOSurface id for cross-process sharing (0 = not using IOSurface).
     iosurface_id: u32 = 0,
-    /// When true, color_texture is backed by an IOSurface for cross-process display.
+    /// POSIX shared memory name for cross-process sharing (Linux Vulkan path).
+    shm_name: [64]u8 = [_]u8{0} ** 64,
+    /// When true, color_texture is backed by a cross-process shared resource.
     use_iosurface: bool = false,
 
     pub fn deinit(self: *SceneViewportState, device: *rhi_mod.RhiDevice) void {
@@ -209,14 +211,15 @@ pub const SceneViewportState = struct {
         };
 
         self.color_texture = if (self.use_iosurface) blk: {
-            const result = device.createIOSurfaceTexture(.{
+            const result = device.createSharedTexture(.{
                 .width = width,
                 .height = height,
                 .format = .bgra8_unorm_srgb,
                 .usage = rhi_types.TextureUsage.color_target | rhi_types.TextureUsage.sampler,
             }) catch |err| {
-                render_log.err("IOSurface color_texture creation failed: {s}, falling back to private texture", .{@errorName(err)});
+                render_log.err("Shared texture creation failed: {s}, falling back to private texture", .{@errorName(err)});
                 self.iosurface_id = 0;
+                self.shm_name = [_]u8{0} ** 64;
                 break :blk try device.createTexture(.{
                     .width = width,
                     .height = height,
@@ -224,7 +227,8 @@ pub const SceneViewportState = struct {
                     .usage = rhi_types.TextureUsage.color_target | rhi_types.TextureUsage.sampler,
                 });
             };
-            self.iosurface_id = result.surface_id;
+            self.iosurface_id = result.iosurface_id;
+            self.shm_name = result.shm_name;
             break :blk result.texture;
         } else try device.createTexture(.{
             .width = width,

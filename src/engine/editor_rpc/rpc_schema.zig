@@ -293,6 +293,7 @@ pub const Methods = struct {
             surfaceId: u32,
             width: u32,
             height: u32,
+            shmName: ?[]const u8 = null,
         };
     };
 
