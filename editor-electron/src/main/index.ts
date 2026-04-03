@@ -9,6 +9,26 @@ let mainWindow: BrowserWindow | null = null;
 let engineProcess: EngineProcess | null = null;
 let engineClient: EngineClient | null = null;
 
+// ── Native IOSurface addon (macOS only) ──────────────────────────
+
+interface IOSurfaceAddon {
+  attach(handle: Buffer, surfaceId: number, x: number, y: number, w: number, h: number): void;
+  updateFrame(x: number, y: number, w: number, h: number): void;
+  updateSurface(surfaceId: number): void;
+  detach(): void;
+  refresh(): void;
+}
+
+let ioSurfaceView: IOSurfaceAddon | null = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  ioSurfaceView = require(
+    path.join(__dirname, "../../native/build/Release/iosurface_view.node"),
+  ) as IOSurfaceAddon;
+} catch (err) {
+  console.warn("[Main] IOSurface native addon not available:", err);
+}
+
 function getEngineBinaryPath(): string {
   // In development, use the adjacent zig-out build
   const devPath = path.resolve(__dirname, "../../..", "zig-out/bin/guava-engine");
@@ -49,6 +69,17 @@ async function createMainWindow(): Promise<BrowserWindow> {
     await win.loadFile(path.join(__dirname, "../renderer/index.html"));
   }
 
+  // Open DevTools in development for debugging
+  if (process.env.NODE_ENV === "development" || process.env.VITE_DEV_SERVER_URL) {
+    win.webContents.openDevTools({ mode: "detach" });
+  }
+
+  // Forward renderer console output to main process stdout for debugging
+  win.webContents.on("console-message", (_event, level, message, line, sourceId) => {
+    const prefix = ["[Renderer:V]", "[Renderer:I]", "[Renderer:W]", "[Renderer:E]"][level] ?? "[Renderer]";
+    console.log(`${prefix} ${message} (${sourceId}:${line})`);
+  });
+
   return win;
 }
 
@@ -87,8 +118,7 @@ async function startEngine(): Promise<void> {
   await engineClient.connect();
 
   // Verify connection
-  const capabilities = await engineClient.call("editor.getCapabilities", {});
-  console.log("[Main] Engine connected:", capabilities);
+  await engineClient.call("editor.getCapabilities", {});
 }
 
 // ── IPC Bridge: Renderer ↔ Engine ────────────────────────────────
@@ -130,27 +160,44 @@ function setupSubscriptionForwarding(): void {
   }
 }
 
-// ── Native Window Parenting ──────────────────────────────────────
+// ── IOSurface viewport integration ───────────────────────────────
 
-async function attachEngineViewport(): Promise<void> {
-  if (!engineClient?.connected || !mainWindow) return;
+let surfaceRefreshTimer: ReturnType<typeof setInterval> | null = null;
 
-  try {
-    // Get Electron window's native handle (NSView* on macOS)
-    const nativeHandle = mainWindow.getNativeWindowHandle();
-    // Read as 64-bit unsigned integer (pointer value)
-    const handleValue = nativeHandle.readBigUInt64LE();
+// Renderer calls this with viewport bounds; main process manages the native layer.
+ipcMain.handle(
+  "viewport:attachSurface",
+  async (_event, surfaceId: number, x: number, y: number, w: number, h: number) => {
+    if (!ioSurfaceView || !mainWindow) return false;
+    const handle = mainWindow.getNativeWindowHandle();
+    ioSurfaceView.attach(handle, surfaceId, x, y, w, h);
 
-    // Tell the engine to attach its SDL window as a child of ours
-    await (engineClient as { call(m: string, p: Record<string, unknown>): Promise<unknown> }).call(
-      "viewport.attachToParent",
-      { parentHandle: Number(handleValue) },
-    );
-    console.log("[Main] Engine viewport attached as child window");
-  } catch (err) {
-    console.warn("[Main] Failed to attach engine viewport:", err);
+    // Start a refresh timer to pick up new frames (~60 fps).
+    if (surfaceRefreshTimer) clearInterval(surfaceRefreshTimer);
+    surfaceRefreshTimer = setInterval(() => ioSurfaceView?.refresh(), 16);
+
+    return true;
+  },
+);
+
+ipcMain.handle(
+  "viewport:updateFrame",
+  async (_event, x: number, y: number, w: number, h: number) => {
+    ioSurfaceView?.updateFrame(x, y, w, h);
+  },
+);
+
+ipcMain.handle("viewport:updateSurface", async (_event, surfaceId: number) => {
+  ioSurfaceView?.updateSurface(surfaceId);
+});
+
+ipcMain.handle("viewport:detach", async () => {
+  if (surfaceRefreshTimer) {
+    clearInterval(surfaceRefreshTimer);
+    surfaceRefreshTimer = null;
   }
-}
+  ioSurfaceView?.detach();
+});
 
 // ── App Lifecycle ────────────────────────────────────────────────
 
@@ -160,12 +207,6 @@ app.whenReady().then(async () => {
   try {
     await startEngine();
     setupSubscriptionForwarding();
-    // NOTE: attachEngineViewport() is intentionally skipped.
-    // Electron's getNativeWindowHandle() returns an NSView* pointer that is only
-    // valid inside Electron's own process address space. The engine runs as a
-    // separate child process, so the pointer is meaningless there and causes a
-    // segfault. Viewport positioning is handled by viewport.setRect (screen-
-    // coordinate sync in Viewport.tsx), which works correctly cross-process.
     mainWindow.webContents.send("engine:connected");
   } catch (err) {
     console.error("[Main] Failed to start engine:", err);

@@ -21,6 +21,11 @@ pub const SceneViewportState = struct {
     color_texture: ?rhi_mod.Texture = null,
     depth_texture: ?rhi_mod.Texture = null,
 
+    /// IOSurface id for cross-process sharing (0 = not using IOSurface).
+    iosurface_id: u32 = 0,
+    /// When true, color_texture is backed by an IOSurface for cross-process display.
+    use_iosurface: bool = false,
+
     pub fn deinit(self: *SceneViewportState, device: *rhi_mod.RhiDevice) void {
         if (self.hdr_color_texture) |*texture| {
             device.releaseTexture(texture);
@@ -61,7 +66,9 @@ pub const SceneViewportState = struct {
         if (self.depth_texture) |*texture| {
             device.releaseTexture(texture);
         }
+        const preserve_iosurface = self.use_iosurface;
         self.* = .{};
+        self.use_iosurface = preserve_iosurface;
     }
 
     pub fn ensure(self: *SceneViewportState, device: *rhi_mod.RhiDevice, width: u32, height: u32) !void {
@@ -201,7 +208,25 @@ pub const SceneViewportState = struct {
             self.fxaa_texture = null;
         };
 
-        self.color_texture = try device.createTexture(.{
+        self.color_texture = if (self.use_iosurface) blk: {
+            const result = device.createIOSurfaceTexture(.{
+                .width = width,
+                .height = height,
+                .format = .bgra8_unorm_srgb,
+                .usage = rhi_types.TextureUsage.color_target | rhi_types.TextureUsage.sampler,
+            }) catch |err| {
+                render_log.err("IOSurface color_texture creation failed: {s}, falling back to private texture", .{@errorName(err)});
+                self.iosurface_id = 0;
+                break :blk try device.createTexture(.{
+                    .width = width,
+                    .height = height,
+                    .format = .bgra8_unorm_srgb,
+                    .usage = rhi_types.TextureUsage.color_target | rhi_types.TextureUsage.sampler,
+                });
+            };
+            self.iosurface_id = result.surface_id;
+            break :blk result.texture;
+        } else try device.createTexture(.{
             .width = width,
             .height = height,
             .format = .bgra8_unorm_srgb,

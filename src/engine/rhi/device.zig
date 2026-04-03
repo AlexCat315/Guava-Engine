@@ -1032,6 +1032,24 @@ pub const RhiDevice = struct {
         };
     }
 
+    /// Create a texture backed by an IOSurface for cross-process GPU sharing (macOS only).
+    /// Returns the Texture handle and the IOSurface id for the other process.
+    pub fn createIOSurfaceTexture(self: *RhiDevice, desc: types.TextureDesc) Error!struct { texture: Texture, surface_id: u32 } {
+        const md = self.owned_metal_device orelse return error.DeviceCreateFailed;
+        const result = md.createIOSurfaceTexture(
+            desc.width,
+            desc.height,
+            @intFromEnum(desc.format),
+            desc.usage,
+            if (desc.label) |l| @ptrCast(l.ptr) else null,
+        );
+        if (result.texture_id == 0) return error.OutOfMemory;
+        return .{
+            .texture = .{ .id = result.texture_id, .desc = desc },
+            .surface_id = result.surface_id,
+        };
+    }
+
     pub fn releaseTexture(self: *RhiDevice, texture: *Texture) void {
         self.device.vtable.destroy_texture(self.device.ctx, .{ .id = texture.id });
         texture.* = undefined;

@@ -80,6 +80,8 @@ pub const ApplicationConfig = struct {
     window_maximized: bool = true,
     /// 是否使用原生标题栏控件（macOS）
     window_native_titlebar_controls: bool = false,
+    /// 是否隐藏窗口（editor-server 模式下使用）
+    window_hidden: bool = false,
     /// 帧延迟（毫秒，用于限制帧率）
     frame_delay_ms: u32 = 16,
     /// 首选的图形后端列表
@@ -219,6 +221,7 @@ pub const Application = struct {
             .borderless = config.window_borderless,
             .maximized = config.window_maximized,
             .native_titlebar_controls = config.window_native_titlebar_controls,
+            .hidden = config.window_hidden,
         });
         errdefer window.deinit();
 

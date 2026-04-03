@@ -1,5 +1,6 @@
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
+#import <IOSurface/IOSurface.h>
 #include <cstdio>
 #include <cstring>
 #include <unordered_map>
@@ -45,6 +46,9 @@ struct GuavaMetalRhiContext {
     std::unordered_map<uint32_t, id<MTLDepthStencilState>>    depth_stencil_states;
     std::unordered_map<uint32_t, MTLPrimitiveType>             pipeline_primitives;
     std::unordered_map<uint32_t, id<MTLSharedEvent>>          shared_events;
+
+    // IOSurface references keyed by texture_id (to prevent premature deallocation)
+    std::unordered_map<uint32_t, IOSurfaceRef>                 iosurfaces;
 
     // Shader libraries cached per shader module (for Metal library compilation)
     std::unordered_map<uint32_t, id<MTLLibrary>>              shader_libraries;
@@ -329,9 +333,6 @@ void guava_metal_rhi_set_layer(void* raw, void* ca_metal_layer) {
     if ([ctx->metal_layer respondsToSelector:@selector(setDisplaySyncEnabled:)]) {
         ctx->metal_layer.displaySyncEnabled = ctx->vsync_enabled ? YES : NO;
     }
-    fprintf(stderr, "[GuavaMetal] CAMetalLayer configured — size: %.0fx%.0f\n",
-            ctx->metal_layer.drawableSize.width,
-            ctx->metal_layer.drawableSize.height);
 }
 
 void guava_metal_rhi_set_vsync_enabled(void* raw, bool enabled) {
@@ -628,6 +629,12 @@ void guava_metal_rhi_destroy_buffer(void* raw, uint32_t buffer_id) {
 void guava_metal_rhi_destroy_texture(void* raw, uint32_t texture_id) {
     auto* ctx = static_cast<GuavaMetalRhiContext*>(raw);
     ctx->textures.erase(texture_id);
+    // Release backing IOSurface if this was an IOSurface-backed texture
+    auto it = ctx->iosurfaces.find(texture_id);
+    if (it != ctx->iosurfaces.end()) {
+        CFRelease(it->second);
+        ctx->iosurfaces.erase(it);
+    }
 }
 
 void guava_metal_rhi_destroy_sampler(void* raw, uint32_t sampler_id) {
@@ -1272,6 +1279,87 @@ bool guava_metal_rhi_acquire_swapchain(void* raw,
         *out_width = (uint32_t)sz.width;
         *out_height = (uint32_t)sz.height;
         return true;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// IOSurface-backed textures — for cross-process GPU texture sharing
+// ---------------------------------------------------------------------------
+
+uint32_t guava_metal_rhi_create_iosurface_texture(void* raw,
+                                                   uint32_t width,
+                                                   uint32_t height,
+                                                   uint32_t format,
+                                                   uint32_t usage_bits,
+                                                   uint32_t* out_surface_id,
+                                                   const char* label) {
+    @autoreleasepool {
+        auto* ctx = static_cast<GuavaMetalRhiContext*>(raw);
+
+        // Determine bytes-per-pixel from the RHI format enum ordinal
+        uint32_t bpe = 4; // default BGRA8
+        MTLPixelFormat mtl_fmt = mapPixelFormat(format);
+        switch (mtl_fmt) {
+            case MTLPixelFormatR8Unorm:        bpe = 1; break;
+            case MTLPixelFormatRGBA8Unorm:
+            case MTLPixelFormatBGRA8Unorm:
+            case MTLPixelFormatRGBA8Unorm_sRGB:
+            case MTLPixelFormatBGRA8Unorm_sRGB: bpe = 4; break;
+            case MTLPixelFormatRGBA16Float:     bpe = 8; break;
+            case MTLPixelFormatRGBA32Float:     bpe = 16; break;
+            default:                            bpe = 4; break;
+        }
+
+        NSDictionary* props = @{
+            (id)kIOSurfaceWidth:           @(width),
+            (id)kIOSurfaceHeight:          @(height),
+            (id)kIOSurfaceBytesPerElement:  @(bpe),
+            (id)kIOSurfaceBytesPerRow:      @(width * bpe),
+            (id)kIOSurfaceAllocSize:        @((uint64_t)width * height * bpe),
+            (id)kIOSurfacePixelFormat:      @((uint32_t)'BGRA'),
+            (id)kIOSurfaceIsGlobal:         @YES, // Required for cross-process IOSurfaceLookup
+        };
+        IOSurfaceRef surface = IOSurfaceCreate((__bridge CFDictionaryRef)props);
+        if (!surface) {
+            fprintf(stderr, "[GuavaMetal] create_iosurface_texture: IOSurfaceCreate failed\n");
+            if (out_surface_id) *out_surface_id = 0;
+            return 0;
+        }
+
+        MTLTextureDescriptor* td = [[MTLTextureDescriptor alloc] init];
+        td.pixelFormat      = mtl_fmt;
+        td.width            = width;
+        td.height           = height;
+        td.storageMode      = MTLStorageModeShared; // required for IOSurface backing
+        td.textureType      = MTLTextureType2D;
+
+        MTLTextureUsage usage = 0;
+        if (usage_bits & 0x01) usage |= MTLTextureUsageShaderRead;
+        if (usage_bits & 0x02) usage |= MTLTextureUsageRenderTarget;
+        if (usage_bits & 0x04) usage |= MTLTextureUsageRenderTarget;
+        if (usage_bits & 0x08) usage |= MTLTextureUsageShaderRead;
+        if (usage_bits & 0x10) usage |= MTLTextureUsageShaderWrite;
+        td.usage = usage;
+
+        id<MTLTexture> tex = [ctx->device newTextureWithDescriptor:td
+                                                         iosurface:surface
+                                                             plane:0];
+        if (!tex) {
+            fprintf(stderr, "[GuavaMetal] create_iosurface_texture: newTextureWithDescriptor:iosurface failed\n");
+            CFRelease(surface);
+            if (out_surface_id) *out_surface_id = 0;
+            return 0;
+        }
+
+        if (label) tex.label = [NSString stringWithUTF8String:label];
+
+        uint32_t tex_id = ctx->next_texture_id++;
+        ctx->textures[tex_id]   = tex;
+        ctx->iosurfaces[tex_id] = surface; // prevent premature deallocation
+
+        IOSurfaceID sid = IOSurfaceGetID(surface);
+        if (out_surface_id) *out_surface_id = sid;
+        return tex_id;
     }
 }
 

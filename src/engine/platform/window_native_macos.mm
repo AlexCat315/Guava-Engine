@@ -109,6 +109,13 @@ extern "C" void guava_window_activate_macos_app(void) {
     }
 }
 
+extern "C" void guava_window_set_background_app(void) {
+    @autoreleasepool {
+        // NSApplicationActivationPolicyAccessory: no Dock icon, no Cmd-Tab entry.
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+    }
+}
+
 extern "C" bool guava_window_begin_macos_native_drag(SDL_Window* window) {
     @autoreleasepool {
         NSWindow* native_window = guava_ns_window_from_sdl(window);

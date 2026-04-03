@@ -6,6 +6,7 @@ const sdl = @import("sdl.zig").c;
 extern fn guava_window_apply_macos_native_titlebar_style(window: *sdl.SDL_Window) bool;
 extern fn guava_window_macos_titlebar_leading_inset(window: *sdl.SDL_Window) f32;
 extern fn guava_window_activate_macos_app() void;
+extern fn guava_window_set_background_app() void;
 extern fn guava_window_begin_macos_native_drag(window: *sdl.SDL_Window) bool;
 extern fn guava_window_apply_windows_native_titlebar_style(window: *sdl.SDL_Window) bool;
 extern fn guava_window_windows_titlebar_trailing_inset(window: *sdl.SDL_Window) f32;
@@ -198,6 +199,14 @@ pub const Window = struct {
     pub fn deinit(self: *Window) void {
         sdl.SDL_DestroyWindow(self.handle);
         sdl.SDL_Quit();
+    }
+
+    /// On macOS, hide the app from the Dock and Cmd-Tab switcher.
+    /// Useful for editor-server mode where the engine is a background process.
+    pub fn setBackgroundApp() void {
+        if (comptime builtin.os.tag == .macos) {
+            guava_window_set_background_app();
+        }
     }
 
     pub fn refreshSizes(self: *Window) !void {

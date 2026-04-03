@@ -287,6 +287,15 @@ pub const Methods = struct {
         pub const Result = struct {};
     };
 
+    pub const @"viewport.getSurfaceId" = struct {
+        pub const Params = struct {};
+        pub const Result = struct {
+            surfaceId: u32,
+            width: u32,
+            height: u32,
+        };
+    };
+
     pub const @"viewport.getRenderSettings" = struct {
         pub const Params = struct {};
         pub const Result = struct {

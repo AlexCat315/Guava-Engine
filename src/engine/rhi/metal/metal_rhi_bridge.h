@@ -166,6 +166,18 @@ bool guava_metal_rhi_acquire_swapchain(void* ctx,
                                        uint32_t* out_height);
 bool guava_metal_rhi_present(void* ctx, uint32_t swapchain_id);
 
+// ── IOSurface-backed textures (macOS cross-process sharing) ───────────────
+// Creates a Metal texture backed by an IOSurface.  The returned surface_id
+// is globally unique and can be sent to another process (e.g. Electron)
+// which can then call IOSurfaceLookup() to obtain a reference.
+uint32_t guava_metal_rhi_create_iosurface_texture(void* ctx,
+                                                   uint32_t width,
+                                                   uint32_t height,
+                                                   uint32_t format,
+                                                   uint32_t usage_bits,
+                                                   uint32_t* out_surface_id,
+                                                   const char* label);
+
 // ── Debug ─────────────────────────────────────────────────────────────────
 const char* guava_metal_rhi_get_device_name(void* ctx);
 

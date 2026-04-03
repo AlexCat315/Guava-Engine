@@ -44,6 +44,8 @@ pub const MetalDevice = struct {
         // Swapchain
         extern fn guava_metal_rhi_acquire_swapchain(ctx: *anyopaque, out_id: *u32, out_w: *u32, out_h: *u32) bool;
         extern fn guava_metal_rhi_present(ctx: *anyopaque, swapchain_id: u32) bool;
+        // IOSurface
+        extern fn guava_metal_rhi_create_iosurface_texture(ctx: *anyopaque, width: u32, height: u32, format: u32, usage_bits: u32, out_surface_id: *u32, label: ?[*:0]const u8) u32;
         // Debug
         extern fn guava_metal_rhi_get_device_name(ctx: *anyopaque) ?[*:0]const u8;
     };
@@ -182,6 +184,31 @@ pub const MetalDevice = struct {
 
     pub fn setVSyncEnabled(self: *MetalDevice, enabled: bool) void {
         bridge.guava_metal_rhi_set_vsync_enabled(self.bridge_ctx, enabled);
+    }
+
+    /// Create a Metal texture backed by an IOSurface for cross-process sharing.
+    /// Returns the RHI texture id and the IOSurface id (globally unique, cross-process safe).
+    pub const IOSurfaceTextureResult = struct { texture_id: u32, surface_id: u32 };
+
+    pub fn createIOSurfaceTexture(
+        self: *MetalDevice,
+        width: u32,
+        height: u32,
+        format: u32,
+        usage_bits: u32,
+        label: ?[*:0]const u8,
+    ) IOSurfaceTextureResult {
+        var surface_id: u32 = 0;
+        const tex_id = bridge.guava_metal_rhi_create_iosurface_texture(
+            self.bridge_ctx,
+            width,
+            height,
+            format,
+            usage_bits,
+            &surface_id,
+            label,
+        );
+        return .{ .texture_id = tex_id, .surface_id = surface_id };
     }
 
     /// Register a binding set with the Metal bridge so it knows what resources

@@ -18,6 +18,8 @@ pub fn setRect(ctx: *Ctx) !void {
     const width = try ctx.param(i64, "width");
     const height = try ctx.param(i64, "height");
 
+    std.log.info("viewport.setRect: x={d} y={d} w={d} h={d}", .{ x, y, width, height });
+
     const win = ctx.layer.window;
 
     // Make window borderless for clean embedding (idempotent)
@@ -32,6 +34,12 @@ pub fn setRect(ctx: *Ctx) !void {
         return error.SdlWindowOperationFailed;
     }
     try win.refreshSizes();
+
+    // Ensure scene viewport textures are created / resized (triggers IOSurface creation
+    // in editor-server mode when use_iosurface is true).
+    const w: u32 = @intCast(width);
+    const h: u32 = @intCast(height);
+    try ctx.layer.renderer.setSceneViewportSize(w, h);
 
     try ctx.reply(.{});
 }
@@ -88,6 +96,17 @@ pub fn detachFromParent(ctx: *Ctx) !void {
     const win = ctx.layer.window;
     _ = win.detachFromParent();
     try ctx.reply(.{});
+}
+
+/// Return the IOSurface id for the viewport's color texture.
+/// Electron uses IOSurfaceLookup() with this id to display the rendered frame.
+pub fn getSurfaceId(ctx: *Ctx) !void {
+    const sv = &ctx.layer.renderer.scene_viewport;
+    try ctx.reply(.{
+        .surfaceId = sv.iosurface_id,
+        .width = sv.width,
+        .height = sv.height,
+    });
 }
 
 // ── Render settings ──────────────────────────────────────────────

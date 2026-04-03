@@ -42,6 +42,29 @@ contextBridge.exposeInMainWorld("guavaEngine", {
     ipcRenderer.on("engine:error", handler);
     return () => ipcRenderer.removeListener("engine:error", handler);
   },
+
+  // ── IOSurface viewport (macOS) ─────────────────────────────────
+
+  /** Attach an IOSurface layer to the Electron window at the given rect */
+  viewportAttachSurface: (
+    surfaceId: number,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+  ): Promise<boolean> =>
+    ipcRenderer.invoke("viewport:attachSurface", surfaceId, x, y, w, h),
+
+  /** Update the IOSurface layer's position/size */
+  viewportUpdateFrame: (x: number, y: number, w: number, h: number): Promise<void> =>
+    ipcRenderer.invoke("viewport:updateFrame", x, y, w, h),
+
+  /** Replace the IOSurface (e.g. after engine-side resize) */
+  viewportUpdateSurface: (surfaceId: number): Promise<void> =>
+    ipcRenderer.invoke("viewport:updateSurface", surfaceId),
+
+  /** Remove the IOSurface layer */
+  viewportDetach: (): Promise<void> => ipcRenderer.invoke("viewport:detach"),
 });
 
 /** Type declaration for the exposed API (used in renderer) */
@@ -54,4 +77,8 @@ export interface GuavaEngineAPI {
   onEvent(callback: (event: string, data: unknown) => void): () => void;
   onConnected(callback: () => void): () => void;
   onError(callback: (error: string) => void): () => void;
+  viewportAttachSurface(surfaceId: number, x: number, y: number, w: number, h: number): Promise<boolean>;
+  viewportUpdateFrame(x: number, y: number, w: number, h: number): Promise<void>;
+  viewportUpdateSurface(surfaceId: number): Promise<void>;
+  viewportDetach(): Promise<void>;
 }
