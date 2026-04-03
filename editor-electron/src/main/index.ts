@@ -160,7 +160,12 @@ app.whenReady().then(async () => {
   try {
     await startEngine();
     setupSubscriptionForwarding();
-    await attachEngineViewport();
+    // NOTE: attachEngineViewport() is intentionally skipped.
+    // Electron's getNativeWindowHandle() returns an NSView* pointer that is only
+    // valid inside Electron's own process address space. The engine runs as a
+    // separate child process, so the pointer is meaningless there and causes a
+    // segfault. Viewport positioning is handled by viewport.setRect (screen-
+    // coordinate sync in Viewport.tsx), which works correctly cross-process.
     mainWindow.webContents.send("engine:connected");
   } catch (err) {
     console.error("[Main] Failed to start engine:", err);

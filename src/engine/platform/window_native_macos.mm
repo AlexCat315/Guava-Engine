@@ -141,26 +141,34 @@ extern "C" bool guava_window_attach_to_parent_nsview(void* child_sdl_window, voi
             return false;
         }
 
-        NSView* parent_view = (__bridge NSView*)parent_nsview_ptr;
-        NSWindow* parent_window = [parent_view window];
-        if (parent_window == nil) {
+        // Safety: the parent pointer may come from a different process (e.g.
+        // Electron) and be invalid in our address space. Wrap ObjC messaging
+        // in @try/@catch to prevent a segfault from killing the engine.
+        @try {
+            NSView* parent_view = (__bridge NSView*)parent_nsview_ptr;
+            NSWindow* parent_window = [parent_view window];
+            if (parent_window == nil) {
+                return false;
+            }
+
+            // Remove from previous parent if any
+            NSWindow* current_parent = [child_window parentWindow];
+            if (current_parent != nil) {
+                [current_parent removeChildWindow:child_window];
+            }
+
+            // Attach as child — child moves with parent, stays on top
+            [parent_window addChildWindow:child_window ordered:NSWindowAbove];
+
+            // Make child window borderless and non-activating
+            child_window.styleMask = NSWindowStyleMaskBorderless;
+            child_window.level = parent_window.level;
+
+            return true;
+        } @catch (NSException* exception) {
+            NSLog(@"[Guava] attachToParent failed: %@ — %@", exception.name, exception.reason);
             return false;
         }
-
-        // Remove from previous parent if any
-        NSWindow* current_parent = [child_window parentWindow];
-        if (current_parent != nil) {
-            [current_parent removeChildWindow:child_window];
-        }
-
-        // Attach as child — child moves with parent, stays on top
-        [parent_window addChildWindow:child_window ordered:NSWindowAbove];
-
-        // Make child window borderless and non-activating
-        child_window.styleMask = NSWindowStyleMaskBorderless;
-        child_window.level = parent_window.level;
-
-        return true;
     }
 }
 
