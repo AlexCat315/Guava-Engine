@@ -73,6 +73,18 @@ export type AssetType =
   | "prefab"
   | "animation";
 
+export type EditorUtilityStatus = "ready" | "load_error" | "init_error" | "update_error";
+
+export interface EditorUtilitySnapshot {
+  handle: number;
+  name: string;
+  description: string;
+  sourcePath: string;
+  status: EditorUtilityStatus;
+  lastError: string;
+  open: boolean;
+}
+
 export const ErrorCode = {
   ParseError: -32700,
   InvalidRequest: -32600,

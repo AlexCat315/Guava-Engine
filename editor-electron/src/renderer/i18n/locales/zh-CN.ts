@@ -123,6 +123,8 @@ export const zhCN: TranslationKeys = {
     connectingToEngine: "正在连接引擎...",
     tabConsole: "控制台",
     tabAssets: "资产",
+    tabTimeline: "时间线",
+    tabUtilities: "AI 工具",
   },
 
   // ── Command Timeline ──────────────────────────────────
@@ -130,5 +132,23 @@ export const zhCN: TranslationKeys = {
     title: "命令时间线",
     noHistory: "无撤销历史",
     current: "当前",
+  },
+
+  // ── Editor Utilities ─────────────────────────────────
+  editorUtilities: {
+    title: "AI 工具",
+    runtimeUnavailable: "编辑器工具运行时不可用。",
+    noUtilitiesLoaded: "未加载任何编辑器工具。使用 MCP compile_editor_utility 来添加。",
+    loadedUtilities: "已加载工具",
+    panelContent: "面板内容",
+    noPanelsOpen: "当前没有打开的工具面板。请在上方切换工具开关以显示。",
+    source: "来源",
+    status: "状态",
+    open: "打开",
+    unload: "卸载",
+    statusReady: "就绪",
+    statusLoadError: "加载错误",
+    statusInitError: "初始化错误",
+    statusUpdateError: "更新错误",
   },
 } as const;

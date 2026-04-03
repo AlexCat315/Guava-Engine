@@ -9,6 +9,7 @@ import { RenderSettingsPanel } from "./panels/RenderSettings";
 import { AssetBrowser } from "./panels/AssetBrowser";
 import { ViewportStatus } from "./panels/ViewportStatus";
 import { CommandTimeline } from "./panels/CommandTimeline";
+import { EditorUtilities } from "./panels/EditorUtilities";
 import { useI18n } from "./i18n";
 import type { EntityNode, LogEntry, GizmoMode } from "../shared/rpc-types";
 
@@ -26,7 +27,7 @@ export function App() {
   const [selectedEntity, setSelectedEntity] = useState<number | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [gizmoMode, setGizmoMode] = useState<GizmoMode>("translate");
-  const [bottomTab, setBottomTab] = useState<"console" | "assets" | "timeline">("console");
+  const [bottomTab, setBottomTab] = useState<"console" | "assets" | "timeline" | "utilities">("console");
 
   useEffect(() => {
     const cleanupConnected = window.guavaEngine.onConnected(() => {
@@ -196,12 +197,20 @@ export function App() {
           >
             {t.app.tabTimeline}
           </button>
+          <button
+            style={{ ...styles.tab, ...(bottomTab === "utilities" ? styles.tabActive : {}) }}
+            onClick={() => setBottomTab("utilities")}
+          >
+            {t.app.tabUtilities}
+          </button>
         </div>
         <div style={styles.bottomContent}>
           {bottomTab === "console" ? (
             <Console logs={logs} onClear={handleClearLogs} />
           ) : bottomTab === "assets" ? (
             <AssetBrowser connected={connected} />
+          ) : bottomTab === "utilities" ? (
+            <EditorUtilities connected={connected} />
           ) : (
             <CommandTimeline connected={connected} />
           )}

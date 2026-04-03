@@ -125,6 +125,8 @@ export const en = {
     connectingToEngine: "Connecting to engine...",
     tabConsole: "Console",
     tabAssets: "Assets",
+    tabTimeline: "Timeline",
+    tabUtilities: "AI Utilities",
   },
 
   // ── Command Timeline ──────────────────────────────────
@@ -132,6 +134,24 @@ export const en = {
     title: "Command Timeline",
     noHistory: "No undo history",
     current: "Current",
+  },
+
+  // ── Editor Utilities ─────────────────────────────────
+  editorUtilities: {
+    title: "AI Utilities",
+    runtimeUnavailable: "Editor utility runtime is not available.",
+    noUtilitiesLoaded: "No editor utilities are loaded. Use MCP compile_editor_utility to add one.",
+    loadedUtilities: "Loaded Utilities",
+    panelContent: "Panel Content",
+    noPanelsOpen: "No utility panels are currently open. Toggle a utility above to display it here.",
+    source: "Source",
+    status: "Status",
+    open: "Open",
+    unload: "Unload",
+    statusReady: "Ready",
+    statusLoadError: "Load Error",
+    statusInitError: "Init Error",
+    statusUpdateError: "Update Error",
   },
 };
 
