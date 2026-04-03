@@ -1,6 +1,12 @@
 import React from "react";
+import type { GizmoMode } from "../../shared/rpc-types";
 
-export function Toolbar() {
+interface ToolbarProps {
+  gizmoMode: GizmoMode;
+  onGizmoModeChange: (mode: GizmoMode) => void;
+}
+
+export function Toolbar({ gizmoMode, onGizmoModeChange }: ToolbarProps) {
   const handlePlay = () => window.guavaEngine.call("playback.play", {});
   const handlePause = () => window.guavaEngine.call("playback.pause", {});
   const handleStop = () => window.guavaEngine.call("playback.stop", {});
@@ -21,9 +27,24 @@ export function Toolbar() {
       </div>
       <div style={styles.divider} />
       <div style={styles.section}>
-        <ToolButton icon="↕" tooltip="Translate (W)" />
-        <ToolButton icon="⟳" tooltip="Rotate (E)" />
-        <ToolButton icon="⤢" tooltip="Scale (R)" />
+        <ToolButton
+          icon="↕"
+          tooltip="Translate (W)"
+          active={gizmoMode === "translate"}
+          onClick={() => onGizmoModeChange("translate")}
+        />
+        <ToolButton
+          icon="⟳"
+          tooltip="Rotate (E)"
+          active={gizmoMode === "rotate"}
+          onClick={() => onGizmoModeChange("rotate")}
+        />
+        <ToolButton
+          icon="⤢"
+          tooltip="Scale (R)"
+          active={gizmoMode === "scale"}
+          onClick={() => onGizmoModeChange("scale")}
+        />
       </div>
       <div style={{ flex: 1 }} />
       <div style={styles.section}>
@@ -37,13 +58,26 @@ function ToolButton({
   icon,
   tooltip,
   onClick,
+  active,
 }: {
   icon: string;
   tooltip: string;
   onClick?: () => void;
+  active?: boolean;
 }) {
   return (
-    <button style={styles.button} title={tooltip} onClick={onClick}>
+    <button
+      style={{
+        ...styles.button,
+        ...(active && {
+          background: "#45475a",
+          borderColor: "#89b4fa",
+          color: "#89b4fa",
+        }),
+      }}
+      title={tooltip}
+      onClick={onClick}
+    >
       {icon}
     </button>
   );
@@ -81,7 +115,7 @@ const styles = {
     padding: "4px 8px",
     fontSize: 14,
     lineHeight: 1,
-    transition: "background 0.1s",
+    transition: "all 0.1s",
   },
   brand: {
     fontSize: 11,

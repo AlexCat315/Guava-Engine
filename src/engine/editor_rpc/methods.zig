@@ -248,6 +248,34 @@ const handlers = struct {
         ctx.layer.playback_controller.setState(.stopped);
         try ctx.reply(.{});
     }
+
+    pub fn @"scene.duplicateEntity"(ctx: *Ctx) !void {
+        const eid = try ctx.param(u64, "entityId");
+        const entity = ctx.layer.world.getEntityConst(eid) orelse return error.EntityNotFound;
+
+        const name_src = entity.name;
+        const copy_name = try std.fmt.allocPrint(ctx.allocator, "{s} (Copy)", .{name_src});
+        defer ctx.allocator.free(copy_name);
+
+        const owned = try ctx.layer.world.allocator.dupe(u8, copy_name);
+        const new_id = try ctx.layer.world.createEntity(.{
+            .name = owned,
+            .parent = entity.parent,
+            .local_transform = entity.local_transform,
+        });
+        try ctx.reply(.{ .entityId = new_id });
+    }
+
+    pub fn @"console.clear"(ctx: *Ctx) !void {
+        // Log buffer lives Electron-side; engine acknowledges the request.
+        try ctx.reply(.{});
+    }
+
+    pub fn @"viewport.setGizmoMode"(ctx: *Ctx) !void {
+        // TODO: wire to EditorState.manipulation_mode when bridge is available
+        _ = try ctx.param([]const u8, "mode");
+        try ctx.reply(.{});
+    }
 };
 
 // Also declare subscriptions (just names — detection logic is in subscriptions.zig)

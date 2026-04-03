@@ -4,7 +4,7 @@ import { SceneHierarchy } from "./panels/SceneHierarchy";
 import { Inspector } from "./panels/Inspector";
 import { Console } from "./panels/Console";
 import { Toolbar } from "./panels/Toolbar";
-import type { EntityNode, LogEntry } from "../shared/rpc-types";
+import type { EntityNode, LogEntry, GizmoMode } from "../shared/rpc-types";
 
 declare global {
   interface Window {
@@ -18,6 +18,7 @@ export function App() {
   const [hierarchy, setHierarchy] = useState<EntityNode[]>([]);
   const [selectedEntity, setSelectedEntity] = useState<number | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [gizmoMode, setGizmoMode] = useState<GizmoMode>("translate");
 
   useEffect(() => {
     const cleanupConnected = window.guavaEngine.onConnected(() => {
@@ -53,10 +54,30 @@ export function App() {
       }
     });
 
+    // Keyboard shortcuts
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      switch (e.key.toLowerCase()) {
+        case "w": setGizmoMode("translate"); handleGizmoChange("translate"); break;
+        case "e": setGizmoMode("rotate"); handleGizmoChange("rotate"); break;
+        case "r": setGizmoMode("scale"); handleGizmoChange("scale"); break;
+        case "delete":
+        case "backspace":
+          if (selectedEntity != null) {
+            window.guavaEngine.call("scene.deleteEntity", { entityId: selectedEntity });
+            setSelectedEntity(null);
+            refreshHierarchy();
+          }
+          break;
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+
     return () => {
       cleanupConnected();
       cleanupError();
       cleanupEvents();
+      window.removeEventListener("keydown", handleKeyDown);
     };
   }, []);
 
@@ -83,6 +104,16 @@ export function App() {
     }
   }, []);
 
+  const handleGizmoChange = useCallback((mode: GizmoMode) => {
+    setGizmoMode(mode);
+    window.guavaEngine.call("viewport.setGizmoMode", { mode }).catch(() => {});
+  }, []);
+
+  const handleClearLogs = useCallback(() => {
+    setLogs([]);
+    window.guavaEngine.call("console.clear", {}).catch(() => {});
+  }, []);
+
   if (error) {
     return (
       <div style={styles.errorContainer}>
@@ -106,13 +137,14 @@ export function App() {
 
   return (
     <div style={styles.root}>
-      <Toolbar />
+      <Toolbar gizmoMode={gizmoMode} onGizmoModeChange={handleGizmoChange} />
       <div style={styles.mainContent}>
         <div style={styles.leftPanel}>
           <SceneHierarchy
             roots={hierarchy}
             selectedId={selectedEntity}
             onSelect={handleSelectEntity}
+            onRefresh={refreshHierarchy}
           />
         </div>
         <div style={styles.viewport}>
@@ -128,7 +160,7 @@ export function App() {
         </div>
       </div>
       <div style={styles.bottomPanel}>
-        <Console logs={logs} />
+        <Console logs={logs} onClear={handleClearLogs} />
       </div>
     </div>
   );

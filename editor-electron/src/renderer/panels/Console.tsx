@@ -1,9 +1,14 @@
-import React, { useRef, useEffect } from "react";
+import React, { useRef, useEffect, useState } from "react";
 import type { LogEntry } from "../../shared/rpc-types";
 
 interface ConsoleProps {
   logs: LogEntry[];
+  onClear: () => void;
 }
+
+type LogLevel = "debug" | "info" | "warn" | "error";
+
+const LEVELS: LogLevel[] = ["debug", "info", "warn", "error"];
 
 const levelColors: Record<string, string> = {
   debug: "#6c7086",
@@ -12,24 +17,56 @@ const levelColors: Record<string, string> = {
   error: "#f38ba8",
 };
 
-export function Console({ logs }: ConsoleProps) {
+export function Console({ logs, onClear }: ConsoleProps) {
   const endRef = useRef<HTMLDivElement>(null);
+  const [activeFilters, setActiveFilters] = useState<Set<LogLevel>>(new Set(LEVELS));
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logs.length]);
 
+  const toggleFilter = (level: LogLevel) => {
+    setActiveFilters((prev) => {
+      const next = new Set(prev);
+      next.has(level) ? next.delete(level) : next.add(level);
+      return next;
+    });
+  };
+
+  const filtered = logs.filter((log) => activeFilters.has(log.level as LogLevel));
+
   return (
     <div style={styles.container}>
       <div style={styles.header}>
         <span style={styles.title}>Console</span>
-        <span style={styles.count}>{logs.length}</span>
+        <span style={styles.count}>{filtered.length}</span>
+        <div style={styles.filters}>
+          {LEVELS.map((level) => (
+            <button
+              key={level}
+              style={{
+                ...styles.filterBtn,
+                color: levelColors[level],
+                opacity: activeFilters.has(level) ? 1 : 0.3,
+                borderColor: activeFilters.has(level) ? levelColors[level] : "transparent",
+              }}
+              onClick={() => toggleFilter(level)}
+              title={`Toggle ${level}`}
+            >
+              {level[0].toUpperCase()}
+            </button>
+          ))}
+        </div>
+        <div style={{ flex: 1 }} />
+        <button style={styles.clearBtn} onClick={onClear} title="Clear console">
+          ✕
+        </button>
       </div>
       <div style={styles.logList}>
-        {logs.length === 0 ? (
+        {filtered.length === 0 ? (
           <div style={styles.empty}>No logs</div>
         ) : (
-          logs.map((log, i) => (
+          filtered.map((log, i) => (
             <div key={i} style={styles.logEntry}>
               <span style={{ ...styles.level, color: levelColors[log.level] ?? "#cdd6f4" }}>
                 [{log.level.toUpperCase()}]
@@ -54,7 +91,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderBottom: "1px solid #313244",
     fontSize: 12,
     fontWeight: 600,
-    textTransform: "uppercase" as const,
+    textTransform: "uppercase",
     letterSpacing: 0.5,
     color: "#a6adc8",
   },
@@ -66,8 +103,33 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 10,
     color: "#a6adc8",
   },
+  filters: {
+    display: "flex",
+    gap: 2,
+    marginLeft: 8,
+  },
+  filterBtn: {
+    background: "transparent",
+    border: "1px solid transparent",
+    borderRadius: 3,
+    cursor: "pointer",
+    padding: "1px 5px",
+    fontSize: 10,
+    fontWeight: 700,
+    fontFamily: "monospace",
+    transition: "opacity 0.1s",
+  },
+  clearBtn: {
+    background: "transparent",
+    border: "1px solid transparent",
+    borderRadius: 3,
+    color: "#6c7086",
+    cursor: "pointer",
+    padding: "1px 5px",
+    fontSize: 12,
+  },
   logList: { flex: 1, overflow: "auto", padding: 4, fontFamily: "monospace", fontSize: 12 },
-  empty: { padding: 16, textAlign: "center" as const, opacity: 0.4 },
+  empty: { padding: 16, textAlign: "center", opacity: 0.4 },
   logEntry: {
     display: "flex",
     gap: 8,
@@ -75,5 +137,5 @@ const styles: Record<string, React.CSSProperties> = {
     borderBottom: "1px solid #181825",
   },
   level: { minWidth: 55, fontWeight: 600, fontSize: 11 },
-  message: { color: "#cdd6f4", wordBreak: "break-all" as const },
+  message: { color: "#cdd6f4", wordBreak: "break-all" },
 };
