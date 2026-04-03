@@ -854,6 +854,10 @@ fn drawInspectorPanel(state: *EditorState, layer_context: *engine.core.LayerCont
     const entry = selectedAsset(state) orelse return;
     const full_width = gui.contentRegionAvail()[0];
 
+    // Ensure light text on the dark inspector background
+    gui.pushStyleColor(.text, .{ 0.88, 0.90, 0.94, 1.0 });
+    defer gui.popStyleColor(1);
+
     // ── Header: type badge + name ──
     {
         const tint = assetIconTint(entry.kind);
@@ -976,6 +980,10 @@ fn drawProjectPanelHeader(state: *EditorState, layer_context: *engine.core.Layer
     const header_width = gui.contentRegionAvail()[0];
     const compact = header_width < 400.0;
 
+    // Ensure toolbar controls have readable light text on dark backgrounds
+    gui.pushStyleColor(.text, .{ 0.88, 0.90, 0.94, 1.0 });
+    defer gui.popStyleColor(1);
+
     // ── Row 1: [← Back] [breadcrumb...] [Search] [⊞/≡] [+] ──
     {
         const btn_h: f32 = 24.0;
@@ -1041,16 +1049,7 @@ fn drawProjectPanelHeader(state: *EditorState, layer_context: *engine.core.Layer
             }
             gui.sameLine();
             if (gui.buttonEx("+##import_menu", 24.0, btn_h)) {
-                gui.openPopup("##import_popup");
-            }
-            if (gui.beginPopup("##import_popup")) {
-                if (gui.selectable(state.text(.import_assets), false, false, 0.0, 0.0)) {
-                    importAssetsFromFinder(state, layer_context);
-                }
-                if (gui.selectable("Import Folder", false, false, 0.0, 0.0)) {
-                    importFolderFromFinder(state, layer_context);
-                }
-                gui.endPopup();
+                importFromFinder(state, layer_context);
             }
         } else {
             // Wide: full controls
@@ -1072,16 +1071,7 @@ fn drawProjectPanelHeader(state: *EditorState, layer_context: *engine.core.Layer
 
             gui.sameLine();
             if (gui.buttonEx("+##import_btn", 24.0, btn_h)) {
-                gui.openPopup("##import_popup_wide");
-            }
-            if (gui.beginPopup("##import_popup_wide")) {
-                if (gui.selectable(state.text(.import_assets), false, false, 0.0, 0.0)) {
-                    importAssetsFromFinder(state, layer_context);
-                }
-                if (gui.selectable("Import Folder", false, false, 0.0, 0.0)) {
-                    importFolderFromFinder(state, layer_context);
-                }
-                gui.endPopup();
+                importFromFinder(state, layer_context);
             }
         }
     }
@@ -2298,7 +2288,8 @@ fn createNewScriptInDirectory(state: *EditorState, directory: []const u8, ext: [
     state.script_editor_open = true;
 }
 
-fn importAssetsFromFinder(state: *EditorState, layer_context: *engine.core.LayerContext) void {
+/// Unified import: opens a macOS NSOpenPanel that allows selecting both files and folders.
+fn importFromFinder(state: *EditorState, layer_context: *engine.core.LayerContext) void {
     const allocator = state.allocator orelse return;
 
     // Build destination directory path
@@ -2310,113 +2301,81 @@ fn importAssetsFromFinder(state: *EditorState, layer_context: *engine.core.Layer
     else
         std.fmt.bufPrint(&dest_dir_buf, "{s}{s}", .{ root_path, current_dir }) catch return;
 
-    // Use osascript to open a macOS file picker dialog (allows multiple files)
+    // Use NSOpenPanel via osascript — allows choosing both files and folders
     const result = std.process.Child.run(.{
         .allocator = allocator,
         .argv = &.{
             "/usr/bin/osascript",
             "-e",
-            "set chosenFiles to choose file with prompt \"Import Assets\" with multiple selections allowed",
-            "-e",
-            "set output to \"\"",
-            "-e",
-            "repeat with f in chosenFiles",
-            "-e",
-            "set output to output & POSIX path of f & \"\n\"",
-            "-e",
-            "end repeat",
-            "-e",
-            "return output",
+            \\set thePanel to current application's NSOpenPanel's openPanel()
+            \\thePanel's setCanChooseFiles:true
+            \\thePanel's setCanChooseDirectories:true
+            \\thePanel's setAllowsMultipleSelection:true
+            \\thePanel's setPrompt:"Import"
+            \\thePanel's setMessage:"Select files or folders to import into the project"
+            \\set theResult to thePanel's runModal() as integer
+            \\if theResult is 1 then
+            \\  set output to ""
+            \\  set theURLs to thePanel's URLs() as list
+            \\  repeat with u in theURLs
+            \\    set output to output & (u's |path|() as text) & linefeed
+            \\  end repeat
+            \\  return output
+            \\else
+            \\  error number -128
+            \\end if
+            ,
         },
     }) catch return;
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    if (result.term.Exited != 0) return; // User cancelled or error
+    if (result.term.Exited != 0) return; // User cancelled
 
-    // Parse the output: one POSIX file path per line
     var lines = std.mem.splitScalar(u8, result.stdout, '\n');
     var imported: usize = 0;
     while (lines.next()) |line| {
         const trimmed = std.mem.trim(u8, line, " \t\r\n");
         if (trimmed.len == 0) continue;
 
-        // Extract filename from source path
-        const filename = if (std.mem.lastIndexOfScalar(u8, trimmed, '/')) |idx| trimmed[idx + 1 ..] else trimmed;
-        if (filename.len == 0) continue;
+        // Strip trailing slash
+        const source = if (trimmed.len > 1 and trimmed[trimmed.len - 1] == '/')
+            trimmed[0 .. trimmed.len - 1]
+        else
+            trimmed;
 
-        // Build destination path
+        // Extract basename
+        const basename = if (std.mem.lastIndexOfScalar(u8, source, '/')) |idx| source[idx + 1 ..] else source;
+        if (basename.len == 0) continue;
+
         var dest_path_buf: [768]u8 = undefined;
-        const dest_path = std.fmt.bufPrint(&dest_path_buf, "{s}/{s}", .{ dest_dir, filename }) catch continue;
+        const dest_path = std.fmt.bufPrint(&dest_path_buf, "{s}/{s}", .{ dest_dir, basename }) catch continue;
 
-        // Copy using /bin/cp (source is absolute, dest is relative)
+        // Check if source is a directory
+        const stat = std.fs.cwd().statFile(source) catch {
+            // statFile fails on directories, treat as directory (use -R)
+            var cp = std.process.Child.init(
+                &.{ "/bin/cp", "-R", source, dest_path },
+                allocator,
+            );
+            _ = cp.spawnAndWait() catch continue;
+            imported += 1;
+            continue;
+        };
+        _ = stat;
+
+        // Regular file copy
         var cp = std.process.Child.init(
-            &.{ "/bin/cp", trimmed, dest_path },
+            &.{ "/bin/cp", source, dest_path },
             allocator,
         );
         _ = cp.spawnAndWait() catch continue;
-
         imported += 1;
     }
 
     if (imported > 0) {
         refreshAssetBrowser(state, layer_context) catch {};
     }
-}
-
-fn importFolderFromFinder(state: *EditorState, layer_context: *engine.core.LayerContext) void {
-    const allocator = state.allocator orelse return;
-
-    // Build destination directory path
-    const root_path = assetBrowserRootPath(state);
-    const current_dir = selectedDirectory(state);
-    var dest_dir_buf: [512]u8 = undefined;
-    const dest_dir = if (std.mem.eql(u8, current_dir, "/"))
-        std.fmt.bufPrint(&dest_dir_buf, "{s}", .{root_path}) catch return
-    else
-        std.fmt.bufPrint(&dest_dir_buf, "{s}{s}", .{ root_path, current_dir }) catch return;
-
-    // Use osascript to open a macOS folder picker dialog
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
-        .argv = &.{
-            "/usr/bin/osascript",
-            "-e",
-            "set chosenFolder to choose folder with prompt \"Import Folder\"",
-            "-e",
-            "return POSIX path of chosenFolder",
-        },
-    }) catch return;
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
-
-    if (result.term.Exited != 0) return; // User cancelled or error
-
-    const trimmed = std.mem.trim(u8, result.stdout, " \t\r\n");
-    if (trimmed.len == 0) return;
-
-    // Strip trailing slash from source
-    const source = if (trimmed.len > 1 and trimmed[trimmed.len - 1] == '/')
-        trimmed[0 .. trimmed.len - 1]
-    else
-        trimmed;
-
-    // Extract folder name from source path
-    const folder_name = if (std.mem.lastIndexOfScalar(u8, source, '/')) |idx| source[idx + 1 ..] else source;
-    if (folder_name.len == 0) return;
-
-    // Build destination: dest_dir/folder_name
-    var dest_path_buf: [768]u8 = undefined;
-    const dest_path = std.fmt.bufPrint(&dest_path_buf, "{s}/{s}", .{ dest_dir, folder_name }) catch return;
-
-    // Recursively copy using /bin/cp -R
-    var cp = std.process.Child.init(
-        &.{ "/bin/cp", "-R", source, dest_path },
-        allocator,
-    );
-    _ = cp.spawnAndWait() catch return;
-
-    refreshAssetBrowser(state, layer_context) catch {};
 }
 
 fn copySelectedAssetsToClipboard(state: *EditorState, is_cut: bool) void {

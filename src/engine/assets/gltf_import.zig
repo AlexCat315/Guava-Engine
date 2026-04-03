@@ -2609,6 +2609,36 @@ fn resolveTextureHandle(
     defer decoded.deinit();
     swizzleRgbaToBgra(decoded.pixels);
 
+    // Cap texture resolution to avoid excessive GPU memory and import time.
+    // Textures larger than max_import_texture_dim are box-filter downscaled.
+    const max_import_texture_dim: u32 = 2048;
+    var final_width = decoded.width;
+    var final_height = decoded.height;
+    var final_pixels = decoded.pixels;
+    var downscaled_buf: ?[]u8 = null;
+    defer if (downscaled_buf) |buf| world.allocator.free(buf);
+
+    if (decoded.width > max_import_texture_dim or decoded.height > max_import_texture_dim) {
+        var tw = decoded.width;
+        var th = decoded.height;
+        var src = decoded.pixels;
+
+        while (tw > max_import_texture_dim or th > max_import_texture_dim) {
+            const nw = @max(tw / 2, 1);
+            const nh = @max(th / 2, 1);
+            const dst = world.allocator.alloc(u8, nw * nh * 4) catch break;
+            boxFilterDownscale(src, tw, th, dst, nw, nh);
+            if (downscaled_buf) |prev| world.allocator.free(prev);
+            downscaled_buf = dst;
+            src = dst;
+            tw = nw;
+            th = nh;
+        }
+        final_width = tw;
+        final_height = th;
+        final_pixels = src;
+    }
+
     const generated_name = try std.fmt.allocPrint(world.allocator, "{s}_texture_{d}", .{
         source_stem,
         index,
@@ -2617,10 +2647,10 @@ fn resolveTextureHandle(
 
     const handle = try world.resources.createTexture(.{
         .name = texture.name orelse image.name orelse generated_name,
-        .width = decoded.width,
-        .height = decoded.height,
+        .width = final_width,
+        .height = final_height,
         .format = .bgra8_unorm,
-        .pixels = decoded.pixels,
+        .pixels = final_pixels,
     });
     texture_handles[index] = handle;
 
@@ -2628,6 +2658,31 @@ fn resolveTextureHandle(
         .handle = handle,
         .created = true,
     };
+}
+
+/// 2x box-filter downscale: averages each 2x2 block of RGBA pixels.
+fn boxFilterDownscale(src: []const u8, sw: u32, sh: u32, dst: []u8, dw: u32, dh: u32) void {
+    var dy: u32 = 0;
+    while (dy < dh) : (dy += 1) {
+        var dx: u32 = 0;
+        while (dx < dw) : (dx += 1) {
+            const sx = dx * 2;
+            const sy = dy * 2;
+            const sx1 = @min(sx + 1, sw - 1);
+            const sy1 = @min(sy + 1, sh - 1);
+            const off00 = (sy * sw + sx) * 4;
+            const off10 = (sy * sw + sx1) * 4;
+            const off01 = (sy1 * sw + sx) * 4;
+            const off11 = (sy1 * sw + sx1) * 4;
+            const di = (dy * dw + dx) * 4;
+            var ch: u32 = 0;
+            while (ch < 4) : (ch += 1) {
+                const sum = @as(u32, src[off00 + ch]) + @as(u32, src[off10 + ch]) +
+                    @as(u32, src[off01 + ch]) + @as(u32, src[off11 + ch]);
+                dst[di + ch] = @intCast(sum / 4);
+            }
+        }
+    }
 }
 
 fn entityNameForPrimitive(
