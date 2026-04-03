@@ -464,6 +464,173 @@ pub const Methods = struct {
         };
         pub const Result = struct {};
     };
+
+    // ── plugin namespace ─────────────────────────────────────────
+
+    pub const @"plugin.list" = struct {
+        pub const Params = struct {};
+        pub const Result = struct {
+            plugins: []const PluginInfo,
+        };
+
+        pub const PluginInfo = struct {
+            name: []const u8,
+            pluginType: []const u8,
+            source: []const u8,
+            lifecycle: []const u8,
+            lastError: ?[]const u8 = null,
+        };
+    };
+
+    pub const @"plugin.enable" = struct {
+        pub const Params = struct { name: []const u8 };
+        pub const Result = struct {};
+    };
+
+    pub const @"plugin.disable" = struct {
+        pub const Params = struct { name: []const u8 };
+        pub const Result = struct {};
+    };
+
+    pub const @"plugin.unload" = struct {
+        pub const Params = struct { name: []const u8 };
+        pub const Result = struct {};
+    };
+
+    pub const @"plugin.rescan" = struct {
+        pub const Params = struct { path: ?[]const u8 = null };
+        pub const Result = struct {};
+    };
+
+    // ── style namespace ──────────────────────────────────────────
+
+    pub const @"style.getActiveStyle" = struct {
+        pub const Params = struct {};
+        pub const Result = struct {
+            name: []const u8,
+            displayName: []const u8,
+            meshProgram: []const u8,
+            shadowProgram: ?[]const u8 = null,
+            source: []const u8,
+            path: ?[]const u8 = null,
+            disabledPasses: []const []const u8,
+            configSchema: []const StyleParamSchema,
+            paramValues: []const StyleParamValue,
+        };
+
+        pub const StyleParamSchema = struct {
+            name: []const u8,
+            displayName: []const u8,
+            paramType: []const u8,
+            defaultValue: f32,
+            minValue: f32,
+            maxValue: f32,
+        };
+
+        pub const StyleParamValue = struct {
+            name: []const u8,
+            value: f32,
+        };
+    };
+
+    pub const @"style.listStyles" = struct {
+        pub const Params = struct {};
+        pub const Result = struct {
+            styles: []const StyleListItem,
+        };
+
+        pub const StyleListItem = struct {
+            name: []const u8,
+            displayName: []const u8,
+            source: []const u8,
+            isActive: bool,
+        };
+    };
+
+    pub const @"style.setActiveStyle" = struct {
+        pub const Params = struct { name: []const u8 };
+        pub const Result = struct {};
+    };
+
+    pub const @"style.setParam" = struct {
+        pub const Params = struct {
+            styleName: []const u8,
+            paramName: []const u8,
+            value: f32,
+        };
+        pub const Result = struct {};
+    };
+
+    // ── scene.spawnActor ─────────────────────────────────────────
+
+    pub const @"scene.spawnActor" = struct {
+        pub const Params = struct { kind: []const u8 };
+        pub const Result = struct { entityId: u64 };
+    };
+
+    // ── renderqueue namespace ────────────────────────────────────
+
+    pub const @"renderqueue.listJobs" = struct {
+        pub const Params = struct {};
+        pub const Result = struct {
+            jobs: []const RenderJobInfo,
+            isRunning: bool,
+        };
+
+        pub const RenderJobInfo = struct {
+            index: u64,
+            sequencePath: []const u8,
+            outputDir: []const u8,
+            width: u32,
+            height: u32,
+            format: []const u8,
+            samples: u32,
+            bounces: u32,
+            usePathTrace: bool,
+            encodeVideo: bool,
+            videoCodec: []const u8,
+            status: []const u8,
+            totalFrames: u32,
+            currentFrame: u32,
+            statusMessage: []const u8,
+        };
+    };
+
+    pub const @"renderqueue.addJob" = struct {
+        pub const Params = struct {
+            sequencePath: []const u8,
+            outputDir: ?[]const u8 = null,
+            width: ?u64 = null,
+            height: ?u64 = null,
+            format: ?[]const u8 = null,
+            samples: ?u64 = null,
+            bounces: ?u64 = null,
+            usePathTrace: ?bool = null,
+            encodeVideo: ?bool = null,
+            videoCodec: ?[]const u8 = null,
+        };
+        pub const Result = struct { index: u64 };
+    };
+
+    pub const @"renderqueue.removeJob" = struct {
+        pub const Params = struct { index: u64 };
+        pub const Result = struct {};
+    };
+
+    pub const @"renderqueue.startQueue" = struct {
+        pub const Params = struct {};
+        pub const Result = struct {};
+    };
+
+    pub const @"renderqueue.cancelQueue" = struct {
+        pub const Params = struct {};
+        pub const Result = struct {};
+    };
+
+    pub const @"renderqueue.clearCompleted" = struct {
+        pub const Params = struct {};
+        pub const Result = struct {};
+    };
 };
 
 // ═══════════════════════════════════════════════════════════════════

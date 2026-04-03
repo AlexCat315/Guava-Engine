@@ -13,6 +13,10 @@ import { EditorUtilities } from "./panels/EditorUtilities";
 import { CameraBookmarks } from "./panels/CameraBookmarks";
 import { RhiStats } from "./panels/RhiStats";
 import { AudioMixer } from "./panels/AudioMixer";
+import { PluginManager } from "./panels/PluginManager";
+import { StyleInspector } from "./panels/StyleInspector";
+import { PlaceActors } from "./panels/PlaceActors";
+import { RenderQueue } from "./panels/RenderQueue";
 import { useI18n } from "./i18n";
 import type { EntityNode, LogEntry, GizmoMode } from "../shared/rpc-types";
 
@@ -30,7 +34,7 @@ export function App() {
   const [selectedEntity, setSelectedEntity] = useState<number | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [gizmoMode, setGizmoMode] = useState<GizmoMode>("translate");
-  const [bottomTab, setBottomTab] = useState<"console" | "assets" | "timeline" | "utilities" | "camera" | "rhistats" | "audio">("console");
+  const [bottomTab, setBottomTab] = useState<"console" | "assets" | "timeline" | "utilities" | "camera" | "rhistats" | "audio" | "plugins" | "style" | "placeactors" | "renderqueue">("console");
 
   useEffect(() => {
     const cleanupConnected = window.guavaEngine.onConnected(() => {
@@ -224,6 +228,30 @@ export function App() {
           >
             Audio
           </button>
+          <button
+            style={{ ...styles.tab, ...(bottomTab === "plugins" ? styles.tabActive : {}) }}
+            onClick={() => setBottomTab("plugins")}
+          >
+            Plugins
+          </button>
+          <button
+            style={{ ...styles.tab, ...(bottomTab === "style" ? styles.tabActive : {}) }}
+            onClick={() => setBottomTab("style")}
+          >
+            Style
+          </button>
+          <button
+            style={{ ...styles.tab, ...(bottomTab === "placeactors" ? styles.tabActive : {}) }}
+            onClick={() => setBottomTab("placeactors")}
+          >
+            Place
+          </button>
+          <button
+            style={{ ...styles.tab, ...(bottomTab === "renderqueue" ? styles.tabActive : {}) }}
+            onClick={() => setBottomTab("renderqueue")}
+          >
+            Render Q
+          </button>
         </div>
         <div style={styles.bottomContent}>
           {bottomTab === "console" ? (
@@ -238,6 +266,14 @@ export function App() {
             <RhiStats connected={connected} />
           ) : bottomTab === "audio" ? (
             <AudioMixer connected={connected} />
+          ) : bottomTab === "plugins" ? (
+            <PluginManager connected={connected} />
+          ) : bottomTab === "style" ? (
+            <StyleInspector connected={connected} />
+          ) : bottomTab === "placeactors" ? (
+            <PlaceActors connected={connected} />
+          ) : bottomTab === "renderqueue" ? (
+            <RenderQueue connected={connected} />
           ) : (
             <CommandTimeline connected={connected} />
           )}

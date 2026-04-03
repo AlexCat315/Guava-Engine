@@ -2,6 +2,7 @@
 const std = @import("std");
 const ctx_mod = @import("../ctx.zig");
 const scene_io = @import("../../scene/scene_io.zig");
+const components = @import("../../scene/components.zig");
 const Ctx = ctx_mod.Ctx;
 const World = ctx_mod.World;
 const EntityId = ctx_mod.EntityId;
@@ -95,6 +96,37 @@ pub fn listScenes(ctx: *Ctx) !void {
 
     try ctx.reply(.{ .scenes = names.items });
     for (names.items) |n| ctx.allocator.free(n);
+}
+
+pub fn spawnActor(ctx: *Ctx) !void {
+    const kind = try ctx.param([]const u8, "kind");
+    const world = ctx.layer.world;
+    const transform = components.Transform.identity();
+
+    const entity_id: u64 = if (std.mem.eql(u8, kind, "empty"))
+        try world.createEmptyEntity(transform)
+    else if (std.mem.eql(u8, kind, "camera"))
+        try world.createCameraEntity(transform)
+    else if (std.mem.eql(u8, kind, "cube"))
+        try world.createPrimitiveEntity(.cube, transform)
+    else if (std.mem.eql(u8, kind, "sphere"))
+        try world.createPrimitiveEntity(.sphere, transform)
+    else if (std.mem.eql(u8, kind, "plane"))
+        try world.createPrimitiveEntity(.plane, transform)
+    else if (std.mem.eql(u8, kind, "point_light"))
+        try world.createLightEntity(.point, transform, 24.0)
+    else if (std.mem.eql(u8, kind, "spot_light"))
+        try world.createLightEntity(.spot, transform, 24.0)
+    else if (std.mem.eql(u8, kind, "directional_light"))
+        try world.createLightEntity(.directional, transform, 3.0)
+    else if (std.mem.eql(u8, kind, "vfx_fountain"))
+        try world.createVfxEntity(.fountain, transform)
+    else if (std.mem.eql(u8, kind, "vfx_orbit"))
+        try world.createVfxEntity(.orbit, transform)
+    else
+        return error.InvalidArguments;
+
+    try ctx.reply(.{ .entityId = entity_id });
 }
 
 // ── Helpers (scene-domain only) ─────────────────────────────────

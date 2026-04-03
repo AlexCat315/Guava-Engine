@@ -113,6 +113,22 @@ export interface RpcMethods {
   "debug.resetRhiStats": { params: Record<string, never>; result: Record<string, never> };
   "audio.getMixerStatus": { params: Record<string, never>; result: { available: boolean; activeVoices: number; buses: { id: string; label: string; volume: number; playing: number }[] } };
   "audio.setBusVolume": { params: { busId: string; volume: number }; result: Record<string, never> };
+  "plugin.list": { params: Record<string, never>; result: { plugins: { name: string; pluginType: string; source: string; lifecycle: string; lastError?: string }[] } };
+  "plugin.enable": { params: { name: string }; result: Record<string, never> };
+  "plugin.disable": { params: { name: string }; result: Record<string, never> };
+  "plugin.unload": { params: { name: string }; result: Record<string, never> };
+  "plugin.rescan": { params: { path?: string }; result: Record<string, never> };
+  "style.getActiveStyle": { params: Record<string, never>; result: { name: string; displayName: string; meshProgram: string; shadowProgram?: string; source: string; path?: string; disabledPasses: string[]; configSchema: { name: string; displayName: string; paramType: string; defaultValue: number; minValue: number; maxValue: number }[]; paramValues: { name: string; value: number }[] } };
+  "style.listStyles": { params: Record<string, never>; result: { styles: { name: string; displayName: string; source: string; isActive: boolean }[] } };
+  "style.setActiveStyle": { params: { name: string }; result: Record<string, never> };
+  "style.setParam": { params: { styleName: string; paramName: string; value: number }; result: Record<string, never> };
+  "scene.spawnActor": { params: { kind: string }; result: { entityId: number } };
+  "renderqueue.listJobs": { params: Record<string, never>; result: { jobs: { index: number; sequencePath: string; outputDir: string; width: number; height: number; format: string; samples: number; bounces: number; usePathTrace: boolean; encodeVideo: boolean; videoCodec: string; status: string; totalFrames: number; currentFrame: number; statusMessage: string }[]; isRunning: boolean } };
+  "renderqueue.addJob": { params: { sequencePath: string; outputDir?: string; width?: number; height?: number; format?: string; samples?: number; bounces?: number; usePathTrace?: boolean; encodeVideo?: boolean; videoCodec?: string }; result: { index: number } };
+  "renderqueue.removeJob": { params: { index: number }; result: Record<string, never> };
+  "renderqueue.startQueue": { params: Record<string, never>; result: Record<string, never> };
+  "renderqueue.cancelQueue": { params: Record<string, never>; result: Record<string, never> };
+  "renderqueue.clearCompleted": { params: Record<string, never>; result: Record<string, never> };
 }
 
 // ── Subscription Events ───────────────────────────────────
