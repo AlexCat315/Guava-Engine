@@ -144,13 +144,11 @@ pub fn applyPtPreset(ctx: *Ctx) !void {
 
 pub fn setRenderOutput(ctx: *Ctx) !void {
     if (try ctx.paramOpt([]const u8, "preset")) |p| {
-        if (strEql(p, "viewport")) render_output_preset = .viewport
-        else if (strEql(p, "720p")) { render_output_preset = .custom; render_output_width = 1280; render_output_height = 720; }
-        else if (strEql(p, "1080p") or strEql(p, "hd_1080")) render_output_preset = .hd_1080
-        else if (strEql(p, "1440p") or strEql(p, "dci_2k")) render_output_preset = .dci_2k
-        else if (strEql(p, "4k") or strEql(p, "uhd_4k")) render_output_preset = .uhd_4k
-        else if (strEql(p, "custom")) render_output_preset = .custom
-        else return error.InvalidArguments;
+        if (strEql(p, "viewport")) render_output_preset = .viewport else if (strEql(p, "720p")) {
+            render_output_preset = .custom;
+            render_output_width = 1280;
+            render_output_height = 720;
+        } else if (strEql(p, "1080p") or strEql(p, "hd_1080")) render_output_preset = .hd_1080 else if (strEql(p, "1440p") or strEql(p, "dci_2k")) render_output_preset = .dci_2k else if (strEql(p, "4k") or strEql(p, "uhd_4k")) render_output_preset = .uhd_4k else if (strEql(p, "custom")) render_output_preset = .custom else return error.InvalidArguments;
     }
     if (try ctx.paramOpt(u64, "width")) |v| {
         render_output_width = @intCast(std.math.clamp(v, 64, 8192));
@@ -159,10 +157,7 @@ pub fn setRenderOutput(ctx: *Ctx) !void {
         render_output_height = @intCast(std.math.clamp(v, 64, 8192));
     }
     if (try ctx.paramOpt([]const u8, "format")) |f| {
-        if (strEql(f, "png")) render_output_format = .png
-        else if (strEql(f, "exr")) render_output_format = .exr
-        else if (strEql(f, "jpg")) render_output_format = .jpg
-        else return error.InvalidArguments;
+        if (strEql(f, "png")) render_output_format = .png else if (strEql(f, "exr")) render_output_format = .exr else if (strEql(f, "jpg")) render_output_format = .jpg else return error.InvalidArguments;
     }
     if (try ctx.paramOpt([]const u8, "path")) |p| {
         const len = @min(p.len, render_output_path.len);
