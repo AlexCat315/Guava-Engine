@@ -89,11 +89,11 @@ pub const paths = struct {
 
     pub const asset = struct {
         pub const scene = "assets/ui/icons/svg/film.svg";
-        pub const model = "assets/ui/icons/svg/cube.svg";
+        pub const model = "assets/ui/icons/svg/models.svg";
         pub const material = "assets/ui/icons/svg/paint-brush.svg";
         pub const texture = "assets/ui/icons/svg/photo.svg";
         pub const shader = "assets/ui/icons/svg/code-bracket.svg";
-        pub const script = "assets/ui/icons/svg/code-bracket.svg";
+        pub const script = "assets/ui/icons/svg/csharp.svg";
         pub const directory = "assets/ui/icons/svg/folder-f.svg";
         pub const unknown = "assets/ui/icons/svg/document-text.svg";
     };

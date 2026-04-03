@@ -316,6 +316,7 @@ pub const EditorLayer = struct {
         }
         try viewport.drawEditorUi(&self.state, &self.post_process_viewport_state, layer_context);
         try content_browser.flushMaterialThumbnailRequests(&self.state, layer_context);
+        try content_browser.flushModelThumbnailRequests(&self.state, layer_context);
         const mesh_edit_consumed = try mesh_edit.handleEditingShortcuts(&self.state, layer_context);
         if (!mesh_edit_consumed and !mesh_edit.isEditModeActive(&self.state)) {
             try manipulation.handleEditingShortcuts(&self.state, layer_context);

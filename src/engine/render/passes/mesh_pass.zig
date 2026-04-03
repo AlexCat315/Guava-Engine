@@ -351,6 +351,17 @@ pub const MeshSceneCache = struct {
         self.textures = .empty;
     }
 
+    pub fn invalidateAllResources(self: *MeshSceneCache, device: *rhi_mod.RhiDevice) void {
+        self.invalidateMaterialResources(device);
+        for (self.meshes.items) |*cached_mesh| {
+            device.releaseBuffer(&cached_mesh.wireframe_index_buffer);
+            device.releaseBuffer(&cached_mesh.index_buffer);
+            device.releaseBuffer(&cached_mesh.vertex_buffer);
+        }
+        self.meshes.deinit(self.allocator);
+        self.meshes = .empty;
+    }
+
     pub fn invalidateMeshResource(
         self: *MeshSceneCache,
         device: *rhi_mod.RhiDevice,

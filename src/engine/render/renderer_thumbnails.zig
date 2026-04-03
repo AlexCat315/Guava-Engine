@@ -1,10 +1,13 @@
 const std = @import("std");
 const assets_lib = @import("../assets/library.zig");
+const gltf_import = @import("../assets/gltf_import.zig");
 const handles = @import("../assets/handles.zig");
 const material_ast_mod = @import("../assets/material_ast.zig");
 const material_resource_mod = @import("../assets/material_resource.zig");
+const mesh_resource_mod = @import("../assets/mesh_resource.zig");
 const registry_mod = @import("../assets/registry.zig");
 const texture_resource_mod = @import("../assets/texture_resource.zig");
+const aabb_mod = @import("../math/aabb.zig");
 const mesh_pass_mod = @import("passes/mesh_pass.zig");
 const scene_extraction = @import("scene_extraction.zig");
 const rhi_mod = @import("../rhi/device.zig");
@@ -15,6 +18,8 @@ const types = @import("types.zig");
 const quat_mod = @import("../math/quat.zig");
 const vec3 = @import("../math/vec3.zig");
 
+const log = std.log.scoped(.renderer_thumbnails);
+
 pub const material_thumbnail_dimension: u32 = 128;
 pub const material_thumbnail_jobs_per_frame: usize = 2;
 pub const material_thumbnail_cache_limit: usize = 48;
@@ -24,6 +29,29 @@ pub const thumbnail_viewport_state = types.EditorViewportState{
     .show_grid = false,
     .show_bones = false,
     .show_collision = false,
+};
+
+// ════════════════════════════════════════════════════════════════════
+// Model thumbnail constants and types
+// ════════════════════════════════════════════════════════════════════
+
+pub const model_thumbnail_dimension: u32 = 128;
+pub const model_thumbnail_jobs_per_frame: usize = 1;
+pub const model_thumbnail_cache_limit: usize = 32;
+pub const model_thumbnail_clear_color = [4]f32{ 0.10, 0.11, 0.13, 1.0 };
+
+pub const ModelThumbnailCacheEntry = struct {
+    path: []u8,
+    target: ThumbnailRenderTarget,
+    ready: bool = false,
+    queued: bool = false,
+    last_requested_frame: usize = 0,
+
+    pub fn deinit(self: *ModelThumbnailCacheEntry, allocator: std.mem.Allocator, device: *rhi_mod.RhiDevice) void {
+        allocator.free(self.path);
+        self.target.deinit(device);
+        self.* = undefined;
+    }
 };
 
 pub const MaterialThumbnailTextureFingerprint = struct {
@@ -658,6 +686,264 @@ pub fn makeOwnedTestAssetRecord(
             .source_extension = try allocator.dupe(u8, ".thumb"),
         },
     };
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Model thumbnail functions
+// ════════════════════════════════════════════════════════════════════
+
+pub fn requestModelThumbnail(self: anytype, model_path: []const u8, frame_index: usize) !void {
+    const entry = try ensureModelThumbnailEntry(self, model_path);
+    entry.last_requested_frame = frame_index;
+    if (!entry.ready and !entry.queued) {
+        try enqueueModelThumbnailRequest(self, entry);
+    }
+}
+
+pub fn modelThumbnailTexture(self: anytype, model_path: []const u8) ?*const rhi_mod.Texture {
+    const entry = findModelThumbnailCacheEntry(self, model_path) orelse return null;
+    if (!entry.ready) return null;
+    return &entry.target.color_texture;
+}
+
+pub fn processModelThumbnailRequests(
+    self: anytype,
+    frame: rhi_mod.Frame,
+) !mesh_pass_mod.DrawStats {
+    var stats = mesh_pass_mod.DrawStats{};
+    if (!self.depth_prepass.isReady() or !self.base_pass.isReady()) {
+        return stats;
+    }
+
+    var processed: usize = 0;
+    while (processed < model_thumbnail_jobs_per_frame and self.model_thumbnail_requests.items.len > 0) : (processed += 1) {
+        const model_path = self.model_thumbnail_requests.orderedRemove(0);
+        defer self.allocator.free(model_path);
+
+        const entry_ptr = findModelThumbnailCacheEntry(self, model_path) orelse continue;
+        entry_ptr.queued = false;
+
+        const render_result = renderModelThumbnail(self, frame, model_path, &entry_ptr.target);
+        if (render_result) |render_stats| {
+            stats.add(render_stats);
+            entry_ptr.ready = true;
+        } else |err| {
+            log.warn("model thumbnail render failed for '{s}': {s}", .{ model_path, @errorName(err) });
+            entry_ptr.ready = false;
+        }
+    }
+
+    return stats;
+}
+
+fn renderModelThumbnail(
+    self: anytype,
+    frame: rhi_mod.Frame,
+    model_path: []const u8,
+    target: *ThumbnailRenderTarget,
+) !mesh_pass_mod.DrawStats {
+    var stats = mesh_pass_mod.DrawStats{};
+
+    // Create temporary world and import the model
+    var temp_world = scene_mod.World.init(self.allocator, null);
+    defer temp_world.deinit();
+
+    const report = try gltf_import.importStaticModel(&temp_world, model_path, .{});
+    if (report.mesh_count == 0) return error.NoMeshes;
+
+    // Compute bounding box from all mesh resources
+    var bounds = aabb_mod.AABB.empty();
+    for (temp_world.resources.meshes.items) |mesh| {
+        bounds.expandAABB(mesh.local_bounds);
+    }
+    if (!bounds.isValid()) return error.InvalidBounds;
+
+    // Compute camera position to frame the model
+    const center = bounds.centroid();
+    const ext = bounds.extent();
+    const max_extent = @max(@max(ext[0], ext[1]), ext[2]);
+    const cam_dist = max_extent * 1.8;
+    const cam_height = center[1] + max_extent * 0.35;
+    const cam_pos = [3]f32{
+        center[0] + cam_dist * 0.7,
+        cam_height,
+        center[2] + cam_dist * 0.7,
+    };
+
+    // Add camera
+    _ = try temp_world.createEntity(.{
+        .name = "ModelThumbCam",
+        .camera = .{
+            .is_primary = true,
+            .projection = .{
+                .perspective = .{
+                    .fov_y_radians = 0.65,
+                    .near_clip = cam_dist * 0.01,
+                    .far_clip = cam_dist * 10.0,
+                },
+            },
+        },
+        .local_transform = .{
+            .translation = cam_pos,
+            .rotation = quat_mod.fromEuler(lookRotationEuler(cam_pos, center)),
+        },
+    });
+
+    // Add key light
+    _ = try temp_world.createEntity(.{
+        .name = "ModelThumbKeyLight",
+        .light = .{
+            .kind = .directional,
+            .color = .{ 1.0, 0.98, 0.94 },
+            .intensity = 2.8,
+        },
+        .local_transform = .{
+            .rotation = quat_mod.fromEuler(.{ -0.85, 0.65, 0.0 }),
+        },
+    });
+
+    // Add fill light
+    _ = try temp_world.createEntity(.{
+        .name = "ModelThumbFillLight",
+        .light = .{
+            .kind = .point,
+            .color = .{ 0.72, 0.82, 1.0 },
+            .intensity = cam_dist * 3.0,
+            .range = cam_dist * 4.0,
+        },
+        .local_transform = .{
+            .translation = .{
+                center[0] + cam_dist * 0.5,
+                center[1] + cam_dist * 0.6,
+                center[2] - cam_dist * 0.3,
+            },
+        },
+    });
+
+    // Invalidate scene cache (new geometry each time)
+    self.model_thumbnail_scene_cache.invalidateAllResources(&self.rhi);
+
+    // Extract world to render world
+    _ = try scene_extraction.extractWorld(
+        &temp_world,
+        &self.model_thumbnail_render_world,
+        null,
+        &.{},
+        null,
+    );
+
+    // Prepare scene and render
+    var prepared_scene = try self.model_thumbnail_scene_cache.prepareScene(
+        &self.rhi,
+        &temp_world,
+        &self.model_thumbnail_render_world,
+        model_thumbnail_dimension,
+        model_thumbnail_dimension,
+    );
+    defer prepared_scene.deinit();
+
+    const render_pass = try self.rhi.beginRenderPassWithDesc(frame, .{
+        .color = .{
+            .target = .{ .texture = &target.color_texture },
+            .clear_color = model_thumbnail_clear_color,
+            .load_op = .clear,
+            .store_op = .store,
+        },
+        .depth = .{
+            .texture = &target.depth_texture,
+            .clear_depth = 1.0,
+            .clear_stencil = 0,
+            .load_op = .clear,
+            .store_op = .dont_care,
+            .stencil_load_op = .dont_care,
+            .stencil_store_op = .dont_care,
+        },
+    });
+
+    const depth_stats = self.depth_prepass.draw(&self.rhi, frame, render_pass, &prepared_scene);
+    stats.add(depth_stats);
+    const base_stats = try self.base_pass.draw(&self.rhi, frame, render_pass, &prepared_scene, .{
+        .render_mode = thumbnail_viewport_state.render_mode,
+        .target = .ldr,
+    });
+    stats.add(base_stats);
+    self.rhi.endRenderPass(render_pass);
+
+    return stats;
+}
+
+pub fn findModelThumbnailCacheEntry(self: anytype, model_path: []const u8) ?*ModelThumbnailCacheEntry {
+    return self.model_thumbnail_cache.getPtr(model_path);
+}
+
+pub fn ensureModelThumbnailEntry(self: anytype, model_path: []const u8) !*ModelThumbnailCacheEntry {
+    if (self.model_thumbnail_cache.getPtr(model_path)) |entry| {
+        return entry;
+    }
+
+    if (self.model_thumbnail_cache.count() >= model_thumbnail_cache_limit) {
+        evictModelThumbnailEntry(self, model_path);
+    }
+
+    const owned_path = try self.allocator.dupe(u8, model_path);
+    errdefer self.allocator.free(owned_path);
+
+    const target = try ThumbnailRenderTarget.init(&self.rhi);
+    errdefer {
+        var owned = target;
+        owned.deinit(&self.rhi);
+    }
+
+    const entry = ModelThumbnailCacheEntry{
+        .path = owned_path,
+        .target = target,
+    };
+    try self.model_thumbnail_cache.put(owned_path, entry);
+    return self.model_thumbnail_cache.getPtr(owned_path).?;
+}
+
+fn enqueueModelThumbnailRequest(self: anytype, entry: *ModelThumbnailCacheEntry) !void {
+    const queued_path = try self.allocator.dupe(u8, entry.path);
+    errdefer self.allocator.free(queued_path);
+    try self.model_thumbnail_requests.append(self.allocator, queued_path);
+    entry.queued = true;
+}
+
+fn evictModelThumbnailEntry(self: anytype, keep_path: []const u8) void {
+    var oldest_key: ?[]const u8 = null;
+    var min_frame: u64 = std.math.maxInt(u64);
+    var it = self.model_thumbnail_cache.iterator();
+    while (it.next()) |kv| {
+        const key = kv.key_ptr.*;
+        if (std.mem.eql(u8, key, keep_path)) continue;
+        if (!kv.value_ptr.queued and kv.value_ptr.last_requested_frame < min_frame) {
+            min_frame = kv.value_ptr.last_requested_frame;
+            oldest_key = key;
+        }
+    }
+    if (oldest_key) |key| {
+        if (self.model_thumbnail_cache.fetchRemove(key)) |kv| {
+            var value = kv.value;
+            value.deinit(self.allocator, &self.rhi);
+        }
+    }
+}
+
+pub fn releaseModelThumbnailCache(self: anytype) void {
+    var it = self.model_thumbnail_cache.iterator();
+    while (it.next()) |entry| {
+        entry.value_ptr.deinit(self.allocator, &self.rhi);
+    }
+    self.model_thumbnail_cache.deinit();
+    self.model_thumbnail_cache = undefined;
+}
+
+pub fn releaseModelThumbnailRequests(self: anytype) void {
+    for (self.model_thumbnail_requests.items) |path| {
+        self.allocator.free(path);
+    }
+    self.model_thumbnail_requests.deinit(self.allocator);
+    self.model_thumbnail_requests = .empty;
 }
 
 test "resolveMaterialThumbnailSource captures loaded material signatures" {

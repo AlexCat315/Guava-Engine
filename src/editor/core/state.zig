@@ -659,6 +659,9 @@ pub const EditorState = struct {
     // Material thumbnail render queue (asset IDs pending render)
     material_thumbnail_queue: std.ArrayList([]const u8) = .empty,
 
+    // Model thumbnail render queue (file paths pending 3D render)
+    model_thumbnail_queue: std.ArrayList([]const u8) = .empty,
+
     left_panel_tab: LeftPanelTab = .scene,
     bottom_workspace_tab: BottomWorkspaceTab = .content_browser,
     bottom_drawer_open: bool = true,
@@ -1120,6 +1123,12 @@ pub const EditorState = struct {
             allocator.free(asset_id);
         }
         self.material_thumbnail_queue.deinit(allocator);
+
+        // 释放 model_thumbnail_queue 中的每个路径
+        for (self.model_thumbnail_queue.items) |path| {
+            allocator.free(path);
+        }
+        self.model_thumbnail_queue.deinit(allocator);
 
         // 释放 layout_templates 中的每个模板条目
         for (self.layout_templates.items) |entry| {

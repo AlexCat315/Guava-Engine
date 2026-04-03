@@ -293,6 +293,7 @@ const MaterialThumbnailSource = renderer_thumbnails.MaterialThumbnailSource;
 const ThumbnailRenderTarget = renderer_thumbnails.ThumbnailRenderTarget;
 const MaterialThumbnailCacheEntry = renderer_thumbnails.MaterialThumbnailCacheEntry;
 const MaterialThumbnailPreview = renderer_thumbnails.MaterialThumbnailPreview;
+const ModelThumbnailCacheEntry = renderer_thumbnails.ModelThumbnailCacheEntry;
 const makeMaterialThumbnailSourceFromAst = renderer_thumbnails.makeMaterialThumbnailSourceFromAst;
 const resolveMaterialThumbnailSource = renderer_thumbnails.resolveMaterialThumbnailSource;
 
@@ -442,6 +443,14 @@ pub const Renderer = struct {
     material_thumbnail_cache: std.StringHashMap(MaterialThumbnailCacheEntry) = undefined,
     /// 材质缩略图请求队列
     material_thumbnail_requests: std.ArrayList([]u8) = .empty,
+    /// 模型缩略图缓存
+    model_thumbnail_cache: std.StringHashMap(ModelThumbnailCacheEntry) = undefined,
+    /// 模型缩略图请求队列
+    model_thumbnail_requests: std.ArrayList([]u8) = .empty,
+    /// 模型缩略图场景缓存
+    model_thumbnail_scene_cache: mesh_pass_mod.MeshSceneCache,
+    /// 模型缩略图渲染世界
+    model_thumbnail_render_world: scene_extraction.RenderWorld,
     /// 编辑器 staged preview scene
     preview_scene: ?*const scene_mod.Scene = null,
     /// AI Ghost Highlight: 实体 ID 列表（最多 16 个），显示紫色呼吸灯轮廓
@@ -526,9 +535,13 @@ pub const Renderer = struct {
             .material_thumbnail_cache = std.StringHashMap(MaterialThumbnailCacheEntry).init(allocator),
             .material_thumbnail_preview = undefined,
             .material_editor_preview_target = undefined,
+            .model_thumbnail_cache = std.StringHashMap(ModelThumbnailCacheEntry).init(allocator),
+            .model_thumbnail_scene_cache = undefined,
+            .model_thumbnail_render_world = scene_extraction.RenderWorld.init(allocator),
         };
         errdefer renderer.prev_mesh_models.deinit();
         errdefer renderer.material_thumbnail_cache.deinit();
+        errdefer renderer.model_thumbnail_cache.deinit();
         errdefer renderer.in_flight_selection_batches.deinit(allocator);
         errdefer renderer.pending_selection_readbacks.deinit(allocator);
         errdefer renderer.selection_history.deinit();
@@ -543,6 +556,9 @@ pub const Renderer = struct {
 
         renderer.thumbnail_scene_cache = try mesh_pass_mod.MeshSceneCache.init(allocator, &renderer.rhi);
         errdefer renderer.thumbnail_scene_cache.deinit(&renderer.rhi);
+
+        renderer.model_thumbnail_scene_cache = try mesh_pass_mod.MeshSceneCache.init(allocator, &renderer.rhi);
+        errdefer renderer.model_thumbnail_scene_cache.deinit(&renderer.rhi);
 
         renderer.material_thumbnail_preview = try MaterialThumbnailPreview.init(allocator);
         errdefer renderer.material_thumbnail_preview.deinit();
@@ -708,9 +724,12 @@ pub const Renderer = struct {
         self.scene_viewport.deinit(&self.rhi);
         self.releaseMaterialThumbnailRequests();
         self.releaseMaterialThumbnailCache();
+        self.releaseModelThumbnailRequests();
+        self.releaseModelThumbnailCache();
         self.material_thumbnail_preview.deinit();
         self.material_editor_preview_target.deinit(&self.rhi);
         self.thumbnail_scene_cache.deinit(&self.rhi);
+        self.model_thumbnail_scene_cache.deinit(&self.rhi);
         self.preview_scene_cache.deinit(&self.rhi);
         if (self.skybox_pass) |*pass| {
             pass.deinit(&self.rhi);
@@ -763,6 +782,7 @@ pub const Renderer = struct {
         self.id_pass.deinit(&self.rhi);
         self.scene_cache.deinit(&self.rhi);
         self.thumbnail_render_world.deinit();
+        self.model_thumbnail_render_world.deinit();
         self.preview_render_world.deinit();
         self.render_world.deinit();
         self.rhi.deinit();
@@ -1181,6 +1201,14 @@ pub const Renderer = struct {
             return null;
         }
         return &entry.target.color_texture;
+    }
+
+    pub fn requestModelThumbnail(self: *Renderer, model_path: []const u8, frame_index: usize) !void {
+        return renderer_thumbnails.requestModelThumbnail(self, model_path, frame_index);
+    }
+
+    pub fn modelThumbnailTexture(self: *const Renderer, model_path: []const u8) ?*const rhi_mod.Texture {
+        return renderer_thumbnails.modelThumbnailTexture(self, model_path);
     }
 
     pub fn requestMaterialEditorPreview(
@@ -2387,6 +2415,9 @@ pub const Renderer = struct {
 
             const thumbnail_stats = try self.processMaterialThumbnailRequests(frame, scene);
             draw_stats.add(thumbnail_stats);
+
+            const model_thumbnail_stats = try self.processModelThumbnailRequests(frame);
+            draw_stats.add(model_thumbnail_stats);
 
             if (has_swapchain) {
                 const ui_cmd = self.rhi.activeCommandBuffer() orelse return error.CommandBufferAcquireFailed;
@@ -3935,6 +3966,13 @@ pub const Renderer = struct {
         return renderer_thumbnails.processMaterialThumbnailRequests(self, frame, scene);
     }
 
+    pub fn processModelThumbnailRequests(
+        self: *Renderer,
+        frame: rhi_mod.Frame,
+    ) !mesh_pass_mod.DrawStats {
+        return renderer_thumbnails.processModelThumbnailRequests(self, frame);
+    }
+
     pub fn processMaterialEditorPreview(self: *Renderer, frame: rhi_mod.Frame) !mesh_pass_mod.DrawStats {
         defer self.material_editor_preview_requested = false;
 
@@ -3977,6 +4015,14 @@ pub const Renderer = struct {
 
     pub fn releaseMaterialThumbnailRequests(self: *Renderer) void {
         return renderer_thumbnails.releaseMaterialThumbnailRequests(self);
+    }
+
+    pub fn releaseModelThumbnailCache(self: *Renderer) void {
+        return renderer_thumbnails.releaseModelThumbnailCache(self);
+    }
+
+    pub fn releaseModelThumbnailRequests(self: *Renderer) void {
+        return renderer_thumbnails.releaseModelThumbnailRequests(self);
     }
 
     fn durationNs(start: i128, end: i128) u64 {

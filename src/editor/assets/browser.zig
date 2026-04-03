@@ -738,15 +738,15 @@ fn drawAssetCard(
 ) !void {
     var child_id_buffer: [64]u8 = undefined;
     const child_id = std.fmt.bufPrint(&child_id_buffer, "asset_card_{d}", .{index}) catch "card";
-    const card_padding: f32 = 4.0;
+    const card_padding: f32 = 3.0;
     const card_width = tile_size + card_padding * 2.0;
-    const name_height: f32 = 22.0;
-    const card_height = tile_size + name_height + card_padding;
+    const name_height: f32 = 20.0;
+    const card_height = tile_size + name_height + card_padding * 2.0;
     const selected = isAssetSelected(state, index);
 
     // ── Card background ──
-    const card_bg: [4]f32 = if (selected) .{ 0.18, 0.30, 0.48, 1.0 } else .{ 0.0, 0.0, 0.0, 0.0 };
-    const card_border: [4]f32 = if (selected) .{ 0.35, 0.60, 0.92, 0.85 } else .{ 0.0, 0.0, 0.0, 0.0 };
+    const card_bg: [4]f32 = if (selected) .{ 0.17, 0.28, 0.45, 1.0 } else .{ 0.0, 0.0, 0.0, 0.0 };
+    const card_border: [4]f32 = if (selected) .{ 0.30, 0.55, 0.90, 0.9 } else .{ 0.0, 0.0, 0.0, 0.0 };
     gui.pushStyleColor(.child_bg, card_bg);
     gui.pushStyleColor(.border, card_border);
     _ = gui.beginChild(child_id, card_width, card_height, true);
@@ -758,14 +758,14 @@ fn drawAssetCard(
     const draw_list = gui.getWindowDrawList();
     const wmin = gui.windowPos();
 
-    // ── Hover effect ──
+    // ── Hover effect (subtle highlight like Unity) ──
     const win_hovered = gui.isWindowHovered();
     if (win_hovered and !selected) {
         draw_list.addRectFilled(
             wmin,
             .{ wmin[0] + card_width, wmin[1] + card_height },
-            gui.getColorU32(.{ 0.22, 0.24, 0.28, 0.55 }),
-            4.0,
+            gui.getColorU32(.{ 0.20, 0.22, 0.26, 0.50 }),
+            3.0,
             0,
         );
     }
@@ -797,7 +797,7 @@ fn drawAssetCard(
     else if (entry.kind == .texture and !entry.is_directory)
         (ensureImageThumbnailTexture(state, layer_context, entry.path) catch null) orelse icon_texture
     else if (entry.kind == .model and !entry.is_directory)
-        (resolveModelThumbnailTexture(state, layer_context, entry.path) catch null) orelse icon_texture
+        (try queueAndResolveModelThumbnailTexture(state, layer_context, &entry) orelse icon_texture)
     else
         icon_texture;
 
@@ -1403,14 +1403,14 @@ fn assetIconPath(kind: AssetKind) []const u8 {
 
 fn assetIconTint(kind: AssetKind) [4]u8 {
     return switch (kind) {
-        .scene => .{ 164, 203, 255, 255 },
-        .model => .{ 196, 234, 255, 255 },
-        .material => .{ 186, 228, 196, 255 },
-        .texture => .{ 255, 214, 150, 255 },
-        .shader => .{ 214, 176, 255, 255 },
-        .script => .{ 255, 196, 196, 255 },
-        .directory => .{ 255, 220, 130, 255 },
-        .unknown => .{ 180, 180, 180, 255 },
+        .scene => .{ 100, 160, 255, 255 }, // Unity-style blue (prefab/scene)
+        .model => .{ 180, 220, 255, 255 }, // Light blue (3D model)
+        .material => .{ 186, 228, 196, 255 }, // Mint green
+        .texture => .{ 255, 214, 150, 255 }, // Light orange
+        .shader => .{ 214, 176, 255, 255 }, // Lavender
+        .script => .{ 120, 200, 80, 255 }, // Unity C# green
+        .directory => .{ 255, 210, 100, 255 }, // Golden yellow
+        .unknown => .{ 180, 180, 180, 255 }, // Gray
     };
 }
 
@@ -1946,97 +1946,33 @@ fn ensureImageThumbnailTexture(
 
 /// For a GLTF model file, extract the first material's baseColorTexture image URI,
 /// resolve the full path, and load it as a thumbnail via ensureImageThumbnailTexture.
-fn resolveModelThumbnailTexture(
+fn queueAndResolveModelThumbnailTexture(
     state: *EditorState,
     layer_context: *engine.core.LayerContext,
-    model_path: []const u8,
-) !*const engine.rhi.Texture {
-    // Check cache first: we store under the model_path key
-    for (state.image_thumbnail_textures.items) |*entry| {
-        if (std.mem.eql(u8, entry.path, model_path)) {
-            return &entry.texture;
-        }
+    entry: *const AssetEntry,
+) !?*const engine.rhi.Texture {
+    if (entry.kind != .model or entry.is_directory) return null;
+    try queueModelThumbnailRequest(state, entry.path);
+    return layer_context.renderer.modelThumbnailTexture(entry.path);
+}
+
+fn queueModelThumbnailRequest(state: *EditorState, model_path: []const u8) !void {
+    const allocator = state.allocator orelse return;
+    for (state.model_thumbnail_queue.items) |existing| {
+        if (std.mem.eql(u8, existing, model_path)) return;
     }
-    for (state.image_thumbnail_failed.items) |failed_path| {
-        if (std.mem.eql(u8, failed_path, model_path)) {
-            return error.ThumbnailLoadFailed;
-        }
+    const queued = try allocator.dupe(u8, model_path);
+    errdefer allocator.free(queued);
+    try state.model_thumbnail_queue.append(allocator, queued);
+}
+
+pub fn flushModelThumbnailRequests(state: *EditorState, layer_context: *engine.core.LayerContext) !void {
+    const allocator = state.allocator orelse return;
+    for (state.model_thumbnail_queue.items) |model_path| {
+        defer allocator.free(model_path);
+        try layer_context.renderer.requestModelThumbnail(model_path, layer_context.frame_index);
     }
-
-    const allocator = state.allocator orelse return error.NoAllocator;
-
-    // Only handle .gltf files (JSON format); .glb binary would need different parsing
-    const ext = std.fs.path.extension(model_path);
-    if (!std.mem.eql(u8, ext, ".gltf")) return error.UnsupportedFormat;
-
-    // Read and minimally parse the GLTF JSON to find the first base color texture URI
-    const source = std.fs.cwd().readFileAlloc(allocator, model_path, 4 * 1024 * 1024) catch {
-        const owned = try allocator.dupe(u8, model_path);
-        try state.image_thumbnail_failed.append(allocator, owned);
-        return error.ReadFailed;
-    };
-    defer allocator.free(source);
-
-    const base_dir = std.fs.path.dirname(model_path) orelse ".";
-
-    // Minimal GLTF parse for first image URI
-    const GltfMini = struct {
-        images: ?[]const struct { uri: ?[]const u8 = null } = null,
-        textures: ?[]const struct { source: ?u32 = null } = null,
-        materials: ?[]const struct {
-            pbrMetallicRoughness: ?struct {
-                baseColorTexture: ?struct { index: u32 } = null,
-            } = null,
-        } = null,
-    };
-
-    var parsed = std.json.parseFromSlice(GltfMini, allocator, source, .{
-        .ignore_unknown_fields = true,
-    }) catch {
-        const owned = try allocator.dupe(u8, model_path);
-        try state.image_thumbnail_failed.append(allocator, owned);
-        return error.ParseFailed;
-    };
-    defer parsed.deinit();
-
-    const doc = parsed.value;
-    const materials = doc.materials orelse {
-        const owned = try allocator.dupe(u8, model_path);
-        try state.image_thumbnail_failed.append(allocator, owned);
-        return error.NoMaterials;
-    };
-    const textures = doc.textures orelse {
-        const owned = try allocator.dupe(u8, model_path);
-        try state.image_thumbnail_failed.append(allocator, owned);
-        return error.NoTextures;
-    };
-    const images = doc.images orelse {
-        const owned = try allocator.dupe(u8, model_path);
-        try state.image_thumbnail_failed.append(allocator, owned);
-        return error.NoImages;
-    };
-
-    // Walk materials to find the first valid base color texture => image => uri
-    for (materials) |mat| {
-        const pbr = mat.pbrMetallicRoughness orelse continue;
-        const bct = pbr.baseColorTexture orelse continue;
-        if (bct.index >= textures.len) continue;
-        const img_idx = textures[bct.index].source orelse continue;
-        if (img_idx >= images.len) continue;
-        const uri = images[img_idx].uri orelse continue;
-
-        // Resolve path relative to model directory
-        const full_path = std.fs.path.join(allocator, &.{ base_dir, uri }) catch continue;
-        defer allocator.free(full_path);
-
-        // Load as image thumbnail (reuses the existing cache + decode pipeline)
-        // Note: we cache this under the MODEL path so we don't re-parse the GLTF each frame
-        return ensureImageThumbnailTextureAs(state, layer_context, full_path, model_path);
-    }
-
-    const owned = try allocator.dupe(u8, model_path);
-    try state.image_thumbnail_failed.append(allocator, owned);
-    return error.NoBaseColorTexture;
+    state.model_thumbnail_queue.clearRetainingCapacity();
 }
 
 /// Like ensureImageThumbnailTexture but caches under a different key than the actual image path.
