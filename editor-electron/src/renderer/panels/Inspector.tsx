@@ -1,12 +1,15 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import type { Transform, ComponentInfo, Vec3 } from "../../shared/rpc-types";
 import type { ComponentField } from "../../shared/rpc-types";
+import { useI18n } from "../i18n";
+import { IconTriangleRight, IconTriangleDown } from "../components/Icons";
 
 interface InspectorProps {
   entityId: number | null;
 }
 
 export function Inspector({ entityId }: InspectorProps) {
+  const { t } = useI18n();
   const [transform, setTransform] = useState<Transform | null>(null);
   const [components, setComponents] = useState<ComponentInfo[]>([]);
   const [entityName, setEntityName] = useState("");
@@ -60,21 +63,21 @@ export function Inspector({ entityId }: InspectorProps) {
   if (entityId == null) {
     return (
       <div style={styles.container}>
-        <div style={styles.header}>Inspector</div>
-        <div style={styles.empty}>No entity selected</div>
+        <div style={styles.header}>{t.inspector.title}</div>
+        <div style={styles.empty}>{t.common.noEntitySelected}</div>
       </div>
     );
   }
 
   return (
     <div style={styles.container}>
-      <div style={styles.header}>Inspector</div>
+      <div style={styles.header}>{t.inspector.title}</div>
 
       {/* Entity identity */}
       <div style={styles.section}>
-        <div style={styles.sectionTitle}>Entity #{entityId}</div>
+        <div style={styles.sectionTitle}>{t.inspector.entityLabel} #{entityId}</div>
         <div style={styles.field}>
-          <label style={styles.label}>Name</label>
+          <label style={styles.label}>{t.common.name}</label>
           <input
             type="text"
             value={entityName}
@@ -82,7 +85,7 @@ export function Inspector({ entityId }: InspectorProps) {
             onBlur={commitName}
             onKeyDown={(e) => e.key === "Enter" && commitName()}
             style={styles.input}
-            placeholder="Entity name"
+            placeholder={t.inspector.entityNamePlaceholder}
           />
         </div>
       </div>
@@ -90,12 +93,12 @@ export function Inspector({ entityId }: InspectorProps) {
       {/* Transform */}
       {transform && (
         <CollapsibleSection
-          title="Transform"
+          title={t.inspector.transform}
           collapsed={collapsedSections.has("transform")}
           onToggle={() => toggleSection("transform")}
         >
           <Vec3Input
-            label="Position"
+            label={t.inspector.position}
             value={transform.position}
             step={0.1}
             onChange={(v) => {
@@ -104,7 +107,7 @@ export function Inspector({ entityId }: InspectorProps) {
             }}
           />
           <Vec3Input
-            label="Rotation"
+            label={t.inspector.rotation}
             value={transform.rotation as unknown as Vec3}
             step={1}
             onChange={(v) => {
@@ -113,7 +116,7 @@ export function Inspector({ entityId }: InspectorProps) {
             }}
           />
           <Vec3Input
-            label="Scale"
+            label={t.inspector.scale}
             value={transform.scale}
             step={0.1}
             onChange={(v) => {
@@ -133,7 +136,7 @@ export function Inspector({ entityId }: InspectorProps) {
           onToggle={() => toggleSection(comp.type)}
         >
           {comp.fields.length === 0 ? (
-            <div style={{ ...styles.empty, padding: 8 }}>No editable fields</div>
+            <div style={{ ...styles.empty, padding: 8 }}>{t.inspector.noEditableFields}</div>
           ) : (
             comp.fields.map((field) => (
               <FieldEditor
@@ -167,7 +170,7 @@ function CollapsibleSection({
   return (
     <div style={styles.section}>
       <div style={styles.sectionHeader} onClick={onToggle}>
-        <span style={styles.arrow}>{collapsed ? "▸" : "▾"}</span>
+        <span style={styles.arrow}>{collapsed ? <IconTriangleRight size={10} /> : <IconTriangleDown size={10} />}</span>
         <span style={styles.sectionTitle}>{title}</span>
       </div>
       {!collapsed && children}

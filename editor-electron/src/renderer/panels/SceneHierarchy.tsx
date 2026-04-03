@@ -1,5 +1,7 @@
 import React, { useState, useCallback, useRef, useEffect } from "react";
 import type { EntityNode } from "../../shared/rpc-types";
+import { useI18n } from "../i18n";
+import { IconClose } from "../components/Icons";
 
 interface SceneHierarchyProps {
   roots: EntityNode[];
@@ -9,6 +11,7 @@ interface SceneHierarchyProps {
 }
 
 export function SceneHierarchy({ roots, selectedId, onSelect, onRefresh }: SceneHierarchyProps) {
+  const { t } = useI18n();
   const [search, setSearch] = useState("");
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; entityId: number | null } | null>(null);
   const [renamingId, setRenamingId] = useState<number | null>(null);
@@ -29,7 +32,7 @@ export function SceneHierarchy({ roots, selectedId, onSelect, onRefresh }: Scene
   const createEntity = useCallback(async (parentId?: number) => {
     try {
       const result = await window.guavaEngine.call("scene.createEntity", {
-        name: "New Entity",
+        name: t.hierarchy.defaultEntityName,
         ...(parentId != null && { parentId }),
       });
       onRefresh();
@@ -73,7 +76,7 @@ export function SceneHierarchy({ roots, selectedId, onSelect, onRefresh }: Scene
   return (
     <div style={styles.container} onContextMenu={(e) => handleContextMenu(e, null)}>
       <div style={styles.header}>
-        <span style={styles.title}>Scene Hierarchy</span>
+        <span style={styles.title}>{t.hierarchy.title}</span>
       </div>
 
       {/* Search bar */}
@@ -82,17 +85,17 @@ export function SceneHierarchy({ roots, selectedId, onSelect, onRefresh }: Scene
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search entities..."
+          placeholder={t.hierarchy.searchPlaceholder}
           style={styles.searchInput}
         />
         {search && (
-          <span style={styles.clearSearch} onClick={() => setSearch("")}>✕</span>
+          <span style={styles.clearSearch} onClick={() => setSearch("")}><IconClose size={12} /></span>
         )}
       </div>
 
       <div style={styles.tree}>
         {filteredRoots.length === 0 ? (
-          <div style={styles.empty}>{search ? "No matching entities" : "No entities"}</div>
+          <div style={styles.empty}>{search ? t.hierarchy.noMatchingEntities : t.hierarchy.noEntities}</div>
         ) : (
           filteredRoots.map((node) => (
             <TreeNode
@@ -153,12 +156,13 @@ function ContextMenu({
   onRename?: () => void;
   onClose: () => void;
 }) {
+  const { t } = useI18n();
   const items: { label: string; action: () => void; danger?: boolean }[] = [
-    { label: entityId != null ? "Create Child" : "Create Entity", action: onCreateEntity },
+    { label: entityId != null ? t.hierarchy.createChild : t.hierarchy.createEntity, action: onCreateEntity },
   ];
-  if (onRename) items.push({ label: "Rename", action: onRename });
-  if (onDuplicate) items.push({ label: "Duplicate", action: onDuplicate });
-  if (onDeleteEntity) items.push({ label: "Delete", action: onDeleteEntity, danger: true });
+  if (onRename) items.push({ label: t.common.rename, action: onRename });
+  if (onDuplicate) items.push({ label: t.common.duplicate, action: onDuplicate });
+  if (onDeleteEntity) items.push({ label: t.common.delete, action: onDeleteEntity, danger: true });
 
   return (
     <div

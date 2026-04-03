@@ -6,6 +6,10 @@ import { Console } from "./panels/Console";
 import { Toolbar } from "./panels/Toolbar";
 import { Viewport } from "./panels/Viewport";
 import { RenderSettingsPanel } from "./panels/RenderSettings";
+import { AssetBrowser } from "./panels/AssetBrowser";
+import { ViewportStatus } from "./panels/ViewportStatus";
+import { CommandTimeline } from "./panels/CommandTimeline";
+import { useI18n } from "./i18n";
 import type { EntityNode, LogEntry, GizmoMode } from "../shared/rpc-types";
 
 declare global {
@@ -15,12 +19,14 @@ declare global {
 }
 
 export function App() {
+  const { t } = useI18n();
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hierarchy, setHierarchy] = useState<EntityNode[]>([]);
   const [selectedEntity, setSelectedEntity] = useState<number | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [gizmoMode, setGizmoMode] = useState<GizmoMode>("translate");
+  const [bottomTab, setBottomTab] = useState<"console" | "assets" | "timeline">("console");
 
   useEffect(() => {
     const cleanupConnected = window.guavaEngine.onConnected(() => {
@@ -59,6 +65,22 @@ export function App() {
     // Keyboard shortcuts
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      // Ctrl/Cmd+S → Save scene
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        window.guavaEngine.call("scene.save", {}).catch(() => {});
+        return;
+      }
+      // Ctrl/Cmd+Z → Undo, Ctrl/Cmd+Shift+Z → Redo
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        if (e.shiftKey) {
+          window.guavaEngine.call("editor.redo", {}).catch(() => {});
+        } else {
+          window.guavaEngine.call("editor.undo", {}).catch(() => {});
+        }
+        return;
+      }
       switch (e.key.toLowerCase()) {
         case "w": setGizmoMode("translate"); handleGizmoChange("translate"); break;
         case "e": setGizmoMode("rotate"); handleGizmoChange("rotate"); break;
@@ -116,10 +138,10 @@ export function App() {
   if (error) {
     return (
       <div style={styles.errorContainer}>
-        <h2>Engine Connection Error</h2>
+        <h2>{t.app.connectionError}</h2>
         <p>{error}</p>
         <p style={{ opacity: 0.6, marginTop: 8 }}>
-          Make sure guava-engine is running with --editor-server
+          {t.app.engineNotRunning}
         </p>
       </div>
     );
@@ -129,14 +151,14 @@ export function App() {
     return (
       <div style={styles.loadingContainer}>
         <div style={styles.spinner} />
-        <p>Connecting to engine...</p>
+        <p>{t.app.connectingToEngine}</p>
       </div>
     );
   }
 
   return (
     <div style={styles.root}>
-      <Toolbar gizmoMode={gizmoMode} onGizmoModeChange={handleGizmoChange} />
+      <Toolbar gizmoMode={gizmoMode} onGizmoModeChange={handleGizmoChange} onRefreshHierarchy={refreshHierarchy} />
       <div style={styles.mainContent}>
         <div style={styles.leftPanel}>
           <SceneHierarchy
@@ -155,8 +177,37 @@ export function App() {
         </div>
       </div>
       <div style={styles.bottomPanel}>
-        <Console logs={logs} onClear={handleClearLogs} />
+        <div style={styles.bottomTabs}>
+          <button
+            style={{ ...styles.tab, ...(bottomTab === "console" ? styles.tabActive : {}) }}
+            onClick={() => setBottomTab("console")}
+          >
+            {t.app.tabConsole}
+          </button>
+          <button
+            style={{ ...styles.tab, ...(bottomTab === "assets" ? styles.tabActive : {}) }}
+            onClick={() => setBottomTab("assets")}
+          >
+            {t.app.tabAssets}
+          </button>
+          <button
+            style={{ ...styles.tab, ...(bottomTab === "timeline" ? styles.tabActive : {}) }}
+            onClick={() => setBottomTab("timeline")}
+          >
+            {t.app.tabTimeline}
+          </button>
+        </div>
+        <div style={styles.bottomContent}>
+          {bottomTab === "console" ? (
+            <Console logs={logs} onClear={handleClearLogs} />
+          ) : bottomTab === "assets" ? (
+            <AssetBrowser connected={connected} />
+          ) : (
+            <CommandTimeline connected={connected} />
+          )}
+        </div>
       </div>
+      <ViewportStatus connected={connected} />
     </div>
   );
 }
@@ -193,7 +244,32 @@ const styles: Record<string, React.CSSProperties> = {
   bottomPanel: {
     height: 200,
     borderTop: "1px solid #313244",
-    overflow: "auto",
+    display: "flex",
+    flexDirection: "column" as const,
+  },
+  bottomTabs: {
+    display: "flex",
+    background: "#181825",
+    borderBottom: "1px solid #313244",
+    gap: 0,
+  },
+  tab: {
+    padding: "6px 16px",
+    background: "transparent",
+    border: "none",
+    borderBottom: "2px solid transparent",
+    color: "#6c7086",
+    fontSize: 12,
+    cursor: "pointer",
+    fontWeight: 500,
+  },
+  tabActive: {
+    color: "#cdd6f4",
+    borderBottomColor: "#89b4fa",
+  },
+  bottomContent: {
+    flex: 1,
+    overflow: "hidden",
   },
   loadingContainer: {
     display: "flex",

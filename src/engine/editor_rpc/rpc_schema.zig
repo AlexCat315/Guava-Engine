@@ -114,6 +114,27 @@ pub const Methods = struct {
         pub const Result = struct {};
     };
 
+    pub const @"editor.getHistory" = struct {
+        pub const Params = struct {};
+        pub const Result = struct {
+            cursor: u64,
+            entries: []const HistoryEntry,
+        };
+
+        pub const HistoryEntry = struct {
+            sequence: u64,
+            label: []const u8,
+            source: []const u8,
+            detail: ?[]const u8 = null,
+            timestampMs: i64,
+        };
+    };
+
+    pub const @"editor.timeTravel" = struct {
+        pub const Params = struct { targetSequence: u64 };
+        pub const Result = struct {};
+    };
+
     // ── scene namespace ──────────────────────────────────────────
 
     pub const @"scene.getHierarchy" = struct {
@@ -328,6 +349,16 @@ pub const Methods = struct {
         pub const Params = struct {};
         pub const Result = struct {};
     };
+
+    // ── assets namespace ─────────────────────────────────────────
+
+    pub const @"assets.list" = struct {
+        pub const Params = struct { path: ?[]const u8 = null };
+        pub const Result = struct {
+            path: []const u8,
+            entries: []const SharedTypes.AssetEntry,
+        };
+    };
 };
 
 // ═══════════════════════════════════════════════════════════════════
@@ -359,5 +390,10 @@ pub const Subscriptions = struct {
     pub const @"on:asset.changed" = struct {
         assetId: []const u8,
         changeType: []const u8,
+    };
+
+    pub const @"on:editor.historyChanged" = struct {
+        cursor: u64,
+        totalEntries: u64,
     };
 };

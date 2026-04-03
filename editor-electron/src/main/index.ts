@@ -120,6 +120,7 @@ function setupSubscriptionForwarding(): void {
     "on:console.log",
     "on:playback.stateChanged",
     "on:asset.changed",
+    "on:editor.historyChanged",
   ] as const;
 
   for (const event of events) {
@@ -141,9 +142,10 @@ async function attachEngineViewport(): Promise<void> {
     const handleValue = nativeHandle.readBigUInt64LE();
 
     // Tell the engine to attach its SDL window as a child of ours
-    await engineClient.call("viewport.attachToParent" as never, {
-      parentHandle: Number(handleValue),
-    });
+    await (engineClient as { call(m: string, p: Record<string, unknown>): Promise<unknown> }).call(
+      "viewport.attachToParent",
+      { parentHandle: Number(handleValue) },
+    );
     console.log("[Main] Engine viewport attached as child window");
   } catch (err) {
     console.warn("[Main] Failed to attach engine viewport:", err);

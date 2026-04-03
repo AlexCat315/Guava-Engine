@@ -67,6 +67,14 @@ export interface AssetEntry {
   size?: number;
 }
 
+export interface HistoryEntry {
+  sequence: number;
+  label: string;
+  source: string;
+  detail?: string;
+  timestampMs: number;
+}
+
 // ── RPC Method Signatures ──────────────────────────────────
 
 export interface RpcMethods {
@@ -75,6 +83,8 @@ export interface RpcMethods {
   "editor.setSelection": { params: { entityIds: number[] }; result: Record<string, never> };
   "editor.undo": { params: Record<string, never>; result: Record<string, never> };
   "editor.redo": { params: Record<string, never>; result: Record<string, never> };
+  "editor.getHistory": { params: Record<string, never>; result: { cursor: number; entries: HistoryEntry[] } };
+  "editor.timeTravel": { params: { targetSequence: number }; result: Record<string, never> };
   "scene.getHierarchy": { params: Record<string, never>; result: { roots: EntityNode[] } };
   "scene.createEntity": { params: { name?: string; parentId?: number }; result: { entityId: number } };
   "scene.deleteEntity": { params: { entityId: number }; result: Record<string, never> };
@@ -100,6 +110,7 @@ export interface RpcMethods {
   "viewport.getRenderSettings": { params: Record<string, never>; result: { shadingMode: string; showGrid: boolean; showBones: boolean; showCollision: boolean; bloomEnabled: boolean; bloomThreshold: number; bloomIntensity: number; exposureEnabled: boolean; exposure: number; ssaoEnabled: boolean; ssaoRadius: number; ssaoIntensity: number; fxaaEnabled: boolean; taaEnabled: boolean; contactShadowsEnabled: boolean; colorGradingEnabled: boolean; colorGradingSaturation: number; colorGradingContrast: number; colorGradingGamma: number; dofEnabled: boolean; dofFocusDistance: number; dofFocusRange: number } };
   "viewport.setRenderSettings": { params: { shadingMode?: string; showGrid?: boolean; showBones?: boolean; showCollision?: boolean; bloomEnabled?: boolean; bloomThreshold?: number; bloomIntensity?: number; exposureEnabled?: boolean; exposure?: number; ssaoEnabled?: boolean; ssaoRadius?: number; ssaoIntensity?: number; fxaaEnabled?: boolean; taaEnabled?: boolean; contactShadowsEnabled?: boolean; colorGradingEnabled?: boolean; colorGradingSaturation?: number; colorGradingContrast?: number; colorGradingGamma?: number; dofEnabled?: boolean; dofFocusDistance?: number; dofFocusRange?: number }; result: Record<string, never> };
   "console.clear": { params: Record<string, never>; result: Record<string, never> };
+  "assets.list": { params: { path?: string }; result: { path: string; entries: AssetEntry[] } };
 }
 
 // ── Subscription Events ───────────────────────────────────
@@ -111,6 +122,7 @@ export interface SubscriptionEvents {
   "on:viewport.metrics": { fps: number; drawCalls: number; triangles: number };
   "on:playback.stateChanged": { state: string };
   "on:asset.changed": { assetId: string; changeType: string };
+  "on:editor.historyChanged": { cursor: number; totalEntries: number };
 }
 
 // ── Convenience Aliases ───────────────────────────────────

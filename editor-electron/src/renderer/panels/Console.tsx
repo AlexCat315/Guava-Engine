@@ -1,5 +1,7 @@
 import React, { useRef, useEffect, useState } from "react";
 import type { LogEntry } from "../../shared/rpc-types";
+import { useI18n } from "../i18n";
+import { IconClose } from "../components/Icons";
 
 interface ConsoleProps {
   logs: LogEntry[];
@@ -18,6 +20,7 @@ const levelColors: Record<string, string> = {
 };
 
 export function Console({ logs, onClear }: ConsoleProps) {
+  const { t } = useI18n();
   const endRef = useRef<HTMLDivElement>(null);
   const [activeFilters, setActiveFilters] = useState<Set<LogLevel>>(new Set(LEVELS));
 
@@ -38,7 +41,7 @@ export function Console({ logs, onClear }: ConsoleProps) {
   return (
     <div style={styles.container}>
       <div style={styles.header}>
-        <span style={styles.title}>Console</span>
+        <span style={styles.title}>{t.console.title}</span>
         <span style={styles.count}>{filtered.length}</span>
         <div style={styles.filters}>
           {LEVELS.map((level) => (
@@ -58,13 +61,13 @@ export function Console({ logs, onClear }: ConsoleProps) {
           ))}
         </div>
         <div style={{ flex: 1 }} />
-        <button style={styles.clearBtn} onClick={onClear} title="Clear console">
-          ✕
+        <button style={styles.clearBtn} onClick={onClear} title={t.console.clearTooltip}>
+          <IconClose size={12} />
         </button>
       </div>
       <div style={styles.logList}>
         {filtered.length === 0 ? (
-          <div style={styles.empty}>No logs</div>
+          <div style={styles.empty}>{t.console.noLogs}</div>
         ) : (
           filtered.map((log, i) => (
             <div key={i} style={styles.logEntry}>

@@ -17,6 +17,7 @@ export type {
   ComponentField as ComponentFieldBase,
   LogEntry,
   AssetEntry,
+  HistoryEntry,
   RpcMethods,
   SubscriptionEvents,
   RpcMethodName,
@@ -26,6 +27,13 @@ export type {
   JsonRpcRequest,
   JsonRpcResponse,
 } from "./rpc-types.generated";
+
+// JSON-RPC 2.0 Notification (server push, no id field)
+export interface JsonRpcNotification {
+  jsonrpc: "2.0";
+  method: string;
+  params?: Record<string, unknown>;
+}
 
 // ── Frontend-only types (not in engine schema) ─────────────────────
 

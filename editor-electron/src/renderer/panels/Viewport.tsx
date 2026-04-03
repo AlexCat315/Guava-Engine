@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { useI18n } from "../i18n";
 
 interface ViewportProps {
   connected: boolean;
@@ -9,6 +10,7 @@ interface ViewportProps {
  * and syncs the engine's SDL window to overlay exactly on top.
  */
 export function Viewport({ connected }: ViewportProps) {
+  const { t } = useI18n();
   const ref = useRef<HTMLDivElement>(null);
   const [synced, setSynced] = useState(false);
 
@@ -49,9 +51,9 @@ export function Viewport({ connected }: ViewportProps) {
     <div ref={ref} style={styles.container}>
       {!synced && (
         <div style={styles.placeholder}>
-          <p style={{ margin: 0, fontSize: 14 }}>Viewport</p>
+          <p style={{ margin: 0, fontSize: 14 }}>{t.viewport.title}</p>
           <p style={{ margin: "4px 0 0", fontSize: 12, opacity: 0.5 }}>
-            {connected ? "Syncing engine window…" : "Waiting for engine connection…"}
+            {connected ? t.viewport.syncingEngine : t.viewport.waitingForEngine}
           </p>
         </div>
       )}
