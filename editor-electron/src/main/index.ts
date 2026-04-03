@@ -254,6 +254,15 @@ app.whenReady().then(async () => {
     mainWindow.webContents.send("engine:error", String(err));
   }
 
+  mainWindow.on("close", () => {
+    // Stop the IOSurface refresh timer before the window handle becomes invalid
+    if (surfaceRefreshTimer) {
+      clearInterval(surfaceRefreshTimer);
+      surfaceRefreshTimer = null;
+    }
+    ioSurfaceView?.detach();
+  });
+
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
