@@ -341,24 +341,22 @@ const input_mod = @import("../../core/input.zig");
 
 fn mapKey(name: []const u8) ?input_mod.Key {
     const map = .{
-        .{ "w", .w },           .{ "a", .a },           .{ "s", .s },
-        .{ "d", .d },           .{ "b", .b },           .{ "i", .i },
-        .{ "m", .m },           .{ "q", .q },           .{ "e", .e },
-        .{ "f", .f },           .{ "g", .g },           .{ "r", .r },
-        .{ "t", .t },           .{ "n", .n },           .{ "l", .l },
-        .{ "o", .o },           .{ "p", .p },           .{ "x", .x },
-        .{ "y", .y },           .{ "z", .z },
-        .{ "tab", .tab },       .{ "delete", .delete },
-        .{ "backspace", .backspace },
-        .{ "1", .one },         .{ "2", .two },         .{ "3", .three },
-        .{ "shift", .shift },   .{ "ctrl", .ctrl },     .{ "alt", .alt },
-        .{ "space", .space },   .{ "escape", .escape }, .{ "period", .period },
-        .{ "up", .up },         .{ "down", .down },
-        .{ "left", .left },     .{ "right", .right },
-        .{ "f1", .f1 },         .{ "f2", .f2 },         .{ "f3", .f3 },
-        .{ "f4", .f4 },         .{ "f5", .f5 },         .{ "f6", .f6 },
-        .{ "f7", .f7 },         .{ "f8", .f8 },         .{ "f9", .f9 },
-        .{ "f10", .f10 },       .{ "f11", .f11 },       .{ "f12", .f12 },
+        .{ "w", .w },           .{ "a", .a },                 .{ "s", .s },
+        .{ "d", .d },           .{ "b", .b },                 .{ "i", .i },
+        .{ "m", .m },           .{ "q", .q },                 .{ "e", .e },
+        .{ "f", .f },           .{ "g", .g },                 .{ "r", .r },
+        .{ "t", .t },           .{ "n", .n },                 .{ "l", .l },
+        .{ "o", .o },           .{ "p", .p },                 .{ "x", .x },
+        .{ "y", .y },           .{ "z", .z },                 .{ "tab", .tab },
+        .{ "delete", .delete }, .{ "backspace", .backspace }, .{ "1", .one },
+        .{ "2", .two },         .{ "3", .three },             .{ "shift", .shift },
+        .{ "ctrl", .ctrl },     .{ "alt", .alt },             .{ "space", .space },
+        .{ "escape", .escape }, .{ "period", .period },       .{ "up", .up },
+        .{ "down", .down },     .{ "left", .left },           .{ "right", .right },
+        .{ "f1", .f1 },         .{ "f2", .f2 },               .{ "f3", .f3 },
+        .{ "f4", .f4 },         .{ "f5", .f5 },               .{ "f6", .f6 },
+        .{ "f7", .f7 },         .{ "f8", .f8 },               .{ "f9", .f9 },
+        .{ "f10", .f10 },       .{ "f11", .f11 },             .{ "f12", .f12 },
     };
     inline for (map) |entry| {
         if (std.mem.eql(u8, name, entry[0])) return entry[1];
@@ -433,6 +431,34 @@ pub fn sendInput(ctx: *Ctx) !void {
             }
         }
     }
+
+    try ctx.reply(.{});
+}
+
+/// Request entity picking at a given viewport pixel coordinate.
+/// Uses the GPU ID pass texture for async readback — the result will be
+/// reflected in selection state and pushed via "on:selection.changed".
+///
+/// Params:
+///   x, y: u32                — pixel coordinates in physical (drawable) pixels
+///   mode: "replace"|"toggle" — selection mode (default: "replace")
+pub fn pick(ctx: *Ctx) !void {
+    const selection_mod = @import("../../render/selection_history.zig");
+
+    const x: u32 = @intCast(try ctx.param(u64, "x"));
+    const y: u32 = @intCast(try ctx.param(u64, "y"));
+
+    const mode_str = (try ctx.paramOpt([]const u8, "mode")) orelse "replace";
+    const mode: selection_mod.SelectionUpdateMode = if (std.mem.eql(u8, mode_str, "toggle"))
+        .toggle
+    else
+        .replace;
+
+    try ctx.layer.renderer.pending_selection_readbacks.append(ctx.layer.renderer.allocator, .{
+        .pixel_x = x,
+        .pixel_y = y,
+        .mode = mode,
+    });
 
     try ctx.reply(.{});
 }

@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { useI18n } from "../i18n";
+import { ViewCube } from "./ViewCube";
 
 type ShadingMode = "solid" | "material" | "rendered" | "wireframe";
 
@@ -65,10 +66,14 @@ export function Viewport({ connected }: ViewportProps) {
     window.guavaEngine.call("viewport.sendInput", params as never).catch(() => {});
   }, []);
 
+  // Track mousedown position for click-to-pick detection
+  const mouseDownPos = useRef<{ x: number; y: number } | null>(null);
+
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     const { x, y } = toViewportCoords(e);
     const btn = e.button === 0 ? "left" : e.button === 2 ? "right" : e.button === 1 ? "middle" : null;
     if (!btn) return;
+    if (btn === "left") mouseDownPos.current = { x, y };
     sendInput({ type: "mousedown", x, y, button: btn, clicks: e.detail, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, alt: e.altKey });
   }, [toViewportCoords, sendInput]);
 
@@ -77,6 +82,17 @@ export function Viewport({ connected }: ViewportProps) {
     const btn = e.button === 0 ? "left" : e.button === 2 ? "right" : e.button === 1 ? "middle" : null;
     if (!btn) return;
     sendInput({ type: "mouseup", x, y, button: btn, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, alt: e.altKey });
+
+    // Click-to-pick: if LMB released close to where it was pressed, trigger entity pick
+    if (btn === "left" && mouseDownPos.current && !e.altKey) {
+      const dx = x - mouseDownPos.current.x;
+      const dy = y - mouseDownPos.current.y;
+      if (dx * dx + dy * dy < 16) { // < 4px movement
+        const mode = (e.shiftKey || e.ctrlKey || e.metaKey) ? "toggle" : "replace";
+        window.guavaEngine.call("viewport.pick", { x: Math.round(x), y: Math.round(y), mode } as never).catch(() => {});
+      }
+      mouseDownPos.current = null;
+    }
   }, [toViewportCoords, sendInput]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
@@ -299,22 +315,26 @@ export function Viewport({ connected }: ViewportProps) {
 
   return (
     <div style={styles.outerContainer}>
-      {/* Shading mode toolbar — outside the IOSurface area so it's not occluded */}
+      {/* Toolbar row — outside the IOSurface area so it's not occluded */}
       {connected && (
-        <div style={styles.shadingBar}>
-          {(["solid", "material", "rendered", "wireframe"] as ShadingMode[]).map((mode) => (
-            <button
-              key={mode}
-              title={mode.charAt(0).toUpperCase() + mode.slice(1)}
-              style={{
-                ...styles.shadingButton,
-                ...(shadingMode === mode ? styles.shadingButtonActive : {}),
-              }}
-              onClick={() => handleShadingChange(mode)}
-            >
-              {SHADING_ICONS[mode]}
-            </button>
-          ))}
+        <div style={styles.toolbarRow}>
+          <div style={styles.shadingBar}>
+            {(["solid", "material", "rendered", "wireframe"] as ShadingMode[]).map((mode) => (
+              <button
+                key={mode}
+                title={mode.charAt(0).toUpperCase() + mode.slice(1)}
+                style={{
+                  ...styles.shadingButton,
+                  ...(shadingMode === mode ? styles.shadingButtonActive : {}),
+                }}
+                onClick={() => handleShadingChange(mode)}
+              >
+                {SHADING_ICONS[mode]}
+              </button>
+            ))}
+          </div>
+          <div style={{ flex: 1 }} />
+          <ViewCube connected={connected} />
         </div>
       )}
       {/* Viewport rendering area — IOSurface/canvas is positioned here */}
@@ -353,6 +373,14 @@ const styles: Record<string, React.CSSProperties> = {
     background: "transparent",
     overflow: "hidden",
   },
+  toolbarRow: {
+    display: "flex",
+    alignItems: "flex-start",
+    padding: "3px 6px",
+    background: "#181825",
+    borderBottom: "1px solid #313244",
+    gap: 6,
+  },
   container: {
     flex: 1,
     background: "transparent",
@@ -369,9 +397,7 @@ const styles: Record<string, React.CSSProperties> = {
   shadingBar: {
     display: "flex",
     gap: 2,
-    background: "#181825",
-    padding: "3px 6px",
-    borderBottom: "1px solid #313244",
+    alignSelf: "center",
   },
   shadingButton: {
     background: "transparent",

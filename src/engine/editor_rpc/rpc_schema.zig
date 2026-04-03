@@ -460,6 +460,15 @@ pub const Methods = struct {
         pub const Result = struct {};
     };
 
+    pub const @"viewport.pick" = struct {
+        pub const Params = struct {
+            x: u64,
+            y: u64,
+            mode: ?[]const u8 = null,
+        };
+        pub const Result = struct {};
+    };
+
     // ── console namespace ────────────────────────────────────────
 
     pub const @"console.clear" = struct {
@@ -511,6 +520,35 @@ pub const Methods = struct {
 
     pub const @"camera.renameBookmark" = struct {
         pub const Params = struct { index: u64, name: []const u8 };
+        pub const Result = struct {};
+    };
+
+    pub const @"camera.getState" = struct {
+        pub const Params = struct {};
+        pub const Result = struct {
+            position: SharedTypes.Vec3,
+            rotation: SharedTypes.Quat,
+        };
+    };
+
+    pub const @"camera.lookAlongAxis" = struct {
+        pub const Params = struct {
+            axisX: f64,
+            axisY: f64,
+            axisZ: f64,
+            distance: ?f64 = null,
+            targetX: ?f64 = null,
+            targetY: ?f64 = null,
+            targetZ: ?f64 = null,
+        };
+        pub const Result = struct {};
+    };
+
+    pub const @"camera.orbit" = struct {
+        pub const Params = struct {
+            deltaYaw: f64,
+            deltaPitch: f64,
+        };
         pub const Result = struct {};
     };
 
