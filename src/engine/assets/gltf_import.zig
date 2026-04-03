@@ -10,6 +10,8 @@ const texture_import_mod = @import("texture_import.zig");
 const components = @import("../scene/components.zig");
 const math = @import("../math/mat4.zig");
 
+const log = std.log.scoped(.gltf_import);
+
 pub const ImportReport = struct {
     entity_count: usize = 0,
     mesh_count: usize = 0,
@@ -2269,6 +2271,13 @@ fn importStaticModelInternal(
 
     const default_material = try world.resources.ensureDefaultMaterial();
 
+    log.info("importing model '{s}' — {d} nodes, {d} materials, {d} textures", .{
+        source_stem,
+        if (document.nodes) |n| n.len else 0,
+        if (document.materials) |m| m.len else 0,
+        document_textures.len,
+    });
+
     var report = ImportReport{};
     const import_parent = if (create_root_instance)
         try createImportRoot(world, path, root_transform, &report)
@@ -2297,6 +2306,14 @@ fn importStaticModelInternal(
             &report,
         );
     }
+
+    log.info("model '{s}' imported — {d} entities, {d} meshes, {d} materials, {d} textures", .{
+        source_stem,
+        report.entity_count,
+        report.mesh_count,
+        report.material_count,
+        report.texture_count,
+    });
 
     return report;
 }
@@ -2602,6 +2619,11 @@ fn resolveTextureHandle(
     }
 
     const image = document_images[image_index];
+    log.info("  loading texture {d}/{d}: {s} ...", .{
+        index + 1,
+        document_textures.len,
+        image.name orelse image.uri orelse "(embedded)",
+    });
     const encoded = try loadImageBytes(world.allocator, base_dir, image, document, loaded_buffers);
     defer world.allocator.free(encoded);
 
@@ -2611,7 +2633,7 @@ fn resolveTextureHandle(
 
     // Cap texture resolution to avoid excessive GPU memory and import time.
     // Textures larger than max_import_texture_dim are box-filter downscaled.
-    const max_import_texture_dim: u32 = 2048;
+    const max_import_texture_dim: u32 = 1024;
     var final_width = decoded.width;
     var final_height = decoded.height;
     var final_pixels = decoded.pixels;

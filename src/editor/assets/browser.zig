@@ -782,6 +782,8 @@ fn drawAssetCard(
         (try queueAndResolveMaterialThumbnailTexture(state, layer_context, &entry) orelse icon_texture)
     else if (entry.kind == .texture and !entry.is_directory)
         (ensureImageThumbnailTexture(state, layer_context, entry.path) catch null) orelse icon_texture
+    else if (entry.kind == .model and !entry.is_directory)
+        (resolveModelThumbnailTexture(state, layer_context, entry.path) catch null) orelse icon_texture
     else
         icon_texture;
 
@@ -1888,6 +1890,195 @@ fn ensureImageThumbnailTexture(
 
     // Cache it
     const owned_path = try allocator.dupe(u8, file_path);
+    errdefer allocator.free(owned_path);
+
+    try state.image_thumbnail_textures.append(allocator, .{
+        .path = owned_path,
+        .texture = texture,
+    });
+    state.image_thumbnail_device = layer_context.rhi();
+
+    return &state.image_thumbnail_textures.items[state.image_thumbnail_textures.items.len - 1].texture;
+}
+
+/// For a GLTF model file, extract the first material's baseColorTexture image URI,
+/// resolve the full path, and load it as a thumbnail via ensureImageThumbnailTexture.
+fn resolveModelThumbnailTexture(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    model_path: []const u8,
+) !*const engine.rhi.Texture {
+    // Check cache first: we store under the model_path key
+    for (state.image_thumbnail_textures.items) |*entry| {
+        if (std.mem.eql(u8, entry.path, model_path)) {
+            return &entry.texture;
+        }
+    }
+    for (state.image_thumbnail_failed.items) |failed_path| {
+        if (std.mem.eql(u8, failed_path, model_path)) {
+            return error.ThumbnailLoadFailed;
+        }
+    }
+
+    const allocator = state.allocator orelse return error.NoAllocator;
+
+    // Only handle .gltf files (JSON format); .glb binary would need different parsing
+    const ext = std.fs.path.extension(model_path);
+    if (!std.mem.eql(u8, ext, ".gltf")) return error.UnsupportedFormat;
+
+    // Read and minimally parse the GLTF JSON to find the first base color texture URI
+    const source = std.fs.cwd().readFileAlloc(allocator, model_path, 4 * 1024 * 1024) catch {
+        const owned = try allocator.dupe(u8, model_path);
+        try state.image_thumbnail_failed.append(allocator, owned);
+        return error.ReadFailed;
+    };
+    defer allocator.free(source);
+
+    const base_dir = std.fs.path.dirname(model_path) orelse ".";
+
+    // Minimal GLTF parse for first image URI
+    const GltfMini = struct {
+        images: ?[]const struct { uri: ?[]const u8 = null } = null,
+        textures: ?[]const struct { source: ?u32 = null } = null,
+        materials: ?[]const struct {
+            pbrMetallicRoughness: ?struct {
+                baseColorTexture: ?struct { index: u32 } = null,
+            } = null,
+        } = null,
+    };
+
+    var parsed = std.json.parseFromSlice(GltfMini, allocator, source, .{
+        .ignore_unknown_fields = true,
+    }) catch {
+        const owned = try allocator.dupe(u8, model_path);
+        try state.image_thumbnail_failed.append(allocator, owned);
+        return error.ParseFailed;
+    };
+    defer parsed.deinit();
+
+    const doc = parsed.value;
+    const materials = doc.materials orelse {
+        const owned = try allocator.dupe(u8, model_path);
+        try state.image_thumbnail_failed.append(allocator, owned);
+        return error.NoMaterials;
+    };
+    const textures = doc.textures orelse {
+        const owned = try allocator.dupe(u8, model_path);
+        try state.image_thumbnail_failed.append(allocator, owned);
+        return error.NoTextures;
+    };
+    const images = doc.images orelse {
+        const owned = try allocator.dupe(u8, model_path);
+        try state.image_thumbnail_failed.append(allocator, owned);
+        return error.NoImages;
+    };
+
+    // Walk materials to find the first valid base color texture => image => uri
+    for (materials) |mat| {
+        const pbr = mat.pbrMetallicRoughness orelse continue;
+        const bct = pbr.baseColorTexture orelse continue;
+        if (bct.index >= textures.len) continue;
+        const img_idx = textures[bct.index].source orelse continue;
+        if (img_idx >= images.len) continue;
+        const uri = images[img_idx].uri orelse continue;
+
+        // Resolve path relative to model directory
+        const full_path = std.fs.path.join(allocator, &.{ base_dir, uri }) catch continue;
+        defer allocator.free(full_path);
+
+        // Load as image thumbnail (reuses the existing cache + decode pipeline)
+        // Note: we cache this under the MODEL path so we don't re-parse the GLTF each frame
+        return ensureImageThumbnailTextureAs(state, layer_context, full_path, model_path);
+    }
+
+    const owned = try allocator.dupe(u8, model_path);
+    try state.image_thumbnail_failed.append(allocator, owned);
+    return error.NoBaseColorTexture;
+}
+
+/// Like ensureImageThumbnailTexture but caches under a different key than the actual image path.
+fn ensureImageThumbnailTextureAs(
+    state: *EditorState,
+    layer_context: *engine.core.LayerContext,
+    file_path: []const u8,
+    cache_key: []const u8,
+) !*const engine.rhi.Texture {
+    // Check cache under cache_key
+    for (state.image_thumbnail_textures.items) |*entry| {
+        if (std.mem.eql(u8, entry.path, cache_key)) {
+            return &entry.texture;
+        }
+    }
+
+    const allocator = state.allocator orelse return error.NoAllocator;
+
+    const encoded = std.fs.cwd().readFileAlloc(allocator, file_path, 32 * 1024 * 1024) catch |err| {
+        const owned_path = try allocator.dupe(u8, cache_key);
+        try state.image_thumbnail_failed.append(allocator, owned_path);
+        return err;
+    };
+    defer allocator.free(encoded);
+
+    var decoded = engine.assets.decodeImageRgba8(allocator, encoded) catch |err| {
+        const owned_path = try allocator.dupe(u8, cache_key);
+        try state.image_thumbnail_failed.append(allocator, owned_path);
+        return err;
+    };
+    defer decoded.deinit();
+
+    const max_thumb_dim: u32 = 256;
+    var thumb_w = decoded.width;
+    var thumb_h = decoded.height;
+    var thumb_pixels = decoded.pixels;
+    var downscaled_buf: ?[]u8 = null;
+    defer if (downscaled_buf) |buf| allocator.free(buf);
+
+    while (thumb_w > max_thumb_dim or thumb_h > max_thumb_dim) {
+        const new_w = @max(thumb_w / 2, 1);
+        const new_h = @max(thumb_h / 2, 1);
+        if (new_w == 0 or new_h == 0) break;
+        const new_buf = try allocator.alloc(u8, new_w * new_h * 4);
+        var y: u32 = 0;
+        while (y < new_h) : (y += 1) {
+            var x: u32 = 0;
+            while (x < new_w) : (x += 1) {
+                const dst = (y * new_w + x) * 4;
+                const sy = @min(y * 2, thumb_h - 1);
+                const sx = @min(x * 2, thumb_w - 1);
+                const sy1 = @min(sy + 1, thumb_h - 1);
+                const sx1 = @min(sx + 1, thumb_w - 1);
+                const s00 = (sy * thumb_w + sx) * 4;
+                const s10 = (sy * thumb_w + sx1) * 4;
+                const s01 = (sy1 * thumb_w + sx) * 4;
+                const s11 = (sy1 * thumb_w + sx1) * 4;
+                var c: u32 = 0;
+                while (c < 4) : (c += 1) {
+                    const avg = (@as(u32, thumb_pixels[s00 + c]) +
+                        @as(u32, thumb_pixels[s10 + c]) +
+                        @as(u32, thumb_pixels[s01 + c]) +
+                        @as(u32, thumb_pixels[s11 + c]) + 2) / 4;
+                    new_buf[dst + c] = @intCast(avg);
+                }
+            }
+        }
+        if (downscaled_buf) |old| allocator.free(old);
+        downscaled_buf = new_buf;
+        thumb_pixels = new_buf;
+        thumb_w = new_w;
+        thumb_h = new_h;
+    }
+
+    var texture = try layer_context.rhi().createTexture(.{
+        .width = thumb_w,
+        .height = thumb_h,
+        .format = .rgba8_unorm,
+        .usage = engine.rhi.TextureUsage.sampler,
+    });
+    errdefer layer_context.rhi().releaseTexture(&texture);
+
+    try layer_context.rhi().uploadTextureData(&texture, thumb_pixels, thumb_w, thumb_h);
+
+    const owned_path = try allocator.dupe(u8, cache_key);
     errdefer allocator.free(owned_path);
 
     try state.image_thumbnail_textures.append(allocator, .{

@@ -146,7 +146,7 @@ pub const Palette = struct {
             .hovered = .{ 0.36, 0.64, 0.96, 0.50 }, // #5CB3F5 50%
             .active = .{ 0.24, 0.52, 0.88, 0.70 }, // #3D85E1 70%
         };
-        pub const active_text: Color = .{ 0.20, 0.60, 0.45, 1.0 };
+        pub const active_text: Color = .{ 0.35, 0.82, 0.62, 1.0 };
         pub const idle_text: Color = .{ 0.72, 0.76, 0.81, 1.0 };
     };
 
