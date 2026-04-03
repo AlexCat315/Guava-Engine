@@ -49,6 +49,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@shared": path.resolve(root, "src/shared"),
+      "@icons": path.resolve(root, "../assets/ui/icons/svg"),
     },
   },
 });
