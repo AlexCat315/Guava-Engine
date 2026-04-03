@@ -369,6 +369,101 @@ pub const Methods = struct {
             entries: []const SharedTypes.AssetEntry,
         };
     };
+
+    // ── camera namespace ─────────────────────────────────────────
+
+    pub const @"camera.listBookmarks" = struct {
+        pub const Params = struct {};
+        pub const Result = struct {
+            bookmarks: []const CameraBookmarkInfo,
+        };
+
+        pub const CameraBookmarkInfo = struct {
+            index: u64,
+            name: []const u8,
+            position: SharedTypes.Vec3,
+            rotation: SharedTypes.Quat,
+            fov: f32,
+        };
+    };
+
+    pub const @"camera.addBookmark" = struct {
+        pub const Params = struct { name: ?[]const u8 = null };
+        pub const Result = struct { index: u64 };
+    };
+
+    pub const @"camera.removeBookmark" = struct {
+        pub const Params = struct { index: u64 };
+        pub const Result = struct {};
+    };
+
+    pub const @"camera.applyBookmark" = struct {
+        pub const Params = struct { index: u64 };
+        pub const Result = struct {};
+    };
+
+    pub const @"camera.renameBookmark" = struct {
+        pub const Params = struct { index: u64, name: []const u8 };
+        pub const Result = struct {};
+    };
+
+    // ── debug namespace ──────────────────────────────────────────
+
+    pub const @"debug.getRhiStats" = struct {
+        pub const Params = struct {};
+        pub const Result = struct {
+            bindingCache: BindingCacheStats,
+            passes: []const PassInfo,
+        };
+
+        pub const BindingCacheStats = struct {
+            hits: u64,
+            misses: u64,
+            evictions: u64,
+            entries: u32,
+            maxEntries: u32,
+            hitRate: f64,
+            frameHits: u64,
+            frameMisses: u64,
+            frameEvictions: u64,
+        };
+
+        pub const PassInfo = struct {
+            name: []const u8,
+            status: []const u8,
+        };
+    };
+
+    pub const @"debug.resetRhiStats" = struct {
+        pub const Params = struct {};
+        pub const Result = struct {};
+    };
+
+    // ── audio namespace ──────────────────────────────────────────
+
+    pub const @"audio.getMixerStatus" = struct {
+        pub const Params = struct {};
+        pub const Result = struct {
+            available: bool,
+            activeVoices: u32,
+            buses: []const BusInfo,
+        };
+
+        pub const BusInfo = struct {
+            id: []const u8,
+            label: []const u8,
+            volume: f32,
+            playing: u32,
+        };
+    };
+
+    pub const @"audio.setBusVolume" = struct {
+        pub const Params = struct {
+            busId: []const u8,
+            volume: f32,
+        };
+        pub const Result = struct {};
+    };
 };
 
 // ═══════════════════════════════════════════════════════════════════

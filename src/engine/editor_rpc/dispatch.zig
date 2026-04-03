@@ -33,6 +33,9 @@ const handler_modules = [_]HandlerModule{
     .{ .prefix = "viewport", .mod = @import("handlers/viewport.zig") },
     .{ .prefix = "console", .mod = @import("handlers/console.zig") },
     .{ .prefix = "assets", .mod = @import("handlers/assets.zig") },
+    .{ .prefix = "camera", .mod = @import("handlers/camera.zig") },
+    .{ .prefix = "debug", .mod = @import("handlers/debug.zig") },
+    .{ .prefix = "audio", .mod = @import("handlers/audio.zig") },
 };
 
 // Subscriptions (push events — detection logic in subscriptions.zig)

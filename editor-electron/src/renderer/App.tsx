@@ -10,6 +10,9 @@ import { AssetBrowser } from "./panels/AssetBrowser";
 import { ViewportStatus } from "./panels/ViewportStatus";
 import { CommandTimeline } from "./panels/CommandTimeline";
 import { EditorUtilities } from "./panels/EditorUtilities";
+import { CameraBookmarks } from "./panels/CameraBookmarks";
+import { RhiStats } from "./panels/RhiStats";
+import { AudioMixer } from "./panels/AudioMixer";
 import { useI18n } from "./i18n";
 import type { EntityNode, LogEntry, GizmoMode } from "../shared/rpc-types";
 
@@ -27,7 +30,7 @@ export function App() {
   const [selectedEntity, setSelectedEntity] = useState<number | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [gizmoMode, setGizmoMode] = useState<GizmoMode>("translate");
-  const [bottomTab, setBottomTab] = useState<"console" | "assets" | "timeline" | "utilities">("console");
+  const [bottomTab, setBottomTab] = useState<"console" | "assets" | "timeline" | "utilities" | "camera" | "rhistats" | "audio">("console");
 
   useEffect(() => {
     const cleanupConnected = window.guavaEngine.onConnected(() => {
@@ -203,6 +206,24 @@ export function App() {
           >
             {t.app.tabUtilities}
           </button>
+          <button
+            style={{ ...styles.tab, ...(bottomTab === "camera" ? styles.tabActive : {}) }}
+            onClick={() => setBottomTab("camera")}
+          >
+            Camera
+          </button>
+          <button
+            style={{ ...styles.tab, ...(bottomTab === "rhistats" ? styles.tabActive : {}) }}
+            onClick={() => setBottomTab("rhistats")}
+          >
+            RHI Stats
+          </button>
+          <button
+            style={{ ...styles.tab, ...(bottomTab === "audio" ? styles.tabActive : {}) }}
+            onClick={() => setBottomTab("audio")}
+          >
+            Audio
+          </button>
         </div>
         <div style={styles.bottomContent}>
           {bottomTab === "console" ? (
@@ -211,6 +232,12 @@ export function App() {
             <AssetBrowser connected={connected} />
           ) : bottomTab === "utilities" ? (
             <EditorUtilities connected={connected} />
+          ) : bottomTab === "camera" ? (
+            <CameraBookmarks connected={connected} />
+          ) : bottomTab === "rhistats" ? (
+            <RhiStats connected={connected} />
+          ) : bottomTab === "audio" ? (
+            <AudioMixer connected={connected} />
           ) : (
             <CommandTimeline connected={connected} />
           )}

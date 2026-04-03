@@ -104,6 +104,15 @@ export interface RpcMethods {
   "viewport.setRenderSettings": { params: { shadingMode?: string; showGrid?: boolean; showBones?: boolean; showCollision?: boolean; bloomEnabled?: boolean; bloomThreshold?: number; bloomIntensity?: number; exposureEnabled?: boolean; exposure?: number; ssaoEnabled?: boolean; ssaoRadius?: number; ssaoIntensity?: number; fxaaEnabled?: boolean; taaEnabled?: boolean; contactShadowsEnabled?: boolean; colorGradingEnabled?: boolean; colorGradingSaturation?: number; colorGradingContrast?: number; colorGradingGamma?: number; dofEnabled?: boolean; dofFocusDistance?: number; dofFocusRange?: number }; result: Record<string, never> };
   "console.clear": { params: Record<string, never>; result: Record<string, never> };
   "assets.list": { params: { path?: string }; result: { path: string; entries: AssetEntry[] } };
+  "camera.listBookmarks": { params: Record<string, never>; result: { bookmarks: { index: number; name: string; position: Vec3; rotation: Quat; fov: number }[] } };
+  "camera.addBookmark": { params: { name?: string }; result: { index: number } };
+  "camera.removeBookmark": { params: { index: number }; result: Record<string, never> };
+  "camera.applyBookmark": { params: { index: number }; result: Record<string, never> };
+  "camera.renameBookmark": { params: { index: number; name: string }; result: Record<string, never> };
+  "debug.getRhiStats": { params: Record<string, never>; result: { bindingCache: { hits: number; misses: number; evictions: number; entries: number; maxEntries: number; hitRate: number; frameHits: number; frameMisses: number; frameEvictions: number }; passes: { name: string; status: string }[] } };
+  "debug.resetRhiStats": { params: Record<string, never>; result: Record<string, never> };
+  "audio.getMixerStatus": { params: Record<string, never>; result: { available: boolean; activeVoices: number; buses: { id: string; label: string; volume: number; playing: number }[] } };
+  "audio.setBusVolume": { params: { busId: string; volume: number }; result: Record<string, never> };
 }
 
 // ── Subscription Events ───────────────────────────────────
