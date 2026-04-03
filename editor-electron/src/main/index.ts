@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, ipcMain, session } from "electron";
 import path from "path";
 import { EngineProcess } from "./engine-process";
 import { EngineClient } from "./engine-client";
@@ -226,6 +226,23 @@ ipcMain.handle("viewport:detach", async () => {
 // ── App Lifecycle ────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
+  // Set Content-Security-Policy to suppress Electron security warning.
+  // In dev mode Vite injects inline scripts for HMR, so we must allow 'unsafe-inline'.
+  const isDev = !!(process.env.VITE_DEV_SERVER_URL);
+  const scriptSrc = isDev
+    ? "script-src 'self' 'unsafe-inline' http://localhost:*"
+    : "script-src 'self'";
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        "Content-Security-Policy": [
+          `default-src 'self'; ${scriptSrc}; style-src 'self' 'unsafe-inline'; connect-src 'self' ws://127.0.0.1:* http://localhost:*; img-src 'self' data:`,
+        ],
+      },
+    });
+  });
+
   mainWindow = await createMainWindow();
 
   try {
