@@ -129,6 +129,21 @@ export interface RpcMethods {
   "renderqueue.startQueue": { params: Record<string, never>; result: Record<string, never> };
   "renderqueue.cancelQueue": { params: Record<string, never>; result: Record<string, never> };
   "renderqueue.clearCompleted": { params: Record<string, never>; result: Record<string, never> };
+  "physicsviz.getSettings": { params: Record<string, never>; result: { drawMode: string; opacity: number; velocityScale: number; wireframeOnly: boolean; showCollisionShapes: boolean; showRigidbodies: boolean; showTriggers: boolean; showConstraints: boolean; showVelocityVectors: boolean; showSleepState: boolean; showAabbs: boolean; colorStatic: unknown /* [4]f32 */; colorDynamic: unknown /* [4]f32 */; colorKinematic: unknown /* [4]f32 */; colorTrigger: unknown /* [4]f32 */; colorSleeping: unknown /* [4]f32 */; colorConstraint: unknown /* [4]f32 */ } };
+  "physicsviz.setDrawMode": { params: { mode: string }; result: Record<string, never> };
+  "physicsviz.setToggle": { params: { key: string; value: boolean }; result: Record<string, never> };
+  "physicsviz.setFloat": { params: { key: string; value: number }; result: Record<string, never> };
+  "physicsviz.setColor": { params: { key: string; r: number; g: number; b: number; a: number }; result: Record<string, never> };
+  "utilities.list": { params: Record<string, never>; result: { utilities: { handle: number; name: string; description: string; sourcePath: string; status: string; open: boolean; lastError: string }[] } };
+  "utilities.setOpen": { params: { handle: number; open: boolean }; result: Record<string, never> };
+  "utilities.remove": { params: { handle: number }; result: Record<string, never> };
+  "rendersettings.getSettings": { params: Record<string, never>; result: { shadingMode: string; transformSpace: string; showGrid: boolean; showBones: boolean; showCollision: boolean; pathTrace: { samples: number; bounces: number; resolutionScale: number }; viewportSize: { width: number; height: number }; renderOutput: { preset: string; width: number; height: number; format: string; path: string } } };
+  "rendersettings.setShadingMode": { params: { mode: string }; result: Record<string, never> };
+  "rendersettings.setTransformSpace": { params: { space: string }; result: Record<string, never> };
+  "rendersettings.setOverlay": { params: { key: string; value: boolean }; result: Record<string, never> };
+  "rendersettings.setPathTrace": { params: { samples?: number; bounces?: number; resolutionScale?: number }; result: Record<string, never> };
+  "rendersettings.applyPtPreset": { params: { preset: string }; result: Record<string, never> };
+  "rendersettings.setRenderOutput": { params: { preset?: string; width?: number; height?: number; format?: string; path?: string }; result: Record<string, never> };
 }
 
 // ── Subscription Events ───────────────────────────────────

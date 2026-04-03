@@ -1,9 +1,24 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import type { RpcResult } from "../../shared/rpc-types";
+import { rpc } from "../rpc";
 import { useI18n } from "../i18n";
 
 type RenderSettings = RpcResult<"viewport.getRenderSettings">;
 type ShadingMode = "solid" | "material" | "rendered" | "wireframe";
+
+interface PathTraceState {
+  samples: number;
+  bounces: number;
+  resolutionScale: number;
+}
+
+interface RenderOutputState {
+  preset: string;
+  width: number;
+  height: number;
+  format: string;
+  path: string;
+}
 
 interface RenderSettingsProps {
   connected: boolean;
@@ -12,6 +27,9 @@ interface RenderSettingsProps {
 export function RenderSettingsPanel({ connected }: RenderSettingsProps) {
   const { t } = useI18n();
   const [settings, setSettings] = useState<RenderSettings | null>(null);
+  const [pathTrace, setPathTrace] = useState<PathTraceState>({ samples: 256, bounces: 8, resolutionScale: 1.0 });
+  const [renderOutput, setRenderOutput] = useState<RenderOutputState>({ preset: "1080p", width: 1920, height: 1080, format: "png", path: "render_output" });
+  const [transformSpace, setTransformSpace] = useState<"local" | "world">("local");
   const commitTimer = useRef<ReturnType<typeof setTimeout>>();
 
   const fetchSettings = useCallback(async () => {
@@ -19,6 +37,14 @@ export function RenderSettingsPanel({ connected }: RenderSettingsProps) {
     try {
       const result = await window.guavaEngine.call("viewport.getRenderSettings", {});
       setSettings(result);
+    } catch {
+      // ignore
+    }
+    try {
+      const ext = await rpc("rendersettings.getSettings", {});
+      setPathTrace(ext.pathTrace);
+      setRenderOutput(ext.renderOutput);
+      setTransformSpace(ext.transformSpace as "local" | "world");
     } catch {
       // ignore
     }
@@ -133,6 +159,102 @@ export function RenderSettingsPanel({ connected }: RenderSettingsProps) {
             { label: t.renderSettings.gamma, value: settings.colorGradingGamma, min: 0.1, max: 3, step: 0.05, onChange: (v) => commit({ colorGradingGamma: v }) },
           ]}
         />
+      </Section>
+
+      {/* Transform Space */}
+      <Section title="Transform Space">
+        <div style={styles.buttonGroup}>
+          {(["local", "world"] as const).map((sp) => (
+            <button
+              key={sp}
+              style={{
+                ...styles.modeButton,
+                ...(transformSpace === sp ? styles.modeButtonActive : {}),
+              }}
+              onClick={() => {
+                setTransformSpace(sp);
+                rpc("rendersettings.setTransformSpace", { space: sp }).catch(() => {});
+              }}
+            >
+              {sp.charAt(0).toUpperCase() + sp.slice(1)}
+            </button>
+          ))}
+        </div>
+      </Section>
+
+      {/* Path Tracing */}
+      <Section title="Path Tracing">
+        <div style={styles.sliderRow}>
+          <span style={styles.sliderLabel}>Samples</span>
+          <input type="range" min={1} max={4096} step={1} value={pathTrace.samples}
+            onChange={(e) => {
+              const v = parseInt(e.target.value);
+              setPathTrace((p) => ({ ...p, samples: v }));
+              rpc("rendersettings.setPathTrace", { samples: v }).catch(() => {});
+            }} style={styles.slider} />
+          <span style={styles.sliderValue}>{pathTrace.samples}</span>
+        </div>
+        <div style={styles.sliderRow}>
+          <span style={styles.sliderLabel}>Bounces</span>
+          <input type="range" min={1} max={32} step={1} value={pathTrace.bounces}
+            onChange={(e) => {
+              const v = parseInt(e.target.value);
+              setPathTrace((p) => ({ ...p, bounces: v }));
+              rpc("rendersettings.setPathTrace", { bounces: v }).catch(() => {});
+            }} style={styles.slider} />
+          <span style={styles.sliderValue}>{pathTrace.bounces}</span>
+        </div>
+        <div style={styles.sliderRow}>
+          <span style={styles.sliderLabel}>Res Scale</span>
+          <input type="range" min={0.25} max={2.0} step={0.25} value={pathTrace.resolutionScale}
+            onChange={(e) => {
+              const v = parseFloat(e.target.value);
+              setPathTrace((p) => ({ ...p, resolutionScale: v }));
+              rpc("rendersettings.setPathTrace", { resolutionScale: v }).catch(() => {});
+            }} style={styles.slider} />
+          <span style={styles.sliderValue}>{pathTrace.resolutionScale.toFixed(2)}</span>
+        </div>
+        <div style={{ ...styles.buttonGroup, marginTop: 6 }}>
+          {["preview", "low", "medium", "high", "ultra"].map((preset) => (
+            <button key={preset} style={styles.modeButton}
+              onClick={() => rpc("rendersettings.applyPtPreset", { preset }).then(() => fetchSettings()).catch(() => {})}
+            >
+              {preset.charAt(0).toUpperCase() + preset.slice(1)}
+            </button>
+          ))}
+        </div>
+      </Section>
+
+      {/* Render Output */}
+      <Section title="Render Output">
+        <div style={styles.buttonGroup}>
+          {["720p", "1080p", "1440p", "4k"].map((preset) => (
+            <button key={preset}
+              style={{ ...styles.modeButton, ...(renderOutput.preset === preset ? styles.modeButtonActive : {}) }}
+              onClick={() => {
+                rpc("rendersettings.setRenderOutput", { preset }).catch(() => {});
+                fetchSettings();
+              }}
+            >
+              {preset}
+            </button>
+          ))}
+        </div>
+        <div style={{ ...styles.sliderRow, marginTop: 6 }}>
+          <span style={styles.sliderLabel}>Format</span>
+          <select value={renderOutput.format} style={styles.select}
+            onChange={(e) => {
+              setRenderOutput((o) => ({ ...o, format: e.target.value }));
+              rpc("rendersettings.setRenderOutput", { format: e.target.value }).catch(() => {});
+            }}>
+            <option value="png">PNG</option>
+            <option value="exr">EXR</option>
+            <option value="jpg">JPG</option>
+          </select>
+        </div>
+        <div style={{ fontSize: 11, color: "#6c7086", marginTop: 4 }}>
+          {renderOutput.width}×{renderOutput.height} → {renderOutput.path}
+        </div>
       </Section>
     </div>
   );
@@ -290,5 +412,14 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 11,
     color: "#a6adc8",
     textAlign: "right" as const,
+  },
+  select: {
+    flex: 1,
+    background: "#1e1e2e",
+    border: "1px solid #45475a",
+    borderRadius: 4,
+    color: "#cdd6f4",
+    padding: "2px 6px",
+    fontSize: 11,
   },
 };

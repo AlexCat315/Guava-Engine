@@ -1,7 +1,19 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { useI18n } from "../i18n";
 import { IconClose, IconRefresh } from "../components/Icons";
-import type { EditorUtilitySnapshot, EditorUtilityStatus } from "../../shared/rpc-types";
+import { rpc } from "../rpc";
+
+type EditorUtilityStatus = "ready" | "load_error" | "init_error" | "update_error";
+
+interface EditorUtilitySnapshot {
+  handle: number;
+  name: string;
+  description: string;
+  sourcePath: string;
+  status: EditorUtilityStatus;
+  open: boolean;
+  lastError: string;
+}
 
 interface EditorUtilitiesProps {
   connected: boolean;
@@ -17,12 +29,11 @@ export function EditorUtilities({ connected }: EditorUtilitiesProps) {
     if (!connected) return;
     setLoading(true);
     try {
-      const result = await window.guavaEngine.call("editorUtility.list" as never, {} as never) as {
-        available: boolean;
+      const result = await rpc("utilities.list", {}) as {
         utilities: EditorUtilitySnapshot[];
       };
-      setRuntimeAvailable(result.available);
-      setUtilities(result.utilities);
+      setRuntimeAvailable(true);
+      setUtilities(result.utilities ?? []);
     } catch {
       setRuntimeAvailable(false);
       setUtilities([]);
@@ -39,7 +50,7 @@ export function EditorUtilities({ connected }: EditorUtilitiesProps) {
 
   const handleToggleOpen = useCallback(async (handle: number, open: boolean) => {
     try {
-      await window.guavaEngine.call("editorUtility.setOpen" as never, { handle, open } as never);
+      await rpc("utilities.setOpen", { handle, open });
       setUtilities((prev) =>
         prev.map((u) => (u.handle === handle ? { ...u, open } : u))
       );
@@ -50,7 +61,7 @@ export function EditorUtilities({ connected }: EditorUtilitiesProps) {
 
   const handleUnload = useCallback(async (handle: number) => {
     try {
-      await window.guavaEngine.call("editorUtility.remove" as never, { handle } as never);
+      await rpc("utilities.remove", { handle });
       setUtilities((prev) => prev.filter((u) => u.handle !== handle));
     } catch {
       /* ignore */

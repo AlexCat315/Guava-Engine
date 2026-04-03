@@ -631,6 +631,145 @@ pub const Methods = struct {
         pub const Params = struct {};
         pub const Result = struct {};
     };
+
+    // ── physicsviz namespace ─────────────────────────────────────
+
+    pub const @"physicsviz.getSettings" = struct {
+        pub const Params = struct {};
+        pub const Result = struct {
+            drawMode: []const u8,
+            opacity: f32,
+            velocityScale: f32,
+            wireframeOnly: bool,
+            showCollisionShapes: bool,
+            showRigidbodies: bool,
+            showTriggers: bool,
+            showConstraints: bool,
+            showVelocityVectors: bool,
+            showSleepState: bool,
+            showAabbs: bool,
+            colorStatic: [4]f32,
+            colorDynamic: [4]f32,
+            colorKinematic: [4]f32,
+            colorTrigger: [4]f32,
+            colorSleeping: [4]f32,
+            colorConstraint: [4]f32,
+        };
+    };
+
+    pub const @"physicsviz.setDrawMode" = struct {
+        pub const Params = struct { mode: []const u8 };
+        pub const Result = struct {};
+    };
+
+    pub const @"physicsviz.setToggle" = struct {
+        pub const Params = struct { key: []const u8, value: bool };
+        pub const Result = struct {};
+    };
+
+    pub const @"physicsviz.setFloat" = struct {
+        pub const Params = struct { key: []const u8, value: f32 };
+        pub const Result = struct {};
+    };
+
+    pub const @"physicsviz.setColor" = struct {
+        pub const Params = struct { key: []const u8, r: f32, g: f32, b: f32, a: f32 };
+        pub const Result = struct {};
+    };
+
+    // ── utilities namespace ──────────────────────────────────────
+
+    pub const @"utilities.list" = struct {
+        pub const Params = struct {};
+        pub const Result = struct {
+            utilities: []const UtilityInfo,
+
+            pub const UtilityInfo = struct {
+                handle: u64,
+                name: []const u8,
+                description: []const u8,
+                sourcePath: []const u8,
+                status: []const u8,
+                open: bool,
+                lastError: []const u8,
+            };
+        };
+    };
+
+    pub const @"utilities.setOpen" = struct {
+        pub const Params = struct { handle: u64, open: bool };
+        pub const Result = struct {};
+    };
+
+    pub const @"utilities.remove" = struct {
+        pub const Params = struct { handle: u64 };
+        pub const Result = struct {};
+    };
+
+    // ── rendersettings namespace ─────────────────────────────────
+
+    pub const @"rendersettings.getSettings" = struct {
+        pub const Params = struct {};
+        pub const Result = struct {
+            shadingMode: []const u8,
+            transformSpace: []const u8,
+            showGrid: bool,
+            showBones: bool,
+            showCollision: bool,
+            pathTrace: PathTraceSettings,
+            viewportSize: ViewportDimensions,
+            renderOutput: RenderOutputSettings,
+
+            pub const PathTraceSettings = struct {
+                samples: u32,
+                bounces: u32,
+                resolutionScale: f32,
+            };
+
+            pub const ViewportDimensions = struct {
+                width: u32,
+                height: u32,
+            };
+
+            pub const RenderOutputSettings = struct {
+                preset: []const u8,
+                width: u32,
+                height: u32,
+                format: []const u8,
+                path: []const u8,
+            };
+        };
+    };
+
+    pub const @"rendersettings.setShadingMode" = struct {
+        pub const Params = struct { mode: []const u8 };
+        pub const Result = struct {};
+    };
+
+    pub const @"rendersettings.setTransformSpace" = struct {
+        pub const Params = struct { space: []const u8 };
+        pub const Result = struct {};
+    };
+
+    pub const @"rendersettings.setOverlay" = struct {
+        pub const Params = struct { key: []const u8, value: bool };
+        pub const Result = struct {};
+    };
+
+    pub const @"rendersettings.setPathTrace" = struct {
+        pub const Params = struct { samples: ?u32 = null, bounces: ?u32 = null, resolutionScale: ?f32 = null };
+        pub const Result = struct {};
+    };
+
+    pub const @"rendersettings.applyPtPreset" = struct {
+        pub const Params = struct { preset: []const u8 };
+        pub const Result = struct {};
+    };
+
+    pub const @"rendersettings.setRenderOutput" = struct {
+        pub const Params = struct { preset: ?[]const u8 = null, width: ?u32 = null, height: ?u32 = null, format: ?[]const u8 = null, path: ?[]const u8 = null };
+        pub const Result = struct {};
+    };
 };
 
 // ═══════════════════════════════════════════════════════════════════

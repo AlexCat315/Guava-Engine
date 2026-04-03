@@ -39,6 +39,9 @@ const handler_modules = [_]HandlerModule{
     .{ .prefix = "plugin", .mod = @import("handlers/plugin.zig") },
     .{ .prefix = "style", .mod = @import("handlers/style.zig") },
     .{ .prefix = "renderqueue", .mod = @import("handlers/renderqueue.zig") },
+    .{ .prefix = "physicsviz", .mod = @import("handlers/physics_viz.zig") },
+    .{ .prefix = "utilities", .mod = @import("handlers/utilities.zig") },
+    .{ .prefix = "rendersettings", .mod = @import("handlers/rendersettings.zig") },
 };
 
 // Subscriptions (push events — detection logic in subscriptions.zig)
