@@ -156,6 +156,7 @@ const styles = {
     display: "flex",
     alignItems: "center",
     padding: "4px 12px",
+    paddingLeft: window.guavaEngine?.platform === "darwin" ? 80 : 12,
     background: "#181825",
     borderBottom: "1px solid #313244",
     gap: 4,

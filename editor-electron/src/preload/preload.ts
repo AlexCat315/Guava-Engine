@@ -5,6 +5,9 @@ import { contextBridge, ipcRenderer } from "electron";
  * The renderer process cannot access Node.js or Electron APIs directly.
  */
 contextBridge.exposeInMainWorld("guavaEngine", {
+  /** The OS platform (e.g. "darwin", "win32", "linux") */
+  platform: process.platform,
+
   /** Call an engine RPC method */
   call: (method: string, params: unknown): Promise<unknown> =>
     ipcRenderer.invoke("engine:call", method, params),
@@ -84,6 +87,7 @@ contextBridge.exposeInMainWorld("guavaEngine", {
 
 /** Type declaration for the exposed API (used in renderer) */
 export interface GuavaEngineAPI {
+  platform: string;
   call<M extends import("../shared/rpc-types").RpcMethodName>(
     method: M,
     params: import("../shared/rpc-types").RpcParams<M>,
