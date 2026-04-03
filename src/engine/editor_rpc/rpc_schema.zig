@@ -49,8 +49,18 @@ pub const SharedTypes = struct {
 
     pub const ComponentInfo = struct {
         type: []const u8,
-        // fields intentionally omitted — not yet serialized by engine
+        fields: []const ComponentField,
     };
+
+    pub const ComponentField = struct {
+        name: []const u8,
+        fieldType: []const u8,
+        value: JsonValue,
+        options: ?[]const []const u8 = null,
+    };
+
+    /// Opaque JSON value — codegen emits this as `unknown`.
+    pub const JsonValue = struct { _opaque: u8 = 0 };
 
     pub const LogEntry = struct {
         level: []const u8,
@@ -155,6 +165,16 @@ pub const Methods = struct {
     pub const @"entity.getComponents" = struct {
         pub const Params = struct { entityId: u64 };
         pub const Result = struct { components: []const SharedTypes.ComponentInfo };
+    };
+
+    pub const @"entity.setComponentField" = struct {
+        pub const Params = struct {
+            entityId: u64,
+            componentType: []const u8,
+            fieldName: []const u8,
+            value: SharedTypes.JsonValue,
+        };
+        pub const Result = struct {};
     };
 
     // ── playback namespace ───────────────────────────────────────

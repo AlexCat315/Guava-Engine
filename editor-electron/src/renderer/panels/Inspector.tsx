@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
-import type { Transform, ComponentInfo, Vec3 } from "../../shared/rpc-types";
+import type { Transform, ComponentInfo, ComponentField, Vec3 } from "../../shared/rpc-types";
 
 interface InspectorProps {
   entityId: number | null;
@@ -135,10 +135,13 @@ export function Inspector({ entityId }: InspectorProps) {
             <div style={{ ...styles.empty, padding: 8 }}>No editable fields</div>
           ) : (
             comp.fields.map((field) => (
-              <div key={field.name} style={styles.field}>
-                <label style={styles.label}>{field.name}</label>
-                <span style={styles.value}>{formatFieldValue(field.value)}</span>
-              </div>
+              <FieldEditor
+                key={field.name}
+                entityId={entityId}
+                componentType={comp.type}
+                field={field}
+                onFieldChanged={() => fetchEntityData(entityId)}
+              />
             ))
           )}
         </CollapsibleSection>
@@ -229,12 +232,181 @@ function Vec3Input({
   );
 }
 
-// ── Helpers ──────────────────────────────────────────────────────
+// ── Typed field editor — dispatches on fieldType ─────────────────
 
-function formatFieldValue(value: unknown): string {
-  if (value == null) return "null";
-  if (typeof value === "object") return JSON.stringify(value);
-  return String(value);
+function FieldEditor({
+  entityId,
+  componentType,
+  field,
+  onFieldChanged,
+}: {
+  entityId: number;
+  componentType: string;
+  field: ComponentField;
+  onFieldChanged: () => void;
+}) {
+  const commitTimer = useRef<ReturnType<typeof setTimeout>>();
+
+  const commitField = useCallback(
+    (value: unknown) => {
+      clearTimeout(commitTimer.current);
+      commitTimer.current = setTimeout(() => {
+        window.guavaEngine.call("entity.setComponentField", {
+          entityId,
+          componentType,
+          fieldName: field.name,
+          value,
+        });
+      }, 150);
+    },
+    [entityId, componentType, field.name],
+  );
+
+  switch (field.fieldType) {
+    case "float":
+      return <FloatField label={field.name} value={field.value as number} onCommit={commitField} />;
+    case "bool":
+      return <BoolField label={field.name} value={field.value as boolean} onCommit={commitField} />;
+    case "vec3":
+      return (
+        <Vec3Input
+          label={field.name}
+          value={field.value as Vec3}
+          step={0.1}
+          onChange={(v) => commitField(v)}
+        />
+      );
+    case "color":
+      return <ColorField label={field.name} value={field.value as Vec3 & { w: number }} onCommit={commitField} />;
+    case "enum":
+      return (
+        <EnumField
+          label={field.name}
+          value={field.value as string}
+          options={field.options ?? []}
+          onCommit={commitField}
+        />
+      );
+    default:
+      return (
+        <div style={styles.field}>
+          <label style={styles.label}>{field.name}</label>
+          <span style={styles.value}>{JSON.stringify(field.value)}</span>
+        </div>
+      );
+  }
+}
+
+// ── Float field ──────────────────────────────────────────────────
+
+function FloatField({ label, value, onCommit }: { label: string; value: number; onCommit: (v: number) => void }) {
+  const [local, setLocal] = useState(value);
+  useEffect(() => setLocal(value), [value]);
+
+  return (
+    <div style={styles.field}>
+      <label style={styles.label}>{label}</label>
+      <input
+        type="number"
+        step={0.01}
+        value={local.toFixed(3)}
+        onChange={(e) => {
+          const n = parseFloat(e.target.value);
+          if (!isNaN(n)) { setLocal(n); onCommit(n); }
+        }}
+        style={{ ...styles.numInput, flex: 1, marginLeft: 8 }}
+      />
+    </div>
+  );
+}
+
+// ── Bool field ───────────────────────────────────────────────────
+
+function BoolField({ label, value, onCommit }: { label: string; value: boolean; onCommit: (v: boolean) => void }) {
+  return (
+    <div style={styles.field}>
+      <label style={styles.label}>{label}</label>
+      <input
+        type="checkbox"
+        checked={value}
+        onChange={(e) => onCommit(e.target.checked)}
+        style={{ marginLeft: 8, accentColor: "#89b4fa" }}
+      />
+    </div>
+  );
+}
+
+// ── Color field (vec4) ──────────────────────────────────────────
+
+function ColorField({
+  label,
+  value,
+  onCommit,
+}: {
+  label: string;
+  value: { x: number; y: number; z: number; w: number };
+  onCommit: (v: { x: number; y: number; z: number; w: number }) => void;
+}) {
+  const toHex = (v: { x: number; y: number; z: number }) => {
+    const r = Math.round(Math.min(1, Math.max(0, v.x)) * 255);
+    const g = Math.round(Math.min(1, Math.max(0, v.y)) * 255);
+    const b = Math.round(Math.min(1, Math.max(0, v.z)) * 255);
+    return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
+  };
+  const fromHex = (hex: string) => {
+    const r = parseInt(hex.slice(1, 3), 16) / 255;
+    const g = parseInt(hex.slice(3, 5), 16) / 255;
+    const b = parseInt(hex.slice(5, 7), 16) / 255;
+    return { x: r, y: g, z: b, w: value.w };
+  };
+
+  return (
+    <div style={styles.field}>
+      <label style={styles.label}>{label}</label>
+      <input
+        type="color"
+        value={toHex(value)}
+        onChange={(e) => onCommit(fromHex(e.target.value))}
+        style={{ marginLeft: 8, width: 32, height: 20, border: "none", background: "none", cursor: "pointer" }}
+      />
+      <span style={{ ...styles.value, marginLeft: 4, fontSize: 10 }}>{toHex(value)}</span>
+    </div>
+  );
+}
+
+// ── Enum field ──────────────────────────────────────────────────
+
+function EnumField({
+  label,
+  value,
+  options,
+  onCommit,
+}: {
+  label: string;
+  value: string;
+  options: string[];
+  onCommit: (v: string) => void;
+}) {
+  return (
+    <div style={styles.field}>
+      <label style={styles.label}>{label}</label>
+      <select
+        value={value}
+        onChange={(e) => onCommit(e.target.value)}
+        style={{
+          ...styles.numInput,
+          flex: 1,
+          marginLeft: 8,
+          appearance: "none",
+          padding: "2px 6px",
+        }}
+      >
+        {options.map((opt) => (
+          <option key={opt} value={opt}>{opt}</option>
+        ))}
+      </select>
+    </div>
+  );
 }
 
 // ── Styles ──────────────────────────────────────────────────────

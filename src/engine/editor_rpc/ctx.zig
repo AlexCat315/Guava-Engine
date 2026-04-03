@@ -60,6 +60,11 @@ pub const Ctx = struct {
         self._result = try json(self.allocator, value);
     }
 
+    /// Set a pre-built JSON string as the result (for dynamic responses).
+    pub fn replyRaw(self: *Ctx, raw_json: []u8) void {
+        self._result = raw_json;
+    }
+
     // ── Internal ────────────────────────────────────────────────
 
     fn coerce(comptime T: type, val: std.json.Value) !T {
@@ -137,6 +142,9 @@ pub fn readQuat(val: std.json.Value) ?[4]f32 {
         jsonFloat(obj.get("w") orelse return null),
     };
 }
+
+/// Alias for readQuat — used for color [4]f32 {x,y,z,w} objects.
+pub const readVec4 = readQuat;
 
 fn jsonFloat(val: std.json.Value) f32 {
     return switch (val) {
