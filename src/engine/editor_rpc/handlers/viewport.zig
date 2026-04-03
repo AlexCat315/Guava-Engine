@@ -143,9 +143,34 @@ pub fn getRenderSettings(ctx: *Ctx) !void {
         .ssaoEnabled = state.ssao_enabled,
         .ssaoRadius = state.ssao_radius,
         .ssaoIntensity = state.ssao_intensity,
+        .ssaoBias = state.ssao_bias,
+        .ssaoPower = state.ssao_power,
         .fxaaEnabled = state.fxaa_enabled,
         .taaEnabled = state.taa_enabled,
+        .taaBlendFactor = state.taa_blend_factor,
+        .taaMotionBlurScale = state.taa_motion_blur_scale,
+        .taaFeedbackMin = state.taa_feedback_min,
+        .taaFeedbackMax = state.taa_feedback_max,
         .contactShadowsEnabled = state.contact_shadows_enabled,
+        .contactShadowsDistance = state.contact_shadows_distance,
+        .contactShadowsThickness = state.contact_shadows_thickness,
+        .contactShadowsIntensity = state.contact_shadows_intensity,
+        .contactShadowsBias = state.contact_shadows_bias,
+        .contactShadowsSteps = state.contact_shadows_steps,
+        .ssrEnabled = state.ssr_enabled,
+        .ssrIntensity = state.ssr_intensity,
+        .ssrRayStep = state.ssr_ray_step,
+        .ssrMaxDistance = state.ssr_ray_max_distance,
+        .ssrThickness = state.ssr_ray_thickness,
+        .ssrFadeDistance = state.ssr_fade_distance,
+        .ssrEdgeFade = state.ssr_edge_fade,
+        .ssrRoughnessBlur = state.ssr_roughness_blur_strength,
+        .ssgiEnabled = state.ssgi_enabled,
+        .ssgiRadius = state.ssgi_radius,
+        .ssgiIntensity = state.ssgi_intensity,
+        .ssgiBias = state.ssgi_bias,
+        .ssgiRayCount = state.ssgi_ray_count,
+        .ssgiStepCount = state.ssgi_step_count,
         .colorGradingEnabled = state.color_grading_enabled,
         .colorGradingSaturation = state.color_grading_saturation,
         .colorGradingContrast = state.color_grading_contrast,
@@ -153,6 +178,23 @@ pub fn getRenderSettings(ctx: *Ctx) !void {
         .dofEnabled = state.dof_enabled,
         .dofFocusDistance = state.dof_focus_distance,
         .dofFocusRange = state.dof_focus_range,
+        .dofBlurRadius = state.dof_blur_radius,
+        .dofBokehRadius = state.dof_bokeh_radius,
+        .dofNearBlur = state.dof_near_blur,
+        .dofFarBlur = state.dof_far_blur,
+        .dofQuality = state.dof_quality,
+        .lutEnabled = state.lut_enabled,
+        .lutIntensity = state.lut_intensity,
+        .lutPreset = @tagName(state.lut_preset),
+        .volumetricFogEnabled = state.volumetric_fog_enabled,
+        .volumetricFogDensity = state.volumetric_fog_density,
+        .volumetricFogHeightFalloff = state.volumetric_fog_height_falloff,
+        .volumetricFogMaxDistance = state.volumetric_fog_max_distance,
+        .rtShadowsEnabled = state.rt_shadows_enabled,
+        .rtShadowSamples = state.rt_shadow_samples,
+        .rtShadowStrength = state.rt_shadow_strength,
+        .rtShadowSoftness = state.rt_shadow_softness,
+        .rtShadowResolutionScale = state.rt_shadow_resolution_scale,
     });
 }
 
@@ -195,13 +237,42 @@ pub fn setRenderSettings(ctx: *Ctx) !void {
     if (try ctx.paramOpt(bool, "ssaoEnabled")) |v| state.ssao_enabled = v;
     if (try ctx.paramOpt(f64, "ssaoRadius")) |v| state.ssao_radius = @floatCast(v);
     if (try ctx.paramOpt(f64, "ssaoIntensity")) |v| state.ssao_intensity = @floatCast(v);
+    if (try ctx.paramOpt(f64, "ssaoBias")) |v| state.ssao_bias = @floatCast(v);
+    if (try ctx.paramOpt(f64, "ssaoPower")) |v| state.ssao_power = @floatCast(v);
 
     // Anti-aliasing
     if (try ctx.paramOpt(bool, "fxaaEnabled")) |v| state.fxaa_enabled = v;
     if (try ctx.paramOpt(bool, "taaEnabled")) |v| state.taa_enabled = v;
+    if (try ctx.paramOpt(f64, "taaBlendFactor")) |v| state.taa_blend_factor = @floatCast(v);
+    if (try ctx.paramOpt(f64, "taaMotionBlurScale")) |v| state.taa_motion_blur_scale = @floatCast(v);
+    if (try ctx.paramOpt(f64, "taaFeedbackMin")) |v| state.taa_feedback_min = @floatCast(v);
+    if (try ctx.paramOpt(f64, "taaFeedbackMax")) |v| state.taa_feedback_max = @floatCast(v);
 
     // Contact Shadows
     if (try ctx.paramOpt(bool, "contactShadowsEnabled")) |v| state.contact_shadows_enabled = v;
+    if (try ctx.paramOpt(f64, "contactShadowsDistance")) |v| state.contact_shadows_distance = @floatCast(v);
+    if (try ctx.paramOpt(f64, "contactShadowsThickness")) |v| state.contact_shadows_thickness = @floatCast(v);
+    if (try ctx.paramOpt(f64, "contactShadowsIntensity")) |v| state.contact_shadows_intensity = @floatCast(v);
+    if (try ctx.paramOpt(f64, "contactShadowsBias")) |v| state.contact_shadows_bias = @floatCast(v);
+    if (try ctx.paramOpt(u64, "contactShadowsSteps")) |v| state.contact_shadows_steps = @intCast(v);
+
+    // SSR
+    if (try ctx.paramOpt(bool, "ssrEnabled")) |v| state.ssr_enabled = v;
+    if (try ctx.paramOpt(f64, "ssrIntensity")) |v| state.ssr_intensity = @floatCast(v);
+    if (try ctx.paramOpt(f64, "ssrRayStep")) |v| state.ssr_ray_step = @floatCast(v);
+    if (try ctx.paramOpt(f64, "ssrMaxDistance")) |v| state.ssr_ray_max_distance = @floatCast(v);
+    if (try ctx.paramOpt(f64, "ssrThickness")) |v| state.ssr_ray_thickness = @floatCast(v);
+    if (try ctx.paramOpt(f64, "ssrFadeDistance")) |v| state.ssr_fade_distance = @floatCast(v);
+    if (try ctx.paramOpt(f64, "ssrEdgeFade")) |v| state.ssr_edge_fade = @floatCast(v);
+    if (try ctx.paramOpt(f64, "ssrRoughnessBlur")) |v| state.ssr_roughness_blur_strength = @floatCast(v);
+
+    // SSGI
+    if (try ctx.paramOpt(bool, "ssgiEnabled")) |v| state.ssgi_enabled = v;
+    if (try ctx.paramOpt(f64, "ssgiRadius")) |v| state.ssgi_radius = @floatCast(v);
+    if (try ctx.paramOpt(f64, "ssgiIntensity")) |v| state.ssgi_intensity = @floatCast(v);
+    if (try ctx.paramOpt(f64, "ssgiBias")) |v| state.ssgi_bias = @floatCast(v);
+    if (try ctx.paramOpt(u64, "ssgiRayCount")) |v| state.ssgi_ray_count = @intCast(v);
+    if (try ctx.paramOpt(u64, "ssgiStepCount")) |v| state.ssgi_step_count = @intCast(v);
 
     // Color Grading
     if (try ctx.paramOpt(bool, "colorGradingEnabled")) |v| state.color_grading_enabled = v;
@@ -213,6 +284,31 @@ pub fn setRenderSettings(ctx: *Ctx) !void {
     if (try ctx.paramOpt(bool, "dofEnabled")) |v| state.dof_enabled = v;
     if (try ctx.paramOpt(f64, "dofFocusDistance")) |v| state.dof_focus_distance = @floatCast(v);
     if (try ctx.paramOpt(f64, "dofFocusRange")) |v| state.dof_focus_range = @floatCast(v);
+    if (try ctx.paramOpt(f64, "dofBlurRadius")) |v| state.dof_blur_radius = @floatCast(v);
+    if (try ctx.paramOpt(f64, "dofBokehRadius")) |v| state.dof_bokeh_radius = @floatCast(v);
+    if (try ctx.paramOpt(f64, "dofNearBlur")) |v| state.dof_near_blur = @floatCast(v);
+    if (try ctx.paramOpt(f64, "dofFarBlur")) |v| state.dof_far_blur = @floatCast(v);
+    if (try ctx.paramOpt(u64, "dofQuality")) |v| state.dof_quality = @intCast(v);
+
+    // LUT
+    if (try ctx.paramOpt(bool, "lutEnabled")) |v| state.lut_enabled = v;
+    if (try ctx.paramOpt(f64, "lutIntensity")) |v| state.lut_intensity = @floatCast(v);
+    if (try ctx.paramOpt([]const u8, "lutPreset")) |v| {
+        if (std.mem.eql(u8, v, "neutral")) state.lut_preset = .neutral else if (std.mem.eql(u8, v, "warm")) state.lut_preset = .warm else if (std.mem.eql(u8, v, "cool")) state.lut_preset = .cool else if (std.mem.eql(u8, v, "filmic")) state.lut_preset = .filmic;
+    }
+
+    // Volumetric Fog
+    if (try ctx.paramOpt(bool, "volumetricFogEnabled")) |v| state.volumetric_fog_enabled = v;
+    if (try ctx.paramOpt(f64, "volumetricFogDensity")) |v| state.volumetric_fog_density = @floatCast(v);
+    if (try ctx.paramOpt(f64, "volumetricFogHeightFalloff")) |v| state.volumetric_fog_height_falloff = @floatCast(v);
+    if (try ctx.paramOpt(f64, "volumetricFogMaxDistance")) |v| state.volumetric_fog_max_distance = @floatCast(v);
+
+    // RT Shadows
+    if (try ctx.paramOpt(bool, "rtShadowsEnabled")) |v| state.rt_shadows_enabled = v;
+    if (try ctx.paramOpt(u64, "rtShadowSamples")) |v| state.rt_shadow_samples = @intCast(v);
+    if (try ctx.paramOpt(f64, "rtShadowStrength")) |v| state.rt_shadow_strength = @floatCast(v);
+    if (try ctx.paramOpt(f64, "rtShadowSoftness")) |v| state.rt_shadow_softness = @floatCast(v);
+    if (try ctx.paramOpt(f64, "rtShadowResolutionScale")) |v| state.rt_shadow_resolution_scale = @floatCast(v);
 
     ctx.layer.renderer.setEditorViewportState(state);
     try ctx.reply(.{});

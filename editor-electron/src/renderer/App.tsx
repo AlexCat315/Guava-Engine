@@ -19,6 +19,7 @@ import { StyleInspector } from "./panels/StyleInspector";
 import { PlaceActors } from "./panels/PlaceActors";
 import { RenderQueue } from "./panels/RenderQueue";
 import { PhysicsVisualization } from "./panels/PhysicsVisualization";
+import { PostProcessEditor } from "./panels/PostProcessEditor";
 import { useI18n } from "./i18n";
 import type { EntityNode, LogEntry, GizmoMode } from "../shared/rpc-types";
 
@@ -36,7 +37,7 @@ export function App() {
   const [selectedEntity, setSelectedEntity] = useState<number | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [gizmoMode, setGizmoMode] = useState<GizmoMode>("translate");
-  const [bottomTab, setBottomTab] = useState<"console" | "assets" | "timeline" | "utilities" | "camera" | "rhistats" | "audio" | "plugins" | "style" | "placeactors" | "renderqueue" | "physicsviz">("console");
+  const [bottomTab, setBottomTab] = useState<"console" | "assets" | "timeline" | "utilities" | "camera" | "rhistats" | "audio" | "plugins" | "style" | "placeactors" | "renderqueue" | "physicsviz" | "postprocess">("console");
 
   useEffect(() => {
     const cleanupConnected = window.guavaEngine.onConnected(() => {
@@ -261,6 +262,12 @@ export function App() {
           >
             Physics
           </button>
+          <button
+            style={{ ...styles.tab, ...(bottomTab === "postprocess" ? styles.tabActive : {}) }}
+            onClick={() => setBottomTab("postprocess")}
+          >
+            Post-FX
+          </button>
         </div>
         <div style={styles.bottomContent}>
           {bottomTab === "console" ? (
@@ -285,6 +292,8 @@ export function App() {
             <RenderQueue connected={connected} />
           ) : bottomTab === "physicsviz" ? (
             <PhysicsVisualization connected={connected} />
+          ) : bottomTab === "postprocess" ? (
+            <PostProcessEditor connected={connected} />
           ) : (
             <CommandTimeline connected={connected} />
           )}
