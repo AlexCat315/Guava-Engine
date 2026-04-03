@@ -6,6 +6,7 @@ import { Console } from "./panels/Console";
 import { Toolbar } from "./panels/Toolbar";
 import { Viewport } from "./panels/Viewport";
 import { RenderSettingsPanel } from "./panels/RenderSettings";
+import { MaterialEditor } from "./panels/MaterialEditor";
 import { AssetBrowser } from "./panels/AssetBrowser";
 import { ViewportStatus } from "./panels/ViewportStatus";
 import { CommandTimeline } from "./panels/CommandTimeline";
@@ -182,6 +183,7 @@ export function App() {
         </div>
         <div style={styles.rightPanel}>
           <Inspector entityId={selectedEntity} />
+          <MaterialEditor entityId={selectedEntity} />
           <RenderSettingsPanel connected={connected} />
         </div>
       </div>

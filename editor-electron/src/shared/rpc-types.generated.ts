@@ -144,6 +144,17 @@ export interface RpcMethods {
   "rendersettings.setPathTrace": { params: { samples?: number; bounces?: number; resolutionScale?: number }; result: Record<string, never> };
   "rendersettings.applyPtPreset": { params: { preset: string }; result: Record<string, never> };
   "rendersettings.setRenderOutput": { params: { preset?: string; width?: number; height?: number; format?: string; path?: string }; result: Record<string, never> };
+  "material.getState": { params: { entityId: number }; result: { hasMaterial: boolean; name?: string; shading?: string; baseColor?: unknown /* [4]f32 */; emissive?: unknown /* [3]f32 */; metallic?: number; roughness?: number; alphaCutoff?: number; doubleSided?: boolean; useIBL?: boolean; iblIntensity?: number; texBaseColor?: number; texMetallicRoughness?: number; texNormal?: number; texOcclusion?: number; texEmissive?: number; isShared?: boolean; materialHandle?: number; parentHandle?: number; generation?: number; previewPrimitive?: string } };
+  "material.setShading": { params: { entityId: number; mode: string }; result: Record<string, never> };
+  "material.setColor": { params: { entityId: number; property: string; value: unknown /* [4]f32 */ }; result: Record<string, never> };
+  "material.setScalar": { params: { entityId: number; property: string; value: number }; result: Record<string, never> };
+  "material.setFlag": { params: { entityId: number; property: string; value: boolean }; result: Record<string, never> };
+  "material.assignTexture": { params: { entityId: number; slot: string; textureHandle: number }; result: Record<string, never> };
+  "material.clearTexture": { params: { entityId: number; slot: string }; result: Record<string, never> };
+  "material.makeUnique": { params: { entityId: number }; result: { newHandle: number; wasShared: boolean; generation?: number } };
+  "material.getTextureInfo": { params: { textureHandle: number }; result: { found: boolean; name?: string; width?: number; height?: number; format?: string } };
+  "material.listTextures": { params: Record<string, never>; result: { textures: { handle: number; name: string; width: number; height: number }[] } };
+  "material.setPreviewPrimitive": { params: { primitive: string }; result: Record<string, never> };
 }
 
 // ── Subscription Events ───────────────────────────────────

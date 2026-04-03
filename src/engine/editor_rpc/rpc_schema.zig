@@ -770,6 +770,104 @@ pub const Methods = struct {
         pub const Params = struct { preset: ?[]const u8 = null, width: ?u32 = null, height: ?u32 = null, format: ?[]const u8 = null, path: ?[]const u8 = null };
         pub const Result = struct {};
     };
+
+    // ── material namespace ───────────────────────────────────────
+
+    pub const @"material.getState" = struct {
+        pub const Params = struct { entityId: u64 };
+        pub const Result = struct {
+            hasMaterial: bool,
+            name: ?[]const u8 = null,
+            shading: ?[]const u8 = null,
+            baseColor: ?[4]f32 = null,
+            emissive: ?[3]f32 = null,
+            metallic: ?f32 = null,
+            roughness: ?f32 = null,
+            alphaCutoff: ?f32 = null,
+            doubleSided: ?bool = null,
+            useIBL: ?bool = null,
+            iblIntensity: ?f32 = null,
+            texBaseColor: ?u32 = null,
+            texMetallicRoughness: ?u32 = null,
+            texNormal: ?u32 = null,
+            texOcclusion: ?u32 = null,
+            texEmissive: ?u32 = null,
+            isShared: ?bool = null,
+            materialHandle: ?u32 = null,
+            parentHandle: ?u32 = null,
+            generation: ?u32 = null,
+            previewPrimitive: ?[]const u8 = null,
+        };
+    };
+
+    pub const @"material.setShading" = struct {
+        pub const Params = struct { entityId: u64, mode: []const u8 };
+        pub const Result = struct {};
+    };
+
+    pub const @"material.setColor" = struct {
+        pub const Params = struct { entityId: u64, property: []const u8, value: [4]f32 };
+        pub const Result = struct {};
+    };
+
+    pub const @"material.setScalar" = struct {
+        pub const Params = struct { entityId: u64, property: []const u8, value: f32 };
+        pub const Result = struct {};
+    };
+
+    pub const @"material.setFlag" = struct {
+        pub const Params = struct { entityId: u64, property: []const u8, value: bool };
+        pub const Result = struct {};
+    };
+
+    pub const @"material.assignTexture" = struct {
+        pub const Params = struct { entityId: u64, slot: []const u8, textureHandle: u32 };
+        pub const Result = struct {};
+    };
+
+    pub const @"material.clearTexture" = struct {
+        pub const Params = struct { entityId: u64, slot: []const u8 };
+        pub const Result = struct {};
+    };
+
+    pub const @"material.makeUnique" = struct {
+        pub const Params = struct { entityId: u64 };
+        pub const Result = struct {
+            newHandle: u32,
+            wasShared: bool,
+            generation: ?u32 = null,
+        };
+    };
+
+    pub const @"material.getTextureInfo" = struct {
+        pub const Params = struct { textureHandle: u32 };
+        pub const Result = struct {
+            found: bool,
+            name: ?[]const u8 = null,
+            width: ?u32 = null,
+            height: ?u32 = null,
+            format: ?[]const u8 = null,
+        };
+    };
+
+    pub const @"material.listTextures" = struct {
+        pub const Params = struct {};
+        pub const Result = struct {
+            textures: []const TextureEntry,
+
+            pub const TextureEntry = struct {
+                handle: u32,
+                name: []const u8,
+                width: u32,
+                height: u32,
+            };
+        };
+    };
+
+    pub const @"material.setPreviewPrimitive" = struct {
+        pub const Params = struct { primitive: []const u8 };
+        pub const Result = struct {};
+    };
 };
 
 // ═══════════════════════════════════════════════════════════════════
