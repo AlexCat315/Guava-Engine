@@ -125,6 +125,7 @@ export const zhCN: TranslationKeys = {
     tabAssets: "资产",
     tabTimeline: "时间线",
     tabUtilities: "AI 工具",
+    tabSettings: "设置",
   },
 
   // ── Command Timeline ──────────────────────────────────

@@ -127,6 +127,7 @@ export const en = {
     tabAssets: "Assets",
     tabTimeline: "Timeline",
     tabUtilities: "AI Utilities",
+    tabSettings: "Settings",
   },
 
   // ── Command Timeline ──────────────────────────────────

@@ -25,6 +25,7 @@ import { RenderQueue } from "./panels/RenderQueue";
 import { PhysicsVisualization } from "./panels/PhysicsVisualization";
 import { PostProcessEditor } from "./panels/PostProcessEditor";
 import { SequencerPanel } from "./panels/SequencerPanel";
+import { SettingsPanel } from "./panels/Settings";
 import { useI18n } from "./i18n";
 import type { EntityNode, LogEntry, GizmoMode } from "../shared/rpc-types";
 
@@ -122,6 +123,7 @@ const defaultLayout: IJsonModel = {
               { type: "tab", name: "Physics", component: "physicsviz" },
               { type: "tab", name: "Post-FX", component: "postprocess" },
               { type: "tab", name: "Sequencer", component: "sequencer" },
+              { type: "tab", name: "Settings", component: "settings" },
             ],
           },
         ],
@@ -327,6 +329,8 @@ export function App() {
         return <PostProcessEditor connected={connected} />;
       case "sequencer":
         return <SequencerPanel connected={connected} />;
+      case "settings":
+        return <SettingsPanel connected={connected} />;
       default:
         return <div style={{ padding: 12, color: "#6c7086" }}>Unknown panel: {component}</div>;
     }
