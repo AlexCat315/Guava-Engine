@@ -31,7 +31,7 @@ export class EngineClient {
 
   constructor(
     private url: string,
-    private options: { timeout?: number; reconnectInterval?: number } = {},
+    private options: { timeout?: number; reconnectInterval?: number; onReconnected?: () => void } = {},
   ) {}
 
   get connected(): boolean {
@@ -196,6 +196,7 @@ export class EngineClient {
         console.log("[EngineClient] Attempting reconnect...");
         await this.connect();
         console.log("[EngineClient] Reconnected");
+        this.options.onReconnected?.();
       } catch {
         console.warn("[EngineClient] Reconnect failed, retrying...");
         this.scheduleReconnect();

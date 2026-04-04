@@ -114,6 +114,12 @@ async function startEngine(): Promise<void> {
   engineClient = new EngineClient(`ws://127.0.0.1:${DEFAULT_PORT}`, {
     timeout: 10000,
     reconnectInterval: 2000,
+    onReconnected: () => {
+      // If the engine reconnects (e.g. after a restart), notify the renderer.
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("engine:connected");
+      }
+    },
   });
   await engineClient.connect();
 
@@ -124,10 +130,13 @@ async function startEngine(): Promise<void> {
 // ── IPC Bridge: Renderer ↔ Engine ────────────────────────────────
 
 ipcMain.handle("engine:call", async (_event, method: string, params: unknown) => {
+  // If momentarily disconnected (e.g. after HMR), wait briefly for reconnection.
   if (!engineClient?.connected) {
-    throw new Error("Engine not connected");
+    await new Promise((r) => setTimeout(r, 500));
+    if (!engineClient?.connected) {
+      throw new Error("Engine not connected");
+    }
   }
-  // Type narrowing happens at the shared types level in renderer
   return engineClient.call(method as keyof typeof engineClient.call, params as never);
 });
 
@@ -182,10 +191,16 @@ ipcMain.handle(
     // refresh() returns { pixels, width, height } which we forward to the renderer.
     if (surfaceRefreshTimer) clearInterval(surfaceRefreshTimer);
     surfaceRefreshTimer = setInterval(() => {
-      if (!ioSurfaceView) return;
+      if (!ioSurfaceView || !mainWindow) return;
+      // Guard against sending to a destroyed webContents (e.g. during HMR reload)
+      if (mainWindow.webContents.isDestroyed()) {
+        clearInterval(surfaceRefreshTimer!);
+        surfaceRefreshTimer = null;
+        return;
+      }
       const result = ioSurfaceView.refresh();
       if (result && result.pixels) {
-        mainWindow?.webContents.send("viewport:pixels", result.pixels, result.width, result.height);
+        mainWindow.webContents.send("viewport:pixels", result.pixels, result.width, result.height);
       }
     }, 16);
 
@@ -230,6 +245,22 @@ app.whenReady().then(async () => {
   });
 
   mainWindow = await createMainWindow();
+
+  // When the renderer reloads (Vite HMR full-reload or manual refresh),
+  // clean up stale viewport state and re-send engine connection status.
+  mainWindow.webContents.on("did-finish-load", () => {
+    // Stop the pixel streaming timer — the new page will re-attach if needed.
+    if (surfaceRefreshTimer) {
+      clearInterval(surfaceRefreshTimer);
+      surfaceRefreshTimer = null;
+    }
+    ioSurfaceView?.detach();
+
+    // Re-notify the new renderer page of the current engine state.
+    if (engineClient?.connected) {
+      mainWindow?.webContents.send("engine:connected");
+    }
+  });
 
   try {
     await startEngine();
