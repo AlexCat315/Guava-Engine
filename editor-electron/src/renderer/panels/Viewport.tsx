@@ -272,31 +272,91 @@ export function Viewport({ connected }: ViewportProps) {
     };
   }, []);
 
-  // Linux pixel rendering: subscribe to viewport:pixels from main process.
+  // WebGL pixel rendering: subscribe to viewport:pixels and display via GPU.
+  // Pixels arrive as BGRA from Vulkan/Metal readback; a fragment shader swaps
+  // R↔B on the GPU, avoiding the slow per-pixel JS conversion.
   useEffect(() => {
     if (!attached) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const gl = canvas.getContext("webgl", { alpha: false, antialias: false, preserveDrawingBuffer: true });
+    if (!gl) {
+      console.error("[Viewport] WebGL unavailable — pixel display disabled");
+      return;
+    }
+
+    // ── Shaders ──────────────────────────────────────
+    const compile = (type: number, src: string) => {
+      const s = gl.createShader(type)!;
+      gl.shaderSource(s, src);
+      gl.compileShader(s);
+      return s;
+    };
+    const vs = compile(gl.VERTEX_SHADER, `
+      attribute vec2 aPos;
+      varying vec2 vUV;
+      void main() {
+        vUV = aPos * 0.5 + 0.5;
+        vUV.y = 1.0 - vUV.y;
+        gl_Position = vec4(aPos, 0.0, 1.0);
+      }
+    `);
+    const fs = compile(gl.FRAGMENT_SHADER, `
+      precision mediump float;
+      varying vec2 vUV;
+      uniform sampler2D uTex;
+      void main() {
+        vec4 c = texture2D(uTex, vUV);
+        gl_FragColor = vec4(c.b, c.g, c.r, c.a);
+      }
+    `);
+    const prog = gl.createProgram()!;
+    gl.attachShader(prog, vs);
+    gl.attachShader(prog, fs);
+    gl.linkProgram(prog);
+    gl.useProgram(prog);
+
+    // ── Fullscreen quad ──────────────────────────────
+    const buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+    const aPos = gl.getAttribLocation(prog, "aPos");
+    gl.enableVertexAttribArray(aPos);
+    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+    // ── Texture ──────────────────────────────────────
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    // ── Subscribe to pixel data ──────────────────────
     const unsub = window.guavaEngine.onViewportPixels((pixels, width, height) => {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
       if (canvas.width !== width || canvas.height !== height) {
         canvas.width = width;
         canvas.height = height;
+        gl.viewport(0, 0, width, height);
       }
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return;
-      // pixels is BGRA from Vulkan readback — convert to RGBA for ImageData.
-      const src = new Uint8Array(pixels.buffer, pixels.byteOffset, pixels.byteLength);
-      const rgba = new Uint8ClampedArray(src.length);
-      for (let i = 0; i < src.length; i += 4) {
-        rgba[i] = src[i + 2];     // R ← B
-        rgba[i + 1] = src[i + 1]; // G
-        rgba[i + 2] = src[i];     // B ← R
-        rgba[i + 3] = src[i + 3]; // A
-      }
-      const img = new ImageData(rgba, width, height);
-      ctx.putImageData(img, 0, 0);
+      const src = new Uint8Array(
+        pixels.buffer ?? pixels,
+        (pixels as { byteOffset?: number }).byteOffset ?? 0,
+        (pixels as { byteLength?: number }).byteLength ?? (width * height * 4),
+      );
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, src);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     });
-    return unsub;
+
+    return () => {
+      unsub();
+      gl.deleteTexture(tex);
+      gl.deleteBuffer(buf);
+      gl.deleteProgram(prog);
+      gl.deleteShader(vs);
+      gl.deleteShader(fs);
+    };
   }, [attached]);
 
   return (
