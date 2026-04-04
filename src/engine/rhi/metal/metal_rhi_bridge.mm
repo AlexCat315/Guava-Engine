@@ -1310,12 +1310,16 @@ uint32_t guava_metal_rhi_create_iosurface_texture(void* raw,
             default:                            bpe = 4; break;
         }
 
+        // Metal requires IOSurface bytesPerRow to be aligned to 16 bytes.
+        uint32_t rawBytesPerRow = width * bpe;
+        uint32_t alignedBytesPerRow = (rawBytesPerRow + 15) & ~15u;
+
         NSDictionary* props = @{
             (id)kIOSurfaceWidth:           @(width),
             (id)kIOSurfaceHeight:          @(height),
             (id)kIOSurfaceBytesPerElement:  @(bpe),
-            (id)kIOSurfaceBytesPerRow:      @(width * bpe),
-            (id)kIOSurfaceAllocSize:        @((uint64_t)width * height * bpe),
+            (id)kIOSurfaceBytesPerRow:      @(alignedBytesPerRow),
+            (id)kIOSurfaceAllocSize:        @((uint64_t)alignedBytesPerRow * height),
             (id)kIOSurfacePixelFormat:      @((uint32_t)'BGRA'),
             (id)kIOSurfaceIsGlobal:         @YES, // Required for cross-process IOSurfaceLookup
         };

@@ -123,7 +123,6 @@ const defaultLayout: IJsonModel = {
               { type: "tab", name: "Physics", component: "physicsviz" },
               { type: "tab", name: "Post-FX", component: "postprocess" },
               { type: "tab", name: "Sequencer", component: "sequencer" },
-              { type: "tab", name: "Settings", component: "settings" },
             ],
           },
         ],
@@ -146,6 +145,7 @@ export function App() {
   const { t } = useI18n();
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [hierarchy, setHierarchy] = useState<EntityNode[]>([]);
   const [selectedEntity, setSelectedEntity] = useState<number | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -364,6 +364,7 @@ export function App() {
         onGizmoModeChange={handleGizmoChange}
         onRefreshHierarchy={refreshHierarchy}
         onResetLayout={handleResetLayout}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
       <div style={styles.dockArea}>
         <Layout
@@ -374,6 +375,19 @@ export function App() {
         />
       </div>
       <ViewportStatus connected={connected} />
+      {settingsOpen && (
+        <div style={styles.modalBackdrop} onClick={() => setSettingsOpen(false)}>
+          <div style={styles.modalPanel} onClick={(e) => e.stopPropagation()}>
+            <div style={styles.modalHeader}>
+              <span style={styles.modalTitle}>Settings</span>
+              <button style={styles.modalClose} onClick={() => setSettingsOpen(false)}>✕</button>
+            </div>
+            <div style={styles.modalBody}>
+              <SettingsPanel connected={connected} />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -416,5 +430,50 @@ const styles: Record<string, React.CSSProperties> = {
     borderTop: "3px solid #89b4fa",
     borderRadius: "50%",
     animation: "spin 1s linear infinite",
+  },
+  modalBackdrop: {
+    position: "fixed" as const,
+    inset: 0,
+    background: "rgba(0,0,0,0.5)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 9999,
+  },
+  modalPanel: {
+    background: "#1e1e2e",
+    border: "1px solid #45475a",
+    borderRadius: 8,
+    width: 560,
+    maxHeight: "80vh",
+    display: "flex",
+    flexDirection: "column" as const,
+    boxShadow: "0 8px 32px rgba(0,0,0,0.6)",
+  },
+  modalHeader: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: "10px 16px",
+    borderBottom: "1px solid #313244",
+  },
+  modalTitle: {
+    fontSize: 14,
+    fontWeight: 600,
+    color: "#cdd6f4",
+  },
+  modalClose: {
+    background: "transparent",
+    border: "none",
+    color: "#6c7086",
+    cursor: "pointer",
+    fontSize: 16,
+    padding: "2px 6px",
+    borderRadius: 4,
+    lineHeight: 1,
+  },
+  modalBody: {
+    flex: 1,
+    overflow: "auto",
   },
 };
