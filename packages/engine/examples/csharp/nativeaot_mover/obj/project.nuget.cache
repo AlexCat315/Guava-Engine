@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "dgSpecHash": "00rSLC3FWeY=",
+  "success": true,
+  "projectFilePath": "/Users/alex/dev/zig/Guava Engine/examples/csharp/nativeaot_mover/GuavaNativeAotMover.csproj",
+  "expectedPackageFiles": [
+    "/Users/alex/.nuget/packages/microsoft.dotnet.ilcompiler/10.0.5/microsoft.dotnet.ilcompiler.10.0.5.nupkg.sha512",
+    "/Users/alex/.nuget/packages/microsoft.net.illink.tasks/10.0.5/microsoft.net.illink.tasks.10.0.5.nupkg.sha512",
+    "/Users/alex/.nuget/packages/runtime.osx-arm64.microsoft.dotnet.ilcompiler/10.0.5/runtime.osx-arm64.microsoft.dotnet.ilcompiler.10.0.5.nupkg.sha512",
+    "/Users/alex/.nuget/packages/microsoft.netcore.app.runtime.osx-arm64/10.0.5/microsoft.netcore.app.runtime.osx-arm64.10.0.5.nupkg.sha512",
+    "/Users/alex/.nuget/packages/microsoft.aspnetcore.app.runtime.osx-arm64/10.0.5/microsoft.aspnetcore.app.runtime.osx-arm64.10.0.5.nupkg.sha512",
+    "/Users/alex/.nuget/packages/microsoft.netcore.app.runtime.nativeaot.osx-arm64/10.0.5/microsoft.netcore.app.runtime.nativeaot.osx-arm64.10.0.5.nupkg.sha512",
+    "/Users/alex/.nuget/packages/runtime.osx-arm64.microsoft.dotnet.ilcompiler/10.0.5/runtime.osx-arm64.microsoft.dotnet.ilcompiler.10.0.5.nupkg.sha512"
+  ],
+  "logs": []
+}
