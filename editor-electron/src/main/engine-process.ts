@@ -120,33 +120,4 @@ export class EngineProcess extends EventEmitter {
       this.proc!.kill("SIGTERM");
     });
   }
-
-  /**
-   * Get the native window handle of the engine viewport (if available).
-   * The engine writes its native window handle to stdout on startup.
-   */
-  getNativeWindowHandle(): Promise<Buffer> {
-    return new Promise((resolve, reject) => {
-      if (!this.proc?.stdout) {
-        reject(new Error("Engine process not running"));
-        return;
-      }
-
-      const timeout = setTimeout(() => {
-        reject(new Error("Timed out waiting for window handle"));
-      }, 10000);
-
-      const handler = (text: string) => {
-        // Engine outputs: VIEWPORT_HANDLE:<hex_handle>
-        const match = text.match(/VIEWPORT_HANDLE:([0-9a-fA-F]+)/);
-        if (match) {
-          clearTimeout(timeout);
-          this.removeListener("stdout", handler);
-          resolve(Buffer.from(match[1], "hex"));
-        }
-      };
-
-      this.on("stdout", handler);
-    });
-  }
 }

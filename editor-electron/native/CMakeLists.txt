@@ -28,9 +28,7 @@ if(APPLE)
     XCODE_ATTRIBUTE_CLANG_ENABLE_OBJC_ARC YES
   )
   target_link_libraries(${PROJECT_NAME} PRIVATE
-    "-framework Cocoa"
     "-framework IOSurface"
-    "-framework QuartzCore"
     ${CMAKE_JS_LIB}
   )
   set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0")

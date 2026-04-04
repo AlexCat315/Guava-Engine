@@ -13,7 +13,6 @@ let engineClient: EngineClient | null = null;
 
 interface ViewportAddon {
   attach(handle: Buffer, surfaceId: number, x: number, y: number, w: number, h: number): void;
-  updateFrame(x: number, y: number, w: number, h: number): void;
   updateSurface(surfaceId: number, shmName?: string, width?: number, height?: number): void;
   detach(): void;
   refresh(): { pixels: Buffer; width: number; height: number } | void;
@@ -165,22 +164,21 @@ function setupSubscriptionForwarding(): void {
 
 let surfaceRefreshTimer: ReturnType<typeof setInterval> | null = null;
 
-// Renderer calls this with viewport bounds; main process manages the native layer.
+// Renderer calls this to start pixel streaming from the engine's shared surface.
 ipcMain.handle(
   "viewport:attachSurface",
-  async (_event, surfaceId: number, x: number, y: number, w: number, h: number, shmName?: string) => {
+  async (_event, surfaceId: number, _x: number, _y: number, w: number, h: number, shmName?: string) => {
     if (!ioSurfaceView || !mainWindow) return false;
 
     if (isMac) {
       // macOS: store the IOSurface reference for pixel readback
-      const handle = mainWindow.getNativeWindowHandle();
-      ioSurfaceView.attach(handle, surfaceId, x, y, w, h);
+      ioSurfaceView.attach(Buffer.alloc(8), surfaceId, 0, 0, w, h);
     } else if (shmName) {
       // Linux: set up shm mapping for pixel readback
       ioSurfaceView.updateSurface(0, shmName, w, h);
     }
 
-    // Both platforms now use the same pixel streaming path:
+    // Both platforms use the same pixel streaming path:
     // refresh() returns { pixels, width, height } which we forward to the renderer.
     if (surfaceRefreshTimer) clearInterval(surfaceRefreshTimer);
     surfaceRefreshTimer = setInterval(() => {
@@ -192,13 +190,6 @@ ipcMain.handle(
     }, 16);
 
     return true;
-  },
-);
-
-ipcMain.handle(
-  "viewport:updateFrame",
-  async (_event, x: number, y: number, w: number, h: number) => {
-    ioSurfaceView?.updateFrame(x, y, w, h);
   },
 );
 

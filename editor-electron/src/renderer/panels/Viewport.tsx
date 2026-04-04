@@ -18,16 +18,17 @@ interface ViewportProps {
 /**
  * Viewport panel — cross-platform engine viewport display.
  *
- * macOS: Uses IOSurface texture sharing (native CALayer behind Electron window).
- * Linux: Uses POSIX shared memory + canvas pixel rendering.
+ * Both macOS (IOSurface) and Linux (POSIX shm) use the same pixel streaming
+ * approach: the native addon reads raw BGRA pixels from the shared surface,
+ * the main process pushes them to the renderer via IPC, and this component
+ * draws them on a <canvas> element.
  *
  * Flow:
  *  1. On connect, tell the engine the desired viewport size (viewport.setRect).
  *  2. Poll viewport.getSurfaceId to get the surfaceId (and optional shmName).
- *  3. Pass the surface id + element bounds to the main process via IPC.
- *  4. macOS: main process creates a CALayer backed by IOSurface.
- *     Linux: main process opens shm, pushes pixel data via "viewport:pixels" IPC.
- *  5. On resize / position change, update the layer frame via IPC.
+ *  3. Pass the surface id to the main process to start pixel streaming.
+ *  4. Main process calls refresh() at ~60 fps, pushes pixels via "viewport:pixels".
+ *  5. On resize, re-notify the engine and poll for the new surface id.
  */
 export function Viewport({ connected }: ViewportProps) {
   const { t } = useI18n();
@@ -36,7 +37,7 @@ export function Viewport({ connected }: ViewportProps) {
   const [attached, setAttached] = useState(false);
   const surfaceIdRef = useRef(0);
   const shmNameRef = useRef<string | undefined>(undefined);
-  const lastBoundsRef = useRef({ x: 0, y: 0, w: 0, h: 0 });
+  const lastSizeRef = useRef({ w: 0, h: 0 });
   const [shadingMode, setShadingMode] = useState<ShadingMode>("material");
 
   // Fetch current shading mode on connect
@@ -128,21 +129,18 @@ export function Viewport({ connected }: ViewportProps) {
     sendInput({ type: "keyup", key, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, alt: e.altKey });
   }, [sendInput]);
 
-  // Compute element bounds relative to the window's content origin (points).
-  const getBounds = useCallback(() => {
+  // Compute element size (width, height) in CSS points.
+  const getSize = useCallback(() => {
     const el = ref.current;
     if (!el) return null;
     const rect = el.getBoundingClientRect();
-    const x = Math.round(rect.left);
-    const y = Math.round(rect.top);
     const w = Math.round(rect.width);
     const h = Math.round(rect.height);
     if (w <= 0 || h <= 0) return null;
-    return { x, y, w, h };
+    return { w, h };
   }, []);
 
-  // Initialisation: request engine viewport size + attach IOSurface layer.
-  // Initialisation: request engine viewport size + attach IOSurface layer.
+  // Initialisation: tell the engine our viewport size and start pixel streaming.
   useEffect(() => {
     if (!connected) {
       if (surfaceIdRef.current) {
@@ -159,29 +157,27 @@ export function Viewport({ connected }: ViewportProps) {
     let cancelled = false;
 
     const init = async () => {
-      // Wait for the element to be laid out (the div may not have dimensions
-      // yet on the same tick as the React render that adds it to the DOM).
-      let bounds = getBounds();
-      for (let wait = 0; !bounds && wait < 20 && !cancelled; wait++) {
+      // Wait for the element to be laid out.
+      let size = getSize();
+      for (let wait = 0; !size && wait < 20 && !cancelled; wait++) {
         await new Promise((r) => requestAnimationFrame(r));
-        bounds = getBounds();
+        size = getSize();
       }
-      if (!bounds || cancelled) return;
+      if (!size || cancelled) return;
 
       // Tell the engine the desired viewport dimensions.
       try {
         await window.guavaEngine.call("viewport.setRect", {
-          x: bounds.x,
-          y: bounds.y,
-          width: bounds.w,
-          height: bounds.h,
+          x: 0,
+          y: 0,
+          width: size.w,
+          height: size.h,
         });
       } catch {
         // Engine may not be fully ready yet — retry is handled below.
       }
 
-      // Wait a short moment for the engine to create the IOSurface after
-      // the first setRect (the first frame must be rendered).
+      // Wait a short moment for the engine to create the surface.
       await new Promise((r) => setTimeout(r, 500));
       if (cancelled) return;
 
@@ -194,14 +190,14 @@ export function Viewport({ connected }: ViewportProps) {
             shmNameRef.current = res.shmName ?? undefined;
             const ok = await window.guavaEngine.viewportAttachSurface(
               res.surfaceId,
-              bounds.x,
-              bounds.y,
-              bounds.w,
-              bounds.h,
+              0,
+              0,
+              size.w,
+              size.h,
               res.shmName ?? undefined,
             );
             if (ok) {
-              lastBoundsRef.current = bounds;
+              lastSizeRef.current = size;
               setAttached(true);
               return;
             }
@@ -218,58 +214,48 @@ export function Viewport({ connected }: ViewportProps) {
     return () => {
       cancelled = true;
     };
-  }, [connected, attached, getBounds]); // attached in deps so disconnect→reconnect re-inits
+  }, [connected, attached, getSize]);
 
-  // Track position / size changes and update the CALayer frame.
+  // Track size changes and notify the engine to resize + recreate surface.
   useEffect(() => {
     if (!attached) return;
 
     let raf: number;
 
     const tick = () => {
-      const bounds = getBounds();
-      if (bounds) {
-        const last = lastBoundsRef.current;
-        if (
-          bounds.x !== last.x ||
-          bounds.y !== last.y ||
-          bounds.w !== last.w ||
-          bounds.h !== last.h
-        ) {
-          lastBoundsRef.current = bounds;
-          window.guavaEngine.viewportUpdateFrame(bounds.x, bounds.y, bounds.w, bounds.h);
-
-          // If the size changed, also tell the engine to resize.
-          if (bounds.w !== last.w || bounds.h !== last.h) {
-            window.guavaEngine
-              .call("viewport.setRect", {
-                x: bounds.x,
-                y: bounds.y,
-                width: bounds.w,
-                height: bounds.h,
-              })
-              .then(async () => {
-                // Give the engine a moment to recreate the IOSurface, then
-                // poll for the new surface id.
-                await new Promise((r) => setTimeout(r, 100));
-                try {
-                  const res = await window.guavaEngine.call("viewport.getSurfaceId", {});
-                  if (res.surfaceId && res.surfaceId !== surfaceIdRef.current) {
-                    surfaceIdRef.current = res.surfaceId;
-                    shmNameRef.current = res.shmName ?? undefined;
-                    window.guavaEngine.viewportUpdateSurface(
-                      res.surfaceId,
-                      res.shmName ?? undefined,
-                      res.width,
-                      res.height,
-                    );
-                  }
-                } catch {
-                  // Best-effort.
+      const size = getSize();
+      if (size) {
+        const last = lastSizeRef.current;
+        if (size.w !== last.w || size.h !== last.h) {
+          lastSizeRef.current = size;
+          window.guavaEngine
+            .call("viewport.setRect", {
+              x: 0,
+              y: 0,
+              width: size.w,
+              height: size.h,
+            })
+            .then(async () => {
+              // Give the engine a moment to recreate the surface, then
+              // poll for the new surface id.
+              await new Promise((r) => setTimeout(r, 100));
+              try {
+                const res = await window.guavaEngine.call("viewport.getSurfaceId", {});
+                if (res.surfaceId && res.surfaceId !== surfaceIdRef.current) {
+                  surfaceIdRef.current = res.surfaceId;
+                  shmNameRef.current = res.shmName ?? undefined;
+                  window.guavaEngine.viewportUpdateSurface(
+                    res.surfaceId,
+                    res.shmName ?? undefined,
+                    res.width,
+                    res.height,
+                  );
                 }
-              })
-              .catch(() => {});
-          }
+              } catch {
+                // Best-effort.
+              }
+            })
+            .catch(() => {});
         }
       }
       raf = requestAnimationFrame(tick);
@@ -277,7 +263,7 @@ export function Viewport({ connected }: ViewportProps) {
 
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [attached, getBounds]);
+  }, [attached, getSize]);
 
   // Cleanup on unmount.
   useEffect(() => {

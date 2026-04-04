@@ -59,10 +59,6 @@ contextBridge.exposeInMainWorld("guavaEngine", {
   ): Promise<boolean> =>
     ipcRenderer.invoke("viewport:attachSurface", surfaceId, x, y, w, h, shmName),
 
-  /** Update the viewport layer's position/size */
-  viewportUpdateFrame: (x: number, y: number, w: number, h: number): Promise<void> =>
-    ipcRenderer.invoke("viewport:updateFrame", x, y, w, h),
-
   /** Replace the surface (e.g. after engine-side resize) */
   viewportUpdateSurface: (surfaceId: number, shmName?: string, width?: number, height?: number): Promise<void> =>
     ipcRenderer.invoke("viewport:updateSurface", surfaceId, shmName, width, height),
@@ -97,7 +93,6 @@ export interface GuavaEngineAPI {
   onConnected(callback: () => void): () => void;
   onError(callback: (error: string) => void): () => void;
   viewportAttachSurface(surfaceId: number, x: number, y: number, w: number, h: number, shmName?: string): Promise<boolean>;
-  viewportUpdateFrame(x: number, y: number, w: number, h: number): Promise<void>;
   viewportUpdateSurface(surfaceId: number, shmName?: string, width?: number, height?: number): Promise<void>;
   viewportDetach(): Promise<void>;
   onViewportPixels(callback: (pixels: Buffer, width: number, height: number) => void): () => void;
