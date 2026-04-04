@@ -314,11 +314,31 @@ export function Viewport({ connected }: ViewportProps) {
   }, [attached]);
 
   return (
-    <div style={styles.outerContainer}>
-      {/* Toolbar row — outside the IOSurface area so it's not occluded */}
+    <div
+      ref={ref}
+      style={styles.container}
+      tabIndex={0}
+      onMouseDown={handleMouseDown}
+      onMouseUp={handleMouseUp}
+      onMouseMove={handleMouseMove}
+      onWheel={handleWheel}
+      onContextMenu={handleContextMenu}
+      onKeyDown={handleKeyDown}
+      onKeyUp={handleKeyUp}
+    >
+      <canvas ref={canvasRef} style={styles.canvas} />
+      {!attached && (
+        <div style={styles.placeholder}>
+          <p style={{ margin: 0, fontSize: 14 }}>{t.viewport.title}</p>
+          <p style={{ margin: "4px 0 0", fontSize: 12, opacity: 0.5 }}>
+            {connected ? t.viewport.syncingEngine : t.viewport.waitingForEngine}
+          </p>
+        </div>
+      )}
+      {/* Floating overlays on top of the canvas */}
       {connected && (
-        <div style={styles.toolbarRow}>
-          <div style={styles.shadingBar}>
+        <>
+          <div style={styles.shadingOverlay}>
             {(["solid", "material", "rendered", "wireframe"] as ShadingMode[]).map((mode) => (
               <button
                 key={mode}
@@ -333,59 +353,22 @@ export function Viewport({ connected }: ViewportProps) {
               </button>
             ))}
           </div>
-          <div style={{ flex: 1 }} />
-          <ViewCube connected={connected} />
-        </div>
-      )}
-      {/* Viewport rendering area — IOSurface/canvas is positioned here */}
-      <div
-        ref={ref}
-        style={styles.container}
-        tabIndex={0}
-        onMouseDown={handleMouseDown}
-        onMouseUp={handleMouseUp}
-        onMouseMove={handleMouseMove}
-        onWheel={handleWheel}
-        onContextMenu={handleContextMenu}
-        onKeyDown={handleKeyDown}
-        onKeyUp={handleKeyUp}
-      >
-        <canvas ref={canvasRef} style={styles.canvas} />
-        {!attached && (
-          <div style={styles.placeholder}>
-            <p style={{ margin: 0, fontSize: 14 }}>{t.viewport.title}</p>
-            <p style={{ margin: "4px 0 0", fontSize: 12, opacity: 0.5 }}>
-              {connected ? t.viewport.syncingEngine : t.viewport.waitingForEngine}
-            </p>
+          <div style={styles.viewCubeOverlay}>
+            <ViewCube connected={connected} />
           </div>
-        )}
-      </div>
+        </>
+      )}
     </div>
   );
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  outerContainer: {
+  container: {
     width: "100%",
     height: "100%",
-    display: "flex",
-    flexDirection: "column",
-    background: "transparent",
-    overflow: "hidden",
-  },
-  toolbarRow: {
-    display: "flex",
-    alignItems: "flex-start",
-    padding: "3px 6px",
-    background: "#181825",
-    borderBottom: "1px solid #313244",
-    gap: 6,
-  },
-  container: {
-    flex: 1,
-    background: "transparent",
     position: "relative",
     overflow: "hidden",
+    background: "#11111b",
   },
   canvas: {
     position: "absolute",
@@ -394,10 +377,26 @@ const styles: Record<string, React.CSSProperties> = {
     height: "100%",
     imageRendering: "pixelated",
   },
-  shadingBar: {
+  shadingOverlay: {
+    position: "absolute",
+    top: 8,
+    left: 8,
+    zIndex: 10,
     display: "flex",
     gap: 2,
-    alignSelf: "center",
+    background: "rgba(24, 24, 37, 0.75)",
+    backdropFilter: "blur(8px)",
+    WebkitBackdropFilter: "blur(8px)",
+    borderRadius: 6,
+    padding: "3px 4px",
+    boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+    border: "1px solid rgba(69, 71, 90, 0.4)",
+  },
+  viewCubeOverlay: {
+    position: "absolute",
+    top: 4,
+    right: 4,
+    zIndex: 10,
   },
   shadingButton: {
     background: "transparent",
@@ -413,7 +412,7 @@ const styles: Record<string, React.CSSProperties> = {
     transition: "all 0.1s",
   },
   shadingButtonActive: {
-    background: "#45475a",
+    background: "rgba(69, 71, 90, 0.8)",
     borderColor: "#89b4fa",
     color: "#89b4fa",
   },

@@ -54,8 +54,7 @@ async function createMainWindow(): Promise<BrowserWindow> {
     minHeight: 600,
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 12, y: 12 },
-    transparent: true,
-    hasShadow: true,
+    backgroundColor: "#1e1e2e",
     webPreferences: {
       preload: path.join(__dirname, "../preload/preload.js"),
       contextIsolation: true,
@@ -171,29 +170,24 @@ ipcMain.handle(
   "viewport:attachSurface",
   async (_event, surfaceId: number, x: number, y: number, w: number, h: number, shmName?: string) => {
     if (!ioSurfaceView || !mainWindow) return false;
-    const handle = mainWindow.getNativeWindowHandle();
 
     if (isMac) {
-      // macOS: attach CALayer overlay backed by IOSurface
+      // macOS: store the IOSurface reference for pixel readback
+      const handle = mainWindow.getNativeWindowHandle();
       ioSurfaceView.attach(handle, surfaceId, x, y, w, h);
     } else if (shmName) {
       // Linux: set up shm mapping for pixel readback
       ioSurfaceView.updateSurface(0, shmName, w, h);
     }
 
-    // Start a refresh timer to pick up new frames (~60 fps).
+    // Both platforms now use the same pixel streaming path:
+    // refresh() returns { pixels, width, height } which we forward to the renderer.
     if (surfaceRefreshTimer) clearInterval(surfaceRefreshTimer);
     surfaceRefreshTimer = setInterval(() => {
       if (!ioSurfaceView) return;
-      if (isMac) {
-        // macOS: tell CALayer to re-composite the IOSurface content
-        ioSurfaceView.refresh();
-      } else {
-        // Linux: read pixels from shm and push to renderer
-        const result = ioSurfaceView.refresh();
-        if (result && result.pixels) {
-          mainWindow?.webContents.send("viewport:pixels", result.pixels, result.width, result.height);
-        }
+      const result = ioSurfaceView.refresh();
+      if (result && result.pixels) {
+        mainWindow?.webContents.send("viewport:pixels", result.pixels, result.width, result.height);
       }
     }, 16);
 

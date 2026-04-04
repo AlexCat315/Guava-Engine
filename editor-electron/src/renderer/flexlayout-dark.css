@@ -13,7 +13,7 @@
   --color-blue: #89b4fa;
   --color-overlay0: #6c7086;
 
-  background: transparent;
+  background: var(--color-background);
   color: var(--color-text);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   font-size: 12px;
@@ -211,15 +211,7 @@
   /* nothing extra */
 }
 
-/* Make the viewport tab panel have no overflow so IOSurface layer is correct */
+/* Make the viewport tab panel have no overflow so canvas fills correctly */
 .flexlayout__tab[data-layout-path*="viewport"] {
   overflow: hidden;
-}
-
-/* ── Viewport transparency (IOSurface compositing) ─── */
-/* The viewport tab must be fully transparent so the native
-   IOSurface layer (inserted behind Chromium) can show through. */
-.viewport-transparent {
-  background: transparent !important;
-  overflow: hidden !important;
 }

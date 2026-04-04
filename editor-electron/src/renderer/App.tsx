@@ -89,7 +89,7 @@ const defaultLayout: IJsonModel = {
                 weight: 55,
                 id: "viewport-tabset",
                 children: [
-                  { type: "tab", name: "Viewport", component: "viewport", enableClose: false, enableDrag: false, contentClassName: "viewport-transparent" },
+                  { type: "tab", name: "Viewport", component: "viewport", enableClose: false, enableDrag: false },
                 ],
               },
               {
@@ -379,7 +379,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     flexDirection: "column",
     height: "100vh",
-    background: "transparent",
+    background: "#1e1e2e",
   },
   dockArea: {
     flex: 1,
