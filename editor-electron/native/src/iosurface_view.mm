@@ -78,7 +78,7 @@ static Napi::Value Attach(const Napi::CallbackInfo& info) {
     layer.frame = webRectToLayerRect(view, x, y, w, h);
     [CATransaction commit];
 
-    [view.layer addSublayer:layer];
+    [view.layer insertSublayer:layer atIndex:0];
     g_surfaceLayer = layer;
 
     return env.Undefined();

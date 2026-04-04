@@ -89,7 +89,7 @@ const defaultLayout: IJsonModel = {
                 weight: 55,
                 id: "viewport-tabset",
                 children: [
-                  { type: "tab", name: "Viewport", component: "viewport", enableClose: false, enableDrag: false },
+                  { type: "tab", name: "Viewport", component: "viewport", enableClose: false, enableDrag: false, contentClassName: "viewport-transparent" },
                 ],
               },
               {
@@ -379,7 +379,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     flexDirection: "column",
     height: "100vh",
-    background: "#1e1e2e",
+    background: "transparent",
   },
   dockArea: {
     flex: 1,
@@ -393,6 +393,7 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: "center",
     height: "100vh",
     gap: 16,
+    background: "#1e1e2e",
   },
   errorContainer: {
     display: "flex",
@@ -402,6 +403,7 @@ const styles: Record<string, React.CSSProperties> = {
     height: "100vh",
     gap: 8,
     color: "#f38ba8",
+    background: "#1e1e2e",
   },
   spinner: {
     width: 24,

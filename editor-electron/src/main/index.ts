@@ -54,7 +54,8 @@ async function createMainWindow(): Promise<BrowserWindow> {
     minHeight: 600,
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 12, y: 12 },
-    backgroundColor: "#1e1e2e",
+    transparent: true,
+    hasShadow: true,
     webPreferences: {
       preload: path.join(__dirname, "../preload/preload.js"),
       contextIsolation: true,
