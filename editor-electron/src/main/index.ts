@@ -224,6 +224,116 @@ ipcMain.handle("viewport:detach", async () => {
   ioSurfaceView?.detach();
 });
 
+// ── Remote server support ────────────────────────────────────────
+
+import WebSocket from "ws";
+
+/** Test whether a remote engine server is reachable and responds to RPC. */
+ipcMain.handle("settings:testRemoteConnection", async (_event, url: string) => {
+  return new Promise<{ ok: boolean; version?: string; error?: string }>((resolve) => {
+    const timeout = setTimeout(() => {
+      ws.close();
+      resolve({ ok: false, error: "Connection timeout (5s)" });
+    }, 5000);
+
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(url);
+    } catch (err) {
+      clearTimeout(timeout);
+      resolve({ ok: false, error: String(err) });
+      return;
+    }
+
+    ws.on("open", () => {
+      // Send an RPC ping to verify it's actually a Guava Engine server
+      const pingRequest = JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "editor.getCapabilities",
+        params: {},
+      });
+      ws.send(pingRequest);
+    });
+
+    ws.on("message", (data: WebSocket.Data) => {
+      clearTimeout(timeout);
+      try {
+        const msg = JSON.parse(data.toString());
+        if (msg.result?.version) {
+          resolve({ ok: true, version: msg.result.version });
+        } else if (msg.error) {
+          resolve({ ok: false, error: `RPC error: ${msg.error.message}` });
+        } else {
+          resolve({ ok: true });
+        }
+      } catch {
+        resolve({ ok: false, error: "Invalid response from server" });
+      }
+      ws.close();
+    });
+
+    ws.on("error", (err: Error) => {
+      clearTimeout(timeout);
+      resolve({ ok: false, error: err.message });
+    });
+  });
+});
+
+/** Switch the engine connection to a remote server URL, or "local" to reconnect locally. */
+ipcMain.handle("settings:connectToServer", async (_event, url: string) => {
+  try {
+    // Disconnect current client
+    engineClient?.disconnect();
+    engineClient = null;
+
+    // Stop viewport pixel streaming
+    if (surfaceRefreshTimer) {
+      clearInterval(surfaceRefreshTimer);
+      surfaceRefreshTimer = null;
+    }
+
+    if (url === "local") {
+      // Reconnect to local engine process
+      if (!engineProcess?.running) {
+        return { ok: false, error: "Local engine is not running" };
+      }
+      engineClient = new EngineClient(`ws://127.0.0.1:${DEFAULT_PORT}`, {
+        timeout: 10000,
+        reconnectInterval: 2000,
+        onReconnected: () => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send("engine:connected");
+          }
+        },
+      });
+      await engineClient.connect();
+      await engineClient.call("editor.getCapabilities", {});
+      setupSubscriptionForwarding();
+      mainWindow?.webContents.send("engine:connected");
+      return { ok: true };
+    }
+
+    // Connect to remote server
+    engineClient = new EngineClient(url, {
+      timeout: 10000,
+      reconnectInterval: 3000,
+      onReconnected: () => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send("engine:connected");
+        }
+      },
+    });
+    await engineClient.connect();
+    await engineClient.call("editor.getCapabilities", {});
+    setupSubscriptionForwarding();
+    mainWindow?.webContents.send("engine:connected");
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
 // ── App Lifecycle ────────────────────────────────────────────────
 
 app.whenReady().then(async () => {

@@ -67,6 +67,7 @@ contextBridge.exposeInMainWorld("guavaEngine", {
   viewportDetach: (): Promise<void> => ipcRenderer.invoke("viewport:detach"),
 
   /** Subscribe to pixel data pushed from main process (Linux shm path) */
+  /** Subscribe to pixel data pushed from main process (Linux shm path) */
   onViewportPixels: (
     callback: (pixels: Buffer, width: number, height: number) => void,
   ): (() => void) => {
@@ -79,6 +80,14 @@ contextBridge.exposeInMainWorld("guavaEngine", {
     ipcRenderer.on("viewport:pixels", handler);
     return () => ipcRenderer.removeListener("viewport:pixels", handler);
   },
+
+  /** Test connection to a remote engine server */
+  testRemoteConnection: (url: string): Promise<{ ok: boolean; version?: string; error?: string }> =>
+    ipcRenderer.invoke("settings:testRemoteConnection", url),
+
+  /** Connect to a remote engine server (or "local" to switch back) */
+  connectToServer: (url: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke("settings:connectToServer", url),
 });
 
 /** Type declaration for the exposed API (used in renderer) */
@@ -96,4 +105,6 @@ export interface GuavaEngineAPI {
   viewportUpdateSurface(surfaceId: number, shmName?: string, width?: number, height?: number): Promise<void>;
   viewportDetach(): Promise<void>;
   onViewportPixels(callback: (pixels: Buffer, width: number, height: number) => void): () => void;
+  testRemoteConnection(url: string): Promise<{ ok: boolean; version?: string; error?: string }>;
+  connectToServer(url: string): Promise<{ ok: boolean; error?: string }>;
 }

@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { useI18n, type Locale } from "../i18n";
 
-type SettingsTab = "general" | "shortcuts";
+type SettingsTab = "general" | "shortcuts" | "remote";
 type FpsDisplay = "viewport" | "none";
 
 interface SettingsProps {
@@ -142,13 +142,15 @@ export function SettingsPanel({ connected }: SettingsProps) {
 
       {/* Tab bar */}
       <div style={styles.tabBar}>
-        {(["general", "shortcuts"] as SettingsTab[]).map((t) => (
+        {(["general", "shortcuts", "remote"] as SettingsTab[]).map((t) => (
           <button
             key={t}
             style={{ ...styles.tabButton, ...(tab === t ? styles.tabButtonActive : {}) }}
             onClick={() => setTab(t)}
           >
-            {t === "general" ? (isZh ? "通用" : "General") : (isZh ? "快捷键" : "Shortcuts")}
+            {t === "general" ? (isZh ? "通用" : "General")
+              : t === "shortcuts" ? (isZh ? "快捷键" : "Shortcuts")
+              : (isZh ? "远程服务器" : "Remote Server")}
           </button>
         ))}
       </div>
@@ -173,6 +175,9 @@ export function SettingsPanel({ connected }: SettingsProps) {
             resetShortcuts={resetShortcuts}
             isZh={isZh}
           />
+        )}
+        {tab === "remote" && (
+          <RemoteServerTab connected={connected} isZh={isZh} />
         )}
       </div>
     </div>
@@ -347,6 +352,163 @@ function ShortcutsTab({
         </button>
         <div style={styles.hint}>
           {isZh ? "快捷键保存在本地，后续将同步到引擎端" : "Shortcuts saved locally; engine sync coming soon"}
+        </div>
+      </Section>
+    </>
+  );
+}
+
+// ── Remote Server Tab ────────────────────────────────────────────
+
+type TestStatus = "idle" | "testing" | "success" | "fail";
+type ConnectMode = "local" | "remote";
+
+const REMOTE_URL_KEY = "guava-editor-remote-url";
+const CONNECT_MODE_KEY = "guava-editor-connect-mode";
+
+function RemoteServerTab({ connected, isZh }: { connected: boolean; isZh: boolean }) {
+  const [url, setUrl] = useState(() => localStorage.getItem(REMOTE_URL_KEY) || "ws://192.168.1.100:9100");
+  const [mode, setMode] = useState<ConnectMode>(() => (localStorage.getItem(CONNECT_MODE_KEY) as ConnectMode) || "local");
+  const [testStatus, setTestStatus] = useState<TestStatus>("idle");
+  const [testResult, setTestResult] = useState("");
+  const [connecting, setConnecting] = useState(false);
+  const [connectError, setConnectError] = useState("");
+
+  const handleTest = useCallback(async () => {
+    setTestStatus("testing");
+    setTestResult("");
+    try {
+      const res = await window.guavaEngine.testRemoteConnection(url);
+      if (res.ok) {
+        setTestStatus("success");
+        setTestResult(res.version ? `Guava Engine v${res.version}` : "Connected");
+      } else {
+        setTestStatus("fail");
+        setTestResult(res.error || "Unknown error");
+      }
+    } catch (err) {
+      setTestStatus("fail");
+      setTestResult(String(err));
+    }
+  }, [url]);
+
+  const handleConnect = useCallback(async (targetMode: ConnectMode) => {
+    setConnecting(true);
+    setConnectError("");
+    try {
+      const targetUrl = targetMode === "local" ? "local" : url;
+      const res = await window.guavaEngine.connectToServer(targetUrl);
+      if (res.ok) {
+        setMode(targetMode);
+        localStorage.setItem(CONNECT_MODE_KEY, targetMode);
+        if (targetMode === "remote") {
+          localStorage.setItem(REMOTE_URL_KEY, url);
+        }
+      } else {
+        setConnectError(res.error || "Failed to connect");
+      }
+    } catch (err) {
+      setConnectError(String(err));
+    } finally {
+      setConnecting(false);
+    }
+  }, [url]);
+
+  return (
+    <>
+      {/* Connection Mode */}
+      <Section title={isZh ? "连接模式" : "Connection Mode"}>
+        <div style={styles.buttonGroup}>
+          <button
+            style={{ ...styles.optionButton, ...(mode === "local" ? styles.optionButtonActive : {}) }}
+            onClick={() => mode !== "local" && handleConnect("local")}
+            disabled={connecting}
+          >
+            {isZh ? "本地引擎" : "Local Engine"}
+          </button>
+          <button
+            style={{ ...styles.optionButton, ...(mode === "remote" ? styles.optionButtonActive : {}) }}
+            onClick={() => mode !== "remote" && handleConnect("remote")}
+            disabled={connecting}
+          >
+            {isZh ? "远程服务器" : "Remote Server"}
+          </button>
+        </div>
+        {connecting && (
+          <div style={{ ...styles.hint, color: "#89b4fa" }}>
+            {isZh ? "正在切换连接..." : "Switching connection..."}
+          </div>
+        )}
+        {connectError && (
+          <div style={{ ...styles.hint, color: "#f38ba8" }}>{connectError}</div>
+        )}
+      </Section>
+
+      {/* Remote Server URL */}
+      <Section title={isZh ? "服务器地址" : "Server URL"}>
+        <div style={styles.inputRow}>
+          <input
+            type="text"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder="ws://192.168.1.100:9100"
+            style={styles.textInput}
+          />
+        </div>
+        <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+          <button style={styles.actionButton} onClick={handleTest} disabled={testStatus === "testing"}>
+            {testStatus === "testing"
+              ? (isZh ? "测试中..." : "Testing...")
+              : (isZh ? "测试连接" : "Test Connection")}
+          </button>
+        </div>
+        {testStatus !== "idle" && testStatus !== "testing" && (
+          <div style={{
+            ...styles.testResult,
+            color: testStatus === "success" ? "#a6e3a1" : "#f38ba8",
+            borderColor: testStatus === "success" ? "rgba(166,227,161,0.3)" : "rgba(243,139,168,0.3)",
+          }}>
+            <span style={{ marginRight: 6 }}>{testStatus === "success" ? "✓" : "✕"}</span>
+            {testResult}
+          </div>
+        )}
+      </Section>
+
+      {/* Architecture info */}
+      <Section title={isZh ? "架构说明" : "Architecture Notes"}>
+        <div style={styles.infoBox}>
+          <p style={styles.infoParagraph}>
+            {isZh
+              ? "远程模式通过 WebSocket RPC 连接到远端引擎服务器。所有面板（层级、检查器、控制台等）均可正常工作。"
+              : "Remote mode connects to a remote engine via WebSocket RPC. All panels (hierarchy, inspector, console, etc.) work normally."}
+          </p>
+          <p style={styles.infoParagraph}>
+            {isZh
+              ? "⚠️ 视口渲染目前仅支持本地模式（通过共享内存/IOSurface 传输像素）。远程像素流传输（帧编码 + 网络推送）将在后续版本中实现。"
+              : "⚠️ Viewport rendering currently works in local mode only (via shared memory/IOSurface). Remote pixel streaming (frame encoding + network push) is planned for a future release."}
+          </p>
+        </div>
+      </Section>
+
+      {/* Status */}
+      <Section title={isZh ? "当前状态" : "Current Status"}>
+        <div style={styles.aboutRow}>
+          <span style={styles.aboutLabel}>{isZh ? "模式" : "Mode"}</span>
+          <span style={styles.aboutValue}>
+            {mode === "local" ? (isZh ? "本地" : "Local") : (isZh ? "远程" : "Remote")}
+          </span>
+        </div>
+        {mode === "remote" && (
+          <div style={styles.aboutRow}>
+            <span style={styles.aboutLabel}>{isZh ? "地址" : "URL"}</span>
+            <span style={{ ...styles.aboutValue, fontFamily: "monospace", fontSize: 11 }}>{url}</span>
+          </div>
+        )}
+        <div style={styles.aboutRow}>
+          <span style={styles.aboutLabel}>{isZh ? "连接" : "Status"}</span>
+          <span style={{ ...styles.aboutValue, color: connected ? "#a6e3a1" : "#f38ba8" }}>
+            {connected ? (isZh ? "已连接" : "Connected") : (isZh ? "未连接" : "Disconnected")}
+          </span>
         </div>
       </Section>
     </>
@@ -535,5 +697,42 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 11,
     padding: "1px 5px",
     lineHeight: "1",
+  },
+  // ── Remote server ─────────────────────────────────────
+  inputRow: {
+    display: "flex",
+    gap: 6,
+  },
+  textInput: {
+    flex: 1,
+    padding: "5px 8px",
+    border: "1px solid #45475a",
+    borderRadius: 4,
+    background: "#1e1e2e",
+    color: "#cdd6f4",
+    fontSize: 12,
+    fontFamily: "monospace",
+    outline: "none",
+  },
+  testResult: {
+    marginTop: 6,
+    padding: "4px 8px",
+    borderRadius: 4,
+    border: "1px solid",
+    fontSize: 11,
+    display: "flex",
+    alignItems: "center",
+  },
+  infoBox: {
+    background: "rgba(49,50,68,0.3)",
+    border: "1px solid rgba(69,71,90,0.4)",
+    borderRadius: 4,
+    padding: "6px 8px",
+  },
+  infoParagraph: {
+    fontSize: 11,
+    color: "#a6adc8",
+    margin: "3px 0",
+    lineHeight: 1.5,
   },
 };
