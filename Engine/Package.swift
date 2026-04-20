@@ -2,23 +2,22 @@
 import PackageDescription
 
 let package = Package(
-    name: "GuavaNext",
+    name: "GuavaEngine",
     platforms: [
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "EditorApp", targets: ["EditorApp"]),
-        .library(name: "EditorCore", targets: ["EditorCore"]),
-        .library(name: "EngineCore", targets: ["EngineCore"]),
         .library(name: "EngineKernel", targets: ["EngineKernel"]),
         .library(name: "RHIWGPU", targets: ["RHIWGPU"]),
+        .library(name: "PlatformShell", targets: ["PlatformShell"]),
+        .library(name: "RenderBackend", targets: ["RenderBackend"]),
         .library(name: "SceneRuntime", targets: ["SceneRuntime"]),
         .library(name: "AssetPipeline", targets: ["AssetPipeline"]),
         .library(name: "ScriptRuntime", targets: ["ScriptRuntime"]),
-        .library(name: "RenderBackend", targets: ["RenderBackend"]),
-        .library(name: "PlatformShell", targets: ["PlatformShell"]),
+        .library(name: "EngineCore", targets: ["EngineCore"]),
     ],
     targets: [
+        // MARK: - C Bridges
         .systemLibrary(
             name: "CSDL3",
             path: "Sources/Bridge/CSDL3",
@@ -49,14 +48,33 @@ let package = Package(
                 ])
             ]
         ),
+
+        // MARK: - Core Kernel (no deps, pure Swift protocols and types)
         .target(name: "EngineKernel"),
+
+        // MARK: - Rendering
         .target(
             name: "RHIWGPU",
             dependencies: ["CWGPUBridge"]
         ),
+
+        // MARK: - Platform
+        .target(
+            name: "PlatformShell",
+            dependencies: ["CSDL3", "EngineKernel"]
+        ),
+
+        // MARK: - Engine Services
         .target(name: "SceneRuntime"),
         .target(name: "AssetPipeline"),
         .target(name: "ScriptRuntime"),
+        .target(
+            name: "RenderBackend",
+            dependencies: ["RHIWGPU", "PlatformShell", "AssetPipeline"],
+            resources: [.copy("Resources/FinalBaseMesh.obj")]
+        ),
+
+        // MARK: - Engine Host (orchestrates all services)
         .target(
             name: "EngineCore",
             dependencies: [
@@ -67,23 +85,6 @@ let package = Package(
                 "AssetPipeline",
                 "ScriptRuntime",
             ]
-        ),
-        .target(
-            name: "RenderBackend",
-            dependencies: ["RHIWGPU", "PlatformShell", "AssetPipeline"],
-            resources: [.copy("Resources/FinalBaseMesh.obj")]
-        ),
-        .target(
-            name: "EditorCore",
-            dependencies: ["EngineCore", "EngineKernel", "RenderBackend", "PlatformShell"]
-        ),
-        .target(
-            name: "PlatformShell",
-            dependencies: ["CSDL3", "EngineKernel"]
-        ),
-        .executableTarget(
-            name: "EditorApp",
-            dependencies: ["EditorCore", "PlatformShell", "RHIWGPU"]
         ),
     ]
 )
