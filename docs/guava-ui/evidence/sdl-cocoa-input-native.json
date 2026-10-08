@@ -1,0 +1,102 @@
+{
+  "date": "2026-10-08",
+  "platform": "macOS 27 arm64, Retina; SDL 3.4.18; Swift 6.4",
+  "source_revision": "829a65d769d935c4852f8159e964312c0957260a",
+  "method": "A minimal native SDL application records NSEvent local coordinates, its embedded CGEvent global position, current hardware query and the actual SDL events. Input performed through CUA.",
+  "before": [],
+  "after_sdl": [
+    {
+      "type": 1024,
+      "local": [
+        75,
+        75
+      ],
+      "source": "sdl"
+    },
+    {
+      "type": 1025,
+      "local": [
+        75,
+        75
+      ],
+      "source": "sdl"
+    },
+    {
+      "type": 1026,
+      "local": [
+        75,
+        75
+      ],
+      "source": "sdl"
+    },
+    {
+      "type": 1024,
+      "local": [
+        225,
+        75
+      ],
+      "source": "sdl"
+    },
+    {
+      "type": 1025,
+      "local": [
+        225,
+        75
+      ],
+      "source": "sdl"
+    },
+    {
+      "type": 1026,
+      "local": [
+        225,
+        75
+      ],
+      "source": "sdl"
+    },
+    {
+      "type": 1024,
+      "local": [
+        75,
+        75
+      ],
+      "source": "sdl"
+    },
+    {
+      "type": 1025,
+      "local": [
+        75,
+        75
+      ],
+      "source": "sdl"
+    },
+    {
+      "type": 1024,
+      "local": [
+        225,
+        175
+      ],
+      "source": "sdl"
+    },
+    {
+      "type": 1026,
+      "local": [
+        225,
+        175
+      ],
+      "source": "sdl"
+    }
+  ],
+  "verified": [
+    "Both click down/up pairs retain their event positions (75,75) and (225,75)",
+    "Drag delivers down (75,75), motion (225,175), up (225,175), with no premature release",
+    "Rating whole/half click, preview, repeat clear, inside drag and outside cancellation work in the production gallery",
+    "Continuous Slider drag reaches approximately 0.1996 and ends Idle",
+    "Fresh SDK patch application, repeated configuration and rejection of incompatible source changes pass",
+    "SDL static library and build manifest rebuilt; GuavaUI and Editor full package tests pass"
+  ],
+  "limitations": [
+    "No physical-device, multi-monitor, Spaces or relative-mode native acceptance in this batch",
+    "Title-bar drag did not change the diagnostic window frame and is not treated as a window-movement test",
+    "No event latency or throughput measurements"
+  ]
+}
