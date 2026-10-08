@@ -54,11 +54,5 @@
     "Right half of third star selects 3; left half selects 2.5",
     "Disabled and read-only ratings ignore native coordinate clicks",
     "Continuous Slider drag changes 0.6 to approximately 0.1996 and finishes in Idle state"
-  ],
-  "platform_input_fix": {
-    "cause": "SDL 3.4.18 on macOS 26+ replaced per-event mouse coordinates with a current global hardware query; Cocoa also reconciled explicit drag/button events against current hardware state and could insert premature releases.",
-    "fix": "Pinned SDL Cocoa patch uses CGEvent location for the existing global coordinate compensation, reads button-event positions in absolute mode and preserves explicit button/drag event ordering. Relative mode and background-window position restoration are retained.",
-    "reproduction": "Independent native SDL window: clicks (75,75) and (225,75), then drag (75,75) to (225,175); before/after JSON evidence in sdl-cocoa-input-native.json.",
-    "rebuild": "CMake copies the pinned SDL submodule into the disposable build tree, applies the tracked patch there, and leaves the submodule clean. Fresh application, repeated configure and incompatible upstream rejection verified."
-  }
+  ]
 }
