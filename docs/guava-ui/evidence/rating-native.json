@@ -59,6 +59,6 @@
     "cause": "SDL 3.4.18 on macOS 26+ replaced per-event mouse coordinates with a current global hardware query; Cocoa also reconciled explicit drag/button events against current hardware state and could insert premature releases.",
     "fix": "Pinned SDL Cocoa patch uses CGEvent location for the existing global coordinate compensation, reads button-event positions in absolute mode and preserves explicit button/drag event ordering. Relative mode and background-window position restoration are retained.",
     "reproduction": "Independent native SDL window: clicks (75,75) and (225,75), then drag (75,75) to (225,175); before/after JSON evidence in sdl-cocoa-input-native.json.",
-    "rebuild": "CMake applies the tracked patch on macOS before building SDL. Fresh application, repeated configure and incompatible upstream rejection verified."
+    "rebuild": "CMake copies the pinned SDL submodule into the disposable build tree, applies the tracked patch there, and leaves the submodule clean. Fresh application, repeated configure and incompatible upstream rejection verified."
   }
 }
