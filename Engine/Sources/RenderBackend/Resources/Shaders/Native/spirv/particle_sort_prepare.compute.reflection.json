@@ -28,8 +28,33 @@
         "kind": "constantBuffer",
         "elementType": {
           "kind": "struct",
-          "name": "ParticleStateMaintenanceUniforms",
+          "name": "ParticleSortPrepareUniforms",
           "fields": [
+            {
+              "name": "world_transform",
+              "type": {
+                "kind": "matrix",
+                "rowCount": 4,
+                "columnCount": 4,
+                "elementType": {
+                  "kind": "scalar",
+                  "scalarType": "float32"
+                },
+                "sizes": [
+                  {
+                    "kind": "uniform",
+                    "value": 64,
+                    "alignment": 16
+                  }
+                ]
+              },
+              "binding": {
+                "kind": "uniform",
+                "offset": 0,
+                "size": 64,
+                "elementStride": 0
+              }
+            },
             {
               "name": "params",
               "type": {
@@ -37,7 +62,7 @@
                 "elementCount": 4,
                 "elementType": {
                   "kind": "scalar",
-                  "scalarType": "uint32"
+                  "scalarType": "float32"
                 },
                 "sizes": [
                   {
@@ -49,7 +74,31 @@
               },
               "binding": {
                 "kind": "uniform",
-                "offset": 0,
+                "offset": 64,
+                "size": 16,
+                "elementStride": 4
+              }
+            },
+            {
+              "name": "sort_params",
+              "type": {
+                "kind": "vector",
+                "elementCount": 4,
+                "elementType": {
+                  "kind": "scalar",
+                  "scalarType": "float32"
+                },
+                "sizes": [
+                  {
+                    "kind": "uniform",
+                    "value": 16,
+                    "alignment": 16
+                  }
+                ]
+              },
+              "binding": {
+                "kind": "uniform",
+                "offset": 80,
                 "size": 16,
                 "elementStride": 4
               }
@@ -58,7 +107,7 @@
           "sizes": [
             {
               "kind": "uniform",
-              "value": 16,
+              "value": 96,
               "alignment": 16
             }
           ]
@@ -72,8 +121,33 @@
         "elementVarLayout": {
           "type": {
             "kind": "struct",
-            "name": "ParticleStateMaintenanceUniforms",
+            "name": "ParticleSortPrepareUniforms",
             "fields": [
+              {
+                "name": "world_transform",
+                "type": {
+                  "kind": "matrix",
+                  "rowCount": 4,
+                  "columnCount": 4,
+                  "elementType": {
+                    "kind": "scalar",
+                    "scalarType": "float32"
+                  },
+                  "sizes": [
+                    {
+                      "kind": "uniform",
+                      "value": 64,
+                      "alignment": 16
+                    }
+                  ]
+                },
+                "binding": {
+                  "kind": "uniform",
+                  "offset": 0,
+                  "size": 64,
+                  "elementStride": 0
+                }
+              },
               {
                 "name": "params",
                 "type": {
@@ -81,7 +155,7 @@
                   "elementCount": 4,
                   "elementType": {
                     "kind": "scalar",
-                    "scalarType": "uint32"
+                    "scalarType": "float32"
                   },
                   "sizes": [
                     {
@@ -93,7 +167,31 @@
                 },
                 "binding": {
                   "kind": "uniform",
-                  "offset": 0,
+                  "offset": 64,
+                  "size": 16,
+                  "elementStride": 4
+                }
+              },
+              {
+                "name": "sort_params",
+                "type": {
+                  "kind": "vector",
+                  "elementCount": 4,
+                  "elementType": {
+                    "kind": "scalar",
+                    "scalarType": "float32"
+                  },
+                  "sizes": [
+                    {
+                      "kind": "uniform",
+                      "value": 16,
+                      "alignment": 16
+                    }
+                  ]
+                },
+                "binding": {
+                  "kind": "uniform",
+                  "offset": 80,
                   "size": 16,
                   "elementStride": 4
                 }
@@ -102,7 +200,7 @@
             "sizes": [
               {
                 "kind": "uniform",
-                "value": 16,
+                "value": 96,
                 "alignment": 16
               }
             ]
@@ -110,7 +208,7 @@
           "binding": {
             "kind": "uniform",
             "offset": 0,
-            "size": 16,
+            "size": 96,
             "elementStride": 0
           }
         },
@@ -123,7 +221,7 @@
       }
     },
     {
-      "name": "source_particles",
+      "name": "sim_particles",
       "binding": {
         "kind": "descriptorTableSlot",
         "index": 1
@@ -273,7 +371,7 @@
       }
     },
     {
-      "name": "compact_particles",
+      "name": "sort_items",
       "binding": {
         "kind": "descriptorTableSlot",
         "index": 2
@@ -284,164 +382,13 @@
         "access": "readWrite",
         "resultType": {
           "kind": "struct",
-          "name": "ParticleSimState",
+          "name": "ParticleSortItem",
           "fields": [
             {
-              "name": "position_lifetime",
-              "type": {
-                "kind": "vector",
-                "elementCount": 4,
-                "elementType": {
-                  "kind": "scalar",
-                  "scalarType": "float32"
-                },
-                "sizes": [
-                  {
-                    "kind": "uniform",
-                    "value": 16,
-                    "alignment": 16
-                  }
-                ]
-              },
-              "binding": {
-                "kind": "uniform",
-                "offset": 0,
-                "size": 16,
-                "elementStride": 4
-              }
-            },
-            {
-              "name": "velocity_age",
-              "type": {
-                "kind": "vector",
-                "elementCount": 4,
-                "elementType": {
-                  "kind": "scalar",
-                  "scalarType": "float32"
-                },
-                "sizes": [
-                  {
-                    "kind": "uniform",
-                    "value": 16,
-                    "alignment": 16
-                  }
-                ]
-              },
-              "binding": {
-                "kind": "uniform",
-                "offset": 16,
-                "size": 16,
-                "elementStride": 4
-              }
-            },
-            {
-              "name": "size_rotation",
-              "type": {
-                "kind": "vector",
-                "elementCount": 4,
-                "elementType": {
-                  "kind": "scalar",
-                  "scalarType": "float32"
-                },
-                "sizes": [
-                  {
-                    "kind": "uniform",
-                    "value": 16,
-                    "alignment": 16
-                  }
-                ]
-              },
-              "binding": {
-                "kind": "uniform",
-                "offset": 32,
-                "size": 16,
-                "elementStride": 4
-              }
-            },
-            {
-              "name": "color",
-              "type": {
-                "kind": "vector",
-                "elementCount": 4,
-                "elementType": {
-                  "kind": "scalar",
-                  "scalarType": "float32"
-                },
-                "sizes": [
-                  {
-                    "kind": "uniform",
-                    "value": 16,
-                    "alignment": 16
-                  }
-                ]
-              },
-              "binding": {
-                "kind": "uniform",
-                "offset": 48,
-                "size": 16,
-                "elementStride": 4
-              }
-            },
-            {
-              "name": "params",
-              "type": {
-                "kind": "vector",
-                "elementCount": 4,
-                "elementType": {
-                  "kind": "scalar",
-                  "scalarType": "uint32"
-                },
-                "sizes": [
-                  {
-                    "kind": "uniform",
-                    "value": 16,
-                    "alignment": 16
-                  }
-                ]
-              },
-              "binding": {
-                "kind": "uniform",
-                "offset": 64,
-                "size": 16,
-                "elementStride": 4
-              }
-            }
-          ],
-          "sizes": [
-            {
-              "kind": "uniform",
-              "value": 80,
-              "alignment": 16
-            }
-          ]
-        },
-        "sizes": [
-          {
-            "kind": "descriptorTableSlot",
-            "value": 1
-          }
-        ]
-      }
-    },
-    {
-      "name": "metadata",
-      "binding": {
-        "kind": "descriptorTableSlot",
-        "index": 3
-      },
-      "type": {
-        "kind": "resource",
-        "baseShape": "structuredBuffer",
-        "access": "readWrite",
-        "resultType": {
-          "kind": "struct",
-          "name": "ParticleSimMetadata",
-          "fields": [
-            {
-              "name": "alive_count",
+              "name": "key",
               "type": {
                 "kind": "scalar",
-                "scalarType": "uint32",
+                "scalarType": "float32",
                 "sizes": [
                   {
                     "kind": "uniform",
@@ -458,7 +405,7 @@
               }
             },
             {
-              "name": "expired_count",
+              "name": "index",
               "type": {
                 "kind": "scalar",
                 "scalarType": "uint32",
@@ -478,7 +425,7 @@
               }
             },
             {
-              "name": "collision_count",
+              "name": "padding0",
               "type": {
                 "kind": "scalar",
                 "scalarType": "uint32",
@@ -498,7 +445,7 @@
               }
             },
             {
-              "name": "spawned_count",
+              "name": "padding1",
               "type": {
                 "kind": "scalar",
                 "scalarType": "uint32",
@@ -516,92 +463,12 @@
                 "size": 4,
                 "elementStride": 0
               }
-            },
-            {
-              "name": "dropped_spawn_count",
-              "type": {
-                "kind": "scalar",
-                "scalarType": "uint32",
-                "sizes": [
-                  {
-                    "kind": "uniform",
-                    "value": 4,
-                    "alignment": 4
-                  }
-                ]
-              },
-              "binding": {
-                "kind": "uniform",
-                "offset": 16,
-                "size": 4,
-                "elementStride": 0
-              }
-            },
-            {
-              "name": "append_cursor",
-              "type": {
-                "kind": "scalar",
-                "scalarType": "uint32",
-                "sizes": [
-                  {
-                    "kind": "uniform",
-                    "value": 4,
-                    "alignment": 4
-                  }
-                ]
-              },
-              "binding": {
-                "kind": "uniform",
-                "offset": 20,
-                "size": 4,
-                "elementStride": 0
-              }
-            },
-            {
-              "name": "compacted_count",
-              "type": {
-                "kind": "scalar",
-                "scalarType": "uint32",
-                "sizes": [
-                  {
-                    "kind": "uniform",
-                    "value": 4,
-                    "alignment": 4
-                  }
-                ]
-              },
-              "binding": {
-                "kind": "uniform",
-                "offset": 24,
-                "size": 4,
-                "elementStride": 0
-              }
-            },
-            {
-              "name": "event_count",
-              "type": {
-                "kind": "scalar",
-                "scalarType": "uint32",
-                "sizes": [
-                  {
-                    "kind": "uniform",
-                    "value": 4,
-                    "alignment": 4
-                  }
-                ]
-              },
-              "binding": {
-                "kind": "uniform",
-                "offset": 28,
-                "size": 4,
-                "elementStride": 0
-              }
             }
           ],
           "sizes": [
             {
               "kind": "uniform",
-              "value": 32,
+              "value": 16,
               "alignment": 4
             }
           ]
@@ -645,8 +512,33 @@
           "kind": "constantBuffer",
           "elementType": {
             "kind": "struct",
-            "name": "ParticleStateMaintenanceUniforms",
+            "name": "ParticleSortPrepareUniforms",
             "fields": [
+              {
+                "name": "world_transform",
+                "type": {
+                  "kind": "matrix",
+                  "rowCount": 4,
+                  "columnCount": 4,
+                  "elementType": {
+                    "kind": "scalar",
+                    "scalarType": "float32"
+                  },
+                  "sizes": [
+                    {
+                      "kind": "uniform",
+                      "value": 64,
+                      "alignment": 16
+                    }
+                  ]
+                },
+                "binding": {
+                  "kind": "uniform",
+                  "offset": 0,
+                  "size": 64,
+                  "elementStride": 0
+                }
+              },
               {
                 "name": "params",
                 "type": {
@@ -654,7 +546,7 @@
                   "elementCount": 4,
                   "elementType": {
                     "kind": "scalar",
-                    "scalarType": "uint32"
+                    "scalarType": "float32"
                   },
                   "sizes": [
                     {
@@ -666,7 +558,31 @@
                 },
                 "binding": {
                   "kind": "uniform",
-                  "offset": 0,
+                  "offset": 64,
+                  "size": 16,
+                  "elementStride": 4
+                }
+              },
+              {
+                "name": "sort_params",
+                "type": {
+                  "kind": "vector",
+                  "elementCount": 4,
+                  "elementType": {
+                    "kind": "scalar",
+                    "scalarType": "float32"
+                  },
+                  "sizes": [
+                    {
+                      "kind": "uniform",
+                      "value": 16,
+                      "alignment": 16
+                    }
+                  ]
+                },
+                "binding": {
+                  "kind": "uniform",
+                  "offset": 80,
                   "size": 16,
                   "elementStride": 4
                 }
@@ -675,7 +591,7 @@
             "sizes": [
               {
                 "kind": "uniform",
-                "value": 16,
+                "value": 96,
                 "alignment": 16
               }
             ]
@@ -689,8 +605,33 @@
           "elementVarLayout": {
             "type": {
               "kind": "struct",
-              "name": "ParticleStateMaintenanceUniforms",
+              "name": "ParticleSortPrepareUniforms",
               "fields": [
+                {
+                  "name": "world_transform",
+                  "type": {
+                    "kind": "matrix",
+                    "rowCount": 4,
+                    "columnCount": 4,
+                    "elementType": {
+                      "kind": "scalar",
+                      "scalarType": "float32"
+                    },
+                    "sizes": [
+                      {
+                        "kind": "uniform",
+                        "value": 64,
+                        "alignment": 16
+                      }
+                    ]
+                  },
+                  "binding": {
+                    "kind": "uniform",
+                    "offset": 0,
+                    "size": 64,
+                    "elementStride": 0
+                  }
+                },
                 {
                   "name": "params",
                   "type": {
@@ -698,7 +639,7 @@
                     "elementCount": 4,
                     "elementType": {
                       "kind": "scalar",
-                      "scalarType": "uint32"
+                      "scalarType": "float32"
                     },
                     "sizes": [
                       {
@@ -710,7 +651,31 @@
                   },
                   "binding": {
                     "kind": "uniform",
-                    "offset": 0,
+                    "offset": 64,
+                    "size": 16,
+                    "elementStride": 4
+                  }
+                },
+                {
+                  "name": "sort_params",
+                  "type": {
+                    "kind": "vector",
+                    "elementCount": 4,
+                    "elementType": {
+                      "kind": "scalar",
+                      "scalarType": "float32"
+                    },
+                    "sizes": [
+                      {
+                        "kind": "uniform",
+                        "value": 16,
+                        "alignment": 16
+                      }
+                    ]
+                  },
+                  "binding": {
+                    "kind": "uniform",
+                    "offset": 80,
                     "size": 16,
                     "elementStride": 4
                   }
@@ -719,7 +684,7 @@
               "sizes": [
                 {
                   "kind": "uniform",
-                  "value": 16,
+                  "value": 96,
                   "alignment": 16
                 }
               ]
@@ -727,7 +692,7 @@
             "binding": {
               "kind": "uniform",
               "offset": 0,
-              "size": 16,
+              "size": 96,
               "elementStride": 0
             }
           },
@@ -740,7 +705,7 @@
         }
       },
       {
-        "name": "source_particles",
+        "name": "sim_particles",
         "binding": {
           "kind": "descriptorTableSlot",
           "index": 1
@@ -890,7 +855,7 @@
         }
       },
       {
-        "name": "compact_particles",
+        "name": "sort_items",
         "binding": {
           "kind": "descriptorTableSlot",
           "index": 2
@@ -901,164 +866,13 @@
           "access": "readWrite",
           "resultType": {
             "kind": "struct",
-            "name": "ParticleSimState",
+            "name": "ParticleSortItem",
             "fields": [
               {
-                "name": "position_lifetime",
-                "type": {
-                  "kind": "vector",
-                  "elementCount": 4,
-                  "elementType": {
-                    "kind": "scalar",
-                    "scalarType": "float32"
-                  },
-                  "sizes": [
-                    {
-                      "kind": "uniform",
-                      "value": 16,
-                      "alignment": 16
-                    }
-                  ]
-                },
-                "binding": {
-                  "kind": "uniform",
-                  "offset": 0,
-                  "size": 16,
-                  "elementStride": 4
-                }
-              },
-              {
-                "name": "velocity_age",
-                "type": {
-                  "kind": "vector",
-                  "elementCount": 4,
-                  "elementType": {
-                    "kind": "scalar",
-                    "scalarType": "float32"
-                  },
-                  "sizes": [
-                    {
-                      "kind": "uniform",
-                      "value": 16,
-                      "alignment": 16
-                    }
-                  ]
-                },
-                "binding": {
-                  "kind": "uniform",
-                  "offset": 16,
-                  "size": 16,
-                  "elementStride": 4
-                }
-              },
-              {
-                "name": "size_rotation",
-                "type": {
-                  "kind": "vector",
-                  "elementCount": 4,
-                  "elementType": {
-                    "kind": "scalar",
-                    "scalarType": "float32"
-                  },
-                  "sizes": [
-                    {
-                      "kind": "uniform",
-                      "value": 16,
-                      "alignment": 16
-                    }
-                  ]
-                },
-                "binding": {
-                  "kind": "uniform",
-                  "offset": 32,
-                  "size": 16,
-                  "elementStride": 4
-                }
-              },
-              {
-                "name": "color",
-                "type": {
-                  "kind": "vector",
-                  "elementCount": 4,
-                  "elementType": {
-                    "kind": "scalar",
-                    "scalarType": "float32"
-                  },
-                  "sizes": [
-                    {
-                      "kind": "uniform",
-                      "value": 16,
-                      "alignment": 16
-                    }
-                  ]
-                },
-                "binding": {
-                  "kind": "uniform",
-                  "offset": 48,
-                  "size": 16,
-                  "elementStride": 4
-                }
-              },
-              {
-                "name": "params",
-                "type": {
-                  "kind": "vector",
-                  "elementCount": 4,
-                  "elementType": {
-                    "kind": "scalar",
-                    "scalarType": "uint32"
-                  },
-                  "sizes": [
-                    {
-                      "kind": "uniform",
-                      "value": 16,
-                      "alignment": 16
-                    }
-                  ]
-                },
-                "binding": {
-                  "kind": "uniform",
-                  "offset": 64,
-                  "size": 16,
-                  "elementStride": 4
-                }
-              }
-            ],
-            "sizes": [
-              {
-                "kind": "uniform",
-                "value": 80,
-                "alignment": 16
-              }
-            ]
-          },
-          "sizes": [
-            {
-              "kind": "descriptorTableSlot",
-              "value": 1
-            }
-          ]
-        }
-      },
-      {
-        "name": "metadata",
-        "binding": {
-          "kind": "descriptorTableSlot",
-          "index": 3
-        },
-        "type": {
-          "kind": "resource",
-          "baseShape": "structuredBuffer",
-          "access": "readWrite",
-          "resultType": {
-            "kind": "struct",
-            "name": "ParticleSimMetadata",
-            "fields": [
-              {
-                "name": "alive_count",
+                "name": "key",
                 "type": {
                   "kind": "scalar",
-                  "scalarType": "uint32",
+                  "scalarType": "float32",
                   "sizes": [
                     {
                       "kind": "uniform",
@@ -1075,7 +889,7 @@
                 }
               },
               {
-                "name": "expired_count",
+                "name": "index",
                 "type": {
                   "kind": "scalar",
                   "scalarType": "uint32",
@@ -1095,7 +909,7 @@
                 }
               },
               {
-                "name": "collision_count",
+                "name": "padding0",
                 "type": {
                   "kind": "scalar",
                   "scalarType": "uint32",
@@ -1115,7 +929,7 @@
                 }
               },
               {
-                "name": "spawned_count",
+                "name": "padding1",
                 "type": {
                   "kind": "scalar",
                   "scalarType": "uint32",
@@ -1133,92 +947,12 @@
                   "size": 4,
                   "elementStride": 0
                 }
-              },
-              {
-                "name": "dropped_spawn_count",
-                "type": {
-                  "kind": "scalar",
-                  "scalarType": "uint32",
-                  "sizes": [
-                    {
-                      "kind": "uniform",
-                      "value": 4,
-                      "alignment": 4
-                    }
-                  ]
-                },
-                "binding": {
-                  "kind": "uniform",
-                  "offset": 16,
-                  "size": 4,
-                  "elementStride": 0
-                }
-              },
-              {
-                "name": "append_cursor",
-                "type": {
-                  "kind": "scalar",
-                  "scalarType": "uint32",
-                  "sizes": [
-                    {
-                      "kind": "uniform",
-                      "value": 4,
-                      "alignment": 4
-                    }
-                  ]
-                },
-                "binding": {
-                  "kind": "uniform",
-                  "offset": 20,
-                  "size": 4,
-                  "elementStride": 0
-                }
-              },
-              {
-                "name": "compacted_count",
-                "type": {
-                  "kind": "scalar",
-                  "scalarType": "uint32",
-                  "sizes": [
-                    {
-                      "kind": "uniform",
-                      "value": 4,
-                      "alignment": 4
-                    }
-                  ]
-                },
-                "binding": {
-                  "kind": "uniform",
-                  "offset": 24,
-                  "size": 4,
-                  "elementStride": 0
-                }
-              },
-              {
-                "name": "event_count",
-                "type": {
-                  "kind": "scalar",
-                  "scalarType": "uint32",
-                  "sizes": [
-                    {
-                      "kind": "uniform",
-                      "value": 4,
-                      "alignment": 4
-                    }
-                  ]
-                },
-                "binding": {
-                  "kind": "uniform",
-                  "offset": 28,
-                  "size": 4,
-                  "elementStride": 0
-                }
               }
             ],
             "sizes": [
               {
                 "kind": "uniform",
-                "value": 32,
+                "value": 16,
                 "alignment": 4
               }
             ]
@@ -1235,14 +969,14 @@
   },
   "entryPoints": [
     {
-      "name": "particleCompact",
+      "name": "particleSortPrepare",
       "stage": "compute",
       "scope": {
         "kind": "none",
         "parameters": [
           {
-            "name": "lane",
-            "semanticName": "SV_GROUPTHREADID",
+            "name": "gid",
+            "semanticName": "SV_DISPATCHTHREADID",
             "type": {
               "kind": "vector",
               "elementCount": 3,
@@ -1257,8 +991,8 @@
       },
       "parameters": [
         {
-          "name": "lane",
-          "semanticName": "SV_GROUPTHREADID",
+          "name": "gid",
+          "semanticName": "SV_DISPATCHTHREADID",
           "type": {
             "kind": "vector",
             "elementCount": 3,
@@ -1293,7 +1027,7 @@
           }
         },
         {
-          "name": "source_particles",
+          "name": "sim_particles",
           "binding": {
             "kind": "descriptorTableSlot",
             "index": 1,
@@ -1301,18 +1035,10 @@
           }
         },
         {
-          "name": "compact_particles",
+          "name": "sort_items",
           "binding": {
             "kind": "descriptorTableSlot",
             "index": 2,
-            "used": 1
-          }
-        },
-        {
-          "name": "metadata",
-          "binding": {
-            "kind": "descriptorTableSlot",
-            "index": 3,
             "used": 1
           }
         }
